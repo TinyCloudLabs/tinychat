@@ -42,3 +42,6 @@ smithers.db-wal
 *.jks
 *.keystore
 mobile/android/app/libs/sherpa-onnx-static-link-onnxruntime-*.aar
+
+# Feed design rig build output (scripts/publish-feed-rig.sh)
+frontend/dist-feed-rig/

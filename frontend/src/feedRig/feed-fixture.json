@@ -1,0 +1,2311 @@
+{
+  "$comment": "Home feed rig fixture. Each feed state's snapshot is exactly what HomeFeedSource.load() returns (frontend/src/feed/feedStoreTypes.ts:56-64). Entries are HomeFeedEntry (:40-54); cards are @tinycloud/sdk-services FeedCard; typed cards carry payload.sitrep {version:1, record}, validated by packages/core/src/feed/sitrep. Cards that stand in for real ones are synthetic; the real cards stay in a private overlay that scripts/publish-feed-rig.sh merges when present. Edit freely, then publish.",
+  "states": {
+    "empty": {
+      "label": "Empty (new account)",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [],
+        "settings": {
+          "defaultSelector": "needs-action"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "loading": {
+      "label": "Loading",
+      "kind": "loading"
+    },
+    "one-card": {
+      "label": "One card (QA-style ask)",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "qa_owner",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Feed QA",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_qa_owner"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_qa_owner"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-qa-sample-ask",
+                "revision": 1,
+                "issuanceId": "ask-qa-sample-ask-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Feed QA sample question",
+                "body": "A sample question in a test owner's own space. It authorizes nothing and is removed after the check.",
+                "urgency": 0,
+                "createdAt": "2026-11-06T12:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "ack",
+                    "label": "Acknowledge"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "qa-sample-ask",
+                      "title": "Feed QA sample question",
+                      "body": "A sample question in a test owner's own space. It authorizes nothing and is removed after the check.",
+                      "from": "Feed QA",
+                      "owner": "You",
+                      "urgency": 0,
+                      "importance": 0,
+                      "links": [],
+                      "createdAt": "2026-11-06T12:00:00.000Z",
+                      "updatedAt": "2026-11-06T12:00:00.000Z",
+                      "askedAt": "2026-11-06T12:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "group": "Feed QA",
+                      "context": {
+                        "background": "A sample card posted to a test owner's own feed to check that it shows up on every surface.",
+                        "whyNow": "The check needs one open question.",
+                        "ifNoAnswer": "Nothing happens; the card is removed after the check.",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "ack",
+                          "label": "Acknowledge"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "qa_owner",
+              "cardId": "ask-qa-sample-ask",
+              "revision": 1,
+              "issuanceId": "ask-qa-sample-ask-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "real-landed": {
+      "label": "Real cards that landed (stand-ins; real text when the private overlay is present)",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "bridge",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Bridge agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_bridge"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_bridge"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "standin-ask-sync",
+                "revision": 1,
+                "issuanceId": "standin-ask-sync-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Photo sync: should new photos keep syncing while the laptop is offline? (uses a little more phone storage)",
+                "body": "Your phone already keeps a short list of photos waiting to sync. Today it waits for the laptop before sending anything, so a long trip means nothing moves until you're home. Keeping a local queue means sync resumes on its own.\n\nWhy now: The first version is being built now; this decides its scope.\n\n- Local queue (proposal): keeps up to 500 photos, sends the oldest first, and pauses when the phone is low on space.\n- Cost: up to about 2 GB of extra phone storage while you're away.\n- Either way it gets a review before shipping; nothing changes on your laptop until you say yes.\n- Related edge case: a brand-new phone (no queue yet) waits for the laptop the first time.\n\nIf you do not answer: We build the simple version: sync waits for the laptop.\n\n[Design (one page)](https://example.com/design/photo-sync)",
+                "urgency": 5,
+                "createdAt": "2026-11-04T17:18:32.858Z",
+                "choices": [
+                  {
+                    "id": "queue",
+                    "label": "Yes: keep a local queue, ~2 GB max (Recommended)"
+                  },
+                  {
+                    "id": "wait",
+                    "label": "No: wait for the laptop"
+                  },
+                  {
+                    "id": "talk",
+                    "label": "Talk it through first"
+                  }
+                ],
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "Owner's board",
+                    "url": "https://example.com/board"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "bridge",
+              "cardId": "standin-ask-sync",
+              "revision": 1,
+              "issuanceId": "standin-ask-sync-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "bridge",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Bridge agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_bridge"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_bridge"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "standin-ask-move",
+                "revision": 1,
+                "issuanceId": "standin-ask-move-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Photo archive: when it's ready, move your OLD albums to this drive (archive.example.com), or to a drive only you keep?",
+                "body": "The trial works with a sample album. Moving your old albums means copying them to the chosen drive; your current library stays where it is.\n\nWhy now: You asked to see this; it's the last step before real use.\n\n- The move happens only after the review; this card only picks where.\n- The originals stay until you clear them, so moving is reversible.\n\nIf you do not answer: Nothing moves; your albums stay where they are.\n\nRelated cards: standin-ask-sync",
+                "urgency": 5,
+                "createdAt": "2026-11-04T23:11:00.805Z",
+                "choices": [
+                  {
+                    "id": "thisdrive",
+                    "label": "This drive (archive.example.com)"
+                  },
+                  {
+                    "id": "owndrive",
+                    "label": "A drive only I keep (I'll say which)"
+                  },
+                  {
+                    "id": "notyet",
+                    "label": "Not yet"
+                  }
+                ],
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "Owner's board",
+                    "url": "https://example.com/board"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "bridge",
+              "cardId": "standin-ask-move",
+              "revision": 1,
+              "issuanceId": "standin-ask-move-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "bridge",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Bridge agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_bridge"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_bridge"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "standin-task-status",
+                "revision": 1,
+                "issuanceId": "standin-task-status-i1",
+                "kind": "task",
+                "needsResponse": false,
+                "title": "Photo archive: what's left before it's real (status, nothing for you to do here)",
+                "body": "Trial works: a sample album copied to the drive and opened again from your laptop. These are the remaining steps; your two decisions are on their own cards.\n\nWhy now: You asked to see them.\n\n- 1. A public name for the drive plus a test from a second laptop. Next.\n- 2. Review, then merging the archive pieces: later this week.\n- 3. The archive view in your browser: being built.\n- 4. Syncing while offline: your card standin-ask-sync.\n- 5. Moving your old albums and where: your card standin-ask-move.\n\nIf you do not answer: Work continues in this order.",
+                "urgency": 5,
+                "createdAt": "2026-11-04T23:11:12.350Z",
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "Owner's board",
+                    "url": "https://example.com/board"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "bridge",
+              "cardId": "standin-task-status",
+              "revision": 1,
+              "issuanceId": "standin-task-status-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "qa_owner",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Feed QA",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_qa_owner"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_qa_owner"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-qa-sample-ask",
+                "revision": 1,
+                "issuanceId": "ask-qa-sample-ask-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Feed QA sample question",
+                "body": "A sample question in a test owner's own space. It authorizes nothing and is removed after the check.",
+                "urgency": 0,
+                "createdAt": "2026-11-06T12:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "ack",
+                    "label": "Acknowledge"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "qa-sample-ask",
+                      "title": "Feed QA sample question",
+                      "body": "A sample question in a test owner's own space. It authorizes nothing and is removed after the check.",
+                      "from": "Feed QA",
+                      "owner": "You",
+                      "urgency": 0,
+                      "importance": 0,
+                      "links": [],
+                      "createdAt": "2026-11-06T12:00:00.000Z",
+                      "updatedAt": "2026-11-06T12:00:00.000Z",
+                      "askedAt": "2026-11-06T12:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "group": "Feed QA",
+                      "context": {
+                        "background": "A sample card posted to a test owner's own feed to check that it shows up on every surface.",
+                        "whyNow": "The check needs one open question.",
+                        "ifNoAnswer": "Nothing happens; the card is removed after the check.",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "ack",
+                          "label": "Acknowledge"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "qa_owner",
+              "cardId": "ask-qa-sample-ask",
+              "revision": 1,
+              "issuanceId": "ask-qa-sample-ask-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "ask-unanswered": {
+      "label": "Ask, unanswered",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-ask-backup-window",
+                "revision": 1,
+                "issuanceId": "ask-ask-backup-window-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Which night should the backup run?",
+                "body": "Both nights avoid your calendar. The backup takes about 40 minutes.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "tue",
+                    "label": "Tuesday 02:00"
+                  },
+                  {
+                    "id": "thu",
+                    "label": "Thursday 02:00"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "ask-backup-window",
+                      "title": "Which night should the backup run?",
+                      "body": "Both nights avoid your calendar. The backup takes about 40 minutes.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T09:00:00.000Z",
+                      "updatedAt": "2026-11-06T09:00:00.000Z",
+                      "askedAt": "2026-11-06T09:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "context": {
+                        "background": "You asked for a weekly backup of your notes. This card is part of the feed design rig's sample data.",
+                        "whyNow": "The first run needs a night this week.",
+                        "ifNoAnswer": "Nothing runs until you pick one.",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "tue",
+                          "label": "Tuesday 02:00",
+                          "detail": "Quietest night."
+                        },
+                        {
+                          "id": "thu",
+                          "label": "Thursday 02:00",
+                          "detail": "Right after your Wednesday edits."
+                        }
+                      ],
+                      "recommend": "tue"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ask-ask-backup-window",
+              "revision": 1,
+              "issuanceId": "ask-ask-backup-window-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "travel",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Travel agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_travel"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_travel"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "question",
+                "needsResponse": true,
+                "title": "Which flight should I hold for Thursday?",
+                "body": "Two flights fit your calendar. Holding one is free for 24 hours.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:30:00.000Z",
+                "choices": [
+                  {
+                    "id": "early",
+                    "label": "07:10 direct"
+                  },
+                  {
+                    "id": "later",
+                    "label": "09:40, one stop"
+                  }
+                ]
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "travel",
+              "cardId": "generic-flight",
+              "revision": 1,
+              "issuanceId": "generic-flight-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "ask-answered": {
+      "label": "Ask, answered",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "travel",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Travel agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_travel"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_travel"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "question",
+                "needsResponse": true,
+                "title": "Which flight should I hold for Thursday?",
+                "body": "Two flights fit your calendar. Holding one is free for 24 hours.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:30:00.000Z",
+                "choices": [
+                  {
+                    "id": "early",
+                    "label": "07:10 direct"
+                  },
+                  {
+                    "id": "later",
+                    "label": "09:40, one stop"
+                  }
+                ]
+              },
+              "response": {
+                "responseId": "resp-flight-1",
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "answer",
+                "choiceId": "early",
+                "createdAt": "2026-11-06T09:35:00.000Z",
+                "sequence": 1
+              },
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "travel",
+              "cardId": "generic-flight",
+              "revision": 1,
+              "issuanceId": "generic-flight-i1",
+              "seenAt": "2026-11-06T09:34:00.000Z"
+            },
+            "responses": [
+              {
+                "responseId": "resp-flight-1",
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "answer",
+                "choiceId": "early",
+                "createdAt": "2026-11-06T09:35:00.000Z",
+                "sequence": 1
+              }
+            ],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "task": {
+      "label": "Task and status cards",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "research",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Research agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_research"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_research"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "task-task-review-notes",
+                "revision": 1,
+                "issuanceId": "task-task-review-notes-i1",
+                "kind": "task",
+                "needsResponse": true,
+                "title": "Review the meeting notes from Monday",
+                "body": "Three notes need a quick check before they're shared.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T08:30:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "task",
+                      "id": "task-review-notes",
+                      "title": "Review the meeting notes from Monday",
+                      "body": "Three notes need a quick check before they're shared.",
+                      "from": "Research agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T08:30:00.000Z",
+                      "updatedAt": "2026-11-06T08:30:00.000Z",
+                      "status": "todo",
+                      "context": {
+                        "background": "The notes come from Monday's planning call. This card is part of the feed design rig's sample data.",
+                        "whyNow": "They're shared with the team on Friday.",
+                        "ifNoAnswer": "They stay private.",
+                        "known": [],
+                        "related": []
+                      },
+                      "steps": [
+                        {
+                          "id": "read",
+                          "text": "Read the three notes"
+                        },
+                        {
+                          "id": "fix",
+                          "text": "Fix any names that are wrong"
+                        },
+                        {
+                          "id": "ok",
+                          "text": "Mark them ready to share"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "research",
+              "cardId": "task-task-review-notes",
+              "revision": 1,
+              "issuanceId": "task-task-review-notes-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "research",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Research agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_research"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_research"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "progress-progress-tax-docs",
+                "revision": 1,
+                "issuanceId": "progress-progress-tax-docs-i1",
+                "kind": "progress",
+                "needsResponse": false,
+                "title": "Gathering this year's tax documents",
+                "body": "Four of seven documents found so far.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T06:00:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "progress",
+                      "id": "progress-tax-docs",
+                      "title": "Gathering this year's tax documents",
+                      "body": "Four of seven documents found so far.",
+                      "from": "Research agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T06:00:00.000Z",
+                      "updatedAt": "2026-11-06T06:00:00.000Z",
+                      "ticket": "TC-1",
+                      "important": false,
+                      "steps": [
+                        {
+                          "name": "Find documents",
+                          "state": "in-progress"
+                        },
+                        {
+                          "name": "Check totals",
+                          "state": "todo"
+                        },
+                        {
+                          "name": "Share with you",
+                          "state": "todo"
+                        }
+                      ],
+                      "currentStep": 0,
+                      "status": "open"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "research",
+              "cardId": "progress-progress-tax-docs",
+              "revision": 1,
+              "issuanceId": "progress-progress-tax-docs-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ship-ship-photo-backup",
+                "revision": 1,
+                "issuanceId": "ship-ship-photo-backup-i1",
+                "kind": "ship",
+                "needsResponse": false,
+                "title": "Photo backup finished",
+                "body": "1,204 new photos are stored in your TinyCloud space.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T07:00:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ship",
+                      "id": "ship-photo-backup",
+                      "title": "Photo backup finished",
+                      "body": "1,204 new photos are stored in your TinyCloud space.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T07:00:00.000Z",
+                      "updatedAt": "2026-11-06T07:00:00.000Z",
+                      "component": "Photo backup",
+                      "version": "November",
+                      "prevVersion": "October",
+                      "at": "2026-11-06T07:00:00.000Z",
+                      "status": "live"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ship-ship-photo-backup",
+              "revision": 1,
+              "issuanceId": "ship-ship-photo-backup-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "bridge",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Bridge agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_bridge"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_bridge"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "standin-task-status",
+                "revision": 1,
+                "issuanceId": "standin-task-status-i1",
+                "kind": "task",
+                "needsResponse": false,
+                "title": "Photo archive: what's left before it's real (status, nothing for you to do here)",
+                "body": "Trial works: a sample album copied to the drive and opened again from your laptop. These are the remaining steps; your two decisions are on their own cards.\n\nWhy now: You asked to see them.\n\n- 1. A public name for the drive plus a test from a second laptop. Next.\n- 2. Review, then merging the archive pieces: later this week.\n- 3. The archive view in your browser: being built.\n- 4. Syncing while offline: your card standin-ask-sync.\n- 5. Moving your old albums and where: your card standin-ask-move.\n\nIf you do not answer: Work continues in this order.",
+                "urgency": 5,
+                "createdAt": "2026-11-04T23:11:12.350Z",
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "Owner's board",
+                    "url": "https://example.com/board"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "bridge",
+              "cardId": "standin-task-status",
+              "revision": 1,
+              "issuanceId": "standin-task-status-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "approval-link": {
+      "label": "Approvals (link and go)",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "travel",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Travel agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_travel"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_travel"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "approval-approval-openkey-calendar",
+                "revision": 1,
+                "issuanceId": "approval-approval-openkey-calendar-i1",
+                "kind": "approval",
+                "needsResponse": true,
+                "title": "Let the travel agent read your calendar",
+                "body": "To suggest flights that fit, it needs read-only access to your calendar for 30 days.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T10:30:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "approval",
+                      "id": "approval-openkey-calendar",
+                      "title": "Let the travel agent read your calendar",
+                      "body": "To suggest flights that fit, it needs read-only access to your calendar for 30 days.",
+                      "from": "Travel agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T10:30:00.000Z",
+                      "updatedAt": "2026-11-06T10:30:00.000Z",
+                      "approvalType": "openkey",
+                      "codeExpected": true,
+                      "url": "https://openkey.so/delegate?request=EXAMPLE_REQUEST",
+                      "issuedAt": "2026-11-06T10:30:00.000Z",
+                      "expiresAt": "2099-01-01T00:00:00.000Z",
+                      "status": "open",
+                      "context": {
+                        "background": "You asked the travel agent to plan Thursday. This card is part of the feed design rig's sample data.",
+                        "whyNow": "Holds expire tonight.",
+                        "ifNoAnswer": "It plans without your calendar.",
+                        "known": [],
+                        "related": []
+                      }
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "travel",
+              "cardId": "approval-approval-openkey-calendar",
+              "revision": 1,
+              "issuanceId": "approval-approval-openkey-calendar-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "approval-approval-go-publish",
+                "revision": 1,
+                "issuanceId": "approval-approval-go-publish-i1",
+                "kind": "approval",
+                "needsResponse": true,
+                "title": "Publish the weekly summary?",
+                "body": "The summary is ready. Publishing makes it visible to the two people you share it with.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T10:00:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "approval",
+                      "id": "approval-go-publish",
+                      "title": "Publish the weekly summary?",
+                      "body": "The summary is ready. Publishing makes it visible to the two people you share it with.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [
+                        {
+                          "label": "Read the summary",
+                          "url": "https://example.com/weekly-summary"
+                        }
+                      ],
+                      "createdAt": "2026-11-06T10:00:00.000Z",
+                      "updatedAt": "2026-11-06T10:00:00.000Z",
+                      "approvalType": "go",
+                      "approvalKind": "publish",
+                      "codeExpected": false,
+                      "issuedAt": "2026-11-06T10:00:00.000Z",
+                      "expiresAt": "2099-01-01T00:00:00.000Z",
+                      "status": "open",
+                      "context": {
+                        "background": "You asked for a weekly summary. This card is part of the feed design rig's sample data.",
+                        "whyNow": "It goes out on Fridays.",
+                        "ifNoAnswer": "Nothing is published.",
+                        "known": [],
+                        "related": []
+                      }
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "approval-approval-go-publish",
+              "revision": 1,
+              "issuanceId": "approval-approval-go-publish-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "long": {
+      "label": "Very long title and body",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-ask-long-content",
+                "revision": 1,
+                "issuanceId": "ask-ask-long-content-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Please confirm whether the quarterly storage report, the renewed album sharing and the new backup schedule should all go ahead this weekend",
+                "body": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agen",
+                "urgency": 2,
+                "createdAt": "2026-11-06T11:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "all",
+                    "label": "Go ahead with all three this weekend, in one batch"
+                  },
+                  {
+                    "id": "split",
+                    "label": "Do them one at a time"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "ask-long-content",
+                      "title": "Please confirm whether the quarterly storage report, the renewed album sharing and the new backup schedule should all go ahead this weekend",
+                      "body": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agen",
+                      "from": "A helper agent with a long display name",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T11:00:00.000Z",
+                      "updatedAt": "2026-11-06T11:00:00.000Z",
+                      "askedAt": "2026-11-06T11:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "context": {
+                        "background": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to",
+                        "whyNow": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The ",
+                        "ifNoAnswer": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and fou",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "all",
+                          "label": "Go ahead with all three this weekend, in one batch",
+                          "detail": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and fou"
+                        },
+                        {
+                          "id": "split",
+                          "label": "Do them one at a time",
+                          "detail": "Slower."
+                        }
+                      ],
+                      "recommend": "split"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ask-ask-long-content",
+              "revision": 1,
+              "issuanceId": "ask-ask-long-content-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "plain-long",
+                "revision": 1,
+                "issuanceId": "plain-long-i1",
+                "kind": "update",
+                "needsResponse": false,
+                "title": "Please confirm whether the quarterly storage report, the renewed album sharing and the new backup schedule should all go ahead this weekend — and what happens to the older shares after thatPlease confirm whether the quarterly storage report, the renewed album sharing and the new backup schedule should all go ahead this weekend — and what happens to the older shares after that",
+                "body": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. ",
+                "urgency": 1,
+                "createdAt": "2026-11-06T11:05:00.000Z",
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "A source label that is also quite long",
+                    "url": "https://example.com/source"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "plain-long",
+              "revision": 1,
+              "issuanceId": "plain-long-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "many": {
+      "label": "Many cards",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "bridge",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Bridge agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_bridge"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_bridge"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "standin-ask-sync",
+                "revision": 1,
+                "issuanceId": "standin-ask-sync-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Photo sync: should new photos keep syncing while the laptop is offline? (uses a little more phone storage)",
+                "body": "Your phone already keeps a short list of photos waiting to sync. Today it waits for the laptop before sending anything, so a long trip means nothing moves until you're home. Keeping a local queue means sync resumes on its own.\n\nWhy now: The first version is being built now; this decides its scope.\n\n- Local queue (proposal): keeps up to 500 photos, sends the oldest first, and pauses when the phone is low on space.\n- Cost: up to about 2 GB of extra phone storage while you're away.\n- Either way it gets a review before shipping; nothing changes on your laptop until you say yes.\n- Related edge case: a brand-new phone (no queue yet) waits for the laptop the first time.\n\nIf you do not answer: We build the simple version: sync waits for the laptop.\n\n[Design (one page)](https://example.com/design/photo-sync)",
+                "urgency": 5,
+                "createdAt": "2026-11-04T17:18:32.858Z",
+                "choices": [
+                  {
+                    "id": "queue",
+                    "label": "Yes: keep a local queue, ~2 GB max (Recommended)"
+                  },
+                  {
+                    "id": "wait",
+                    "label": "No: wait for the laptop"
+                  },
+                  {
+                    "id": "talk",
+                    "label": "Talk it through first"
+                  }
+                ],
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "Owner's board",
+                    "url": "https://example.com/board"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "bridge",
+              "cardId": "standin-ask-sync",
+              "revision": 1,
+              "issuanceId": "standin-ask-sync-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "bridge",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Bridge agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_bridge"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_bridge"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "standin-ask-move",
+                "revision": 1,
+                "issuanceId": "standin-ask-move-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Photo archive: when it's ready, move your OLD albums to this drive (archive.example.com), or to a drive only you keep?",
+                "body": "The trial works with a sample album. Moving your old albums means copying them to the chosen drive; your current library stays where it is.\n\nWhy now: You asked to see this; it's the last step before real use.\n\n- The move happens only after the review; this card only picks where.\n- The originals stay until you clear them, so moving is reversible.\n\nIf you do not answer: Nothing moves; your albums stay where they are.\n\nRelated cards: standin-ask-sync",
+                "urgency": 5,
+                "createdAt": "2026-11-04T23:11:00.805Z",
+                "choices": [
+                  {
+                    "id": "thisdrive",
+                    "label": "This drive (archive.example.com)"
+                  },
+                  {
+                    "id": "owndrive",
+                    "label": "A drive only I keep (I'll say which)"
+                  },
+                  {
+                    "id": "notyet",
+                    "label": "Not yet"
+                  }
+                ],
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "Owner's board",
+                    "url": "https://example.com/board"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "bridge",
+              "cardId": "standin-ask-move",
+              "revision": 1,
+              "issuanceId": "standin-ask-move-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "bridge",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Bridge agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_bridge"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_bridge"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "standin-task-status",
+                "revision": 1,
+                "issuanceId": "standin-task-status-i1",
+                "kind": "task",
+                "needsResponse": false,
+                "title": "Photo archive: what's left before it's real (status, nothing for you to do here)",
+                "body": "Trial works: a sample album copied to the drive and opened again from your laptop. These are the remaining steps; your two decisions are on their own cards.\n\nWhy now: You asked to see them.\n\n- 1. A public name for the drive plus a test from a second laptop. Next.\n- 2. Review, then merging the archive pieces: later this week.\n- 3. The archive view in your browser: being built.\n- 4. Syncing while offline: your card standin-ask-sync.\n- 5. Moving your old albums and where: your card standin-ask-move.\n\nIf you do not answer: Work continues in this order.",
+                "urgency": 5,
+                "createdAt": "2026-11-04T23:11:12.350Z",
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "Owner's board",
+                    "url": "https://example.com/board"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "bridge",
+              "cardId": "standin-task-status",
+              "revision": 1,
+              "issuanceId": "standin-task-status-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "qa_owner",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Feed QA",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_qa_owner"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_qa_owner"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-qa-sample-ask",
+                "revision": 1,
+                "issuanceId": "ask-qa-sample-ask-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Feed QA sample question",
+                "body": "A sample question in a test owner's own space. It authorizes nothing and is removed after the check.",
+                "urgency": 0,
+                "createdAt": "2026-11-06T12:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "ack",
+                    "label": "Acknowledge"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "qa-sample-ask",
+                      "title": "Feed QA sample question",
+                      "body": "A sample question in a test owner's own space. It authorizes nothing and is removed after the check.",
+                      "from": "Feed QA",
+                      "owner": "You",
+                      "urgency": 0,
+                      "importance": 0,
+                      "links": [],
+                      "createdAt": "2026-11-06T12:00:00.000Z",
+                      "updatedAt": "2026-11-06T12:00:00.000Z",
+                      "askedAt": "2026-11-06T12:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "group": "Feed QA",
+                      "context": {
+                        "background": "A sample card posted to a test owner's own feed to check that it shows up on every surface.",
+                        "whyNow": "The check needs one open question.",
+                        "ifNoAnswer": "Nothing happens; the card is removed after the check.",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "ack",
+                          "label": "Acknowledge"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "qa_owner",
+              "cardId": "ask-qa-sample-ask",
+              "revision": 1,
+              "issuanceId": "ask-qa-sample-ask-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-ask-backup-window",
+                "revision": 1,
+                "issuanceId": "ask-ask-backup-window-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Which night should the backup run?",
+                "body": "Both nights avoid your calendar. The backup takes about 40 minutes.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "tue",
+                    "label": "Tuesday 02:00"
+                  },
+                  {
+                    "id": "thu",
+                    "label": "Thursday 02:00"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "ask-backup-window",
+                      "title": "Which night should the backup run?",
+                      "body": "Both nights avoid your calendar. The backup takes about 40 minutes.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T09:00:00.000Z",
+                      "updatedAt": "2026-11-06T09:00:00.000Z",
+                      "askedAt": "2026-11-06T09:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "context": {
+                        "background": "You asked for a weekly backup of your notes. This card is part of the feed design rig's sample data.",
+                        "whyNow": "The first run needs a night this week.",
+                        "ifNoAnswer": "Nothing runs until you pick one.",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "tue",
+                          "label": "Tuesday 02:00",
+                          "detail": "Quietest night."
+                        },
+                        {
+                          "id": "thu",
+                          "label": "Thursday 02:00",
+                          "detail": "Right after your Wednesday edits."
+                        }
+                      ],
+                      "recommend": "tue"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ask-ask-backup-window",
+              "revision": 1,
+              "issuanceId": "ask-ask-backup-window-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "travel",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Travel agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_travel"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_travel"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "question",
+                "needsResponse": true,
+                "title": "Which flight should I hold for Thursday?",
+                "body": "Two flights fit your calendar. Holding one is free for 24 hours.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:30:00.000Z",
+                "choices": [
+                  {
+                    "id": "early",
+                    "label": "07:10 direct"
+                  },
+                  {
+                    "id": "later",
+                    "label": "09:40, one stop"
+                  }
+                ]
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "travel",
+              "cardId": "generic-flight",
+              "revision": 1,
+              "issuanceId": "generic-flight-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "research",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Research agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_research"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_research"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "task-task-review-notes",
+                "revision": 1,
+                "issuanceId": "task-task-review-notes-i1",
+                "kind": "task",
+                "needsResponse": true,
+                "title": "Review the meeting notes from Monday",
+                "body": "Three notes need a quick check before they're shared.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T08:30:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "task",
+                      "id": "task-review-notes",
+                      "title": "Review the meeting notes from Monday",
+                      "body": "Three notes need a quick check before they're shared.",
+                      "from": "Research agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T08:30:00.000Z",
+                      "updatedAt": "2026-11-06T08:30:00.000Z",
+                      "status": "todo",
+                      "context": {
+                        "background": "The notes come from Monday's planning call. This card is part of the feed design rig's sample data.",
+                        "whyNow": "They're shared with the team on Friday.",
+                        "ifNoAnswer": "They stay private.",
+                        "known": [],
+                        "related": []
+                      },
+                      "steps": [
+                        {
+                          "id": "read",
+                          "text": "Read the three notes"
+                        },
+                        {
+                          "id": "fix",
+                          "text": "Fix any names that are wrong"
+                        },
+                        {
+                          "id": "ok",
+                          "text": "Mark them ready to share"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "research",
+              "cardId": "task-task-review-notes",
+              "revision": 1,
+              "issuanceId": "task-task-review-notes-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "travel",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Travel agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_travel"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_travel"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "approval-approval-openkey-calendar",
+                "revision": 1,
+                "issuanceId": "approval-approval-openkey-calendar-i1",
+                "kind": "approval",
+                "needsResponse": true,
+                "title": "Let the travel agent read your calendar",
+                "body": "To suggest flights that fit, it needs read-only access to your calendar for 30 days.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T10:30:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "approval",
+                      "id": "approval-openkey-calendar",
+                      "title": "Let the travel agent read your calendar",
+                      "body": "To suggest flights that fit, it needs read-only access to your calendar for 30 days.",
+                      "from": "Travel agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T10:30:00.000Z",
+                      "updatedAt": "2026-11-06T10:30:00.000Z",
+                      "approvalType": "openkey",
+                      "codeExpected": true,
+                      "url": "https://openkey.so/delegate?request=EXAMPLE_REQUEST",
+                      "issuedAt": "2026-11-06T10:30:00.000Z",
+                      "expiresAt": "2099-01-01T00:00:00.000Z",
+                      "status": "open",
+                      "context": {
+                        "background": "You asked the travel agent to plan Thursday. This card is part of the feed design rig's sample data.",
+                        "whyNow": "Holds expire tonight.",
+                        "ifNoAnswer": "It plans without your calendar.",
+                        "known": [],
+                        "related": []
+                      }
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "travel",
+              "cardId": "approval-approval-openkey-calendar",
+              "revision": 1,
+              "issuanceId": "approval-approval-openkey-calendar-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "approval-approval-go-publish",
+                "revision": 1,
+                "issuanceId": "approval-approval-go-publish-i1",
+                "kind": "approval",
+                "needsResponse": true,
+                "title": "Publish the weekly summary?",
+                "body": "The summary is ready. Publishing makes it visible to the two people you share it with.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T10:00:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "approval",
+                      "id": "approval-go-publish",
+                      "title": "Publish the weekly summary?",
+                      "body": "The summary is ready. Publishing makes it visible to the two people you share it with.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [
+                        {
+                          "label": "Read the summary",
+                          "url": "https://example.com/weekly-summary"
+                        }
+                      ],
+                      "createdAt": "2026-11-06T10:00:00.000Z",
+                      "updatedAt": "2026-11-06T10:00:00.000Z",
+                      "approvalType": "go",
+                      "approvalKind": "publish",
+                      "codeExpected": false,
+                      "issuedAt": "2026-11-06T10:00:00.000Z",
+                      "expiresAt": "2099-01-01T00:00:00.000Z",
+                      "status": "open",
+                      "context": {
+                        "background": "You asked for a weekly summary. This card is part of the feed design rig's sample data.",
+                        "whyNow": "It goes out on Fridays.",
+                        "ifNoAnswer": "Nothing is published.",
+                        "known": [],
+                        "related": []
+                      }
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "approval-approval-go-publish",
+              "revision": 1,
+              "issuanceId": "approval-approval-go-publish-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "research",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Research agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_research"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_research"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "progress-progress-tax-docs",
+                "revision": 1,
+                "issuanceId": "progress-progress-tax-docs-i1",
+                "kind": "progress",
+                "needsResponse": false,
+                "title": "Gathering this year's tax documents",
+                "body": "Four of seven documents found so far.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T06:00:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "progress",
+                      "id": "progress-tax-docs",
+                      "title": "Gathering this year's tax documents",
+                      "body": "Four of seven documents found so far.",
+                      "from": "Research agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T06:00:00.000Z",
+                      "updatedAt": "2026-11-06T06:00:00.000Z",
+                      "ticket": "TC-1",
+                      "important": false,
+                      "steps": [
+                        {
+                          "name": "Find documents",
+                          "state": "in-progress"
+                        },
+                        {
+                          "name": "Check totals",
+                          "state": "todo"
+                        },
+                        {
+                          "name": "Share with you",
+                          "state": "todo"
+                        }
+                      ],
+                      "currentStep": 0,
+                      "status": "open"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "research",
+              "cardId": "progress-progress-tax-docs",
+              "revision": 1,
+              "issuanceId": "progress-progress-tax-docs-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ship-ship-photo-backup",
+                "revision": 1,
+                "issuanceId": "ship-ship-photo-backup-i1",
+                "kind": "ship",
+                "needsResponse": false,
+                "title": "Photo backup finished",
+                "body": "1,204 new photos are stored in your TinyCloud space.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T07:00:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ship",
+                      "id": "ship-photo-backup",
+                      "title": "Photo backup finished",
+                      "body": "1,204 new photos are stored in your TinyCloud space.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T07:00:00.000Z",
+                      "updatedAt": "2026-11-06T07:00:00.000Z",
+                      "component": "Photo backup",
+                      "version": "November",
+                      "prevVersion": "October",
+                      "at": "2026-11-06T07:00:00.000Z",
+                      "status": "live"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ship-ship-photo-backup",
+              "revision": 1,
+              "issuanceId": "ship-ship-photo-backup-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "research",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Research agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_research"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_research"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "generic-reading",
+                "revision": 1,
+                "issuanceId": "generic-reading-i1",
+                "kind": "update",
+                "needsResponse": false,
+                "title": "Five papers matched your topics",
+                "body": "Two are short. I saved them to your reading list.",
+                "urgency": 0,
+                "createdAt": "2026-11-06T08:00:00.000Z",
+                "payload": {
+                  "render": "link",
+                  "url": "https://example.com/reading-list",
+                  "source": {
+                    "label": "Reading list",
+                    "url": "https://example.com/reading-list"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "research",
+              "cardId": "generic-reading",
+              "revision": 1,
+              "issuanceId": "generic-reading-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-ask-long-content",
+                "revision": 1,
+                "issuanceId": "ask-ask-long-content-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Please confirm whether the quarterly storage report, the renewed album sharing and the new backup schedule should all go ahead this weekend",
+                "body": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agen",
+                "urgency": 2,
+                "createdAt": "2026-11-06T11:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "all",
+                    "label": "Go ahead with all three this weekend, in one batch"
+                  },
+                  {
+                    "id": "split",
+                    "label": "Do them one at a time"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "ask-long-content",
+                      "title": "Please confirm whether the quarterly storage report, the renewed album sharing and the new backup schedule should all go ahead this weekend",
+                      "body": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agen",
+                      "from": "A helper agent with a long display name",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T11:00:00.000Z",
+                      "updatedAt": "2026-11-06T11:00:00.000Z",
+                      "askedAt": "2026-11-06T11:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "context": {
+                        "background": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to",
+                        "whyNow": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The ",
+                        "ifNoAnswer": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and fou",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "all",
+                          "label": "Go ahead with all three this weekend, in one batch",
+                          "detail": "The agent checked every folder in your space and found three places where older shares are still open to people you stopped working with last year. The agent checked every folder in your space and fou"
+                        },
+                        {
+                          "id": "split",
+                          "label": "Do them one at a time",
+                          "detail": "Slower."
+                        }
+                      ],
+                      "recommend": "split"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ask-ask-long-content",
+              "revision": 1,
+              "issuanceId": "ask-ask-long-content-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "offline": {
+      "label": "Offline (cards shown, live updates off)",
+      "kind": "feed",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-ask-backup-window",
+                "revision": 1,
+                "issuanceId": "ask-ask-backup-window-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Which night should the backup run?",
+                "body": "Both nights avoid your calendar. The backup takes about 40 minutes.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "tue",
+                    "label": "Tuesday 02:00"
+                  },
+                  {
+                    "id": "thu",
+                    "label": "Thursday 02:00"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "ask-backup-window",
+                      "title": "Which night should the backup run?",
+                      "body": "Both nights avoid your calendar. The backup takes about 40 minutes.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T09:00:00.000Z",
+                      "updatedAt": "2026-11-06T09:00:00.000Z",
+                      "askedAt": "2026-11-06T09:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "context": {
+                        "background": "You asked for a weekly backup of your notes. This card is part of the feed design rig's sample data.",
+                        "whyNow": "The first run needs a night this week.",
+                        "ifNoAnswer": "Nothing runs until you pick one.",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "tue",
+                          "label": "Tuesday 02:00",
+                          "detail": "Quietest night."
+                        },
+                        {
+                          "id": "thu",
+                          "label": "Thursday 02:00",
+                          "detail": "Right after your Wednesday edits."
+                        }
+                      ],
+                      "recommend": "tue"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ask-ask-backup-window",
+              "revision": 1,
+              "issuanceId": "ask-ask-backup-window-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ship-ship-photo-backup",
+                "revision": 1,
+                "issuanceId": "ship-ship-photo-backup-i1",
+                "kind": "ship",
+                "needsResponse": false,
+                "title": "Photo backup finished",
+                "body": "1,204 new photos are stored in your TinyCloud space.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T07:00:00.000Z",
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ship",
+                      "id": "ship-photo-backup",
+                      "title": "Photo backup finished",
+                      "body": "1,204 new photos are stored in your TinyCloud space.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T07:00:00.000Z",
+                      "updatedAt": "2026-11-06T07:00:00.000Z",
+                      "component": "Photo backup",
+                      "version": "November",
+                      "prevVersion": "October",
+                      "at": "2026-11-06T07:00:00.000Z",
+                      "status": "live"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ship-ship-photo-backup",
+              "revision": 1,
+              "issuanceId": "ship-ship-photo-backup-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        },
+        "connectionError": "Live updates unavailable: you're offline"
+      }
+    },
+    "error": {
+      "label": "Error (feed failed to load)",
+      "kind": "error",
+      "message": "Couldn't reach your TinyCloud space. Check your connection and try again."
+    },
+    "signed-out": {
+      "label": "Signed out (front page)",
+      "kind": "signed-out"
+    }
+  }
+}
