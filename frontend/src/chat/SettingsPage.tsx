@@ -43,6 +43,7 @@ import { WordFixesSettings } from "./WordFixesSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { ReplicationSettings } from "../lib/replication/ReplicationSettings";
+import { HOME_SITE } from "../lib/homeSite";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
@@ -187,6 +188,8 @@ export function SettingsPage({
               <FirstScreenControl tcw={tcw} did={did} />
             </SectionCard>
           )}
+          {/* The Home site's sign-in grants no meeting access, so the cards that only serve Recording and Connectors are not shown there. */}
+          {!HOME_SITE && (<>
           <SectionCard
             id="agent-access"
             icon={ShieldCheckIcon}
@@ -200,6 +203,7 @@ export function SettingsPage({
             <AgentAccessControls {...agentAccess} />
           </SectionCard>
           <AgentSetupCard />
+          </>)}
           <SectionCard icon={BrainIcon} title="Memory">
             <MemoryPanel
               variant="inline"
@@ -208,8 +212,9 @@ export function SettingsPage({
               onMemoryUpdated={onMemoryUpdated}
             />
           </SectionCard>
-          <TranscriptionSettings tcw={tcw} />
+          {!HOME_SITE && <TranscriptionSettings tcw={tcw} />}
           <WordFixesSettings tcw={tcw} />
+          {!HOME_SITE && (<>
           <SectionCard icon={BookOpenIcon} title="Meeting summaries">
             <AutomaticSummariesSettings tcw={tcw} />
           </SectionCard>
@@ -218,6 +223,7 @@ export function SettingsPage({
               <VoiceNotesTranscriberSettings />
             </SectionCard>
           )}
+          </>)}
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
             <BackendAttestationPanel
               backendUrl={backendUrl}
@@ -225,10 +231,12 @@ export function SettingsPage({
             />
           </SectionCard>
           <DebugLogRow />
-          <SectionCard icon={DatabaseIcon} title="Audio storage">
-            <AudioCacheSettings />
-          </SectionCard>
-          <ReplicationSettings tcw={tcw} />
+          {!HOME_SITE && (
+            <SectionCard icon={DatabaseIcon} title="Audio storage">
+              <AudioCacheSettings />
+            </SectionCard>
+          )}
+          {!HOME_SITE && <ReplicationSettings tcw={tcw} />}
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.

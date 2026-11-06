@@ -20,6 +20,7 @@ import {
 import { useSizeClass } from "@/lib/sizeClass";
 import { createConnectorMeetingsClient } from "../lib/connectors/meetingsApi";
 import { createBrowserMeetingTurnRetriever } from "../lib/meetingChat/retriever";
+import { HOME_SITE } from "../lib/homeSite";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
 import type { ModelSelectionController, SelectionView } from "./modelSelection";
 import { ChatHeader } from "./ChatHeader";
@@ -53,9 +54,10 @@ export function ChatWorkspace(props: {
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
   // workspace reload. It receives only browser-local handles and the existing
-  // session-backed metadata/content client.
+  // session-backed metadata/content client. The Home site has none: its sign-in grants no
+  // meeting storage, so Chat answers there without meeting context.
   const meetingRetriever = useMemo(
-    () => createBrowserMeetingTurnRetriever({
+    () => HOME_SITE ? undefined : createBrowserMeetingTurnRetriever({
       tcw: props.tcw,
       meetings: createConnectorMeetingsClient(props.backendUrl, {
         sessionStore: props.sessionStore,
@@ -179,7 +181,8 @@ export function ChatWorkspace(props: {
               composerToolbar={props.composerToolbar}
             />
           </div>
-          <ChatViewAgentEnablementBanner />
+          {/* The banner offers meeting access, which the Home site's sign-in does not cover. */}
+          {!HOME_SITE && <ChatViewAgentEnablementBanner />}
         </section>
       </div>
       <ChatsSheet open={chatsOpen} onOpenChange={setChatsOpen} settings={props.settings} />

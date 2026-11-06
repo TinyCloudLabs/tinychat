@@ -37,3 +37,8 @@ export const APPS_EMPTY = "No apps to show yet.";
 
 /** A plain link on the signed-out sign-in surface to the landing page at /about. */
 export const LANDING_LINK_LABEL = "About TinyCloud Home";
+
+/** The Home site's pointer where Recording and Connectors used to open: they live on tinycloud.chat. */
+export const MOVED_TO_CHAT_TITLE = "This is on tinycloud.chat";
+export const MOVED_TO_CHAT_BODY = "Recording and Connectors are part of TinyCloud Chat.";
+export const MOVED_TO_CHAT_LINK = "Open on tinycloud.chat";
