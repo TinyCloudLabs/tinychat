@@ -13,9 +13,9 @@ import {
   listFeedCardHistory, listFeedResponses, publishFeedCard, readFeedResponsePayload, recordFeedHandling,
 } from "@tinycloud/sdk-services/feed";
 import type { FeedCardIdentity, FeedResponsePayload, NewFeedResponse } from "@tinycloud/sdk-services/feed";
-import { validateRecord } from "@tinyboilerplate/core/feed/sitrep";
+import { applyUpsert, closePatch, validateRecord } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord, Kind } from "@tinyboilerplate/core/feed/sitrep";
-import { closeHomeMirror, publishHomeMirror } from "./bridge";
+import { closeHomeMirror, homeMirrorDiagnostic, publishHomeMirror } from "./bridge";
 import type { HomeMirrorContext, HomeMirrorIdentity, HomeMirrorPublishInput } from "./bridge-types";
 
 const SPACE = "tinycloud:pkh:eip155:1:0x2222222222222222222222222222222222222222:applications";
@@ -347,4 +347,67 @@ test("legacy write failures remain failures without leaking private answer data 
   expect(f.values.get(f.key)).toEqual(before);
   expect(take(await f.owner.query("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows).toEqual([[null]]);
   expect(take(await listFeedResponses(f.responses)).map((response) => response.kind)).toEqual(["answer"]);
+});
+
+test("an answered KV with a new ETag and no receipt recovers the original close without another KV write", async () => {
+  const f = await fixture();
+  const binding = await publishHomeMirror(f.ctx, f.input);
+  const response = await f.answer({ askId: f.input.legacy.record.id, action: "answer", choice: "yes", text: PRIVATE, at: T2 });
+  take(await f.owner.execute(`CREATE TRIGGER refuse_receipt BEFORE UPDATE OF close_receipt_json ON feed_sitrep_mirrors BEGIN SELECT RAISE(ABORT, '${PRIVATE}'); END`));
+  const rejected = await refused(closeHomeMirror(f.ctx, f.identity));
+  expect(homeMirrorDiagnostic(rejected)).toMatchObject({ error: { name: "ServiceError", code: "SQL_ERROR", step: "close.receipt-update", status: 400 }, exitCode: 1 });
+  const closedHead = f.values.get(f.key), writes = [...f.writes];
+  expect(closedHead?.etag).not.toBe(binding.legacy.publishedETag);
+  expect(take(await f.owner.query("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows).toEqual([[null]]);
+  take(await f.owner.execute("DROP TRIGGER refuse_receipt"));
+  f.ctx.now = () => "2026-10-29T12:05:00.000Z";
+  const receipt = await closeHomeMirror(f.ctx, f.identity);
+  expect(receipt).toMatchObject({ responseId: response.responseId, identity: tuple(f.identity), status: "answered", expectedETag: binding.legacy.publishedETag, closedETag: closedHead?.etag });
+  expect(f.values.get(f.key)).toEqual(closedHead);
+  expect(f.writes).toEqual(writes);
+  const persisted = take(await f.owner.query<string>("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows;
+  expect(JSON.parse(persisted[0][0])).toEqual(receipt);
+  expect(await closeHomeMirror(f.ctx, f.identity)).toEqual(receipt);
+  expect(f.writes).toEqual(writes);
+});
+
+test("an answered mirror with changed business content cannot acquire a recovered receipt", async () => {
+  const f = await fixture();
+  await publishHomeMirror(f.ctx, f.input);
+  await f.answer({ askId: f.input.legacy.record.id, action: "answer", text: PRIVATE, at: T2 });
+  const patch = closePatch("ask", undefined);
+  if (!patch.ok) throw new Error("Invalid close fixture");
+  const closed = applyUpsert("ask", f.input.legacy.record.id, f.input.legacy.record, patch.patch, { now: NOW, from: f.input.legacy.record.from });
+  if (!closed.ok) throw new Error("Invalid closed fixture");
+  const text = JSON.stringify({ ...closed.record, body: "An unrelated replacement must remain untouched.", cardUuid: f.identity.cardId });
+  f.values.set(f.key, { text, etag: etag(text) });
+  const head = f.values.get(f.key), writes = [...f.writes];
+  expect(await closeHomeMirror(f.ctx, f.identity)).toBeNull();
+  expect(f.values.get(f.key)).toEqual(head);
+  expect(f.writes).toEqual(writes);
+  expect(take(await f.owner.query("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows).toEqual([[null]]);
+});
+
+test("a later durable decision replaces an existing non-null receipt conditionally", async () => {
+  const f = await fixture();
+  await publishHomeMirror(f.ctx, f.input);
+  const first = await f.answer({ askId: f.input.legacy.record.id, action: "answer", text: PRIVATE, at: T2 });
+  const prior = await closeHomeMirror(f.ctx, f.identity);
+  const next = await f.answer({ askId: f.input.legacy.record.id, action: "drop", text: PRIVATE, at: NOW }, { kind: "followup", supersedes: first.responseId, createdAt: NOW });
+  const receipt = await closeHomeMirror(f.ctx, f.identity);
+  expect(receipt).toMatchObject({ responseId: next.responseId, status: "dropped", expectedETag: prior?.closedETag });
+  expect(f.legacyRecord()).toMatchObject({ status: "dropped", cardUuid: f.identity.cardId });
+  expect(JSON.parse(take(await f.owner.query<string>("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows[0][0])).toEqual(receipt);
+});
+
+test("publication validation identifies a missing label without exposing unknown keys or values", async () => {
+  const f = await fixture();
+  const source = { ...f.input.source, label: undefined, [PRIVATE]: PRIVATE };
+  const error = await refused(publishHomeMirror(f.ctx, { ...f.input, source }));
+  const diagnostic = homeMirrorDiagnostic(error);
+  expect(diagnostic).toMatchObject({ error: { name: "ZodError", code: "INVALID_INPUT", step: "post" }, exitCode: 2 });
+  expect(diagnostic.error.message).toContain("source.label");
+  expect(JSON.stringify(diagnostic)).not.toContain(PRIVATE);
+  expect(f.values.has(f.key)).toBe(false);
+  expect(take(await f.owner.query("SELECT binding_json FROM feed_sitrep_mirrors")).rows).toEqual([]);
 });
