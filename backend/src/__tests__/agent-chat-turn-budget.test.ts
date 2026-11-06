@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import type { Request, Response as ExpressResponse } from "express";
+import type { Server } from "node:http";
+import express, { type Request, type Response as ExpressResponse } from "express";
 import type Stripe from "stripe";
 import { createAgentChatHandler, type AgentChatConfig } from "../routes/agent-chat.js";
+import { createChatRouter } from "../routes/chat.js";
 import { _resetCatalogCache } from "../billing/catalog.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
-import { _resetUsage, recordUsage } from "../billing/usage.js";
+import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
 import { TIERS } from "../billing/tiers.js";
 
 const address = "0xturn-budget-local";
-const model = "phala/gpt-oss-120b";
+const model = "z-ai/glm-5.2";
 const budget = 1000;
 const encoder = new TextEncoder();
 const frame = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
@@ -49,7 +51,7 @@ function seedRemaining(remaining: number) {
   if (budget - remaining > 0) recordUsage(address, TIERS.free, budget - remaining);
 }
 
-function browser() {
+function browser(onEnd?: () => Promise<void>) {
   const chunks: string[] = [];
   let jsonBody: unknown = undefined;
   let status = 200;
@@ -62,7 +64,12 @@ function browser() {
     setHeader() { return this; },
     flushHeaders() {},
     write(value: Uint8Array | string) { chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value)); return true; },
-    end() { this.emit("finish"); return this; },
+    end() {
+      // A client may send its next request before the server's finish event.
+      if (onEnd) void onEnd().finally(() => this.emit("finish"));
+      else this.emit("finish");
+      return this;
+    },
     destroy() { this.destroyed = true; this.emit("close"); return this; },
   }) as unknown as ExpressResponse;
   return { req, res, chunks, json: () => jsonBody, status: () => status };
@@ -195,5 +202,72 @@ describe("agent chat turn budget", () => {
     await createAgentChatHandler(run.config)(local.req, local.res, () => {});
     expect(run.calls.some(url => url.endsWith("/cancel"))).toBe(false);
     expect(local.chunks.join("")).not.toContain("budget_exhausted");
+  });
+
+  test("records a legacy agent charge before stream end so an immediate /api/chat is denied", async () => {
+    process.env.CREDIT_BUDGET_FREE = "500";
+    const run = fixture([], "final");
+    run.config.elizaTasksEnabled = false;
+    run.config.fetchImpl = (async (input: unknown) => {
+      expect(String(input)).toBe("https://provider.test/v1/chat/completions");
+      return new Response(
+        frame({ id: "legacy-completion", choices: [{ delta: { content: "Hello" }, finish_reason: "stop" }] }) +
+        frame({ choices: [], usage: { prompt_tokens: 60_000, completion_tokens: 22_000 } }) +
+        "data: [DONE]\n\n",
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }) as typeof fetch;
+    const catalogFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      if (String(input).endsWith("/chat/completions")) {
+        return new Response(
+          frame({ choices: [{ delta: { content: "follow-up admitted" }, finish_reason: "stop" }] }) +
+          frame({ choices: [], usage: { prompt_tokens: 0, completion_tokens: 0 } }) +
+          "data: [DONE]\n\n",
+        );
+      }
+      return catalogFetch(input as RequestInfo, init);
+    }) as typeof fetch;
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter());
+    const server = await new Promise<Server>(resolve => {
+      const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
+    });
+    let followUpStatus: number | undefined;
+    let followUpBody: unknown;
+    let usageAtEnd = -1;
+    const local = browser(async () => {
+      usageAtEnd = getUsage(address, TIERS.free).used;
+      const { port } = server.address() as { port: number };
+      const response = await originalFetch(`http://127.0.0.1:${port}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model, messages: [{ role: "user", content: "follow-up" }] }),
+      });
+      followUpStatus = response.status;
+      const body = await response.text();
+      followUpBody = response.status === 402 ? JSON.parse(body) : body;
+    });
+    try {
+      expect(getUsage(address, TIERS.free).used).toBe(0);
+      await createAgentChatHandler(run.config)(local.req, local.res, () => {});
+      expect(local.chunks.join("")).toBe(
+        ": keepalive\n\n" +
+        frame({ choices: [{ delta: { content: "Hello" } }] }) +
+        frame({ id: "legacy-completion" }) +
+        frame({ choices: [], usage: { prompt_tokens: 60_000, completion_tokens: 22_000 } }) +
+        "data: [DONE]\n\n",
+      );
+      expect(followUpStatus).toBe(402);
+      expect(followUpBody).toMatchObject({
+        error: "credit_budget_exceeded", tier: "free", usage: { used: 820, limit: 500 },
+      });
+      expect(usageAtEnd).toBe(820);
+      expect(getUsage(address, TIERS.free).used).toBe(820);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+    }
   });
 });
