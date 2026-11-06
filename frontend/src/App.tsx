@@ -161,7 +161,6 @@ import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE,
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
-import { closeSignedInToastAfter } from "./lib/signInToast";
 import { applyManifestRevisionGate, browserRevisionStore, createResignPromptGuard, MANIFEST_RESIGN_NOTICE, manifestCarriesCurrentBundle, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
 import { MovedToChatPointer } from "./shell/MovedToChatPointer";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
@@ -977,9 +976,6 @@ export function App() {
             return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
           })()
         : await createAndSignIn(prefetch.guardSigning(web3Provider), signInConfig);
-      // The SDK shows "Successfully signed in" for 7 s; Home's design keeps it for 4 s.
-      closeSignedInToastAfter();
-
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);

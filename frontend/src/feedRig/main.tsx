@@ -13,7 +13,6 @@ import { AppShell } from "@/shell/AppShell";
 import { screenFor } from "@/shell/routes";
 import { SignedOutSurface } from "@/shell/SignedOutSurface";
 import fixtureJson from "feed-rig-fixture";
-import { closeSignedInToastAfter } from "@/lib/signInToast";
 import { failingSource, fixtureSource, loadingSource, type RigFixture, type RigState } from "./fixtureSource";
 
 const fixture = fixtureJson as unknown as RigFixture;
@@ -55,14 +54,13 @@ function ShellFrame({ state }: { state: RigState }) {
 
 /**
  * Rig-only: shows the real TinyCloud SDK toast host with "Successfully signed in", as the
- * SDK does at the end of signIn(), then the app's 4 s close. No session, no network.
+ * SDK does at the end of signIn(), and leaves it to the SDK's own timing. No session, no network.
  */
 function signInToast() {
   const tcw = new TinyCloudWeb({ ui: { button: false, platform: "web" } });
   // The SDK raises this toast from its private notification handler at the end of signIn().
   const handler: unknown = Reflect.get(tcw, "notificationHandler");
   if (handler && typeof handler === "object" && "success" in handler && typeof handler.success === "function") handler.success.call(handler, "Successfully signed in");
-  closeSignedInToastAfter();
 }
 
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
