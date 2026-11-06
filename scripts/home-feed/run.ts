@@ -8,7 +8,7 @@ import type { Result, SqlValue } from "@tinycloud/sdk-services";
 import { initializeFeedHandoff, projectFeedResponseNotification } from "@tinycloud/sdk-services/feed";
 import type { FeedDatabase, FeedResponse } from "@tinycloud/sdk-services/feed";
 import { loadProfile } from "../agent-sync/fireflies";
-import { closeHomeMirror, publishHomeMirror, watchHomeMirrors } from "./bridge";
+import { closeHomeMirror, homeMirrorDiagnostic, publishHomeMirror, watchHomeMirrors } from "./bridge";
 import type { HomeMirrorContext } from "./bridge-types";
 
 const space = z.string().regex(/^tinycloud:[^\s]+:[^\s]+$/);
@@ -137,5 +137,9 @@ function runExternal(argv: readonly [string, ...string[]], input: FeedResponse, 
 
 if (import.meta.main) {
   try { await runHomeMirror(process.argv.slice(2)); }
-  catch { process.stderr.write("Home mirror operation failed; no delivery success is implied.\n"); process.exitCode = 1; }
+  catch (error) {
+    const diagnostic = homeMirrorDiagnostic(error);
+    process.stderr.write(`${JSON.stringify(diagnostic)}\n`);
+    process.exitCode = diagnostic.exitCode;
+  }
 }

@@ -47,15 +47,54 @@ const inputSchema = z.object({
   source: sourceSchema.extend({ label: z.string() }).strict(), card: cardSchema,
   legacy: z.object({ spaceId: text, fullKey: text, record: businessSchema }).strict(),
 }).strict();
+type SafeDiagnostic = { name: string; message: string; code: string; step: string; status?: number };
+class MirrorFailure extends Error {
+  readonly code: string;
+  readonly status?: number;
+  constructor(readonly diagnostic: SafeDiagnostic) {
+    super(diagnostic.message);
+    this.name = diagnostic.name; this.code = diagnostic.code; this.status = diagnostic.status;
+  }
+}
+const argumentCodes = new Set(["ERR_PARSE_ARGS_UNKNOWN_OPTION", "ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"]);
+const transientCodes = new Set(["NETWORK_ERROR", "TIMEOUT", "SQL_BUSY", "SQL_UNAVAILABLE"]);
+const safeMessages = new Set([
+  "Home mirror operation refused", "Invalid node host", "Existing owner session is unavailable",
+  "Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file",
+  "Local durable handoff initialization failed", "Home mirror watch requires Bun SQLite",
+  "Home mirror handoff requires a persistent file path", "Local durable handoff unavailable",
+]);
+const inputFields = new Set(["source", "sourceId", "agentDid", "label", "output", "responses", "spaceId", "database", "card", "cardId", "revision", "issuanceId", "legacy", "fullKey", "record", "recipient", "runner", "renewalSeconds"]);
 function failure(code: string = ErrorCodes.INVALID_INPUT): Error { return Object.assign(new Error("Home mirror operation refused"), { code }); }
-function safeFailure(error: unknown): Error {
+function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
+  if (error instanceof MirrorFailure) return error.diagnostic.step === "mirror" && step !== "mirror" ? new MirrorFailure({ ...error.diagnostic, step }) : error;
   const candidate = object(error) ? error.code : undefined;
-  const code = typeof candidate === "string" && Object.hasOwn(ErrorCodes, candidate) ? candidate : ErrorCodes.INVALID_INPUT;
+  const code = typeof candidate === "string" && (Object.hasOwn(ErrorCodes, candidate) || argumentCodes.has(candidate)) ? candidate : ErrorCodes.INVALID_INPUT;
   const meta = object(error) && object(error.meta) ? error.meta : undefined;
   const status = meta?.status;
-  return Object.assign(new Error("Home mirror operation refused"), { code, ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {}) });
+  const name = error instanceof z.ZodError ? "ZodError" : error instanceof TypeError ? "TypeError" : error instanceof SyntaxError ? "SyntaxError" : error instanceof RangeError ? "RangeError" : object(error) && error.service === "sql" ? "ServiceError" : "Error";
+  let message = "Error details redacted";
+  if (error instanceof z.ZodError) {
+    // Schema-defined paths and issue codes only: Zod messages may echo input values.
+    message = error.issues.map((issue) => `${issue.path.filter((part) => typeof part === "string" && inputFields.has(part)).join(".") || "input"}: ${issue.code}`).join("; ");
+  } else if (object(error) && error.service === "sql") {
+    // Preserve the SDK's already-redacted SQL message, never its HTTP body/cause.
+    message = error.message === "Local durable handoff operation failed" ? error.message : "SQL operation failed";
+  } else if (argumentCodes.has(code)) {
+    message = "Invalid command-line arguments"; step = "arguments";
+  } else if (error instanceof Error && safeMessages.has(error.message)) {
+    message = error.message;
+    if (message.startsWith("Home mirror requires explicit mode")) step = "arguments";
+  }
+  return new MirrorFailure({ name, message, code, step, ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {}) });
 }
-function take<T>(result: Result<T>): T { if (!result.ok) throw safeFailure(result.error); return result.data; }
+export function homeMirrorDiagnostic(error: unknown) {
+  const failure = safeFailure(error, "run");
+  const { code, status } = failure.diagnostic;
+  const transient = transientCodes.has(code) || status === 429 || status === 503;
+  return { error: failure.diagnostic, delivery: "not-confirmed", retry: "manual-reconciliation-required", exitCode: code === ErrorCodes.INVALID_INPUT || argumentCodes.has(code) ? 2 : transient ? 6 : 1 };
+}
+function take<T>(result: Result<T>, step?: string): T { if (!result.ok) throw safeFailure(result.error, step); return result.data; }
 function active(ctx: HomeMirrorContext): void { if (ctx.signal?.aborted) throw failure(ErrorCodes.ABORTED); }
 function tuple(value: FeedCardIdentity): FeedCardIdentity { return { cardId: value.cardId, revision: value.revision, issuanceId: value.issuanceId }; }
 function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity): boolean { return a.cardId === b.cardId && a.revision === b.revision && a.issuanceId === b.issuanceId; }
@@ -192,7 +231,7 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     const replay = await load(ctx, { sourceId: source.sourceId, ...identity });
     if (!replay || !isDeepStrictEqual(replay.binding, binding)) throw failure();
     return replay.binding;
-  } catch (error) { throw safeFailure(error); }
+  } catch (error) { throw safeFailure(error, "post"); }
 }
 
 type Decision = { response: FeedResponse; patch: Patch };
@@ -303,25 +342,29 @@ export async function closeHomeMirror(ctx: HomeMirrorContext, identity: HomeMirr
     const ownPreviousClose = row.receipt !== null && row.receipt.closedETag === head.etag && row.receipt.status === head.record.status;
     if (head.sha256 !== binding.legacy.publicationSha256 && !matchingClosed && !ownPreviousClose) return null;
     if (head.sha256 === binding.legacy.publicationSha256 && head.etag !== binding.legacy.publishedETag) return null;
-    const expectedETag = head.etag;
+    const expectedETag = matchingClosed && row.receipt === null ? binding.legacy.publishedETag : head.etag;
     const planned = applyUpsert(typed.record.kind, typed.record.id, head.record, selected.patch, { now: ctx.now(), from: typed.record.from });
     if (!planned.ok) throw failure();
     if (!await currentCard(ctx, binding.source, binding.identity)) return null;
     // A newly saved response gets a new drain; never close from a superseded selection.
     if (take(await listFeedResponses(privateDatabase(ctx.sql.db(binding.source.responses.database), ctx), { afterSequence: sequence, limit: 1, signal: ctx.signal })).length) return null;
     active(ctx);
-    if (planned.changed) {
+    if (!matchingClosed && planned.changed) {
       take(await ctx.legacy.put(binding.legacy.fullKey, publication(planned.record, binding.cardUuid), { ifMatch: expectedETag, prefix: "", contentType: "application/json", signal: ctx.signal }));
       head = await readLegacy(ctx, binding.legacy.kind, binding.legacy.fullKey);
       if (!head || head.raw.cardUuid !== binding.cardUuid || head.sha256 !== hash(publication(planned.record, binding.cardUuid))) throw failure();
     }
     const receipt = receiptSchema.parse({ version: 1, sourceId: binding.source.sourceId, identity: binding.identity, responseId: selected.response.responseId, legacyKey: binding.legacy.fullKey, publicationSha256: binding.legacy.publicationSha256, expectedETag, closedETag: head.etag, status: planned.record.status, observedAt: ctx.now() });
     const json = JSON.stringify(receipt);
-    take(await privateDatabase(ctx.sql.db(OWNER), ctx).execute("UPDATE feed_sitrep_mirrors SET close_receipt_json=? WHERE source_id=? AND card_id=? AND revision=? AND issuance_id=? AND close_receipt_json IS ?", [json, identity.sourceId, identity.cardId, identity.revision, identity.issuanceId, row.receiptJSON]));
+    // sqlparser on the node accepts IS NULL, but not SQLite's IS ? extension.
+    const params: SqlValue[] = [json, identity.sourceId, identity.cardId, identity.revision, identity.issuanceId];
+    const condition = row.receiptJSON === null ? "close_receipt_json IS NULL" : "close_receipt_json = ?";
+    if (row.receiptJSON !== null) params.push(row.receiptJSON);
+    take(await privateDatabase(ctx.sql.db(OWNER), ctx).execute(`UPDATE feed_sitrep_mirrors SET close_receipt_json=? WHERE source_id=? AND card_id=? AND revision=? AND issuance_id=? AND ${condition}`, params), "close.receipt-update");
     const recorded = await load(ctx, identity);
     if (!recorded?.receipt || !isDeepStrictEqual(recorded.receipt, receipt)) throw failure();
     return recorded.receipt;
-  } catch (error) { throw safeFailure(error); }
+  } catch (error) { throw safeFailure(error, "close"); }
 }
 
 export interface HomeMirrorForwardOptions {
@@ -404,7 +447,7 @@ export async function forwardHomeMirrorResponse(ctx: HomeMirrorContext, options:
     const delivered = await deliverFeedResponse({ handoff, recipient: options.recipient, response: allowed, deliver: options.deliver });
     if (!delivered.ok && delivered.error.service === "feed" && delivered.error.code === ErrorCodes.PERMISSION_DENIED && delivered.error.meta?.reason === "dispatch_deadline") return null;
     return take(delivered);
-  } catch (error) { throw safeFailure(error); }
+  } catch (error) { throw safeFailure(error, "forward"); }
 }
 
 export interface HomeMirrorWatchOptions {
