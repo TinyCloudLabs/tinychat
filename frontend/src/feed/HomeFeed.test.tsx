@@ -92,15 +92,34 @@ async function mount(source: HomeFeedSource) {
   await act(async () => root.render(<FeedViewEntries {...props} />));
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
 }
-function button(host: HTMLElement, label: string) {
+function button(host: ParentNode, label: string) {
   const node = [...host.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label);
   expect(node).toBeDefined();
   return node!;
+}
+function hasButton(host: ParentNode, label: string) {
+  return [...host.querySelectorAll("button")].some((candidate) => candidate.textContent?.trim() === label);
 }
 function answer(host: HTMLElement) {
   const node = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
   expect(node).not.toBeNull();
   return node!;
+}
+function option(host: ParentNode, label: string) {
+  const node = [...host.querySelectorAll('[role="group"][aria-label="Answers"] button')].find((candidate) => candidate.textContent?.includes(label));
+  expect(node).toBeDefined();
+  return node as HTMLButtonElement;
+}
+function card(host: HTMLElement, title: string) {
+  const node = host.querySelector<HTMLElement>(`article[aria-label="${title}"]`);
+  expect(node).not.toBeNull();
+  return node!;
+}
+function status(host: ParentNode) {
+  return host.querySelector('[role="status"][aria-label="Your answer"]')?.textContent ?? null;
+}
+async function openNote(host: HTMLElement) {
+  await act(async () => button(host, "Add a note").click());
 }
 async function typeAnswer(host: HTMLElement, value: string) {
   const node = answer(host);
@@ -109,10 +128,13 @@ async function typeAnswer(host: HTMLElement, value: string) {
     node.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-async function chooseView(host: HTMLElement, value: FeedSelector) {
-  const selector = host.querySelector<HTMLSelectElement>('select[aria-label="Feed view"]');
-  expect(selector).not.toBeNull();
-  await act(async () => { selector!.value = value; selector!.dispatchEvent(new Event("change", { bubbles: true })); });
+function segment(host: HTMLElement, label: "Needs you" | "All" | "Done") {
+  const node = [...host.querySelectorAll('[role="group"][aria-label="Show"] button')].find((candidate) => candidate.textContent?.startsWith(label));
+  expect(node).toBeDefined();
+  return node as HTMLButtonElement;
+}
+async function chooseView(host: HTMLElement, label: "Needs you" | "All" | "Done") {
+  await act(async () => segment(host, label).click());
 }
 function handling(response: FeedResponse, phase: FeedHandling["phase"]): FeedHandling {
   return { cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId, handlingId: `handling-${phase}`, phase, createdAt, detail: { message: phase === "failed" ? "Action failed safely" : "Reversible action completed" } };
@@ -122,81 +144,151 @@ test("saving an answer waits for durability, then distinguishes saved, received,
   const write = Promise.withResolvers<void>();
   const store = persistence([decision()], { beforeSave: () => write.promise });
   const view = await mount(store.source());
+  await openNote(view.host);
   await typeAnswer(view.host, "Proceed with the isolated action");
   await act(async () => button(view.host, "Save answer").click());
   expect(answer(view.host).value).toBe("Proceed with the isolated action");
   expect(store.responses).toEqual([]);
-  expect(view.host.textContent).not.toContain("Answer saved");
+  expect(status(view.host)).toBeNull();
   await act(async () => write.resolve());
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", text: "Proceed with the isolated action" });
-  expect(view.host.textContent).toContain("Answer saved");
-  expect(view.host.textContent).not.toContain("Agent received");
-  expect(view.host.textContent).not.toContain("Completed");
+  expect(status(view.host)).toContain("Proceed with the isolated action");
+  expect(status(view.host)).not.toContain("got it");
+  expect(status(view.host)).not.toContain("finished it");
   store.durable.entries[0]!.state.acknowledgement = handling(store.responses[0]!, "acknowledged");
   await act(async () => store.notify());
-  expect(view.host.textContent).toContain("Agent received");
-  expect(view.host.textContent).not.toContain("Completed");
+  expect(status(view.host)).toContain("Test agent got it.");
+  expect(status(view.host)).not.toContain("finished it");
   store.durable.entries[0]!.state.outcome = handling(store.responses[0]!, "succeeded");
   await act(async () => store.notify());
-  expect(view.host.textContent).toContain("Completed");
-  expect(view.host.textContent).toContain("Reversible action completed");
+  expect(status(view.host)).toContain("Test agent finished it.");
+  expect(status(view.host)).toContain("Reversible action completed");
   await view.unmount();
   const reopened = await mount(store.source());
-  await chooseView(reopened.host, "both");
-  expect(reopened.host.textContent).toContain("Proceed with the isolated action");
-  expect(reopened.host.textContent).toContain("Completed");
+  await chooseView(reopened.host, "All");
+  expect(status(reopened.host)).toContain("Proceed with the isolated action");
+  expect(status(reopened.host)).toContain("finished it");
+});
+
+test("one tap saves the option once, and Change answer saves a follow-up that replaces it", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await act(async () => option(view.host, "Hold").click());
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", choiceId: "hold" });
+  expect(store.responses[0]!.supersedesResponseId).toBeUndefined();
+  // The answered card stays in Needs you, showing the label (never the id) and Change answer.
+  expect(status(view.host)).toContain("You chose Hold.");
+  expect(view.host.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
+  await act(async () => button(view.host, "Change answer").click());
+  await act(async () => option(view.host, "Proceed").click());
+  expect(store.responses).toHaveLength(2);
+  expect(store.responses[1]).toMatchObject({ kind: "followup", choiceId: "proceed", supersedesResponseId: store.responses[0]!.responseId });
+  expect(status(view.host)).toContain("You chose Proceed.");
+});
+
+test("Keep my answer leaves the saved answer untouched", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await act(async () => option(view.host, "Hold").click());
+  await act(async () => button(view.host, "Change answer").click());
+  await act(async () => button(view.host, "Keep my answer").click());
+  expect(store.responses).toHaveLength(1);
+  expect(status(view.host)).toContain("You chose Hold.");
 });
 
 test("a rejected write keeps the draft actionable and does not imply receipt", async () => {
   const write = Promise.withResolvers<void>();
   const store = persistence([decision()], { beforeSave: () => write.promise });
   const view = await mount(store.source());
+  await openNote(view.host);
   await typeAnswer(view.host, "Keep this unsaved answer");
   await act(async () => button(view.host, "Save answer").click());
   await act(async () => write.reject(new Error("Isolated SQL write denied")));
   expect(answer(view.host).value).toBe("Keep this unsaved answer");
-  expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
+  const alert = view.host.querySelector('[role="alert"]');
+  expect(alert?.textContent).toBe("Your answer wasn't saved. Try again.");
   expect(button(view.host, "Save answer").disabled).toBe(false);
-  expect(view.host.textContent).not.toContain("Answer saved");
-  expect(view.host.textContent).not.toContain("Agent received");
+  expect(status(view.host)).toBeNull();
   expect(store.responses).toEqual([]);
   await view.unmount();
   const reopened = await mount(store.source());
-  expect(reopened.host.textContent).toContain("Question decision-one");
+  expect(card(reopened.host, "Question decision-one")).toBeDefined();
+  await openNote(reopened.host);
   expect(answer(reopened.host).value).toBe("");
 });
 
-test("information is nonactionable, Both mixes it with decisions, and seen is not answered", async () => {
+test("a retried tap after a failed write reuses its response identity", async () => {
+  let fail = true;
+  const store = persistence([decision()], { beforeSave: async () => { if (fail) throw new Error("Isolated SQL write denied"); } });
+  const ids: string[] = [];
+  const base = store.source();
+  const view = await mount({ ...base, async saveResponse(entry, response, payload) { ids.push(response.responseId); return base.saveResponse(entry, response, payload); } });
+  await act(async () => option(view.host, "Hold").click());
+  expect(store.responses).toEqual([]);
+  fail = false;
+  await act(async () => option(view.host, "Hold").click());
+  expect(ids).toHaveLength(2);
+  expect(ids[1]).toBe(ids[0]!);
+  expect(store.responses).toHaveLength(1);
+});
+
+test("information is nonactionable, All mixes it with decisions, and seen is not answered", async () => {
   const store = persistence([decision(), information()]);
   const view = await mount(store.source());
+  expect(segment(view.host, "Needs you").getAttribute("aria-pressed")).toBe("true");
   expect(view.host.textContent).toContain("Question decision-one");
   expect(view.host.textContent).not.toContain("Informational update");
-  await chooseView(view.host, "information");
-  expect(view.host.textContent).toContain("Informational update");
-  expect(view.host.textContent).not.toContain("Question decision-one");
-  expect(view.host.querySelector("textarea")).toBeNull();
-  expect([...view.host.querySelectorAll("button")].some((node) => node.textContent === "Save answer")).toBe(false);
-  await chooseView(view.host, "both");
+  await chooseView(view.host, "All");
+  expect(segment(view.host, "All").getAttribute("aria-pressed")).toBe("true");
+  expect(segment(view.host, "Needs you").getAttribute("aria-pressed")).toBe("false");
   expect(view.host.textContent).toContain("Informational update");
   expect(view.host.textContent).toContain("Question decision-one");
-  await chooseView(view.host, "needs-action");
-  expect(view.host.textContent).toContain("Question decision-one");
+  const info = card(view.host, "Informational update");
+  expect(info.querySelector("textarea")).toBeNull();
+  expect(info.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
+  await chooseView(view.host, "Needs you");
+  expect(view.host.textContent).not.toContain("Informational update");
+  await act(async () => card(view.host, "Question decision-one").querySelector<HTMLButtonElement>("h3 button")!.click());
   expect(store.durable.entries[0]!.view.seenAt).toBeDefined();
+  expect(store.responses).toEqual([]);
+});
+
+test("a collapsed card expands in place and keeps its draft", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  const article = card(view.host, "Question decision-one");
+  const title = article.querySelector<HTMLButtonElement>("h3 button")!;
+  expect(title.getAttribute("aria-expanded")).toBe("false");
+  expect(article.querySelector("a[href='https://example.org/source']")).toBeNull();
+  await openNote(view.host);
+  await typeAnswer(view.host, "Draft before expanding");
+  const input = answer(view.host);
+  await act(async () => title.click());
+  expect(title.getAttribute("aria-expanded")).toBe("true");
+  expect(card(view.host, "Question decision-one") === article).toBe(true);
+  expect(article.querySelector("a[href='https://example.org/source']")).not.toBeNull();
+  expect(answer(view.host) === input).toBe(true);
+  expect(input.value).toBe("Draft before expanding");
+  await act(async () => title.click());
+  expect(title.getAttribute("aria-expanded")).toBe("false");
   expect(store.responses).toEqual([]);
 });
 
 test("new urgent arrivals cannot replace the focused response or its input node", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await openNote(view.host);
   await typeAnswer(view.host, "Still answering the original question");
   const activeInput = answer(view.host);
   activeInput.focus();
   store.durable.entries.unshift(decision("urgent-new", 1, 100));
   await act(async () => store.notify());
+  expect(card(view.host, "Question urgent-new")).toBeDefined();
   expect(answer(view.host) === activeInput).toBe(true);
   expect(document.activeElement === activeInput).toBe(true);
   expect(activeInput.value).toBe("Still answering the original question");
-  await act(async () => button(view.host, "Save answer").click());
+  await act(async () => button(card(view.host, "Question decision-one"), "Save answer").click());
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, text: "Still answering the original question" });
 });
 
@@ -204,6 +296,7 @@ test("an in-flight answer retains its exact issuance and loads its outcome after
   const write = Promise.withResolvers<void>();
   const store = persistence([decision()], { beforeSave: () => write.promise });
   const view = await mount(store.source());
+  await openNote(view.host);
   await typeAnswer(view.host, "Answer for revision one only");
   const originalInput = answer(view.host);
   await act(async () => button(view.host, "Save answer").click());
@@ -217,42 +310,45 @@ test("an in-flight answer retains its exact issuance and loads its outcome after
   store.archive[0]!.state.acknowledgement = handling(store.responses[0]!, "acknowledged");
   store.archive[0]!.state.outcome = handling(store.responses[0]!, "succeeded");
   await act(async () => store.notify());
-  expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Completed");
-  expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Answer for revision one only");
-  await act(async () => button(view.host, "Next card").click());
+  expect(status(view.host)).toContain("finished it");
+  expect(status(view.host)).toContain("Answer for revision one only");
+  await act(async () => button(view.host, "Show the newer version").click());
+  expect(status(view.host)).toBeNull();
+  await openNote(view.host);
   expect(answer(view.host).value).toBe("");
-  expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).not.toContain("Answer saved");
   await view.unmount();
   const reopened = await mount(store.source());
-  expect(answer(reopened.host).value).toBe("");
-  expect(reopened.host.textContent).not.toContain("Answer saved");
+  expect(status(reopened.host)).toBeNull();
 });
 
 test("snoozing removes attention without writing an answer and expiry restores it", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
-  await act(async () => button(view.host, "Snooze for 1 hour").click());
+  await act(async () => button(view.host, "Ask me later").click());
+  const presets = view.host.querySelector('[role="group"][aria-label="Ask me later"]')!;
+  await act(async () => presets.querySelector("button")!.click());
   expect(store.responses).toEqual([]);
   expect(store.durable.entries[0]!.view.snoozedUntil).toBeDefined();
-  expect(view.host.querySelector("textarea")).toBeNull();
+  expect(view.host.querySelector("article")).toBeNull();
+  expect(view.host.textContent).toContain("Nothing needs you right now.");
   store.durable.entries[0]!.view.snoozedUntil = "2000-01-01T00:00:00Z";
   await act(async () => store.notify());
   expect(view.host.textContent).toContain("Question decision-one");
-  expect(answer(view.host).value).toBe("");
-  expect(view.host.textContent).not.toContain("Answer saved");
+  expect(status(view.host)).toBeNull();
+  expect(option(view.host, "Hold")).toBeDefined();
 });
 
-test("the explicit saved default reaches another session without every view change becoming the default", async () => {
+test("the last view is remembered for the next session; Done is not", async () => {
   const store = persistence([decision(), information()]);
   const view = await mount(store.source());
-  await chooseView(view.host, "information");
-  expect(store.durable.settings.defaultSelector).toBe("needs-action");
-  await act(async () => button(view.host, "Use as default").click());
+  await chooseView(view.host, "All");
+  expect(store.durable.settings.defaultSelector).toBe("both");
+  await chooseView(view.host, "Done");
+  expect(store.durable.settings.defaultSelector).toBe("both");
   await view.unmount();
   const secondSession = await mount(store.source());
-  expect(secondSession.host.querySelector<HTMLSelectElement>('select[aria-label="Feed view"]')?.value).toBe("information");
+  expect(segment(secondSession.host, "All").getAttribute("aria-pressed")).toBe("true");
   expect(secondSession.host.textContent).toContain("Informational update");
-  expect(secondSession.host.querySelector("textarea")).toBeNull();
 });
 
 test("a failed outcome stays distinct from an unsaved answer and keeps source/report links", async () => {
@@ -262,13 +358,14 @@ test("a failed outcome stays distinct from an unsaved answer and keeps source/re
   entry.state.outcome = handling(entry.state.response, "failed");
   const store = persistence([entry], { defaultSelector: "both" });
   const view = await mount(store.source());
-  expect(view.host.textContent).toContain("Answer saved");
-  expect(view.host.textContent).toContain("Agent received");
-  expect(view.host.textContent).toContain("Failed");
-  expect(view.host.textContent).toContain("Action failed safely");
-  expect(view.host.querySelector("a[href='https://example.org/source']")).not.toBeNull();
+  expect(status(view.host)).toContain("You chose Hold.");
+  expect(status(view.host)).toContain("Test agent got it.");
+  expect(status(view.host)).toContain("couldn't finish it");
+  expect(status(view.host)).toContain("Action failed safely");
   expect(view.host.querySelector("a[href='https://example.org/report']")).not.toBeNull();
-  await chooseView(view.host, "needs-action");
+  await act(async () => card(view.host, "Question decision-one").querySelector<HTMLButtonElement>("h3 button")!.click());
+  expect(view.host.querySelector("a[href='https://example.org/source']")).not.toBeNull();
+  await chooseView(view.host, "Needs you");
   expect(view.host.querySelector("textarea")).toBeNull();
   expect(store.responses).toEqual([]);
 });
@@ -278,6 +375,7 @@ test("a true latest-issuance replacement preserves the draft until explicit navi
   original.state.card.title = "Original question";
   const store = persistence([original]);
   const view = await mount(store.source());
+  await openNote(view.host);
   await typeAnswer(view.host, "Unsubmitted original draft");
   const originalInput = answer(view.host);
   originalInput.focus();
@@ -288,21 +386,26 @@ test("a true latest-issuance replacement preserves the draft until explicit navi
   expect(answer(view.host) === originalInput).toBe(true);
   expect(document.activeElement === originalInput).toBe(true);
   expect(originalInput.value).toBe("Unsubmitted original draft");
-  expect(view.host.querySelector('[aria-label="Focused card"] h2')?.textContent).toBe("Original question");
-  await act(async () => button(view.host, "Next card").click());
-  expect(view.host.querySelector('[aria-label="Focused card"] h2')?.textContent).toBe("Replacement question");
-  expect(answer(view.host).value).toBe("");
+  expect(view.host.querySelector("article h3")?.textContent).toBe("Original question");
+  expect(view.host.querySelectorAll("article")).toHaveLength(1);
+  await act(async () => button(view.host, "Show the newer version").click());
+  expect(view.host.querySelector("article h3")?.textContent).toBe("Replacement question");
+  expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+  expect(hasButton(view.host, "Add a note")).toBe(true);
+  expect(store.responses).toEqual([]);
 });
 
-test("Next card advances through all three cards before wrapping", async () => {
-  const store = persistence([decision("a", 1, 3), decision("b", 1, 2), decision("c", 1, 1)]);
+test("a (Recommended) label shows without the marker and with the Suggested tag, and a tap saves the unchanged choice", async () => {
+  const entry = decision();
+  entry.state.card.choices = [{ id: "proceed", label: "Proceed (Recommended)" }, { id: "hold", label: "Hold" }];
+  const store = persistence([entry]);
   const view = await mount(store.source());
-  const title = () => view.host.querySelector('[aria-label="Focused card"] h2')?.textContent;
-  expect(title()).toBe("Question a");
-  await act(async () => button(view.host, "Next card").click());
-  expect(title()).toBe("Question b");
-  await act(async () => button(view.host, "Next card").click());
-  expect(title()).toBe("Question c");
-  await act(async () => button(view.host, "Next card").click());
-  expect(title()).toBe("Question a");
+  const proceed = option(view.host, "Proceed");
+  expect(proceed.textContent).toBe("ProceedSuggested");
+  expect(option(view.host, "Hold").textContent).toBe("Hold");
+  await act(async () => proceed.click());
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ kind: "answer", choiceId: "proceed" });
+  expect(store.durable.entries[0]!.state.card.choices?.[0]?.label).toBe("Proceed (Recommended)");
+  expect(status(view.host)).toContain("You chose Proceed.");
 });
