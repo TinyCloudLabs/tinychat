@@ -29,6 +29,7 @@ export {
 // ── Sign-in manifest bundle (revision "2") ───────────────────────────
 
 export {
+  HOME_SIGN_IN_BUNDLE_ENTRIES,
   SIGN_IN_BUNDLE_ENTRIES,
   manifestCarriesBundle,
   type RequiredManifestEntry,

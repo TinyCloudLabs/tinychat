@@ -156,6 +156,20 @@ writer. Treat write access to this repo as production access.
 The same frontend, built with `VITE_HOME_SITE=true`, is also served as the
 TinyCloud Home site at `https://home.tinycloud.xyz`.
 
+- **Sign-in grant:** the Home build signs in with `manifest.home.json`, not the
+  root `manifest.json`: only what Feed, Chat and Apps use. It has the same
+  `app_id` (`xyz.tinycloud.tinychat`), so the data is shared with
+  tinycloud.chat. It grants: KV `threads/` (chat share links); SQL `threads`
+  (chats and settings), `home_feed` and `feed/` (the feed); the hooks that
+  refresh the feed and chats; and space info (storage panel). It has no
+  secrets, no decrypt grant, and none of the canvas, connectors, details,
+  summaries or transcripts databases. Recording and Connectors are not in the
+  Home navigation; their addresses show a pointer to tinycloud.chat, which
+  keeps the full `manifest.json` and signs in exactly as before. The backend
+  keeps reading `manifest.json` (`/api/server-info` and the delegation routes
+  depend on its connectors coverage), so do not narrow it. A Home session
+  signed in under the broad grant is cleared once (revision `home-1`, in
+  `frontend/src/lib/manifestRevision.ts`) and the user signs in once more.
 - **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
   name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
   `production`.
