@@ -231,9 +231,11 @@ export function SettingsPage({
             />
           </SectionCard>
           <DebugLogRow />
-          <SectionCard icon={DatabaseIcon} title="Audio storage">
-            <AudioCacheSettings />
-          </SectionCard>
+          {!HOME_SITE && (
+            <SectionCard icon={DatabaseIcon} title="Audio storage">
+              <AudioCacheSettings />
+            </SectionCard>
+          )}
           {!HOME_SITE && <ReplicationSettings tcw={tcw} />}
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">

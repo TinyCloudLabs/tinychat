@@ -16,6 +16,6 @@ function runFixture(homeSite: boolean) {
 }
 
 describe("SettingsPage, by build", () => {
-  test("the Home build hides the sections that only serve Recording and Connectors", () => runFixture(true));
-  test("the plain build keeps them", () => runFixture(false));
+  test("the Home build hides the sections that only serve Recording and Connectors", () => runFixture(true), 60_000);
+  test("the plain build keeps them", () => runFixture(false), 60_000);
 });

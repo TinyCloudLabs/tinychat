@@ -28,6 +28,10 @@ const pipelineApi = await import("@/lib/voiceNotes/voiceNotePipeline");
 const grantApi = await import("@/lib/connectors/encryptionGrant");
 const delegationApi = await import("@/lib/transcriptDelegation");
 const captureApi = await import("@/lib/voiceNotes/captureEngine");
+const audioCacheApi = await import("@/lib/voiceNotes/audioReceiptUpgrade");
+// Taken before the mocks are installed: a module namespace is live, so reading it later returns the mock.
+const realInstallCaptureEngine = captureApi.installCaptureEngine;
+const realUseAudioCacheBoot = audioCacheApi.useAudioCacheBoot;
 const agentEnablementApi = await import("@/chat/useAgentEnablement");
 const drainApi = await import("@/chat/useBackgroundDrain");
 const transcriberSyncApi = await import("@/chat/useTranscriberLibrarySync");
@@ -37,6 +41,8 @@ const appShellApi = await import("@/shell/AppShell");
 let lastSignInConfig: { manifest: unknown; includeAccountRegistryPermissions?: unknown } | null = null;
 let decryptGrantCalls = 0;
 let delegationCalls = 0;
+let installEngineCalls = 0;
+const audioCacheBootArgs: Array<TinyCloudWeb | null> = [];
 let transcriberSyncEnabled: boolean | null = null;
 const mounted: string[] = [];
 
@@ -91,6 +97,11 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
   ...captureApi,
   captureCapabilities: () => ({ offlineRecorder: false, micDeniedPresentation: false }),
   captureEngineAvailable: () => false,
+  installCaptureEngine: (...args: Parameters<typeof realInstallCaptureEngine>) => { installEngineCalls += 1; return realInstallCaptureEngine(...args); },
+}));
+mock.module("@/lib/voiceNotes/audioReceiptUpgrade", () => ({
+  ...audioCacheApi,
+  useAudioCacheBoot: (tcw: TinyCloudWeb | null) => { audioCacheBootArgs.push(tcw); realUseAudioCacheBoot(tcw); },
 }));
 mock.module("../src/chat/ChatWorkspace", () => ({
   ChatWorkspace: ({ settings }: { settings: React.ReactNode }) => <div data-testid="authenticated-workspace">{settings}</div>,
@@ -104,8 +115,6 @@ mock.module("../src/chat/useBackgroundDrain", () => ({ ...drainApi, BackgroundDr
 mock.module("../src/chat/useGmeetSessionSync", () => ({ GmeetSessionSync: spy("GmeetSessionSync") }));
 mock.module("../src/chat/BackendReconciler", () => ({ BackendReconciler: spy("BackendReconciler") }));
 mock.module("../src/capture/upload/UploadResumer", () => ({ UploadResumer: spy("UploadResumer") }));
-mock.module("../src/chat/PendingVoiceNotesSaver", () => ({ PendingVoiceNotesSaver: spy("PendingVoiceNotesSaver") }));
-mock.module("../src/capture/recorder/RecordingOverlay", () => ({ RecordingOverlay: spy("RecordingOverlay") }));
 mock.module("../src/chat/ConnectorsPage", () => ({ ConnectorsPage: spy("ConnectorsPage") }));
 mock.module("../src/capture/CaptureSurface", () => ({ CaptureSurface: spy("CaptureSurface") }));
 mock.module("../src/chat/MeetingsSection", () => ({ MeetingsSection: spy("MeetingsSection") }));
@@ -175,6 +184,8 @@ beforeEach(() => {
   lastSignInConfig = null;
   decryptGrantCalls = 0;
   delegationCalls = 0;
+  installEngineCalls = 0;
+  audioCacheBootArgs.length = 0;
   transcriberSyncEnabled = null;
   mounted.length = 0;
   Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryLocalStorage() });
@@ -198,6 +209,8 @@ test("sign-in asks for the manifest this build ships, with the decrypt grant onl
   const config = lastSignInConfig!;
   expect(config.includeAccountRegistryPermissions).toBe(false);
   if (HOME) {
+    // No replica: it would sync transcripts, which the Home grant does not cover.
+    expect("replication" in config).toBe(false);
     expect(config.manifest).toEqual(readManifest("manifest.home.json"));
     expect(decryptGrantCalls).toBe(0);
     expect(JSON.stringify(config.manifest)).not.toContain("decryptGrant");
@@ -220,8 +233,18 @@ test("the recording, connector and transcript lanes run only on the plain build"
     for (const lane of lanes) expect(mounted).toContain(lane);
     expect(transcriberSyncEnabled).toBe(true);
   }
-  expect(mounted).not.toContain("PendingVoiceNotesSaver");
-  expect(mounted).not.toContain("RecordingOverlay");
+});
+
+test("the audio cache boot runs for a signed-in account only on the plain build, and the Home build asks for no capture engine", async () => {
+  await mount();
+  await signIn();
+  const signedIn = audioCacheBootArgs.filter((tcw) => tcw !== null);
+  if (HOME) {
+    expect(signedIn).toEqual([]);
+    expect(installEngineCalls).toBe(0);
+  } else {
+    expect(signedIn.length).toBeGreaterThan(0);
+  }
 });
 
 test("navigation and the Recording and Connectors screens", async () => {
