@@ -6,9 +6,13 @@ import type { FeedResponse } from "@tinycloud/sdk-services/feed";
 import { emptySitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "@/feed/feedStoreTypes";
 
-/** One rig state. `snapshot` is exactly what HomeFeedSource.load() returns (feed/feedStoreTypes.ts:56-64). */
+/**
+ * One rig state. `snapshot` is exactly what HomeFeedSource.load() returns (feed/feedStoreTypes.ts:56-64).
+ * `failSaves` makes every answer write fail; `act` is a rig-only step taken after the first render
+ * (open the Done view, or pick a filter that matches nothing).
+ */
 export type RigState =
-  | { label: string; kind: "feed"; snapshot: HomeFeedSnapshot }
+  | { label: string; kind: "feed"; snapshot: HomeFeedSnapshot; failSaves?: boolean; act?: "done" | "filter-empty" }
   | { label: string; kind: "loading" }
   | { label: string; kind: "error"; message: string }
   | { label: string; kind: "signed-out" };
@@ -22,7 +26,7 @@ const sameCard = (a: HomeFeedEntry, b: HomeFeedEntry) =>
   && a.state.card.revision === b.state.card.revision && a.state.card.issuanceId === b.state.card.issuanceId;
 
 /** An in-memory source over one fixture snapshot. */
-export function fixtureSource(initial: HomeFeedSnapshot): HomeFeedSource {
+export function fixtureSource(initial: HomeFeedSnapshot, options: { failSaves?: boolean } = {}): HomeFeedSource {
   const snapshot: HomeFeedSnapshot = structuredClone(initial);
   const owner = snapshot.sitrep ?? emptySitrepOwnerData();
   snapshot.sitrep = owner;
@@ -48,6 +52,7 @@ export function fixtureSource(initial: HomeFeedSnapshot): HomeFeedSource {
       return match ? { ...loaded, focusedEntry: structuredClone(match) } : loaded;
     },
     async saveResponse(entry, response, payload) {
+      if (options.failSaves) throw new Error("Rig: this state refuses every write");
       const saved = { ...response, sequence: ++sequence } as FeedResponse;
       const target = stored(entry);
       if (target) { target.state.response = saved; (target.responses ??= []).push(saved); }

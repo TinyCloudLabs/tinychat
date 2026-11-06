@@ -2,7 +2,7 @@
 // picker and a phone or desktop frame; with ?frame=1 it renders the real Home shell and
 // feed for ?state=<id> from feed-fixture.json.
 import "@/index.css";
-import { StrictMode, useMemo } from "react";
+import { StrictMode, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
@@ -24,10 +24,11 @@ function ShellFrame({ state }: { state: RigState }) {
   const { pathname } = useLocation();
   const screen = useMemo(() => screenFor(pathname), [pathname]);
   const source = useMemo(() =>
-    state.kind === "feed" ? fixtureSource(state.snapshot)
+    state.kind === "feed" ? fixtureSource(state.snapshot, { failSaves: state.failSaves })
       : state.kind === "loading" ? loadingSource()
         : failingSource(state.kind === "error" ? state.message : ""),
   [state]);
+  useEffect(() => { if (state.kind === "feed" && state.act) void act(state.act); }, [state]);
   return (
     <div className="h-dvh">
       <AppShell
@@ -43,6 +44,33 @@ function ShellFrame({ state }: { state: RigState }) {
       />
     </div>
   );
+}
+
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+function chooseOption(select: HTMLSelectElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+/** Rig-only: the first render's follow-up step for states that need a view or filter. */
+async function act(step: "done" | "filter-empty") {
+  const pressed = () => document.querySelector('[role="group"][aria-label="Show"] button[aria-pressed="true"]');
+  for (let tries = 0; !pressed() && tries < 120; tries++) await nextFrame();
+  const segment = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Show"] button')].find((node) => node.textContent?.startsWith(label));
+  if (step === "done") { segment("Done")?.click(); return; }
+  segment("All")?.click();
+  document.querySelector<HTMLButtonElement>('button[aria-label="Filter by agent or project"]')?.click();
+  await nextFrame(); await nextFrame();
+  const agent = document.querySelector<HTMLSelectElement>('select[aria-label="Filter by agent"]');
+  const type = document.querySelector<HTMLSelectElement>('select[aria-label="Filter by type"]');
+  if (!agent || !type) return;
+  chooseOption(agent, agent.options[1]?.value ?? "");
+  await nextFrame();
+  for (const option of [...type.options].reverse()) {
+    chooseOption(type, option.value);
+    await nextFrame();
+    if (document.body.textContent?.includes("No cards match this filter.")) break;
+  }
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 }
 
 // A phone shows no scrollbar; the bare frame hides them (scrolling still works) so 390 shots match.

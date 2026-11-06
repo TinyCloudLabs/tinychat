@@ -419,7 +419,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     const unsupported = isTypedPayload(entry) && !context;
     const open = expanded.has(key);
     const reference = <Reference title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</Reference>;
-    return <li key={key}>
+    return <li key={key} className="min-w-0">
       <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} expanded={open} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
         {retained && <div role="status" className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>A newer version of this card arrived. Answer it there; your draft stays here.</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
         <ReportLink entry={entry} />
@@ -443,7 +443,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           <button type="button" className={`min-h-11 grow text-left text-[15px] font-semibold ${focusRing}`} aria-expanded={open} onClick={() => setExpandedGroups((previous) => { const next = new Set(previous); if (next.has(row.name)) next.delete(row.name); else next.add(row.name); return next; })}>{name} <span className="font-normal tabular-nums text-muted-foreground">{row.items.length} cards</span></button>
           <button type="button" disabled={viewBusy} aria-pressed={pinned} className={quietClass} onClick={() => void saveGroup(first, name, !pinned)}>{pinned ? "Clear priority" : "Mark priority"}</button>
         </div>
-        {open && <ul className="mt-2 grid gap-3">{row.items.map((entry) => renderCard(entry))}</ul>}
+        {open && <ul className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-3">{row.items.map((entry) => renderCard(entry))}</ul>}
       </section>
     </li>;
   }
@@ -453,7 +453,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     const headingId = `home-group-${label.toLowerCase().replace(/\s+/g, "-")}`;
     return <section aria-labelledby={headingId} className="mt-6">
       <h2 id={headingId} className={hidden ? "sr-only" : "mb-2.5 flex gap-1.5 text-[13px] font-semibold leading-none"}>{label}{count !== undefined && <span className="font-normal tabular-nums text-muted-foreground">{count}</span>}</h2>
-      <ul className="grid gap-3">{list.map(renderRow)}</ul>
+      <ul className="grid grid-cols-[minmax(0,1fr)] gap-3">{list.map(renderRow)}</ul>
     </section>;
   }
 
