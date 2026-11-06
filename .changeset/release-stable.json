@@ -1,0 +1,9 @@
+{
+  "versions": {
+    "@tinychat/backend": "0.7.1"
+  },
+  "changesets": [
+    ".changeset/pre/agent-usage-before-stream-end.md",
+    ".changeset/pre/backend-dockerfile-patches.md"
+  ]
+}
