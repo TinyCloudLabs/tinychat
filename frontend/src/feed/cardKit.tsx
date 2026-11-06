@@ -4,9 +4,10 @@
 // Colours are the theme's semantic tokens, so the light values are the app
 // family's (#09090b ink, #71717a dim, #f4f4f5 muted, #e4e4e7 hairline) and
 // dark mode follows.
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
 import { CheckIcon } from "lucide-react";
 import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
+import { safeUrl } from "./feedData";
 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 
@@ -63,8 +64,30 @@ export function dueTime(at: string | number, now: number): string {
 
 export interface CardOption { id: string; label: string; detail?: string }
 
+const RECOMMENDED_MARK = /\s*\(recommended\)\s*$/i;
+/**
+ * Agents sometimes mark their pick inside the label ("Yes, go (Recommended)").
+ * For display only, the marker comes off the label and becomes the Suggested
+ * tag, unless the card already names its recommendation. Saved payloads keep
+ * the option exactly as the agent sent it.
+ */
+export function displayOptions<T extends CardOption>(options: readonly T[], recommended?: string): { options: T[]; suggested?: string } {
+  const marked = options.find((option) => RECOMMENDED_MARK.test(option.label));
+  return {
+    options: options.map((option) => ({ ...option, label: optionText(option.label) })),
+    suggested: recommended ?? marked?.id,
+  };
+}
+/** An option's label as the owner sees it: without a trailing "(Recommended)" marker. */
+export function optionText(label: string): string {
+  return label.replace(RECOMMENDED_MARK, "") || label;
+}
+
+/** True while a card shows its full text (expanded, or "Show more" opened): option details stop clamping too. */
+export const CardTextContext = createContext(false);
+
 /** One tap saves: each option is its own button. */
-export function OptionButtons({ options, suggested, saving, disabled, onChoose, tag = "Suggested" }: {
+export function OptionButtons({ options: given, suggested: recommended, saving, disabled, onChoose, tag = "Suggested" }: {
   options: readonly CardOption[];
   suggested?: string;
   saving?: string;
@@ -72,20 +95,62 @@ export function OptionButtons({ options, suggested, saving, disabled, onChoose, 
   onChoose: (id: string) => void;
   tag?: string;
 }) {
+  const full = useContext(CardTextContext);
+  const { options, suggested } = displayOptions(given, recommended);
   return <div role="group" aria-label="Answers" className="mt-3.5 grid gap-2 min-[480px]:grid-cols-2">
     {options.map((option) => <button key={option.id} type="button" disabled={disabled} onClick={() => onChoose(option.id)}
-      className={`grid min-h-14 content-center gap-px rounded-xl px-3.5 py-[9px] text-left ${controlEdge} hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent ${saving === option.id ? "bg-muted" : ""} ${focusRing}`}>
-      <span className="flex flex-wrap items-center gap-2 text-[15px] font-semibold text-foreground">{saving === option.id ? "Saving…" : option.label}{option.id === suggested && saving !== option.id && <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-xs font-semibold">{tag}</span>}</span>
-      {option.detail && <span className="text-[13px] text-muted-foreground">{option.detail}</span>}
+      className={`grid min-h-14 min-w-0 content-center gap-px rounded-xl px-3.5 py-[9px] text-left ${controlEdge} hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent ${saving === option.id ? "bg-muted" : ""} ${focusRing}`}>
+      <span className="flex flex-wrap items-center gap-x-2 text-[15px] font-semibold text-foreground">{saving === option.id ? "Saving…" : option.label}{option.id === suggested && saving !== option.id && <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-xs font-semibold">{tag}</span>}</span>
+      {option.detail && <span className={`break-words text-[13px] text-muted-foreground ${full ? "" : "line-clamp-2"}`}>{option.detail}</span>}
     </button>)}
   </div>;
+}
+
+const INLINE_LINK = /\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()"'\]]+[^\s<>()"'\].,;:!?])/g;
+function inline(text: string): ReactNode[] {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(INLINE_LINK)) {
+    const href = match[2] ?? match[3]!;
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    parts.push(safeUrl(href)
+      ? <a key={match.index} href={href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{match[1] ?? href}</a>
+      : match[1] ?? href);
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+const LIST_ITEM = /^\s*[-*•]\s+/;
+/**
+ * A card body as React text: paragraphs, "- " lists and links ([label](https://…)
+ * or a bare https URL). Only safe http(s) links become anchors; nothing is
+ * parsed as HTML.
+ */
+export function CardBody({ text, className }: { text: string; className?: string }) {
+  const blocks: ReactNode[] = [];
+  let paragraph: string[] = [];
+  let items: string[] = [];
+  const flush = () => {
+    if (paragraph.length) blocks.push(<p key={blocks.length} className="whitespace-pre-wrap">{inline(paragraph.join("\n"))}</p>);
+    if (items.length) blocks.push(<ul key={blocks.length} className="list-disc space-y-0.5 pl-5">{items.map((item, index) => <li key={index}>{inline(item)}</li>)}</ul>);
+    paragraph = []; items = [];
+  };
+  for (const line of text.split(/\r?\n/)) {
+    if (LIST_ITEM.test(line)) { if (paragraph.length) flush(); items.push(line.replace(LIST_ITEM, "")); }
+    else if (!line.trim()) flush();
+    else { if (items.length) flush(); paragraph.push(line); }
+  }
+  flush();
+  return <div className={`space-y-2 break-words ${className ?? ""}`}>{blocks}</div>;
 }
 
 /** The answer, where the options were. It takes focus when it replaces them after a tap, so it is announced. */
 export function AnsweredPanel({ children, focusOnMount = false }: { children: ReactNode; focusOnMount?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { if (focusOnMount) ref.current?.focus(); }, [focusOnMount]);
-  return <div ref={ref} role="status" aria-label="Your answer" tabIndex={-1} className={`mt-3.5 flex items-start gap-2.5 rounded-xl bg-muted px-3 py-2.5 text-sm leading-[1.45] ${focusRing}`}>
+  // Focus moves here for screen readers only: the panel is not operable (tabIndex -1), so it never shows a ring.
+  return <div ref={ref} role="status" aria-label="Your answer" tabIndex={-1} className="mt-3.5 flex items-start gap-2.5 rounded-xl bg-muted px-3 py-2.5 text-sm leading-[1.45] outline-none">
     <CheckIcon aria-hidden className="mt-px size-[18px] shrink-0" />
     <div className="min-w-0 space-y-1 break-words">{children}</div>
   </div>;

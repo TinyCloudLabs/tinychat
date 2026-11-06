@@ -45,6 +45,9 @@ function ShellFrame({ state }: { state: RigState }) {
   );
 }
 
+// A phone shows no scrollbar; the bare frame hides them (scrolling still works) so 390 shots match.
+const FRAME_CSS = "html, * { scrollbar-width: none; } html::-webkit-scrollbar, *::-webkit-scrollbar { display: none; }";
+
 function Frame() {
   const state = fixture.states[stateId]!;
   if (state.kind === "signed-out") {
@@ -60,7 +63,7 @@ function Picker() {
   };
   const frameWidth = width === "1280" ? 1280 : 390;
   return (
-    <div className="min-h-dvh bg-muted/40 p-4 text-foreground">
+    <div className="min-h-dvh overflow-x-hidden bg-muted/40 p-4 text-foreground">
       <header className="mx-auto mb-4 flex max-w-[1320px] flex-wrap items-center gap-3">
         <h1 className="font-display text-xl font-semibold">Home feed rig</h1>
         <label className="flex items-center gap-2 text-sm">State
@@ -77,14 +80,15 @@ function Picker() {
         <a className="text-sm underline underline-offset-4" href={`?frame=1&state=${encodeURIComponent(stateId)}`} target="_blank" rel="noreferrer">Open frame alone</a>
         <span className="text-xs text-muted-foreground">Real Home components · data from feed-fixture.json · answers stay in this tab</span>
       </header>
-      <div className="mx-auto overflow-auto" style={{ maxWidth: frameWidth + 4 }}>
+      {/* The frame is the chosen width, or the window's width less the page padding when that is narrower. */}
+      <div className="mx-auto" style={{ maxWidth: frameWidth + 2 }}>
         <iframe title={`Home feed: ${fixture.states[stateId]!.label}`} src={`?frame=1&state=${encodeURIComponent(stateId)}`}
-          className="block rounded-xl border border-border bg-background shadow-sm" style={{ width: frameWidth, height: width === "1280" ? 800 : 844 }} />
+          className="block w-full rounded-xl border border-border bg-background shadow-sm" style={{ height: width === "1280" ? 800 : 844 }} />
       </div>
     </div>
   );
 }
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>{params.get("frame") === "1" ? <Frame /> : <Picker />}</StrictMode>,
+  <StrictMode>{params.get("frame") === "1" ? <><style>{FRAME_CSS}</style><Frame /></> : <Picker />}</StrictMode>,
 );

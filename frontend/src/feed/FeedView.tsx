@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { cardClass, cardTime, chipClass, focusRing } from "./cardKit";
+import { CardBody, cardClass, CardTextContext, cardTime, chipClass, focusRing, quietClass } from "./cardKit";
 import { createHomeFeedSource } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
@@ -55,18 +55,20 @@ function CardImage({ image, alt }: { image?: string; alt: string }) {
 const INTERACTIVE = "a, button, input, textarea, select, label, summary, details, [role='dialog']";
 
 /**
- * The one Home card. Collapsed, it shows the header, the title (2 lines) and the
- * body (3 lines); `children` (answers, actions) always render inside the border.
+ * The one Home card. Collapsed, it shows the header, the title (whole, or 2
+ * lines with `clampTitle`) and the body (3 lines, with "Show more" when it is
+ * cut); `children` (answers, actions) always render inside the border.
  * With `onToggle`, tapping the title or any non-interactive part of the card
  * expands it in place.
  */
-export function FeedCardView({ card, sample = true, readBody, now, chip, expanded = true, onToggle, onEngage, heading = "h2", children }: {
+export function FeedCardView({ card, sample = true, readBody, now, chip, expanded = true, clampTitle = false, onToggle, onEngage, heading = "h2", children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
   now?: number;
   chip?: ReactNode;
   expanded?: boolean;
+  clampTitle?: boolean;
   onToggle?: () => void;
   onEngage?: () => void;
   heading?: "h2" | "h3";
@@ -74,8 +76,19 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
 }): JSX.Element {
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
   const Heading = heading;
-  const clamp = !expanded;
+  const [moreText, setMoreText] = useState(false);
+  const [cut, setCut] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
+  const full = expanded || moreText;
   const when = cardTime(card.at, now ?? Date.now());
+  useLayoutEffect(() => {
+    const node = body.current;
+    if (!node || full) { setCut(false); return; }
+    const measure = () => setCut(node.scrollHeight > node.clientHeight + 1);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [full, card.lead.text]);
   return (
     <article className={`${cardClass} ${onToggle ? "cursor-pointer" : ""}`} aria-label={card.title ?? `${card.render} by ${card.author.name}`}
       onFocusCapture={onEngage} onPointerDownCapture={onEngage} onClickCapture={onEngage}
@@ -94,10 +107,11 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
       </div>
       {card.title && <Heading className="mt-2.5 break-words text-[17px] font-semibold leading-[1.3] [text-wrap:balance]">
         {onToggle
-          ? <button type="button" aria-expanded={expanded} onClick={onToggle} className={`w-full rounded-sm text-left ${clamp ? "line-clamp-2" : ""} ${focusRing}`}>{card.title}</button>
+          ? <button type="button" aria-expanded={expanded} onClick={onToggle} className={`w-full rounded-sm text-left ${clampTitle && !expanded ? "line-clamp-2" : ""} ${focusRing}`}>{card.title}</button>
           : card.title}
       </Heading>}
-      {card.lead.text && <p className={`mt-1 max-w-[60ch] whitespace-pre-wrap break-words text-[15px] leading-[1.5] ${clamp ? "line-clamp-3" : ""}`}>{card.lead.text}</p>}
+      {card.lead.text && <div ref={body} className={`mt-1 max-w-[60ch] text-[15px] leading-[1.5] ${full ? "" : "line-clamp-3"}`}><CardBody text={card.lead.text} /></div>}
+      {cut && !full && <button type="button" className={quietClass} onClick={() => setMoreText(true)}>Show more</button>}
       {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
       {expanded && card.render === "thread" && card.replies?.map((reply, index) => (
         <div key={index} className="mt-3 min-w-0 border-l border-border pl-4 text-[15px]">
@@ -110,7 +124,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
           ? <a className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
           : <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
       </div>}
-      {children}
+      <CardTextContext.Provider value={full}>{children}</CardTextContext.Provider>
       {expanded && card.source && <p className="mt-3 text-[13px] text-muted-foreground">Source: {card.source.url
         ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all underline underline-offset-[3px]">{card.source.label}</a>
         : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}

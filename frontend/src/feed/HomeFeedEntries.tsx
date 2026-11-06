@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { SlidersHorizontalIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { FeedCardView } from "./FeedView";
@@ -8,12 +7,12 @@ import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStor
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
-import { AnsweredPanel, cardTime, chipClass, fieldClass, focusRing, MoreSheet, OptionButtons, pillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, dueTime, kindWord } from "./cardKit";
+import { AnsweredPanel, cardClass, cardTime, chipClass, dueTime, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
-import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
+import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
+import { AgentPrompt } from "@/home/AgentPromptCard";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
-import { PATHS } from "@/shell/routes";
 import { FEED_SKILL_URL } from "./strings";
 
 type HomeView = "needs-you" | "all" | "done";
@@ -80,7 +79,7 @@ function CardHistory({ entry, now }: { entry: HomeFeedEntry; now: number }) {
     <ol className="space-y-3 text-sm">
       {responses.map((response) => <li key={response.responseId} className="break-words">
         <p className="text-[13px] text-muted-foreground">{response.kind === "message" ? "Message saved" : response.kind === "followup" ? "Changed answer" : "Answer saved"} · <time dateTime={response.createdAt}>{cardTime(response.createdAt, now)}</time></p>
-        {response.choiceId && <p>{entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? "An option that is no longer listed"}</p>}
+        {response.choiceId && <p>{optionText(entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? "An option that is no longer listed")}</p>}
         {response.text && <p className="whitespace-pre-wrap">{response.text}</p>}
       </li>)}
       {snoozes.map((event) => <li key={`snooze-${event.sequence}`} className="text-[13px] text-muted-foreground">Asked to see it later · {cardTime(event.createdAt, now)}{event.snoozedUntil && `, until ${dueTime(event.snoozedUntil, now)}`}</li>)}
@@ -96,7 +95,8 @@ function ResponseStatus({ entry, focusOnMount }: { entry: HomeFeedEntry; focusOn
   const received = acknowledgement?.responseId === response.responseId;
   const result = outcome?.responseId === response.responseId ? outcome : null;
   const detail = result?.detail?.message;
-  const label = response.choiceId ? entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label : undefined;
+  const choice = response.choiceId ? entry.state.card.choices?.find((option) => option.id === response.choiceId) : undefined;
+  const label = choice && optionText(choice.label);
   return <AnsweredPanel focusOnMount={focusOnMount}>
     <p>{label ? <>You chose <b className="font-semibold">{label}</b>.</> : "You answered."}{received && ` ${agent} got it.`}{result && (result.phase === "succeeded" ? ` ${agent} finished it.` : ` ${agent} couldn't finish it.`)}</p>
     {response.text && <p className="whitespace-pre-wrap">{response.text}</p>}
@@ -417,7 +417,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     const open = expanded.has(key);
     const reference = <Reference title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</Reference>;
     return <li key={key}>
-      <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} expanded={open} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
+      <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} expanded={open} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
         {retained && <div role="status" className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>A newer version of this card arrived.</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
         <ReportLink entry={entry} />
         {context
@@ -460,7 +460,9 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const filtering = !!(agent || kind || project);
   const today = (snapshot?.entries ?? []).filter((entry) => !attention(entry) && new Date(entry.state.card.createdAt).toDateString() === new Date(clock).toDateString()).length;
   // The Home site shows only the heading and its empty state until the first card arrives.
-  const bare = homeSite && !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
+  // The Home site shows only the heading and its empty card until the first card arrives;
+  // while loading, the control row is already in place so nothing moves when cards land.
+  const bare = homeSite && !!snapshot && !snapshot.entries.length && !snapshot.historicalEntries?.length;
   const selectClass = `mt-2 block h-11 w-full rounded-xl bg-background px-3 text-[15px] shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] ${focusRing}`;
   return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={homeSite ? NAV_LABEL_HOME : "Feed"}>
     <div className="mx-auto w-full max-w-[672px] min-w-0 px-4 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10">
@@ -489,15 +491,20 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
         </ResponsiveSheetBody>
       </ResponsiveSheet>
       {error && <div role="alert" className="mt-4 rounded-2xl bg-card px-4 py-3 text-sm shadow-[inset_0_0_0_1px_hsl(var(--border))]"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className={`mt-2 ${pillClass}`}>Try again</button></div>}
-      {!snapshot && !error && <p className="mt-6 text-sm text-muted-foreground">Loading your feed…</p>}
+      {!snapshot && !error && <ul aria-busy="true" aria-label="Loading your feed" className="mt-6 grid gap-3">
+        {[0, 1, 2].map((index) => <li key={index} aria-hidden className={`${cardClass} space-y-3`}>
+          <div className="flex items-center gap-2"><span className="size-7 rounded-full bg-muted" /><span className="h-3 w-2/5 rounded-full bg-muted" /></div>
+          <div className="h-3.5 w-4/5 rounded-full bg-muted" />
+          <div className="h-3.5 w-3/5 rounded-full bg-muted" />
+          <div className="h-14" />
+        </li>)}
+      </ul>}
       {snapshot && !filteredCount && (bare
-        ? <section aria-label={HOME_EMPTY_TITLE} className="mt-6 rounded-xl border border-border bg-card p-6 text-sm">
-          <h2 className="font-display text-lg font-semibold">{HOME_EMPTY_TITLE}</h2>
-          <p className="mt-2 text-muted-foreground">{HOME_EMPTY_BODY}</p>
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            <Link to={PATHS.chat} className="inline-flex min-h-10 items-center rounded-lg bg-primary px-4 font-medium text-primary-foreground">{HOME_EMPTY_CHAT}</Link>
-            <a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{HOME_EMPTY_HOW}</a>
-          </div>
+        ? <section aria-labelledby="home-empty-title" className={`mt-6 ${cardClass}`}>
+          <h2 id="home-empty-title" className="font-display text-[1.375rem] font-normal leading-[1.2]">{HOME_EMPTY_TITLE}</h2>
+          <p className="mt-2 max-w-[60ch] text-base leading-[1.5]">{HOME_EMPTY_BODY}</p>
+          <AgentPrompt copyButton={({ onClick, children }) => <button type="button" className={primaryPillClass} onClick={onClick}>{children}</button>}
+            aside={<a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className={quietClass}>{HOME_EMPTY_HOW}</a>} />
         </section>
         : <div className="mt-6 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
           <p>{filtering ? "No cards match this filter." : history ? "Nothing answered or snoozed yet." : view === "needs-you" ? "Nothing needs you right now." : "No cards yet."}</p>
