@@ -52,6 +52,30 @@ test("unknown error messages, names, codes and metadata are not reflected", asyn
   const { homeMirrorDiagnostic } = await import("./bridge");
   const error = Object.assign(new Error(PRIVATE), { name: PRIVATE, code: PRIVATE, cause: new Error(PRIVATE), meta: { status: PRIVATE } });
   const diagnostic = homeMirrorDiagnostic(error);
-  expect(diagnostic).toMatchObject({ error: { name: "Error", code: "INVALID_INPUT" }, delivery: "not-confirmed" });
+  expect(diagnostic).toMatchObject({ error: { name: "Error" }, delivery: "not-confirmed" });
+  expect(JSON.stringify(diagnostic)).not.toContain(PRIVATE);
+});
+
+test("an unclassified runtime failure is not reported as bad input", async () => {
+  const { homeMirrorDiagnostic } = await import("./bridge");
+  const diagnostic = homeMirrorDiagnostic(new Error(PRIVATE));
+  expect(diagnostic.exitCode).toBe(1);
+  expect(diagnostic.error.code).not.toBe("INVALID_INPUT");
+  expect(JSON.stringify(diagnostic)).not.toContain(PRIVATE);
+});
+
+test("canonical busy and request-timeout codes remain transient without HTTP metadata", async () => {
+  const { homeMirrorDiagnostic } = await import("./bridge");
+  for (const code of ["NODE_BUSY", "REQUEST_TIMEOUT"]) {
+    const diagnostic = homeMirrorDiagnostic({ code, service: "sql", message: PRIVATE });
+    expect(diagnostic).toMatchObject({ error: { code }, exitCode: 6, delivery: "not-confirmed", retry: "manual-reconciliation-required" });
+    expect(JSON.stringify(diagnostic)).not.toContain(PRIVATE);
+  }
+});
+
+test("an explicit unknown write outcome is never classified as a transient retry", async () => {
+  const { homeMirrorDiagnostic } = await import("./bridge");
+  const diagnostic = homeMirrorDiagnostic({ code: "OUTCOME_UNKNOWN", service: "sql", message: PRIVATE, meta: { status: 503 } });
+  expect(diagnostic).toMatchObject({ error: { code: "OUTCOME_UNKNOWN" }, exitCode: 1, delivery: "not-confirmed", retry: "manual-reconciliation-required" });
   expect(JSON.stringify(diagnostic)).not.toContain(PRIVATE);
 });
