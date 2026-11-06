@@ -73,8 +73,8 @@ An agent chat turn is kept within the remaining credit budget. Two env vars cont
 
 Invalid values log a warning and fall back to the default. A turn stopped by the in-turn check ends with the stream error code `budget_exhausted`; text produced before the stop remains visible.
 
-Completed agent turns record their credit charge before sending terminal stream
-metadata and ending the response. An immediate follow-up `/api/chat` request
+Agent turns record observed credit usage before sending success or provider-error
+terminal frames and ending the response. An immediate follow-up `/api/chat` request
 uses that updated usage and returns HTTP 402 `credit_budget_exceeded` when the
 budget is exhausted. This does not clamp a finishing answer's charge to the cap.
 

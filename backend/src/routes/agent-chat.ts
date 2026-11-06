@@ -1607,8 +1607,9 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
         });
       } catch (error) {
-        orchestrateResult = null;
-        await streamOwner.fail(error);
+        // Preserve the failure for terminal delivery after observed usage settles.
+        orchestrateResult = { ...observedUsage, completionId: "",
+          errorCode: error instanceof StreamFailure ? error.code : "agent_failed" };
       }
     } else {
       await streamOwner.fail(new StreamFailure("agent_failed"));
@@ -1681,7 +1682,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         }
       }
     }
-    if (streamOwner.isOpen()) await streamOwner.complete(orchestrateResult);
+    // Also await an already claimed timeout/cancellation terminal's drain.
+    await streamOwner.complete(orchestrateResult);
     } finally { releaseAccess?.(); }
   };
 }

@@ -270,4 +270,77 @@ describe("agent chat turn budget", () => {
       await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
     }
   });
+
+  for (const [failure, code] of [
+    ["provider error", "upstream_failed"],
+    ["truncated SSE", "upstream_incomplete"],
+  ] as const) {
+    test(`records observed legacy usage before the ${failure} terminal so an immediate /api/chat is denied`, async () => {
+      process.env.CREDIT_BUDGET_FREE = "500";
+      const run = fixture([], "final");
+      const entries: unknown[] = [];
+      run.config.elizaTasksEnabled = false;
+      run.config.flusher = { enqueue: entry => { entries.push(entry); } } as AgentChatConfig["flusher"];
+      run.config.fetchImpl = (async (input: unknown) => {
+        expect(String(input)).toBe("https://provider.test/v1/chat/completions");
+        return new Response(
+          frame({ choices: [{ delta: { content: "Partial answer" } }] }) +
+          frame({ choices: [], usage: { prompt_tokens: 60_000, completion_tokens: 22_000 } }) +
+          (failure === "provider error" ? frame({ error: { message: "synthetic provider failure" } }) : ""),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }) as typeof fetch;
+      const catalogFetch = globalThis.fetch;
+      globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+        if (String(input).endsWith("/chat/completions")) {
+          return new Response(
+            frame({ choices: [{ delta: { content: "follow-up admitted" }, finish_reason: "stop" }] }) +
+            frame({ choices: [], usage: { prompt_tokens: 0, completion_tokens: 0 } }) +
+            "data: [DONE]\n\n",
+          );
+        }
+        return catalogFetch(input as RequestInfo, init);
+      }) as typeof fetch;
+      const app = express();
+      app.use(express.json());
+      app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter());
+      const server = await new Promise<Server>(resolve => {
+        const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
+      });
+      let usageAtEnd = -1;
+      let followUpStatus: number | undefined;
+      let followUpBody: unknown;
+      const local = browser(async () => {
+        usageAtEnd = getUsage(address, TIERS.free).used;
+        const { port } = server.address() as { port: number };
+        const response = await originalFetch(`http://127.0.0.1:${port}/api/chat`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model, messages: [{ role: "user", content: "follow-up" }] }),
+        });
+        followUpStatus = response.status;
+        const body = await response.text();
+        followUpBody = response.status === 402 ? JSON.parse(body) : body;
+      });
+      try {
+        expect(getUsage(address, TIERS.free).used).toBe(0);
+        await createAgentChatHandler(run.config)(local.req, local.res, () => {});
+        const stream = local.chunks.join("");
+        expect(stream).toContain(`"stream_error":{"code":"${code}"}`);
+        expect(stream.match(/"stream_error":/g)).toHaveLength(1);
+        expect(stream.match(/data: \[DONE\]/g)).toHaveLength(1);
+        expect(followUpStatus).toBe(402);
+        expect(followUpBody).toMatchObject({
+          error: "credit_budget_exceeded", tier: "free", usage: { used: 820, limit: 500 },
+        });
+        expect(usageAtEnd).toBe(820);
+        expect(getUsage(address, TIERS.free).used).toBe(820);
+        expect(entries).toEqual([expect.objectContaining({
+          credits: 820, prompt_tokens: 60_000, completion_tokens: 22_000,
+        })]);
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+      }
+    });
+  }
 });
