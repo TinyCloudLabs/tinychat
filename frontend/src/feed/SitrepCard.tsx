@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, cardTime, fieldClass as inputClass, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
+import { AnsweredPanel, cardTime, ErrorLine, fieldClass as inputClass, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
@@ -23,6 +23,7 @@ function requestEnds(expiresAt: string | undefined, now: number): string | null 
   return `Request ends in ${days} ${days === 1 ? "day" : "days"}`;
 }
 const STEP_WORDS: Record<StepState, string> = { pending: "Waiting for you", done: "Done", "not needed": "Not needed", expired: "Ended", closed: "Closed" };
+const ANSWER_FAILED = "Your answer wasn't saved. Try again.";
 
 interface Props {
   entry: HomeFeedEntry;
@@ -102,12 +103,12 @@ export function SitrepCard(props: Props) {
   const answers = owner.answers.filter((answer) => answer.card.kind === record.kind && answer.card.id === record.id).map((answer) => answer.value);
   const claims = claimDecisionHistory(owner, record.id);
 
-  async function perform(work: () => Promise<unknown>): Promise<boolean> {
+  async function perform(work: () => Promise<unknown>, failure = "That wasn't saved. Try again."): Promise<boolean> {
     if (busyRef.current) return false;
     busyRef.current = true;
     setBusy(true); setError(undefined); setNotice(undefined);
     try { await work(); return true; }
-    catch { setError("That wasn't saved. Try again."); return false; }
+    catch { setError(failure); return false; }
     finally { busyRef.current = false; setBusy(false); }
   }
   async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string) {
@@ -157,7 +158,7 @@ export function SitrepCard(props: Props) {
   }
   async function tap(action: "answer" | "accept-default", selected: string) {
     setTapped(selected);
-    await perform(() => askAnswer(action, selected));
+    await perform(() => askAnswer(action, selected), ANSWER_FAILED);
     setTapped(undefined);
   }
   async function command(patch: Partial<SamState>, key: string) {
@@ -222,7 +223,7 @@ export function SitrepCard(props: Props) {
       {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
       {asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => void tap("answer", choice)} />}
       {asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => void tap("accept-default", record.default!)}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
-      {asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); void perform(() => askAnswer()); }}>
+      {asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); void perform(() => askAnswer(), ANSWER_FAILED); }}>
         <label className="block text-[13px] font-semibold">Your answer<textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24 resize-y`} /></label>
         {!!options.length && <p className="mt-1.5 text-[13px] text-muted-foreground">Tap an answer above to send this note with it, or save the note on its own.</p>}
         <button className={`mt-2 ${buttonClass}`} disabled={busy || stale || !text.trim()}>{busy && !tapped ? "Saving answer…" : "Save answer"}</button>
@@ -245,6 +246,10 @@ export function SitrepCard(props: Props) {
       {entry.state.card.needsResponse && <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><button type="button" className={buttonClass} disabled={busy || closed} onClick={() => void perform(() => { const at = new Date().toISOString(); return command({ doneAt: at, dismissedAt: at }, "task-done"); })}>{state?.doneAt ? "Send “done” again" : "Mark done"}</button><span className={fineClass}>Goes to {agent}.</span></div>}
     </div>}
     {record.kind === "incident" && !state?.dismissedAt && <button type="button" className={`mt-3.5 ${buttonClass}`} disabled={busy} onClick={() => void perform(() => savePrivate({ dismissedAt: new Date().toISOString() }, "incident-read"))}>Mark as read</button>}
+    {record.kind === "progress" && !!record.steps.length && <>
+      <div role="img" aria-label={`Step ${Math.min(record.currentStep + 1, record.steps.length)} of ${record.steps.length}`} className="mt-3.5 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-foreground" style={{ width: `${Math.min(100, ((record.currentStep + 1) / record.steps.length) * 100)}%` }} /></div>
+      <p className={`mt-2 ${fineClass}`}>Step {Math.min(record.currentStep + 1, record.steps.length)} of {record.steps.length}{record.steps[record.currentStep] && ` · ${record.steps[record.currentStep]!.name}`}</p>
+    </>}
     {record.kind === "claim" && <div className="mt-3.5 space-y-3">
       <p aria-live="polite" className="text-sm">{claims.length ? <>You chose to <b className="font-semibold">{claims.at(-1)!.value.choice}</b> this claim.</> : "Not decided yet."}</p>
       {entry.state.card.needsResponse && <>
@@ -317,7 +322,7 @@ export function SitrepCard(props: Props) {
       <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>
     </QuietRow>}
     {later && <SnoozeChoices now={now} disabled={busy} onPick={(until) => void perform(async () => { await source.snooze(entry, until); setLater(false); onOwnerSaved(); onSnoozed?.(entry); })} />}
-    {error && <p role="alert" className="mt-2 text-sm">{error}</p>}{notice && <p role="status" className={`mt-2 ${fineClass}`}>{notice}</p>}
+    {error && <ErrorLine>{error}</ErrorLine>}{notice && <p role="status" className={`mt-2 ${fineClass}`}>{notice}</p>}
 
     <MoreSheet open={more} onOpenChange={setMore} title={entry.state.card.title || kindWord(record.kind)}>
       <div className="flex flex-wrap gap-2">
@@ -437,6 +442,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm"><p>This request was replaced. Anything you typed stays with this one; codes don't move to the new request.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
     {approval.warning && <p className="text-sm font-medium text-warning">{approval.warning}</p>}
+    {!expanded && approval.permissions && <p className="line-clamp-1 text-sm">Allows {approval.permissions}</p>}
     <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
       {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className={action ? buttonClass : primaryClass}>{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
       {action && <button type="button" disabled={disabled} className={approval.approvalType === "go" ? primaryClass : buttonClass} onClick={() => void submit()}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}
@@ -453,6 +459,6 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
       {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
       <p className={fineClass}>Asked {stamp(approval.issuedAt)}</p>
     </div>}
-    {error && <p role="alert" className="text-sm">{error}</p>}
+    {error && <ErrorLine>{error}</ErrorLine>}
   </div>;
 }

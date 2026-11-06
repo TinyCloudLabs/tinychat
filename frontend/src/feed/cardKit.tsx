@@ -5,7 +5,7 @@
 // family's (#09090b ink, #71717a dim, #f4f4f5 muted, #e4e4e7 hairline) and
 // dark mode follows.
 import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
 
@@ -154,6 +154,11 @@ export function AnsweredPanel({ children, focusOnMount = false }: { children: Re
     <CheckIcon aria-hidden className="mt-px size-[18px] shrink-0" />
     <div className="min-w-0 space-y-1 break-words">{children}</div>
   </div>;
+}
+
+/** A card-level failure in plain words, under the control that failed. Never exception text. */
+export function ErrorLine({ children }: { children: ReactNode }) {
+  return <p role="alert" className="mt-2 flex items-start gap-2 text-sm leading-[1.45]"><TriangleAlertIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" /><span>{children}</span></p>;
 }
 
 export function QuietRow({ children }: { children: ReactNode }) {
