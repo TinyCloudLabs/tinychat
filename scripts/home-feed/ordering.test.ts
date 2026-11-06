@@ -44,6 +44,7 @@ async function fixture(kind: "ask" | "task" | "hold" = "ask") {
   cleanup.push(async () => { for (const database of databases.values()) database.close(); await rm(directory, { recursive: true, force: true }); });
   const boardFile = join(directory, "legacy-board.json"), attemptsFile = join(directory, "external-attempts.jsonl");
   const values = new Map<string, { text: string; etag: string }>();
+  let putCount = 0;
   let closeGate: { arrived: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> } | undefined;
   let failClose = false, failResponseRead = false;
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
@@ -71,6 +72,7 @@ async function fixture(kind: "ask" | "task" | "hold" = "ask") {
       if ((expected !== null && expected !== old?.etag) || (request.headers.get("if-none-match") === "*" && old)) return new Response(null, { status: 412 });
       const text = await request.text(); values.set(path, { text, etag: stamp(text) });
       writeFileSync(boardFile, text, { mode: 0o600 });
+      putCount += 1;
       return new Response(null, { headers: { etag: stamp(text) } });
     } catch { return Response.json({ error: PRIVATE, cause: { private: PRIVATE } }, { status: 400 }); }
   } });
@@ -131,6 +133,7 @@ process.exit(Number(exitCode));
   const forward = (response: FeedResponse, callback = deliver()) => forwardHomeMirrorResponse(ctx, { identity, responseId: response.responseId, handoff, recipient: RECIPIENT, deliver: callback });
   const noDelivery = async (response: FeedResponse) => { expect(take(await getFeedHandoff(handoff, response.responseId, RECIPIENT))).toBeNull(); expect(attempts()).toEqual([]); };
   return { ctx, input, identity, owner, output, responses, handoff, legacy, values, key, answer, command, forward, deliver, attempts, noDelivery,
+    kvWrites: () => putCount,
     holdClose: () => { const gate = { arrived: deferred(), release: deferred() }; closeGate = gate; cleanup.push(() => gate.release.resolve()); return gate; },
     failClose: () => { failClose = true; }, failRead: () => { failResponseRead = true; } };
 }
@@ -240,4 +243,36 @@ test("the full durable response identity and selected close receipt must match b
   await f.noDelivery(response);
   await blocked(forwardHomeMirrorResponse(f.ctx, { identity: f.identity, responseId: randomUUID(), handoff: f.handoff, recipient: RECIPIENT, deliver: f.deliver() }));
   await f.noDelivery(response);
+});
+
+test("an answered mirror with no receipt recovers through one durable child handoff without another KV close", async () => {
+  const f = await fixture(), response = await f.answer(), published = f.values.get(f.key);
+  take(await f.owner.execute(`CREATE TRIGGER refuse_receipt BEFORE UPDATE OF close_receipt_json ON feed_sitrep_mirrors BEGIN SELECT RAISE(ABORT, '${PRIVATE}'); END`));
+  await blocked(f.forward(response));
+  await f.noDelivery(response);
+  const halfClosed = f.values.get(f.key), writes = f.kvWrites();
+  expect(JSON.parse(halfClosed!.text)).toMatchObject({ status: "answered", cardUuid: f.identity.cardId });
+  expect(halfClosed?.etag).not.toBe(published?.etag);
+  expect(take(await f.owner.query("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows).toEqual([[null]]);
+  take(await f.owner.execute("DROP TRIGGER refuse_receipt"));
+  f.ctx.now = () => "2026-10-29T12:05:00.000Z";
+  const child = f.deliver();
+  const verifyBeforeChild: FeedDeliveryOptions["deliver"] = async (...args: Parameters<FeedDeliveryOptions["deliver"]>) => {
+    const receiptRows = take(await f.owner.query<string>("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows;
+    const receipt = JSON.parse(receiptRows[0][0]);
+    expect(receipt).toMatchObject({ sourceId: f.identity.sourceId, identity: tuple(f.identity), responseId: response.responseId, status: "answered", expectedETag: published?.etag, closedETag: halfClosed?.etag });
+    expect(take(await getFeedHandoff(f.handoff, response.responseId, RECIPIENT))).toMatchObject({ state: "unconfirmed" });
+    expect(f.attempts()).toEqual([]);
+    return child(...args);
+  };
+  expect(await f.forward(response, verifyBeforeChild)).toMatchObject({ responseId: response.responseId, state: "delivered" });
+  expect(f.values.get(f.key)).toEqual(halfClosed);
+  expect(f.kvWrites()).toBe(writes);
+  const accepted = f.attempts();
+  expect(accepted).toEqual([{ header: response, boardStatus: "answered", liftReason: null, liftedBy: null }]);
+  expect(take(await getFeedHandoff(f.handoff, response.responseId, RECIPIENT))).toMatchObject({ state: "delivered" });
+  expect(await f.forward(response)).toMatchObject({ state: "delivered" });
+  expect(f.attempts()).toEqual(accepted);
+  expect(f.kvWrites()).toBe(writes);
+  expect(inspect({ accepted, handoff: take(await f.handoff.query("SELECT * FROM feed_handoffs")).rows }, { depth: 20 })).not.toContain(PRIVATE);
 });

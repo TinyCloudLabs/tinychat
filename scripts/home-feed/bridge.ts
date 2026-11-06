@@ -51,8 +51,8 @@ class MirrorFailure extends Error {
     this.name = diagnostic.name; this.code = diagnostic.code; this.status = diagnostic.status;
   }
 }
-const argumentCodes = new Set(["ERR_PARSE_ARGS_UNKNOWN_OPTION", "ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"]);
-const transientCodes = new Set(["NETWORK_ERROR", "TIMEOUT", "SQL_BUSY", "SQL_UNAVAILABLE"]);
+const argumentCodes = new Set(["ERR_PARSE_ARGS_UNKNOWN_OPTION", "ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL", "ERR_INVALID_URL"]);
+const transientCodes = new Set(["NETWORK_ERROR", "TIMEOUT", "NODE_BUSY", "REQUEST_TIMEOUT"]);
 const safeMessages = new Set([
   "Home mirror operation refused", "Invalid node host", "Existing owner session is unavailable",
   "Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file",
@@ -64,7 +64,7 @@ function failure(code: string = ErrorCodes.INVALID_INPUT): Error { return Object
 function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
   if (error instanceof MirrorFailure) return error.diagnostic.step === "mirror" && step !== "mirror" ? new MirrorFailure({ ...error.diagnostic, step }) : error;
   const candidate = object(error) ? error.code : undefined;
-  const code = typeof candidate === "string" && (Object.hasOwn(ErrorCodes, candidate) || argumentCodes.has(candidate)) ? candidate : ErrorCodes.INVALID_INPUT;
+  const code = typeof candidate === "string" && (Object.hasOwn(ErrorCodes, candidate) || argumentCodes.has(candidate)) ? candidate : error instanceof z.ZodError || error instanceof SyntaxError ? ErrorCodes.INVALID_INPUT : "HOME_MIRROR_ERROR";
   const meta = object(error) && object(error.meta) ? error.meta : undefined;
   const status = meta?.status;
   const name = error instanceof z.ZodError ? "ZodError" : error instanceof TypeError ? "TypeError" : error instanceof SyntaxError ? "SyntaxError" : error instanceof RangeError ? "RangeError" : object(error) && error.service === "sql" ? "ServiceError" : "Error";
@@ -86,7 +86,7 @@ function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
 export function homeMirrorDiagnostic(error: unknown) {
   const failure = safeFailure(error, "run");
   const { code, status } = failure.diagnostic;
-  const transient = transientCodes.has(code) || status === 429 || status === 503;
+  const transient = code !== ErrorCodes.OUTCOME_UNKNOWN && (transientCodes.has(code) || status === 429 || status === 503);
   return { error: failure.diagnostic, delivery: "not-confirmed", retry: "manual-reconciliation-required", exitCode: code === ErrorCodes.INVALID_INPUT || argumentCodes.has(code) ? 2 : transient ? 6 : 1 };
 }
 function take<T>(result: Result<T>, step?: string): T { if (!result.ok) throw safeFailure(result.error, step); return result.data; }
