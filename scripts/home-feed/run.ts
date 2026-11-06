@@ -8,7 +8,7 @@ import type { Result, SqlValue } from "@tinycloud/sdk-services";
 import { initializeFeedHandoff, projectFeedResponseNotification } from "@tinycloud/sdk-services/feed";
 import type { FeedDatabase, FeedResponse } from "@tinycloud/sdk-services/feed";
 import { loadProfile } from "../agent-sync/fireflies";
-import { closeHomeMirror, publishHomeMirror, watchHomeMirrors } from "./bridge";
+import { closeHomeMirror, homeMirrorDiagnostic, publishHomeMirror, watchHomeMirrors } from "./bridge";
 import type { HomeMirrorContext } from "./bridge-types";
 
 const space = z.string().regex(/^tinycloud:[^\s]+:[^\s]+$/);
@@ -18,7 +18,7 @@ const usage = "bun scripts/home-feed/run.ts post|close|watch --tc-home DIR --pro
 
 export function normalizeHomeMirrorHost(value: string): string {
   const host = new URL(value);
-  if (!["http:", "https:"].includes(host.protocol) || host.username || host.password || host.search || host.hash) throw new Error("Invalid node host");
+  if (!["http:", "https:"].includes(host.protocol) || host.username || host.password || host.search || host.hash) throw Object.assign(new Error("Invalid node host"), { code: "INVALID_INPUT" });
   return host.href.replace(/\/+$/, "");
 }
 
@@ -32,7 +32,7 @@ export async function runHomeMirror(argv: string[]): Promise<void> {
   } });
   if (values.help) { process.stdout.write(usage); return; }
   const mode = positionals[0];
-  if (positionals.length !== 1 || (mode !== "post" && mode !== "close" && mode !== "watch") || !values["tc-home"] || !values.profile || !values.file || (mode === "watch" && !values.handoff)) throw new Error("Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file");
+  if (positionals.length !== 1 || (mode !== "post" && mode !== "close" && mode !== "watch") || !values["tc-home"] || !values.profile || !values.file || (mode === "watch" && !values.handoff)) throw Object.assign(new Error("Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file"), { code: "INVALID_INPUT" });
   const ownerSpaceId = space.parse(values["owner-space"]), legacySpaceId = space.parse(values["legacy-space"]);
   const profile = loadProfile(values["tc-home"], values.profile);
   if (profile.spaceId !== ownerSpaceId || (profile.expiresAt !== null && (!Number.isFinite(Date.parse(profile.expiresAt)) || Date.parse(profile.expiresAt) <= Date.now()))) throw new Error("Existing owner session is unavailable");
@@ -71,7 +71,7 @@ export async function runHomeMirror(argv: string[]): Promise<void> {
 
 async function openHandoff(path: string): Promise<{ handle: FeedDatabase; close(): void }> {
   if (!("Bun" in globalThis)) throw new Error("Home mirror watch requires Bun SQLite");
-  if (path === ":memory:" || path.startsWith("file:")) throw new Error("Home mirror handoff requires a persistent file path");
+  if (path === ":memory:" || path.startsWith("file:")) throw Object.assign(new Error("Home mirror handoff requires a persistent file path"), { code: "INVALID_INPUT" });
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const { Database } = await import("bun:sqlite");
   const database = new Database(path);
@@ -137,5 +137,9 @@ function runExternal(argv: readonly [string, ...string[]], input: FeedResponse, 
 
 if (import.meta.main) {
   try { await runHomeMirror(process.argv.slice(2)); }
-  catch { process.stderr.write("Home mirror operation failed; no delivery success is implied.\n"); process.exitCode = 1; }
+  catch (error) {
+    const diagnostic = homeMirrorDiagnostic(error);
+    process.stderr.write(`${JSON.stringify(diagnostic)}\n`);
+    process.exitCode = diagnostic.exitCode;
+  }
 }
