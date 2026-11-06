@@ -219,7 +219,8 @@ export function App() {
   const [captureFailClosed, setCaptureFailClosed] = useState(false);
   const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
   const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
-  useAudioCacheBoot(LOCAL_VALIDATION ? null : tcw);
+  // The audio cache belongs to the recorder, which the Home site does not have.
+  useAudioCacheBoot(LOCAL_VALIDATION || HOME_SITE ? null : tcw);
   const captureHandoffInFlight = useRef<Promise<boolean> | null>(null);
   const performCaptureHandoff = useCallback(async () => {
     if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;

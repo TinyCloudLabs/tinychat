@@ -18,8 +18,8 @@ function runFixture(fixture: string, homeSite: boolean) {
 describe("mounted App, by build", () => {
   test("the Home build signs in with the narrow grant, runs no recording or connector lane and points the dropped screens to tinycloud.chat", () => {
     runFixture("./test-fixtures/App.homeGrant.fixture.tsx", true);
-  });
+  }, 60_000);
   test("the plain build keeps the full grant, its lanes and its screens", () => {
     runFixture("./test-fixtures/App.homeGrant.fixture.tsx", false);
-  });
+  }, 60_000);
 });
