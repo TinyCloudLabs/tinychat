@@ -181,7 +181,8 @@ export function ChatWorkspace(props: {
               composerToolbar={props.composerToolbar}
             />
           </div>
-          <ChatViewAgentEnablementBanner />
+          {/* The banner offers meeting access, which the Home site's sign-in does not cover. */}
+          {!HOME_SITE && <ChatViewAgentEnablementBanner />}
         </section>
       </div>
       <ChatsSheet open={chatsOpen} onOpenChange={setChatsOpen} settings={props.settings} />
