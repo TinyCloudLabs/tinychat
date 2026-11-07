@@ -163,13 +163,24 @@ TinyCloud Home site at `https://home.tinycloud.xyz`.
   (chats and settings), `home_feed` and `feed/` (the feed); the hooks that
   refresh the feed and chats; and space info (storage panel). It has no
   secrets, no decrypt grant, and none of the canvas, connectors, details,
-  summaries or transcripts databases. Recording and Connectors are not in the
-  Home navigation; their addresses show a pointer to tinycloud.chat, which
-  keeps the full `manifest.json` and signs in exactly as before. The backend
-  keeps reading `manifest.json` (`/api/server-info` and the delegation routes
-  depend on its connectors coverage), so do not narrow it. A Home session
-  signed in under the broad grant is cleared once (revision `home-1`, in
+  summaries or transcripts databases. tinycloud.chat keeps the full
+  `manifest.json` and signs in exactly as before. The backend keeps reading
+  `manifest.json` (`/api/server-info` and the delegation routes depend on its
+  connectors coverage), so do not narrow it. A Home session signed in under the
+  broad grant is cleared once (revision `home-1`, in
   `frontend/src/lib/manifestRevision.ts`) and the user signs in once more.
+- **Recording and Connectors on Home:** each has its own set
+  (`HOME_RECORDING_ENTRIES`, `HOME_CONNECTORS_ENTRIES` in
+  `packages/core/src/manifest-bundle.ts`), plus the decrypt grant composed at
+  request time. When one is opened and the session does not cover its set, it
+  asks in place: Home signs in again in the page on a separate instance with
+  the base grant plus every used set plus this one (one OpenKey approval), and
+  replaces the session only once that is approved and verified. Once a feature
+  has been used on a device, `xyz.tinycloud.tinychat:home-features:<address>`
+  in localStorage (feature names only; kept on sign-out) makes the next
+  sign-in include its set. Background work for a feature runs only when it is
+  flagged on the device and the session covers its set. The flag never changes
+  the revision: any grant carrying the Home bundle records `home-1`.
 - **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
   name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
   `production`.
