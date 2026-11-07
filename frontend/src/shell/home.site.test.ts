@@ -3,12 +3,14 @@ import { navItems } from "./navItems";
 import { homeDestination, homePath } from "./routes";
 
 describe("navigation on the Home site", () => {
-  test("leads with Home (the feed), then Chat and Apps; Recording and Connectors stay on tinycloud.chat", () => {
+  test("leads with Home (the feed), then Chat, Apps, Recording, Connectors", () => {
     const items = navItems(0, true);
     expect(items.map((item) => [item.id, item.label])).toEqual([
       ["feed", "Home"],
       ["chat", "Chat"],
       ["apps", "Apps"],
+      ["capture", "Recording"],
+      ["connectors", "Connectors"],
     ]);
     expect(items[0]!.href).toBe("/chat/feed");
   });
@@ -17,8 +19,8 @@ describe("navigation on the Home site", () => {
     expect(navItems(0, false).map((item) => item.label)).toEqual(["Recording", "Chat", "Apps", "Feed", "Connectors"]);
   });
 
-  test("keeps the Connectors badge on the other builds", () => {
-    expect(navItems(3, false).find((item) => item.id === "connectors")!.badge).toBe(3);
+  test("keeps the Connectors badge on the Home site", () => {
+    expect(navItems(3, true).find((item) => item.id === "connectors")!.badge).toBe(3);
   });
 });
 

@@ -1,5 +1,5 @@
-// The REAL ChatWorkspace, by build: the Home site answers without meeting context, so it never builds the
-// browser meeting retriever (which reads the connectors databases) and never shows the agent-access banner
+// The REAL ChatWorkspace, by build: the Home site builds the browser meeting retriever (which reads the connectors
+// databases and asks the meetings route) only once Connectors is permitted, and never shows the agent-access banner
 // (which offers meeting access); the plain build still does both.
 // Run by src/chat/ChatWorkspace.homeGrant.test.ts in its own process.
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
@@ -32,6 +32,7 @@ mock.module("@/chat/useAgentEnablement", () => ({
   useAgentAccess: () => ({ ...realUseAgentAccess(), capability: "available" as const, reconnectReason: null, enableError: null, enabling: false }),
 }));
 const { ChatWorkspace } = await import("@/chat/ChatWorkspace");
+const { HomeFeatureAccessContext } = await import("@/shell/homeFeatureAccess");
 restoreImportDom();
 
 let restoreDom: () => void;
@@ -46,43 +47,50 @@ afterEach(() => {
   restoreDom();
 });
 
-async function mountChat() {
+async function mountChat(connectorsPermitted?: boolean) {
   const shim = createRuntimeShim();
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
   const backendUrl = "http://localhost";
+  const chat = (
+    <AgentAccessProvider tcw={harnessTcw} sessionStore={harnessSessionStore} backendUrl={backendUrl} appName="test" openkeyHost={backendUrl}>
+      <ChatWorkspace
+        tcw={shim.tcw}
+        sessionStore={shim.sessionStore}
+        backendUrl={backendUrl}
+        selectionControllerRef={{ current: null }}
+        selectionView={{ model: null, canPick: false, canSend: false, message: null } as never}
+        memoryRef={{ current: null }}
+        onSelectionView={() => {}}
+        onSelectionAuthFailure={() => {}}
+        onMemoryUpdated={() => {}}
+        contextTokensFor={() => 8_000}
+        settings={false}
+        billingStatus={null}
+      />
+    </AgentAccessProvider>
+  );
+  const access = { covered: () => true, permitted: () => connectorsPermitted === true, request: async () => "failed" as const, confirmUse: () => {}, inFlight: null };
   await act(async () => {
     root.render(
       <MemoryRouter initialEntries={["/chat"]}>
-        <AgentAccessProvider tcw={harnessTcw} sessionStore={harnessSessionStore} backendUrl={backendUrl} appName="test" openkeyHost={backendUrl}>
-          <ChatWorkspace
-            tcw={shim.tcw}
-            sessionStore={shim.sessionStore}
-            backendUrl={backendUrl}
-            selectionControllerRef={{ current: null }}
-            selectionView={{ model: null, canPick: false, canSend: false, message: null } as never}
-            memoryRef={{ current: null }}
-            onSelectionView={() => {}}
-            onSelectionAuthFailure={() => {}}
-            onMemoryUpdated={() => {}}
-            contextTokensFor={() => 8_000}
-            settings={false}
-            billingStatus={null}
-          />
-        </AgentAccessProvider>
+        {connectorsPermitted === undefined ? chat : <HomeFeatureAccessContext.Provider value={access}>{chat}</HomeFeatureAccessContext.Provider>}
       </MemoryRouter>,
     );
   });
   return { host, unmount: () => act(async () => root.unmount()) };
 }
 
-test("Chat builds the meeting retriever only on the plain build", async () => {
-  const { unmount } = await mountChat();
-  try {
-    expect(retrieversBuilt > 0).toBe(!HOME);
-  } finally {
-    await unmount();
+test("Chat builds the meeting retriever on the plain build, and on the Home site only once Connectors is permitted", async () => {
+  for (const [connectorsPermitted, built] of [[undefined, !HOME], ...(HOME ? [[false, false], [true, true]] as const : [])] as const) {
+    retrieversBuilt = 0;
+    const { unmount } = await mountChat(connectorsPermitted);
+    try {
+      expect(retrieversBuilt > 0).toBe(built);
+    } finally {
+      await unmount();
+    }
   }
 });
 
