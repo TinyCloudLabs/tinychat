@@ -16,6 +16,6 @@ function runFixture(homeSite: boolean) {
 }
 
 describe("ChatWorkspace, by build", () => {
-  test("the Home build builds no meeting retriever, so Chat never reads connectors", () => runFixture(true), 60_000);
+  test("the Home build builds the meeting retriever only once Connectors is permitted", () => runFixture(true), 60_000);
   test("the plain build still builds it", () => runFixture(false), 60_000);
 });

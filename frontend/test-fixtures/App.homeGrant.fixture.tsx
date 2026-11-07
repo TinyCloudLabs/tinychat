@@ -39,6 +39,8 @@ const transcriberSyncApi = await import("@/chat/useTranscriberLibrarySync");
 const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
 const appShellApi = await import("@/shell/AppShell");
 const { homeSignInManifest } = await import("@/lib/homeFeatures");
+const laneApi = await import("@/lib/spaceWriteLane");
+const feedApi = await import("@/feed/FeedView");
 
 let lastSignInConfig: { manifest: unknown; includeAccountRegistryPermissions?: unknown } | null = null;
 let decryptGrantCalls = 0;
@@ -47,9 +49,21 @@ let installEngineCalls = 0;
 const audioCacheBootArgs: Array<TinyCloudWeb | null> = [];
 let transcriberSyncEnabled: boolean | null = null;
 const mounted: string[] = [];
+// What the signed-in session's own approval covers (the Home base, or the base plus the flagged sets).
+let signInCovers = false;
+// How the owner answers the in-place re-authorise.
+let reauthAnswer: "approve" | "decline" = "approve";
+let reauthConfig: { manifest: unknown } | null = null;
+const feedTcws: Array<TinyCloudWeb | null> = [];
+const fetchedUrls: string[] = [];
 
-function fakeTcw(): TinyCloudWeb {
-  return { did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {} } as unknown as TinyCloudWeb;
+function fakeTcw(covers: boolean, tag: string): TinyCloudWeb {
+  return {
+    tag, did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "space-a1", address: () => ADDRESS, sql: {}, secrets: {},
+    hasPermissions: () => covers,
+    kv: { get: async () => ({ ok: false, error: { code: "KV_NOT_FOUND", message: "none" } }) },
+    cleanup: () => {},
+  } as unknown as TinyCloudWeb;
 }
 function spy(name: string) {
   return function Spy() { mounted.push(name); return null; };
@@ -57,11 +71,22 @@ function spy(name: string) {
 
 mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
-  connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
+  connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: { request: async () => null } }),
   requestNonce: async () => "nonce",
   createAndSignIn: async (_provider: unknown, config: typeof lastSignInConfig) => {
     lastSignInConfig = config;
-    return { tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } };
+    return { tcw: fakeTcw(signInCovers, "signed-in"), session: { siwe: "message", signature: "signature" } };
+  },
+  // The in-place re-authorise's separate instance.
+  createTinyCloudWeb: (_provider: unknown, config: { manifest: unknown }) => {
+    reauthConfig = config;
+    return {
+      ...fakeTcw(true, "re-authorised"),
+      signIn: async () => {
+        if (reauthAnswer === "decline") throw { code: "USER_CANCELLED" };
+        return { siwe: "message-2", signature: "signature-2" };
+      },
+    };
   },
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
 }));
@@ -120,6 +145,10 @@ mock.module("../src/capture/upload/UploadResumer", () => ({ UploadResumer: spy("
 mock.module("../src/chat/ConnectorsPage", () => ({ ConnectorsPage: spy("ConnectorsPage") }));
 mock.module("../src/capture/CaptureSurface", () => ({ CaptureSurface: spy("CaptureSurface") }));
 mock.module("../src/chat/MeetingsSection", () => ({ MeetingsSection: spy("MeetingsSection") }));
+mock.module("../src/feed/FeedView", () => ({
+  ...feedApi,
+  FeedView: ({ tcw }: { tcw: TinyCloudWeb | null }) => { feedTcws.push(tcw); return <div data-testid="feed-view" />; },
+}));
 mock.module("../src/chat/useTranscriberLibrarySync", () => ({
   ...transcriberSyncApi,
   TranscriberLibrarySyncProvider: ({ enabled, children }: { enabled?: boolean; children: React.ReactNode }) => {
@@ -131,7 +160,7 @@ mock.module("../src/capture/recorder/RecorderProvider", () => ({
   ...recorderProviderApi,
   RecorderProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
-// The real frame, so the navigation and the pointer are the real ones.
+// The real frame, so the navigation and the in-place prompts are the real ones.
 mock.module("../src/capture/recorder/RecorderShell", () => ({
   RecorderShell: ({ onOpenNote: _onOpenNote, ...shell }: Record<string, unknown>) => <appShellApi.AppShell {...(shell as never)} />,
 }));
@@ -190,8 +219,16 @@ beforeEach(() => {
   audioCacheBootArgs.length = 0;
   transcriberSyncEnabled = null;
   mounted.length = 0;
+  signInCovers = false;
+  reauthAnswer = "approve";
+  reauthConfig = null;
+  feedTcws.length = 0;
+  fetchedUrls.length = 0;
   Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryLocalStorage() });
-  globalThis.fetch = (async () => { throw new TypeError("Failed to fetch"); }) as unknown as typeof fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    fetchedUrls.push(String(input));
+    throw new TypeError("Failed to fetch");
+  }) as unknown as typeof fetch;
 });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -237,10 +274,21 @@ test("a feature this device has used is asked for in the same sign-in on the Hom
   }
 });
 
-test("the recording, connector and transcript lanes run only on the plain build", async () => {
+const CONNECTORS_LANES = ["BackgroundDrainer", "GmeetSessionSync", "BackendReconciler"];
+const RECORDING_LANES = ["UploadResumer"];
+const meetingsRequests = () => fetchedUrls.filter((url) => url.includes("/api/connectors/meetings"));
+const prompt = (feature: string) => host!.querySelector(`[data-testid="feature-access-${feature}"]`);
+const tagOf = (tcw: TinyCloudWeb | null | undefined) => (tcw as { tag?: string } | null | undefined)?.tag;
+async function clickInPrompt(feature: string, label: string) {
+  const button = [...prompt(feature)!.querySelectorAll("button")].find((entry) => entry.textContent === label)!;
+  await act(async () => { button.click(); await tick(); });
+  await settle();
+}
+
+test("without the feature flag the Home site starts no recording, connector or transcript lane, and asks the meetings route nothing", async () => {
   await mount();
   await signIn();
-  const lanes = ["BackgroundDrainer", "GmeetSessionSync", "BackendReconciler", "UploadResumer"];
+  const lanes = [...CONNECTORS_LANES, ...RECORDING_LANES];
   if (HOME) {
     expect(mounted.filter((name) => lanes.includes(name))).toEqual([]);
     expect(transcriberSyncEnabled).toBe(false);
@@ -248,9 +296,32 @@ test("the recording, connector and transcript lanes run only on the plain build"
     for (const lane of lanes) expect(mounted).toContain(lane);
     expect(transcriberSyncEnabled).toBe(true);
   }
+  expect(meetingsRequests()).toEqual([]);
 });
 
-test("the audio cache boot runs for a signed-in account only on the plain build, and the Home build asks for no capture engine", async () => {
+test("with the flag set and a session covering the flagged sets, the Home site starts their lanes", async () => {
+  if (!HOME) return;
+  localStorage.setItem(FEATURES_KEY, JSON.stringify(["recording", "connectors"]));
+  signInCovers = true;
+  await mount();
+  await signIn();
+  for (const lane of [...CONNECTORS_LANES, ...RECORDING_LANES]) expect(mounted).toContain(lane);
+  expect(transcriberSyncEnabled).toBe(true);
+  expect(audioCacheBootArgs.some((tcw) => tcw !== null)).toBe(true);
+});
+
+test("a flag the session does not cover starts nothing on the Home site", async () => {
+  if (!HOME) return;
+  localStorage.setItem(FEATURES_KEY, JSON.stringify(["recording", "connectors"]));
+  signInCovers = false;
+  await mount();
+  await signIn();
+  expect(mounted.filter((name) => [...CONNECTORS_LANES, ...RECORDING_LANES].includes(name))).toEqual([]);
+  expect(transcriberSyncEnabled).toBe(false);
+  expect(audioCacheBootArgs.filter((tcw) => tcw !== null)).toEqual([]);
+});
+
+test("the audio cache boot and the recorder wait for Recording on the Home site", async () => {
   await mount();
   await signIn();
   const signedIn = audioCacheBootArgs.filter((tcw) => tcw !== null);
@@ -262,28 +333,84 @@ test("the audio cache boot runs for a signed-in account only on the plain build,
   }
 });
 
-test("navigation and the Recording and Connectors screens", async () => {
+test("navigation, and Recording and Connectors asking in place on the Home site", async () => {
   await mount("/chat");
   await signIn();
   if (HOME) {
-    expect(navLabels()).toEqual(["Home", "Chat", "Apps"]);
-    for (const path of ["/chat/connectors", "/chat/capture", "/chat/capture/library", "/chat/capture/library/note-1"]) {
+    expect(navLabels()).toEqual(["Home", "Chat", "Apps", "Recording", "Connectors"]);
+    for (const [path, feature, heading] of [
+      ["/chat/capture", "recording", "Allow Recording"],
+      ["/chat/capture/library", "recording", "Allow Recording"],
+      ["/chat/connectors", "connectors", "Allow Connectors"],
+    ] as const) {
       await navigate(path);
-      expect(host!.textContent).toContain("This is on tinycloud.chat");
-      expect(host!.textContent).toContain("Recording and Connectors are part of TinyCloud Chat.");
-      const link = [...host!.querySelectorAll("a")].find((entry) => entry.textContent === "Open on tinycloud.chat")!;
-      expect(link.getAttribute("href")).toBe(`https://tinycloud.chat${path}`);
+      expect(prompt(feature)?.querySelector("h2")?.textContent).toBe(heading);
       expect(host!.querySelectorAll("main").length).toBe(1);
     }
     expect(mounted).not.toContain("ConnectorsPage");
     expect(mounted).not.toContain("CaptureSurface");
     expect(mounted).not.toContain("MeetingsSection");
+    expect(meetingsRequests()).toEqual([]);
+    expect(reauthConfig).toBeNull();
   } else {
     expect(navLabels()).toEqual(["Recording", "Chat", "Connectors"]);
     await navigate("/chat/connectors");
     expect(mounted).toContain("ConnectorsPage");
-    expect(host!.textContent).not.toContain("This is on tinycloud.chat");
+    expect(prompt("connectors")).toBeNull();
   }
+});
+
+test("declining the in-place ask keeps the session and the feed, sets no flag, and leaves a plain retry", async () => {
+  if (!HOME) return;
+  reauthAnswer = "decline";
+  await mount();
+  await signIn();
+  await navigate("/chat/capture");
+  await clickInPrompt("recording", "Continue");
+  expect(reauthConfig).not.toBeNull();
+  expect(prompt("recording")?.textContent).toContain("Permission wasn't given. Nothing changed.");
+  expect([...prompt("recording")!.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Continue"]);
+  expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
+  expect(mounted).not.toContain("CaptureSurface");
+  // The feed opens on the same session.
+  await navigate("/chat/feed");
+  expect(host!.querySelector('[data-testid="feed-view"]')).toBeTruthy();
+  expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
+});
+
+test("approving swaps in the re-authorised session in place; Recording opens, and its first successful call flags it", async () => {
+  if (!HOME) return;
+  await mount();
+  await signIn();
+  await navigate("/chat/capture");
+  await clickInPrompt("recording", "Continue");
+  expect(reauthConfig!.manifest).toEqual(homeSignInManifest(readManifest("manifest.home.json"), ["recording"], ADDRESS));
+  expect(window.location.pathname).toBe("/chat/capture");
+  expect(mounted).toContain("CaptureSurface");
+  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["recording"]);
+  expect(mounted).toContain("UploadResumer");
+  // Connectors was not asked for, so its lanes stay off.
+  expect(mounted.filter((name) => CONNECTORS_LANES.includes(name))).toEqual([]);
+  // The feed opens on the re-authorised session.
+  await navigate("/chat/feed");
+  expect(tagOf(feedTcws.at(-1))).toBe("re-authorised");
+});
+
+test("Continue waits while an upload or a save is writing, and comes back when it ends", async () => {
+  if (!HOME) return;
+  await mount();
+  await signIn();
+  await navigate("/chat/capture");
+  const write = Promise.withResolvers<void>();
+  let running!: Promise<void>;
+  await act(async () => { running = laneApi.runOnSpaceLane(() => write.promise); await tick(); });
+  const continueButton = () => [...prompt("recording")!.querySelectorAll("button")].find((entry) => entry.textContent === "Continue")!;
+  expect(continueButton().disabled).toBe(true);
+  expect(prompt("recording")?.textContent).toContain("Finish the current recording or upload first.");
+  await act(async () => { write.resolve(); await running; });
+  await settle();
+  expect(continueButton().disabled).toBe(false);
+  expect(prompt("recording")?.textContent).not.toContain("Finish the current recording or upload first.");
 });
 
 test("a session saved under the broad grant is cleared once on the Home site; the plain build keeps it", async () => {

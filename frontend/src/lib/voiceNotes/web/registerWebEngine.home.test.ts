@@ -20,7 +20,7 @@ afterAll(() => {
   }
 });
 
-test("the Home site registers no web capture engine, so nothing in it can record", () => {
-  registerWebCaptureEngine(true);
+test("a Home device that has not used Recording registers no web capture engine at boot", () => {
+  registerWebCaptureEngine(false);
   expect(captureEngineKind()).toBeNull();
 });

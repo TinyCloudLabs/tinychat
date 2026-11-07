@@ -38,7 +38,17 @@ export const APPS_EMPTY = "No apps to show yet.";
 /** A plain link on the signed-out sign-in surface to the landing page at /about. */
 export const LANDING_LINK_LABEL = "About TinyCloud Home";
 
-/** The Home site's pointer where Recording and Connectors used to open: they live on tinycloud.chat. */
-export const MOVED_TO_CHAT_TITLE = "This is on tinycloud.chat";
-export const MOVED_TO_CHAT_BODY = "Recording and Connectors are part of TinyCloud Chat.";
-export const MOVED_TO_CHAT_LINK = "Open on tinycloud.chat";
+/** Recording and Connectors on the Home site ask for their own permissions in place, when the owner opens them. */
+export const FEATURE_ACCESS_TITLE = { recording: "Allow Recording", connectors: "Allow Connectors" } as const;
+export const FEATURE_ACCESS_BODY = {
+  recording: "To save your recordings, transcripts and summaries, OpenKey will ask you to let TinyCloud Home keep them in your space, with an AssemblyAI key if you add one.",
+  connectors: "To sync your meetings, OpenKey will ask you to let TinyCloud Home keep them in your space, with the keys you add for Fireflies, Granola and Google Meet.",
+} as const;
+/** The calm state after "Not now": the feature waits for permission, and Continue asks again. */
+export const FEATURE_ACCESS_NEEDED = { recording: "Recording needs your permission.", connectors: "Connectors needs your permission." } as const;
+export const FEATURE_ACCESS_CONTINUE = "Continue";
+export const FEATURE_ACCESS_NOT_NOW = "Not now";
+/** Continue waits while a recording or an upload is running, so asking never cuts it off. */
+export const FEATURE_ACCESS_BUSY = "Finish the current recording or upload first.";
+export const FEATURE_ACCESS_DECLINED = "Permission wasn't given. Nothing changed.";
+export const FEATURE_ACCESS_FAILED = "Couldn't ask for permission. Nothing changed. Try again.";

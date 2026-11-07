@@ -29,6 +29,10 @@ import {
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { homeSignInManifest, readHomeFeatures } from "./lib/homeFeatures";
+import { reauthorizeHome } from "./lib/homeReauthorize";
+import { useInFlightWork } from "./lib/inFlightWork";
+import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
+import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -133,7 +137,7 @@ import { DeviceCaptureSurface, DeviceCaptureSettings } from "./capture/DeviceCap
 import { useAudioCacheBoot } from "./lib/voiceNotes/audioReceiptUpgrade";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
-import { captureCapabilities, captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
+import { captureCapabilities, captureEngineAvailable, subscribeCaptureCapabilities } from "./lib/voiceNotes/captureEngine";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
 import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
@@ -163,7 +167,6 @@ import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { applyManifestRevisionGate, browserRevisionStore, createResignPromptGuard, MANIFEST_RESIGN_NOTICE, manifestCarriesCurrentBundle, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
-import { MovedToChatPointer } from "./shell/MovedToChatPointer";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -220,8 +223,49 @@ export function App() {
   const [captureFailClosed, setCaptureFailClosed] = useState(false);
   const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
   const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
-  // The audio cache belongs to the recorder, which the Home site does not have.
-  useAudioCacheBoot(LOCAL_VALIDATION || HOME_SITE ? null : tcw);
+  // Recording and Connectors on the Home site ask for their own sets in place (shell/homeFeatureAccess.tsx). Asking
+  // signs in again on a separate instance, which replaces the session here only once it is approved and verified;
+  // declining or closing OpenKey leaves this session, the feed and chat exactly as they are.
+  const homeFeatureStore = useMemo(() => browserRevisionStore(), []);
+  const requestFeatureAccess = useCallback<RequestFeatureAccess>(async (feature) => {
+    const current = tcw;
+    if (!HOME_SITE || state !== "ready" || !current || !address) return "failed";
+    const result = await reauthorizeHome({
+      connect: () => connectWallet({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
+      prefetch: createWebSignInPrefetch(BACKEND_URL, { requestNonce }),
+      createTcw: createTinyCloudWeb,
+      verify: (siwe, signature) => verifySession(BACKEND_URL, siwe, signature),
+    }, {
+      address,
+      features: [...readHomeFeatures(homeFeatureStore, address), feature],
+      config: { autoCreateSpace: true, includeAccountRegistryPermissions: false, tinycloudHosts: TINYCLOUD_HOSTS, uiPlatform: sdkUiPlatform() },
+    });
+    if (result.outcome !== "granted") return result.outcome;
+    sessionStoreRef.current.setSession(result.verified.token, result.verified.expiresIn, address);
+    recordManifestRevisionIfSigned(homeFeatureStore, address, result.manifest);
+    // Same account and space: the new instance joins the current storage session instead of opening a new one.
+    const scope = storageScopeFor(current);
+    if (scope) associateStorageAccountClient(result.tcw, scope);
+    openkeyRef.current = result.openkey;
+    setTcw(result.tcw);
+    current.cleanup();
+    return "granted";
+  }, [tcw, state, address, homeFeatureStore]);
+  const featureInFlight = useInFlightWork(HOME_SITE && state === "ready");
+  const featureAccess = useHomeFeatureAccessState({
+    homeSite: HOME_SITE,
+    tcw: state === "ready" ? tcw : null,
+    address,
+    store: homeFeatureStore,
+    requestFeatureAccess,
+    inFlight: featureInFlight,
+  });
+  useAudioCacheBoot(LOCAL_VALIDATION || !featureAccess.permitted("recording") ? null : tcw);
+  // A device that has not recorded on the Home site registers no recorder at boot; it starts once Recording is covered.
+  const recordingCovered = featureAccess.covered("recording");
+  useEffect(() => {
+    if (HOME_SITE && recordingCovered) void enableWebCaptureEngine().catch((caught: unknown) => console.error("[VoiceNotes] Could not start the recorder engine", caught));
+  }, [recordingCovered]);
   const captureHandoffInFlight = useRef<Promise<boolean> | null>(null);
   const performCaptureHandoff = useCallback(async () => {
     if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;
@@ -619,7 +663,7 @@ export function App() {
           setDid(accountDid);
           setSpaceId(restored.tcw.spaceId ?? null);
           setState("ready");
-          // The Home site's grant has no transcript delivery to maintain.
+          // On the Home site this waits until Recording is permitted; the delegation effect below runs it then.
           if (!HOME_SITE) void ensureTranscriptWriterDelegation({ tcw: restored.tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
           return;
         }
@@ -699,19 +743,22 @@ export function App() {
     };
   }, [state]);
 
+  const recordingPermitted = featureAccess.permitted("recording");
   useEffect(() => {
-    if (state !== "ready" || !tcw || LOCAL_VALIDATION || HOME_SITE) return;
+    if (state !== "ready" || !tcw || LOCAL_VALIDATION || !recordingPermitted) return;
     const recheck = () => void ensureTranscriptWriterDelegation({
       tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current,
     });
     const visible = () => { if (document.visibilityState === "visible") recheck(); };
+    // The Home site's sign-in and restore skip the check until Recording is permitted, so it starts here.
+    if (HOME_SITE) recheck();
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", visible);
     return () => {
       window.removeEventListener("focus", recheck);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [state, tcw]);
+  }, [state, tcw, recordingPermitted]);
 
   // A1 — keep the policy-input refs in sync with render state.
   useEffect(() => {
@@ -1139,7 +1186,8 @@ export function App() {
   // Voice notes exist inside the Exo mobile app only. Once ready, the one
   // recorder (RecorderProvider, below) serves every view of it; a recording
   // still running from the offline screen is picked up there, never restarted.
-  const voiceNotesInApp = useMemo(() => captureEngineAvailable(), []);
+  // On the Home site the engine can start later, once Recording is covered.
+  const voiceNotesInApp = useSyncExternalStore(subscribeCaptureCapabilities, captureEngineAvailable);
 
   const capabilities = captureCapabilities();
   const deviceCapture = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION &&
@@ -1239,11 +1287,12 @@ export function App() {
   ) : null;
 
   return (
+    <HomeFeatureAccessContext.Provider value={featureAccess}>
     <RecorderProvider
       tcw={isReady ? tcw : null}
       backendUrl={BACKEND_URL}
       sessionStore={sessionStoreRef.current}
-      enabled={voiceNotesInApp && !LOCAL_VALIDATION}
+      enabled={voiceNotesInApp && !LOCAL_VALIDATION && featureAccess.covered("recording")}
       onAccountReady={setCaptureReadyTcw}
       pipeline={voiceNotePipeline}
       signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}
@@ -1278,7 +1327,7 @@ export function App() {
         ) : isReady && tcw ? (
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
-            <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION && !HOME_SITE} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
+            <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION && featureAccess.permitted("recording")} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
             {/* The shell keeps ChatWorkspace mounted while another surface is
                 shown — a visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
@@ -1314,25 +1363,25 @@ export function App() {
                   billingStatus={billingStatus}
                 />
               }
-              capture={LOCAL_VALIDATION ? null : HOME_SITE ? <MovedToChatPointer /> : <CaptureSurface
+              capture={LOCAL_VALIDATION ? null : <HomeFeatureGate feature="recording"><CaptureSurface
                 tcw={tcw}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
                 active={screen.destination === "capture"}
                 onSummarySettled={refreshBillingStatus}
                 screen={screen}
-                meetingsSlot={
+                meetingsSlot={featureAccess.permitted("connectors") ? (
                   <MeetingsSection
                     backendUrl={BACKEND_URL}
                     sessionStore={sessionStoreRef.current}
                   />
-                }
-              />}
-              connectors={LOCAL_VALIDATION ? null : HOME_SITE ? <MovedToChatPointer /> : <ConnectorsPage
+                ) : null}
+              /></HomeFeatureGate>}
+              connectors={LOCAL_VALIDATION ? null : <HomeFeatureGate feature="connectors"><ConnectorsPage
                 tcw={tcw}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
-              />}
+              /></HomeFeatureGate>}
               feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} />}
               apps={LOCAL_VALIDATION ? null : <AppsPage />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
@@ -1425,7 +1474,7 @@ export function App() {
           visit"). Same gate as the authenticated surfaces; renders nothing in
           every state, coordinates with Settings on a shared lane, and never
           unlocks — see useBackgroundDrain.ts. */}
-      {!LOCAL_VALIDATION && !HOME_SITE && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <BackgroundDrainer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1436,7 +1485,7 @@ export function App() {
       {/* TC-515: voice notes left on the phone (recorded offline, or a save that
           failed) are saved once the session is ready, without opening
           Capture. The Voice notes card's own single-flight retry. */}
-      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && captureReadyTcw === tcw && voiceNotePipeline && (
+      {voiceNotesInApp && !LOCAL_VALIDATION && featureAccess.permitted("recording") && state === "ready" && tcw && captureReadyTcw === tcw && voiceNotePipeline && (
         <PendingVoiceNotesSaver
           tcw={tcw}
           pipeline={voiceNotePipeline}
@@ -1449,7 +1498,7 @@ export function App() {
           drainer above (gmeet has no webhook queue). Same ready gate; renders
           nothing, defers silently while the vault is locked, and is a no-op for
           every user while the registry row is coming-soon. */}
-      {!LOCAL_VALIDATION && !HOME_SITE && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <GmeetSessionSync
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1462,7 +1511,7 @@ export function App() {
           them. Renders nothing, queues on the drain's lane so the one space has
           a single writer, and is a no-op for every address outside the dark
           cohort — see BackendReconciler.tsx. */}
-      {!LOCAL_VALIDATION && !HOME_SITE && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <BackendReconciler
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1472,7 +1521,7 @@ export function App() {
 
       {/* TC-761: an upload a reload interrupted picks up at launch, without
           opening the Upload sheet. Same ready gate; renders nothing. */}
-      {!LOCAL_VALIDATION && !HOME_SITE && state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && featureAccess.permitted("recording") && state === "ready" && tcw && (
         <UploadResumer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1499,6 +1548,7 @@ export function App() {
       )}
     </div>
     </RecorderProvider>
+    </HomeFeatureAccessContext.Provider>
   );
 }
 

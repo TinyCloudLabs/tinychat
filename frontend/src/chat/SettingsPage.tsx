@@ -44,6 +44,7 @@ import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { ReplicationSettings } from "../lib/replication/ReplicationSettings";
 import { HOME_SITE } from "../lib/homeSite";
+import { HomeFeatureGate, useHomeFeatureAccess } from "../shell/homeFeatureAccess";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
@@ -101,6 +102,7 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const { hash } = useLocation();
   const agentAccess = useAgentAccess();
+  const recordingCovered = useHomeFeatureAccess().covered("recording");
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
   const appsFeedEnabled = useAppsFeedEnabled();
   const compact = useSizeClass().size === "compact";
@@ -188,7 +190,7 @@ export function SettingsPage({
               <FirstScreenControl tcw={tcw} did={did} />
             </SectionCard>
           )}
-          {/* The Home site's sign-in grants no meeting access, so the cards that only serve Recording and Connectors are not shown there. */}
+          {/* Agent access offers meeting access to agents, which the Home site does not. */}
           {!HOME_SITE && (<>
           <SectionCard
             id="agent-access"
@@ -212,9 +214,10 @@ export function SettingsPage({
               onMemoryUpdated={onMemoryUpdated}
             />
           </SectionCard>
-          {!HOME_SITE && <TranscriptionSettings tcw={tcw} />}
+          {/* Recording's sections: on the Home site they ask for Recording's permission in place until it is given. */}
+          <HomeFeatureGate feature="recording"><TranscriptionSettings tcw={tcw} /></HomeFeatureGate>
           <WordFixesSettings tcw={tcw} />
-          {!HOME_SITE && (<>
+          {recordingCovered && (<>
           <SectionCard icon={BookOpenIcon} title="Meeting summaries">
             <AutomaticSummariesSettings tcw={tcw} />
           </SectionCard>
@@ -231,11 +234,12 @@ export function SettingsPage({
             />
           </SectionCard>
           <DebugLogRow />
-          {!HOME_SITE && (
+          {recordingCovered && (
             <SectionCard icon={DatabaseIcon} title="Audio storage">
               <AudioCacheSettings />
             </SectionCard>
           )}
+          {/* Local copy (replication) stays off on the Home site. */}
           {!HOME_SITE && <ReplicationSettings tcw={tcw} />}
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
