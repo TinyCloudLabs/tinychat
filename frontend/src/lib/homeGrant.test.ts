@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolveManifest, validateManifest } from "@tinycloud/sdk-core";
-import { HOME_SIGN_IN_BUNDLE_ENTRIES, manifestCarriesBundle } from "@tinyboilerplate/core";
+import { HOME_CONNECTORS_ENTRIES, HOME_RECORDING_ENTRIES, HOME_SIGN_IN_BUNDLE_ENTRIES, manifestCarriesBundle } from "@tinyboilerplate/core";
 import appManifest from "../../../manifest.json";
 import { webAppManifestFor } from "./webSignInPrefetch";
 import {
@@ -79,6 +79,44 @@ describe("the Home site's sign-in request", () => {
   test("each build signs the manifest it ships", () => {
     expect(webAppManifestFor(true)).toEqual(validateManifest(homeManifestJson));
     expect(webAppManifestFor(false)).toEqual(validateManifest(appManifest));
+  });
+});
+
+describe("the sets Recording and Connectors ask for on the Home site", () => {
+  const SQL = ["read", "write", "schema"];
+  const SECRET = ["get", "put", "del"];
+  const storage = [
+    { service: "tinycloud.sql", path: "connectors", actions: SQL, description: "Store meeting metadata synced from connected sources (e.g. Fireflies) in your space's SQL database." },
+    { service: "tinycloud.kv", path: "connectors/", actions: ["get", "put", "del", "list"], description: "Store transcript content synced from connected sources in your space." },
+  ];
+
+  test("Recording: the meeting storage, its databases, the hosted transcription claim and the AssemblyAI key, nothing more", () => {
+    expect(HOME_RECORDING_ENTRIES).toEqual([
+      ...storage,
+      { service: "tinycloud.sql", path: "details", actions: SQL },
+      { service: "tinycloud.sql", path: "summaries", actions: SQL },
+      { service: "tinycloud.sql", path: "transcripts", actions: SQL },
+      // The one entry outside connectors/: the hosted transcription claim (hostedVoiceNotes.ts), read and written only.
+      { service: "tinycloud.kv", space: "applications", path: "exo/voiceNotes/hostedJobs/", actions: ["get", "put"], skipPrefix: true },
+      { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/ASSEMBLYAI_API_KEY", actions: SECRET, skipPrefix: true, description: "Store your AssemblyAI API key, encrypted, in your secrets space." },
+    ]);
+  });
+
+  test("Connectors: the meeting storage and the three connector keys, nothing more", () => {
+    expect(HOME_CONNECTORS_ENTRIES).toEqual([
+      ...storage,
+      { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/FIREFLIES_API_KEY", actions: SECRET, skipPrefix: true, description: "Store your Fireflies API key, encrypted, in your secrets space." },
+      { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/GRANOLA_API_KEY", actions: SECRET, skipPrefix: true, description: "Store your Granola API key, encrypted, in your secrets space." },
+      { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/scoped/google-meet/REFRESH_TOKEN", actions: SECRET, skipPrefix: true, description: "Store your Google sign-in for Google Meet, encrypted, in your secrets space." },
+    ]);
+  });
+
+  test("their secrets resolve to exactly what the plain build's secrets block grants", () => {
+    const base = { manifest_version: 1, app_id: APP, name: "TinyCloud Home", defaults: false };
+    const secretResources = (manifest: unknown) => resolved(manifest).filter((resource) => resource.space === "secrets" && resource.service !== "tinycloud.capabilities");
+    const fromSets = secretResources({ ...base, permissions: [...HOME_RECORDING_ENTRIES, ...HOME_CONNECTORS_ENTRIES] });
+    expect(fromSets).toHaveLength(4);
+    expect(new Set(fromSets.map((resource) => JSON.stringify(resource)))).toEqual(new Set(secretResources(appManifest).map((resource) => JSON.stringify(resource))));
   });
 });
 
