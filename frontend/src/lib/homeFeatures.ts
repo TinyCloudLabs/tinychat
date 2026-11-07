@@ -1,5 +1,5 @@
 import { APP_ID, HOME_FEATURE_ENTRIES, type HomeFeature, type RequiredManifestEntry } from "@tinyboilerplate/core";
-import type { Manifest, PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
+import { composeManifestRequest, type Manifest, type PermissionEntry, type TinyCloudWeb } from "@tinycloud/web-sdk";
 import { encryptionDecryptGrant } from "./connectors/encryptionGrant";
 
 export type { HomeFeature } from "@tinyboilerplate/core";
@@ -58,19 +58,19 @@ export function homeSignInManifest(base: Manifest, flags: readonly HomeFeature[]
   return { ...base, permissions: [...(base.permissions ?? []), ...entries, encryptionDecryptGrant(address)] } as Manifest;
 }
 
-/** A feature's set as the session's own approval names it: app-relative paths resolved, plus the decrypt grant. */
+/**
+ * A feature's set (and the decrypt grant) resolved the way the SDK checks a manifest against a session before it
+ * reuses one at sign-in: the resources of the composed request.
+ */
 export function homeFeatureCoverageEntries(feature: HomeFeature, address: string): PermissionEntry[] {
-  const decrypt = encryptionDecryptGrant(address);
-  return [
-    ...HOME_FEATURE_ENTRIES[feature].map((entry) => ({
-      service: entry.service,
-      space: entry.space ?? "applications",
-      path: entry.skipPrefix ? entry.path : `${APP_ID}/${entry.path}`,
-      actions: [...entry.actions],
-      skipPrefix: true as const,
-    })),
-    { service: decrypt.service, path: decrypt.path, actions: decrypt.actions, skipPrefix: true as const },
-  ];
+  const request = composeManifestRequest([{
+    manifest_version: 1,
+    app_id: APP_ID,
+    name: "TinyCloud Home",
+    defaults: false,
+    permissions: [...HOME_FEATURE_ENTRIES[feature], encryptionDecryptGrant(address)],
+  } as Manifest], { includeAccountRegistryPermissions: false });
+  return request.resources as PermissionEntry[];
 }
 
 /** Whether the session's signed approval (or a live runtime grant) covers `feature`'s set. Never prompts. */

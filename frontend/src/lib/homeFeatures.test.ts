@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveManifest, validateManifest } from "@tinycloud/sdk-core";
+import { composeManifestRequest, resolveManifest, validateManifest, type Manifest } from "@tinycloud/sdk-core";
 import { HOME_CONNECTORS_ENTRIES, HOME_RECORDING_ENTRIES } from "@tinyboilerplate/core";
 import { encryptionDecryptGrant } from "./connectors/encryptionGrant";
 import { webAppManifestFor } from "./webSignInPrefetch";
@@ -93,20 +93,23 @@ describe("the per-device feature flag", () => {
 });
 
 describe("whether the session covers a feature", () => {
-  test("asks the session about the feature's resolved resources and the decrypt grant", () => {
-    const asked: unknown[] = [];
-    const covered = sessionCoversHomeFeature({ hasPermissions: (entries) => { asked.push(entries); return true; } }, "connectors", ADDRESS);
-    expect(covered).toBe(true);
-    expect(asked).toEqual([homeFeatureCoverageEntries("connectors", ADDRESS)]);
-    const entries = homeFeatureCoverageEntries("connectors", ADDRESS);
-    expect(entries).toContainEqual({ service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.tinychat/connectors", actions: ["read", "write", "schema"], skipPrefix: true });
-    expect(entries).toContainEqual({ service: "tinycloud.kv", space: "applications", path: "xyz.tinycloud.tinychat/connectors/", actions: ["get", "put", "del", "list"], skipPrefix: true });
-    expect(entries).toContainEqual({ service: "tinycloud.kv", space: "secrets", path: "vault/secrets/FIREFLIES_API_KEY", actions: ["get", "put", "del"], skipPrefix: true });
-    expect(entries).toContainEqual({ service: decrypt.service, path: decrypt.path, actions: decrypt.actions, skipPrefix: true });
-    expect(homeFeatureCoverageEntries("recording", ADDRESS)).toContainEqual({ service: "tinycloud.kv", space: "applications", path: "exo/voiceNotes/hostedJobs/", actions: ["get", "put"], skipPrefix: true });
+  test("what a sign-in under a feature's grant signs names everything the check asks for; the base signs none of it", () => {
+    const resources = (manifest: Manifest) => composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources;
+    const baseResources = resources(base);
+    for (const feature of ["recording", "connectors"] as const) {
+      const asked = homeFeatureCoverageEntries(feature, ADDRESS);
+      const signed = resources(homeSignInManifest(base, [feature], ADDRESS));
+      for (const resource of asked) expect(signed).toContainEqual(resource);
+      const ownResources = asked.filter((resource) => resource.service !== "tinycloud.capabilities");
+      expect(ownResources.filter((resource) => baseResources.some((entry) => JSON.stringify(entry) === JSON.stringify(resource)))).toEqual([]);
+      expect(ownResources).toContainEqual(expect.objectContaining({ service: "tinycloud.encryption", path: decrypt.path, actions: ["tinycloud.encryption/decrypt"] }));
+    }
+    expect(homeFeatureCoverageEntries("recording", ADDRESS)).toContainEqual(expect.objectContaining({ space: "applications", path: "exo/voiceNotes/hostedJobs/" }));
+    expect(homeFeatureCoverageEntries("connectors", ADDRESS)).toContainEqual(expect.objectContaining({ space: "applications", path: "xyz.tinycloud.tinychat/connectors" }));
   });
 
-  test("a session that says no, cannot say, or throws does not cover it", () => {
+  test("covered exactly when the session says so; a session that cannot say, or throws, does not cover it", () => {
+    expect(sessionCoversHomeFeature({ hasPermissions: () => true }, "connectors", ADDRESS)).toBe(true);
     expect(sessionCoversHomeFeature({ hasPermissions: () => false }, "recording", ADDRESS)).toBe(false);
     expect(sessionCoversHomeFeature({}, "recording", ADDRESS)).toBe(false);
     expect(sessionCoversHomeFeature({ hasPermissions: () => { throw new Error("no session"); } }, "recording", ADDRESS)).toBe(false);
