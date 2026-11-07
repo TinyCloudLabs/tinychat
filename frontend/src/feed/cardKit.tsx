@@ -4,7 +4,7 @@
 // Colours are the theme's semantic tokens, so the light values are the app
 // family's (#09090b ink, #71717a dim, #f4f4f5 muted, #e4e4e7 hairline) and
 // dark mode follows.
-import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
@@ -13,7 +13,7 @@ import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive
 
 export const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground";
 const controlEdge = "shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))]";
-export const cardClass = "min-w-0 overflow-hidden rounded-[20px] bg-card py-4 pl-[18px] pr-4 text-card-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]";
+export const cardClass = "relative min-w-0 overflow-hidden rounded-[20px] bg-card py-4 pl-[18px] pr-4 text-card-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]";
 export const quietClass = `inline-flex min-h-11 items-center gap-1.5 rounded-md text-[13px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-50 ${focusRing}`;
 export const pillClass = `inline-flex h-11 max-w-full items-center justify-center gap-2 rounded-full px-5 text-[13.5px] font-bold ${controlEdge} hover:bg-muted disabled:opacity-50 ${focusRing}`;
 export const primaryPillClass = `inline-flex h-[52px] max-w-full items-center justify-center gap-2 rounded-full bg-foreground px-[30px] text-[15px] font-bold text-background hover:bg-foreground/90 disabled:opacity-50 ${focusRing}`;
@@ -159,6 +159,78 @@ export function AnsweredPanel({ children, focusOnMount = false }: { children: Re
 /** A card-level failure in plain words, under the control that failed. Never exception text. */
 export function ErrorLine({ children }: { children: ReactNode }) {
   return <p role="alert" className="mt-2 flex items-start gap-2 text-sm leading-[1.45]"><TriangleAlertIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" /><span>{children}</span></p>;
+}
+
+/** Seconds an answer waits, undoable, before it is sent. */
+export const UNDO_SECONDS = 5;
+
+/**
+ * The list's "send now" registry: when the owner leaves the view (switches segment),
+ * every answer still counting down is sent at once, because the owner chose it.
+ */
+export const PendingSendContext = createContext<Set<() => void> | null>(null);
+
+/**
+ * An answer that waits UNDO_SECONDS before it is sent. `start` shows it at once;
+ * `undo` drops it unsent; at 0 (or when the card unmounts, or the view changes)
+ * `send` runs exactly once.
+ */
+export function usePendingSend() {
+  const [pending, setPending] = useState<{ label: string; seconds: number } | null>(null);
+  const send = useRef<(() => void) | null>(null);
+  const timers = useRef<number[]>([]);
+  const registry = useContext(PendingSendContext);
+  const stop = useCallback(() => { for (const timer of timers.current) window.clearTimeout(timer); timers.current = []; }, []);
+  const flush = useCallback(() => {
+    const run = send.current;
+    if (!run) return;
+    send.current = null; stop(); setPending(null);
+    run();
+  }, [stop]);
+  const undo = useCallback(() => {
+    if (!send.current) return;
+    send.current = null; stop(); setPending(null);
+  }, [stop]);
+  const start = useCallback((label: string, run: () => void) => {
+    flush();
+    send.current = run;
+    setPending({ label, seconds: UNDO_SECONDS });
+    for (let elapsed = 1; elapsed < UNDO_SECONDS; elapsed++) {
+      timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: UNDO_SECONDS - elapsed }), elapsed * 1000));
+    }
+    timers.current.push(window.setTimeout(flush, UNDO_SECONDS * 1000));
+  }, [flush]);
+  useEffect(() => {
+    registry?.add(flush);
+    // Unmounting mid-countdown sends: the owner chose this answer.
+    return () => { registry?.delete(flush); flush(); };
+  }, [registry, flush]);
+  return { pending, start, undo };
+}
+
+/**
+ * The chosen answer during its countdown, with the "Undo · N" pill. Tapping the pill,
+ * anywhere else on the card, or Escape inside the card undoes it.
+ */
+export function PendingAnswer({ label, seconds, children, onUndo }: { label: string; seconds: number; children: ReactNode; onUndo: () => void }) {
+  const pill = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    pill.current?.focus();
+    const card = pill.current?.closest("article");
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); onUndo(); } };
+    card?.addEventListener("keydown", onKey);
+    return () => card?.removeEventListener("keydown", onKey);
+  }, [onUndo]);
+  return <>
+    {/* Covers the whole card (the article is the positioned box): a tap anywhere undoes. */}
+    <span aria-hidden className="absolute inset-0 z-10 cursor-pointer" onClick={(event) => { event.stopPropagation(); onUndo(); }} />
+    <div className="mt-3.5 flex items-center gap-3 rounded-xl bg-muted py-1.5 pl-3 pr-1.5 text-sm leading-[1.45]">
+      <div className="min-w-0 flex-1 break-words">{children}</div>
+      <button ref={pill} type="button" aria-label={`Undo, ${seconds} ${seconds === 1 ? "second" : "seconds"} left`} onClick={(event) => { event.stopPropagation(); onUndo(); }}
+        className={`relative z-20 inline-flex h-11 shrink-0 items-center rounded-full bg-foreground px-4 text-[13.5px] font-bold tabular-nums text-background ${focusRing}`}>Undo · {seconds}</button>
+    </div>
+    <p role="status" className="sr-only">Sending {label} in {UNDO_SECONDS} seconds. Undo available.</p>
+  </>;
 }
 
 export function QuietRow({ children }: { children: ReactNode }) {

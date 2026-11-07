@@ -2,9 +2,20 @@
 // fixture, so the real Home feed components render every state without a session,
 // a node or any network. Answers, snoozes and notes made in the rig live in memory
 // and reset on reload.
+//
+// RIG-ONLY: a message the owner sends on a card gets a canned agent reply about 2 s
+// later (fakeAgentReply). This is not app behaviour; the app never fakes replies.
 import type { FeedResponse } from "@tinycloud/sdk-services/feed";
-import { emptySitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
+import { compactStamp, emptySitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "@/feed/feedStoreTypes";
+
+const CANNED_REPLIES = [
+  "Got it. I'll take that into account and update the card.",
+  "Thanks. I'll check and reply here within the hour.",
+  "Understood. Nothing changes until you choose.",
+];
+let replyCount = 0;
+function hex(length: number) { return Array.from(crypto.getRandomValues(new Uint8Array(length / 2)), (byte) => byte.toString(16).padStart(2, "0")).join(""); }
 
 /**
  * One rig state. `snapshot` is exactly what HomeFeedSource.load() returns (feed/feedStoreTypes.ts:56-64).
@@ -45,6 +56,17 @@ export function fixtureSource(initial: HomeFeedSnapshot, options: { failSaves?: 
     if (payload.type === "sitrep.claim") owner.claimDecisions.push({ sourceKey, card: typedRef(entry), value: payload.data } as never);
     if (payload.type === "sitrep.thread") owner.threads.push(payload.data as never);
   };
+  /** RIG-ONLY: the agent answers an owner's card message about 2 s later. */
+  function fakeAgentReply(entry: HomeFeedEntry, data: unknown) {
+    if (!data || typeof data !== "object" || !("kind" in data) || !("id" in data) || !("messageId" in data)) return;
+    const { kind, id, messageId } = data;
+    window.setTimeout(() => {
+      const at = new Date().toISOString();
+      owner.threads.push({ side: "officer", kind, id, at, text: CANNED_REPLIES[replyCount++ % CANNED_REPLIES.length]!, from: entry.source.label, replyTo: messageId,
+        messageId: `${compactStamp(at)}-${hex(32)}` } as never);
+      notify();
+    }, 2000);
+  }
   return {
     async load(focused) {
       const loaded = structuredClone(snapshot);
@@ -64,6 +86,7 @@ export function fixtureSource(initial: HomeFeedSnapshot, options: { failSaves?: 
       const saved = { ...message, sequence: ++sequence } as FeedResponse;
       record(entry, message as { responseId: string }, payload as { type: string; data: unknown } | undefined);
       notify();
+      if (payload?.type === "sitrep.thread") fakeAgentReply(entry, payload.data);
       return saved;
     },
     async saveOwnerState(_entry, event) { owner.states.push(structuredClone(event.state) as never); notify(); },

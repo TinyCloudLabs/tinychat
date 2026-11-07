@@ -2,7 +2,8 @@
 // Feed rig: merge a private overlay into the committed fixture.
 //   node scripts/feed-rig-merge.mjs <fixture.json> <overlay.json> <out.json>
 // overlay: { "replace": { "<cardId in the fixture>": <HomeFeedEntry> } }. Every fixture entry
-// whose state.card.cardId has a replacement is swapped for it, in every state. Prints a count.
+// whose state.card.cardId has a replacement is swapped for it, in every state. A sample thread on
+// a replaced typed card moves to the replacement's record, so it stays on that card. Prints a count.
 import { readFileSync, writeFileSync } from "node:fs";
 
 const [fixturePath, overlayPath, outPath] = process.argv.slice(2);
@@ -22,6 +23,13 @@ for (const state of Object.values(fixture.states)) {
     if (!real) return entry;
     swapped++;
     used.add(entry.state.card.cardId);
+    const from = entry.state.card.payload?.sitrep?.record;
+    const to = real.state?.card?.payload?.sitrep?.record;
+    if (from && to && Array.isArray(state.snapshot.sitrep?.threads)) {
+      for (const message of state.snapshot.sitrep.threads) {
+        if (message.kind === from.kind && message.id === from.id) { message.kind = to.kind; message.id = to.id; }
+      }
+    }
     return real;
   });
 }

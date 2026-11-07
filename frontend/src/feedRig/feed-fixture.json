@@ -379,7 +379,26 @@
           "answers": [],
           "states": [],
           "claimDecisions": [],
-          "threads": [],
+          "threads": [
+            {
+              "side": "sam",
+              "kind": "ask",
+              "id": "qa-sample-ask",
+              "at": "2026-11-05T10:02:00.000Z",
+              "text": "Can this wait until Monday?",
+              "messageId": "20261105T100200000Z-00000000000000000000000000000006"
+            },
+            {
+              "side": "officer",
+              "kind": "ask",
+              "id": "qa-sample-ask",
+              "at": "2026-11-05T10:05:00.000Z",
+              "text": "Yes. Nothing is blocked before Monday; I'll keep the card open.",
+              "from": "Feed QA",
+              "replyTo": "20261105T100200000Z-00000000000000000000000000000006",
+              "messageId": "20261105T100500000Z-00000000000000000000000000000007"
+            }
+          ],
           "deliveries": []
         }
       }
@@ -536,7 +555,34 @@
           "answers": [],
           "states": [],
           "claimDecisions": [],
-          "threads": [],
+          "threads": [
+            {
+              "side": "sam",
+              "kind": "ask",
+              "id": "ask-backup-window",
+              "at": "2026-11-06T09:12:00.000Z",
+              "text": "Does Thursday clash with the Wednesday edits?",
+              "messageId": "20261106T091200000Z-00000000000000000000000000000001"
+            },
+            {
+              "side": "officer",
+              "kind": "ask",
+              "id": "ask-backup-window",
+              "at": "2026-11-06T09:14:00.000Z",
+              "text": "No. The edits finish by 23:00 on Wednesday, so a 02:00 Thursday run sees them all.",
+              "from": "Helper agent",
+              "replyTo": "20261106T091200000Z-00000000000000000000000000000001",
+              "messageId": "20261106T091400000Z-00000000000000000000000000000002"
+            },
+            {
+              "side": "sam",
+              "kind": "ask",
+              "id": "ask-backup-window",
+              "at": "2026-11-06T09:15:00.000Z",
+              "text": "Good. I'll pick in a bit.",
+              "messageId": "20261106T091500000Z-00000000000000000000000000000003"
+            }
+          ],
           "deliveries": []
         }
       }
@@ -2126,7 +2172,26 @@
           "answers": [],
           "states": [],
           "claimDecisions": [],
-          "threads": [],
+          "threads": [
+            {
+              "side": "sam",
+              "kind": "ask",
+              "id": "qa-sample-ask",
+              "at": "2026-11-04T17:30:00.000Z",
+              "text": "What does the revocation delay mean in practice?",
+              "messageId": "20261104T173000000Z-00000000000000000000000000000004"
+            },
+            {
+              "side": "officer",
+              "kind": "ask",
+              "id": "qa-sample-ask",
+              "at": "2026-11-04T17:33:00.000Z",
+              "text": "If you revoke a device, it can still read cached secrets for up to 5 minutes.",
+              "from": "Feed QA",
+              "replyTo": "20261104T173000000Z-00000000000000000000000000000004",
+              "messageId": "20261104T173300000Z-00000000000000000000000000000005"
+            }
+          ],
           "deliveries": []
         }
       }
