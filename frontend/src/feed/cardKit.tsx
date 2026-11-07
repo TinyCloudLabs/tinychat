@@ -161,6 +161,21 @@ export function ErrorLine({ children }: { children: ReactNode }) {
   return <p role="alert" className="mt-2 flex items-start gap-2 text-sm leading-[1.45]"><TriangleAlertIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" /><span>{children}</span></p>;
 }
 
+function names(list: readonly string[]): string {
+  return list.length <= 2 ? list.join(" and ") : `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`;
+}
+/**
+ * The card-thread composer's name and helper line: who a new message reaches. `approved` is
+ * who actually receives it (the publishing agent, or the owner-approved recipients); `held`
+ * recipients aren't connected, keep the message privately, and are never counted as seeing it.
+ */
+export function audienceCopy({ approved, held = [], fallback }: { approved: readonly string[]; held?: readonly string[]; fallback: string }): { ask: string; helper: string } {
+  const heldLine = held.length ? ` ${names(held)} ${held.length === 1 ? "isn't" : "aren't"} connected yet, so ${held.length === 1 ? "it doesn't" : "they don't"} get it.` : "";
+  if (!approved.length) return { ask: `Ask ${fallback} something`, helper: `Only you see this for now.${heldLine}` };
+  if (approved.length >= 3) return { ask: "Ask the agents on this card something", helper: `Only the ${approved.length} agents on this card see this.${heldLine}` };
+  return { ask: `Ask ${names(approved)} something`, helper: `Only ${names(approved)} ${approved.length === 1 ? "sees" : "see"} this.${heldLine}` };
+}
+
 /** Seconds an answer waits, undoable, before it is sent. */
 export const UNDO_SECONDS = 5;
 

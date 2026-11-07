@@ -3,7 +3,9 @@
 //   node scripts/feed-rig-merge.mjs <fixture.json> <overlay.json> <out.json>
 // overlay: { "replace": { "<cardId in the fixture>": <HomeFeedEntry> } }. Every fixture entry
 // whose state.card.cardId has a replacement is swapped for it, in every state. A sample thread on
-// a replaced typed card moves to the replacement's record, so it stays on that card. Prints a count.
+// a replaced typed card moves to the replacement's record, so it stays on that card, and a sample
+// conversation on a replaced plain card (payload.replies, and its earlier revision with the owner's
+// message in historicalEntries) moves onto the replacement. Prints a count.
 import { readFileSync, writeFileSync } from "node:fs";
 
 const [fixturePath, overlayPath, outPath] = process.argv.slice(2);
@@ -30,8 +32,29 @@ for (const state of Object.values(fixture.states)) {
         if (message.kind === from.kind && message.id === from.id) { message.kind = to.kind; message.id = to.id; }
       }
     }
+    const replies = entry.state.card.payload?.replies;
+    if (Array.isArray(replies)) {
+      const card = entry.state.card;
+      const moved = structuredClone(real);
+      moved.state.card = { ...moved.state.card, revision: card.revision, issuanceId: card.issuanceId, createdAt: card.createdAt, payload: { ...moved.state.card.payload, render: "thread", replies } };
+      moved.view = { ...moved.view, revision: card.revision, issuanceId: card.issuanceId };
+      return moved;
+    }
     return real;
   });
+  if (Array.isArray(state.snapshot.historicalEntries)) {
+    state.snapshot.historicalEntries = state.snapshot.historicalEntries.map((entry) => {
+      const real = replace[entry.state.card.cardId];
+      if (!real) return entry;
+      const { cardId, title, body, kind, choices, needsResponse } = real.state.card;
+      const moved = structuredClone(entry);
+      moved.source = real.source;
+      moved.state.card = { ...moved.state.card, cardId, title, body, kind, needsResponse, ...(choices ? { choices } : {}) };
+      moved.view = { ...moved.view, sourceId: real.source.sourceId, cardId };
+      moved.responses = (moved.responses ?? []).map((response) => ({ ...response, cardId }));
+      return moved;
+    });
+  }
 }
 const unused = Object.keys(replace).filter((id) => !used.has(id));
 if (unused.length) {

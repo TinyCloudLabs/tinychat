@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
-import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
+import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
-import { AnsweredPanel, cardClass, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
+import { ThreadView, type ThreadItem } from "./HomeCardThread";
+import { AnsweredPanel, audienceCopy, cardClass, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -53,7 +54,7 @@ function cardView(entry: HomeFeedEntry): FeedCard {
   return {
     key: keyOf(entry), at: card.createdAt, author: { name: entry.source.label }, render,
     title: card.title, lead: { text: card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
-    ...(Array.isArray(payload.replies) ? { replies: payload.replies.filter((reply): reply is { text: string } => !!reply && typeof reply === "object" && "text" in reply && typeof reply.text === "string") } : {}),
+    // Replies on a plain card render in its conversation (plainThreadItems), not in the body.
     ...(typeof payload.body === "string" ? { body: payload.body } : {}),
     ...(typeof payload.url === "string" ? { url: payload.url } : {}),
     ...(sourceRecord && typeof sourceRecord.label === "string" ? { source: {
@@ -104,9 +105,38 @@ function ResponseStatus({ entry, focusOnMount }: { entry: HomeFeedEntry; focusOn
   </AnsweredPanel>;
 }
 
-/** An untyped card's answer: one tap on an option, or a reply in words, sent after a short undo window. */
-function AnswerForm({ entry, source, now, attention, expanded, reference, stale = false, onSaved, onSnooze }: {
+/**
+ * A plain card's conversation: the owner's messages on every revision of the card, and the
+ * agent's `payload.replies`, each timed by the first revision that carried it. Replies are
+ * append-only, so reply i first appears in the earliest revision with more than i replies.
+ */
+function plainThreadItems(entry: HomeFeedEntry, revisions: readonly HomeFeedEntry[]): ThreadItem[] {
+  const agent = entry.source.label;
+  const upTo = [...revisions, entry].filter((candidate) => candidate.state.card.revision <= entry.state.card.revision)
+    .sort((a, b) => a.state.card.revision - b.state.card.revision);
+  const items: ThreadItem[] = [];
+  const seen = new Set<string>();
+  let replies = 0;
+  for (const revision of upTo) {
+    for (const message of revision.responses ?? []) {
+      if (message.kind !== "message" || !message.text || seen.has(message.responseId)) continue;
+      seen.add(message.responseId);
+      items.push({ key: `message:${message.responseId}`, at: message.createdAt, speaker: "You", text: message.text,
+        ...(revision.responseHandling?.[message.responseId]?.acknowledgement ? { status: <span>{agent} got it</span> } : {}) });
+    }
+    const payload = revision.state.card.payload;
+    const list = payload?.render === "thread" && Array.isArray(payload.replies) ? payload.replies.filter((reply): reply is { text: string } => !!reply && typeof reply === "object" && "text" in reply && typeof reply.text === "string") : [];
+    for (let index = replies; index < list.length; index++) items.push({ key: `reply:${index}`, at: revision.state.card.createdAt, speaker: agent, text: list[index]!.text });
+    replies = Math.max(replies, list.length);
+  }
+  return items;
+}
+
+/** An untyped card's answer and conversation: one tap on an option, or an answer in words, sent after a short undo window. */
+function AnswerForm({ entry, revisions, source, now, attention, expanded, reference, stale = false, onSaved, onSnooze }: {
   entry: HomeFeedEntry; source: HomeFeedSource; now: number; attention: boolean; expanded: boolean; reference: ReactNode;
+  /** The card's other revisions Home holds (for its conversation). */
+  revisions: readonly HomeFeedEntry[];
   /** A newer issuance replaced this card: its draft stays, but it can no longer be answered. */
   stale?: boolean;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
@@ -121,7 +151,10 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, stale 
   const [more, setMore] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const countdown = usePendingSend();
+  const [composing, setComposing] = useState(false);
+  const [messaging, setMessaging] = useState(false);
   const pendingResponse = useRef<{ key: string; response: NewFeedResponse } | null>(null);
+  const pendingMessage = useRef<{ text: string; message: NewFeedMessage } | null>(null);
   const card = entry.state.card;
   const choices = card.choices ?? [];
   const saved = entry.state.response;
@@ -147,6 +180,21 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, stale 
       setError("Your answer wasn't saved. Try again.");
     } finally { setSaving(null); }
   }
+  /** A card message to the publishing agent (the existing card-message path). A retry reuses its id. */
+  async function message(value: string): Promise<boolean> {
+    if (!source.sendMessage || messaging) return false;
+    setMessaging(true); setError(null);
+    const draft = pendingMessage.current?.text === value ? pendingMessage.current.message
+      : { responseId: crypto.randomUUID(), cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, kind: "message" as const, text: value, createdAt: new Date().toISOString() };
+    pendingMessage.current = { text: value, message: draft };
+    try {
+      const result = await source.sendMessage(entry, draft);
+      pendingMessage.current = null;
+      onSaved(entry, result);
+      return true;
+    } catch { setError("Your message wasn't sent. Try again."); return false; }
+    finally { setMessaging(false); }
+  }
   async function snooze(until: string) {
     setError(null);
     try { await onSnooze(entry, until); setLater(false); }
@@ -156,7 +204,17 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, stale 
     <SheetSection title="Details">{reference}</SheetSection>
     <CardHistory entry={entry} now={now} />
   </MoreSheet>;
-  if (!card.needsResponse) return expanded ? <QuietRow><button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>{details}</QuietRow> : null;
+  const items = plainThreadItems(entry, revisions);
+  const audience = audienceCopy({ approved: [entry.source.label], fallback: entry.source.label });
+  const canMessage = !!source.sendMessage;
+  const thread = <ThreadView items={items} now={now} composing={composing} ask={audience.ask} helper={audience.helper} busy={messaging} closed={false} onSend={message} onClose={() => setComposing(false)} />;
+  const askButton = canMessage && !composing && <button type="button" className={quietClass} onClick={() => setComposing(true)}>{audience.ask}</button>;
+  if (!card.needsResponse) return <>
+    {thread}
+    {error && <ErrorLine>{error}</ErrorLine>}
+    {(expanded || items.length > 0) && <QuietRow>{askButton}{expanded && <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>}</QuietRow>}
+    {details}
+  </>;
   const asking = !saved || followup || !!text.trim();
   const choose = (choice: string) => {
     if (stale || saving) return;
@@ -164,27 +222,33 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, stale 
   };
   const reply = () => {
     if (stale || saving || !text.trim()) return;
-    countdown.start("your reply", () => void save());
+    countdown.start("your answer", () => void save());
   };
-  if (countdown.pending) return <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-    {countdown.pending.label === "your reply" ? <p>You replied: <span className="whitespace-pre-wrap">{text.trim()}</span></p> : <p>You chose <b className="font-semibold">{countdown.pending.label}</b>.</p>}
-  </PendingAnswer>;
+  // With more than 2 messages, the answer sits right under the body and the thread follows it.
+  const longThread = items.length > 2;
   return <div>
-    {saved && !asking && <ResponseStatus entry={entry} focusOnMount={justSaved} />}
-    {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
-    {asking && !!choices.length && <OptionButtons options={choices} saving={saving ?? undefined} disabled={!!saving || stale} onChoose={choose} />}
-    {asking && (noteOpen || !choices.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); reply(); }}>
-      <label className="block text-[13px] font-semibold">Reply in words<textarea aria-label="Your answer" value={text} disabled={!!saving} onInput={(event) => { setText(event.currentTarget.value); }} className={`${fieldClass} min-h-24 resize-y`} /></label>
-      <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Sending…" : "Send"}</button>
-    </form>}
+    {!longThread && thread}
+    {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
+      {countdown.pending.label === "your answer" ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>}
+    </PendingAnswer> : <>
+      {saved && !asking && <ResponseStatus entry={entry} focusOnMount={justSaved} />}
+      {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
+      {asking && !!choices.length && <OptionButtons options={choices} saving={saving ?? undefined} disabled={!!saving || stale} onChoose={choose} />}
+      {asking && (noteOpen || !choices.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); reply(); }}>
+        <label className="block text-[13px] font-semibold">Your answer<textarea aria-label="Your answer" value={text} disabled={!!saving} onInput={(event) => { setText(event.currentTarget.value); }} className={`${fieldClass} min-h-24 resize-y`} /></label>
+        <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Sending…" : "Send"}</button>
+      </form>}
+    </>}
+    {longThread && thread}
     {error && <ErrorLine>{error}</ErrorLine>}
-    <QuietRow>
-      {asking && !!choices.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Reply in words</button>}
+    {!countdown.pending && <QuietRow>
+      {asking && !!choices.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Answer in your own words</button>}
       {saved && !asking && <button type="button" className={quietClass} onClick={() => setFollowup(true)}>Change answer</button>}
       {followup && <button type="button" className={quietClass} disabled={!!saving} onClick={() => { setFollowup(false); setText(""); setNoteOpen(false); }}>Keep my answer</button>}
       {attention && <button type="button" className={quietClass} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}
+      {askButton}
       <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>
-    </QuietRow>
+    </QuietRow>}
     {later && <SnoozeChoices now={now} onPick={(until) => void snooze(until)} />}
     {details}
   </div>;
@@ -447,7 +511,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />
           : unsupported
             ? <p role="status" className="mt-3.5 text-sm">This card can't be shown here yet. Your agent still has it.</p>
-            : <AnswerForm key={key} entry={entry} source={source} now={clock} attention={attention(entry)} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onSnooze={snooze} />}
+            : <AnswerForm key={key} entry={entry} revisions={[...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].filter((candidate) => candidate !== entry && candidate.source.sourceId === entry.source.sourceId && candidate.state.card.cardId === entry.state.card.cardId)} source={source} now={clock} attention={attention(entry)} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onSnooze={snooze} />}
         </>}
       </FeedCardView>
     </li>;

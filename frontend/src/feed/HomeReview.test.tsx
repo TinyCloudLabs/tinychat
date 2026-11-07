@@ -371,9 +371,8 @@ for (const history of ["answer", "claim", "thread", "command"] as const) {
       expect(button(card, "Keep claim").getAttribute("aria-pressed")).toBe("true");
     }
     if (history === "thread") {
-      await click(fresh, button(card, "More"));
-      await click(fresh, button(document, `Message ${agent.source.label}`));
-      expect(document.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Immutable archive-only thread message");
+      // The thread shows inline on the card; no menu to open.
+      expect(card.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Immutable archive-only thread message");
     }
     if (history === "command") expect(card.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);
     expect(await responseCount(agent.responses)).toBe(0);

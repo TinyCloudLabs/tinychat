@@ -4,7 +4,10 @@
 // and reset on reload.
 //
 // RIG-ONLY: a message the owner sends on a card gets a canned agent reply about 2 s
-// later (fakeAgentReply). This is not app behaviour; the app never fakes replies.
+// later. On a typed card it is an officer thread message (fakeAgentReply); on a plain
+// card the source publishes revision+1 of the card with the reply appended to
+// payload.replies (fakeRevisionReply), as an agent following the feed skill would.
+// This is not app behaviour; the app never fakes replies.
 import type { FeedResponse } from "@tinycloud/sdk-services/feed";
 import { compactStamp, emptySitrepOwnerData, type SitrepHeldNote, type SitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "@/feed/feedStoreTypes";
@@ -67,6 +70,29 @@ export function fixtureSource(initial: HomeFeedSnapshot, options: { failSaves?: 
       notify();
     }, 2000);
   }
+  /** RIG-ONLY: the agent replies to a plain card by publishing revision+1 with the reply appended. */
+  function fakeRevisionReply(entry: HomeFeedEntry) {
+    window.setTimeout(() => {
+      const index = snapshot.entries.findIndex((candidate) => sameCard(candidate, entry));
+      const current = snapshot.entries[index];
+      if (!current) return;
+      const revision = current.state.card.revision + 1;
+      const issuanceId = `${current.state.card.cardId}-i${revision}`;
+      const replies = Array.isArray(current.state.card.payload?.replies) ? current.state.card.payload.replies : [];
+      const next: HomeFeedEntry = {
+        ...structuredClone(current),
+        state: { card: { ...structuredClone(current.state.card), revision, issuanceId, createdAt: new Date().toISOString(),
+          payload: { ...current.state.card.payload, render: "thread", replies: [...replies, { text: CANNED_REPLIES[replyCount++ % CANNED_REPLIES.length]! }] } },
+          response: null, acknowledgement: null, outcome: null },
+        view: { sourceId: current.source.sourceId, cardId: current.state.card.cardId, revision, issuanceId },
+        responses: [], viewEvents: [],
+      };
+      // The replaced revision keeps its owner history, as the real store retains it.
+      (snapshot.historicalEntries ??= []).push({ ...current, currentIssuance: false });
+      snapshot.entries[index] = next;
+      notify();
+    }, 2000);
+  }
   const heldNotes = new Map<string, SitrepHeldNote[]>();
   const cardKey = (entry: HomeFeedEntry) => JSON.stringify([entry.source.sourceId, entry.state.card.cardId]);
   /** Each typed card's own owner data, as the real store attaches it (loadTypedFeed's entry.owner). */
@@ -97,6 +123,12 @@ export function fixtureSource(initial: HomeFeedSnapshot, options: { failSaves?: 
       record(entry, message as { responseId: string }, payload as { type: string; data: unknown } | undefined);
       notify();
       if (payload?.type === "sitrep.thread") fakeAgentReply(entry, payload.data);
+      if (!payload) {
+        const target = stored(entry);
+        if (target) (target.responses ??= []).push(saved);
+        notify();
+        fakeRevisionReply(entry);
+      }
       return saved;
     },
     async saveOwnerState(_entry, event) { owner.states.push(structuredClone(event.state) as never); notify(); },

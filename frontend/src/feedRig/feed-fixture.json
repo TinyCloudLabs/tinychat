@@ -142,14 +142,14 @@
             "state": {
               "card": {
                 "cardId": "standin-ask-sync",
-                "revision": 1,
-                "issuanceId": "standin-ask-sync-i1",
+                "revision": 2,
+                "issuanceId": "standin-ask-sync-i2",
                 "kind": "ask",
                 "needsResponse": true,
                 "title": "Photo sync: should new photos keep syncing while the laptop is offline? (uses a little more phone storage)",
                 "body": "Your phone already keeps a short list of photos waiting to sync. Today it waits for the laptop before sending anything, so a long trip means nothing moves until you're home. Keeping a local queue means sync resumes on its own.\n\nWhy now: The first version is being built now; this decides its scope.\n\n- Local queue (proposal): keeps up to 500 photos, sends the oldest first, and pauses when the phone is low on space.\n- Cost: up to about 2 GB of extra phone storage while you're away.\n- Either way it gets a review before shipping; nothing changes on your laptop until you say yes.\n- Related edge case: a brand-new phone (no queue yet) waits for the laptop the first time.\n\nIf you do not answer: We build the simple version: sync waits for the laptop.\n\n[Design (one page)](https://example.com/design/photo-sync)",
                 "urgency": 5,
-                "createdAt": "2026-11-04T17:18:32.858Z",
+                "createdAt": "2026-11-05T09:18:00.000Z",
                 "choices": [
                   {
                     "id": "queue",
@@ -165,11 +165,16 @@
                   }
                 ],
                 "payload": {
-                  "render": "post",
+                  "render": "thread",
                   "source": {
                     "label": "Owner's board",
                     "url": "https://example.com/board"
-                  }
+                  },
+                  "replies": [
+                    {
+                      "text": "Yes. Nothing depends on it before Monday; I'll keep it open until then."
+                    }
+                  ]
                 }
               },
               "response": null,
@@ -179,8 +184,8 @@
             "view": {
               "sourceId": "bridge",
               "cardId": "standin-ask-sync",
-              "revision": 1,
-              "issuanceId": "standin-ask-sync-i1"
+              "revision": 2,
+              "issuanceId": "standin-ask-sync-i2"
             },
             "responses": [],
             "viewEvents": []
@@ -400,7 +405,81 @@
             }
           ],
           "deliveries": []
-        }
+        },
+        "historicalEntries": [
+          {
+            "source": {
+              "sourceId": "bridge",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Bridge agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_bridge"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_bridge"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "standin-ask-sync",
+                "revision": 1,
+                "issuanceId": "standin-ask-sync-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Photo sync: should new photos keep syncing while the laptop is offline? (uses a little more phone storage)",
+                "body": "Your phone already keeps a short list of photos waiting to sync. Today it waits for the laptop before sending anything, so a long trip means nothing moves until you're home. Keeping a local queue means sync resumes on its own.\n\nWhy now: The first version is being built now; this decides its scope.\n\n- Local queue (proposal): keeps up to 500 photos, sends the oldest first, and pauses when the phone is low on space.\n- Cost: up to about 2 GB of extra phone storage while you're away.\n- Either way it gets a review before shipping; nothing changes on your laptop until you say yes.\n- Related edge case: a brand-new phone (no queue yet) waits for the laptop the first time.\n\nIf you do not answer: We build the simple version: sync waits for the laptop.\n\n[Design (one page)](https://example.com/design/photo-sync)",
+                "urgency": 5,
+                "createdAt": "2026-11-04T17:18:32.858Z",
+                "choices": [
+                  {
+                    "id": "queue",
+                    "label": "Yes: keep a local queue, ~2 GB max (Recommended)"
+                  },
+                  {
+                    "id": "wait",
+                    "label": "No: wait for the laptop"
+                  },
+                  {
+                    "id": "talk",
+                    "label": "Talk it through first"
+                  }
+                ],
+                "payload": {
+                  "render": "post",
+                  "source": {
+                    "label": "Owner's board",
+                    "url": "https://example.com/board"
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "bridge",
+              "cardId": "standin-ask-sync",
+              "revision": 1,
+              "issuanceId": "standin-ask-sync-i1"
+            },
+            "responses": [
+              {
+                "responseId": "standin-ask-sync-owner-message-1",
+                "cardId": "standin-ask-sync",
+                "revision": 1,
+                "issuanceId": "standin-ask-sync-i1",
+                "kind": "message",
+                "text": "Can this wait until after the weekend?",
+                "createdAt": "2026-11-05T09:10:00.000Z",
+                "sequence": 900
+              }
+            ],
+            "viewEvents": [],
+            "currentIssuance": false
+          }
+        ]
       }
     },
     "ask-unanswered": {
@@ -553,7 +632,26 @@
         },
         "sitrep": {
           "answers": [],
-          "states": [],
+          "states": [
+            {
+              "kind": "ask",
+              "id": "ask-backup-window",
+              "steps": {},
+              "notes": [
+                {
+                  "at": "2026-11-06T09:18:00.000Z",
+                  "text": "Check the photo sync isn't running that night.",
+                  "id": "n10qzasi110jt1t"
+                },
+                {
+                  "at": "2026-11-06T09:20:00.000Z",
+                  "text": "Tuesday is fine unless the edits slip.",
+                  "id": "n03l96zb0l1wrnw"
+                }
+              ],
+              "updatedAt": "2026-11-06T09:20:00.000Z"
+            }
+          ],
           "claimDecisions": [],
           "threads": [
             {
@@ -1632,14 +1730,14 @@
             "state": {
               "card": {
                 "cardId": "generic-flight",
-                "revision": 1,
-                "issuanceId": "generic-flight-i1",
+                "revision": 2,
+                "issuanceId": "generic-flight-i2",
                 "kind": "question",
                 "needsResponse": true,
                 "title": "Which flight should I hold for Thursday?",
                 "body": "Two flights fit your calendar. Holding one is free for 24 hours.",
                 "urgency": 2,
-                "createdAt": "2026-11-06T09:30:00.000Z",
+                "createdAt": "2026-11-06T09:52:00.000Z",
                 "choices": [
                   {
                     "id": "early",
@@ -1649,7 +1747,15 @@
                     "id": "later",
                     "label": "09:40, one stop"
                   }
-                ]
+                ],
+                "payload": {
+                  "render": "thread",
+                  "replies": [
+                    {
+                      "text": "Yes. Both fares are refundable until Wednesday 18:00, so holding either is safe."
+                    }
+                  ]
+                }
               },
               "response": null,
               "acknowledgement": null,
@@ -1658,8 +1764,8 @@
             "view": {
               "sourceId": "travel",
               "cardId": "generic-flight",
-              "revision": 1,
-              "issuanceId": "generic-flight-i1"
+              "revision": 2,
+              "issuanceId": "generic-flight-i2"
             },
             "responses": [],
             "viewEvents": []
@@ -2193,7 +2299,70 @@
             }
           ],
           "deliveries": []
-        }
+        },
+        "historicalEntries": [
+          {
+            "source": {
+              "sourceId": "travel",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Travel agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_travel"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_travel"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "question",
+                "needsResponse": true,
+                "title": "Which flight should I hold for Thursday?",
+                "body": "Two flights fit your calendar. Holding one is free for 24 hours.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:30:00.000Z",
+                "choices": [
+                  {
+                    "id": "early",
+                    "label": "07:10 direct"
+                  },
+                  {
+                    "id": "later",
+                    "label": "09:40, one stop"
+                  }
+                ]
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "travel",
+              "cardId": "generic-flight",
+              "revision": 1,
+              "issuanceId": "generic-flight-i1"
+            },
+            "responses": [
+              {
+                "responseId": "generic-flight-owner-message-1",
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "message",
+                "text": "Is the 07:10 refundable if the meeting moves?",
+                "createdAt": "2026-11-06T09:40:00.000Z",
+                "sequence": 900
+              }
+            ],
+            "viewEvents": [],
+            "currentIssuance": false
+          }
+        ]
       }
     },
     "offline": {
