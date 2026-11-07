@@ -15,6 +15,7 @@ const HOME = process.env.VITE_HOME_SITE === "true";
 const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
+const FEATURES_KEY = `xyz.tinycloud.tinychat:home-features:${ADDRESS}`;
 const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
 const readManifest = (name: string) => validateManifest(JSON.parse(readFileSync(new URL(`../../${name}`, import.meta.url), "utf8")));
 
@@ -37,6 +38,7 @@ const drainApi = await import("@/chat/useBackgroundDrain");
 const transcriberSyncApi = await import("@/chat/useTranscriberLibrarySync");
 const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
 const appShellApi = await import("@/shell/AppShell");
+const { homeSignInManifest } = await import("@/lib/homeFeatures");
 
 let lastSignInConfig: { manifest: unknown; includeAccountRegistryPermissions?: unknown } | null = null;
 let decryptGrantCalls = 0;
@@ -219,6 +221,19 @@ test("sign-in asks for the manifest this build ships, with the decrypt grant onl
     expect(config.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
     expect(decryptGrantCalls).toBe(1);
     expect(delegationCalls).toBeGreaterThan(0);
+  }
+});
+
+test("a feature this device has used is asked for in the same sign-in on the Home site", async () => {
+  localStorage.setItem(FEATURES_KEY, JSON.stringify(["recording"]));
+  await mount();
+  await signIn();
+  const config = lastSignInConfig!;
+  if (HOME) {
+    expect(config.manifest).toEqual(homeSignInManifest(readManifest("manifest.home.json"), ["recording"], ADDRESS));
+    expect(localStorage.getItem(REVISION_KEY)).toBe("home-1");
+  } else {
+    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
   }
 });
 
