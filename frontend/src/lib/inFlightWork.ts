@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { uploadRunner, type UploadStage } from "./audioUpload";
-import { spaceLaneSnapshot, subscribeSpaceLane } from "./spaceWriteLane";
+import { spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNotes/voiceNoteRows";
 import { captureEngineAvailable } from "./voiceNotes/captureEngine";
 import { VoiceNotes } from "./voiceNotes/nativeVoiceNotes";
 

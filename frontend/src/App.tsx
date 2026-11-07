@@ -1370,12 +1370,12 @@ export function App() {
                 active={screen.destination === "capture"}
                 onSummarySettled={refreshBillingStatus}
                 screen={screen}
-                meetingsSlot={featureAccess.permitted("connectors") ? (
+                meetingsSlot={
                   <MeetingsSection
                     backendUrl={BACKEND_URL}
                     sessionStore={sessionStoreRef.current}
                   />
-                ) : null}
+                }
               /></HomeFeatureGate>}
               connectors={LOCAL_VALIDATION ? null : <HomeFeatureGate feature="connectors"><ConnectorsPage
                 tcw={tcw}
