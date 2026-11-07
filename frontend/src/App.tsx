@@ -28,6 +28,7 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
+import { homeSignInManifest, readHomeFeatures } from "./lib/homeFeatures";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -286,6 +287,8 @@ export function App() {
     resetNavigationMemory();
     const storedAddress = sessionStoreRef.current.getAddress() ?? address;
     if (storedAddress) clearPersistedSession(storedAddress);
+    // The Home features flag (lib/homeFeatures.ts) stays: it is this device's record of which features were used,
+    // holds no secrets, and lets the next sign-in ask for those sets in its one approval.
     if (storedAddress) clearSendIntentsForOwner(storedAddress);
     clearTranscriptDelegationSchedule(storedAddress);
     sessionStoreRef.current.clear();
@@ -959,8 +962,11 @@ export function App() {
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
         uiPlatform: sdkUiPlatform(),
-        // The Home site's grant has no secrets, so it has no decrypt grant to add.
-        manifest: HOME_SITE ? manifest : withEncryptionDecryptGrant(manifest, connectedAddress),
+        // The Home site asks for its base grant plus the sets of the features this device has used (each with the
+        // decrypt grant); with none used it has no secrets, so no decrypt grant either.
+        manifest: HOME_SITE
+          ? homeSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
+          : withEncryptionDecryptGrant(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
         ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
