@@ -6,7 +6,7 @@
 // RIG-ONLY: a message the owner sends on a card gets a canned agent reply about 2 s
 // later (fakeAgentReply). This is not app behaviour; the app never fakes replies.
 import type { FeedResponse } from "@tinycloud/sdk-services/feed";
-import { compactStamp, emptySitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
+import { compactStamp, emptySitrepOwnerData, type SitrepHeldNote, type SitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "@/feed/feedStoreTypes";
 
 const CANNED_REPLIES = [
@@ -67,10 +67,20 @@ export function fixtureSource(initial: HomeFeedSnapshot, options: { failSaves?: 
       notify();
     }, 2000);
   }
+  const heldNotes = new Map<string, SitrepHeldNote[]>();
+  const cardKey = (entry: HomeFeedEntry) => JSON.stringify([entry.source.sourceId, entry.state.card.cardId]);
+  /** Each typed card's own owner data, as the real store attaches it (loadTypedFeed's entry.owner). */
+  const ownerFor = (entry: HomeFeedEntry): SitrepOwnerData => {
+    const ref = typedRef(entry);
+    const mine = (value: { kind: string; id: string }) => value.kind === ref.kind && value.id === ref.id;
+    return { ...emptySitrepOwnerData(), answers: owner.answers.filter((answer) => mine(answer.card)), claimDecisions: owner.claimDecisions.filter((decision) => mine(decision.card)),
+      states: owner.states.filter(mine), threads: owner.threads.filter(mine), heldNotes: heldNotes.get(cardKey(entry)) ?? [] };
+  };
   return {
     async load(focused) {
       const loaded = structuredClone(snapshot);
-      const match = focused ? snapshot.entries.find((entry) => sameCard(entry, focused)) : undefined;
+      loaded.entries = loaded.entries.map((entry) => entry.state.card.payload?.sitrep !== undefined && !entry.owner ? { ...entry, owner: structuredClone(ownerFor(entry)) } : entry);
+      const match = focused ? loaded.entries.find((entry) => sameCard(entry, focused)) : undefined;
       return match ? { ...loaded, focusedEntry: structuredClone(match) } : loaded;
     },
     async saveResponse(entry, response, payload) {
@@ -90,7 +100,7 @@ export function fixtureSource(initial: HomeFeedSnapshot, options: { failSaves?: 
       return saved;
     },
     async saveOwnerState(_entry, event) { owner.states.push(structuredClone(event.state) as never); notify(); },
-    async saveHeldNote(_entry, note) { (owner.heldNotes ??= []).push(structuredClone(note)); notify(); },
+    async saveHeldNote(entry, note) { heldNotes.set(cardKey(entry), [...heldNotes.get(cardKey(entry)) ?? [], structuredClone(note)]); notify(); },
     async setGroupPriority() { notify(); },
     async markSeen(entry) { const target = stored(entry); if (target) target.view.seenAt = new Date().toISOString(); },
     async snooze(entry, until) { const target = stored(entry); if (target) target.view.snoozedUntil = until; notify(); },
