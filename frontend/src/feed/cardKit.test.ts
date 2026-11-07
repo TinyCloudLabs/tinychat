@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { audienceCopy, displayOptions, optionText } from "./cardKit";
+import { audienceCopy, displayOptions, isReplyOnlyRevision, optionText } from "./cardKit";
+import type { HomeFeedEntry } from "./feedStoreTypes";
 
 const options = [{ id: "yes", label: "Yes: node caches too (Recommended)" }, { id: "no", label: "No: client cache only" }];
 
@@ -23,4 +24,40 @@ test("the thread helper names who actually receives a message, and never counts 
   expect(audienceCopy({ approved: ["A", "B", "C"], fallback: "x" })).toEqual({ ask: "Ask the agents on this card something", helper: "Only the 3 agents on this card see this." });
   expect(audienceCopy({ approved: ["A"], held: ["H"], fallback: "x" }).helper).toBe("Only A sees this. H isn't connected yet, so it doesn't get it.");
   expect(audienceCopy({ approved: [], held: ["H", "J"], fallback: "Owner" })).toEqual({ ask: "Ask Owner something", helper: "Only you see this for now. H and J aren't connected yet, so they don't get it." });
+});
+
+function revision(revisionNumber: number, replies?: string[], change: Partial<{ body: string; choices: { id: string; label: string }[]; cardId: string; sourceId: string; agentDid: string }> = {}): HomeFeedEntry {
+  return {
+    source: { sourceId: change.sourceId ?? "agent", agentDid: change.agentDid ?? "did:key:agent", label: "Agent",
+      output: { spaceId: "space", database: "out" }, responses: { spaceId: "space", database: "resp" } },
+    state: { card: { cardId: change.cardId ?? "card", revision: revisionNumber, issuanceId: `i${revisionNumber}`, kind: "ask", needsResponse: true, title: "T", body: change.body ?? "B", urgency: 1,
+      createdAt: `2026-11-0${revisionNumber}T00:00:00Z`, choices: change.choices ?? [{ id: "a", label: "A" }, { id: "b", label: "B" }],
+      payload: { render: "thread", source: { label: "S" }, ...(replies ? { replies: replies.map((text) => ({ text })) } : {}) } },
+      response: null, acknowledgement: null, outcome: null },
+    view: { sourceId: "agent", cardId: "card", revision: revisionNumber, issuanceId: `i${revisionNumber}` },
+  };
+}
+
+test("a revision that only appends replies is reply-only", () => {
+  expect(isReplyOnlyRevision(revision(1), revision(2, ["one"]))).toBe(true);
+  expect(isReplyOnlyRevision(revision(1, ["one"]), revision(2, ["one", "two", "three"]))).toBe(true);
+  expect(isReplyOnlyRevision(revision(1, ["one"]), revision(4, ["one", "two"]))).toBe(true);
+});
+
+test("anything else is not reply-only", () => {
+  expect(isReplyOnlyRevision(revision(1, ["one", "two"]), revision(2, ["one!", "two", "three"]))).toBe(false); // edited earlier reply
+  expect(isReplyOnlyRevision(revision(1, ["one", "two"]), revision(2, ["two", "three"]))).toBe(false); // removed reply
+  expect(isReplyOnlyRevision(revision(1, ["one", "two"]), revision(2, ["two", "one", "three"]))).toBe(false); // reordered
+  expect(isReplyOnlyRevision(revision(1, ["one"]), revision(2))).toBe(false); // replies missing from the next one
+  expect(isReplyOnlyRevision(revision(1, ["one"]), revision(2, ["one"]))).toBe(false); // nothing appended
+  expect(isReplyOnlyRevision(revision(1), revision(2, ["one"], { body: "Changed" }))).toBe(false); // body change
+  expect(isReplyOnlyRevision(revision(1), revision(2, ["one"], { choices: [{ id: "a", label: "A2" }, { id: "b", label: "B" }] }))).toBe(false); // choice label
+  expect(isReplyOnlyRevision(revision(1), revision(2, ["one"], { choices: [{ id: "b", label: "B" }, { id: "a", label: "A" }] }))).toBe(false); // choice order
+  expect(isReplyOnlyRevision(revision(1), revision(2, ["one"], { sourceId: "other" }))).toBe(false); // different source
+  expect(isReplyOnlyRevision(revision(1), revision(2, ["one"], { agentDid: "did:key:other" }))).toBe(false); // different agent
+  expect(isReplyOnlyRevision(revision(1), revision(2, ["one"], { cardId: "other" }))).toBe(false); // different card
+  expect(isReplyOnlyRevision(revision(2), revision(2, ["one"]))).toBe(false); // same revision
+  expect(isReplyOnlyRevision(revision(3), revision(2, ["one"]))).toBe(false); // older revision
+  const extraKey = revision(2, ["one"]); extraKey.state.card.payload = { ...extraKey.state.card.payload, render: "post" };
+  expect(isReplyOnlyRevision(revision(1), extraKey)).toBe(false); // another payload key changed
 });

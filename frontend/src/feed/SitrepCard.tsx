@@ -38,6 +38,8 @@ interface Props {
   expanded?: boolean;
   /** A newer issuance replaced this card: drafts stay, but nothing more is sent for it. */
   stale?: boolean;
+  /** An answer whose countdown ended after the card was replaced: nothing was written. */
+  onRefused: (label: string) => void;
   /** The card reference, shown under More → Details. */
   reference?: ReactNode;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
@@ -78,7 +80,7 @@ function TypedAnswerStatus({ entry, owner, answer, record, focusOnMount = false 
 
 /** Owns its draft for one complete canonical identity, not a changing list index. */
 export function SitrepCard(props: Props) {
-  const { entry, record, records, entries, owner, projection, source, now, expanded = false, stale = false, reference, onSaved, onOwnerSaved, onSnoozed } = props;
+  const { entry, record, records, entries, owner, projection, source, now, expanded = false, stale = false, reference, onRefused, onSaved, onOwnerSaved, onSnoozed } = props;
   const state = projection.state;
   const [text, setText] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
@@ -87,7 +89,7 @@ export function SitrepCard(props: Props) {
   const [more, setMore] = useState(false);
   const [confirmDrop, setConfirmDrop] = useState(false);
   const [composing, setComposing] = useState(false);
-  const countdown = usePendingSend();
+  const countdown = usePendingSend({ stale, onRefused });
   const [reason, setReason] = useState("");
   const [claimNote, setClaimNote] = useState("");
   const [followup, setFollowup] = useState(false);
@@ -239,15 +241,15 @@ export function SitrepCard(props: Props) {
 
     {record.kind === "ask" && <>
       {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-        {countdown.pending.label === "your answer" ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>}
+        {countdown.pending.label === "your answer" ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
       </PendingAnswer>}
       {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
       {!countdown.pending && asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => { if (!stale) countdown.start(optionLabel(choice) ?? "", () => void tap("answer", choice)); }} />}
       {!countdown.pending && asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => countdown.start(optionLabel(record.default) ?? "its plan", () => void tap("accept-default", record.default!))}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
       {!countdown.pending && asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); if (!stale && text.trim()) countdown.start("your answer", () => void perform(() => askAnswer(), ANSWER_FAILED)); }}>
-        <label className="block text-[13px] font-semibold">Your answer<textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24 resize-y`} /></label>
-        <button className={`mt-2 ${buttonClass}`} disabled={busy || stale || !text.trim()}>{busy && !tapped ? "Sending…" : "Send"}</button>
+        <label className="block"><span className="sr-only">Your answer</span><textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24 resize-y`} /></label>
+        <button className={`mt-2 ${buttonClass}`} disabled={busy || stale || !text.trim()}>{busy && !tapped ? "Sending…" : "Send answer"}</button>
       </form>}
       {projection.parts.map((part) => <section key={part.view.approval.id} className="mt-3.5 space-y-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });

@@ -150,7 +150,7 @@ async function choose(host: ParentNode, label: string) {
 }
 /** Sends the reply in words, then lets its undo window run out. */
 async function sendReply(host: ParentNode) {
-  await act(async () => button(host, "Send").click());
+  await act(async () => button(host, "Send answer").click());
   await clock!.advance(5000);
 }
 async function openNote(host: HTMLElement) {
@@ -243,7 +243,7 @@ test("a rejected write keeps the draft actionable and does not imply receipt", a
   expect(answer(view.host).value).toBe("Keep this unsaved answer");
   const alert = view.host.querySelector('[role="alert"]');
   expect(alert?.textContent).toBe("Your answer wasn't saved. Try again.");
-  expect(button(view.host, "Send").disabled).toBe(false);
+  expect(button(view.host, "Send answer").disabled).toBe(false);
   expect(status(view.host)).toBeNull();
   expect(store.responses).toEqual([]);
   await view.unmount();
@@ -457,7 +457,7 @@ test("a replaced issuance refuses new answers: no write ever carries the old ide
   // The old issuance stays on screen with its draft, but every way to answer it is refused.
   expect(answer(view.host).value).toBe("Drafted against revision one");
   expect(option(view.host, "Hold").disabled).toBe(true);
-  expect(button(view.host, "Send").disabled).toBe(true);
+  expect(button(view.host, "Send answer").disabled).toBe(true);
   await choose(view.host, "Hold");
   await act(async () => { answer(view.host).form!.requestSubmit(); });
   expect(store.responses).toEqual([]);
@@ -525,7 +525,7 @@ test("a reply in words waits too, and undo keeps the draft", async () => {
   const view = await mount(store.source());
   await openNote(view.host);
   await typeAnswer(view.host, "Hold until Friday");
-  await act(async () => button(view.host, "Send").click());
+  await act(async () => button(view.host, "Send answer").click());
   expect(view.host.querySelector('button[aria-label^="Undo"]')).not.toBeNull();
   await act(async () => view.host.querySelector<HTMLButtonElement>('button[aria-label^="Undo"]')!.click());
   expect(answer(view.host).value).toBe("Hold until Friday");
@@ -550,7 +550,7 @@ test("leaving the view mid-countdown sends the answer at once, exactly once", as
 
 function plain(cardId = "plain-one"): HomeFeedEntry {
   const entry = decision(cardId);
-  entry.state.card = { ...entry.state.card, title: "Plain question", payload: { render: "post" } };
+  entry.state.card = { ...entry.state.card, title: "Plain question", payload: { render: "thread" } };
   return entry;
 }
 const writes = (responses: FeedResponse[]) => responses.map((response) => `${response.revision}:${response.choiceId ?? response.text}`);
@@ -572,7 +572,8 @@ test("a plain card's conversation interleaves the owner's messages and revision 
   store.reply("plain-one", "Friday is fine.", "2026-10-28T12:10:00Z");
   store.reply("plain-one", "Booked for Friday.", "2026-10-28T12:20:00Z");
   await act(async () => store.notify());
-  await act(async () => button(view.host, "Show the newer version").click());
+  // Reply-only revisions swap in place, even though sending the message engaged the card.
+  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
   const items = [...view.host.querySelectorAll('[aria-label="Card thread"] li')].map((item) => item.textContent);
   expect(items).toHaveLength(2);
   expect(items[0]).toContain("Friday is fine.");
@@ -588,50 +589,136 @@ test("a plain card's conversation interleaves the owner's messages and revision 
   expect(store.responses).toEqual([]);
 });
 
-// What happens to answer state when the agent replies with a new revision. The stale-issuance
-// rule is unchanged: these tests record today's outcomes for a carry-over design decision.
-test("revision reply after an answer: the card stays on the answered revision; the newer one is unanswered", async () => {
+/** Republishes the card as revision+1 with a changed body: not a reply-only revision. */
+function edit(store: { durable: HomeFeedSnapshot; archive: HomeFeedEntry[] }, cardId: string, body: string) {
+  const index = store.durable.entries.findIndex((entry) => entry.state.card.cardId === cardId);
+  const current = store.durable.entries[index]!;
+  const revision = current.state.card.revision + 1;
+  const next: HomeFeedEntry = { ...structuredClone(current), responses: [],
+    state: { card: { ...structuredClone(current.state.card), revision, issuanceId: `issuance-${revision}`, body }, response: null, acknowledgement: null, outcome: null },
+    view: { sourceId: current.source.sourceId, cardId, revision, issuanceId: `issuance-${revision}` } };
+  store.archive.push(next);
+  store.durable.historicalEntries = [...(store.durable.historicalEntries ?? []), current];
+  store.durable.entries[index] = next;
+}
+
+// Answer state across revisions. A reply-only revision (only payload.replies appended) swaps
+// in place and carries the card's answer state; any other revision keeps the strict rule.
+test("reply-only revision after an answer: no banner, the answer shows, Needs you stays 0, one stored answer on revision 1", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
   await choose(view.host, "Hold");
   store.reply("plain-one", "Noted, holding.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
-  expect(view.host.textContent).toContain("A newer version of this card arrived");
+  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
+  expect(view.host.querySelectorAll("article")).toHaveLength(1);
   expect(status(view.host)).toContain("You chose Hold.");
-  expect(segment(view.host, "Needs you").textContent).toBe("Needs you1");
-  await act(async () => button(view.host, "Show the newer version").click());
-  expect(status(view.host)).toBeNull();
-  expect([...view.host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Answers"] button')].every((node) => !node.disabled)).toBe(true);
   expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Noted, holding.");
+  expect(segment(view.host, "Needs you").textContent).toBe("Needs you0");
   expect(writes(store.responses)).toEqual(["1:hold"]);
+  // A fresh session shows the same: the answer stays bound to revision 1 and is displayed on revision 2.
+  await view.unmount();
+  const fresh = await mount(store.source());
+  await chooseView(fresh.host, "All");
+  expect(status(fresh.host)).toContain("You chose Hold.");
+  expect(segment(fresh.host, "Needs you").textContent).toBe("Needs you0");
 });
 
-test("revision reply during the undo countdown: today the countdown still commits to the replaced revision", async () => {
+test("Change answer after a reply-only revision writes a follow-up that names revision 1", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await choose(view.host, "Hold");
+  store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
+  await act(async () => store.notify());
+  await act(async () => button(view.host, "Change answer").click());
+  await choose(view.host, "Proceed");
+  expect(store.responses).toHaveLength(2);
+  expect(store.responses[1]).toMatchObject({ kind: "followup", revision: 1, issuanceId: "issuance-1", choiceId: "proceed", supersedesResponseId: store.responses[0]!.responseId });
+});
+
+test("a reply-only revision during the countdown re-targets the unanswered answer: one write, on revision 2", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
   await act(async () => option(view.host, "Hold").click());
   await clock!.advance(2000);
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
-  expect(view.host.textContent).toContain("A newer version of this card arrived");
+  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
   expect(view.host.querySelector('button[aria-label^="Undo"]')?.getAttribute("aria-label")).toBe("Undo, 3 seconds left");
   await clock!.advance(3000);
-  // The commit was armed before the replacement, so it writes with revision 1's identity.
-  expect(writes(store.responses)).toEqual(["1:hold"]);
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
 });
 
-test("revision reply with an unsent written answer: the draft stays on the replaced revision and can't be sent; the newer one starts empty", async () => {
+test("any other revision during the countdown refuses the commit: nothing is written, the refusal shows", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await act(async () => option(view.host, "Hold").click());
+  await clock!.advance(2000);
+  edit(store, "plain-one", "The flight times changed.");
+  await act(async () => store.notify());
+  expect(view.host.textContent).toContain("A newer version of this card arrived");
+  await clock!.advance(3000);
+  expect(store.responses).toEqual([]);
+  expect(view.host.querySelector('[role="alert"]')?.textContent).toContain("Not sent: Hold. This card changed. Answer the newer version.");
+  await act(async () => button(view.host, "Show the newer version").click());
+  await choose(view.host, "Hold");
+  expect(writes(store.responses)).toEqual(["2:hold"]);
+  expect(store.responses.some((response) => response.revision === 1)).toBe(false);
+});
+
+test("leaving the view mid-countdown after a non-reply-only revision writes nothing either", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await act(async () => option(view.host, "Hold").click());
+  edit(store, "plain-one", "The flight times changed.");
+  await act(async () => store.notify());
+  await chooseView(view.host, "All");
+  await clock!.advance(10_000);
+  expect(store.responses).toEqual([]);
+});
+
+test("an unsent written answer carries over to a reply-only revision and is sent on it", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
   await openNote(view.host);
   await typeAnswer(view.host, "Hold it until Friday");
+  const input = answer(view.host);
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
+  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
+  expect(answer(view.host) === input).toBe(true);
+  expect(input.value).toBe("Hold it until Friday");
+  await sendReply(view.host);
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ revision: 2, text: "Hold it until Friday" });
+});
+
+test("an unsent written answer stays on the old revision when any other revision arrives", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await openNote(view.host);
+  await typeAnswer(view.host, "Hold it until Friday");
+  edit(store, "plain-one", "The flight times changed.");
+  await act(async () => store.notify());
   expect(answer(view.host).value).toBe("Hold it until Friday");
-  expect(button(view.host, "Send").disabled).toBe(true);
-  await act(async () => button(view.host, "Show the newer version").click());
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+  expect(button(view.host, "Send answer").disabled).toBe(true);
   expect(store.responses).toEqual([]);
+});
+
+test("a reply-only revision after the answer re-targets nothing: the answer and its follow-ups stay on revision 1", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await choose(view.host, "Hold");
+  store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
+  store.reply("plain-one", "Booked.", "2026-10-28T12:20:00Z");
+  await act(async () => store.notify());
+  await act(async () => button(view.host, "Change answer").click());
+  await openNote(view.host);
+  await typeAnswer(view.host, "Actually, proceed");
+  await sendReply(view.host);
+  expect(store.responses.map((response) => response.revision)).toEqual([1, 1]);
+  expect(store.durable.entries[0]!.state.response).toBeNull();
 });
 
 test("revision reply on an untouched card replaces it in place with the reply", async () => {
@@ -642,4 +729,18 @@ test("revision reply on an untouched card replaces it in place with the reply", 
   expect(view.host.textContent).not.toContain("A newer version of this card arrived");
   expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Noted.");
   expect(view.host.querySelectorAll("article")).toHaveLength(1);
+});
+
+test("a written answer counting down when any other revision arrives is refused and its draft stays", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await openNote(view.host);
+  await typeAnswer(view.host, "Hold it until Friday");
+  await act(async () => button(view.host, "Send answer").click());
+  edit(store, "plain-one", "The flight times changed.");
+  await act(async () => store.notify());
+  await clock!.advance(5000);
+  expect(store.responses).toEqual([]);
+  expect(view.host.querySelector('[role="alert"]')?.textContent).toContain("Not sent: your answer. This card changed. Answer the newer version.");
+  expect(answer(view.host).value).toBe("Hold it until Friday");
 });

@@ -447,7 +447,7 @@
                   }
                 ],
                 "payload": {
-                  "render": "post",
+                  "render": "thread",
                   "source": {
                     "label": "Owner's board",
                     "url": "https://example.com/board"
@@ -2335,7 +2335,10 @@
                     "id": "later",
                     "label": "09:40, one stop"
                   }
-                ]
+                ],
+                "payload": {
+                  "render": "thread"
+                }
               },
               "response": null,
               "acknowledgement": null,
