@@ -2,6 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, useCallback, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { SessionStore } from "@tinyboilerplate/client";
+import { MeetingsSection } from "@/chat/MeetingsSection";
+import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import { installDom } from "@/test/dom";
 import type { InFlightWork } from "@/lib/inFlightWork";
 import {
@@ -189,4 +192,19 @@ test("off the Home site the gate shows the feature and asks nothing", async () =
   expect(host.querySelector('[data-testid="feature-access-recording"]')).toBeNull();
   expect(permitted).toBe(true);
   expect(store.size).toBe(0);
+});
+
+test("the meetings list asks the meetings route on the Home site only once Connectors is permitted", async () => {
+  let listed = 0;
+  const client = { list: async () => { listed += 1; return { ok: false, kind: "feature-dark" }; } } as unknown as ConnectorMeetingsClient;
+  const sessionStore = {} as SessionStore;
+  const meetings = (connectorsPermitted: boolean) => (
+    <HomeFeatureAccessContext.Provider value={{ covered: () => true, permitted: (feature) => feature === "connectors" && connectorsPermitted, request: async () => "failed", confirmUse: () => {}, inFlight: null }}>
+      <MeetingsSection backendUrl="http://localhost" sessionStore={sessionStore} client={client} />
+    </HomeFeatureAccessContext.Provider>
+  );
+  await act(async () => root.render(meetings(false)));
+  expect(listed).toBe(0);
+  await act(async () => root.render(meetings(true)));
+  expect(listed).toBe(1);
 });
