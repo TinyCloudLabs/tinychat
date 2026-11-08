@@ -74,3 +74,31 @@ test("a post card's first reply may turn it into a thread, and nothing else may 
   expect(isReplyOnlyRevision(post(), as(revision(1, ["one"]), "link"))).toBe(false); // post → link
   expect(isReplyOnlyRevision(revision(1), as(revision(1, ["one"]), "link"))).toBe(false); // thread → link
 });
+
+test("an absent render or payload counts as a post for the first-reply exception only", () => {
+  const bare = (payload: "no-render" | "no-payload") => {
+    const entry = revision(1);
+    if (payload === "no-payload") delete entry.state.card.payload;
+    else { const { render: _render, ...rest } = entry.state.card.payload!; entry.state.card.payload = rest; }
+    return entry;
+  };
+  const withRender = (entry: HomeFeedEntry, render: string | undefined, replies?: string[], revisionNumber = 2) => {
+    const next = structuredClone(entry);
+    next.state.card.revision = revisionNumber;
+    const { render: _render, replies: _replies, ...rest } = next.state.card.payload ?? {};
+    next.state.card.payload = { ...rest, ...(render ? { render } : {}), ...(replies ? { replies: replies.map((text) => ({ text })) } : {}) };
+    return next;
+  };
+  // absent render key → thread with a first reply
+  expect(isReplyOnlyRevision(bare("no-render"), withRender(bare("no-render"), "thread", ["one"]))).toBe(true);
+  // absent payload → thread with a first reply (the next payload is otherwise empty too)
+  const noPayload = bare("no-payload");
+  const threaded = structuredClone(noPayload); threaded.state.card.revision = 2; threaded.state.card.payload = { render: "thread", replies: [{ text: "one" }] };
+  expect(isReplyOnlyRevision(noPayload, threaded)).toBe(true);
+  // absent → link
+  expect(isReplyOnlyRevision(bare("no-render"), withRender(bare("no-render"), "link", ["one"]))).toBe(false);
+  // absent ↔ post with replies unchanged: a stray render difference is a new request
+  expect(isReplyOnlyRevision(bare("no-render"), withRender(bare("no-render"), "post"))).toBe(false);
+  expect(isReplyOnlyRevision(withRender(bare("no-render"), "post", undefined, 1), withRender(bare("no-render"), undefined))).toBe(false);
+  expect(isReplyOnlyRevision(bare("no-render"), withRender(bare("no-render"), "post", ["one"]))).toBe(false);
+});
