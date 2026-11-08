@@ -19,11 +19,11 @@ test("a marker mid-label is text, not a recommendation", () => {
 });
 
 test("the comment composer names who actually receives a comment, and never counts held recipients", () => {
-  expect(commentCopy({ approved: ["Mail agent"], fallback: "x" })).toEqual({ button: "Comment to Mail agent", input: "Tell Mail agent something", helper: "This doesn't answer the card. Only Mail agent sees this." });
-  expect(commentCopy({ approved: ["A", "B"], fallback: "x" }).helper).toBe("This doesn't answer the card. Only A and B see this.");
-  expect(commentCopy({ approved: ["A", "B", "C"], fallback: "x" })).toEqual({ button: "Comment to the agents on this card", input: "Tell the agents on this card something", helper: "This doesn't answer the card. Only the 3 agents on this card see this." });
-  expect(commentCopy({ approved: ["A"], held: ["H"], fallback: "x" }).helper).toBe("This doesn't answer the card. Only A sees this. H isn't connected yet, so it doesn't get it.");
-  expect(commentCopy({ approved: [], held: ["H", "J"], fallback: "Owner" })).toEqual({ button: "Comment to Owner", input: "Tell Owner something", helper: "This doesn't answer the card. Only you see this for now. H and J aren't connected yet, so they don't get it." });
+  expect(commentCopy({ approved: ["Mail agent"] })).toEqual({ button: "Comment", input: "Tell Mail agent something", helper: "This doesn't answer the card. Only Mail agent sees this." });
+  expect(commentCopy({ approved: ["A", "B"] })).toEqual({ button: "Comment", input: "Tell A and B something", helper: "This doesn't answer the card. Only A and B see this." });
+  expect(commentCopy({ approved: ["A", "B", "C"] })).toEqual({ button: "Comment", input: "Tell the agents on this card something", helper: "This doesn't answer the card. Only the 3 agents on this card see this." });
+  expect(commentCopy({ approved: ["A"], held: ["H"] }).helper).toBe("This doesn't answer the card. Only A sees this. H isn't connected yet, so it doesn't get it.");
+  expect(commentCopy({ approved: [], held: ["H", "J"] })).toEqual({ button: "Comment", input: "Write a comment", helper: "This doesn't answer the card. Only you see this for now. H and J aren't connected yet, so they don't get it." });
 });
 
 function revision(revisionNumber: number, replies?: string[], change: Partial<{ body: string; choices: { id: string; label: string }[]; cardId: string; sourceId: string; agentDid: string }> = {}): HomeFeedEntry {

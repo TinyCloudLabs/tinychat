@@ -228,7 +228,7 @@ export function SitrepCard(props: Props) {
   const steer = record.kind === "ask" && record.mode === "proceeding" ? steerState(record, now, answers) : undefined;
   const optionLabel = (optionId?: string) => { const option = record.kind === "ask" ? record.options.find((candidate) => candidate.id === optionId) : undefined; return option && optionText(option.label); };
 
-  const audience = route ? commentCopy({ approved: destinations.map((recipient) => recipient.legacyName), held: unresolved, fallback: ownerLabel }) : commentCopy({ approved: [agent], fallback: agent });
+  const audience = route ? commentCopy({ approved: destinations.map((recipient) => recipient.legacyName), held: unresolved }) : commentCopy({ approved: [agent] });
   const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} composing={composing && !closed} input={audience.input} helper={audience.helper}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} onClose={() => setComposing(false)} />;
 

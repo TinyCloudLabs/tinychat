@@ -168,9 +168,11 @@ function names(list: readonly string[]): string {
 /** Every string a card's comments use, in one place. */
 export const COMMENT_COPY = {
   /** The quiet button that opens the composer. */
-  button: (who: string) => `Comment to ${who}`,
-  /** The composer's placeholder and accessible name. */
+  button: "Comment",
+  /** The composer's placeholder and accessible name, when someone receives the comment. */
   input: (who: string) => `Tell ${who} something`,
+  /** The same, when no recipient is approved yet (never the owner's own name). */
+  inputNoRecipient: "Write a comment",
   /** First half of the line under the composer. */
   notAnAnswer: "This doesn't answer the card.",
   /** The comment list's accessible name. */
@@ -186,13 +188,13 @@ export const COMMENT_COPY = {
  * who actually receives it (the publishing agent, or the owner-approved recipients); `held`
  * recipients aren't connected, keep it privately, and are never counted as seeing it.
  */
-export function commentCopy({ approved, held = [], fallback }: { approved: readonly string[]; held?: readonly string[]; fallback: string }): { button: string; input: string; helper: string } {
+export function commentCopy({ approved, held = [] }: { approved: readonly string[]; held?: readonly string[] }): { button: string; input: string; helper: string } {
   const heldLine = held.length ? ` ${names(held)} ${held.length === 1 ? "isn't" : "aren't"} connected yet, so ${held.length === 1 ? "it doesn't" : "they don't"} get it.` : "";
-  const who = !approved.length ? fallback : approved.length >= 3 ? "the agents on this card" : names(approved);
+  const who = approved.length >= 3 ? "the agents on this card" : names(approved);
   const sees = !approved.length ? "Only you see this for now."
     : approved.length >= 3 ? `Only the ${approved.length} agents on this card see this.`
       : `Only ${names(approved)} ${approved.length === 1 ? "sees" : "see"} this.`;
-  return { button: COMMENT_COPY.button(who), input: COMMENT_COPY.input(who), helper: `${COMMENT_COPY.notAnAnswer} ${sees}${heldLine}` };
+  return { button: COMMENT_COPY.button, input: approved.length ? COMMENT_COPY.input(who) : COMMENT_COPY.inputNoRecipient, helper: `${COMMENT_COPY.notAnAnswer} ${sees}${heldLine}` };
 }
 
 /** Seconds an answer waits, undoable, before it is sent. */

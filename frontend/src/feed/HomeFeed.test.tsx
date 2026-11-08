@@ -564,7 +564,7 @@ const writes = (responses: FeedResponse[]) => responses.map((response) => `${res
 test("a plain card's conversation interleaves the owner's messages and revision replies, oldest first", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
-  await act(async () => button(view.host, "Comment to Test agent").click());
+  await act(async () => button(view.host, "Comment").click());
   expect(view.host.textContent).toContain("Only Test agent sees this.");
   const input = view.host.querySelector<HTMLInputElement>('input[aria-label="Tell Test agent something"]')!;
   await act(async () => {
@@ -790,7 +790,7 @@ test("a collapsed card shows its comment count, opens at its comments, and shows
 test("a comment doesn't answer the card: no response is written and it stays in Needs you", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
-  await act(async () => button(view.host, "Comment to Test agent").click());
+  await act(async () => button(view.host, "Comment").click());
   expect(view.host.textContent).toContain("This doesn't answer the card. Only Test agent sees this.");
   const input = view.host.querySelector<HTMLInputElement>('input[aria-label="Tell Test agent something"]')!;
   await act(async () => {

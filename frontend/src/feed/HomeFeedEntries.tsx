@@ -220,7 +220,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
     <CardHistory entry={target} now={now} />
   </MoreSheet>;
   const items = plainThreadItems(entry, revisions);
-  const audience = commentCopy({ approved: [entry.source.label], fallback: entry.source.label });
+  const audience = commentCopy({ approved: [entry.source.label] });
   const canMessage = !!source.sendMessage;
   const thread = <ThreadView items={items} now={now} open={expanded} composing={composing} input={audience.input} helper={audience.helper} busy={messaging} closed={false} onSend={message} onClose={() => setComposing(false)} />;
   const askButton = canMessage && !composing && <button type="button" className={quietClass} onClick={() => setComposing(true)}>{audience.button}</button>;
