@@ -75,7 +75,8 @@ export interface FakeVoiceNotes {
   };
 }
 
-export function createFakeVoiceNotes(now: () => number = () => Date.now()): FakeVoiceNotes {
+/** `idBase`: where recording ids start counting, so a test can keep its ids apart from other tests' (default 0). */
+export function createFakeVoiceNotes(now: () => number = () => Date.now(), { idBase = 0 }: { idBase?: number } = {}): FakeVoiceNotes {
   const listeners = new Map<EventName, Set<Listener>>();
   const retained = new Map<EventName, unknown[]>();
   const notes = new Map<string, VoiceNoteRecording>();
@@ -93,7 +94,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   let remoteBeginFailure = false;
   let remoteResultFailure = false;
   let session: Session | null = null;
-  let counter = 0;
+  let counter = idBase;
   let outboxCounter = 0;
   let generation = 0;
   let pauseShouldFail = false;

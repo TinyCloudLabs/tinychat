@@ -159,31 +159,144 @@ export interface VoiceNoteRecorderController {
   subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
 
-// Ownership: the engine's live recording belongs to the recorder attached most recently. A detached recorder never
-// writes recorder state or playback, and its only engine action is the one below. A recording its start left behind
-// is announced to that recorder (one attaching later finds it when it reconciles on attach). With no recorder
-// attached, an engine that discards by id (capabilities.scopedDiscard) discards exactly that recording instead, so
-// no microphone is left on with nobody to see it; the engine refuses if another recording is live by then.
+// Ownership. A live recording has at most one owner: the attached recorder that started or picked it up, or a closed
+// recorder's cleanup. Owners claim it here at the moment they take it (synchronously, after every await), so two
+// recorders can never both hold it. A closed (detached) recorder never writes recorder state, playback or Home work
+// of anyone else; what it leaves live is followed by a tracker (trackDetachedRecording) until it ends or an attached
+// recorder takes it.
+// Kept per capture engine (recording ids are unique within one).
+interface EngineRecordings {
+  owners: Map<string, object>;
+  // How many times an attached recorder has taken each recording. A tracker whose recording was taken since it began
+  // stops: from then on that recorder, or the tracker its own detach starts, answers for it.
+  takes: Map<string, number>;
+}
+let recordingsByEngine = new WeakMap<object, EngineRecordings>();
+const engineRecordings = (): EngineRecordings => {
+  let recordings = recordingsByEngine.get(VoiceNotes);
+  if (!recordings) {
+    recordings = { owners: new Map(), takes: new Map() };
+    recordingsByEngine.set(VoiceNotes, recordings);
+  }
+  return recordings;
+};
+const claimRecording = (id: string, claimant: object): boolean => {
+  const { owners } = engineRecordings();
+  const held = owners.get(id);
+  if (held !== undefined && held !== claimant) return false;
+  owners.set(id, claimant);
+  return true;
+};
+const releaseRecording = (id: string, claimant: object) => {
+  const { owners } = engineRecordings();
+  if (owners.get(id) === claimant) owners.delete(id);
+};
+// A recording that has ended (stopped, discarded, saved) can never be taken again, not even from a status read
+// answered before it ended.
+const ENDED = {};
+const endRecording = (id: string) => {
+  engineRecordings().owners.set(id, ENDED);
+};
+// Attached recorders in attach order; a recording nobody owns is offered to the most recent one.
 const attachedRecorders: Array<(id: string) => void> = [];
 const announceUnownedRecording = (id: string) => {
   attachedRecorders.at(-1)?.(id);
 };
-// Late recordings discarded by id (from the moment that is decided): a recorder attaching meanwhile never picks them
-// up, even from a status read answered after the discard. An id leaves the set only if its discard did not happen.
-const discardingLateStarts = new Set<string>();
-/** Tests only: forget recorders left attached by other test files sharing this module. */
+// Recordings detached recorders left live, each with its trackers and whether a tracker may discard it (a start that
+// finished after its recorder closed: nobody chose to record it). A recording its owner was showing is never discarded.
+const trackedRecordings = new Map<string, Set<{ mayDiscard: boolean }>>();
+// Each recorder blocks note playback while it captures; playback is blocked while any one does.
+const playbackBlockers = new Set<object>();
+const blockPlayback = (blocker: object, blocked: boolean) => {
+  if (blocked) playbackBlockers.add(blocker); else playbackBlockers.delete(blocker);
+  setCapturePlaybackBlocked(playbackBlockers.size > 0);
+};
+
+// A tracker's waits between turns (the last repeats).
+const TRACKER_WAITS_MS: readonly number[] = [1_000, 2_000, 5_000, 10_000, 30_000];
+let trackerWaitsMs = TRACKER_WAITS_MS;
+let trackerSleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+/** Test seam: the tracker's waits between turns and how it sleeps (null: the real ones). */
+export function __setRecorderTrackerForTests(options: { waits?: readonly number[]; sleep?: (ms: number) => Promise<void> } | null) {
+  trackerWaitsMs = options?.waits ?? TRACKER_WAITS_MS;
+  trackerSleep = options?.sleep ?? ((ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+}
+// Bumped by the test reset: trackers from before it stop, and leave the reset Home work count alone.
+let trackerEpoch = 0;
+/** Tests only: forget recorders, claims and trackers left by other test files sharing this module. */
 export function __resetRecorderOwnershipForTests() {
   attachedRecorders.length = 0;
-  discardingLateStarts.clear();
+  recordingsByEngine = new WeakMap();
+  trackedRecordings.clear();
+  playbackBlockers.clear();
+  trackerEpoch += 1;
+}
+/** Tests only: what the ownership model holds now. */
+export function __recorderOwnershipForTests() {
+  const tracked = new Map<string, { mayDiscard: boolean }>();
+  for (const [id, trackers] of trackedRecordings) tracked.set(id, { mayDiscard: [...trackers].some((tracker) => tracker.mayDiscard) });
+  return { owners: new Map(engineRecordings().owners), tracked, attached: attachedRecorders.length };
 }
 
-// While that recording runs, the cancelled start keeps its Home work place, reading the engine's status with these
-// waits between reads (the last repeats), one read at a time, until the recording is no longer live.
-const CANCELLED_START_WATCH_MS: readonly number[] = [1_000, 2_000, 5_000, 10_000, 30_000];
-let cancelledStartWatchMs = CANCELLED_START_WATCH_MS;
-/** Test seam: the waits between status reads while a cancelled start's recording is still live. */
-export function __setCancelledStartWatchForTests(waits: readonly number[] | null) {
-  cancelledStartWatchMs = waits ?? CANCELLED_START_WATCH_MS;
+/** Follows a recording a detached recorder left live, holding that recorder's Home work place (`release`) until the
+ * recording is no longer live or an attached recorder has taken it. Each turn: taken → done; a recorder attached →
+ * offered to it; none attached, and the recording may be discarded on an engine that discards by id → discarded by
+ * its id under a claim (refused if another recording is live; retried on later turns if the engine fails); then one
+ * status read (a read that never answers is waited for, never repeated). A stop or discard its owner had already
+ * sent (`ending`) settles first, with the recording claimed by this tracker meanwhile: nobody takes a recording that
+ * may be ending. */
+async function trackDetachedRecording(id: string, mayDiscard: boolean, release: (() => void) | null, ending: Promise<unknown> | null = null) {
+  const tracker = { mayDiscard };
+  const trackers = trackedRecordings.get(id) ?? new Set();
+  trackers.add(tracker);
+  trackedRecordings.set(id, trackers);
+  const cleanup = {};
+  const epoch = trackerEpoch;
+  const { owners, takes } = engineRecordings();
+  const takesAtStart = takes.get(id) ?? 0;
+  try {
+    if (ending) {
+      if (owners.get(id) !== ENDED) owners.set(id, cleanup);
+      await ending.catch(() => undefined);
+      releaseRecording(id, cleanup);
+    }
+    for (let turn = 0; ; turn += 1) {
+      if (turn > 0) await trackerSleep(trackerWaitsMs[Math.min(turn - 1, trackerWaitsMs.length - 1)]);
+      if (epoch !== trackerEpoch) return;
+      // Taken by an attached recorder (now or since this began): that recorder, or its own tracker, answers for it.
+      if ((takes.get(id) ?? 0) !== takesAtStart) return;
+      const owner = owners.get(id);
+      if (owner !== undefined && owner !== cleanup) return;
+      if (attachedRecorders.length > 0) {
+        announceUnownedRecording(id);
+      } else if (mayDiscard && captureCapabilities().scopedDiscard && claimRecording(id, cleanup)) {
+        let gone = false;
+        try {
+          await VoiceNotes.discard({ id });
+          gone = true;
+        } catch (caught) {
+          // recording_changed: another recording is live, which this never touches.
+          gone = errorCode(caught) === "recording_changed";
+          if (!gone) console.warn("[VoiceNotes] Could not discard a recording started after its recorder closed", caught);
+        }
+        if (gone) {
+          endRecording(id);
+          return;
+        }
+        releaseRecording(id, cleanup);
+        continue;
+      }
+      const status = await VoiceNotes.status().catch(() => null);
+      if (status !== null && (status.state === "idle" || status.id !== id)) {
+        endRecording(id);
+        return;
+      }
+    }
+  } finally {
+    trackers.delete(tracker);
+    if (trackers.size === 0 && trackedRecordings.get(id) === trackers) trackedRecordings.delete(id);
+    if (epoch === trackerEpoch) release?.();
+  }
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
@@ -379,42 +492,46 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     release: (() => void) | null;
     whenCancelled: Promise<void>;
     signalCancelled: () => void;
+    /** The recording this start started, once the engine has answered. */
+    startedId: string | null;
   }
   let pendingStart: PendingStart | null = null;
 
-  /** Holds a cancelled start's place until the recording it started is no longer live, by reading the engine's
-   * status only: one read at a time (a read that never answers is waited for, never repeated), and nothing else. */
-  const watchCancelledStart = async (id: string, attempt: PendingStart) => {
-    for (let reads = 0; ; reads += 1) {
-      const status = await VoiceNotes.status().catch(() => null);
-      if (status !== null && (status.state === "idle" || status.id !== id)) break;
-      await new Promise((resolve) => setTimeout(resolve, cancelledStartWatchMs[Math.min(reads, cancelledStartWatchMs.length - 1)]));
+  // This recorder's claimant while attached (a new one per attach), and the live recording it owns.
+  let attachment: object | null = null;
+  let ownedId: string | null = null;
+  // The owner's stop or discard in flight at the engine (it may end the recording).
+  let endingControl: Promise<unknown> | null = null;
+  /** Takes `id` for this attached recorder; false if another owner holds it. */
+  const own = (id: string): boolean => {
+    if (attachment === null || !claimRecording(id, attachment)) return false;
+    if (ownedId !== null && ownedId !== id) releaseRecording(ownedId, attachment);
+    if (ownedId !== id) {
+      const { takes } = engineRecordings();
+      takes.set(id, (takes.get(id) ?? 0) + 1);
     }
-    attempt.release?.();
-    attempt.release = null;
+    ownedId = id;
+    return true;
   };
+  const disown = () => {
+    if (ownedId !== null && attachment !== null) releaseRecording(ownedId, attachment);
+    ownedId = null;
+  };
+  /** Picks up a recording already running, if this recorder can show it and nobody else owns it. */
+  const pickUp = (status: CaptureStatus): boolean => {
+    if ((state.phase !== "idle" && state.phase !== "starting") || !status.id || status.startedAt === null || !own(status.id)) return false;
+    acceptNativeOptions(status);
+    send(activePickup(status));
+    return true;
+  };
+  // This recorder's own playback block (playback is blocked while any recorder blocks it).
+  const playbackBlocker = {};
 
-  /** A recording its start left behind (detach cancelled that start): the attached recorder takes it, or with none
-   * attached it is discarded by id where the engine can. Its place is kept until it is no longer live either way. */
+  /** A recording its start left behind (detach cancelled that start): tracked until it ends or a recorder takes it,
+   * and discarded by its id where nobody can take it. The start's place is kept until then. */
   const handOverCancelledStart = (id: string, attempt: PendingStart) => {
-    if (attachedRecorders.length > 0 || !captureCapabilities().scopedDiscard) {
-      announceUnownedRecording(id);
-      void watchCancelledStart(id, attempt);
-      return;
-    }
-    discardingLateStarts.add(id);
-    void VoiceNotes.discard({ id }).then(() => true, (caught: unknown) => {
-      // recording_changed: another recording is live, which this never touches.
-      if (errorCode(caught) !== "recording_changed") console.warn("[VoiceNotes] Could not discard a recording started after its recorder closed", caught);
-      return false;
-    }).then((discarded) => {
-      if (!discarded) {
-        // Not discarded: a recorder attached by now takes it, if it is still live.
-        discardingLateStarts.delete(id);
-        announceUnownedRecording(id);
-      }
-      void watchCancelledStart(id, attempt);
-    });
+    void trackDetachedRecording(id, true, attempt.release);
+    attempt.release = null;
   };
 
   // The reducer runs synchronously, so a second tap sees the phase the first one
@@ -424,10 +541,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     const next = recorderReducer(state, event);
     if (next === state) return;
     state = next;
+    // Owned until the recorder is idle again or shows another recording.
+    if (ownedId !== null && (next.phase === "idle" || next.recordingId !== ownedId)) disown();
     // A recording the recorder picks up (one already running) holds its place too; idle releases it.
     if (next.phase !== "idle" && homeWork === null && !homeWorkDetached) homeWork = holdHomeWork("recording");
     if (next.phase === "idle" && homeWork !== null) { homeWork(); homeWork = null; }
-    setCapturePlaybackBlocked(next.phase === "starting" || next.phase === "stopping" || next.phase === "discarding" ||
+    if (!homeWorkDetached) blockPlayback(playbackBlocker, next.phase === "starting" || next.phase === "stopping" || next.phase === "discarding" ||
       (next.phase === "recording" && (next.controlPending === "resume" ||
         (next.mic.state !== "paused" && next.mic.state !== "interrupted" && next.mic.state !== "needs_user"))));
     refreshChoice();
@@ -451,9 +570,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       mic: micFromStatus(status), autoStop: autoStopNow() && status.maxDurationMs < VOICE_NOTE_SAFETY_CAP_MS };
   };
 
+  // Both reconcilers write only for the attachment that started them: a detached (or re-attached) recorder ignores
+  // what it learns here, and the tracker or the next recorder deals with the recording.
   const reconcileFailedStop = async (error: string | null, id?: string | null) => {
+    const mine = attachment;
     try {
       const status = await VoiceNotes.status();
+      if (mine === null || attachment !== mine) return;
       if (state.phase !== "stopping") return;
       if (status.state === "idle") {
         send({ type: "STOP_FAILED", status: "idle", error, id });
@@ -465,17 +588,19 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
       } else {
         send({ type: "STOP_FAILED", status: "idle", error: error ?? `Another recording is active on this ${recorderDevice()}.`, id });
-        acceptNativeOptions(status);
-        send(activePickup(status));
+        pickUp(status);
       }
     } catch (caught) {
+      if (mine === null || attachment !== mine) return;
       send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether this ${recorderDevice()} stopped recording: ${messageOf(caught)}`, id });
     }
   };
 
   const reconcileDiscardFailure = async (shown: string | null, error: string) => {
+    const mine = attachment;
     try {
       const status = await VoiceNotes.status();
+      if (mine === null || attachment !== mine) return;
       if (state.phase !== "discarding") return;
       if (status.state === "idle") {
         send({ type: "DISCARD_FAILED", id: shown, committed: true,
@@ -487,10 +612,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         sendMicState(status);
       } else {
         send({ type: "DISCARD_FAILED", id: shown, committed: true, error });
-        acceptNativeOptions(status);
-        send(activePickup(status));
+        pickUp(status);
       }
     } catch (caught) {
+      if (mine === null || attachment !== mine) return;
       send({ type: "DISCARD_FAILED", id: shown, uncertain: true,
         error: `${error} Could not check whether recording continues: ${messageOf(caught)}` });
     }
@@ -736,6 +861,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
 
   const onAutoStopped = (event: VoiceNoteAutoStopEvent) => {
     const recording = event.recording;
+    const ended = event.id ?? recording?.id;
+    if (ended) endRecording(ended);
     if (recording) captureCommitted(recording.id, recording);
     if (!recording && event.error === "finalization_timed_out") {
       send({ type: "CAPTURE_ISSUE", id: event.id ?? state.recordingId, issue: { kind: "finalization_timed_out" } });
@@ -859,6 +986,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       setQuarantineAccount(tcw?.did ?? null);
       let attached = true;
       homeWorkDetached = false;
+      attachment = {};
       noteAttached = true;
       if (noteId && noteStatus === "error" && !cancelNoteRetry) scheduleNoteRetry(noteId, noteLoadVersion);
       const unsubscribeNoteSync = subscribeRecordingNoteSync(notify);
@@ -892,14 +1020,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (id) { send({ type: "CAPTURE_RESOLVED", id }); committedIds.delete(id); lostAudioIds.delete(id); }
       };
       if (typeof window !== "undefined") window.addEventListener("exo:captureIssueDeleted", onCaptureDeleted);
-      // A recording another recorder's start left behind after it closed is this recorder's now, if it is idle.
+      // A recording nobody owns (a closed recorder left it live) is this recorder's now, if it is idle and claims it.
       const onUnownedRecording = (id: string) => {
         if (state.phase !== "idle") return;
         void VoiceNotes.status().then((status) => {
-          if (!attached || state.phase !== "idle" || status.state === "idle" || status.id !== id) return;
-          acceptNativeOptions(status);
-          sendMicState(status);
-          send(activePickup(status));
+          if (!attached || status.state === "idle" || status.id !== id) return;
+          pickUp(status);
         }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not pick up a recording left by a closed recorder", caught));
       };
       attachedRecorders.push(onUnownedRecording);
@@ -956,6 +1082,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }),
         VoiceNotes.addListener("committed", (event) => {
           const id = event.id ?? event.recording?.id;
+          if (id) endRecording(id);
           captureCommitted(id, event.recording);
           if (!event.recording) inspectSidecar(id);
         }),
@@ -983,9 +1110,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           try {
             const status = await VoiceNotes.status();
             if (!attached || status.state === "idle" || status.id !== event.id) return;
-            if (state.phase === "idle") {
-              send(activePickup(status));
-            }
+            if (state.phase === "idle") pickUp(status);
             if (state.recordingId === status.id && state.phase === "recording") present();
           } catch (caught) {
             console.warn("[VoiceNotes] Could not present the native recording", caught);
@@ -1009,11 +1134,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
                 console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
             }
             if (status.state === "idle") { sendMicState(status); return; }
-            // Being discarded (or discarded) by id as a closed recorder's late start: never this recorder's.
-            if (status.id && discardingLateStarts.has(status.id)) return;
+            // Only a recording nobody else owns (another recorder's, or a closed recorder's being discarded, is not this one's).
+            if (!pickUp(status)) return;
             sendMicState(status);
-            acceptNativeOptions(status);
-            send(activePickup(status));
             if (status.source && status.source !== "in_app") present();
           },
           (caught: unknown) => console.warn("[VoiceNotes] Could not ask the recorder what is running", caught),
@@ -1038,16 +1161,27 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not attach capture scan", caught));
       return () => {
         attached = false;
-        // Detached (signed out or unmounted): this recorder no longer holds a place at the Home work boundary, except
-        // for a start still waiting (on the microphone): that is cancelled, and keeps its place until it has ended.
+        const listed = attachedRecorders.indexOf(onUnownedRecording);
+        if (listed !== -1) attachedRecorders.splice(listed, 1);
+        // Detached (signed out or unmounted): this recorder no longer holds anything at the Home work boundary itself.
+        // A recording it owned is followed by a tracker with a place of its own (offered to the next recorder, never
+        // discarded); a start still waiting (on the microphone) is cancelled and keeps this recorder's place until it
+        // has ended (its recording, if it already claimed one, is handed over by record() itself).
         homeWorkDetached = true;
+        if (ownedId !== null && ownedId !== pendingStart?.startedId) {
+          const left = ownedId;
+          disown();
+          void trackDetachedRecording(left, false, holdHomeWork("recording"), endingControl);
+        }
         if (pendingStart) {
           pendingStart.cancelled = true;
           pendingStart.release = homeWork;
+          disown();
           pendingStart.signalCancelled();
         } else homeWork?.();
         homeWork = null;
-        setCapturePlaybackBlocked(false);
+        attachment = null;
+        blockPlayback(playbackBlocker, false);
         noteAttached = false;
         clearNoteRetry();
         if (noteSyncTimer) {
@@ -1057,8 +1191,6 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             console.warn("[VoiceNotes] Could not sync recording note", error));
         }
         if (typeof window !== "undefined") window.removeEventListener("exo:captureIssueDeleted", onCaptureDeleted);
-        const listed = attachedRecorders.indexOf(onUnownedRecording);
-        if (listed !== -1) attachedRecorders.splice(listed, 1);
         unsubscribePreference();
         unsubscribeNoteSync();
         if (appActiveHandle) void appActiveHandle.then((handle) => handle?.remove());
@@ -1075,7 +1207,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       homeWork = admitted;
       let signalCancelled = () => {};
       const whenCancelled = new Promise<void>((resolve) => { signalCancelled = resolve; });
-      const attempt: PendingStart = { cancelled: false, release: null, whenCancelled, signalCancelled };
+      const attempt: PendingStart = { cancelled: false, release: null, whenCancelled, signalCancelled, startedId: null };
       pendingStart = attempt;
       // Set once a started recording is handed over (handOverCancelledStart), which then owns the place.
       let handedOver = false;
@@ -1094,10 +1226,16 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const started = await VoiceNotes.start({ maxDurationMs: requested,
           uploadAudio: readUploadAudioPreference(),
           ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
+        attempt.startedId = started.id;
         if (attempt.cancelled) {
           // Detached while the microphone was being asked: the recording is handed to the recorder attached now.
           handedOver = true;
           handOverCancelledStart(started.id, attempt);
+          return;
+        }
+        // Claimed before anything else awaits; another recorder that picked it up first keeps it.
+        if (!own(started.id)) {
+          send({ type: "RESET" });
           return;
         }
         const elapsedAt = Date.now();
@@ -1172,7 +1310,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       send({ type: "STOP_REQUESTED", at: Date.now() });
       let recording: VoiceNoteRecording;
       try {
-        recording = await VoiceNotes.stop();
+        const stopping = VoiceNotes.stop();
+        endingControl = stopping;
+        recording = await stopping.finally(() => { if (endingControl === stopping) endingControl = null; });
       } catch (caught) {
         // "not_recording": the limit stopped it first, and its "autoStopped" event saves it.
         const code = errorCode(caught);
@@ -1187,6 +1327,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       } finally {
         nativeStopPending = false;
       }
+      endRecording(recording.id);
       captureCommitted(recording.id, recording);
       void saveStopped(recording).catch((caught: unknown) =>
         send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -1199,7 +1340,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async resume() {
       if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
-      setCapturePlaybackBlocked(true);
+      if (!homeWorkDetached) blockPlayback(playbackBlocker, true);
       stopAllPlayback();
       send({ type: "RESUME_REQUESTED" });
       await runControl("resume");
@@ -1220,16 +1361,22 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       let id = shown;
       let needDeleteCommitted = false;
       try {
-        const discarded = await VoiceNotes.discard();
+        // By its id where the engine can: refused, rather than discarding another recording, if this one ended first.
+        const discarding = VoiceNotes.discard(captureCapabilities().scopedDiscard && shown ? { id: shown } : undefined);
+        endingControl = discarding;
+        const discarded = await discarding.finally(() => { if (endingControl === discarding) endingControl = null; });
+        if (shown) endRecording(shown);
+        if (discarded.id) endRecording(discarded.id);
         if (discarded.id && discarded.id !== id) {
           if (shown) unmarkDiscarded(shown);
           id = discarded.id;
           markDiscarded(id);
         }
       } catch (caught) {
-        // not_recording: the limit stopped it first, and its save meets the mark.
+        // not_recording / recording_changed: the limit stopped it first, and its save meets the mark.
         // no_audio_captured: the phone kept nothing.
-        const code = errorCode(caught);
+        const code = errorCode(caught) === "recording_changed" ? "not_recording" : errorCode(caught);
+        if (shown && (code === "already_committed" || code === "not_recording" || code === "no_audio_captured")) endRecording(shown);
         if (code === "already_committed") {
           if (shown) unmarkDiscarded(shown);
           await reconcileDiscardFailure(shown, `Already saved on this ${recorderDevice()}. The note is still available.`);
