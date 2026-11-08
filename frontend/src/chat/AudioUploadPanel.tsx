@@ -544,6 +544,9 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const onTranscribe = useCallback(() => {
     if (file === null || isHomeReauthorizing()) return;
     const start = () => {
+      // A start deferred behind a consent can land while a Home re-authorise has OpenKey open: the runner refuses it
+      // then, so keep the chosen file for a later Transcribe.
+      if (isHomeReauthorizing()) return;
       uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
       setFile(null);
     };

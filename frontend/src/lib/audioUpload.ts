@@ -38,6 +38,7 @@ import type { NormalizedMeeting } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { NO_SPEECH_MESSAGE, type LocalTranscriptSaver, type PreparedLocalTranscript } from "./localTranscriber";
 import { accountStorageKey } from "./voiceNotes/sourcePins";
+import { admitHomeWork } from "./homeReauthorizing";
 import {
   createCloudJobPoller,
   privateCloudMessage,
@@ -991,8 +992,12 @@ export function createUploadRunner(): UploadRunner {
 
   const resume = (deps: UploadDeps) => {
     if (running || (state !== null && state.stage !== "elsewhere")) return;
+    // Refused while a Home re-authorise is in progress; once admitted, it holds its place until the run ends.
+    const release = admitHomeWork("upload");
+    if (!release) return;
     const owned = (job: PendingUpload | null): job is PendingUpload => job !== null && job.owner === deps.tcw.did;
     if (!owned(pendingOf(deps).read())) {
+      release();
       if (state !== null) {
         state = null;
         notify();
@@ -1004,12 +1009,14 @@ export function createUploadRunner(): UploadRunner {
     void (async () => {
       const claimed = await claim(deps);
       if (gen !== epoch) {
+        release();
         if (claimed) unlock();
         return;
       }
       // Read again under the lock: the tab that held it may have finished the job.
       const job = pendingOf(deps).read();
       if (!claimed || !owned(job)) {
+        release();
         running = false;
         if (!claimed) showElsewhere(job);
         else {
@@ -1025,7 +1032,7 @@ export function createUploadRunner(): UploadRunner {
       audioTask = null;
       audioAbort = null;
       show(job);
-      void run(deps, job);
+      void run(deps, job).finally(release);
     })();
   };
 
@@ -1056,16 +1063,22 @@ export function createUploadRunner(): UploadRunner {
 
     start(deps, input) {
       if (running) return;
+      // Refused while a Home re-authorise is in progress (this covers a start deferred behind a consent); once
+      // admitted, it holds its place until the run ends.
+      const release = admitHomeWork("upload");
+      if (!release) return;
       running = true;
       const gen = epoch;
       void (async () => {
         await stopAudio();
         const claimed = await claim(deps);
         if (gen !== epoch) {
+          release();
           if (claimed) unlock();
           return;
         }
         if (!claimed) {
+          release();
           // Another tab owns the stored upload; writing a new one would take it from under it.
           running = false;
           showElsewhere(pendingOf(deps).read(), input);
@@ -1086,7 +1099,7 @@ export function createUploadRunner(): UploadRunner {
           saved: false,
         });
         show(job);
-        void run(deps, job);
+        void run(deps, job).finally(release);
       })();
     },
 
@@ -1098,10 +1111,12 @@ export function createUploadRunner(): UploadRunner {
         return;
       }
       if (running || current === null || state === null || current.owner !== deps.tcw.did) return;
+      const release = admitHomeWork("upload");
+      if (!release) return;
       // A failed audio store is tried again while the file is here; a stored or quota outcome stands.
       if (file !== null && state.audio.stage === "failed") audioTask = null;
       set({ stage: current.saved ? "saving" : "preparing", error: null, detail: null });
-      void run(deps, current);
+      void run(deps, current).finally(release);
     },
 
     async dismiss(deps) {
@@ -1119,9 +1134,15 @@ export function createUploadRunner(): UploadRunner {
         reset();
         return;
       }
-      const discarding = persist(deps, { ...job, discarding: true });
-      set({ stage: "saving", cleanupPending: true, error: null, detail: "Deleting the remote copy…" });
-      await run(deps, discarding);
+      const release = admitHomeWork("upload");
+      if (!release) return;
+      try {
+        const discarding = persist(deps, { ...job, discarding: true });
+        set({ stage: "saving", cleanupPending: true, error: null, detail: "Deleting the remote copy…" });
+        await run(deps, discarding);
+      } finally {
+        release();
+      }
     },
 
     reset,
