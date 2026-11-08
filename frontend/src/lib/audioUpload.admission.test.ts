@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createUploadRunner, type UploadDeps } from "./audioUpload";
-import { __resetHomeWorkForTests, homeWorkRunning, setHomeReauthorizing } from "./homeReauthorizing";
+import { __resetHomeWorkForTests, homeWorkRunning, setHomeReauthorizing, subscribeHomeReauthorizing } from "./homeReauthorizing";
+import { homeWorkBusyNow } from "./inFlightWork";
 
 beforeEach(() => { __resetHomeWorkForTests(); });
 afterEach(() => { setHomeReauthorizing(false); });
@@ -71,4 +72,35 @@ test("Retry and Discard on a failed upload are refused during a re-authorise, an
   expect(runner.snapshot()?.stage).toBe("preparing");
   expect(homeWorkRunning("upload")).toBe(true);
   runner.reset();
+});
+
+test("a retryable transcription failure keeps the upload counted as running until its audio is stored, then lets go", async () => {
+  const runner = createUploadRunner();
+  const store = Promise.withResolvers<void>();
+  let job: unknown = null;
+  const deps = {
+    tcw: { did: "did:example:a", kv: {} },
+    lock: async () => () => {},
+    pending: { read: () => job, write: (next: unknown) => { job = next; }, clear: () => { job = null; } },
+    // The audio is still being written to the space when the transcription fails.
+    audio: { put: () => store.promise, manifest: async () => null, remove: async () => {} },
+    assemblyAiClient: async () => ({ upload: async () => { throw new Error("network down"); } }),
+  } as unknown as UploadDeps;
+  const failed = new Promise<void>((resolve) => {
+    const off = runner.subscribe(() => { if (runner.snapshot()?.stage === "failed") { off(); resolve(); } });
+  });
+  runner.start(deps, { file: new File(["x"], "standup.mp3", { type: "audio/mpeg" }), engine: "assemblyai", diarize: false, assemblyAiMode: "hosted" });
+  await failed;
+  expect(runner.snapshot()?.error?.retry).toBe(true);
+  expect(runner.snapshot()?.audio.stage).toBe("storing");
+  // Let the failed run finish (it ends a few microtasks after it reports the failure).
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  expect(homeWorkBusyNow()).toBe(true);
+  const released = new Promise<void>((resolve) => {
+    const off = subscribeHomeReauthorizing(() => { if (!homeWorkRunning("upload")) { off(); resolve(); } });
+  });
+  store.resolve();
+  await released;
+  expect(runner.snapshot()?.audio.stage).toBe("stored");
+  expect(homeWorkRunning("upload")).toBe(false);
 });

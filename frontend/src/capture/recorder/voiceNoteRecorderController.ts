@@ -346,6 +346,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let homeWork: (() => void) | null = null;
   // A detached recorder (signed out, unmounted) holds nothing, whatever late events it still hears.
   let homeWorkDetached = false;
+  // The start in progress (waiting on the defaults or the microphone). Detach cancels it and hands it the place.
+  interface PendingStart { cancelled: boolean; release: (() => void) | null }
+  let pendingStart: PendingStart | null = null;
 
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
@@ -955,9 +958,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not attach capture scan", caught));
       return () => {
         attached = false;
-        // Detached (signed out or unmounted): this recorder no longer holds a place at the Home work boundary.
+        // Detached (signed out or unmounted): this recorder no longer holds a place at the Home work boundary, except
+        // for a start still waiting (on the microphone): that is cancelled, and keeps its place until it has ended.
         homeWorkDetached = true;
-        homeWork?.();
+        if (pendingStart) {
+          pendingStart.cancelled = true;
+          pendingStart.release = homeWork;
+        } else homeWork?.();
         homeWork = null;
         setCapturePlaybackBlocked(false);
         noteAttached = false;
@@ -983,6 +990,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (!admitted) return;
       homeWork?.();
       homeWork = admitted;
+      const attempt: PendingStart = { cancelled: false, release: null };
+      pendingStart = attempt;
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
@@ -992,6 +1001,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();
+        if (attempt.cancelled) return;
         if (captureEngineKind() === "web" && typeof navigator !== "undefined")
           void navigator.storage?.persist?.().catch(() => undefined);
         const started = await VoiceNotes.start({ maxDurationMs: requested,
@@ -1005,6 +1015,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         } catch (caught) {
           console.warn("[VoiceNotes] Started, but recording options could not be read", caught);
         }
+        if (attempt.cancelled) {
+          // Detached while the microphone was being asked: the recording must not go live without its recorder.
+          await VoiceNotes.discard().catch((caught: unknown) => console.warn("[VoiceNotes] Could not stop a recording started after its recorder closed", caught));
+          return;
+        }
         send({
           type: "STARTED",
           id: started.id,
@@ -1014,11 +1029,16 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           autoStop,
         });
       } catch (caught) {
+        if (attempt.cancelled) return;
         send({ type: "START_FAILED", error: messageOf(caught) });
         if (errorCode(caught) === "permission_denied") {
           send({ type: "PERMISSION_DENIED" });
           present();
         }
+      } finally {
+        if (pendingStart === attempt) pendingStart = null;
+        // A cancelled start lets go of its place only now, once nothing it started is running.
+        attempt.release?.();
       }
     },
     async openSettings() {
