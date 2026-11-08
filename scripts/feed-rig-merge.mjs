@@ -50,7 +50,7 @@ for (const state of Object.values(fixture.states)) {
       const moved = structuredClone(entry);
       moved.source = real.source;
       const { replies: _replies, ...payload } = real.state.card.payload ?? {};
-      moved.state.card = { ...moved.state.card, cardId, title, body, kind, needsResponse, urgency: real.state.card.urgency, payload: { ...payload, render: "thread" }, ...(choices ? { choices } : {}) };
+      moved.state.card = { ...moved.state.card, cardId, title, body, kind, needsResponse, urgency: real.state.card.urgency, payload: { ...payload, render: entry.state.card.payload?.render ?? "post" }, ...(choices ? { choices } : {}) };
       moved.view = { ...moved.view, sourceId: real.source.sourceId, cardId };
       moved.responses = (moved.responses ?? []).map((response) => ({ ...response, cardId }));
       return moved;

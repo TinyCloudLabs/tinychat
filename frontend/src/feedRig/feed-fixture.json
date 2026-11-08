@@ -447,7 +447,7 @@
                   }
                 ],
                 "payload": {
-                  "render": "thread",
+                  "render": "post",
                   "source": {
                     "label": "Owner's board",
                     "url": "https://example.com/board"
@@ -1730,14 +1730,14 @@
             "state": {
               "card": {
                 "cardId": "generic-flight",
-                "revision": 2,
-                "issuanceId": "generic-flight-i2",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
                 "kind": "question",
                 "needsResponse": true,
                 "title": "Which flight should I hold for Thursday?",
                 "body": "Two flights fit your calendar. Holding one is free for 24 hours.",
                 "urgency": 2,
-                "createdAt": "2026-11-06T09:52:00.000Z",
+                "createdAt": "2026-11-06T09:30:00.000Z",
                 "choices": [
                   {
                     "id": "early",
@@ -1749,12 +1749,7 @@
                   }
                 ],
                 "payload": {
-                  "render": "thread",
-                  "replies": [
-                    {
-                      "text": "Yes. Both fares are refundable until Wednesday 18:00, so holding either is safe."
-                    }
-                  ]
+                  "render": "post"
                 }
               },
               "response": null,
@@ -1764,10 +1759,21 @@
             "view": {
               "sourceId": "travel",
               "cardId": "generic-flight",
-              "revision": 2,
-              "issuanceId": "generic-flight-i2"
+              "revision": 1,
+              "issuanceId": "generic-flight-i1"
             },
-            "responses": [],
+            "responses": [
+              {
+                "responseId": "generic-flight-owner-message-1",
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "message",
+                "text": "Is the 07:10 refundable if the meeting moves?",
+                "createdAt": "2026-11-06T09:40:00.000Z",
+                "sequence": 900
+              }
+            ],
             "viewEvents": []
           },
           {
@@ -2300,72 +2306,7 @@
           ],
           "deliveries": []
         },
-        "historicalEntries": [
-          {
-            "source": {
-              "sourceId": "travel",
-              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
-              "label": "Travel agent",
-              "output": {
-                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
-                "database": "xyz.tinycloud.tinychat/feed/feed_output_travel"
-              },
-              "responses": {
-                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
-                "database": "xyz.tinycloud.tinychat/feed/feed_responses_travel"
-              }
-            },
-            "state": {
-              "card": {
-                "cardId": "generic-flight",
-                "revision": 1,
-                "issuanceId": "generic-flight-i1",
-                "kind": "question",
-                "needsResponse": true,
-                "title": "Which flight should I hold for Thursday?",
-                "body": "Two flights fit your calendar. Holding one is free for 24 hours.",
-                "urgency": 2,
-                "createdAt": "2026-11-06T09:30:00.000Z",
-                "choices": [
-                  {
-                    "id": "early",
-                    "label": "07:10 direct"
-                  },
-                  {
-                    "id": "later",
-                    "label": "09:40, one stop"
-                  }
-                ],
-                "payload": {
-                  "render": "thread"
-                }
-              },
-              "response": null,
-              "acknowledgement": null,
-              "outcome": null
-            },
-            "view": {
-              "sourceId": "travel",
-              "cardId": "generic-flight",
-              "revision": 1,
-              "issuanceId": "generic-flight-i1"
-            },
-            "responses": [
-              {
-                "responseId": "generic-flight-owner-message-1",
-                "cardId": "generic-flight",
-                "revision": 1,
-                "issuanceId": "generic-flight-i1",
-                "kind": "message",
-                "text": "Is the 07:10 refundable if the meeting moves?",
-                "createdAt": "2026-11-06T09:40:00.000Z",
-                "sequence": 900
-              }
-            ],
-            "viewEvents": [],
-            "currentIssuance": false
-          }
-        ]
+        "historicalEntries": []
       }
     },
     "offline": {
