@@ -159,6 +159,16 @@ describe("registration", () => {
       __resetCaptureEngineForTests();
     }
   });
+
+  test("the web engine has none of the native capabilities, and discards by id", async () => {
+    rig = await createRig();
+    const engine = await startWebCaptureEngine({ store: rig.store, captureEnv: () => rig.fake.env, now: rig.clock.now });
+    expect(engine.capabilities).toEqual({
+      nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
+      background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false, nativeFileUpload: false,
+      scopedDiscard: true,
+    });
+  });
 });
 
 describe("a recorded web note reaches private-cloud transcription", () => {
