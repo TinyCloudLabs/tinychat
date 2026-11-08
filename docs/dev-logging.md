@@ -203,10 +203,11 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   barrier, except on `tinychat_request` lines, whose 64-hex `account_hash` it would erase; the allowlist checks each
   of their fields against a strict pattern instead.
 - **Request records (TC-2537).** The allowlist rebuilds each `tinychat_request` from these fields only:
-  `request_id`, `method`, `route`, `status`, `duration_ms` (0.1 ms), `stream`, `code`, `credits`, `account_hash`,
-  plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`. `request_id_replaced`, `correlation_id`
-  and any other key are dropped; a malformed `request_id` or `status` drops the record; an off-shape route becomes
-  `unmatched` and an off-shape optional field is omitted. Bodies, prompts, replies, headers, keys, tokens, emails
+  `request_id`, `method`, `route_template` (the record's `route`), `status`, `duration_ms` (0.1 ms), `stream`, `code`,
+  `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
+  `request_id_replaced`, `correlation_id` and any other key are dropped; a malformed `request_id` or `status` drops
+  the record; a route that is not template-shaped or is longer than 64 characters ships as `unmatched`, and an
+  off-shape optional field is omitted. Bodies, prompts, replies, headers, keys, tokens, emails
   and IPs are never fields. To bound volume on the shared Better Stack allowance, at most 10 problem records
   (5xx, stream `error` or `aborted`) and 20 other records per minute ship; the rest are dropped (Vector `throttle`).
   `backend/src/__tests__/request-record.test.ts` sends a chat turn carrying each kind of sensitive value and checks

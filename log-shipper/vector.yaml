@@ -80,7 +80,7 @@ transforms:
           method = string(j.method) ?? ""
           if !includes(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER"], method) { abort }
           route = string(j.route) ?? ""
-          if length(route) > 160 || !match(route, r'^(?:unmatched|/[A-Za-z0-9_.:*/-]{0,159})$') { route = "unmatched" }
+          if length(route) > 64 || !match(route, r'^(?:unmatched|/[A-Za-z0-9_.:*/-]{0,63})$') { route = "unmatched" }
           if !is_integer(j.status) { abort }
           status = int(j.status) ?? 0
           if status < 100 || status > 599 { abort }
@@ -89,7 +89,7 @@ transforms:
           if duration_ms < 0.0 || duration_ms > 86400000.0 { abort }
           request_level = "info"
           if status >= 500 { request_level = "error" }
-          out = {"svc": "backend", "event": "tinychat_request", "level": request_level, "ts": ts, "request_id": request_id, "method": method, "route": route, "status": status, "duration_ms": duration_ms}
+          out = {"svc": "backend", "event": "tinychat_request", "level": request_level, "ts": ts, "request_id": request_id, "method": method, "route_template": route, "status": status, "duration_ms": duration_ms}
           stream = string(j.stream) ?? ""
           if includes(["done", "error", "aborted"], stream) { out.stream = stream }
           code = string(j.code) ?? ""

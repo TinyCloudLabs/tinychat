@@ -42,7 +42,7 @@ const FORBIDDEN = [...Object.values(CANARY), ADDRESS, ADDRESS.toLowerCase(), ADD
 
 /** Every field the shipped tinychat_request record may carry (TC-2537 allow-list plus the svc/event/level/ts envelope). */
 const SHIPPED_FIELDS = [
-  "account_hash", "code", "credits", "duration_ms", "event", "level", "method", "request_id", "route", "status", "stream", "svc", "ts",
+  "account_hash", "code", "credits", "duration_ms", "event", "level", "method", "request_id", "route_template", "status", "stream", "svc", "ts",
 ];
 
 const ORIGINAL_ENV = { ...process.env };
@@ -271,7 +271,7 @@ describe("TC-2537 request record", () => {
         expect(Object.keys(shipped[0]).sort()).toEqual(SHIPPED_FIELDS.filter(key => key !== "code"));
         expect(shipped[0]).toMatchObject({
           svc: "backend", event: "tinychat_request", level: "info", request_id: REQUEST_ID, method: "POST",
-          route: "/api/chat", status: 200, stream: "done", credits: 13, account_hash: expectedHash,
+          route_template: "/api/chat", status: 200, stream: "done", credits: 13, account_hash: expectedHash,
         });
         const text = JSON.stringify(shipped[0]);
         for (const value of FORBIDDEN) expect(text).not.toContain(value);

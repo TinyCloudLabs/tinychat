@@ -126,7 +126,7 @@
         "failure": { "type": "enum", "values": ["ledger_config", "secret_reuse", "secret_too_weak", "fireflies_oauth_config", "google_oauth_config", "hosted_spool", "private_cloud_config", "unclassified"] },
         "error_name": { "type": "string", "regex": "^[A-Za-z0-9_.]{1,64}$", "max_len": 64 },
         "component": { "type": "string", "regex": "^[a-z0-9][a-z0-9_.-]{0,39}$", "max_len": 40 },
-        "route": { "type": "string", "regex": "^(?:[a-z_]{1,40}|/[A-Za-z0-9_.:*/-]{0,159})$", "max_len": 160 },
+        "route": { "type": "string", "regex": "^[a-z_]{1,40}$", "max_len": 40 },
         "status": { "type": "integer", "min": 100, "max": 599 },
         "upstream_status": { "type": "integer", "min": 100, "max": 599 },
         "code": { "type": "string", "regex": "^[a-z][a-z0-9_]{0,59}$", "max_len": 60 },
@@ -144,7 +144,8 @@
         "duration_ms": { "type": "number", "min": 0, "max": 86400000 },
         "stream": { "type": "enum", "values": ["done", "error", "aborted"] },
         "credits": { "type": "integer", "min": 0, "max": 1000000000 },
-        "account_hash": { "type": "string", "regex": "^[0-9a-f]{64}$", "max_len": 64 }
+        "account_hash": { "type": "string", "regex": "^[0-9a-f]{64}$", "max_len": 64 },
+        "route_template": { "type": "string", "regex": "^(?:unmatched|/[A-Za-z0-9_.:*/-]{0,63})$", "max_len": 64 }
       }
     },
     "tinycloud-mcp": { "events": [], "fields": {} },
