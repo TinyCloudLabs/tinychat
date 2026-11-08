@@ -189,9 +189,16 @@ export function createRequestContextMiddleware(emit: EventSink = emitToStdout): 
     notes.set(res, note);
     let ended: number | undefined;
     let emitted = false;
+    let holdLimit: NodeJS.Timeout | undefined;
     const send = () => {
       if (emitted || ended === undefined) return;
       emitted = true;
+      // Nothing may keep this request (and its parsed body) reachable once the record is out.
+      clearTimeout(holdLimit);
+      holdLimit = undefined;
+      note.release = undefined;
+      res.off("finish", end);
+      res.off("close", end);
       try {
         const correlation = res.getHeader("x-correlation-id");
         const address = req.user?.address;
@@ -221,7 +228,8 @@ export function createRequestContextMiddleware(emit: EventSink = emitToStdout): 
       if (ended !== undefined) return;
       ended = performance.now();
       if (note.holds === 0) return send();
-      setTimeout(send, RECORD_HOLD_LIMIT_MS).unref?.();
+      holdLimit = setTimeout(send, RECORD_HOLD_LIMIT_MS);
+      holdLimit.unref?.();
     };
     context.run({ requestId, emit }, () => {
       res.once("finish", end);

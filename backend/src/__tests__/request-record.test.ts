@@ -1,4 +1,5 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { EventEmitter } from "node:events";
 import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
@@ -14,6 +15,7 @@ import { _resetUsage } from "../billing/usage.js";
 import {
   configureRequestLogAccountHash,
   createRequestContextMiddleware,
+  recordAfterHandler,
   recordMountTemplates,
   type RequestEvent,
 } from "../request-context.js";
@@ -245,6 +247,54 @@ describe("TC-2537 request record", () => {
       expect(JSON.stringify(record)).not.toContain(CANARY.pathToken);
     } finally {
       await server.close();
+    }
+  });
+
+  /** A response that ends while a streaming handler still owes its charge; fake timers expose the hold timer. */
+  function heldStream() {
+    const turn = recorder();
+    const res = Object.assign(new EventEmitter(), {
+      headersSent: true, statusCode: 200, setHeader: () => {}, getHeader: () => undefined,
+    });
+    // Synthetic Express objects: the middleware and wrapper read only the members defined here.
+    const expressReq = { method: "POST", baseUrl: "", route: { path: "/stream" }, get: () => undefined } as unknown as Request;
+    const expressRes = res as unknown as Response;
+    createRequestContextMiddleware(turn.sink)(expressReq, expressRes, () => {});
+    let settle!: () => void;
+    const handled = recordAfterHandler(() => new Promise<void>(done => { settle = done; }))(expressReq, expressRes, () => {});
+    res.emit("finish");
+    return { turn, res, settle: () => { settle(); return handled; } };
+  }
+
+  test("a handler that settles after the response ends leaves no hold timer behind", async () => {
+    vi.useFakeTimers();
+    try {
+      const held = heldStream();
+      expect(held.turn.events).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(1);
+      await held.settle();
+      expect(held.turn.events).toHaveLength(1);
+      // Nothing outside the response still references the request once its record is out.
+      expect(vi.getTimerCount()).toBe(0);
+      expect(held.res.listenerCount("finish") + held.res.listenerCount("close")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a handler that never settles still gets its record after 30 seconds, once", async () => {
+    vi.useFakeTimers();
+    try {
+      const held = heldStream();
+      vi.advanceTimersByTime(29_999);
+      expect(held.turn.events).toHaveLength(0);
+      vi.advanceTimersByTime(1);
+      expect(held.turn.events).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+      await held.settle();
+      expect(held.turn.events).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
