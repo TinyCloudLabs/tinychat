@@ -21,7 +21,8 @@ import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
 import { __resetHomeWorkForTests, homeWorkRunning, setHomeReauthorizing, subscribeHomeReauthorizing } from "@/lib/homeReauthorizing";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
-import { __setCancelledStartRetryForTests } from "./voiceNoteRecorderController";
+import { __setCancelledStartWatchForTests } from "./voiceNoteRecorderController";
+import { playbackBlocked } from "@/lib/audio/playback";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const global = globalThis as Record<string, unknown>;
@@ -166,6 +167,12 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
     registerCaptureEngine(kind, async () => strict.engine);
     await installCaptureEngine();
   }
+  await renderRecorder(recovery, providerProps);
+  return { ...strict, stt };
+}
+
+/** Mounts the recorder over the engine already installed; a second call after unmounting is a replacement recorder. */
+async function renderRecorder(recovery?: { pipeline: unknown }, providerProps: { onSignIn?: () => void | Promise<void>; minimiseOnSignIn?: boolean } = {}) {
   const tcw = { did: "did:example:alice", ...(recovery ? { spaceId: "space:alice" } : {}) } as TinyCloudWeb;
   root = createRoot({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: documentStub, textContent: "", addEventListener() {}, removeEventListener() {},
     appendChild() {}, removeChild() {}, insertBefore() {} } as unknown as HTMLElement);
@@ -176,7 +183,6 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
     </RecorderProvider>,
   ));
   await act(async () => { await tick(); await tick(); });
-  return { ...strict, stt };
 }
 
 test("the recorder's sign-in minimises its sheet first when the app opens a sign-in screen of its own", async () => {
@@ -623,83 +629,98 @@ describe("web engine: no OnDeviceStt calls", () => {
     expect(homeWorkRunning("recording")).toBe(false);
   });
 
-  test("closed while the microphone is still being asked: still running until then, and a late start is stopped, not left live", async () => {
-    const { calls, fake } = await mount("web", NONE);
-    const start = fake.plugin.start.bind(fake.plugin);
-    const permission = Promise.withResolvers<void>();
-    fake.plugin.start = async (...args) => { await permission.promise; return start(...args); };
-    await act(async () => { value!.record(); await tick(); });
-    expect(homeWorkRunning("recording")).toBe(true);
-    // The recorder closes (sign-out, unmount) before the browser answers.
-    await act(async () => { root!.unmount(); });
-    root = null;
-    expect(homeWorkRunning("recording")).toBe(true);
-    // The owner allows the microphone afterwards: the recording starts, and is stopped and removed at once.
-    await act(async () => { permission.resolve(); await tick(); await tick(); });
-    expect(calls).toContain("discard");
-    expect((await fake.plugin.status()).intent).toBe("stopped");
-    expect(homeWorkRunning("recording")).toBe(false);
-  });
+  describe("a start whose recorder closed before the microphone answered", () => {
+    beforeEach(() => { __setCancelledStartWatchForTests([0]); });
+    afterEach(() => { __setCancelledStartWatchForTests(null); });
 
-  test("a late start whose stop is refused keeps counting as running while it records, until a later stop succeeds", async () => {
-    __setCancelledStartRetryForTests([0]);
-    try {
-      const { fake } = await mount("web", NONE);
-      const start = fake.plugin.start.bind(fake.plugin);
-      const discard = fake.plugin.discard.bind(fake.plugin);
-      const permission = Promise.withResolvers<void>();
-      fake.plugin.start = async (...args) => { await permission.promise; return start(...args); };
-      let engineBusy = true;
-      let refused = 0;
-      fake.plugin.discard = async () => {
-        if (engineBusy) { refused += 1; throw Object.assign(new Error("engine busy"), { code: "engine_busy" }); }
-        return discard();
-      };
-      await act(async () => { value!.record(); await tick(); });
-      await act(async () => { root!.unmount(); });
-      root = null;
-      await act(async () => { permission.resolve(); await tick(); await tick(); await tick(); });
-      // Refused, and tried again: the microphone is still on, so the recording still counts as running.
-      expect(refused).toBeGreaterThan(1);
-      expect((await fake.plugin.status()).state).toBe("recording");
-      expect(homeWorkRunning("recording")).toBe(true);
-      const released = new Promise<void>((resolve) => {
-        const off = subscribeHomeReauthorizing(() => { if (!homeWorkRunning("recording")) { off(); resolve(); } });
-      });
-      engineBusy = false;
-      await released;
-      expect((await fake.plugin.status()).state).toBe("idle");
-    } finally {
-      __setCancelledStartRetryForTests(null);
-    }
-  });
-
-  for (const when of ["while the microphone is still being asked", "while the engine's status is still being read"] as const) {
-    test(`closed ${when}, with a status read that never answers: the recording is stopped at once, and counts until it is`, async () => {
+    /** Record with the microphone still being asked, then close the recorder (sign-out, unmount). */
+    async function closeWhileAsking() {
       const { calls, fake } = await mount("web", NONE);
+      // The owner's own Discard announces the cleared notice on the window.
+      Object.assign(global.window, { dispatchEvent: () => true });
       const start = fake.plugin.start.bind(fake.plugin);
       const status = fake.plugin.status.bind(fake.plugin);
-      const discard = fake.plugin.discard.bind(fake.plugin);
       const permission = Promise.withResolvers<void>();
-      if (when === "while the microphone is still being asked") fake.plugin.start = async (...args) => { await permission.promise; return start(...args); };
-      else permission.resolve();
-      fake.plugin.status = () => new Promise(() => {});
-      const stopped = Promise.withResolvers<void>();
-      fake.plugin.discard = async () => { await stopped.promise; return discard(); };
+      fake.plugin.start = async (...args) => { await permission.promise; return start(...args); };
       await act(async () => { value!.record(); await tick(); });
-      expect(calls).not.toContain("discard");
       await act(async () => { root!.unmount(); });
       root = null;
-      const reads = calls.filter((call) => call === "status").length;
-      await act(async () => { permission.resolve(); await tick(); await tick(); });
-      // Stopping did not wait for the status read, and the place is kept until the engine has stopped.
-      expect(calls).toContain("discard");
-      // A start that resolves already cancelled is stopped before anything else is asked of the engine.
-      if (when === "while the microphone is still being asked") expect(calls.filter((call) => call === "status").length).toBe(reads);
-      expect(homeWorkRunning("recording")).toBe(true);
-      await act(async () => { stopped.resolve(); await tick(); await tick(); });
-      expect((await status()).state).toBe("idle");
-      expect(homeWorkRunning("recording")).toBe(false);
+      return { calls, fake, status, permission };
+    }
+    const releasedAll = () => new Promise<void>((resolve) => {
+      const off = subscribeHomeReauthorizing(() => { if (!homeWorkRunning("recording")) { off(); resolve(); } });
     });
-  }
+
+    test("the late recording is handed to the recorder open now; the closed one never stops it or touches its state", async () => {
+      const { calls, status, permission } = await closeWhileAsking();
+      expect(homeWorkRunning("recording")).toBe(true);
+      await renderRecorder();
+      expect(value!.phase).toBe("idle");
+      await act(async () => { permission.resolve(); await tick(); await tick(); });
+      const live = await status();
+      expect(live.state).toBe("recording");
+      // The open recorder shows it, and playback stays blocked while it captures, read after read.
+      for (let turn = 0; turn < 3; turn += 1) {
+        await act(async () => { for (let read = 0; read < 5; read += 1) await tick(); });
+        expect(value!).toMatchObject({ phase: "recording", recordingId: live.id, error: null });
+        expect(playbackBlocked()).toBe(true);
+        expect(homeWorkRunning("recording")).toBe(true);
+      }
+      expect(calls).not.toContain("discard");
+      expect(calls).not.toContain("stop");
+      // The owner ends it from the open recorder: then nothing is running.
+      const released = releasedAll();
+      await act(async () => { value!.discard(); await tick(); await tick(); });
+      await released;
+      expect((await status()).state).toBe("idle");
+    });
+
+    test("a stale status read answered after the owner started a new recording never ends that recording", async () => {
+      const { calls, fake, status, permission } = await closeWhileAsking();
+      await renderRecorder();
+      let gate: PromiseWithResolvers<void> | null = null;
+      fake.plugin.status = async () => {
+        const snapshot = await status();
+        const held = gate;
+        gate = null;
+        if (held) await held.promise;
+        return snapshot;
+      };
+      await act(async () => { permission.resolve(); await tick(); await tick(); });
+      const late = value!.recordingId;
+      expect(value!.phase).toBe("recording");
+      // The closed recorder's next read sees the late recording still live, and is held there.
+      const stale = Promise.withResolvers<void>();
+      gate = stale;
+      await act(async () => { await tick(); await tick(); });
+      expect(gate).toBeNull();
+      // Meanwhile the owner discards it and starts a new recording from the open recorder.
+      await act(async () => { value!.discard(); await tick(); await tick(); });
+      expect(value!.phase).toBe("idle");
+      await act(async () => { value!.record(); await tick(); await tick(); });
+      const fresh = value!.recordingId;
+      expect(fresh).not.toBeNull();
+      expect(fresh).not.toBe(late);
+      await act(async () => { stale.resolve(); for (let read = 0; read < 5; read += 1) await tick(); });
+      expect(await status()).toMatchObject({ state: "recording", id: fresh });
+      expect(value!).toMatchObject({ phase: "recording", recordingId: fresh });
+      // The only discard is the owner's own.
+      expect(calls.filter((call) => call === "discard")).toHaveLength(1);
+      expect(homeWorkRunning("recording")).toBe(true);
+    });
+
+    test("with no answer to its status read, the closed recorder asks once and waits, still counting it as running", async () => {
+      const { calls, fake, permission } = await closeWhileAsking();
+      await renderRecorder();
+      let reads = 0;
+      fake.plugin.status = () => { reads += 1; return new Promise(() => {}); };
+      await act(async () => { permission.resolve(); await tick(); await tick(); });
+      // One read by the closed recorder, one by the open recorder picking the recording up; neither repeats.
+      expect(reads).toBe(2);
+      await act(async () => { for (let turn = 0; turn < 10; turn += 1) await tick(); });
+      expect(reads).toBe(2);
+      expect(calls).not.toContain("discard");
+      expect(homeWorkRunning("recording")).toBe(true);
+    });
+  });
 });
