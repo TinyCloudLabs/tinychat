@@ -448,7 +448,8 @@ export function queueNotices(state: BackgroundSyncState): QueueNotice[] {
         kind: "pending",
         title: `${plural(queue.pendingCount, "meeting")} waiting`,
         detail: `Fireflies told us ${queue.pendingCount} ${queue.pendingCount === 1 ? "is" : "are"} ready. Your browser collects and saves them — that needs your Fireflies key, so it happens here.`,
-        action: "sync",
+        // Signed out of the vault, a sync only retries into the same auth error.
+        action: state.ingestBlocked === "secrets-locked" ? null : "sync",
         tone: "info",
       });
     }
