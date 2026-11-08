@@ -541,6 +541,14 @@ export function createUploadRunner(): UploadRunner {
   /** Aborts the running attempt's network work (uploads, polling); reset() fires it. */
   let runAbort: AbortController | null = null;
   const listeners = new Set<() => void>();
+  /** Storage writes and cleanups a run starts without awaiting them to the end (the audio store, a failed job's delete). */
+  const children = new Set<Promise<void>>();
+  const track = <T,>(work: Promise<T>): Promise<T> => {
+    const settled = work.then(() => undefined, () => undefined);
+    children.add(settled);
+    void settled.then(() => { children.delete(settled); });
+    return work;
+  };
 
   const notify = () => {
     for (const cb of listeners) cb();
@@ -637,17 +645,17 @@ export function createUploadRunner(): UploadRunner {
         await audio.remove(deps.tcw.kv, base).catch((err: unknown) => console.error("Removing partly stored audio failed", err));
         return { stored: false, reason: "failed" };
       };
-      return audio.manifest(deps.tcw.kv, base).then((manifest): AudioOutcome | Promise<AudioOutcome> => {
+      return track(audio.manifest(deps.tcw.kv, base).then((manifest): AudioOutcome | Promise<AudioOutcome> => {
         if (manifest === null) return notStored();
         runSet(r, { audio: { stage: "stored", pct: null } });
         return { stored: true };
-      }, notStored);
+      }, notStored));
     }
     const controller = new AbortController();
     audioAbort = controller;
     r.signal.addEventListener("abort", () => controller.abort(), { once: true });
     runSet(r, { audio: { stage: "storing", pct: 0 } });
-    return audio
+    return track(audio
       .put(deps.tcw.kv, base, blobPartSource(file), {
         fileName: file.name,
         mimeType: storedContentType(file),
@@ -669,7 +677,7 @@ export function createUploadRunner(): UploadRunner {
           runSet(r, { audio: { stage: quota ? "quota" : "failed", pct: null } });
           return { stored: false, reason: quota ? "quota" : "failed" };
         },
-      );
+      ));
   };
 
   async function transcribePrivate(deps: UploadDeps, job: PendingUpload, r: Run): Promise<UploadTranscript> {
@@ -954,7 +962,7 @@ export function createUploadRunner(): UploadRunner {
         // This job is over: Retry starts a new one, which needs the file.
         if (file === null) retry = false;
         else if (failed.jobId !== null) {
-          void deleteRemote(deps, failed, client).catch((e: unknown) => console.error("Deleting the failed job failed", e));
+          void track(deleteRemote(deps, failed, client)).catch((e: unknown) => console.error("Deleting the failed job failed", e));
           persist(deps, { ...failed, attemptId: crypto.randomUUID(), jobId: null, uploadRef: undefined, uploadSubmitting: undefined });
           sent = false;
         }
@@ -966,6 +974,19 @@ export function createUploadRunner(): UploadRunner {
         running = false;
         if (runAbort === controller) runAbort = null;
       }
+    }
+  }
+
+  /**
+   * A run, holding the Home work slot (`release`) until the run AND every storage write and cleanup it started have
+   * settled: a failed transcription can end the run while its audio is still being stored.
+   */
+  async function runHeld(deps: UploadDeps, job: PendingUpload, release: () => void): Promise<void> {
+    try {
+      await run(deps, job);
+    } finally {
+      while (children.size > 0) await Promise.all([...children]);
+      release();
     }
   }
 
@@ -1032,7 +1053,7 @@ export function createUploadRunner(): UploadRunner {
       audioTask = null;
       audioAbort = null;
       show(job);
-      void run(deps, job).finally(release);
+      void runHeld(deps, job, release);
     })();
   };
 
@@ -1099,7 +1120,7 @@ export function createUploadRunner(): UploadRunner {
           saved: false,
         });
         show(job);
-        void run(deps, job).finally(release);
+        void runHeld(deps, job, release);
       })();
     },
 
@@ -1116,7 +1137,7 @@ export function createUploadRunner(): UploadRunner {
       // A failed audio store is tried again while the file is here; a stored or quota outcome stands.
       if (file !== null && state.audio.stage === "failed") audioTask = null;
       set({ stage: current.saved ? "saving" : "preparing", error: null, detail: null });
-      void run(deps, current).finally(release);
+      void runHeld(deps, current, release);
     },
 
     async dismiss(deps) {
@@ -1136,13 +1157,9 @@ export function createUploadRunner(): UploadRunner {
       }
       const release = admitHomeWork("upload");
       if (!release) return;
-      try {
-        const discarding = persist(deps, { ...job, discarding: true });
-        set({ stage: "saving", cleanupPending: true, error: null, detail: "Deleting the remote copy…" });
-        await run(deps, discarding);
-      } finally {
-        release();
-      }
+      const discarding = persist(deps, { ...job, discarding: true });
+      set({ stage: "saving", cleanupPending: true, error: null, detail: "Deleting the remote copy…" });
+      await runHeld(deps, discarding, release);
     },
 
     reset,

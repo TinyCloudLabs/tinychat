@@ -621,4 +621,22 @@ describe("web engine: no OnDeviceStt calls", () => {
     await act(async () => { permission.reject(Object.assign(new Error("denied"), { code: "permission_denied" })); await tick(); });
     expect(homeWorkRunning("recording")).toBe(false);
   });
+
+  test("closed while the microphone is still being asked: still running until then, and a late start is stopped, not left live", async () => {
+    const { calls, fake } = await mount("web", NONE);
+    const start = fake.plugin.start.bind(fake.plugin);
+    const permission = Promise.withResolvers<void>();
+    fake.plugin.start = async (...args) => { await permission.promise; return start(...args); };
+    await act(async () => { value!.record(); await tick(); });
+    expect(homeWorkRunning("recording")).toBe(true);
+    // The recorder closes (sign-out, unmount) before the browser answers.
+    await act(async () => { root!.unmount(); });
+    root = null;
+    expect(homeWorkRunning("recording")).toBe(true);
+    // The owner allows the microphone afterwards: the recording starts, and is stopped and removed at once.
+    await act(async () => { permission.resolve(); await tick(); await tick(); });
+    expect(calls).toContain("discard");
+    expect((await fake.plugin.status()).intent).toBe("stopped");
+    expect(homeWorkRunning("recording")).toBe(false);
+  });
 });
