@@ -19,8 +19,9 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { VoiceNoteSaveDeferred } from "@/lib/voiceNotes/voiceNotePipeline";
 import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
-import { __resetHomeWorkForTests, homeWorkRunning, setHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { __resetHomeWorkForTests, homeWorkRunning, setHomeReauthorizing, subscribeHomeReauthorizing } from "@/lib/homeReauthorizing";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
+import { __setCancelledStartRetryForTests } from "./voiceNoteRecorderController";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const global = globalThis as Record<string, unknown>;
@@ -639,4 +640,66 @@ describe("web engine: no OnDeviceStt calls", () => {
     expect((await fake.plugin.status()).intent).toBe("stopped");
     expect(homeWorkRunning("recording")).toBe(false);
   });
+
+  test("a late start whose stop is refused keeps counting as running while it records, until a later stop succeeds", async () => {
+    __setCancelledStartRetryForTests([0]);
+    try {
+      const { fake } = await mount("web", NONE);
+      const start = fake.plugin.start.bind(fake.plugin);
+      const discard = fake.plugin.discard.bind(fake.plugin);
+      const permission = Promise.withResolvers<void>();
+      fake.plugin.start = async (...args) => { await permission.promise; return start(...args); };
+      let engineBusy = true;
+      let refused = 0;
+      fake.plugin.discard = async () => {
+        if (engineBusy) { refused += 1; throw Object.assign(new Error("engine busy"), { code: "engine_busy" }); }
+        return discard();
+      };
+      await act(async () => { value!.record(); await tick(); });
+      await act(async () => { root!.unmount(); });
+      root = null;
+      await act(async () => { permission.resolve(); await tick(); await tick(); await tick(); });
+      // Refused, and tried again: the microphone is still on, so the recording still counts as running.
+      expect(refused).toBeGreaterThan(1);
+      expect((await fake.plugin.status()).state).toBe("recording");
+      expect(homeWorkRunning("recording")).toBe(true);
+      const released = new Promise<void>((resolve) => {
+        const off = subscribeHomeReauthorizing(() => { if (!homeWorkRunning("recording")) { off(); resolve(); } });
+      });
+      engineBusy = false;
+      await released;
+      expect((await fake.plugin.status()).state).toBe("idle");
+    } finally {
+      __setCancelledStartRetryForTests(null);
+    }
+  });
+
+  for (const when of ["while the microphone is still being asked", "while the engine's status is still being read"] as const) {
+    test(`closed ${when}, with a status read that never answers: the recording is stopped at once, and counts until it is`, async () => {
+      const { calls, fake } = await mount("web", NONE);
+      const start = fake.plugin.start.bind(fake.plugin);
+      const status = fake.plugin.status.bind(fake.plugin);
+      const discard = fake.plugin.discard.bind(fake.plugin);
+      const permission = Promise.withResolvers<void>();
+      if (when === "while the microphone is still being asked") fake.plugin.start = async (...args) => { await permission.promise; return start(...args); };
+      else permission.resolve();
+      fake.plugin.status = () => new Promise(() => {});
+      const stopped = Promise.withResolvers<void>();
+      fake.plugin.discard = async () => { await stopped.promise; return discard(); };
+      await act(async () => { value!.record(); await tick(); });
+      expect(calls).not.toContain("discard");
+      await act(async () => { root!.unmount(); });
+      root = null;
+      const reads = calls.filter((call) => call === "status").length;
+      await act(async () => { permission.resolve(); await tick(); await tick(); });
+      // Stopping did not wait for the status read, and the place is kept until the engine has stopped.
+      expect(calls).toContain("discard");
+      // A start that resolves already cancelled is stopped before anything else is asked of the engine.
+      if (when === "while the microphone is still being asked") expect(calls.filter((call) => call === "status").length).toBe(reads);
+      expect(homeWorkRunning("recording")).toBe(true);
+      await act(async () => { stopped.resolve(); await tick(); await tick(); });
+      expect((await status()).state).toBe("idle");
+      expect(homeWorkRunning("recording")).toBe(false);
+    });
+  }
 });

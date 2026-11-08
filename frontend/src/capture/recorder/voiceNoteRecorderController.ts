@@ -159,6 +159,17 @@ export interface VoiceNoteRecorderController {
   subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
 
+// A recording that started after its recorder closed is stopped with these waits between tries; after the last, the
+// failure is reported and it keeps trying at the last interval until the engine has definitely stopped.
+const CANCELLED_START_RETRY_MS: readonly number[] = [1_000, 2_000, 5_000, 10_000, 30_000];
+let cancelledStartRetryMs = CANCELLED_START_RETRY_MS;
+/** Test seam: the waits between tries to stop a recording that started after its recorder closed. */
+export function __setCancelledStartRetryForTests(waits: readonly number[] | null) {
+  cancelledStartRetryMs = waits ?? CANCELLED_START_RETRY_MS;
+}
+/** How long a retry waits for the engine's status before skipping that try. */
+const CANCELLED_START_STATUS_MS = 5_000;
+
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
   subscribeAppActive, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
     const timer = setTimeout(retry, delayMs);
@@ -347,8 +358,51 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   // A detached recorder (signed out, unmounted) holds nothing, whatever late events it still hears.
   let homeWorkDetached = false;
   // The start in progress (waiting on the defaults or the microphone). Detach cancels it and hands it the place.
-  interface PendingStart { cancelled: boolean; release: (() => void) | null }
+  interface PendingStart {
+    cancelled: boolean;
+    release: (() => void) | null;
+    whenCancelled: Promise<void>;
+    signalCancelled: () => void;
+  }
   let pendingStart: PendingStart | null = null;
+
+  /** The engine's status, or null when it cannot be read in time. */
+  const statusWithin = async (ms: number): Promise<CaptureStatus | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); });
+    try {
+      return await Promise.race([VoiceNotes.status().catch(() => null), late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /** Stops a recording that started after its recorder closed (a cancelled start), and lets go of the start's place
+   * only once the engine has definitely stopped it: never while capture may continue. */
+  const stopCancelledStart = async (id: string, attempt: PendingStart) => {
+    for (let tries = 0; ; tries += 1) {
+      if (tries > 0) {
+        await new Promise((resolve) => setTimeout(resolve, cancelledStartRetryMs[Math.min(tries, cancelledStartRetryMs.length) - 1]));
+        // Stopped some other way (the owner, the limit) or replaced by another recording: nothing of this start runs.
+        // An unreadable status is no proof: try again later rather than discard what may be a newer recording.
+        const status = await statusWithin(CANCELLED_START_STATUS_MS);
+        if (status === null) continue;
+        if (status.state === "idle" || status.id !== id) break;
+      }
+      try {
+        await VoiceNotes.discard();
+        break;
+      } catch (caught) {
+        const code = errorCode(caught);
+        if (code === "not_recording" || code === "no_audio_captured") break;
+        console.warn("[VoiceNotes] Could not stop a recording started after its recorder closed", caught);
+        if (tries + 1 === cancelledStartRetryMs.length && state.phase === "starting")
+          send({ type: "START_FAILED", error: `Recording started after the recorder closed and could not be stopped: ${messageOf(caught)}` });
+      }
+    }
+    attempt.release?.();
+    attempt.release = null;
+  };
 
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
@@ -964,6 +1018,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (pendingStart) {
           pendingStart.cancelled = true;
           pendingStart.release = homeWork;
+          pendingStart.signalCancelled();
         } else homeWork?.();
         homeWork = null;
         setCapturePlaybackBlocked(false);
@@ -990,8 +1045,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (!admitted) return;
       homeWork?.();
       homeWork = admitted;
-      const attempt: PendingStart = { cancelled: false, release: null };
+      let signalCancelled = () => {};
+      const whenCancelled = new Promise<void>((resolve) => { signalCancelled = resolve; });
+      const attempt: PendingStart = { cancelled: false, release: null, whenCancelled, signalCancelled };
       pendingStart = attempt;
+      // Set once a started recording is handed to stopCancelledStart, which then owns the place.
+      let stopping = false;
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
@@ -1007,17 +1066,26 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const started = await VoiceNotes.start({ maxDurationMs: requested,
           uploadAudio: readUploadAudioPreference(),
           ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
-        const elapsedAt = Date.now();
-        nativeOptions = null;
-        try {
-          const status = await VoiceNotes.status();
-          if (status.id === started.id) acceptNativeOptions(status);
-        } catch (caught) {
-          console.warn("[VoiceNotes] Started, but recording options could not be read", caught);
-        }
         if (attempt.cancelled) {
           // Detached while the microphone was being asked: the recording must not go live without its recorder.
-          await VoiceNotes.discard().catch((caught: unknown) => console.warn("[VoiceNotes] Could not stop a recording started after its recorder closed", caught));
+          stopping = true;
+          void stopCancelledStart(started.id, attempt);
+          return;
+        }
+        const elapsedAt = Date.now();
+        nativeOptions = null;
+        // A detach while this read is still out stops the recording at once, without waiting for the read.
+        await Promise.race([
+          VoiceNotes.status().then((status) => {
+            if (!attempt.cancelled && status.id === started.id) acceptNativeOptions(status);
+          }, (caught: unknown) => {
+            if (!attempt.cancelled) console.warn("[VoiceNotes] Started, but recording options could not be read", caught);
+          }),
+          attempt.whenCancelled,
+        ]);
+        if (attempt.cancelled) {
+          stopping = true;
+          void stopCancelledStart(started.id, attempt);
           return;
         }
         send({
@@ -1037,8 +1105,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
       } finally {
         if (pendingStart === attempt) pendingStart = null;
-        // A cancelled start lets go of its place only now, once nothing it started is running.
-        attempt.release?.();
+        // A cancelled start that started nothing lets go of its place now; one that started a recording keeps it
+        // until that recording has definitely stopped.
+        if (!stopping) attempt.release?.();
       }
     },
     async openSettings() {
