@@ -45,6 +45,9 @@ import XCTest
         while engine.debugPendingStopFinalizations > 0 && Date() < deadline {
             _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
         }
+        if engine.debugPendingStopFinalizations > 0 {
+            XCTFail("Stop finalization still pending after drain")
+        }
     }
 
     private func withEngine(clock: CaptureClock = SystemCaptureClock(), realMux: Bool = false,
