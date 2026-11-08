@@ -141,7 +141,7 @@ import { appCorsOptions } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
-import { createRequestContextMiddleware, installRequestLogBoundary, parseRequestIdFirstPartyOrigins } from "./request-context.js";
+import { configureRequestLogAccountHash, createRequestContextMiddleware, installRequestLogBoundary, parseRequestIdFirstPartyOrigins, recordMountTemplates } from "./request-context.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
@@ -243,6 +243,17 @@ export function validateConnectorWebhookSecrets(env: NodeJS.ProcessEnv): {
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** TC-2537: key for the request record's account_hash. Missing or weak only drops that field; it never stops a boot. */
+function requestLogHmacKey(value: string | undefined): string | undefined {
+  try {
+    assertStrongSecret("REQUEST_LOG_HMAC_KEY", value);
+    return value;
+  } catch {
+    console.warn("[startup] REQUEST_LOG_HMAC_KEY is missing or too weak; request records omit account_hash");
+    return undefined;
   }
 }
 
@@ -482,7 +493,9 @@ async function main() {
 
   const app = express();
   installRequestLogBoundary();
+  configureRequestLogAccountHash(requestLogHmacKey(process.env.REQUEST_LOG_HMAC_KEY));
   app.use(createRequestContextMiddleware());
+  recordMountTemplates(app);
   if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
@@ -1006,7 +1019,8 @@ async function main() {
         // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
         // env read does not have. CORS also accepts Exo's fixed app origins, but the callback page
-        // stays pinned to this web origin; the Exo apps return through the fixed native deep link.
+        // stays pinned to this web origin (or the fixed Home origin for `home.`/`hometab.` states);
+        // the Exo apps return through the fixed native deep link.
         appOrigin: FRONTEND_URL,
       }),
     );
@@ -1042,6 +1056,8 @@ async function main() {
                 meetingContentRetrievalEnabled: meetingRollout.enabled,
                 meetingContentAccountAllowed: meetingRollout.accountAllowed,
                 meetingContentModelAllowed: meetingRollout.modelAllowed,
+                meetingContentMcpAccountAllowed: meetingRollout.mcpAccountAllowed,
+                meetingContentMcpModelAllowed: meetingRollout.mcpModelAllowed,
                 backendRevision: process.env.BUILD_REVISION ?? process.env.GIT_SHA ?? "unknown",
                 agentId: TINYCHAT_AGENT_ID,
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),

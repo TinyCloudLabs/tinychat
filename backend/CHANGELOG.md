@@ -1,5 +1,47 @@
 # @tinychat/backend
 
+## 0.8.0-beta.2
+
+### Patch Changes
+
+- 0d8fa35: Distinguish slow storage-lane waits from queue timeouts in private logs and include closed calendar failure classifications without account IDs, storage keys, values or error text. Preserve request-log rate limits and existing storage scheduling.
+
+  Bound every non-request log stream to ten samples per minute and retain pre-sampling outcome counts in one fixed-size summary per minute, without changing the existing request-record limits.
+
+## 0.8.0-beta.1
+
+### Minor Changes
+
+- e31dd71: Ship one metadata record per request to the private log sink: request id, route template, method, status, duration, stream outcome and code, credits charged and a keyed account hash (new optional `REQUEST_LOG_HMAC_KEY`). Records are capped per minute and never carry bodies, headers, keys, emails or IPs. The local `tinychat_request` event's `route` now includes the mount template (for example `/api/chat` instead of `/`).
+
+## 0.7.1-beta.0
+
+### Patch Changes
+
+- 9bf796f: Record legacy agent-turn credit usage before ending either successful or failed responses so immediate follow-up chat requests enforce the updated budget. Preserve the existing soft-cap policy and streamed answer.
+
+## 0.7.0
+
+### Minor Changes
+
+- a51b231: Adds https://home.tinycloud.xyz to the allowed web origins: CORS, the SIWE sign-in domain (signed like the production web domain), and the Google OAuth return. The OAuth `state` accepts two new tags, `home.<nonce>` for the popup return and `hometab.<path>.<nonce>` for the same-tab return; both go to the fixed Home origin. Untagged, `tab.` and `native.` flows are unchanged. Details: TC-2387
+
+### Patch Changes
+
+- 5d559f2: The validated meeting answer pipeline (interpretation, evidence ledger, draft validation, one repair, evidence fallback, coverage) now runs for accounts served by MCP chat when the meeting content rollout flags admit them; its reader compatibility check no longer calls eliza-service. For MCP turns only, `MEETING_CONTENT_TEST_ACCOUNTS` accepts `*` and an empty `MEETING_CONTENT_MODELS` admits every offered model. Claim citations in the validated render now carry the speaker and time, `[M1:E3, Speaker, hh:mm:ss]`, as tool results already do. An MCP turn refuses a tool name the MCP wrapper does not serve instead of forwarding it to eliza-service. Default behaviour is unchanged. Details: TC-2196
+
+## 0.7.0-beta.1
+
+### Minor Changes
+
+- a51b231: Adds https://home.tinycloud.xyz to the allowed web origins: CORS, the SIWE sign-in domain (signed like the production web domain), and the Google OAuth return. The OAuth `state` accepts two new tags, `home.<nonce>` for the popup return and `hometab.<path>.<nonce>` for the same-tab return; both go to the fixed Home origin. Untagged, `tab.` and `native.` flows are unchanged. Details: TC-2387
+
+## 0.6.1-beta.0
+
+### Patch Changes
+
+- 5d559f2: The validated meeting answer pipeline (interpretation, evidence ledger, draft validation, one repair, evidence fallback, coverage) now runs for accounts served by MCP chat when the meeting content rollout flags admit them; its reader compatibility check no longer calls eliza-service. For MCP turns only, `MEETING_CONTENT_TEST_ACCOUNTS` accepts `*` and an empty `MEETING_CONTENT_MODELS` admits every offered model. Claim citations in the validated render now carry the speaker and time, `[M1:E3, Speaker, hh:mm:ss]`, as tool results already do. An MCP turn refuses a tool name the MCP wrapper does not serve instead of forwarding it to eliza-service. Default behaviour is unchanged. Details: TC-2196
+
 ## 0.6.0
 
 ### Minor Changes

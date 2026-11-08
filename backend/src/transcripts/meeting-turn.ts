@@ -292,7 +292,7 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
     let capability: any;
     try { capability = await inSlice(Math.min(10000, retrievalDeadline - Date.now()), params.signal, "retrieval_budget", params.capability); } catch { abortCheck(params.signal); }
     if (capability?.meetingRetrieval?.contractVersion !== 2 || typeof capability.buildRevision !== "string" || !capability.buildRevision || capability.buildRevision === "unknown") return await deliver("Meeting retrieval is temporarily unavailable because the reader service has not passed its compatibility check.", "meeting_feature_unavailable");
-    trace.elizaRevision = capability.buildRevision; trace.contractVersion = 2;
+    trace.readerRevision = capability.buildRevision; trace.contractVersion = 2;
     let delegationCode: string | undefined;
     let accessDenied = false;
     let resultSizeLimit = false;

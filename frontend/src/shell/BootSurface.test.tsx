@@ -35,3 +35,9 @@ test("an ordinary error shows no link", () => {
   const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error="Couldn't sign in. Please try again." onAction={() => {}} />);
   expect(markup).not.toContain("<a ");
 });
+
+test("the product name on the boot screen is the one it is given", () => {
+  const markup = renderToStaticMarkup(<BootSurface state="booting" error={null} onAction={() => {}} appName="TinyCloud Home" />);
+  expect(markup).toContain(">TinyCloud Home</h1>");
+  expect(markup).not.toContain(">Exo</h1>");
+});

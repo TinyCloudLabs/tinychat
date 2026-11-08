@@ -21,7 +21,7 @@ test("request console and dependency stdout/stderr redact forbidden values at th
   const requests = events.filter(event => event.event === "tinychat_request");
   expect(requests).toEqual([{
     event: "tinychat_request", request_id: "12345678-abcd-4abc-8abc-123456789abc",
-    method: "GET", route: "/canary/:id", status: 204, duration_ms: expect.any(Number), request_id_replaced: false,
+    method: "GET", route: "/api/manifest/canary/:id", status: 204, duration_ms: expect.any(Number), request_id_replaced: false,
   }]);
 });
 

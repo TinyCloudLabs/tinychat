@@ -28,15 +28,19 @@ transforms:
       msg = replace(msg, r'\x1b\[[0-9;]*[A-Za-z]', "")
       # Stack frames, source snippets and the runtime banner that follow an error line carry no class or event of their own.
       if match(msg, r'^(?:\s|[0-9]+ \| |Bun v)') { abort }
-      msg = replace(msg, r'(?i)did:[a-z0-9]+:[A-Za-z0-9._:%-]+', "[did]")
-      msg = replace(msg, r'(?i)\b0x[0-9a-f]{8,}\b', "[hex]")
-      msg = replace(msg, r'eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*', "[jwt]")
-      msg = replace(msg, r'(?i)bearer\s+\S+', "bearer [redacted]")
-      msg = replace(msg, r'(?i)\b(?:sk|pk|tc|tcu|key|ghp|xox[a-z])[_-][A-Za-z0-9_-]{12,}', "[key]")
-      msg = replace(msg, r'[A-Za-z][A-Za-z0-9+.-]*://\S+', "[url]")
-      msg = replace(msg, r'[\w.+-]+@[\w-]+\.[\w.-]+', "[email]")
-      msg = replace(msg, r'[A-Za-z0-9+/=_]{32,}', "[long]")
-      msg = replace(msg, r'[A-Za-z0-9_-]{43,}', "[long]")
+      # The typed request record carries a 64-hex account_hash that `[long]` would erase; the allowlist checks
+      # every one of its fields against a strict pattern instead, so free-text redaction is not applied to it.
+      if !starts_with(msg, "{\"event\":\"tinychat_request\",") {
+        msg = replace(msg, r'(?i)did:[a-z0-9]+:[A-Za-z0-9._:%-]+', "[did]")
+        msg = replace(msg, r'(?i)\b0x[0-9a-f]{8,}\b', "[hex]")
+        msg = replace(msg, r'eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*', "[jwt]")
+        msg = replace(msg, r'(?i)bearer\s+\S+', "bearer [redacted]")
+        msg = replace(msg, r'(?i)\b(?:sk|pk|tc|tcu|key|ghp|xox[a-z])[_-][A-Za-z0-9_-]{12,}', "[key]")
+        msg = replace(msg, r'[A-Za-z][A-Za-z0-9+.-]*://\S+', "[url]")
+        msg = replace(msg, r'[\w.+-]+@[\w-]+\.[\w.-]+', "[email]")
+        msg = replace(msg, r'[A-Za-z0-9+/=_]{32,}', "[long]")
+        msg = replace(msg, r'[A-Za-z0-9_-]{43,}', "[long]")
+      }
       level_num = to_int(get(., ["level"]) ?? 6) ?? 6
       at = now()
       raw_at = get(., ["timestamp"]) ?? null
@@ -61,13 +65,53 @@ transforms:
       peeled = replace(msg, r'^(?:error|[A-Za-z0-9_.]{0,48}Error): \[startup\] ', "[startup] ")
       parsed, parse_err = parse_json(msg)
       if parse_err == null && is_object(parsed) {
-        # Structured events: the four hosted-AssemblyAI monitor events (backend/src/services/assemblyai-hosted-monitor.ts).
+        # Structured events: hosted-AssemblyAI monitor events, per-request records and closed calendar diagnostics.
         j = object!(parsed)
         name = string(j.event) ?? ""
         ts = gelf_ts
         app_ts = string(j.ts) ?? ""
         if length(app_ts) <= 24 && match(app_ts, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$') { ts = app_ts }
-        if name == "assemblyai_provider_blocked" {
+        if name == "tinychat_request" {
+          # TC-2537 allow-list: request id, route template, method, status, duration, stream outcome and code,
+          # credits, account hash. Bodies, headers, query strings, path values, addresses and IPs are never fields.
+          request_id = string(j.request_id) ?? ""
+          if length(request_id) != 36 || !match(request_id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') { abort }
+          method = string(j.method) ?? ""
+          if !includes(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER"], method) { abort }
+          route = string(j.route) ?? ""
+          if length(route) > 64 || !match(route, r'^(?:unmatched|/[A-Za-z0-9_.:*/-]{0,63})$') { route = "unmatched" }
+          if !is_integer(j.status) { abort }
+          status = int(j.status) ?? 0
+          if status < 100 || status > 599 { abort }
+          if !(is_integer(j.duration_ms) || is_float(j.duration_ms)) { abort }
+          duration_ms = round(float(j.duration_ms) ?? to_float(j.duration_ms) ?? -1.0, precision: 1)
+          if duration_ms < 0.0 || duration_ms > 86400000.0 { abort }
+          request_level = "info"
+          if status >= 500 { request_level = "error" }
+          out = {"svc": "backend", "event": "tinychat_request", "level": request_level, "ts": ts, "request_id": request_id, "method": method, "route_template": route, "status": status, "duration_ms": duration_ms}
+          stream = string(j.stream) ?? ""
+          if includes(["done", "error", "aborted"], stream) { out.stream = stream }
+          code = string(j.code) ?? ""
+          if length(code) <= 60 && match(code, r'^[a-z][a-z0-9_]{0,59}$') { out.code = code }
+          if is_integer(j.credits) {
+            credits = int(j.credits) ?? -1
+            if credits >= 0 && credits <= 1000000000 { out.credits = credits }
+          }
+          account_hash = string(j.account_hash) ?? ""
+          if length(account_hash) == 64 && match(account_hash, r'^[0-9a-f]{64}$') { out.account_hash = account_hash }
+        } else if name == "backend_log_error" && j.component == "calendar-autojoin" {
+          phase = string(j.phase) ?? ""
+          if !includes(["tick", "tenant_reconcile", "due_timer", "dispatch_lag_status"], phase) { abort }
+          error_name = string(j.error_name) ?? ""
+          if !includes(["BackendStorageLaneTimeout", "KvResultError", "GoogleCalendarError", "GoogleOAuthError", "TranscriptionApiError", "CalendarAutojoinError", "SyntaxError", "Error", "UnknownError"], error_name) { abort }
+          code = string(j.code) ?? ""
+          if !includes(["storage_lane_timeout", "kv_failure", "unavailable_retryable", "outcome_unknown", "request_timeout", "auth_unauthorized", "auth_forbidden", "storage_quota_exceeded", "google_calendar_failure", "scan_incomplete", "calendar_transport", "calendar_rate_limited", "calendar_unauthorized", "calendar_access_denied", "calendar_unavailable", "calendar_invalid_response", "google_oauth_failure", "network_error", "invalid_response", "invalid_grant", "invalid_client", "access_denied", "transcription_failure", "capacity_exhausted", "meeting_not_found", "autojoin_failure", "needs_reconnect", "autojoin_disabled", "connection_changed", "insufficient_scope", "calendar_state_invalid", "calendar_listing_invalid", "invalid_json", "unexpected_error"], code) { abort }
+          out = {"svc": "backend", "event": "backend_log_error", "component": "calendar-autojoin", "level": "error", "ts": ts, "phase": phase, "error_name": error_name, "code": code}
+          if is_integer(j.status) {
+            status = int(j.status) ?? 0
+            if status >= 100 && status <= 599 { out.status = status }
+          }
+        } else if name == "assemblyai_provider_blocked" {
           reason = string(j.reason) ?? ""
           if !includes(["billing_blocked", "key_rejected", "rate_limited"], reason) { abort }
           if !is_integer(j.http_status) { abort }
@@ -128,6 +172,16 @@ transforms:
         name = string(m.name) ?? ""
         if !match(name, r'^[A-Za-z0-9_.]{1,64}$') { abort }
         out = {"svc": "backend", "event": "backend_uncaught_exception", "level": "error", "ts": gelf_ts, "error_name": name}
+      } else if starts_with(msg, "[storage-lane]") {
+        # Match the source's fixed prefix; malformed lane lines must not reach generic stderr classification.
+        lane = parse_regex(msg, r'^\[storage-lane\] op=(?P<op>slow-wait|wait-timeout) priority=(?P<priority>foreground|background) waitedMs=(?P<waited_ms>[0-9]+)(?:\s|$)') ?? {}
+        op = string(lane.op) ?? ""
+        priority = string(lane.priority) ?? ""
+        waited_ms = to_int(lane.waited_ms) ?? -1
+        if op == "" || priority == "" || waited_ms < 0 || waited_ms > 3600000 { abort }
+        lane_level = "warn"
+        if op == "wait-timeout" { lane_level = "error" }
+        out = {"svc": "backend", "event": "backend_storage_lane_wait", "component": "storage-lane", "level": lane_level, "ts": gelf_ts, "op": op, "priority": priority, "waited_ms": waited_ms}
       } else if from_stderr || contains(msg, " alert=true") {
         # Plain `[component] key=value ...` lines (e.g. `[assemblyai-hosted] route=... status=... code=... alert=true`):
         # keep only strictly-shaped tokens. Free text is never copied.
@@ -164,10 +218,111 @@ transforms:
         abort
       }
       . = out
+  # TC-2537: per-request records are capped so traffic (or a request flood) cannot exhaust the shared Better Stack
+  # allowance: at most 10 problem records (5xx, stream error or aborted) and 20 routine records per minute.
+  request_split:
+    type: route
+    inputs: [allowlist]
+    route:
+      problem: '.event == "tinychat_request" && ((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+      routine: '.event == "tinychat_request" && !((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+  request_problem_cap:
+    type: throttle
+    inputs: [request_split.problem]
+    threshold: 10
+    window_secs: 60
+  request_routine_cap:
+    type: throttle
+    inputs: [request_split.routine]
+    threshold: 20
+    window_secs: 60
+  # TC-2546: every non-request sample has a finite global budget, including legacy events.
+  diagnostic_split:
+    type: route
+    inputs: [request_split._unmatched]
+    route:
+      lane: '.event == "backend_storage_lane_wait"'
+      calendar: '.component == "calendar-autojoin"'
+  lane_cap:
+    type: throttle
+    inputs: [diagnostic_split.lane]
+    threshold: 10
+    window_secs: 60
+  calendar_cap:
+    type: throttle
+    inputs: [diagnostic_split.calendar]
+    threshold: 10
+    window_secs: 60
+  other_cap:
+    type: throttle
+    inputs: [diagnostic_split._unmatched]
+    threshold: 10
+    window_secs: 60
+  # Count before sampling. Seven fixed counters make one constant-size group, never per-account state.
+  diagnostic_counts:
+    type: remap
+    inputs: [request_split._unmatched]
+    source: |
+      slow = .event == "backend_storage_lane_wait" && .op == "slow-wait"
+      timeout = .event == "backend_storage_lane_wait" && .op == "wait-timeout"
+      calendar = .event == "backend_log_error" && .component == "calendar-autojoin"
+      tick = calendar && .phase == "tick"
+      tenant = calendar && .phase == "tenant_reconcile"
+      due = calendar && .phase == "due_timer"
+      lag = calendar && .phase == "dispatch_lag_status"
+      other = !(slow || timeout || tick || tenant || due || lag)
+      slow_count = if slow { 1 } else { 0 }
+      timeout_count = if timeout { 1 } else { 0 }
+      tick_count = if tick { 1 } else { 0 }
+      tenant_count = if tenant { 1 } else { 0 }
+      due_count = if due { 1 } else { 0 }
+      lag_count = if lag { 1 } else { 0 }
+      other_count = if other { 1 } else { 0 }
+      . = {"slow_wait_count": slow_count, "wait_timeout_count": timeout_count, "calendar_tick_count": tick_count, "calendar_tenant_reconcile_count": tenant_count, "calendar_due_timer_count": due_count, "calendar_dispatch_lag_status_count": lag_count, "other_count": other_count}
+  diagnostic_reduce:
+    type: reduce
+    inputs: [diagnostic_counts]
+    end_every_period_ms: 60000
+    expire_after_ms: 60000
+    flush_period_ms: 1000
+    merge_strategies:
+      slow_wait_count: sum
+      wait_timeout_count: sum
+      calendar_tick_count: sum
+      calendar_tenant_reconcile_count: sum
+      calendar_due_timer_count: sum
+      calendar_dispatch_lag_status_count: sum
+      other_count: sum
+  diagnostic_summary:
+    type: remap
+    inputs: [diagnostic_reduce]
+    drop_on_error: true
+    source: |
+      slow = int(.slow_wait_count) ?? 0
+      timeout = int(.wait_timeout_count) ?? 0
+      tick = int(.calendar_tick_count) ?? 0
+      tenant = int(.calendar_tenant_reconcile_count) ?? 0
+      due = int(.calendar_due_timer_count) ?? 0
+      lag = int(.calendar_dispatch_lag_status_count) ?? 0
+      other = int(.other_count) ?? 0
+      saturated = slow > 1000000000 || timeout > 1000000000 || tick > 1000000000 || tenant > 1000000000 || due > 1000000000 || lag > 1000000000 || other > 1000000000
+      if slow > 1000000000 { slow = 1000000000 }
+      if timeout > 1000000000 { timeout = 1000000000 }
+      if tick > 1000000000 { tick = 1000000000 }
+      if tenant > 1000000000 { tenant = 1000000000 }
+      if due > 1000000000 { due = 1000000000 }
+      if lag > 1000000000 { lag = 1000000000 }
+      if other > 1000000000 { other = 1000000000 }
+      . = {"svc": "backend", "event": "backend_diagnostic_summary", "level": "info", "ts": format_timestamp!(now(), "%Y-%m-%dT%H:%M:%S%.3fZ"), "slow_wait_count": slow, "wait_timeout_count": timeout, "calendar_tick_count": tick, "calendar_tenant_reconcile_count": tenant, "calendar_due_timer_count": due, "calendar_dispatch_lag_status_count": lag, "other_count": other, "counts_saturated": saturated}
+  diagnostic_summary_cap:
+    type: throttle
+    inputs: [diagnostic_summary]
+    threshold: 1
+    window_secs: 60
 sinks:
   betterstack:
     type: http
-    inputs: [allowlist]
+    inputs: [request_problem_cap, request_routine_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
     method: post
     uri: "https://s2795438.us-west-2a.betterstackdata.com/"
     encoding: { codec: json }

@@ -43,6 +43,7 @@ import {
   logCreditGateDeny,
 } from "../billing/ledger-gate.js";
 import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
+import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
 
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
@@ -133,6 +134,9 @@ export interface AgentChatConfig {
   meetingContentRetrievalEnabled?: boolean;
   meetingContentAccountAllowed?: (address: string) => boolean;
   meetingContentModelAllowed?: (model: string) => boolean;
+  /** The same gates for MCP-served turns only (`*` account entry, empty model list = all offered models); they replace the two above on those turns. */
+  meetingContentMcpAccountAllowed?: (address: string) => boolean;
+  meetingContentMcpModelAllowed?: (model: string) => boolean;
   backendRevision?: string;
   meetingTrace?: (trace: Record<string, unknown>) => void;
   /** §E.6 — shadow-push outbox (disabled when absent). */
@@ -456,6 +460,10 @@ async function dispatchTool(
     throw new StreamFailure("upstream_incomplete");
   }
   throwIfAborted(signal);
+  // An MCP turn never falls back to eliza-service: a name the wrapper does not serve (invented or injected) is refused here.
+  if (config.mcpOwner && !config.mcpMeetings?.handles(call.name)) {
+    return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(call.name.slice(0, 64))} is not available)` };
+  }
   const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.handles(call.name)
     ? await config.mcpMeetings.run({ name: call.name, args, owner: config.mcpOwner, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext as unknown as RetrievalContext } : {}), ...(signal ? { signal } : {}) })
     : undefined;
@@ -611,7 +619,8 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
     modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
-    capability: async signal => {
+    // MCP turns read through the in-process wrapper, which emits contract v2 by construction; there is no remote reader to probe.
+    capability: params.config.mcpOwner ? async () => ({ meetingRetrieval: { contractVersion: 2 }, buildRevision: params.config.backendRevision ?? "unknown" }) : async signal => {
       const response = await fetchForTurn(fetchImpl, `${params.config.elizaServiceUrl}/capabilities`, { headers: { authorization: `Bearer ${params.config.elizaServiceSecret}` } }, signal);
       if (!response.ok) { if (response.body) ignoreCleanup(() => response.body!.cancel()); return null; }
       // This content-free response has a small independent transport bound.
@@ -1025,6 +1034,14 @@ export interface AgentStreamRuntime {
   log(summary: AgentStreamSummary): void;
 }
 
+/** The request record's coarse view of a turn's end: client-side ends are aborted, server-side ones error. */
+function recordedOutcome(outcome: AgentStreamSummary["outcome"]): { stream: StreamOutcome; code?: string } {
+  if (outcome === "success") return { stream: "done" };
+  if (outcome === "cancelled") return { stream: "aborted" };
+  if (outcome === "transport_failed") return { stream: "aborted", code: "transport_failed" };
+  return { stream: "error", code: outcome };
+}
+
 const streamRuntime: AgentStreamRuntime = {
   now: () => performance.now(),
   setTimeout: (callback, ms) => setTimeout(callback, ms),
@@ -1236,6 +1253,7 @@ class AgentStreamOwner {
   private close(outcome: AgentStreamSummary["outcome"], destroy: boolean): void {
     if (this.state === "closed") return;
     this.outcome ??= outcome;
+    noteRequestRecord(this.res, recordedOutcome(this.outcome));
     this.state = "closed";
     this.runtime.clearTimeout(this.heartbeat);
     this.runtime.clearTimeout(this.deadline);
@@ -1262,7 +1280,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
   const taskClient = createAgentTaskClient({ baseUrl: config.elizaServiceUrl, apiKey: config.elizaServiceSecret, fetch: config.fetchImpl });
   const budgetStopMode = parseBudgetStopMode(process.env.AGENT_CHAT_BUDGET_STOP_MODE);
   const budgetPreflightMode = parseBudgetPreflightMode(process.env.AGENT_CHAT_BUDGET_PREFLIGHT);
-  return async (req: Request, res: Response) => {
+  return recordAfterHandler(async (req: Request, res: Response) => {
     if (!req.user) {
       res.status(401).json({ error: "unauthenticated", message: "Authentication required" });
       return;
@@ -1485,7 +1503,11 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     const accessIssue = accessControl || mcpSelected ? privateAccessIssue(privateStatus) : undefined;
     const privateAccessActive = accessIssue === undefined;
     const turnConfig: AgentChatConfig = { ...config, privateAccessActive,
-      ...(mcpSelected ? { mcpOwner: config.mcpOwnerDidFor!(address) } : {}),
+      ...(mcpSelected ? {
+        mcpOwner: config.mcpOwnerDidFor!(address),
+        ...(config.meetingContentMcpAccountAllowed ? { meetingContentAccountAllowed: config.meetingContentMcpAccountAllowed } : {}),
+        ...(config.meetingContentMcpModelAllowed ? { meetingContentModelAllowed: config.meetingContentMcpModelAllowed } : {}),
+      } : {}),
       ...(accessIssue ? { privateAccessIssue: accessIssue } : {}),
       privateAccessRevision: privateAccessActive && typeof privateStatus?.revision === "string" ? privateStatus.revision : undefined };
     // A public-only turn still answers; it also tells the browser to offer
@@ -1546,7 +1568,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       // erase it because a subsequent content/write/end/enqueue operation fails.
       if (paywallEnabled() && address) {
         const credits = creditsFor(rates ?? FALLBACK_RECORDING_RATES, result.usage.promptTokens, result.usage.completionTokens);
-        try { recordUsage(address, TIERS[gatedTier], credits, anchor); }
+        try { recordUsage(address, TIERS[gatedTier], credits, anchor); noteRequestRecord(res, { credits }); }
         catch { console.error("[agent-chat] task local usage recording failed"); }
         if (config.flusher && credits > 0) {
           const now = Date.now();
@@ -1589,25 +1611,24 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       try {
         if (accessFrame) await streamOwner.write(accessFrame);
         orchestrateResult = await orchestrateToolCalling({
-          config: { ...turnConfig, meetingContentRetrievalEnabled: config.meetingContentRetrievalEnabled === true && (!config.meetingContentAccountAllowed || config.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
+          config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
         });
-        await streamOwner.complete(orchestrateResult);
       } catch (error) {
-        orchestrateResult = null;
-        await streamOwner.fail(error);
+        // Preserve the failure for terminal delivery after observed usage settles.
+        orchestrateResult = { ...observedUsage, completionId: "",
+          errorCode: error instanceof StreamFailure ? error.code : "agent_failed" };
       }
     } else {
       await streamOwner.fail(new StreamFailure("agent_failed"));
     }
-    // A completed result stays provisional through final writes and end().
-    if (streamOwner.deliveryException) orchestrateResult = null;
     // Content delivery and cancellation must not erase already observed usage.
     orchestrateResult ??= { ...observedUsage, completionId: "" };
 
-    // A4: post-stream usage recording — mirrors chat.ts:335-372.
+    // Record usage before terminal metadata and stream end so follow-up requests
+    // see the completed turn's charge during their budget preflight.
     // NEVER throw after bytes were served. Falls back to conservative rates on any failure.
     if (paywallEnabled() && address && orchestrateResult) {
       try {
@@ -1618,6 +1639,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           orchestrateResult.completionTokens,
         );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        noteRequestRecord(res, { credits });
         // §E.6 — shadow-push to ledger (async, never blocks serving)
         if (config.flusher && credits > 0) {
           const now = Date.now();
@@ -1647,6 +1669,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
             orchestrateResult.completionTokens,
           );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          noteRequestRecord(res, { credits });
           if (config.flusher && credits > 0) {
             const now = Date.now();
             const tierCfg = TIERS[gatedTier];
@@ -1671,6 +1694,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         }
       }
     }
+    // Also await an already claimed timeout/cancellation terminal's drain.
+    await streamOwner.complete(orchestrateResult);
     } finally { releaseAccess?.(); }
-  };
+  });
 }

@@ -556,6 +556,8 @@ jobs:
           # private Better Stack source; unset = the sidecar idles and nothing ships. Declared in all four places for
           # the allowed_envs reason; the sidecar writes it to tmpfs and removes it from its environment.
           BETTERSTACK_SOURCE_TOKEN: ${{ secrets.BETTERSTACK_SOURCE_TOKEN }}
+          # TC-2537: key for the account_hash in shipped request records. Unset = records omit account_hash.
+          REQUEST_LOG_HMAC_KEY: ${{ secrets.REQUEST_LOG_HMAC_KEY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           # These values are written one per line into the env file, so a line break in any of them would add settings.
@@ -663,6 +665,7 @@ jobs:
             printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_FRESH_INSTALL=$ASSEMBLYAI_HOSTED_FRESH_INSTALL"
             printf '%s\n' "BETTERSTACK_SOURCE_TOKEN=$BETTERSTACK_SOURCE_TOKEN"
+            printf '%s\n' "REQUEST_LOG_HMAC_KEY=$REQUEST_LOG_HMAC_KEY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"
