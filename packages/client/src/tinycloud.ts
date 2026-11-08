@@ -16,7 +16,6 @@ import type { EIP1193Provider } from "./openkey.js";
 export interface TinyCloudWebConfig {
   tinycloudHosts?: string[];
   tinycloudRegistryUrl?: string | null;
-  tinycloudFallbackHosts?: string[] | null;
   autoCreateSpace?: boolean;
   siweConfig?: SiweConfig;
   /** Explicit SIWE authority when the app is served from a development URL. */
@@ -69,7 +68,6 @@ export function createTinyCloudWeb(
     provider: web3Provider,
     tinycloudHosts: config?.tinycloudHosts,
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
-    tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
     autoCreateSpace: config?.autoCreateSpace ?? true,
     sessionStorage: config?.sessionStorage ?? new BrowserSessionStorage(),
     sessionExpirationMs: SESSION_EXPIRATION_MS,
@@ -217,7 +215,6 @@ export async function restoreTinyCloudWebSession(
   const tcwConfig: TinyCloudWebSdkConfig = {
     tinycloudHosts: config?.tinycloudHosts,
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
-    tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
     autoCreateSpace: config?.autoCreateSpace ?? false,
     sessionStorage: recording.storage,
     nonce: config?.nonce,
