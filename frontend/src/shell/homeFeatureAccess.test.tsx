@@ -60,6 +60,7 @@ function Harness(props: {
   answer: () => Promise<{ outcome: FeatureAccessOutcome; next?: TinyCloudWeb }>;
   inFlight?: InFlightWork;
   homeSite?: boolean;
+  store?: Pick<Storage, "getItem" | "setItem">;
   children: ReactNode;
 }) {
   const [tcw, setTcw] = useState(props.initial);
@@ -72,7 +73,7 @@ function Harness(props: {
     return outcome;
   }, [answer]);
   const access = useHomeFeatureAccessState({
-    homeSite: props.homeSite ?? true, tcw, address: ADDRESS, store: storage(), requestFeatureAccess, inFlight: props.inFlight ?? null,
+    homeSite: props.homeSite ?? true, tcw, address: ADDRESS, store: props.store ?? storage(), requestFeatureAccess, inFlight: props.inFlight ?? null,
   });
   return <HomeFeatureAccessContext.Provider value={access}><Permitted />{props.children}</HomeFeatureAccessContext.Provider>;
 }
@@ -129,6 +130,26 @@ test("Continue asks once for Recording; the new session opens it, and the flag f
   expect(permitted).toBe(true);
 });
 
+test("a flag the store refuses is not retried on every render: one read per opening of the feature", async () => {
+  const granted = session(true);
+  const refusing = { getItem: () => null, setItem: () => { throw new Error("quota"); } };
+  const view = (gate: boolean) => (
+    <Harness initial={asTcw(granted)} answer={async () => ({ outcome: "declined" })} store={refusing}>
+      {gate && <HomeFeatureGate feature="recording"><RecordingScreen /></HomeFeatureGate>}
+    </Harness>
+  );
+  await act(async () => root.render(view(true)));
+  for (let render = 0; render < 5; render += 1) {
+    await act(async () => { root.render(view(true)); await Promise.resolve(); });
+  }
+  expect(granted.reads).toBe(1);
+  expect(permitted).toBe(false);
+  // The owner opens Recording again later: one more try.
+  await act(async () => root.render(view(false)));
+  await act(async () => { root.render(view(true)); await Promise.resolve(); });
+  expect(granted.reads).toBe(2);
+});
+
 test("a first call the session is refused leaves the flag unset", async () => {
   const granted = session(true, async () => ({ ok: false, error: { code: "KV_UNAUTHORIZED", message: "no" } }));
   await act(async () => root.render(page({ initial: asTcw(session(false)), answer: async () => ({ outcome: "granted", next: asTcw(granted) }) })));
@@ -159,6 +180,26 @@ test("a failed ask shows plain words, never the cause", async () => {
   expect(store.size).toBe(0);
 });
 
+test("every outcome leaves the prompt usable, with plain words and both buttons", async () => {
+  const cases = [
+    ["declined", "Permission wasn't given. Nothing changed."],
+    ["failed", "Couldn't ask for permission. Nothing changed. Try again."],
+    ["wrong-account", "This is a different OpenKey account. Nothing changed."],
+    ["busy", "Finish the current recording or upload first."],
+    // Granted, but the session still lacks the set (it was not swapped in): back to the ask.
+    ["granted", null],
+    ["signed-out", null],
+  ] as const;
+  for (const [outcome, alert] of cases) {
+    await act(async () => root.render(<div key={outcome}>{page({ initial: asTcw(session(false)), answer: async () => ({ outcome }) })}</div>));
+    await click("Continue");
+    expect(host.querySelector('[role="alert"]')?.textContent ?? null).toBe(alert);
+    expect(button("Continue")?.disabled).toBe(false);
+    expect(button("Not now")).toBeTruthy();
+    expect(store.size).toBe(0);
+  }
+});
+
 test("Not now leaves the prompt, calmly, with Continue to ask later", async () => {
   await act(async () => root.render(page({ initial: asTcw(session(false)), answer: async () => ({ outcome: "declined" }) })));
   await click("Not now");
@@ -169,11 +210,12 @@ test("Not now leaves the prompt, calmly, with Continue to ask later", async () =
   expect(host.querySelector('[data-testid="feed"]')).toBeTruthy();
 });
 
-test("Continue waits while a recording or an upload is running, and comes back when it ends", async () => {
+test("Continue waits while a recording or an upload is running, with Not now still there, and comes back when it ends", async () => {
   const props = { initial: asTcw(session(false)), answer: async () => ({ outcome: "declined" as const }) };
   for (const inFlight of ["recording", "upload"] as const) {
     await act(async () => root.render(page({ ...props, inFlight })));
     expect(button("Continue")?.disabled).toBe(true);
+    expect(button("Not now")?.disabled).toBe(false);
     expect(host.textContent).toContain("Finish the current recording or upload first.");
   }
   await act(async () => root.render(page({ ...props, inFlight: null })));

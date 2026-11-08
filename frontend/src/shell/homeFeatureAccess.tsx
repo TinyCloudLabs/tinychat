@@ -10,12 +10,12 @@ import { HOME_SITE } from "@/lib/homeSite";
 import { readHomeFeatures, rememberHomeFeature, sessionCoversHomeFeature, type HomeFeature } from "@/lib/homeFeatures";
 import {
   FEATURE_ACCESS_BODY, FEATURE_ACCESS_BUSY, FEATURE_ACCESS_CONTINUE, FEATURE_ACCESS_DECLINED, FEATURE_ACCESS_FAILED,
-  FEATURE_ACCESS_NEEDED, FEATURE_ACCESS_NOT_NOW, FEATURE_ACCESS_TITLE,
+  FEATURE_ACCESS_NEEDED, FEATURE_ACCESS_NOT_NOW, FEATURE_ACCESS_TITLE, FEATURE_ACCESS_WRONG_ACCOUNT,
 } from "@/lib/homeStrings";
 import type { InFlightWork } from "@/lib/inFlightWork";
 
 /** What asking for a feature's set came to. Only "granted" replaces the session. */
-export type FeatureAccessOutcome = "granted" | "declined" | "failed";
+export type FeatureAccessOutcome = "granted" | "declined" | "failed" | "wrong-account" | "busy" | "signed-out";
 export type RequestFeatureAccess = (feature: HomeFeature) => Promise<FeatureAccessOutcome>;
 
 export interface HomeFeatureAccess {
@@ -66,7 +66,8 @@ export function useHomeFeatureAccessState(options: {
   inFlight: InFlightWork;
 }): HomeFeatureAccess {
   const { homeSite, tcw, address, store, requestFeatureAccess, inFlight } = options;
-  // Bumped when a feature is remembered, so the flags are read again.
+  // Bumped when a feature's flag is stored, so the flags are read again. A write the store refuses changes nothing,
+  // so nothing reads again until the owner opens the feature again.
   const [remembered, setRemembered] = useState(0);
   const confirming = useRef(new Set<string>());
   const flags = useMemo(
@@ -87,8 +88,7 @@ export function useHomeFeatureAccessState(options: {
     confirming.current.add(attempt);
     void tcw.kv.get(FIRST_USE_KEY).then(
       (result) => {
-        if (result.ok || result.error.code === "KV_NOT_FOUND") {
-          rememberHomeFeature(store, address, feature);
+        if ((result.ok || result.error.code === "KV_NOT_FOUND") && rememberHomeFeature(store, address, feature)) {
           setRemembered((value) => value + 1);
         }
       },
@@ -106,17 +106,32 @@ export function useHomeFeatureAccessState(options: {
     : EVERYTHING, [homeSite, coverage, flags, requestFeatureAccess, confirmUse, inFlight]);
 }
 
-/** A feature's screen or Settings section: the content once the session covers its set, else the in-place ask. */
+/**
+ * A feature's screen or Settings section: the content once the session covers its set, else the in-place ask. Opening
+ * it on a covering session is one use: it confirms the rights once, not on every render.
+ */
 export function HomeFeatureGate({ feature, children }: { feature: HomeFeature; children: ReactNode }) {
   const access = useHomeFeatureAccess();
   const covered = access.covered(feature);
-  useEffect(() => { if (covered) access.confirmUse(feature); }, [access, covered, feature]);
+  const latest = useRef(access);
+  latest.current = access;
+  useEffect(() => { if (covered) latest.current.confirmUse(feature); }, [covered, feature]);
   return covered ? <>{children}</> : <HomeFeaturePrompt feature={feature} />;
 }
 
-type PromptPhase = "ask" | "asking" | "later" | "declined" | "failed";
+type PromptPhase = "ask" | "asking" | "later" | "declined" | "failed" | "wrong-account" | "busy";
 
-/** Asks for one feature's set. Nothing else on the page waits on it: the feed and chat keep working whatever it says. */
+const OUTCOME_LINE: Partial<Record<PromptPhase, string>> = {
+  declined: FEATURE_ACCESS_DECLINED,
+  failed: FEATURE_ACCESS_FAILED,
+  "wrong-account": FEATURE_ACCESS_WRONG_ACCOUNT,
+  busy: FEATURE_ACCESS_BUSY,
+};
+
+/**
+ * Asks for one feature's set. Nothing else on the page waits on it: the feed and chat keep working whatever it says.
+ * Every outcome leaves Continue and Not now usable; the session only changes when the ask is granted and swapped in.
+ */
 export function HomeFeaturePrompt({ feature }: { feature: HomeFeature }) {
   const access = useHomeFeatureAccess();
   const [phase, setPhase] = useState<PromptPhase>("ask");
@@ -125,23 +140,22 @@ export function HomeFeaturePrompt({ feature }: { feature: HomeFeature }) {
   const ask = async () => {
     setPhase("asking");
     const outcome = await access.request(feature).catch((): FeatureAccessOutcome => "failed");
-    // Granted: the gate shows the feature once the new session covers it.
-    if (outcome !== "granted") setPhase(outcome);
+    // Granted: the gate shows the feature once the new session covers it; if it does not, the ask starts over.
+    setPhase(outcome === "granted" || outcome === "signed-out" ? "ask" : outcome);
   };
-  const line = phase === "declined" ? FEATURE_ACCESS_DECLINED
-    : phase === "failed" ? FEATURE_ACCESS_FAILED
-      : phase === "later" ? FEATURE_ACCESS_NEEDED[feature]
-        : FEATURE_ACCESS_BODY[feature];
+  const alert = OUTCOME_LINE[phase];
   return (
     <section aria-labelledby={headingId} data-testid={`feature-access-${feature}`} className="mx-auto my-6 flex w-full max-w-md flex-col gap-3 rounded-xl border bg-card p-5">
       <h2 id={headingId} className="text-base font-semibold">{FEATURE_ACCESS_TITLE[feature]}</h2>
-      <p role={phase === "declined" || phase === "failed" ? "alert" : undefined} className="text-sm text-muted-foreground">{line}</p>
-      {busy && <p className="text-sm text-muted-foreground">{FEATURE_ACCESS_BUSY}</p>}
+      {alert
+        ? <p role="alert" className="text-sm text-muted-foreground">{alert}</p>
+        : <p className="text-sm text-muted-foreground">{phase === "later" ? FEATURE_ACCESS_NEEDED[feature] : FEATURE_ACCESS_BODY[feature]}</p>}
+      {busy && phase !== "busy" && <p className="text-sm text-muted-foreground">{FEATURE_ACCESS_BUSY}</p>}
       <div className="flex items-center gap-2">
         <Button className="rounded-full" disabled={busy || phase === "asking"} onClick={() => void ask()}>
           {FEATURE_ACCESS_CONTINUE}
         </Button>
-        {phase === "ask" && (
+        {phase !== "later" && (
           <Button variant="ghost" onClick={() => setPhase("later")}>{FEATURE_ACCESS_NOT_NOW}</Button>
         )}
       </div>

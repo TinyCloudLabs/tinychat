@@ -19,6 +19,7 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { VoiceNoteSaveDeferred } from "@/lib/voiceNotes/voiceNotePipeline";
 import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
+import { setHomeReauthorizing } from "@/lib/homeReauthorizing";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -594,5 +595,18 @@ describe("web engine: no OnDeviceStt calls", () => {
     fake.plugin.start = start;
     await act(async () => { value!.record(); await tick(); });
     expect(value?.permissionDenied).toBe(false);
+  });
+
+  test("Record starts nothing while a Home permission ask has OpenKey open, and starts once it ends", async () => {
+    const { calls } = await mount("web", NONE);
+    setHomeReauthorizing(true);
+    try {
+      await act(async () => { value!.record(); await tick(); });
+      expect(calls).not.toContain("start");
+    } finally {
+      setHomeReauthorizing(false);
+    }
+    await act(async () => { value!.record(); await tick(); });
+    expect(calls).toContain("start");
   });
 });

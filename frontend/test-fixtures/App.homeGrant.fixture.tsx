@@ -41,6 +41,7 @@ const appShellApi = await import("@/shell/AppShell");
 const { homeSignInManifest } = await import("@/lib/homeFeatures");
 const laneApi = await import("@/lib/spaceWriteLane");
 const feedApi = await import("@/feed/FeedView");
+const webSdkApi = await import("@tinycloud/web-sdk");
 
 let lastSignInConfig: { manifest: unknown; includeAccountRegistryPermissions?: unknown } | null = null;
 let decryptGrantCalls = 0;
@@ -51,9 +52,20 @@ let transcriberSyncEnabled: boolean | null = null;
 const mounted: string[] = [];
 // What the signed-in session's own approval covers (the Home base, or the base plus the flagged sets).
 let signInCovers = false;
-// How the owner answers the in-place re-authorise.
+// How the owner answers the in-place re-authorise, and when (null: at once).
 let reauthAnswer: "approve" | "decline" = "approve";
+let reauthSignInGate: Promise<void> | null = null;
 let reauthConfig: { manifest: unknown } | null = null;
+let reauthInstances = 0;
+// Held open to stand for a slow backend check of the re-authorised sign-in (null: at once).
+let verifyGate: Promise<void> | null = null;
+let verifyCalls = 0;
+// What the re-authorise saved where the live session is persisted (BrowserSessionStorage).
+const persistedSessions: unknown[] = [];
+let engineAvailable = false;
+let restoreResult: unknown = { kind: "signedOut" };
+const recorderEnabled: Array<boolean | undefined> = [];
+let agentAccessEnabled: boolean | undefined | null = null;
 const feedTcws: Array<TinyCloudWeb | null> = [];
 const fetchedUrls: string[] = [];
 
@@ -78,17 +90,36 @@ mock.module("@tinyboilerplate/client", () => ({
     return { tcw: fakeTcw(signInCovers, "signed-in"), session: { siwe: "message", signature: "signature" } };
   },
   // The in-place re-authorise's separate instance.
-  createTinyCloudWeb: (_provider: unknown, config: { manifest: unknown }) => {
+  createTinyCloudWeb: (_provider: unknown, config: { manifest: unknown; sessionStorage: { save(address: string, data: unknown): Promise<void> } }) => {
     reauthConfig = config;
+    reauthInstances += 1;
     return {
       ...fakeTcw(true, "re-authorised"),
       signIn: async () => {
+        if (reauthSignInGate) await reauthSignInGate;
         if (reauthAnswer === "decline") throw { code: "USER_CANCELLED" };
+        await config.sessionStorage.save(ADDRESS, { tag: "re-authorised session" });
         return { siwe: "message-2", signature: "signature-2" };
       },
     };
   },
-  verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
+  verifySession: async (_url: string, siwe: string) => {
+    if (siwe === "message-2") {
+      verifyCalls += 1;
+      if (verifyGate) await verifyGate;
+    }
+    return { token: "bearer", expiresIn: 3600, address: ADDRESS };
+  },
+}));
+mock.module("@tinycloud/web-sdk", () => ({
+  ...webSdkApi,
+  BrowserSessionStorage: class {
+    async save(_address: string, data: unknown) { persistedSessions.push(data); }
+    async load() { return null; }
+    async clear() {}
+    exists() { return false; }
+    isAvailable() { return true; }
+  },
 }));
 mock.module("@/lib/openkeyNative", () => ({
   ...nativeApi,
@@ -107,7 +138,7 @@ mock.module("@/lib/openkeyNativeRenewal", () => ({
 mock.module("@/lib/sessionRestore", () => ({
   ...restoreApi,
   browserIsOffline: () => false,
-  restorePersistedSession: async () => ({ kind: "signedOut" }),
+  restorePersistedSession: async () => restoreResult,
 }));
 mock.module("@/lib/openkeySignOut", () => ({ ...signOutApi, signOutOpenKeySession: async () => ({ status: "cancelled" }) }));
 mock.module("@/lib/connectors/encryptionGrant", () => ({
@@ -119,11 +150,11 @@ mock.module("@/lib/transcriptDelegation", () => ({
   ensureTranscriptWriterDelegation: async () => { delegationCalls += 1; return "disabled"; },
 }));
 mock.module("@/lib/voiceNotes/voiceNotePipeline", () => ({ ...pipelineApi, createVoiceNotePipeline: () => null }));
-// No recorder: the Home site registers no capture engine.
+// No recorder unless a test gives one: the Home site registers no capture engine before Recording.
 mock.module("@/lib/voiceNotes/captureEngine", () => ({
   ...captureApi,
   captureCapabilities: () => ({ offlineRecorder: false, micDeniedPresentation: false }),
-  captureEngineAvailable: () => false,
+  captureEngineAvailable: () => engineAvailable,
   installCaptureEngine: (...args: Parameters<typeof realInstallCaptureEngine>) => { installEngineCalls += 1; return realInstallCaptureEngine(...args); },
 }));
 mock.module("@/lib/voiceNotes/audioReceiptUpgrade", () => ({
@@ -133,10 +164,15 @@ mock.module("@/lib/voiceNotes/audioReceiptUpgrade", () => ({
 mock.module("../src/chat/ChatWorkspace", () => ({
   ChatWorkspace: ({ settings }: { settings: React.ReactNode }) => <div data-testid="authenticated-workspace">{settings}</div>,
 }));
-mock.module("../src/chat/SettingsPage", () => ({ SettingsPage: () => <div data-testid="settings-page" /> }));
+mock.module("../src/chat/SettingsPage", () => ({
+  SettingsPage: ({ onSignOut }: { onSignOut: () => void }) => <div data-testid="settings-page"><button type="button" onClick={() => onSignOut()}>Sign out</button></div>,
+}));
 mock.module("../src/chat/useAgentEnablement", () => ({
   ...agentEnablementApi,
-  AgentAccessProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  AgentAccessProvider: ({ enabled, children }: { enabled?: boolean; children: React.ReactNode }) => {
+    agentAccessEnabled = enabled;
+    return <>{children}</>;
+  },
 }));
 mock.module("../src/chat/useBackgroundDrain", () => ({ ...drainApi, BackgroundDrainer: spy("BackgroundDrainer") }));
 mock.module("../src/chat/useGmeetSessionSync", () => ({ GmeetSessionSync: spy("GmeetSessionSync") }));
@@ -158,7 +194,10 @@ mock.module("../src/chat/useTranscriberLibrarySync", () => ({
 }));
 mock.module("../src/capture/recorder/RecorderProvider", () => ({
   ...recorderProviderApi,
-  RecorderProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  RecorderProvider: ({ enabled, children }: { enabled?: boolean; children: React.ReactNode }) => {
+    recorderEnabled.push(enabled);
+    return <recorderProviderApi.StaticRecorderProvider value={{ available: false }}>{children}</recorderProviderApi.StaticRecorderProvider>;
+  },
 }));
 // The real frame, so the navigation and the in-place prompts are the real ones.
 mock.module("../src/capture/recorder/RecorderShell", () => ({
@@ -221,7 +260,16 @@ beforeEach(() => {
   mounted.length = 0;
   signInCovers = false;
   reauthAnswer = "approve";
+  reauthSignInGate = null;
   reauthConfig = null;
+  reauthInstances = 0;
+  verifyGate = null;
+  verifyCalls = 0;
+  persistedSessions.length = 0;
+  engineAvailable = false;
+  restoreResult = { kind: "signedOut" };
+  recorderEnabled.length = 0;
+  agentAccessEnabled = null;
   feedTcws.length = 0;
   fetchedUrls.length = 0;
   Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryLocalStorage() });
@@ -369,7 +417,8 @@ test("declining the in-place ask keeps the session and the feed, sets no flag, a
   await clickInPrompt("recording", "Continue");
   expect(reauthConfig).not.toBeNull();
   expect(prompt("recording")?.textContent).toContain("Permission wasn't given. Nothing changed.");
-  expect([...prompt("recording")!.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Continue"]);
+  expect([...prompt("recording")!.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Continue", "Not now"]);
+  expect(persistedSessions).toEqual([]);
   expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
   expect(mounted).not.toContain("CaptureSurface");
   // The feed opens on the same session.
@@ -388,6 +437,7 @@ test("approving swaps in the re-authorised session in place; Recording opens, an
   expect(window.location.pathname).toBe("/chat/capture");
   expect(mounted).toContain("CaptureSurface");
   expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["recording"]);
+  expect(persistedSessions).toEqual([{ tag: "re-authorised session" }]);
   expect(mounted).toContain("UploadResumer");
   // Connectors was not asked for, so its lanes stay off.
   expect(mounted.filter((name) => CONNECTORS_LANES.includes(name))).toEqual([]);
@@ -411,6 +461,105 @@ test("Continue waits while an upload or a save is writing, and comes back when i
   await settle();
   expect(continueButton().disabled).toBe(false);
   expect(prompt("recording")?.textContent).not.toContain("Finish the current recording or upload first.");
+});
+
+const signedOutNow = () => [...host!.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Sign in");
+async function signOutFromSettings() {
+  await navigate("/chat/settings");
+  const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent === "Sign out")!;
+  await act(async () => { button.click(); await tick(); });
+  await settle();
+}
+
+test("an approval that lands after the owner signed out keeps nothing: no saved session, no swap, still signed out", async () => {
+  if (!HOME) return;
+  const verification = Promise.withResolvers<void>();
+  verifyGate = verification.promise;
+  await mount();
+  await signIn();
+  await navigate("/chat/capture");
+  await clickInPrompt("recording", "Continue");
+  expect(verifyCalls).toBe(1);
+  await signOutFromSettings();
+  expect(signedOutNow()).toBe(true);
+  await act(async () => { verification.resolve(); await tick(); });
+  await settle();
+  expect(persistedSessions).toEqual([]);
+  expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
+  expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
+  expect(signedOutNow()).toBe(true);
+  expect(mounted).not.toContain("CaptureSurface");
+});
+
+test("work that starts while OpenKey is open stops the swap: nothing saved, the session and feed stay, and the prompt says why", async () => {
+  if (!HOME) return;
+  const approval = Promise.withResolvers<void>();
+  reauthSignInGate = approval.promise;
+  await mount();
+  await signIn();
+  await navigate("/chat/capture");
+  await clickInPrompt("recording", "Continue");
+  const write = Promise.withResolvers<void>();
+  let running!: Promise<void>;
+  await act(async () => { running = laneApi.runOnSpaceLane(() => write.promise); await tick(); });
+  await act(async () => { approval.resolve(); await tick(); });
+  await settle();
+  expect(persistedSessions).toEqual([]);
+  expect(mounted).not.toContain("CaptureSurface");
+  expect(prompt("recording")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
+  await act(async () => { write.resolve(); await running; });
+  await navigate("/chat/feed");
+  expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
+});
+
+test("a second ask while OpenKey is open joins the first: one sign-in, not two", async () => {
+  if (!HOME) return;
+  const approval = Promise.withResolvers<void>();
+  reauthSignInGate = approval.promise;
+  await mount();
+  await signIn();
+  await navigate("/chat/capture");
+  await clickInPrompt("recording", "Continue");
+  await navigate("/chat/connectors");
+  await clickInPrompt("connectors", "Continue");
+  expect(reauthInstances).toBe(1);
+  await act(async () => { approval.resolve(); await tick(); });
+  await settle();
+  expect(reauthInstances).toBe(1);
+  expect(persistedSessions).toHaveLength(1);
+});
+
+test("after a reload, a session that covers Recording and a device that used it open Recording without a prompt", async () => {
+  if (!HOME) return;
+  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 3_600_000, address: ADDRESS }));
+  localStorage.setItem(REVISION_KEY, "home-1");
+  localStorage.setItem(FEATURES_KEY, JSON.stringify(["recording"]));
+  restoreResult = { kind: "restored", tcw: fakeTcw(true, "restored"), address: ADDRESS };
+  await mount("/chat/capture");
+  expect(prompt("recording")).toBeNull();
+  expect(mounted).toContain("CaptureSurface");
+  expect(reauthConfig).toBeNull();
+});
+
+test("the recorder's own checks and resumes wait for Recording to be permitted, not just covered", async () => {
+  if (!HOME) return;
+  engineAvailable = true;
+  // Covered, but this device has not used Recording yet.
+  signInCovers = true;
+  await mount();
+  await signIn();
+  expect(recorderEnabled.at(-1)).toBe(false);
+  expect(mounted).not.toContain("UploadResumer");
+  // Opening Recording is the first use: the flag is written, and the recorder may start its own work.
+  await navigate("/chat/capture");
+  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["recording"]);
+  expect(recorderEnabled.at(-1)).toBe(true);
+});
+
+test("agent access is switched off on the Home site, so its chat has no agent tools; the plain build keeps it on", async () => {
+  await mount();
+  await signIn();
+  expect(agentAccessEnabled).toBe(!HOME);
 });
 
 test("a session saved under the broad grant is cleared once on the Home site; the plain build keeps it", async () => {

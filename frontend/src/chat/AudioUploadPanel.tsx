@@ -46,6 +46,8 @@ import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { localStorageVoiceNoteConsentStore } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { PlatformContext } from "@/lib/platform";
 import { FilePicker } from "./FilePicker";
+import { isHomeReauthorizing, subscribeHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
 
 /** Whether an engine can take a new upload, and if not, why (one line). */
 export type EngineStatus =
@@ -466,6 +468,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   }, [tcw.did]);
   const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
+  // While a Home permission ask has OpenKey open, a new upload waits: the session swap after a grant must not cut it off.
+  const reauthorizing = useSyncExternalStore(subscribeHomeReauthorizing, isHomeReauthorizing, isHomeReauthorizing);
   const { deps, origin, api, hosted } = useUploadDeps(tcw, backendUrl, sessionStore);
   const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);
 
@@ -538,7 +542,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   });
   const requestPowerful = powerfulConsent.request;
   const onTranscribe = useCallback(() => {
-    if (file === null) return;
+    if (file === null || isHomeReauthorizing()) return;
     const start = () => {
       uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
       setFile(null);
@@ -567,7 +571,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         privateConsentText={privateConsentBody(privateConsentDevice(platform))}
         diarize={diarize}
         diarizeUnavailable={diarizeUnavailable}
-        fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
+        fileProblem={reauthorizing ? FEATURE_ACCESS_WAIT_FOR_OPENKEY : fileProblem(file, engine, maxBytes, assemblyAiMode)}
         onEngineChange={setEngine}
         onDiarizeChange={setDiarize}
         onFile={setFile}
