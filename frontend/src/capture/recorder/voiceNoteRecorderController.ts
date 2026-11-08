@@ -587,7 +587,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   // A recording holds its place at the Home work boundary (lib/homeReauthorizing.ts) from the moment it starts
   // (before the microphone is even asked) until the recorder is idle again, so a session swap never cuts it off.
   let homeWork: (() => void) | null = null;
-  // A detached recorder (signed out, unmounted) holds nothing, whatever late events it still hears.
+  // A detached recorder (signed out, unmounted) holds nothing and writes no state, whatever late events or answers it
+  // still hears (send drops them); attached again, it starts from REATTACHED.
   let homeWorkDetached = false;
   // The start in progress (waiting on the defaults or the microphone). Detach cancels it and hands it the place.
   interface PendingStart {
@@ -664,6 +665,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
   const send = (event: RecorderEvent) => {
+    if (homeWorkDetached) return;
     const before = state;
     const next = recorderReducer(state, event);
     if (next === state) return;
@@ -671,9 +673,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     // Owned until the recorder is idle again or shows another recording.
     if (ownedId !== null && (next.phase === "idle" || next.recordingId !== ownedId)) disown();
     // A recording the recorder picks up (one already running) holds its place too; idle releases it.
-    if (next.phase !== "idle" && homeWork === null && !homeWorkDetached) homeWork = holdHomeWork("recording");
+    if (next.phase !== "idle" && homeWork === null) homeWork = holdHomeWork("recording");
     if (next.phase === "idle" && homeWork !== null) { homeWork(); homeWork = null; }
-    if (!homeWorkDetached) blockPlayback(playbackBlocker, capturing(next));
+    blockPlayback(playbackBlocker, capturing(next));
     refreshChoice();
     followNote(next.outcome === "saved" && before.outcome !== "saved" && note === null && noteStatus === "ready");
     notify();
