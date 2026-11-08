@@ -194,8 +194,8 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
 - **What ships.** Only these events, typed fields only, no message text: `backend_startup` (info/warn),
   `backend_startup_failed` (`phase`: `startup_fatal` | `main_rejected`; closed `failure` class),
   `backend_uncaught_exception` (class name only; Bun prints an unhandled rejection the same way),
-  `backend_alert` (`alert=true` lines) and `backend_log_error` (any other stderr line; `component`, `route`, `status`,
-  `upstream_status`, `code`, `reason`, `cid` only when they match a strict pattern), the four hosted-AssemblyAI
+  `backend_alert` (`alert=true` lines), `backend_log_error` (other stderr lines and closed calendar failure diagnostics),
+  `backend_storage_lane_wait` (typed queue-wait diagnostics), the four hosted-AssemblyAI
   JSON events (`assemblyai_provider_blocked`, `_provider_recovered`, `_jobs_failed_in_a_row`, `_worker_heartbeat`),
   and the per-request `tinychat_request` record (TC-2537).
   Everything else is dropped, not redacted: free text, stack frames, lines over 2048 characters.
@@ -212,12 +212,25 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   (5xx, stream `error` or `aborted`) and 20 other records per minute ship; the rest are dropped (Vector `throttle`).
   `backend/src/__tests__/request-record.test.ts` sends a chat turn carrying each kind of sensitive value and checks
   the emitted record and, with `VECTOR_BIN`, what the real pipeline passes to the sink.
+- **Storage and calendar diagnostics (TC-2546).** A `[storage-lane]` line projects exactly `svc`, `event`, `component`,
+  `level`, `ts`, `op`, `priority` and `waited_ms`. The closed operations are `slow-wait` (warning: queued at least one
+  second before starting, not evidence that the operation failed) and `wait-timeout` (error: the queued operation
+  expired without starting). Priorities are `foreground` or `background`; wait values are integers from 0 to
+  3,600,000 ms. Invalid lane lines are dropped; extra keys, including generic error fields, are not copied.
+  The four calendar worker catches emit `backend_log_error`, component `calendar-autojoin`, with closed `phase`
+  (`tick`, `tenant_reconcile`, `due_timer`, `dispatch_lag_status`), trusted `error_name` class and a closed normalized
+  `code`. A service HTTP `status` is optional and restricted to integer 100–599; no-response status 0 is omitted.
+  Unknown error names, provider codes and payloads never pass through: unknown codes receive a fixed class-specific
+  fallback. No error message, account, KV key or value is emitted. Vector rebuilds the calendar record from those
+  fields only. The request caps above remain unchanged; these diagnostics do not enter either request bucket.
+  Native Vector tests exercise the sink-facing projection, hostile extras and the 10/20 request limits without
+  contacting Better Stack. This diagnostic change does not alter lane concurrency, retry policy or history scans.
 - **`REQUEST_LOG_HMAC_KEY`.** Generated once (`openssl rand -hex 32`) and set as the `production-api` secret; it
   reaches only the backend's encrypted CVM env (step `env:`, env-file `printf`, Compose). It is never logged or
   shipped. Rotating it changes every `account_hash`, so records before and after a rotation no longer join.
 - **Add an event or field.** (1) Add it to `tinychat-backend` in `ops/logging/fields.json` in `tinycloud-dev` and merge;
   (2) copy that file byte-for-byte to `log-shipper/fields.json`; (3) emit it in the `allowlist` transform in
   `log-shipper/vector.yaml` with a type/range check; (4) mirror the YAML into `docker-compose.phala.yml` (`$` → `$$`);
-  (5) add a case to `log-shipper/vector.tests.yaml`. `backend/src/__tests__/log-shipper.test.ts` checks the emitted
-  events/fields against `fields.json`; CI runs `vector validate` and `vector test` on the pinned image.
+  (5) add a case to `log-shipper/vector.tests.yaml`. Native Vector fixtures and the sink-facing
+  `request-record.test.ts` cases verify the emitted keys and rejection of private extras; CI also validates the pinned image.
 - **Delivery is best effort.** UDP and the sink buffer can drop lines under load or while the shipper restarts.
