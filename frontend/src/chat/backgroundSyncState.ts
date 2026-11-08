@@ -468,11 +468,11 @@ export function queueNotices(state: BackgroundSyncState): QueueNotice[] {
       kind: "ingest-blocked",
       title:
         state.ingestBlocked === "secrets-locked"
-          ? "Sign in to collect waiting meetings"
+          ? "Sign in again to collect waiting meetings"
           : "No Fireflies key on this device",
       detail:
         state.ingestBlocked === "secrets-locked"
-          ? "Waiting meetings stay queued until you sign in again."
+          ? "Your sign-in has ended. Waiting meetings stay queued until you sign in again."
           : "Reconnect Fireflies above to give this browser the key it needs to collect waiting meetings.",
       action: null,
       tone: "warn",

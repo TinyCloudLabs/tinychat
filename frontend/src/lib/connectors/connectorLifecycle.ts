@@ -408,7 +408,7 @@ async function deleteKey(deps: DisconnectDeps): Promise<StepOutcome> {
     return {
       failure: {
         step: "delete-key",
-        message: "Your API key isn’t available in the Exo app. Disconnect from Exo on the web or desktop to remove it.",
+        message: "Your API key can’t be removed in the Exo app. Disconnect on the web or desktop to remove it.",
         retryable: false,
       },
     };
