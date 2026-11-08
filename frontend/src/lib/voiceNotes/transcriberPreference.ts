@@ -295,13 +295,16 @@ async function commitPreference(change: Partial<CaptureOptions>, live: Live = al
   return applied;
 }
 
-/** The effective choice changed under an unchanged preference (the Mac's Whisper became ready): rewrite the engine's default and tell the listeners. */
-export async function refreshEffectiveTranscriber(): Promise<void> {
+/** The effective choice changed under an unchanged preference (the Mac's Whisper became ready): rewrite the engine's
+ * default and tell the listeners. `live` false when the step runs or once the defaults are read (the refresh's caller
+ * has gone): nothing is written. */
+export async function refreshEffectiveTranscriber(live: Live = always): Promise<void> {
+  let applied = true;
   await inOrder(async () => {
-    await writeEffectiveDefaults(readTranscriberPreference());
+    if (!live() || await writeEffectiveDefaults(readTranscriberPreference(), undefined, live) === STALE) { applied = false; return; }
     unreconciled = null;
   });
-  for (const listener of listeners) listener();
+  if (applied) for (const listener of listeners) listener();
 }
 
 /** Resolves false, writing nothing, if `live` is false when its turn in the write lane comes (its caller closed). */

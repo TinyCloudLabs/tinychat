@@ -5,6 +5,7 @@ import { memoryLocks, openWebStore, type WebStoreOptions } from "../web/webStore
 import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBridge } from "./desktopVoiceNotes";
+import { refreshEffectiveTranscriber } from "../transcriberPreference";
 import { selectRecorderView } from "@/capture/recorder/final/recorderView";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import type { TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
@@ -423,6 +424,86 @@ describe("desktop recorder adapter", () => {
       expect(recorder.getTranscriber()).toMatchObject({ id: "off", source: "recording" });
     } finally {
       detach();
+      engine.dispose();
+      __resetCaptureEngineForTests();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  /** A signed-in Mac engine with the app's default repair, Whisper not ready yet (its model downloaded, not selected), and
+   * the native default Off while the saved choice is Local (as another window can leave it); and a recorder on it. */
+  async function macWithRepair(bridge: FakeBridge) {
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const engine = await openDesktopVoiceNotes({ bridge, now: () => bridge.now, onWhisperReadyChanged: refreshEffectiveTranscriber,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null, now: () => bridge.now } });
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    __setInstalledEngineForTests("tauri", engine.plugin.capabilities);
+    await engine.plugin.setCaptureDefaults({ accountDid: "did:example:alice", transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    const recorder = createVoiceNoteRecorderController({ tcw: { did: "did:example:alice", spaceId: "space-a" } as TinyCloudWeb,
+      available: true, transcriber: { check: async () => {}, noteSaved: () => {} }, onDeviceReady: () => true });
+    expect((await engine.plugin.getCaptureDefaults()).transcriber).toBe("off");
+    return { engine, recorder };
+  }
+
+  test("the default repair writes nothing for a caller that has gone, and repairs for a live one", async () => {
+    const { engine } = await macWithRepair(new FakeBridge());
+    try {
+      await refreshEffectiveTranscriber(() => false);
+      expect((await engine.plugin.getCaptureDefaults()).transcriber).toBe("off");
+      await refreshEffectiveTranscriber();
+      expect((await engine.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+    } finally {
+      engine.dispose();
+      __resetCaptureEngineForTests();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("a default Local choice from a closed Mac recorder sets off no Whisper refresh: the native default stays Off", async () => {
+    const bridge = new FakeBridge();
+    const { engine, recorder } = await macWithRepair(bridge);
+    try {
+      const detach = recorder.attach();
+      await waitUntilRecorderReady(recorder);
+      detach();
+      // The model is selected now; a refresh would find Whisper ready and repair the default to Local.
+      bridge.selectedModel = "QuantizedTinyEn";
+      const closedAt = bridge.calls.length;
+      expect(await recorder.setTranscriber("on-device", { scope: "default" })).toBe("unavailable");
+      expect(bridge.calls.slice(closedAt)).not.toContain("recorder_models_get");
+      expect((await engine.plugin.getCaptureDefaults()).transcriber).toBe("off");
+    } finally {
+      engine.dispose();
+      __resetCaptureEngineForTests();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("a Mac recorder closing while its Whisper refresh reads the models: the refresh's default repair writes nothing", async () => {
+    class HeldModelsBridge extends FakeBridge {
+      hold: Promise<void> | null = null;
+      override async invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+        if (command === "recorder_models_get" && this.hold) await this.hold;
+        return super.invoke<T>(command, args);
+      }
+    }
+    const bridge = new HeldModelsBridge();
+    const { engine, recorder } = await macWithRepair(bridge);
+    try {
+      const detach = recorder.attach();
+      await waitUntilRecorderReady(recorder);
+      bridge.selectedModel = "QuantizedTinyEn";
+      let release = () => {};
+      bridge.hold = new Promise<void>((resolve) => { release = resolve; });
+      const choosing = recorder.setTranscriber("on-device", { scope: "default" });
+      detach();
+      bridge.hold = null;
+      release();
+      expect(await choosing).toBe("unavailable");
+      expect((await engine.plugin.getCaptureDefaults()).transcriber).toBe("off");
+      // Unchanged too: the next refresh still sees Whisper become ready, and repairs the default then.
+      expect(engine.plugin.capabilities.desktopWhisper).toBe(false);
+    } finally {
       engine.dispose();
       __resetCaptureEngineForTests();
       __setVoiceNotesForTests(originalVoiceNotes, { available: null });

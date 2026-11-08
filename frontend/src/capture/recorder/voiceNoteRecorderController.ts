@@ -1056,16 +1056,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async setTranscriber(id, { scope }) {
       if (!available) return "unavailable";
-      // From this attachment only: a closed recorder changes no choice. A recording-scoped choice is for the recording
-      // shown now (stillShown, checked before the engine call): the desktop refresh below can outlast that recording,
-      // and the choice must not land on whichever recording is live when it returns. A default choice is checked inside
-      // the default-write lane, after its read and before its write.
+      // From this attachment only: a closed recorder changes no choice, and sets off no desktop refresh (whose default
+      // repair would write). A recording-scoped choice is for the recording shown now (stillShown, checked again
+      // before the engine call): the desktop refresh below can outlast that recording, and the choice must not land on
+      // whichever recording is live when it returns. A default choice is checked again inside the default-write lane,
+      // after its read and before its write; the refresh's repair, too, once the models are read.
       const mine = attachment;
       const shown = state.recordingId;
       const stillShown = () => state.phase === "recording" && !!shown && state.recordingId === shown && controls(mine, shown);
-      if (scope === "recording" && !stillShown()) return "unavailable";
+      if (!controls(mine) || (scope === "recording" && !stillShown())) return "unavailable";
       if (id === "on-device" && captureEngineKind() === "tauri") {
-        try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(); }
+        try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(() => controls(mine)); }
         catch { return "unavailable"; }
       }
       if (id === "on-device" && !onDeviceTranscriptionAvailable()) return "unavailable";

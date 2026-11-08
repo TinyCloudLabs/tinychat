@@ -54,10 +54,11 @@ export const DESKTOP_CAPABILITIES: CaptureCapabilities = {
   unattendedStop: "scoped",
 };
 
-let refreshSelectedWhisper: (() => Promise<void>) | null = null;
-/** D7b can await this after models.select; the controller also uses it before accepting Local. */
-export async function refreshDesktopWhisperCapability(): Promise<void> {
-  await refreshSelectedWhisper?.();
+let refreshSelectedWhisper: ((live?: () => boolean) => Promise<void>) | null = null;
+/** D7b can await this after models.select; the controller also uses it before accepting Local. `live` false once the
+ * models are read (its caller, a recorder, has closed): nothing changes, and the next refresh sees the change. */
+export async function refreshDesktopWhisperCapability(live?: () => boolean): Promise<void> {
+  await refreshSelectedWhisper?.(live);
 }
 
 export interface DesktopVoiceNotes {
@@ -72,8 +73,9 @@ export interface DesktopVoiceNotesOptions {
   whisper?: DesktopWhisperBridge;
   store?: WebStore;
   storeOptions?: Omit<WebStoreOptions, "audio">;
-  /** The selected Whisper model became ready or went away; the installed engine rewrites its default choice. */
-  onWhisperReadyChanged?: () => Promise<void>;
+  /** The selected Whisper model became ready or went away; the installed engine rewrites its default choice (not once
+   * `live` is false: the refresh's caller has gone). */
+  onWhisperReadyChanged?: (live: () => boolean) => Promise<void>;
   now?: () => number;
   newId?: () => string;
 }
@@ -112,15 +114,17 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     }
   } catch (error) { console.warn("[desktopVoiceNotes] Could not read the selected Whisper model", error); }
   const capabilities: CaptureCapabilities = { ...DESKTOP_CAPABILITIES, desktopWhisper };
-  const refreshWhisperCapability = async () => {
+  const refreshWhisperCapability = async (live: () => boolean = () => true) => {
     const selected = await bridge.invoke<string | null>("recorder_models_get");
     const models = selected ? await bridge.invoke<{ id: string; downloaded: boolean }[]>("recorder_models_list") : [];
+    // A caller that has gone changes nothing: not the capability, its listeners, nor the default repair below.
+    if (!live()) return;
     const ready = !!selected && models.some((model) => model.id === selected && model.downloaded);
     const changed = ready !== capabilities.desktopWhisper;
     capabilities.desktopWhisper = ready;
     notifyCaptureCapabilitiesChanged();
     // The shown choice and the default a new recording journals both follow the capability.
-    if (changed) await options.onWhisperReadyChanged?.();
+    if (changed) await options.onWhisperReadyChanged?.(live);
   };
   refreshSelectedWhisper = refreshWhisperCapability;
   const now = options.now ?? (() => Date.now());
