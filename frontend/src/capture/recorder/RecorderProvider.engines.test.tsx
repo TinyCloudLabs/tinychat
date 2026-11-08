@@ -21,7 +21,7 @@ import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
 import { __resetHomeWorkForTests, homeWorkRunning, setHomeReauthorizing, subscribeHomeReauthorizing } from "@/lib/homeReauthorizing";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
-import { __resetRecorderOwnershipForTests, __setCancelledStartWatchForTests } from "./voiceNoteRecorderController";
+import { __resetRecorderOwnershipForTests, __setRecorderTrackerForTests } from "./voiceNoteRecorderController";
 import { playbackBlocked } from "@/lib/audio/playback";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -632,8 +632,8 @@ describe("web engine: no OnDeviceStt calls", () => {
   describe("a start whose recorder closed before the microphone answered", () => {
     // A web engine: it discards by id, refusing unless that recording is the live one.
     const WEB_SCOPED: CaptureCapabilities = { ...NONE, scopedDiscard: true };
-    beforeEach(() => { __setCancelledStartWatchForTests([0]); __resetRecorderOwnershipForTests(); });
-    afterEach(() => { __setCancelledStartWatchForTests(null); });
+    beforeEach(() => { __setRecorderTrackerForTests({ waits: [0] }); __resetRecorderOwnershipForTests(); });
+    afterEach(() => { __setRecorderTrackerForTests(null); });
 
     /** Record with the microphone still being asked, then close the recorder (sign-out, unmount). */
     async function closeWhileAsking(capabilities: CaptureCapabilities = WEB_SCOPED) {
@@ -744,22 +744,21 @@ describe("web engine: no OnDeviceStt calls", () => {
     test("a stale status read answered after the owner started a new recording never ends that recording", async () => {
       const { calls, fake, status, permission } = await closeWhileAsking();
       await renderRecorder();
-      let gate: PromiseWithResolvers<void> | null = null;
+      // The second read once the late recording is live is the closed recorder's (the first is the open recorder's
+      // pickup); it sees the late recording still live, and is held there.
+      const stale = Promise.withResolvers<void>();
+      let reads = -1;
       fake.plugin.status = async () => {
         const snapshot = await status();
-        const held = gate;
-        gate = null;
-        if (held) await held.promise;
+        if (reads >= 0) reads += 1;
+        if (reads === 2) await stale.promise;
         return snapshot;
       };
+      reads = 0;
       await act(async () => { permission.resolve(); await tick(); await tick(); });
       const late = value!.recordingId;
       expect(value!.phase).toBe("recording");
-      // The closed recorder's next read sees the late recording still live, and is held there.
-      const stale = Promise.withResolvers<void>();
-      gate = stale;
-      await act(async () => { await tick(); await tick(); });
-      expect(gate).toBeNull();
+      expect(reads).toBe(2);
       // Meanwhile the owner discards it and starts a new recording from the open recorder.
       await act(async () => { value!.discard(); await tick(); await tick(); });
       expect(value!.phase).toBe("idle");
