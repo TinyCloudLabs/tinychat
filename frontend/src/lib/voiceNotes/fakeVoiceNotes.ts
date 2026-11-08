@@ -392,8 +392,9 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         manualRestart(s);
       } else if (s.availability !== "available") manualRestart(s);
     },
-    async discard() {
+    async discard(options) {
       const id = session?.id ?? null;
+      if (options && id !== null && id !== options.id) throw failure("recording_changed");
       if (id) { tombstones.add(id); session = null; generation++; pendingNotification = null; stateChanged(); }
       return { id };
     },

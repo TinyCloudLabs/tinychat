@@ -29,6 +29,7 @@ export const WEB_CAPABILITIES = {
   desktopWhisper: false,
   offlineRecorder: false,
   nativeFileUpload: false,
+  scopedDiscard: true,
 } as const;
 export type WebCapabilities = typeof WEB_CAPABILITIES;
 
@@ -492,10 +493,12 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       });
     },
 
-    async discard() {
+    async discard(options) {
       return run(async () => {
         const l = live;
         if (!l) return { id: null };
+        // Checked in the same queued task as the discard: no other control can run in between.
+        if (options && l.id !== options.id) throw failure("recording_changed", "A different recording is live.");
         l.finishing = true;
         l.capture.abort();
         await l.queue;

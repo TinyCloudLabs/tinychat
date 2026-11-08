@@ -37,6 +37,7 @@ const WEB_CAPABILITIES: CaptureCapabilities = {
   desktopWhisper: false,
   offlineRecorder: false,
   nativeFileUpload: false,
+  scopedDiscard: true,
 };
 
 // The installed engine makes the home read the parked recordings; the fake plugin answers that here.

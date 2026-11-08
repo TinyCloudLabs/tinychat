@@ -24,6 +24,8 @@ export interface CaptureCapabilities {
   offlineRecorder: boolean;
   /** The engine can stream its local recording to PTX without a webview copy. */
   nativeFileUpload: boolean;
+  /** discard({ id }) discards only that recording, checked and discarded in one step (VoiceNotesPlugin.discard). */
+  scopedDiscard: boolean;
 }
 
 export type CaptureEngine = VoiceNotesPlugin & { capabilities: CaptureCapabilities };
@@ -39,6 +41,7 @@ const NATIVE_CAPABILITIES: CaptureCapabilities = {
   desktopWhisper: false,
   offlineRecorder: true,
   nativeFileUpload: false,
+  scopedDiscard: false,
 };
 const NATIVE_UPLOAD_CAPABILITIES: CaptureCapabilities = { ...NATIVE_CAPABILITIES, nativeFileUpload: true };
 let androidFileUploadAvailable = false;
@@ -64,6 +67,7 @@ const NO_CAPABILITIES: CaptureCapabilities = {
   desktopWhisper: false,
   offlineRecorder: false,
   nativeFileUpload: false,
+  scopedDiscard: false,
 };
 
 const factories = new Map<RegisterableKind, () => Promise<CaptureEngine>>();
