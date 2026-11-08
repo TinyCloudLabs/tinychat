@@ -515,17 +515,6 @@ describe("Sync now — engine dispatch", () => {
     expect(card).not.toContain('"API_KEY"');
   });
 
-  test("the existing vault-unlock gate is reused for BOTH engines", () => {
-    // One unlock, above the branch — not a second copy inside the Meet engine,
-    // and not skipped for it. (The engine is CHOSEN before the unlock; what
-    // matters is that neither engine RUNS before it.)
-    expect(handler.indexOf("isSecretsUnlocked(tcw)")).toBeLessThan(
-      handler.indexOf('engine === "gmeet"'),
-    );
-    expect(gmeetEngine).not.toContain("unlockSecrets");
-    expect(handler.match(/unlockSecrets<SecretsErr>\(tcw\)/g)).toHaveLength(1);
-  });
-
   test("the Meet run shares the engine's single-flight and the row's Stop button", () => {
     // `syncGoogleMeet` owns a module-level in-flight slot shared with the
     // session-start lane, and the card threads its own AbortController into it
@@ -616,11 +605,11 @@ describe("Calendar autojoin consent and browser importer separation", () => {
     const finish = dialog.slice(finishAt, exchangeAt);
     expect(finish).toContain('/autojoin/enable');
     expect(finish).toContain('setupId');
-    expect(finish).not.toMatch(/saveConnectorKey|runInitialSync|saveAndSync|unlockSecrets/);
+    expect(finish).not.toMatch(/saveConnectorKey|runInitialSync|saveAndSync/);
   });
   test("disconnect removes server custody before browser vault access and keeps revoke failures visible", () => {
     const revoke = dialog.slice(dialog.indexOf('async function revokeGoogleUpstream'));
-    expect(revoke.indexOf('/autojoin/disconnect')).toBeLessThan(revoke.indexOf('unlockSecrets'));
+    expect(revoke.indexOf('/autojoin/disconnect')).toBeLessThan(revoke.indexOf('getConnectorKey'));
     expect(dialog).toContain('if (!showRevokeWarning) onOpenChange(false)');
     expect(dialog).toContain('revokeOutcome.status === "server-unavailable"');
     const calendar = read('CalendarAutojoinSection.tsx');

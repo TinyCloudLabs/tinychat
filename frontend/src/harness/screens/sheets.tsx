@@ -58,7 +58,6 @@ function UploadSheetScreen(props: Partial<AudioUploadViewProps>) {
           onOpenSettings={noop}
           onRecheck={noop}
           onOpenLibrary={noop}
-          onContinue={noop}
           layout="sheet"
           {...props}
         />
@@ -129,7 +128,6 @@ const MEETING = { ...SHEETS, readyWhen: '[data-testid="meeting-sheet"]' } as con
 export const sheetsScreens: HarnessScreen[] = [
   { ...UPLOAD, id: "sheets-upload", render: () => <UploadSheetScreen /> },
   { ...UPLOAD, id: "sheets-upload-uploading", render: () => <UploadSheetScreen job={job({})} /> },
-  { ...UPLOAD, id: "sheets-upload-paused", render: () => <UploadSheetScreen paused={{ fileName: "Interview.m4a" }} /> },
   {
     ...UPLOAD,
     id: "sheets-upload-failed",

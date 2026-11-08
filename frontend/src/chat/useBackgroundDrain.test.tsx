@@ -5,8 +5,7 @@
 // trigger to any authenticated visit WITHOUT changing what the drain does. The
 // rules under test are the drain-trigger handoff's non-negotiables:
 //
-//   1. MOUNT NEVER UNLOCKS — a locked vault is a silent no-op, and
-//      `secrets.unlock` is not even wired into the headless path;
+//   1. MOUNT NEVER PROMPTS — a locked vault is a silent no-op;
 //   2. no double drain — the headless run and the Settings surface share one
 //      serialized lane, so overlapping mounts cannot fetch a meeting twice;
 //   3. a route-disabled 404 latches DARK for the whole session — one cheap
@@ -29,12 +28,10 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
   BackgroundDrainer,
-  buildHeadlessDrainDeps,
   clearBackgroundDrainRecord,
   enqueueDrainWork,
   maybeStartBackgroundDrain,
   readBackgroundDrainRecord,
-  resumeBackgroundDrain,
   resetBackgroundDrainForTests,
   type BackgroundDrainHooks,
 } from "./useBackgroundDrain";
@@ -88,19 +85,14 @@ function connection(patch: Partial<ConnectorConnection> = {}): ConnectorConnecti
   };
 }
 
-/** A tcw whose vault records unlock attempts instead of prompting. */
+/** A tcw whose vault reports a fixed lock state. */
 function tcwWithVault(unlocked: boolean) {
-  let unlockCalls = 0;
   const tcw = {
     secrets: {
       isUnlocked: unlocked,
-      unlock: async () => {
-        unlockCalls += 1;
-        return { ok: true };
-      },
     },
   } as unknown as TinyCloudWeb;
-  return { tcw, unlockCalls: () => unlockCalls };
+  return { tcw };
 }
 
 /** The targetedSync idiom: reaching unlock at all fails the run loudly. */
@@ -331,9 +323,6 @@ function settingsDeps(b: FakeBackend, fetched: string[]): { deps: BackgroundSync
     webhooks: b.webhooks,
     secrets: {
       isUnlocked: () => true,
-      unlock: async () => {
-        throw new Error("the mount-time load must never unlock");
-      },
     },
     ingest: (items) => rec.run(items),
   };
@@ -359,32 +348,6 @@ describe("user-visible surface", () => {
     expect(html).toBe("");
     // Rendering is not starting: the drain belongs to the mount effect.
     expect(readBackgroundDrainRecord()).toBeNull();
-  });
-});
-
-// ── Constraint 1: MOUNT NEVER UNLOCKS ────────────────────────────────
-
-describe("mount never unlocks", () => {
-  test("a locked vault with queued meetings never reaches tcw.secrets.unlock", async () => {
-    const b = backend({ pending: [item("m1"), item("m2")] });
-    const vault = tcwWithVault(false);
-    const { promise } = start(b, { tcw: vault.tcw });
-    await promise;
-    expect(vault.unlockCalls()).toBe(0);
-  });
-
-  test("the headless deps hard-wire unlock to a refusal that never touches the vault", async () => {
-    const b = backend();
-    const vault = tcwWithVault(false);
-    const deps = buildHeadlessDrainDeps(vault.tcw, fireflies, b.webhooks);
-    const result = await deps.secrets.unlock();
-    expect(result.ok).toBe(false);
-    expect(vault.unlockCalls()).toBe(0);
-  });
-
-  test("the module does not even import the interactive unlock helper", () => {
-    const source = readFileSync(join(import.meta.dir, "useBackgroundDrain.ts"), "utf8");
-    expect(source).not.toContain("unlockSecrets");
   });
 });
 
@@ -450,28 +413,6 @@ describe("stale Fireflies catch-up", () => {
       },
     });
     await promise;
-    expect(limits).toEqual([50]);
-  });
-  test("unlock rechecks and catches up stale Fireflies through the same bound", async () => {
-    const b = backend();
-    const conn = countingConnection(connection({ lastSyncedAt: "2026-10-11T11:59:59.000Z" }));
-    const limits: number[] = [];
-    const now = Date.parse("2026-10-13T12:00:00.000Z");
-    await resumeBackgroundDrain({
-      tcw: explodingVaultTcw(true),
-      sessionStore: SESSION,
-      backendUrl: BACKEND,
-      hooks: {
-        webhooks: b.webhooks,
-        getConnection: conn.getConnection,
-        connectors: [fireflies],
-        ingest: async () => neverIngest(),
-        catchUpFireflies: async (_tcw, _descriptor, detailCap) => {
-          limits.push(detailCap);
-        },
-        now: () => now,
-      },
-    }, "unlock");
     expect(limits).toEqual([50]);
   });
 });
@@ -972,48 +913,6 @@ function realCatchUpHarness(
   };
 }
 
-describe("Fireflies catch-up ignores the dark webhook route", () => {
-  test("unlock after a feature-dark mount still runs the real Fireflies client and engine", async () => {
-    const harness = realCatchUpHarness();
-    const b = backend({ config: { status: "feature-dark" } });
-    const vault = { isUnlocked: false };
-    const tcw = {
-      secrets: vault,
-      kv: {
-        get: async () => ({ ok: true, data: { data: null } }),
-      },
-    } as unknown as TinyCloudWeb;
-    const options = {
-      tcw,
-      sessionStore: SESSION,
-      backendUrl: BACKEND,
-      hooks: {
-        webhooks: b.webhooks,
-        getConnection: async () => ({
-          ok: true as const,
-          data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
-        }),
-        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, detailCap: number, options) => {
-          await syncFireflies({
-            client: harness.client, store: harness.store, tcw: space, detailCap,
-            signal: options.signal, isCurrent: options.isCurrent,
-          });
-        },
-        now: () => Date.parse("2026-10-13T12:00:00.000Z"),
-      },
-    };
-
-    await maybeStartBackgroundDrain(options);
-    expect(readBackgroundDrainRecord()?.featureDark).toBe(true);
-    expect(harness.calls).toEqual([]);
-
-    vault.isUnlocked = true;
-    await resumeBackgroundDrain(options, "unlock");
-
-    expect(harness.calls).toContain("list");
-    expect(harness.meetings.map((meeting) => meeting.sourceId)).toEqual(["meeting-1"]);
-  });
-});
 describe("Fireflies catch-up pacing and generation", () => {
   test("an attempt recorded less than 15 minutes ago skips real provider listing", async () => {
     const harness = realCatchUpHarness();
@@ -1032,7 +931,7 @@ describe("Fireflies catch-up pacing and generation", () => {
       },
     } as unknown as TinyCloudWeb;
     const b = backend();
-    await resumeBackgroundDrain({
+    await maybeStartBackgroundDrain({
       tcw,
       sessionStore: SESSION,
       backendUrl: BACKEND,
@@ -1050,53 +949,9 @@ describe("Fireflies catch-up pacing and generation", () => {
         },
         now: () => now,
       },
-    }, "unlock");
+    });
 
     expect(harness.calls).toEqual([]);
-  });
-
-  test("simultaneous unlock triggers share one real provider/engine run", async () => {
-    const listing = deferred();
-    const harness = realCatchUpHarness(["meeting-1"], { onList: () => listing.promise });
-    const tcw = {
-      secrets: { isUnlocked: true },
-      kv: {
-        get: async () => ({
-          ok: true,
-          data: { data: JSON.stringify(harness.attempt()) },
-        }),
-      },
-    } as unknown as TinyCloudWeb;
-    const b = backend();
-    const options = {
-      tcw,
-      sessionStore: SESSION,
-      backendUrl: BACKEND,
-      hooks: {
-        webhooks: b.webhooks,
-        getConnection: async () => ({
-          ok: true as const,
-          data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
-        }),
-        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, detailCap: number, options) => {
-          await syncFireflies({
-            client: harness.client, store: harness.store, tcw: space, detailCap,
-            signal: options.signal, isCurrent: options.isCurrent,
-          });
-        },
-        now: () => Date.parse("2026-10-13T12:00:00.000Z"),
-      },
-    };
-    const first = resumeBackgroundDrain(options, "unlock");
-    for (let i = 0; i < 10 && harness.calls.length === 0; i++) await tick();
-    expect(harness.calls).toEqual(["list"]);
-    const second = resumeBackgroundDrain(options, "unlock");
-    await tick();
-    listing.resolve();
-    await Promise.all([first, second]);
-
-    expect(harness.calls.filter((call) => call === "list")).toHaveLength(1);
-    expect(harness.meetings.map((meeting) => meeting.sourceId)).toEqual(["meeting-1"]);
   });
 
   test("clearing a queued generation prevents real Fireflies work from starting", async () => {
@@ -1109,7 +964,7 @@ describe("Fireflies catch-up pacing and generation", () => {
       secrets: { isUnlocked: true },
       kv: { get: async () => ({ ok: true, data: { data: null } }) },
     } as unknown as TinyCloudWeb;
-    const pending = resumeBackgroundDrain({
+    const pending = maybeStartBackgroundDrain({
       tcw,
       sessionStore: SESSION,
       backendUrl: BACKEND,
@@ -1127,7 +982,7 @@ describe("Fireflies catch-up pacing and generation", () => {
         },
         now: () => Date.parse("2026-10-13T12:00:00.000Z"),
       },
-    }, "unlock");
+    });
     clearBackgroundDrainRecord();
     laneRelease.resolve();
     await Promise.all([laneHold, pending]);
@@ -1144,7 +999,7 @@ describe("Fireflies catch-up cancellation and lane boundaries", () => {
       secrets: { isUnlocked: true },
       kv: { get: async () => ({ ok: true, data: { data: null } }) },
     } as unknown as TinyCloudWeb;
-    const pending = resumeBackgroundDrain({
+    const pending = maybeStartBackgroundDrain({
       tcw,
       sessionStore: SESSION,
       backendUrl: BACKEND,
@@ -1171,7 +1026,7 @@ describe("Fireflies catch-up cancellation and lane boundaries", () => {
         },
         now: () => Date.parse("2026-10-13T12:00:00.000Z"),
       },
-    }, "unlock");
+    });
     for (let i = 0; i < 10 && !harness.calls.includes("list"); i++) await tick();
     expect(harness.calls).toEqual(["list"]);
     clearBackgroundDrainRecord();
@@ -1210,7 +1065,7 @@ describe("Fireflies catch-up cancellation and lane boundaries", () => {
         now: () => Date.parse("2026-10-13T12:00:00.000Z"),
       },
     };
-    const syncing = resumeBackgroundDrain(options, "unlock");
+    const syncing = maybeStartBackgroundDrain(options);
     for (let i = 0; i < 10 && !harness.calls.includes("list"); i++) await tick();
     expect(harness.calls).toContain("list");
     let laneWriteFinished = false;

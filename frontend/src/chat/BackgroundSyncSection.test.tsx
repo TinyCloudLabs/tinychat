@@ -366,19 +366,6 @@ describe("queue states", () => {
   });
 });
 
-describe("locked secrets", () => {
-  test("pending work with a locked vault offers the unlock as a user action", () => {
-    const html = render(
-      enabledState({
-        ingestBlocked: "secrets-locked",
-        queue: { pendingCount: 2, deadCount: 0, rateLimited: false, blockedReason: null },
-      }),
-    );
-    expect(html).toContain("Sync queued meetings");
-    expect(text(html).toLowerCase()).toContain("unlock");
-  });
-});
-
 describe("outages", () => {
   test("a backend outage renders unavailable + retry, never 'off' and never success", () => {
     const html = render({

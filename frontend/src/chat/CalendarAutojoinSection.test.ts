@@ -11,6 +11,7 @@ import { autojoinDetail } from "@/capture/meetingSources/useCalendarAutojoin";
 import { CalendarAutojoinRow } from "@/capture/meetingSources/MeetingSourcesView";
 import { deleteConnectorKey } from "@/lib/connectors/connectorSecrets";
 import { runDisconnect } from "@/lib/connectors/connectorLifecycle";
+import { setSecretsAvailableForTests } from "@/lib/openkeyNative";
 
 const session = { getToken: () => "tinychat-session", isExpired: () => false } as SessionStore;
 const google = CONNECTORS.find((row) => row.id === "google-meet")!;
@@ -90,7 +91,7 @@ describe("Google disconnect across interrupted account replacement", () => {
     const result = await runDisconnect({ connectorId: google.id, source: google.source, mode: "keep-data",
       webhooks: { disable: async () => ({ status: "feature-dark" }), recordPurge: async () => ({ status: "feature-dark" }) },
       featureDark: true,
-      secrets: { isUnlocked: () => true, unlock: async () => ({ ok: true }), deleteKey: () => deleteConnectorKey(tcw, google) },
+      secrets: { available: () => true, deleteKey: () => deleteConnectorKey(tcw, google) },
       store: { listKnownSourceIds: async () => ({ ok: true, data: [] }), purgeConnector: async () => ({ ok: true, data: undefined }),
         clearFirefliesAttempt: async () => ({ ok: true, data: undefined }), getConnection: async () => ({ ok: true, data: null }),
         countMeetings: async () => ({ ok: true, data: 0 }), updateSyncState: async () => ({ ok: true, data: undefined }) },
@@ -134,6 +135,25 @@ describe("Google disconnect across interrupted account replacement", () => {
       fetchImpl: (async () => { throw new Error("offline"); }) as typeof fetch,
     })).status).toBe("server-unavailable");
     expect(reads).toBe(0);
+  });
+  test("a native app session stops server custody, then reports unavailable without reading secrets", async () => {
+    setSecretsAvailableForTests(false);
+    try {
+      let reads = 0;
+      const paths: string[] = [];
+      const tcw = { secrets: { get: async () => { reads++; return { ok: true, data: "token" }; } } } as unknown as TinyCloudWeb;
+      const result = await revokeGoogleUpstream({ tcw, descriptor: google, backendUrl: "https://backend.example", sessionStore: session,
+        fetchImpl: (async (url) => {
+          paths.push(new URL(String(url)).pathname);
+          return Response.json({ status: "disconnected", upstreamRevoked: "ok" });
+        }) as typeof fetch,
+      });
+      expect(result.status).toBe("unavailable");
+      expect(paths).toEqual(["/api/connectors/google/autojoin/disconnect"]);
+      expect(reads).toBe(0);
+    } finally {
+      setSecretsAvailableForTests(null);
+    }
   });
 });
 

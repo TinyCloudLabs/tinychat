@@ -57,7 +57,6 @@ import { pipelineActionPriority, type PipelineActionKind } from "@/lib/voiceNote
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { MeetingSheet } from "./meeting/MeetingSheet";
 import { useRecorder } from "./recorder/RecorderProvider";
-import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
 import { UploadSheet } from "./upload/UploadSheet";
 import { useUploadDeps } from "./upload/useUploadDeps";
 import { ActivityPanel } from "./activity/ActivityPanel";
@@ -142,7 +141,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
 
   // The notetaker: one per app, for the Meeting sheet and the In progress rows.
   const bot = useMeetingBot({ backendUrl, sessionStore, active: homeShown });
-  const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
   const storageFull = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
   const { deps: uploadDeps } = useUploadDeps(tcw, backendUrl, sessionStore);
   const [sheet, setSheet] = useState<Sheet | null>(null);
@@ -214,7 +212,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
 
   const inProgress: InProgressRowsViewProps = {
     upload,
-    paused,
     meetings: activeMeetings(bot.meetings),
     busyId: bot.busyId,
     voice: recorder.available
@@ -230,7 +227,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         }
       : undefined,
     onOpenUpload: () => setSheet("upload"),
-    onContinue: () => continuePausedUpload(uploadDeps),
     onOpenMeeting: () => setSheet("meeting"),
     onEnd: bot.actions.stop,
   };
@@ -238,16 +234,15 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const sidebarActivity = platform === "tauri" && nav === "sidebar";
   const activityOwner = useRef({});
   const openActivityUpload = useCallback(() => { navigate(PATHS.capture); setSheet("upload"); }, [navigate]);
-  const continueActivityUpload = useCallback(() => continuePausedUpload(uploadDeps), [uploadDeps]);
   const retryActivityUpload = useCallback(() => uploadRunner.retry(uploadDeps), [uploadDeps]);
   useEffect(() => {
     if (platform !== "tauri") { sidebarActivityStore.clear(activityOwner.current); return; }
-    sidebarActivityStore.publish(activityOwner.current, { items: library.items, views: activityViews, upload, paused,
-      onOpenNote: openActivityNote, onOpenUpload: openActivityUpload, onContinueUpload: continueActivityUpload, onRetryUpload: retryActivityUpload });
-  }, [platform, library.items, activityViews, upload, paused, openActivityNote, openActivityUpload, continueActivityUpload, retryActivityUpload]);
+    sidebarActivityStore.publish(activityOwner.current, { items: library.items, views: activityViews, upload,
+      onOpenNote: openActivityNote, onOpenUpload: openActivityUpload, onRetryUpload: retryActivityUpload });
+  }, [platform, library.items, activityViews, upload, openActivityNote, openActivityUpload, retryActivityUpload]);
   useEffect(() => () => sidebarActivityStore.clear(activityOwner.current), []);
   const activityControl = <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={openActivityNote}
-    upload={upload} paused={paused} onOpenUpload={openActivityUpload} onContinueUpload={continueActivityUpload}
+    upload={upload} onOpenUpload={openActivityUpload}
     onRetryUpload={retryActivityUpload} active={active} />;
   const visibleNoteId = active ? (noteScreen ? screen.noteId ?? null : recentNoteId !== null && openNote ? openNote.id : null)
     ?? (recorder.sheetOpen && recorder.lastSaved ? library.items.find((item) => item.sourceId === recorder.lastSaved?.id)?.id ?? null : null) : null;

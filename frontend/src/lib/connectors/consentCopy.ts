@@ -171,12 +171,12 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
     "Turning this on gives our server **no new permission on your space**. Background sync asks " +
       "you to grant nothing, and nothing is granted — the credential above is held by our server, " +
       "outside your space, and our server writes no meeting into your space. Your browser still " +
-      "does that, when you are signed in with your vault unlocked, so your own copy lands where " +
+      "does that, when you are signed in, so your own copy lands where " +
       "it always did — and it stays yours: it is not deleted when our 90-day window closes. What " +
       "changed is not what our server is *permitted* to do — it is what our server now *has*: " +
       "your Fireflies token, and a copy of your meetings.",
     "**Signing in is still required.** \"Already there\" means you do not have to set the device " +
-      "up — nothing to unlock before your meetings appear, no Fireflies key to type. It does not " +
+      "up — no Fireflies key to type before your meetings appear. It does not " +
       "mean your meetings are reachable without signing in as you.",
     "You'll copy a web address and a secret into your Fireflies dashboard. Treat that web address " +
       "**like a password** — anyone holding it can tell our server that one of your meetings is " +
@@ -318,7 +318,7 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
     "TinyChat reads events on your primary Google calendar in the background. The Calendar permission can read events on calendars you own; primary-calendar-only is TinyChat’s policy. Confirmed timed Meet events qualify when you organize them or have accepted. Declined, tentative, unanswered and all-day events are skipped.",
     "Our server stores your Google refresh token encrypted and uses it without your browser. The token lets TinyChat read your Google Calendar events and see your Google account identifier and email address. The email is used to match you against event invitations.",
     "The bot may be sent from one minute before start until the earlier of five minutes after start or the event end. It requests admission; the host decides whether to admit it. Meeting title, scheduled start and recording remain available for your return.",
-    "Your browser saves completed recordings into your own space after you return and unlock it. Enabling grants the server no new permission to write to your space.",
+    "Your browser saves completed recordings into your own space the next time you open TinyChat. Enabling grants the server no new permission to write to your space.",
     "Turning off stops new sends, requests stops for active autojoined bots and deletes the server’s token. Turning off does not revoke Google’s grant; it remains until you disconnect Google Meet or remove TinyChat in your Google account. Turning on again requires this consent again. Connecting a different Google account in the Google Meet importer turns autojoin off until you explicitly re-enable it.",
   ],
   consentCheckbox: "I authorize unattended Calendar reading and encrypted server storage of my Google refresh token to autojoin eligible meetings.",
@@ -366,8 +366,8 @@ export const BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy =
   bullets: withBullets(BACKEND_INGEST_CONSENT_COPY, {
     3: "Turning this on adds **no new permission on your space** of its own. Background sync asks " +
       "you to grant nothing — the credential above is held by our server, outside your space. " +
-      "Your browser still saves Fireflies meetings into your space when you are signed in with " +
-      "your vault unlocked, so your own copy lands where it always did, and it is not deleted " +
+      "Your browser still saves Fireflies meetings into your space when you are signed in, so " +
+      "your own copy lands where it always did, and it is not deleted " +
       `when our 90-day window closes. ${TRANSCRIPT_WRITER_NOTICE} What changed with this Fireflies ` +
       "toggle is what our server now *has*: your Fireflies token, and a copy of your meetings.",
   }),
@@ -406,7 +406,7 @@ export const GOOGLE_CALENDAR_AUTOJOIN_TRANSCRIPT_CONSENT_COPY: BackgroundSyncCon
     3: "Enabling autojoin adds no new permission to write to your space of its own. " +
       `${TRANSCRIPT_WRITER_NOTICE} So an autojoined meeting's transcript may be saved by our ` +
       "server before you return; your browser also saves completed recordings into your own " +
-      "space after you return and unlock it.",
+      "space the next time you open TinyChat.",
   }),
 };
 

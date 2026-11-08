@@ -20,8 +20,8 @@ afterEach(() => { cleanupDom?.(); cleanupDom = undefined; });
 const noop = () => {};
 const now = new Date(2026, 9, 9, 9, 41);
 const inProgress: InProgressRowsViewProps = {
-  upload: null, paused: null, meetings: [], busyId: null,
-  onOpenUpload: noop, onContinue: noop, onOpenMeeting: noop, onEnd: noop,
+  upload: null, meetings: [], busyId: null,
+  onOpenUpload: noop, onOpenMeeting: noop, onEnd: noop,
 };
 const recentNote: LibraryItem = {
   id: "on-phone:rec-2", source: "exo-voice-note", sourceId: "rec-2", title: null,

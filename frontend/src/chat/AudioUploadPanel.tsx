@@ -16,7 +16,6 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Loader2Icon } from "lucide-react";
 
-import { continuePausedUpload, pausedUpload } from "@/capture/upload/pausedUpload";
 import { useUploadDeps } from "@/capture/upload/useUploadDeps";
 import { RouteLine } from "@/capture/recorder/RouteLine";
 import { uploadRoute } from "@/capture/sheetRoute";
@@ -167,12 +166,6 @@ function audioText(job: UploadState): string | null {
 export interface AudioUploadViewProps {
   /** The running, failed or finished upload; null shows the form. */
   job: UploadState | null;
-  /**
-   * An upload a reload interrupted that would unlock the vault to resume (it
-   * uses the user's own AssemblyAI key): it waits for Continue instead.
-   */
-  paused?: { fileName: string } | null;
-  onContinue?: () => void;
   file: { name: string; type: string; size: number } | null;
   engine: UploadEngine;
   engines: Readonly<Record<UploadEngine, EngineStatus>>;
@@ -205,8 +198,6 @@ export interface AudioUploadViewProps {
 
 export const AudioUploadView: FC<AudioUploadViewProps> = ({
   job,
-  paused = null,
-  onContinue,
   file,
   engine,
   engines,
@@ -229,21 +220,6 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
 }) => {
   const inSheet = layout === "sheet";
   const body = (node: ReactNode) => (inSheet ? <ResponsiveSheetBody className="pb-5">{node}</ResponsiveSheetBody> : node);
-  if (job === null && paused !== null) {
-    return body(
-      <div className="flex flex-col gap-3" data-testid="upload-paused">
-        <p className="break-words text-headline" title={paused.fileName}>
-          {paused.fileName}
-        </p>
-        <p className="text-callout text-muted-foreground" role="status">
-          Upload paused. This upload uses a separate transcription key. Continue to unlock it and finish.
-        </p>
-        <Button type="button" size="lg" onClick={onContinue} className="w-full">
-          Continue
-        </Button>
-      </div>,
-    );
-  }
   if (job !== null && job.stage === "elsewhere") {
     return body(
       <div className="flex flex-col gap-3">
@@ -465,9 +441,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     return localStorageVoiceNoteConsentStore(privateConsentAccountDid(tcw.did));
   }, [tcw.did]);
   const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
-  const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
   const { deps, origin, api, hosted } = useUploadDeps(tcw, backendUrl, sessionStore);
-  const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);
 
   const [file, setFile] = useState<File | null>(null);
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
@@ -557,8 +531,6 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     <>
       <AudioUploadView
         job={job}
-        paused={paused}
-        onContinue={onContinue}
         file={file}
         engine={engine}
         engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}

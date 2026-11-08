@@ -3,7 +3,7 @@
 //
 // TWO connect machines live here, selected by the registry row (`usesOAuthConnect`):
 //
-//   API-KEY (Fireflies): key entry → validate → (unlock secrets) → save →
+//   API-KEY (Fireflies): key entry → validate → save →
 //     initial sync → done. `validateKey` distinguishes invalid-key vs
 //     network-error and shows distinct inline messages; we NEVER store an
 //     unvalidated key. Once the key has been saved to secrets the connector is
@@ -31,8 +31,8 @@
 //     system browser and a one-shot 127.0.0.1 listener. Both share the verifier
 //     refs and `runExchange`; the web uses a popup or same-tab return.
 //
-// Both connect flows write to the same store and reuse the same wallet-unlock
-// choke point; nothing here logs a token, a transcript or a meeting title.
+// Both connect flows write to the same store through `connectorSecrets`;
+// nothing here logs a token, a transcript or a meeting title.
 //
 // Disconnect flow: AlertDialog confirm with a "Also delete the N synced
 // meetings from my space" checkbox (default OFF), which selects between the
@@ -75,9 +75,7 @@ import * as connectorStore from "@/lib/connectors/connectorStore";
 import {
   deleteConnectorKey,
   getConnectorKey,
-  isSecretsUnlocked,
   saveConnectorKey,
-  unlockSecrets,
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
 import {
@@ -322,17 +320,6 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
     const generation = readBackgroundDrainGeneration();
     setError(null);
     setPhase("saving");
-    if (!isSecretsUnlocked(tcw)) {
-      const unlock = await unlockSecrets<SecretsErr>(tcw);
-      if (!unlock.ok) {
-        setError({
-          kind: "storage",
-          message: unlock.error?.message ?? "Could not unlock secrets",
-        });
-        setPhase("verified");
-        return;
-      }
-    }
     const save = await saveConnectorKey<SecretsErr>(tcw, descriptor, apiKey);
     if (!save.ok) {
       setError({
@@ -531,8 +518,8 @@ const VerifiedPanel: FC<{
       </div>
     </div>
     <p className="text-xs text-muted-foreground">
-      TinyCloud will ask for a wallet signature to unlock your encrypted
-      secrets, then save this key and run an initial sync.
+      Save &amp; sync stores this key in your encrypted secrets and runs an
+      initial sync.
     </p>
     {error && (
       <p role="alert" className="text-xs text-destructive">
@@ -1050,16 +1037,6 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const saveAndSync = useCallback(
     async (accessToken: string, refreshToken: string) => {
       setPhase("save-token");
-      if (!isSecretsUnlocked(tcw)) {
-        const unlock = await unlockSecrets<SecretsErr>(tcw);
-        if (!unlock.ok) {
-          failWith({
-            kind: "storage",
-            message: unlock.error?.message ?? "Could not unlock secrets",
-          });
-          return;
-        }
-      }
       // The registry row names the secret; this file never spells it. That is
       // what lets the flip commit change WHAT is stored without touching here.
       const storedRefreshToken = desktopRedirectUriRef.current
@@ -2131,10 +2108,10 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
       });
       setRevoke(revokeOutcome);
       showRevokeWarning = revokeOutcome.status === "failed" || revokeOutcome.status === "no-token";
-      if (revokeOutcome.status === "locked" || revokeOutcome.status === "server-unavailable") {
-        // The one blocking case: without the vault we can neither read the
+      if (revokeOutcome.status === "unavailable" || revokeOutcome.status === "server-unavailable") {
+        // The one blocking case: without secrets we can neither read the
         // token to revoke nor delete it, so nothing has happened yet and the
-        // honest state is "not disconnected, try again".
+        // honest state is "not disconnected".
         setRunning(false);
         return;
       }
@@ -2147,8 +2124,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark: featureDark === true,
       secrets: {
-        isUnlocked: () => isSecretsUnlocked(tcw),
-        unlock: () => unlockSecrets<SecretsErr>(tcw),
+        available: secretsAvailable,
         deleteKey: () => deleteConnectorKey<SecretsErr>(tcw, descriptor),
       },
       store: {
@@ -2374,9 +2350,9 @@ export const NO_DELIVERY_LANE: DisconnectWebhooks = {
   recordPurge: () => Promise.resolve({ status: "feature-dark" }),
 };
 
-/** What the upstream `POST /revoke` did. Never fatal except `locked`. */
+/** What the upstream `POST /revoke` did. Never fatal except `unavailable`. */
 export interface UpstreamRevokeState {
-  status: "revoked" | "no-token" | "failed" | "locked" | "server-unavailable";
+  status: "revoked" | "no-token" | "failed" | "unavailable" | "server-unavailable";
   /** Google's or the vault's own words, when there are any. */
   message?: string;
 }
@@ -2402,7 +2378,7 @@ export async function revokeGoogleUpstream(input: {
 }): Promise<UpstreamRevokeState> {
   const { tcw, descriptor, backendUrl, sessionStore } = input;
   const fetchImpl = input.fetchImpl ?? fetch;
-  // End server custody before vault interaction; a locked/missing browser token must
+  // End server custody before vault interaction; an unavailable/missing browser token must
   // never leave unattended scheduling enabled after Disconnect.
   let serverRevokeFailed = false;
   let serverRevoked = false;
@@ -2423,18 +2399,13 @@ export async function revokeGoogleUpstream(input: {
       }
     } catch { return { status: "server-unavailable", message: "could not stop Calendar autojoin" }; }
   }
+  // Native app sessions carry no secrets: the token can be neither read nor deleted here.
+  if (!secretsAvailable()) return { status: "unavailable" };
   let browserToken: string | undefined;
   let localFailure: UpstreamRevokeState | undefined;
-  if (!isSecretsUnlocked(tcw)) {
-    const unlock = await unlockSecrets<SecretsErr>(tcw);
-    if (!unlock.ok) localFailure = { status: "locked", message: unlock.error?.message ?? "unlock was not completed" };
-  }
-  if (!localFailure) {
-    const stored = await getConnectorKey<SecretsErr>(tcw, descriptor);
-    if (stored.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
-    else localFailure = { status: "no-token" };
-  }
-  if (localFailure?.status === "locked") return localFailure;
+  const stored = await getConnectorKey<SecretsErr>(tcw, descriptor);
+  if (stored.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
+  else localFailure = { status: "no-token" };
   // An interrupted account replacement can leave these tokens bound to different
   // subjects. Successfully revoking the browser token cannot clear the server warning.
   const finished: UpstreamRevokeState = serverRevokeFailed
@@ -2479,8 +2450,8 @@ export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null
       return `We couldn’t ask Google to revoke this access (${state.message ?? "unknown reason"}), so it may still be live. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. Everything else below still ran.`;
     case "server-unavailable":
       return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyChat and retry disconnecting.";
-    case "locked":
-      return `Calendar autojoin was stopped, but your browser token remains locked: ${state.message ?? "unlock was not completed"}. Try again.`;
+    case "unavailable":
+      return "Calendar autojoin was stopped, but your saved Google connection isn’t available in the Exo app. Disconnect from Exo on the web or desktop to finish.";
   }
 }
 

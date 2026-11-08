@@ -280,7 +280,7 @@ Existing SQL rows need no migration.
 
 The Connectors UI shows “Stale since <date>” when the SQL watermark is older than
 24 hours. A stale Fireflies connector gets a bounded full-listing reconcile (at most
-50 unseen transcript details) on mount or successful unlock, including when the
+50 unseen transcript details) on mount, including when the
 webhook route is dark. It is paced at one attempt per 15 minutes per account and
 does not run on focus. Catch-up skips known IDs but continues paging past them until
 it reaches the watermark minus a 24-hour lag buffer, subject to the 50-item cap.
@@ -326,8 +326,8 @@ gotcha; ImportDialog imports sequentially for the same reason).
 
 Thin wrapper over `tcw.secrets` (`ISecretsService`):
 
-- `unlockSecrets(tcw)` → `tcw.secrets.unlock()` (wallet signature; SDK caches it —
-  subsequent unlocks in the session are popup-free). Surface `isUnlocked`.
+- No unlock step: the secrets vault is network-encrypted, so `tcw.secrets.unlock()` is a
+  no-op and `isUnlocked` is always true. Reads are authorized by the sign-in's decrypt grant.
 - `saveConnectorKey(tcw, descriptor, key)` → `tcw.secrets.put(descriptor.secretName,
 key, descriptor.secretScope ? { scope: descriptor.secretScope } : undefined)`.
   Source keys use the global Listen-compatible names `FIREFLIES_API_KEY` and
@@ -459,10 +459,10 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    deduplication is out of scope: TinyCloud user SQL does not support a unique
    index, so this build does not claim cross-tab serialization. Cross-tab purge
    resurrection is part of this same limitation.
-8. A background catch-up starts only on mount or unlock when Fireflies is
-   connected, secrets are already unlocked, and SQL success is older than 24 h.
+8. A background catch-up starts only on mount when Fireflies is
+   connected and SQL success is older than 24 h.
    Focus only drains queued webhook IDs. In the default route-dark deployment,
-   stale mount/unlock reconciliation still runs; webhook probing/draining is
+   stale mount reconciliation still runs; webhook probing/draining is
    dark. Connect, Sync now, and Meeting sources sync also run the same listing
    reconcile when explicitly invoked. Server-side ingest without an open tab is
    out of scope (TC-641).
@@ -496,7 +496,7 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
     progress "Syncing 3/12…" while running, driven by `onProgress`), overflow/
     secondary action "Disconnect".
 - Connection state loaded from `connectorStore.getConnection` on mount (no secrets
-  unlock needed just to render — never trigger a wallet popup on page load).
+  read needed just to render).
 
 ### `ConnectorDialog.tsx` (Radix Dialog, ImportDialog conventions)
 
@@ -507,8 +507,8 @@ Connect flow (stepper-lite, one dialog):
    Cancel/Continue.
 2. **Validate**: `client.validateKey()` — invalid key and network errors show distinct
    inline messages; never store an unvalidated key.
-3. **Store**: `unlockSecrets` (explain: "TinyCloud will ask for a signature to unlock
-   your encrypted secrets") → `saveConnectorKey`.
+3. **Store**: `saveConnectorKey` (no signature: the sign-in already carries the secrets
+   permissions).
 4. **Initial sync**: runs immediately with progress ("Found 12 meetings… syncing 3/12");
    done state shows summary ("42 meetings synced") + Close. Sync failure here leaves
    the connector connected-with-error (key is saved; user can retry Sync now).

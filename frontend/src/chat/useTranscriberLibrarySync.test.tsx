@@ -7,7 +7,6 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { captureEvents } from "@/capture/captureEvents";
-import { notifySecretsUnlockedForTests } from "@/lib/connectors/connectorSecrets";
 import { setSecretsAvailableForTests } from "@/lib/openkeyNative";
 import { PENDING_RECONCILE_SNAPSHOT_KEY } from "@/lib/connectors/pendingReconcileSnapshot";
 import type { TranscriberClient } from "@/lib/transcriberApi";
@@ -366,31 +365,6 @@ test("an in-flight save cannot emit after the provider unmounts", async () => {
     pending.resolve({ ok: true });
     await act(async () => {});
     expect(changes).toEqual([]);
-  } finally { unsubscribe(); }
-});
-
-test("meetings imported while secrets were locked are new after unlock", async () => {
-  const f = setup(true);
-  let savedReads = 0;
-  let clientReads = 0;
-  const listSaved = f.saver.listSaved;
-  f.saver.listSaved = (tcw) => { savedReads++; return listSaved(tcw); };
-  const list = f.client.list.bind(f.client);
-  f.client.list = async () => { clientReads++; return list(); };
-  const changes: Array<{ source: string; sourceId: string } | undefined> = [];
-  const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail));
-  try {
-    await mount(f);
-    expect(savedReads).toBe(1);
-    expect(clientReads).toBe(0);
-    expect(changes).toEqual([]);
-    f.savedIds.push("remote-while-locked");
-    f.rows.push(row("remote-while-locked"));
-    f.secrets.isUnlocked = true;
-    await act(async () => notifySecretsUnlockedForTests());
-    expect(changes).toEqual([{ source: TRANSCRIBER_MEETING_SOURCE, sourceId: "remote-while-locked" }]);
-    await act(async () => { fire("focus"); });
-    expect(changes).toHaveLength(1);
   } finally { unsubscribe(); }
 });
 

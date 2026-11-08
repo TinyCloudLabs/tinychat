@@ -161,7 +161,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         one minute before start until five minutes after start or the event ends. The host still needs to admit it.
       </p>
       <p>
-        It works while TinyChat is closed. Recordings import when you return and unlock your space. Turning it off
+        It works while TinyChat is closed. Recordings import into your space the next time you open TinyChat. Turning it off
         removes the server’s saved Google token and requests stops for active autojoined bots; Google’s granted
         permissions and your browser importer remain.
       </p>

@@ -5,7 +5,6 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createUploadRunner, uploadRunner, type PendingUpload, type PendingUploadStore, type UploadDeps } from "@/lib/audioUpload";
 import type { PrivateCloudApi } from "@/lib/privateCloud";
-import { pausedUpload } from "./pausedUpload";
 import { resumeOnLaunch } from "./UploadResumer";
 import { buildUploadDeps } from "./useUploadDeps";
 
@@ -25,7 +24,7 @@ function setup(stored: PendingUpload | null) {
   return { deps: { ...built, pending, lock: async () => () => {} } as UploadDeps, hostedCalls };
 }
 
-afterEach(() => { pausedUpload.set(null); uploadRunner.reset(); });
+afterEach(() => { uploadRunner.reset(); });
 
 describe("resumeOnLaunch", () => {
   test("a hosted AssemblyAI upload resumes without a key or vault", async () => {
@@ -33,18 +32,26 @@ describe("resumeOnLaunch", () => {
     const { deps } = setup({ engine: "assemblyai", assemblyAiMode: "hosted", meetingId: "m-1", attemptId: "a-1",
       jobId: "t-1", diarize: false, file: { name: "Interview.m4a", type: "audio/mp4", size: 1024, lastModified: 0 },
       owner: OWNER, saved: false });
-    resumeOnLaunch(runner, deps, false);
+    resumeOnLaunch(runner, deps);
     await settle();
     expect(runner.snapshot()).not.toBeNull();
-    expect(pausedUpload.snapshot()).toBeNull();
+  });
+
+  test("an own-key AssemblyAI upload resumes at launch, with no unlock step", async () => {
+    const runner = createUploadRunner();
+    const { deps } = setup({ engine: "assemblyai", assemblyAiMode: "own", meetingId: "m-1", attemptId: "a-1",
+      jobId: "t-1", diarize: false, file: { name: "Interview.m4a", type: "audio/mp4", size: 1024, lastModified: 0 },
+      owner: OWNER, saved: false });
+    resumeOnLaunch(runner, deps);
+    await settle();
+    expect(runner.snapshot()?.fileName).toBe("Interview.m4a");
   });
 
   test("nothing stored resumes nothing", async () => {
     const runner = createUploadRunner();
-    resumeOnLaunch(runner, setup(null).deps, false);
+    resumeOnLaunch(runner, setup(null).deps);
     await settle();
     expect(runner.snapshot()).toBeNull();
-    expect(pausedUpload.snapshot()).toBeNull();
   });
 });
 

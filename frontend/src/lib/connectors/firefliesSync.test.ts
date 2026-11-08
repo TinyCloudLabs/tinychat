@@ -870,8 +870,7 @@ describe("Fireflies disconnect cancels a running client engine", () => {
         clearPurgeLedger: async () => ({ status: "ok", value: null }),
       },
       secrets: {
-        isUnlocked: () => true,
-        unlock: async () => ({ ok: true }),
+        available: () => true,
         deleteKey: async () => ({ ok: true }),
       },
       store: {

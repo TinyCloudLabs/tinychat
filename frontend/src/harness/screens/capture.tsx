@@ -7,7 +7,6 @@ import { useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { RouteLine } from "@/capture/recorder/RouteLine";
 import { NOTETAKER_ROUTE } from "@/capture/sheetRoute";
-import { pausedUpload } from "@/capture/upload/pausedUpload";
 import { PlatformContext } from "@/lib/platform";
 import {
   __setVoiceNotesForTests,
@@ -41,12 +40,6 @@ export function CaptureShell(props: {
   );
 }
 
-function InProgress() {
-  // An own-key upload a reload interrupted, waiting for Continue.
-  pausedUpload.set({ fileName: "Interview.m4a" });
-  return <CaptureShell library />;
-}
-
 const MINIMISED: Partial<RecorderValue> = {
   available: true,
   phase: "recording",
@@ -75,7 +68,6 @@ export const captureScreens: HarnessScreen[] = [
   },
   { ...CAPTURE, id: "capture-first-use", readyWhen: LISTED, render: () => <CaptureShell /> },
   { ...CAPTURE, id: "capture-items", readyWhen: LISTED, render: () => <CaptureShell library /> },
-  { ...CAPTURE, id: "capture-in-progress", readyWhen: LISTED, render: () => <InProgress /> },
   {
     ...CAPTURE,
     id: "capture-recording-minimised",

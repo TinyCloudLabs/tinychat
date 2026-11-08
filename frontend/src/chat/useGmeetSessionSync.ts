@@ -1,8 +1,8 @@
 // The once-per-session Google Meet sync trigger (plan §4.2 / §6 WP-B).
 //
 // G1 ruled that session-start sync suffices for Phase 1: there is no push lane
-// and there is NO POLLING here — the triggers are an authenticated app-shell
-// mount and a user-initiated vault unlock, nothing else.
+// and there is NO POLLING here — the trigger is an authenticated app-shell
+// mount, nothing else.
 //
 // A SEPARATE LANE from `useBackgroundDrain`, deliberately. The drainer serves
 // the Option-C webhook queue, which google-meet does not have
@@ -17,8 +17,8 @@
 //    phase) this module reads no SQL, touches no vault, and mints no token —
 //    for every user, on every visit.
 //  - LOCKED DEFERS, SILENTLY. A locked vault is not an error and not a prompt:
-//    the run returns without burning the session's one attempt, so the next
-//    unlock (or a manual "Sync now") picks it up.
+//    the run returns without burning the session's one attempt, so a manual
+//    "Sync now" picks it up.
 //  - ONE ATTEMPT PER SESSION. The latch is burned only when a REAL attempt
 //    begins — signed out, dark, not connected and locked are all free. Two
 //    triggers arriving together JOIN one run (the module's own in-flight slot),
@@ -62,7 +62,6 @@ import {
 import {
   getConnectorKey,
   isSecretsUnlocked,
-  onSecretsUnlocked,
   type SecretsErr,
   type SecretsResult,
 } from "@/lib/connectors/connectorSecrets";
@@ -183,22 +182,13 @@ let attempted = false;
  * The run in flight, if any.
  *
  * The `attempted` latch cannot be burned synchronously — whether an attempt is
- * even warranted takes an awaited SQL read — so a mount and an unlock firing in
+ * even warranted takes an awaited SQL read — so two callers firing in
  * the same tick would both walk past it. A second caller JOINS the first run
  * and observes its outcome instead of starting a parallel one. (The engine's
  * own single-flight would keep the STORAGE safe either way; this keeps the
  * token mint and the secret read single too.)
  */
 let inFlight: Promise<GmeetSessionSyncOutcome> | null = null;
-
-/**
- * Resolves when the session-start run in flight has finished its foreground part (immediately when none
- * is running). A press whose own unlock re-armed that run waits here, so it sees the run the unlock
- * started instead of racing it for the engine's slot. Never rejects.
- */
-export async function awaitGmeetSessionSync(): Promise<void> {
-  await inFlight?.catch(() => {});
-}
 
 /** True once a real attempt has been made this page load. */
 export function hasGmeetSessionSyncRun(): boolean {
@@ -294,7 +284,7 @@ function defaultCreateClient(
 /**
  * Run the session's Google Meet sync, if this session has not had one.
  *
- * Safe to call from every app-shell render and from every unlock event: the
+ * Safe to call from every app-shell render: the
  * gates below are cheap and ordered cheapest-first, the latch is consumed only
  * by a real attempt, and the returned promise NEVER rejects.
  */
@@ -346,7 +336,7 @@ async function runGmeetSessionSync(
   if (!connection || connection.status !== "connected") return "not-connected";
 
   // A property read, never a prompt. A locked vault DEFERS: no error surfaces,
-  // no attempt is burned, and the unlock re-arm below (or "Sync now") covers it.
+  // no attempt is burned, and "Sync now" covers it.
   const unlocked = (hooks.isUnlocked ?? isSecretsUnlocked)(tcw);
   if (!unlocked) return "vault-locked";
 
@@ -428,14 +418,10 @@ async function runGmeetSessionSync(
 /**
  * Fire-and-forget start on mount. The sync never gates rendering.
  *
- * Also the registration seam for the ONE re-arm: a successful user-initiated
- * unlock (the lib-side choke point every unlock site funnels through), which is
- * what makes a deferred locked run retriable inside the same page load. A run
- * that already happened short-circuits on the latch, so the listener costs
- * nothing after the first success.
+ * A run that already happened short-circuits on the latch.
  *
  * Registration is effect-time (never module-load — that would leak across test
- * files), and the cleanup both unhooks the listener and ABORTS the controller,
+ * files), and the cleanup ABORTS the controller,
  * so an in-flight sync stops between items when the shell unmounts.
  */
 export function useGmeetSessionSync(options: Omit<GmeetSessionSyncOptions, "signal">): void {
@@ -456,11 +442,7 @@ export function useGmeetSessionSync(options: Omit<GmeetSessionSyncOptions, "sign
     void resolveBuildInfo(appPlatform()).then((label) => { build = label; }, () => {});
     const stopLog = startPersistingGmeetRunLog(tcw, { build: () => build });
     void maybeStartGmeetSessionSync(current);
-    const off = onSecretsUnlocked(() => {
-      void maybeStartGmeetSessionSync(current);
-    });
     return () => {
-      off();
       stopLog();
       controller.abort();
     };

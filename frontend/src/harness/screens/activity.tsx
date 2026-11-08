@@ -47,12 +47,11 @@ const matrix: Matrix[] = [
 
 const uploadBase: UploadState = { engine: "assemblyai", fileName: "Interview.m4a", stage: "uploading", uploadPct: 42, detail: null, audio: { stage: "storing", pct: 25 }, error: null, savedTitle: null, cleanupPending: false };
 const importScreens: HarnessScreen[] = ([
-  { id: "file-import-running", upload: uploadBase, paused: null },
-  { id: "file-import-waiting", upload: { ...uploadBase, stage: "queued" as const }, paused: null },
-  { id: "file-import-failed", upload: { ...uploadBase, stage: "failed" as const, error: { message: "diagnostic", reference: "ref-3", retry: true } }, paused: null },
-  { id: "file-import-paused", upload: null, paused: { fileName: "Interview.m4a" } },
-] as const).map(({ id, upload, paused }) => ({ id: "activity-" + id, group: "activity", layout: "pane", platform: "web", readyWhen: '[data-testid="activity-panel"]', viewports: ["phone", "zoom200", "text200-phone"],
-  render: () => <main className="h-full bg-background px-4 py-5"><h1 className="text-headline">Library</h1><ActivityPanel items={[]} views={new Map()} platform="web" onOpenNote={() => {}} upload={upload} paused={paused} onOpenUpload={() => {}} onContinueUpload={() => {}} onRetryUpload={() => {}} defaultOpen /></main>,
+  { id: "file-import-running", upload: uploadBase },
+  { id: "file-import-waiting", upload: { ...uploadBase, stage: "queued" as const } },
+  { id: "file-import-failed", upload: { ...uploadBase, stage: "failed" as const, error: { message: "diagnostic", reference: "ref-3", retry: true } } },
+] as const).map(({ id, upload }) => ({ id: "activity-" + id, group: "activity", layout: "pane", platform: "web", readyWhen: '[data-testid="activity-panel"]', viewports: ["phone", "zoom200", "text200-phone"],
+  render: () => <main className="h-full bg-background px-4 py-5"><h1 className="text-headline">Library</h1><ActivityPanel items={[]} views={new Map()} platform="web" onOpenNote={() => {}} upload={upload} onOpenUpload={() => {}} onRetryUpload={() => {}} defaultOpen /></main>,
 }));
 
 export const activityScreens: HarnessScreen[] = [

@@ -40,7 +40,6 @@ interface Recorded {
   purges: Array<{ source: string; ids: string[]; purgedThrough?: string }>;
   syncStates: unknown[];
   clearLedgerCalls: number;
-  unlocks: number;
 }
 
 interface Failures {
@@ -48,7 +47,6 @@ interface Failures {
   recordPurge?: "retryable" | "rejected" | "feature-dark" | "unauthenticated";
   disable?: "retryable" | "rejected" | "feature-dark" | "unauthenticated" | "offline";
   deleteKey?: string;
-  unlock?: string;
   purgeLocal?: string;
   getConnection?: string;
   countMeetings?: string;
@@ -71,7 +69,8 @@ function harness(
   overrides: {
     mode: DisconnectProgress["mode"];
     fail?: Failures;
-    unlocked?: boolean;
+    /** False models a native app session, which carries no secrets. */
+    secretsAvailable?: boolean;
     scopedIds?: readonly string[];
     purgedThrough?: string;
     ids?: string[];
@@ -85,7 +84,6 @@ function harness(
     purges: [],
     syncStates: [],
     clearLedgerCalls: 0,
-    unlocks: 0,
   };
   let current = initialDisconnectProgress(overrides.mode);
   const seen: DisconnectProgress[] = [];
@@ -148,12 +146,7 @@ function harness(
       },
     },
     secrets: {
-      isUnlocked: () => overrides.unlocked ?? true,
-      unlock: async () => {
-        rec.ops.push("unlock");
-        rec.unlocks += 1;
-        return fail.unlock ? { ok: false, error: { message: fail.unlock } } : { ok: true };
-      },
+      available: () => overrides.secretsAvailable ?? true,
       deleteKey: async () => {
         rec.ops.push("delete-key");
         return fail.deleteKey
@@ -270,19 +263,6 @@ describe("disconnect, keep data", () => {
         itemCount: 7,
       },
     ]);
-  });
-
-  test("unlocks the vault only when it is locked", async () => {
-    const unlocked = harness({ mode: "keep-data", unlocked: true });
-    await runDisconnect(unlocked.deps, unlocked.emit);
-    expect(unlocked.rec.unlocks).toBe(0);
-
-    const locked = harness({ mode: "keep-data", unlocked: false });
-    await runDisconnect(locked.deps, locked.emit);
-    expect(locked.rec.unlocks).toBe(1);
-    expect(locked.rec.ops.indexOf("unlock")).toBeLessThan(
-      locked.rec.ops.indexOf("delete-key"),
-    );
   });
 });
 
@@ -451,12 +431,8 @@ describe("partial failure", () => {
     expect(h.rec.ops).not.toContain("purge-local");
   });
 
-  test("a failed unlock fails the key step rather than proceeding keyless", async () => {
-    const h = harness({
-      mode: "keep-data",
-      unlocked: false,
-      fail: { unlock: "user rejected the signature" },
-    });
+  test("without secrets (native app) the key step fails before touching the key", async () => {
+    const h = harness({ mode: "keep-data", secretsAvailable: false });
     const result = await runDisconnect(h.deps, h.emit);
     expect(result.done).toBe(false);
     expect(result.failure?.step).toBe("delete-key");

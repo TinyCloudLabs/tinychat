@@ -1462,9 +1462,7 @@ export function App() {
       )}
 
       {/* TC-761: an upload a reload interrupted picks up at launch, without
-          opening the Upload sheet. Same ready gate; renders nothing, and never
-          unlocks: an own-key AssemblyAI upload with the vault locked waits as
-          "Upload paused" until the user taps Continue — see UploadResumer.tsx. */}
+          opening the Upload sheet. Same ready gate; renders nothing. */}
       {!LOCAL_VALIDATION && state === "ready" && tcw && (
         <UploadResumer
           tcw={tcw}

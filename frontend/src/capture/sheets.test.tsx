@@ -71,11 +71,9 @@ function renderRows(patch: Partial<InProgressRowsViewProps>): string {
   return renderToStaticMarkup(
     <InProgressRowsView
       upload={null}
-      paused={null}
       meetings={[]}
       busyId={null}
       onOpenUpload={noop}
-      onContinue={noop}
       onOpenMeeting={noop}
       onEnd={noop}
       {...patch}
@@ -94,14 +92,6 @@ describe("Upload sheet", () => {
     expect(html).toContain("Your space");
     expect(html).toContain('href="/chat/about#uploads"');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Transcribe<\/button>/);
-  });
-
-  test("paused: the stored file and Continue; nothing else to fill in", () => {
-    const html = renderUpload({ paused: { fileName: "Interview.m4a" } });
-    expect(html).toContain('data-testid="upload-paused"');
-    expect(html).toContain("Interview.m4a");
-    expect(html).toContain(">Continue</button>");
-    expect(html).not.toContain(">Transcribe</button>");
   });
 
   test("uploading: progress on the route, not landed yet", () => {
@@ -254,16 +244,11 @@ describe("In progress", () => {
     expect(renderRows({})).toBe("");
   });
 
-  test("an upload shows its stage; a paused one offers Continue beside its row", () => {
+  test("an upload shows its stage", () => {
     const busy = renderRows({ upload: upload() });
     expect(busy).toContain(">In progress</h2>");
     expect(busy).toContain("Interview.m4a");
     expect(busy).toContain("Uploading for Private transcription… 42%");
-    const paused = renderRows({ paused: { fileName: "Interview.m4a" } });
-    expect(paused).toContain("Upload paused");
-    expect(paused).toContain(">Continue</button>");
-    // A running upload wins over a stale paused one.
-    expect(renderRows({ upload: upload(), paused: { fileName: "Old.m4a" } })).not.toContain("Old.m4a");
     expect(renderRows({ upload: upload({ stage: "saved", savedTitle: "Interview" }) })).toContain("Saved to your space");
   });
 

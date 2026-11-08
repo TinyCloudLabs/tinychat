@@ -19,11 +19,9 @@ const noop = () => {};
 const NOW = new Date(2026, 9, 9, 9, 41);
 const idle: InProgressRowsViewProps = {
   upload: null,
-  paused: null,
   meetings: [],
   busyId: null,
   onOpenUpload: noop,
-  onContinue: noop,
   onOpenMeeting: noop,
   onEnd: noop,
 };

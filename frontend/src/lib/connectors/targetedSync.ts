@@ -24,8 +24,7 @@
 // re-acknowledges; the backend answers `alreadySettled`.
 //
 // NO SURPRISE PROMPTS. A locked vault or a missing key is a reported no-op, not
-// an error and not a reason to pop an unlock/permission dialog. Unlocking is a
-// user-initiated action on the surface, never a side effect of processing.
+// an error and not a reason to pop an unlock/permission dialog.
 //
 // Sequential everywhere — TinyCloud drops concurrent responses on one space,
 // and Fireflies rate-limits bursts, so detail fetches are paced exactly as the
@@ -273,8 +272,7 @@ export async function ingestQueuedMeetings(
   if (groups.length === 0) return { ok: true, data: emptyOutcome() };
 
   // ── 2. The key, browser-side only ────────────────────────────────────
-  // `isUnlocked` is a read, never a prompt. If it is false we stop here: the
-  // surface offers a user-initiated unlock, this engine never asks for one.
+  // `isUnlocked` is a read, never a prompt. If it is false we stop here.
   if (!secrets.isUnlocked(tcw)) {
     return { ok: true, data: emptyOutcome({ blocked: "secrets-locked" }) };
   }

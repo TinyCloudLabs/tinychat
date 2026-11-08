@@ -4,7 +4,6 @@ import type { NotePipeline, PipelineStep } from "@/lib/voiceNotes/notePipeline";
 import { pipelineTranscriptStatus } from "../pipeline/PipelineTrackSummary";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { UploadState } from "@/lib/audioUpload";
-import type { PausedUpload } from "@/capture/upload/pausedUpload";
 import { STORAGE_FULL_SAVE_MESSAGE, isStorageFullError, storageSaveMessage } from "@/lib/storageStatus";
 import { LOCAL_COPY, PROVIDER_DELAYED_COPY } from "@/lib/voiceNotes/notePipelineCopy";
 
@@ -141,10 +140,9 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
 }
 
 /** File imports use the upload runner, which is separate from voice-note stores. */
-export function activityForFileUpload(upload: UploadState | null, paused: PausedUpload | null, actions: { open: () => void; continue: () => void; retry: () => void }): { title: string; jobs: ActivityJob[] } | null {
-  if (!upload && !paused) return null;
-  const title = upload?.fileName ?? paused!.fileName;
-  if (!upload) return { title, jobs: [{ kind: "upload-audio", state: "waiting", label: "Upload audio", destination: "your TinyCloud space", detail: "Upload paused · Continue", action: { label: "Continue", run: actions.continue } }] };
+export function activityForFileUpload(upload: UploadState | null, actions: { open: () => void; retry: () => void }): { title: string; jobs: ActivityJob[] } | null {
+  if (!upload) return null;
+  const title = upload.fileName;
   if (upload.stage === "saved" && upload.audio.stage === "stored") return null;
   const destination = upload.engine === "assemblyai" ? "Powerful" : "Private transcription";
   const failed = upload.stage === "failed";

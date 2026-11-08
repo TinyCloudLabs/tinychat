@@ -84,7 +84,7 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 > Turning this on gives our server **no new permission on your space**. Background sync asks you to
 > grant nothing, and nothing is granted — the credential above is held by our server, outside your
 > space, and our server writes no meeting into your space. Your browser still does that, when you
-> are signed in with your vault unlocked, so your own copy lands where it always did — and it stays
+> are signed in, so your own copy lands where it always did — and it stays
 > yours: it is not deleted when our 90-day window closes. What changed is not what our server is
 > *permitted* to do — it is what our server now *has*: your Fireflies token, and a copy of your
 > meetings.
@@ -92,7 +92,7 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 ## bullet 5
 
 > **Signing in is still required.** "Already there" means you do not have to set the device up —
-> nothing to unlock before your meetings appear, no Fireflies key to type. It does not mean your
+> no Fireflies key to type before your meetings appear. It does not mean your
 > meetings are reachable without signing in as you.
 
 ## bullet 6
@@ -146,7 +146,7 @@ than approved.
 
 > Turning this on adds **no new permission on your space** of its own. Background sync asks you to
 > grant nothing — the credential above is held by our server, outside your space. Your browser still
-> saves Fireflies meetings into your space when you are signed in with your vault unlocked, so your
+> saves Fireflies meetings into your space when you are signed in, so your
 > own copy lands where it always did, and it is not deleted when our 90-day window closes.
 > Separately, because the TinyCloud Private Notetaker is on, our server holds a permission on your
 > space over the **meeting records in your connectors library**: the titles, participants, summaries

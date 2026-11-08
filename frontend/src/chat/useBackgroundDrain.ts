@@ -9,10 +9,9 @@
 //
 // The rules, restated in code:
 //
-//  - MOUNT NEVER UNLOCKS. The headless deps hard-wire `secrets.unlock` to a
-//    refusal that never touches the vault — the interactive unlock helper is
-//    not imported here at all. A locked vault counts what is waiting and stops.
-//  - PACED, NEVER POLLED. Attempts are mount ∪ unlock events ∪ focus ticks at
+//  - MOUNT NEVER PROMPTS. The headless deps only read the vault's state; a
+//    vault that can't be read counts what is waiting and stops.
+//  - PACED, NEVER POLLED. Attempts are mount ∪ focus ticks at
 //    least `FOCUS_DEBOUNCE_MS` apart — nothing else. A module-level timestamp
 //    (`lastAttemptStartedAt`) absorbs remounts, re-renders and route changes:
 //    the mount path runs at most once per page load, and the window is a
@@ -60,7 +59,6 @@ import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import {
   getConnectorKey,
   isSecretsUnlocked,
-  onSecretsUnlocked,
 } from "@/lib/connectors/connectorSecrets";
 import {
   ingestQueuedMeetings,
@@ -226,29 +224,26 @@ export function maybeStartBackgroundDrain(
 }
 
 /**
- * The shared re-arm entry — unlock and focus.
+ * The focus re-arm entry.
  *
- * Unlock re-enters without focus debounce; focus is the weak signal and runs
- * only after `FOCUS_DEBOUNCE_MS`. Queue processing uses the space lane;
- * stale Fireflies catch-up is independent of webhook darkness and has its own
- * cross-tab attempt pacing.
+ * Focus is the weak signal and runs only after `FOCUS_DEBOUNCE_MS`. Queue
+ * processing uses the space lane.
  *
  * The focus window is burned synchronously when an attempt is committed.
- * Signed-out calls and dark focus ticks burn nothing; unlock still permits
- * Fireflies reconciliation in a dark-route deployment. The returned promise
+ * Signed-out calls and dark focus ticks burn nothing. The returned promise
  * never rejects.
  */
 export function resumeBackgroundDrain(
   options: BackgroundDrainOptions,
-  trigger: "unlock" | "focus",
+  trigger: "focus",
 ): Promise<void> {
   const tcw = options.tcw;
   // Signed out: no listener should exist in production, but a stray call here
   // must still be free (no burn, no enqueue).
   if (!tcw) return Promise.resolve();
-  if (featureDark && trigger !== "unlock") return Promise.resolve();
+  if (featureDark) return Promise.resolve();
   const now = readClock(options);
-  if (trigger === "focus" && now - lastAttemptStartedAt < FOCUS_DEBOUNCE_MS) {
+  if (now - lastAttemptStartedAt < FOCUS_DEBOUNCE_MS) {
     return Promise.resolve();
   }
   lastAttemptStartedAt = now;
@@ -541,7 +536,7 @@ async function drainConnectedConnectors(
   tcw: TinyCloudWeb,
   options: BackgroundDrainOptions,
   generation: number,
-  trigger: "mount" | "unlock" | "focus",
+  trigger: "mount" | "focus",
 ): Promise<void> {
   const { backendUrl, sessionStore } = options;
   const hooks = options.hooks ?? {};
@@ -583,7 +578,7 @@ async function drainConnectedConnectors(
       }
 
       if (
-        (trigger === "mount" || trigger === "unlock")
+        trigger === "mount"
         && descriptor.source === "fireflies"
         && connection?.status === "connected"
         && isSecretsUnlocked(tcw)
@@ -652,12 +647,8 @@ async function drainConnectedConnectors(
 }
 
 /**
- * The headless `BackgroundSyncDeps`.
- *
- * Identical to the Connectors section's wiring with ONE deliberate difference:
- * `unlock` is a hard-wired refusal. The headless surface has no user gesture,
- * so nothing it calls may reach the vault's unlock — not even by a future
- * refactor routing it through `syncQueuedMeetings`.
+ * The headless `BackgroundSyncDeps` — identical to the Connectors section's
+ * wiring.
  */
 export function buildHeadlessDrainDeps(
   tcw: TinyCloudWeb,
@@ -671,10 +662,6 @@ export function buildHeadlessDrainDeps(
     secrets: {
       // A property read, never a prompt.
       isUnlocked: () => isSecretsUnlocked(tcw),
-      unlock: async () => ({
-        ok: false,
-        error: { message: "The headless drain never unlocks. Open Connectors to unlock and sync." },
-      }),
     },
     ingest: (items) =>
       ingest
@@ -725,19 +712,14 @@ async function runFirefliesCatchUp(
 
 /** Fire-and-forget start on mount. The drain never gates rendering.
  *
- *  Also the registration seam for both re-arms:
- *
- *   - I2, a successful user-initiated unlock (from any of the four unlock
- *     sites — all funneled through the lib-side choke point);
- *   - I3, the window regaining focus, following App.tsx's "A1 trigger (c)"
- *     idiom exactly: a `window` focus listener added in an effect with
- *     symmetric cleanup, all gating pushed into the callee, event-driven with
- *     nothing left polling.
- *
- *  Re-arms trigger the drain entry point. Queue work uses the shared lane;
+ *  Also the registration seam for the I3 re-arm: the window regaining focus,
+ *  following App.tsx's "A1 trigger (c)" idiom exactly: a `window` focus
+ *  listener added in an effect with symmetric cleanup, all gating pushed into
+ *  the callee, event-driven with nothing left polling.
+ *  The re-arm triggers the drain entry point. Queue work uses the shared lane;
  *  Fireflies provider listing and detail fetches do not. Registration is
  *  effect-time (never module-load — that would leak across test files) so an
- *  latest options via the effect's closure. The listeners exist only while the
+ *  latest options via the effect's closure. The listener exists only while the
  *  drainer is mounted, which the app shell gates on being signed in — so the
  *  effect's existence IS the signed-in check and its cleanup IS the sign-out
  *  teardown. */
@@ -747,15 +729,11 @@ export function useBackgroundDrain(options: BackgroundDrainOptions): void {
     const current = { tcw, sessionStore, backendUrl, hooks };
     void maybeStartBackgroundDrain(current);
     if (!tcw) return;
-    const off = onSecretsUnlocked(() => {
-      void resumeBackgroundDrain(current, "unlock");
-    });
     const onFocus = () => {
       void resumeBackgroundDrain(current, "focus");
     };
     window.addEventListener("focus", onFocus);
     return () => {
-      off();
       window.removeEventListener("focus", onFocus);
     };
   }, [tcw, sessionStore, backendUrl, hooks]);

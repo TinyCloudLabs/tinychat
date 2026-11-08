@@ -1518,8 +1518,7 @@ test("keep-data Disconnect clears a saved continuation before Connect resumes", 
       recordPurge: async () => ({ status: "feature-dark" }),
     },
     secrets: {
-      isUnlocked: () => true,
-      unlock: async () => ({ ok: true }),
+      available: () => true,
       deleteKey: async () => ({ ok: true }),
     },
     store: {
@@ -2008,8 +2007,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
           disable: async () => ({ status: "ok", value: { status: "disabled", queueDropped: 0 } }),
         },
         secrets: {
-          isUnlocked: () => true,
-          unlock: async () => ({ ok: true }),
+          available: () => true,
           deleteKey: async () => ({ ok: true }),
         },
         store: {

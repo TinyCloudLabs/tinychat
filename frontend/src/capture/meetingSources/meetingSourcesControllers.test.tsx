@@ -82,12 +82,9 @@ async function mount(props: Parameters<typeof Probe>[0]) {
 
 const syncDeps = (engine: SourceSyncDeps["runFirefliesSyncNow"]): SourceSyncDeps => ({
   secretsAvailable: () => true,
-  isSecretsUnlocked: () => true,
-  unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
   getConnectorKey: (async () => ({ ok: true, data: "key" })) as SourceSyncDeps["getConnectorKey"],
   isGmeetSyncInFlight: () => false,
   isGmeetNotesSyncInFlight: () => false,
-  awaitSessionSync: async () => {},
   runGmeetSyncNow: async () => ({ ok: true }),
   runFirefliesSyncNow: engine,
 });

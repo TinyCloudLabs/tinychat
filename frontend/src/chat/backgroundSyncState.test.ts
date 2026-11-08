@@ -144,7 +144,6 @@ interface Calls {
   getPending: number;
   drain: number;
   isUnlocked: number;
-  unlock: number;
   ingest: TargetedQueueItem[][];
   /** The tripwire: `DELETE /purged` may fire ONLY from the confirmed action. */
   clearPurgeLedger: string[];
@@ -166,7 +165,6 @@ function harness(
     pending?: ConnectorWebhooksResult<ConnectorWebhookPending>;
     drain?: ConnectorWebhooksResult<ConnectorWebhookPending>;
     unlocked?: boolean;
-    unlock?: { ok: true } | { ok: false; error?: { message?: string } };
     ingest?: TargetedIngestResult;
     clearPurgeLedger?: ConnectorWebhooksResult<null>;
   } = {},
@@ -178,7 +176,6 @@ function harness(
     getPending: 0,
     drain: 0,
     isUnlocked: 0,
-    unlock: 0,
     ingest: [],
     clearPurgeLedger: [],
   };
@@ -221,10 +218,6 @@ function harness(
         calls.isUnlocked += 1;
         return responses.unlocked ?? false;
       },
-      unlock: async () => {
-        calls.unlock += 1;
-        return responses.unlock ?? { ok: true };
-      },
     },
     ingest: async (items) => {
       calls.ingest.push([...items]);
@@ -253,7 +246,6 @@ describe("loadOnMount", () => {
     // Nothing else is attempted, and nothing is retried, against a dark route.
     expect(h.calls.getPending).toBe(0);
     expect(h.calls.drain).toBe(0);
-    expect(h.calls.unlock).toBe(0);
   });
 
   test("401 is a signed-out state, not an outage", async () => {
@@ -298,8 +290,7 @@ describe("loadOnMount", () => {
     expect(s.phase).toBe("enabled");
     expect(s.hasSecret).toBe(true);
     expect(s.queue?.pendingCount).toBe(2);
-    // The whole point of §"no surprise unlock": mount never unlocks, never drains.
-    expect(h.calls.unlock).toBe(0);
+    // Mount never drains a vault it can't read.
     expect(h.calls.drain).toBe(0);
     expect(h.calls.ingest.length).toBe(0);
     // …and the poll must not have leaked the delivery URL into the state.
@@ -316,8 +307,6 @@ describe("loadOnMount", () => {
     await loadOnMount(h.deps, h.emit);
     expect(h.calls.drain).toBe(1);
     expect(h.calls.ingest[0]).toEqual([{ meetingId: "m1", kind: "transcript" }]);
-    // Automatic processing is allowed; an automatic UNLOCK is never allowed.
-    expect(h.calls.unlock).toBe(0);
     expect(h.state().lastIngest?.stored).toBe(1);
   });
 
@@ -503,40 +492,6 @@ describe("disable", () => {
 // ── User-initiated processing ────────────────────────────────────────
 
 describe("syncQueuedMeetings", () => {
-  test("a locked vault is unlocked ONLY by this user-initiated action", async () => {
-    const h = harness({
-      unlocked: false,
-      drain: okPending({ count: 1, pending: [pendingItem("m1")] }),
-    });
-    await syncQueuedMeetings(h.deps, h.emit);
-    expect(h.calls.unlock).toBe(1);
-    expect(h.calls.drain).toBe(1);
-    expect(h.calls.ingest.length).toBe(1);
-  });
-
-  test("an already-unlocked vault is not unlocked again", async () => {
-    const h = harness({
-      unlocked: true,
-      drain: okPending({ count: 1, pending: [pendingItem("m1")] }),
-    });
-    await syncQueuedMeetings(h.deps, h.emit);
-    expect(h.calls.unlock).toBe(0);
-    expect(h.calls.ingest.length).toBe(1);
-  });
-
-  test("a refused unlock stops before the drain and reports it", async () => {
-    const h = harness({
-      unlocked: false,
-      unlock: { ok: false, error: { message: "User rejected the request" } },
-    });
-    await syncQueuedMeetings(h.deps, h.emit);
-    expect(h.calls.drain).toBe(0);
-    expect(h.calls.ingest.length).toBe(0);
-    expect(h.state().notice?.tone).toBe("error");
-    expect(h.state().notice?.message).toContain("User rejected the request");
-    expect(h.state().busy).toBeNull();
-  });
-
   test("a blocked drain surfaces the reason instead of ingesting nothing quietly", async () => {
     const h = harness({
       unlocked: true,

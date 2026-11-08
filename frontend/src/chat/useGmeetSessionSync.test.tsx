@@ -7,7 +7,7 @@
 //      secret, mints no token and runs no sync, for every user;
 //   2. once per session — a second trigger short-circuits on the latch;
 //   3. a locked vault DEFERS silently: no throw, no prompt, no burned attempt,
-//      and the next unlock retries;
+//      and a later run retries;
 //   4. abort on unmount — the mount's signal threads into the sync engine, and
 //      an aborted signal stops the run before it starts;
 //   5. failures stay contained — a rejecting or failing sync never propagates;
@@ -296,19 +296,14 @@ describe("locked vault", () => {
     expect(hasGmeetSessionSyncRun()).toBe(false);
   });
 
-  test("the deferral is retriable — the next unlock runs the sync", async () => {
+  test("the deferral is retriable — a later run syncs", async () => {
     const locked = harness({ unlocked: false });
     expect(await maybeStartGmeetSessionSync(locked.options)).toBe("vault-locked");
 
-    // The same session, after the user unlocked: the latch was never burned.
+    // The same session, once the vault is readable: the latch was never burned.
     const unlocked = harness({ unlocked: true });
     expect(await maybeStartGmeetSessionSync(unlocked.options)).toBe("synced");
     expect(unlocked.syncs()).toHaveLength(1);
-  });
-
-  test("the module never reaches for the interactive unlock helper", () => {
-    const source = readFileSync(join(import.meta.dir, "useGmeetSessionSync.ts"), "utf8");
-    expect(source).not.toContain("unlockSecrets");
   });
 
   test("the session-start store gives the engine the preloaded association index and the snapshot checkpoint", () => {
