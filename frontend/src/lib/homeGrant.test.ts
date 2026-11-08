@@ -98,7 +98,7 @@ describe("the sets Recording and Connectors ask for on the Home site", () => {
       { service: "tinycloud.sql", path: "transcripts", actions: SQL },
       // The one entry outside connectors/: the hosted transcription claim (hostedVoiceNotes.ts), read and written only.
       { service: "tinycloud.kv", space: "applications", path: "exo/voiceNotes/hostedJobs/", actions: ["get", "put"], skipPrefix: true },
-      { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/ASSEMBLYAI_API_KEY", actions: SECRET, skipPrefix: true, description: "Store your AssemblyAI API key, encrypted, in your secrets space." },
+      { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/ASSEMBLYAI_API_KEY", actions: SECRET, skipPrefix: true, description: "Store your transcription service API key, encrypted, in your secrets space." },
     ]);
   });
 
