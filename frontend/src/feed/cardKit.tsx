@@ -165,16 +165,34 @@ export function ErrorLine({ children }: { children: ReactNode }) {
 function names(list: readonly string[]): string {
   return list.length <= 2 ? list.join(" and ") : `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`;
 }
+/** Every string a card's comments use, in one place. */
+export const COMMENT_COPY = {
+  /** The quiet button that opens the composer. */
+  button: (who: string) => `Comment to ${who}`,
+  /** The composer's placeholder and accessible name. */
+  input: (who: string) => `Tell ${who} something`,
+  /** First half of the line under the composer. */
+  notAnAnswer: "This doesn't answer the card.",
+  /** The comment list's accessible name. */
+  list: "Comments",
+  /** Collapsed-card count, as read aloud. */
+  count: (n: number) => `${n} ${n === 1 ? "comment" : "comments"}. Open comments`,
+  earlier: (n: number) => `Show ${n} earlier ${n === 1 ? "comment" : "comments"}`,
+  you: "You",
+} as const;
+
 /**
- * The card-thread composer's name and helper line: who a new message reaches. `approved` is
+ * The comment composer's button, input and helper line: who a comment reaches. `approved` is
  * who actually receives it (the publishing agent, or the owner-approved recipients); `held`
- * recipients aren't connected, keep the message privately, and are never counted as seeing it.
+ * recipients aren't connected, keep it privately, and are never counted as seeing it.
  */
-export function audienceCopy({ approved, held = [], fallback }: { approved: readonly string[]; held?: readonly string[]; fallback: string }): { ask: string; helper: string } {
+export function commentCopy({ approved, held = [], fallback }: { approved: readonly string[]; held?: readonly string[]; fallback: string }): { button: string; input: string; helper: string } {
   const heldLine = held.length ? ` ${names(held)} ${held.length === 1 ? "isn't" : "aren't"} connected yet, so ${held.length === 1 ? "it doesn't" : "they don't"} get it.` : "";
-  if (!approved.length) return { ask: `Ask ${fallback} something`, helper: `Only you see this for now.${heldLine}` };
-  if (approved.length >= 3) return { ask: "Ask the agents on this card something", helper: `Only the ${approved.length} agents on this card see this.${heldLine}` };
-  return { ask: `Ask ${names(approved)} something`, helper: `Only ${names(approved)} ${approved.length === 1 ? "sees" : "see"} this.${heldLine}` };
+  const who = !approved.length ? fallback : approved.length >= 3 ? "the agents on this card" : names(approved);
+  const sees = !approved.length ? "Only you see this for now."
+    : approved.length >= 3 ? `Only the ${approved.length} agents on this card see this.`
+      : `Only ${names(approved)} ${approved.length === 1 ? "sees" : "see"} this.`;
+  return { button: COMMENT_COPY.button(who), input: COMMENT_COPY.input(who), helper: `${COMMENT_COPY.notAnAnswer} ${sees}${heldLine}` };
 }
 
 /** Seconds an answer waits, undoable, before it is sent. */

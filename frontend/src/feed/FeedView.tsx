@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { CardBody, cardClass, CardTextContext, cardTime, chipClass, focusRing, quietClass } from "./cardKit";
+import { CardBody, cardClass, CardTextContext, cardTime, chipClass, COMMENT_COPY, focusRing, quietClass } from "./cardKit";
+import { MessageCircleIcon } from "lucide-react";
 import { createHomeFeedSource } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
@@ -61,7 +62,7 @@ const INTERACTIVE = "a, button, input, textarea, select, label, summary, details
  * With `onToggle`, tapping the title or any non-interactive part of the card
  * expands it in place.
  */
-export function FeedCardView({ card, sample = true, readBody, now, chip, expanded = true, clampTitle = false, compact = false, onToggle, onEngage, heading = "h2", children }: {
+export function FeedCardView({ card, sample = true, readBody, now, chip, comments = 0, onOpenComments, expanded = true, clampTitle = false, compact = false, onToggle, onEngage, heading = "h2", children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
@@ -69,6 +70,10 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
   chip?: ReactNode;
   expanded?: boolean;
   clampTitle?: boolean;
+  /** The card's comment count, shown on the collapsed card when there are any. */
+  comments?: number;
+  /** Opens the card at its comments. */
+  onOpenComments?: () => void;
   /** Header and title only (no body): a snoozed or unreadable card. */
   compact?: boolean;
   onToggle?: () => void;
@@ -81,6 +86,13 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
   const [moreText, setMoreText] = useState(false);
   const [cut, setCut] = useState(false);
   const body = useRef<HTMLDivElement>(null);
+  const article = useRef<HTMLElement>(null);
+  const toComments = useRef(false);
+  useEffect(() => {
+    if (!expanded || !toComments.current) return;
+    toComments.current = false;
+    article.current?.querySelector(`[aria-label="${COMMENT_COPY.list}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [expanded]);
   const full = expanded || moreText;
   const when = cardTime(card.at, now ?? Date.now());
   useLayoutEffect(() => {
@@ -92,7 +104,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
     return () => window.removeEventListener("resize", measure);
   }, [full, compact, card.lead.text]);
   return (
-    <article className={`${cardClass} ${onToggle ? "cursor-pointer" : ""}`} aria-label={card.title ?? `${card.render} by ${card.author.name}`}
+    <article ref={article} className={`${cardClass} ${onToggle ? "cursor-pointer" : ""}`} aria-label={card.title ?? `${card.render} by ${card.author.name}`}
       onFocusCapture={onEngage} onPointerDownCapture={onEngage} onClickCapture={onEngage}
       onClick={onToggle ? (event) => {
         const target = event.target as Element;
@@ -106,7 +118,13 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
           : <span aria-hidden className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-[12.5px] font-semibold">{card.author.name.trim().charAt(0).toUpperCase() || "?"}</span>}
         <span className="min-w-0 break-words"><span className="font-semibold">{card.author.name}</span>{when && <span className="whitespace-nowrap tabular-nums text-muted-foreground"> · <time dateTime={card.at}>{when}</time></span>}</span>
         {sample && <span className={`ml-auto ${chipClass}`}>{FEED_STRINGS.provenance}</span>}
-        {chip && <span className="ml-auto flex shrink-0">{chip}</span>}
+        {(chip || (!expanded && comments > 0 && onOpenComments)) && <span className="ml-auto flex shrink-0 items-center gap-2">
+          {!expanded && comments > 0 && onOpenComments && <button type="button" aria-label={COMMENT_COPY.count(comments)} onClick={() => { toComments.current = true; onOpenComments(); }}
+            className={`-my-2 inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md text-[13px] tabular-nums text-muted-foreground hover:text-foreground ${focusRing}`}>
+            <MessageCircleIcon aria-hidden className="size-4" />{comments}
+          </button>}
+          {chip}
+        </span>}
       </div>
       {card.title && <Heading className="mt-2.5 break-words text-[17px] font-semibold leading-[1.3] [text-wrap:balance]">
         {onToggle

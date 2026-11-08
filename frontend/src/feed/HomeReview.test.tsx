@@ -372,7 +372,7 @@ for (const history of ["answer", "claim", "thread", "command"] as const) {
     }
     if (history === "thread") {
       // The thread shows inline on the card; no menu to open.
-      expect(card.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Immutable archive-only thread message");
+      expect(card.querySelector('[aria-label="Comments"]')?.textContent).toContain("Immutable archive-only thread message");
     }
     if (history === "command") expect(card.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);
     expect(await responseCount(agent.responses)).toBe(0);

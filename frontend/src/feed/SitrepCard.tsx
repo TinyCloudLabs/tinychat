@@ -2,11 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, audienceCopy, cardTime, ErrorLine, fieldClass as inputClass, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
+import { AnsweredPanel, cardTime, commentCopy, ErrorLine, fieldClass as inputClass, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
-import { HomeCardThread, threadSize } from "./HomeCardThread";
+import { HomeCardThread } from "./HomeCardThread";
 
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
 function stamp(at: string) { return cardTime(at, Date.now()); }
@@ -228,16 +228,13 @@ export function SitrepCard(props: Props) {
   const steer = record.kind === "ask" && record.mode === "proceeding" ? steerState(record, now, answers) : undefined;
   const optionLabel = (optionId?: string) => { const option = record.kind === "ask" ? record.options.find((candidate) => candidate.id === optionId) : undefined; return option && optionText(option.label); };
 
-  const audience = route ? audienceCopy({ approved: destinations.map((recipient) => recipient.legacyName), held: unresolved, fallback: ownerLabel }) : audienceCopy({ approved: [agent], fallback: agent });
-  // With more than 2 messages, the answer sits right under the body and the thread follows it.
-  const longThread = threadSize(entry, record, owner) > 2;
-  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} composing={composing && !closed} ask={audience.ask} helper={audience.helper}
+  const audience = route ? commentCopy({ approved: destinations.map((recipient) => recipient.legacyName), held: unresolved, fallback: ownerLabel }) : commentCopy({ approved: [agent], fallback: agent });
+  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} composing={composing && !closed} input={audience.input} helper={audience.helper}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} onClose={() => setComposing(false)} />;
 
   return <div className="text-[15px]" aria-label={`${kindWord(record.kind)} details`}>
     {Number.isFinite(deadline) && <p className={`mt-2 text-[13px] tabular-nums ${deadline - now < 86_400_000 ? "font-medium text-warning" : "text-muted-foreground"}`}>{record.kind === "ask" ? "Answer by" : "Due"} {stamp(new Date(deadline).toISOString()).replace(/^Today, /, "today ")}</p>}
     {!Number.isFinite(deadline) && hint && <p className="mt-2 text-[13px] font-medium text-warning">{hint.replace(/^expires/, "Expires")}</p>}
-    {!longThread && thread}
 
     {record.kind === "ask" && <>
       {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
@@ -294,7 +291,6 @@ export function SitrepCard(props: Props) {
       <button type="button" className={buttonClass} disabled={busy || closed} onClick={() => void perform(() => command({ lift: { at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) } }, `lift:${reason}`))}>Ask to lift the hold</button>
     </div>}
 
-    {longThread && thread}
     {expanded && <div className="mt-4 space-y-3">
       {"context" in record && <div className="space-y-2"><p>{prose(record.context.background, record.repo)}</p>{record.context.whyNow && <p><strong className="font-semibold">Why now: </strong>{prose(record.context.whyNow, record.repo)}</p>}{record.context.ifNoAnswer && <p><strong className="font-semibold">If no answer: </strong>{prose(record.context.ifNoAnswer, record.repo)}</p>}{!!record.context.known.length && <ul className="list-disc space-y-1 pl-5">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul>}{!!record.context.related.length && <p>Earlier questions: {record.context.related.join(", ")}</p>}</div>}
       {steer && <div className="space-y-1 text-sm"><p>{record.kind === "ask" && <>If you don't choose, {agent} goes ahead with <b className="font-semibold">{optionLabel(record.default) ?? "its plan"}</b>.</>}</p><p className="text-muted-foreground">{steer === "done" ? "It has gone ahead." : steer === "closed-proceeding" ? "The time to choose has passed; it is going ahead." : `You can still choose${record.kind === "ask" && record.decideBy ? ` until ${stamp(record.decideBy)}` : ""}.`}</p>{record.kind === "ask" && record.proceededAt && <p className="text-muted-foreground">Went ahead {stamp(record.proceededAt)}. A new answer can't undo that.</p>}</div>}
@@ -338,12 +334,13 @@ export function SitrepCard(props: Props) {
       {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className={fineClass}>An earlier reply here can't be shown. It is kept, and isn't counted as an answer.</p>)}
     </div>}
 
+    {thread}
     {!countdown.pending && (projection.request || expanded) && <QuietRow>
       {asking && !!options.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Answer in your own words</button>}
       {record.kind === "ask" && responds && !asking && projection.answer?.action !== "drop" && <button type="button" className={quietClass} onClick={() => { setFollowup(true); setJustSaved(false); }}>Change answer</button>}
       {followup && <button type="button" className={quietClass} disabled={busy} onClick={() => { setFollowup(false); setText(""); setNoteOpen(false); }}>Keep my answer</button>}
       {projection.needsAction && !snoozed && <button type="button" className={quietClass} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}
-      {!closed && !composing && <button type="button" className={quietClass} onClick={() => setComposing(true)}>{audience.ask}</button>}
+      {!closed && !composing && <button type="button" className={quietClass} onClick={() => setComposing(true)}>{audience.button}</button>}
       <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>
     </QuietRow>}
     {later && <SnoozeChoices now={now} disabled={busy} onPick={(until) => void perform(async () => { await source.snooze(entry, until); setLater(false); onOwnerSaved(); onSnoozed?.(entry); })} />}

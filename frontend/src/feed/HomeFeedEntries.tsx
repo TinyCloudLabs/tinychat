@@ -7,8 +7,8 @@ import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStor
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
-import { ThreadView, type ThreadItem } from "./HomeCardThread";
-import { AnsweredPanel, audienceCopy, cardClass, isReplyOnlyRevision, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
+import { threadSize, ThreadView, type ThreadItem } from "./HomeCardThread";
+import { AnsweredPanel, cardClass, COMMENT_COPY, commentCopy, isReplyOnlyRevision, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -121,12 +121,12 @@ function plainThreadItems(entry: HomeFeedEntry, revisions: readonly HomeFeedEntr
     for (const message of revision.responses ?? []) {
       if (message.kind !== "message" || !message.text || seen.has(message.responseId)) continue;
       seen.add(message.responseId);
-      items.push({ key: `message:${message.responseId}`, at: message.createdAt, speaker: "You", text: message.text,
+      items.push({ key: `message:${message.responseId}`, id: message.responseId, at: message.createdAt, speaker: COMMENT_COPY.you, text: message.text, mine: true,
         ...(revision.responseHandling?.[message.responseId]?.acknowledgement ? { status: <span>{agent} got it</span> } : {}) });
     }
     const payload = revision.state.card.payload;
     const list = payload?.render === "thread" && Array.isArray(payload.replies) ? payload.replies.filter((reply): reply is { text: string } => !!reply && typeof reply === "object" && "text" in reply && typeof reply.text === "string") : [];
-    for (let index = replies; index < list.length; index++) items.push({ key: `reply:${index}`, at: revision.state.card.createdAt, speaker: agent, text: list[index]!.text });
+    for (let index = replies; index < list.length; index++) items.push({ key: `reply:${index}`, id: `reply:${index}`, at: revision.state.card.createdAt, speaker: agent, text: list[index]!.text, mine: false });
     replies = Math.max(replies, list.length);
   }
   return items;
@@ -220,10 +220,10 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
     <CardHistory entry={target} now={now} />
   </MoreSheet>;
   const items = plainThreadItems(entry, revisions);
-  const audience = audienceCopy({ approved: [entry.source.label], fallback: entry.source.label });
+  const audience = commentCopy({ approved: [entry.source.label], fallback: entry.source.label });
   const canMessage = !!source.sendMessage;
-  const thread = <ThreadView items={items} now={now} composing={composing} ask={audience.ask} helper={audience.helper} busy={messaging} closed={false} onSend={message} onClose={() => setComposing(false)} />;
-  const askButton = canMessage && !composing && <button type="button" className={quietClass} onClick={() => setComposing(true)}>{audience.ask}</button>;
+  const thread = <ThreadView items={items} now={now} open={expanded} composing={composing} input={audience.input} helper={audience.helper} busy={messaging} closed={false} onSend={message} onClose={() => setComposing(false)} />;
+  const askButton = canMessage && !composing && <button type="button" className={quietClass} onClick={() => setComposing(true)}>{audience.button}</button>;
   if (!card.needsResponse) return <>
     {thread}
     {error && <ErrorLine>{error}</ErrorLine>}
@@ -239,10 +239,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
     if (stale || saving || !text.trim()) return;
     countdown.start("your answer", () => void save());
   };
-  // With more than 2 messages, the answer sits right under the body and the thread follows it.
-  const longThread = items.length > 2;
   return <div>
-    {!longThread && thread}
     {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
       {countdown.pending.label === "your answer" ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
     </PendingAnswer> : <>
@@ -254,7 +251,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
         <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Sending…" : "Send answer"}</button>
       </form>}
     </>}
-    {longThread && thread}
+    {thread}
     {error && <ErrorLine>{error}</ErrorLine>}
     {!countdown.pending && <QuietRow>
       {asking && !!choices.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Answer in your own words</button>}
@@ -568,8 +565,9 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     // A snoozed card rests as its title until the owner asks to answer it now.
     const resting = snoozedNow(entry, clock) && !awake.has(key) && !open;
     const reference = <Reference title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</Reference>;
+    const comments = context ? threadSize(entry, context.record, context.owner) : unsupported ? 0 : plainThreadItems(entry, revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))).length;
     return <li key={key} className="min-w-0">
-      <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} expanded={open} compact={resting || unsupported} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
+      <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} comments={resting ? 0 : comments} onOpenComments={() => { if (!open) toggle(entry); }} expanded={open} compact={resting || unsupported} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
         {resting && <QuietRow><button type="button" className={quietClass} onClick={() => { engage(entry); setAwake((current) => new Set(current).add(key)); }}>Answer now</button></QuietRow>}
         {!resting && <>
         {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
