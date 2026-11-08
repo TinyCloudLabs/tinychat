@@ -1606,19 +1606,20 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           onUsage: usage => { observedUsage = usage; },
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
         });
+        await streamOwner.complete(orchestrateResult);
       } catch (error) {
-        // Preserve the failure for terminal delivery after observed usage settles.
-        orchestrateResult = { ...observedUsage, completionId: "",
-          errorCode: error instanceof StreamFailure ? error.code : "agent_failed" };
+        orchestrateResult = null;
+        await streamOwner.fail(error);
       }
     } else {
       await streamOwner.fail(new StreamFailure("agent_failed"));
     }
+    // A completed result stays provisional through final writes and end().
+    if (streamOwner.deliveryException) orchestrateResult = null;
     // Content delivery and cancellation must not erase already observed usage.
     orchestrateResult ??= { ...observedUsage, completionId: "" };
 
-    // Record usage before terminal metadata and stream end so follow-up requests
-    // see the completed turn's charge during their budget preflight.
+    // A4: post-stream usage recording — mirrors chat.ts:335-372.
     // NEVER throw after bytes were served. Falls back to conservative rates on any failure.
     if (paywallEnabled() && address && orchestrateResult) {
       try {
@@ -1682,8 +1683,6 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         }
       }
     }
-    // Also await an already claimed timeout/cancellation terminal's drain.
-    await streamOwner.complete(orchestrateResult);
     } finally { releaseAccess?.(); }
   };
 }
