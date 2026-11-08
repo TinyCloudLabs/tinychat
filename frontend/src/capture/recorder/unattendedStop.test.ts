@@ -193,6 +193,63 @@ test("Recording withdrawn: stopped and kept at once, without waiting for the gra
   expect((await fake.plugin.status()).state).toBe("idle");
 });
 
+/** Status reads from now on are held until released: how many were asked, and a release for each. */
+function holdingStatus() {
+  const held: Array<() => void> = [];
+  const state = { holding: false, asked: 0, held };
+  const wrap = (fake: FakeVoiceNotes): Partial<VoiceNotesPlugin> => ({
+    status() {
+      if (!state.holding) return fake.plugin.status();
+      state.asked += 1;
+      return new Promise((resolve) => { held.push(() => resolve(fake.plugin.status())); });
+    },
+  });
+  return { state, wrap };
+}
+
+test("Recording withdrawn while a status read is held: stopped by its id at once, with that one read still the only one", async () => {
+  const { state, wrap } = holdingStatus();
+  const { fake, calls, detach, id } = await leftRunning(WEB, wrap);
+  state.holding = true;
+  detach();
+  await flush();
+  expect(state.asked).toBe(1);
+  stopUnattendedRecordings();
+  await flush();
+  expect(calls.filter((call) => call.name === "stop")).toEqual([{ name: "stop", id }]);
+  expect((await fake.plugin.listPending()).recordings.map((recording) => recording.id)).toEqual([id]);
+  await turns(3);
+  expect(state.asked).toBe(1);
+});
+
+test("past the grace with a status read held, web and desktop still stop it by its id", async () => {
+  const { state, wrap } = holdingStatus();
+  const { calls, detach, id } = await leftRunning(WEB, wrap);
+  state.holding = true;
+  detach();
+  await flush();
+  await turns(graceTurns + 1);
+  expect(calls.filter((call) => call.name === "stop")).toEqual([{ name: "stop", id }]);
+  expect(state.asked).toBe(1);
+});
+
+test("on the phone, a withdrawal with a status read held stops on that read's answer, and on nothing before it", async () => {
+  const { state, wrap } = holdingStatus();
+  const { fake, calls, detach, id } = await leftRunning(PHONE, wrap);
+  state.holding = true;
+  detach();
+  await flush();
+  stopUnattendedRecordings();
+  await turns(3);
+  expect(stops(calls)).toBe(0);
+  expect(state.asked).toBe(1);
+  state.holding = false;
+  state.held.shift()!();
+  await flush();
+  expect(stops(calls)).toBe(1);
+  expect((await fake.plugin.listPending()).recordings.map((recording) => recording.id)).toEqual([id]);
+});
+
 test("offers repeated while a recorder's pickup read is unanswered start no more reads", async () => {
   let hangNext = false;
   let reads = 0;

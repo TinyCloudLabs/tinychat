@@ -264,10 +264,11 @@ export function __recorderOwnershipForTests() {
 }
 
 /** Follows what a closed recorder left behind (see TrackerKind), holding a Home work place (`release`) until the
- * recording has ended (a status read says so) or an attached recorder has taken it. Status reads go one at a time (a
- * read that never answers is waited for, never repeated). A stop or discard the owner had already sent (`ending`)
- * settles first, with the recording claimed by this tracker meanwhile: nobody takes a recording that may be ending.
- * It follows the engine it began on, and stops if the app replaces that engine. */
+ * recording has ended (a status read says so) or an attached recorder has taken it. At most one status read is in
+ * flight: a turn waits for it only until the turn's wait is over (or Recording is withdrawn), and one that never
+ * answers is never repeated; what it answers is acted on when it does. A stop or discard the owner had already sent
+ * (`ending`) settles first, with the recording claimed by this tracker meanwhile: nobody takes a recording that may be
+ * ending. It follows the engine it began on, and stops if the app replaces that engine. */
 async function trackDetachedRecording(id: string, kind: TrackerKind, release: (() => void) | null, ending: Promise<unknown> | null = null) {
   const tracker = { kind };
   const trackers = trackedRecordings.get(id) ?? new Set();
@@ -280,9 +281,56 @@ async function trackDetachedRecording(id: string, kind: TrackerKind, release: ((
   const { owners, takes } = engineRecordings();
   const takesAtStart = takes.get(id) ?? 0;
   const withdrawalsAtStart = withdrawals;
+  const stops = kind === "left-live" || (kind === "late-start" && !captureCapabilities().scopedDiscard);
   // How long it has gone with no recorder attached.
   let unattendedMs = 0;
+  // The one status read in flight, and the latest answer (numbered, so a stop can tell an answer that came after it
+  // fell due).
+  let reading: Promise<void> | null = null;
+  let answers = 0;
+  let answered: { status: CaptureStatus | null; number: number } | null = null;
+  const read = () => {
+    reading ??= readStatus(engine).then((status) => {
+      answers += 1;
+      answered = { status, number: answers };
+      reading = null;
+    });
+    return reading;
+  };
+  // Once a stop is due (the grace has passed, or Recording was withdrawn): the answers seen by then. Once one stopped
+  // this recording, nothing more is sent: a status read confirms the end.
+  let stopDueAfter: number | null = null;
+  let stopped = false;
   const hold = () => { if (owners.get(id) !== ENDED) owners.set(id, cleanup); };
+  // The recording ended, or another recorder (or its own tracker) answers for it now.
+  const finished = () => {
+    if (!current() || owners.get(id) === ENDED) return true;
+    if (answered?.status && endedIn(answered.status, id)) {
+      endRecording(id);
+      return true;
+    }
+    if (kind === "ending") return false;
+    const owner = owners.get(id);
+    return (takes.get(id) ?? 0) !== takesAtStart || (owner !== undefined && owner !== cleanup);
+  };
+  const stopIfDue = async () => {
+    if (!stops || stopped || attachedRecorders.length > 0) return;
+    if (unattendedMs < UNATTENDED_GRACE_MS && withdrawals === withdrawalsAtStart) return;
+    stopDueAfter ??= answers;
+    const latest = answered;
+    const outcome = await stopUnattended(id, cleanup, engine, latest?.status ?? null, latest !== null && latest.number > stopDueAfter);
+    if (outcome === "not-sent") return;
+    stopped = outcome === "stopped";
+    // Tried again (if it must be) only on an answer read after this one; that read also confirms the end.
+    stopDueAfter = answers;
+    void read();
+  };
+  const sleepOrWake = (ms: number) => {
+    let wake = () => {};
+    const woken = new Promise<void>((resolve) => { wake = resolve; });
+    trackerWakers.add(wake);
+    return Promise.race([trackerSleep(ms), woken]).finally(() => { trackerWakers.delete(wake); });
+  };
   try {
     if (kind === "ending" || ending) hold();
     if (ending) {
@@ -290,26 +338,12 @@ async function trackDetachedRecording(id: string, kind: TrackerKind, release: ((
       if (kind !== "ending") releaseRecording(id, cleanup);
     }
     // An "ending" tracker waits before its first read: the owner's own flow is still finishing with the engine.
+    if (kind === "ending") await sleepOrWake(trackerWaitsMs[0]);
     for (let turn = kind === "ending" ? 1 : 0; ; turn += 1) {
-      if (turn > 0) {
-        const wait = trackerWaitsMs[Math.min(turn - 1, trackerWaitsMs.length - 1)];
-        let wake = () => {};
-        const woken = new Promise<void>((resolve) => { wake = resolve; });
-        trackerWakers.add(wake);
-        await Promise.race([trackerSleep(wait), woken]);
-        trackerWakers.delete(wake);
-        unattendedMs = attachedRecorders.length === 0 ? unattendedMs + wait : 0;
-      }
-      if (!current()) return;
-      if (owners.get(id) === ENDED) return;
-      if (kind !== "ending") {
-        // Taken by an attached recorder (now or since this began): that recorder, or its own tracker, answers for it.
-        if ((takes.get(id) ?? 0) !== takesAtStart) return;
-        const owner = owners.get(id);
-        if (owner !== undefined && owner !== cleanup) return;
-      }
+      if (finished()) return;
       if (kind !== "ending" && attachedRecorders.length > 0) {
         unattendedMs = 0;
+        stopDueAfter = null;
         announceUnownedRecording(id);
       } else if (kind === "late-start" && captureCapabilities().scopedDiscard && claimRecording(id, cleanup)) {
         try {
@@ -321,17 +355,18 @@ async function trackDetachedRecording(id: string, kind: TrackerKind, release: ((
             releaseRecording(id, cleanup);
           }
         }
-      } else if ((kind === "left-live" || (kind === "late-start" && !captureCapabilities().scopedDiscard))
-        && (unattendedMs >= UNATTENDED_GRACE_MS || withdrawals !== withdrawalsAtStart)) {
-        if (!current()) return;
-        await stopUnattended(id, cleanup, engine);
+      } else await stopIfDue();
+      if (finished()) return;
+      const slept = sleepOrWake(trackerWaitsMs[Math.min(turn, trackerWaitsMs.length - 1)]);
+      const answeredBefore = answers;
+      await Promise.race([read(), slept]);
+      // Acted on as it answers: the end it shows, or the fresh status a verified stop waits for.
+      if (answers !== answeredBefore) {
+        if (finished()) return;
+        await stopIfDue();
       }
-      if (!current()) return;
-      const status = await readStatus(engine);
-      if (status !== null && endedIn(status, id)) {
-        endRecording(id);
-        return;
-      }
+      await slept;
+      unattendedMs = attachedRecorders.length === 0 ? unattendedMs + trackerWaitsMs[Math.min(turn, trackerWaitsMs.length - 1)] : 0;
     }
   } finally {
     trackers.delete(tracker);
@@ -343,31 +378,28 @@ async function trackDetachedRecording(id: string, kind: TrackerKind, release: ((
 /** One status read; null if it fails (or the engine cannot be asked). */
 const readStatus = (engine: VoiceNotesPlugin) => Promise.resolve().then(() => engine.status()).catch(() => null);
 
-/** Stops (and so keeps: a stop never discards) a recording left running with nobody to see it, if a fresh status read
- * shows exactly it live, not paused by its owner, and still no recorder is attached. Engines that stop by id
- * (unattendedStop "scoped") are told the id and refuse anything else; the native mobile engines cannot be
- * ("verified-status"), so a recording started from a native shortcut at that instant could be the one stopped: it is
- * kept too, the status is read again, and that is logged without any id. */
-async function stopUnattended(id: string, cleanup: object, engine: VoiceNotesPlugin) {
+/** Stops (and so keeps: a stop never discards) a recording left running with nobody to see it, while no recorder is
+ * attached; "stopped" once its stop resolved. Engines that stop by id (unattendedStop "scoped") are told the id and
+ * refuse anything else, so they need no status read (a recording its owner paused is stopped and kept too). The native
+ * mobile engines cannot be told an id ("verified-status"): they stop only on a `fresh` answer (read after the stop fell
+ * due) showing exactly this recording live and not paused by its owner. A recording started from a native shortcut at
+ * that instant could still be the one stopped: it is kept too, and that is logged without any id. */
+async function stopUnattended(id: string, cleanup: object, engine: VoiceNotesPlugin, status: CaptureStatus | null, fresh: boolean): Promise<"stopped" | "tried" | "not-sent"> {
   const mode = captureCapabilities().unattendedStop;
-  if (mode !== "scoped" && mode !== "verified-status") return;
-  const fresh = await readStatus(engine);
-  if (!fresh || fresh.state === "idle" || fresh.id !== id || fresh.intent === "paused") return;
-  if (attachedRecorders.length > 0 || VoiceNotes !== engine || !claimRecording(id, cleanup)) return;
+  if (mode === "verified-status") {
+    if (!fresh || !status || status.state === "idle" || status.id !== id || status.intent === "paused") return "not-sent";
+  } else if (mode !== "scoped") return "not-sent";
+  if (attachedRecorders.length > 0 || VoiceNotes !== engine || !claimRecording(id, cleanup)) return "not-sent";
   try {
-    if (mode === "scoped") {
-      await engine.stop({ id });
-      return;
-    }
-    const stopped = await engine.stop();
-    if (stopped.id !== id) console.warn("[VoiceNotes] An unattended stop ended a different recording than the one left running; it was kept");
-    const after = await readStatus(engine);
-    // Still live (the stop took another recording): released, so a later turn can try again.
-    if (after && after.state !== "idle" && after.id === id) releaseRecording(id, cleanup);
+    const result = await (mode === "scoped" ? engine.stop({ id }) : engine.stop());
+    if (result.id === id) return "stopped";
+    console.warn("[VoiceNotes] An unattended stop ended a different recording than the one left running; it was kept");
   } catch (caught) {
     if (errorCode(caught) !== "recording_changed") console.warn("[VoiceNotes] Could not stop a recording left running with no recorder open", errorCode(caught));
-    releaseRecording(id, cleanup);
   }
+  // Still live, as far as this knows: released, so a later turn can try again.
+  releaseRecording(id, cleanup);
+  return "tried";
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
@@ -1017,6 +1049,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async setTranscriber(id, { scope }) {
       if (!available) return "unavailable";
+      // A recording-scoped choice is for the recording shown now, from this attachment: the desktop refresh below can
+      // outlast that recording, and the choice must not land on whichever recording is live when it returns.
+      const mine = attachment;
+      const shown = state.recordingId;
+      const stillShown = () => state.phase === "recording" && !!shown && state.recordingId === shown && controls(mine, shown);
+      if (scope === "recording" && !stillShown()) return "unavailable";
       if (id === "on-device" && captureEngineKind() === "tauri") {
         try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(); }
         catch { return "unavailable"; }
@@ -1034,10 +1072,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (!snapshot.powerfulAvailable) return "unavailable";
       }
       if (scope === "recording") {
-        if (state.phase !== "recording" || !state.recordingId || !controls(attachment, state.recordingId)) return "unavailable";
+        if (!stillShown()) return "unavailable";
         const identifySpeakers = (id === "assemblyai" || (id === "private-cloud" && privateDiarization())) && preference.identifySpeakers;
         await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
-        acceptNativeOptions(await VoiceNotes.status());
+        const status = await VoiceNotes.status();
+        if (stillShown() && status.id === shown) acceptNativeOptions(status);
       } else {
         await setDefaultTranscriber(id);
         preference = readTranscriberPreference();
@@ -1054,9 +1093,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
       if (id === "private-cloud" && !privateDiarization()) return "unavailable";
       if (scope === "recording") {
-        if (!controls(attachment, state.recordingId ?? "")) return "unavailable";
+        const mine = attachment;
+        const shown = state.recordingId;
+        if (!shown || !controls(mine, shown)) return "unavailable";
         await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
-        acceptNativeOptions(await VoiceNotes.status());
+        const status = await VoiceNotes.status();
+        if (state.recordingId === shown && controls(mine, shown) && status.id === shown) acceptNativeOptions(status);
       } else {
         await setDefaultIdentifySpeakers(on);
         preference = readTranscriberPreference();

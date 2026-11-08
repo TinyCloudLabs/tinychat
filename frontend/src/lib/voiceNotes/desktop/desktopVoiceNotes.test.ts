@@ -8,7 +8,8 @@ import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBri
 import { selectRecorderView } from "@/capture/recorder/final/recorderView";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import type { TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
-import { subscribeCaptureCapabilities } from "../captureEngine";
+import { __resetCaptureEngineForTests, __setInstalledEngineForTests, subscribeCaptureCapabilities } from "../captureEngine";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { __setVoiceNotesForTests, VoiceNotes, type MissingAudioSpan } from "../nativeVoiceNotes";
 import { leaseWhisperServer } from "@/lib/whisperServerLease";
 const originalVoiceNotes = VoiceNotes;
@@ -381,6 +382,53 @@ describe("desktop recorder adapter", () => {
       __setVoiceNotesForTests(originalVoiceNotes, { available: null });
     }
   });
+  test("Local chosen for one recording never lands on the next one when the model check returns late", async () => {
+    class HeldModelsBridge extends FakeBridge {
+      hold: Promise<void> | null = null;
+      override async invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+        if (command === "recorder_models_get" && this.hold) await this.hold;
+        return super.invoke<T>(command, args);
+      }
+    }
+    const bridge = new HeldModelsBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const ids = ["first-note", "second-note"];
+    const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), {}, () => ids.shift()!);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    __setInstalledEngineForTests("tauri", engine.plugin.capabilities);
+    await engine.plugin.setCaptureDefaults({ accountDid: "did:example:alice", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: { did: "did:example:alice", spaceId: "space-a" } as TinyCloudWeb,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      let release = () => {};
+      bridge.hold = new Promise<void>((resolve) => { release = resolve; });
+      const late = recorder.setTranscriber("on-device", { scope: "recording" });
+      await recorder.stop();
+      recorder.dismissOutcome();
+      bridge.hold = null;
+      await recorder.record();
+      expect(recorder.getState().recordingId).toBe("second-note");
+      expect(await recorder.setTranscriber("off", { scope: "recording" })).toBe("ok");
+      release();
+      expect(await late).toBe("unavailable");
+      expect((await engine.plugin.status()).options?.transcriber).toBe("off");
+      expect(recorder.getTranscriber()).toMatchObject({ id: "off", source: "recording" });
+    } finally {
+      detach();
+      engine.dispose();
+      __resetCaptureEngineForTests();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
   test("a stalled Resume retries through recorder_resume and recovers the real adapter intent", async () => {
     const bridge = new FakeBridge();
     const engine = await rig(bridge);

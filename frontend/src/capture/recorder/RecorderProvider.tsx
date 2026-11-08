@@ -223,18 +223,24 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [receiptActionable, setReceiptActionable] = useState(false);
   const [receiptReady, setReceiptReadyState] = useState(false);
   const [momentFieldFocused, setMomentFieldFocused] = useState(false);
-  const [disclosure, setDisclosure] = useState<{ kind: "system-audio"; extras: DesktopCaptureExtras } | { kind: "private" | "powerful"; startAfter: boolean } | null>(null);
+  // Each disclosure belongs to the account and recorder it was opened for (`owner`, below).
+  const [disclosure, setDisclosure] = useState<({ kind: "system-audio"; extras: DesktopCaptureExtras } | { kind: "private" | "powerful"; startAfter: boolean }) & { owner: object } | null>(null);
   const [disclosureBusy, setDisclosureBusy] = useState(false);
   const [disclosureError, setDisclosureError] = useState<string | null>(null);
   const disclosureOpener = useRef<HTMLElement | null>(null);
   const promptedAccounts = useRef(new Set<string>());
-  // A Record deferred behind an await (the system-audio check or choice) goes ahead only while this provider is mounted;
-  // the recorder itself also refuses once it has closed.
-  const mounted = useRef(true);
+  // The account and recorder this provider serves now: replaced when either changes (account switch, sign-out). A
+  // Record deferred behind an await (the system-audio check or choice) and an open disclosure belong to the owner they
+  // began under: on any change they are dropped, never carried over to the new account's recorder. Unmounting drops
+  // them too; the recorder itself also refuses once it has closed.
+  const owner = useRef<object>({});
+  const ownerToken = recorder.setOnPresent;
   useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
+    const current = {};
+    owner.current = current;
+    setDisclosure(null);
+    return () => { if (owner.current === current) owner.current = {}; };
+  }, [tcw, ownerToken]);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
   // A new note's receipt starts unready again — each one waits for its own Play control (or
   // load error), not whatever the previous note left behind.
@@ -316,12 +322,12 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     if (promptedAccounts.current.has(did) || privateConsentWasPrompted(did)) return false;
     promptedAccounts.current.add(did);
     markPrivateConsentPrompted(did);
-    setDisclosure({ kind: "private", startAfter });
+    setDisclosure({ kind: "private", startAfter, owner: owner.current });
     return true;
   }, [tcw?.did, recorder.transcription]);
   const maybePromptPowerful = useCallback((startAfter: boolean) => {
     if (!tcw?.did || recorder.transcription?.powerfulConsented) return false;
-    setDisclosure({ kind: "powerful", startAfter });
+    setDisclosure({ kind: "powerful", startAfter, owner: owner.current });
     return true;
   }, [tcw?.did, recorder.transcription?.powerfulConsented]);
   const afterSystemAudio = useCallback(() => {
@@ -337,22 +343,24 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     setDisclosureError(null);
     if (platform !== "tauri") { afterSystemAudio(); return; }
     setDisclosureBusy(true);
+    const mine = owner.current;
     void (async () => {
       try {
         const extras = getDesktopCaptureExtras();
         if (!extras) throw Object.assign(new Error("System audio consent is unavailable."), { code: "system_audio_consent_unavailable" as const });
-        if (await needsSystemAudioDisclosure(extras)) {
-          if (mounted.current) setDisclosure({ kind: "system-audio", extras });
-        } else if (mounted.current) afterSystemAudio();
+        const needed = await needsSystemAudioDisclosure(extras);
+        if (owner.current !== mine) return;
+        if (needed) setDisclosure({ kind: "system-audio", extras, owner: mine });
+        else afterSystemAudio();
       } catch (error) {
-        setDisclosureError(`Could not start recording: ${readableError(error)}`);
+        if (owner.current === mine) setDisclosureError(`Could not start recording: ${readableError(error)}`);
       } finally { setDisclosureBusy(false); }
     })();
   }, [afterSystemAudio, disclosure, disclosureBusy, platform]);
   const reviewPrivateConsent = useCallback(() => {
     disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setDisclosureError(null);
-    setDisclosure({ kind: "private", startAfter: false });
+    setDisclosure({ kind: "private", startAfter: false, owner: owner.current });
   }, []);
   useEffect(() => {
     const accountDid = tcw?.did;
@@ -363,24 +371,26 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     maybePromptPrivate(false);
   }, [tcw?.did, recorder.transcription, state.ready, state.phase, disclosure, disclosureBusy, maybePromptPrivate]);
   const chooseAudio = useCallback((choice: "record" | "mic-only") => {
-    if (disclosure?.kind !== "system-audio" || disclosureBusy) return;
+    if (disclosure?.kind !== "system-audio" || disclosureBusy || disclosure.owner !== owner.current) return;
+    const mine = disclosure.owner;
     setDisclosureBusy(true);
     void chooseSystemAudio(disclosure.extras, choice).then(() => {
-      if (!mounted.current) return;
+      if (owner.current !== mine) return;
       setDisclosure(null);
       afterSystemAudio();
-    }, (error: unknown) => setDisclosureError(`Could not save your choice: ${readableError(error)}`))
+    }, (error: unknown) => { if (owner.current === mine) setDisclosureError(`Could not save your choice: ${readableError(error)}`); })
       .finally(() => setDisclosureBusy(false));
   }, [afterSystemAudio, disclosure, disclosureBusy]);
   const closePrivate = useCallback((confirmed: boolean) => {
     if (disclosure?.kind !== "private" && disclosure?.kind !== "powerful") return;
+    setDisclosure(null);
+    // Opened for an account or recorder that is no longer this provider's: its answer applies to nothing here.
+    if (disclosure.owner !== owner.current) return;
     if (confirmed) {
       if (disclosure.kind === "powerful") recorder.transcription?.onPowerfulConsent?.();
       else recorder.transcription?.onConsent();
     }
-    const startAfter = disclosure.startAfter;
-    setDisclosure(null);
-    if (startAfter && confirmed) beginRecording();
+    if (disclosure.startAfter && confirmed) beginRecording();
   }, [beginRecording, disclosure, recorder.transcription]);
   const dismiss = useCallback(() => {
     setMomentFieldFocused(false);
