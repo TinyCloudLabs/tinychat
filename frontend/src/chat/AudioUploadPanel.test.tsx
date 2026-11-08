@@ -254,6 +254,17 @@ test("discard cleanup offers Retry deleting without claiming the meeting was sav
   expect(html).not.toContain("Saved to your TinyCloud space");
 });
 
+test("while a Home permission ask has OpenKey open, a failed upload says to finish there first, beside Retry and Discard that wait", () => {
+  const failed = job({ stage: "failed", error: { message: "The upload stopped.", retry: true, reference: null } });
+  const waiting = renderUpload({ job: failed, waitForOpenKey: true });
+  expect(waiting).toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
+  expect(waiting).toMatch(/<button[^>]*disabled=""[^>]*>Retry<\/button>/);
+  expect(waiting).toMatch(/<button[^>]*disabled=""[^>]*>Discard<\/button>/);
+  const open = renderUpload({ job: failed });
+  expect(open).not.toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
+  expect(open).not.toMatch(/disabled=""[^>]*>(Retry|Discard)<\/button>/);
+});
+
 test("while a Home permission ask has OpenKey open, Upload says to finish there first and offers no Transcribe", () => {
   const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1", spaceId: "space-1" } as unknown as TinyCloudWeb;
   const sessionStore = { getToken: () => "token" } as unknown as SessionStore;

@@ -198,6 +198,8 @@ export interface AudioUploadViewProps {
   onOpenSettings: () => void;
   onRecheck: () => void;
   onOpenLibrary?: () => void;
+  /** A Home permission ask has OpenKey open: Retry and Discard wait until it is done (the runner refuses them now). */
+  waitForOpenKey?: boolean;
   /**
    * `inline` (default): one column. `sheet`: the Upload sheet's scrolling body,
    * with Transcribe pinned in its footer so it stays on screen.
@@ -227,6 +229,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   onOpenSettings,
   onRecheck,
   onOpenLibrary,
+  waitForOpenKey = false,
   layout = "inline",
 }) => {
   const inSheet = layout === "sheet";
@@ -309,26 +312,29 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           </>
         )}
         {!busy && (
-          <div className="flex flex-wrap justify-end gap-2">
-            {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
-              <Button type="button" onClick={onRetry}>
-                Retry
+          <>
+            {waitForOpenKey && <p className="text-callout text-muted-foreground" role="status">{FEATURE_ACCESS_WAIT_FOR_OPENKEY}</p>}
+            <div className="flex flex-wrap justify-end gap-2">
+              {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
+                <Button type="button" disabled={waitForOpenKey} onClick={onRetry}>
+                  Retry
+                </Button>
+              )}
+              {job.cleanupPending && (
+                <Button type="button" disabled={waitForOpenKey} onClick={onRetry}>
+                  Retry deleting
+                </Button>
+              )}
+              {saved && onOpenLibrary && !job.cleanupPending && (
+                <Button type="button" variant="outline" onClick={onOpenLibrary}>
+                  Open Library
+                </Button>
+              )}
+              <Button type="button" variant={saved && !job.cleanupPending ? "default" : "outline"} disabled={waitForOpenKey} onClick={onDismiss}>
+                {saved ? "Upload another file" : "Discard"}
               </Button>
-            )}
-            {job.cleanupPending && (
-              <Button type="button" onClick={onRetry}>
-                Retry deleting
-              </Button>
-            )}
-            {saved && onOpenLibrary && !job.cleanupPending && (
-              <Button type="button" variant="outline" onClick={onOpenLibrary}>
-                Open Library
-              </Button>
-            )}
-            <Button type="button" variant={saved && !job.cleanupPending ? "default" : "outline"} onClick={onDismiss}>
-              {saved ? "Upload another file" : "Discard"}
-            </Button>
-          </div>
+            </div>
+          </>
         )}
       </div>,
     );
@@ -588,6 +594,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
           navigate(PATHS.library);
         }}
         layout={layout}
+        waitForOpenKey={reauthorizing}
       />
       {powerfulConsent.dialog}
     </>
