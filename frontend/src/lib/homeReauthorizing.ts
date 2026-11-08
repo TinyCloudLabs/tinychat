@@ -26,19 +26,14 @@ export function subscribeHomeReauthorizing(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
-// Bumped by the test reset: a place held before it is forgotten, and its later release changes nothing.
-let holdGeneration = 0;
-
 /** Count `kind` as running until the returned release is called (once; later calls do nothing). */
 export function holdHomeWork(kind: HomeWork): () => void {
   running[kind] += 1;
   notify();
   let released = false;
-  const generation = holdGeneration;
   return () => {
     if (released) return;
     released = true;
-    if (generation !== holdGeneration) return;
     running[kind] -= 1;
     notify();
   };
@@ -59,6 +54,5 @@ export function __resetHomeWorkForTests(): void {
   reauthorizing = false;
   running.recording = 0;
   running.upload = 0;
-  holdGeneration += 1;
   notify();
 }

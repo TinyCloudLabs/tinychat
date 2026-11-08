@@ -228,13 +228,6 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [disclosureError, setDisclosureError] = useState<string | null>(null);
   const disclosureOpener = useRef<HTMLElement | null>(null);
   const promptedAccounts = useRef(new Set<string>());
-  // A Record deferred behind an await (the system-audio check or choice) goes ahead only while this provider is mounted;
-  // the recorder itself also refuses once it has closed.
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
   // A new note's receipt starts unready again — each one waits for its own Play control (or
   // load error), not whatever the previous note left behind.
@@ -341,9 +334,8 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       try {
         const extras = getDesktopCaptureExtras();
         if (!extras) throw Object.assign(new Error("System audio consent is unavailable."), { code: "system_audio_consent_unavailable" as const });
-        if (await needsSystemAudioDisclosure(extras)) {
-          if (mounted.current) setDisclosure({ kind: "system-audio", extras });
-        } else if (mounted.current) afterSystemAudio();
+        if (await needsSystemAudioDisclosure(extras)) setDisclosure({ kind: "system-audio", extras });
+        else afterSystemAudio();
       } catch (error) {
         setDisclosureError(`Could not start recording: ${readableError(error)}`);
       } finally { setDisclosureBusy(false); }
@@ -366,7 +358,6 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     if (disclosure?.kind !== "system-audio" || disclosureBusy) return;
     setDisclosureBusy(true);
     void chooseSystemAudio(disclosure.extras, choice).then(() => {
-      if (!mounted.current) return;
       setDisclosure(null);
       afterSystemAudio();
     }, (error: unknown) => setDisclosureError(`Could not save your choice: ${readableError(error)}`))

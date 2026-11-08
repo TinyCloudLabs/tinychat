@@ -129,9 +129,6 @@ export type RecorderEvent =
   | { type: "PERMISSION_GRANTED" }
   /** Back to idle without an outcome (the recording is being saved elsewhere). */
   | { type: "RESET" }
-  /** The recorder attached again after closing, with none of its own controls in flight: whatever start or recording it
-   * showed before is not its own now (a closed recorder owns nothing). Back to idle without an outcome. */
-  | { type: "REATTACHED" }
   /** The receipt was read: Done, Open, or its time ran out. */
   | { type: "DISMISSED" }
   /** The user confirmed Discard on the live recording `id`. */
@@ -408,9 +405,6 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
       return state.ready ? state : { ...state, ready: true };
     case "RESET":
       if (state.phase === "discarding") return state;
-      return toIdle(state);
-    case "REATTACHED":
-      if (state.phase !== "starting" && state.phase !== "recording" && state.phase !== "stopping" && state.phase !== "discarding") return state;
       return toIdle(state);
     case "DISMISSED":
       return { ...state, outcome: null, localUpload: null, error: null, failedRecording: null };

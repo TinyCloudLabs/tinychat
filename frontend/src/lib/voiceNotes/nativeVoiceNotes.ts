@@ -265,10 +265,7 @@ export interface VoiceNotesPlugin {
    * that fix the limit at start (native mobile): callers then keep the limit they started with. Rejects `no_recording` when idle.
    */
   setMaxDuration?(options: { maxDurationMs: number }): Promise<{ maxDurationMs: number }>;
-  /** Stops the live recording and keeps it. With `id` (engines with `capabilities.scopedStop` only): only that
-   * recording, checked and stopped in one step, refusing with `recording_changed` if another one is live. The native
-   * mobile plugins ignore `id`; never pass it to them. */
-  stop(options?: { id: string }): Promise<VoiceNoteRecording>;
+  stop(): Promise<VoiceNoteRecording>;
   /** Desktop finishing gate; absent on platforms whose stop already produces ready audio. */
   awaitAudioReady?(id: string): Promise<void>;
   /**
@@ -294,10 +291,7 @@ export interface VoiceNotesPlugin {
   listPending(): Promise<{ recordings: VoiceNoteRecording[] }>;
   pause(): Promise<void>;
   resume(): Promise<void>;
-  /** Stops the live recording and deletes it. With `id` (engines with `capabilities.scopedDiscard` only): only that
-   * recording, checked and discarded in one step, refusing with `recording_changed` if another one is live and
-   * resolving `{ id: null }` if none is. The native mobile plugins ignore `id`; never pass it to them. */
-  discard(options?: { id: string }): Promise<{ id: string | null }>;
+  discard(): Promise<{ id: string | null }>;
   setRecordingOptions(options: Partial<CaptureOptions>): Promise<void>;
   getCaptureDefaults(): Promise<CaptureDefaults & { status: AccountStatus }>;
   setCaptureDefaults(options: CaptureDefaults): Promise<{ claimed: string[] }>;

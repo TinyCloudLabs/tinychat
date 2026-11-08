@@ -75,8 +75,7 @@ export interface FakeVoiceNotes {
   };
 }
 
-/** `idBase`: where recording ids start counting, so a test can keep its ids apart from other tests' (default 0). */
-export function createFakeVoiceNotes(now: () => number = () => Date.now(), { idBase = 0 }: { idBase?: number } = {}): FakeVoiceNotes {
+export function createFakeVoiceNotes(now: () => number = () => Date.now()): FakeVoiceNotes {
   const listeners = new Map<EventName, Set<Listener>>();
   const retained = new Map<EventName, unknown[]>();
   const notes = new Map<string, VoiceNoteRecording>();
@@ -94,7 +93,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now(), { idB
   let remoteBeginFailure = false;
   let remoteResultFailure = false;
   let session: Session | null = null;
-  let counter = idBase;
+  let counter = 0;
   let outboxCounter = 0;
   let generation = 0;
   let pauseShouldFail = false;
@@ -310,10 +309,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now(), { idB
       // A limit at or below the recorded time applies at the next tick, like any other limit.
       return { maxDurationMs: s.maxDurationMs };
     },
-    async stop(options) {
-      if (options && session && session.id !== options.id) throw failure("recording_changed");
-      return stop("user");
-    },
+    async stop() { return stop("user"); },
     async status() {
       const s = session;
       return structuredClone({ ...(s ? mic(s) : { state: "idle" as const, reason: null }), detail: s?.detail,
@@ -396,9 +392,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now(), { idB
         manualRestart(s);
       } else if (s.availability !== "available") manualRestart(s);
     },
-    async discard(options) {
+    async discard() {
       const id = session?.id ?? null;
-      if (options && id !== null && id !== options.id) throw failure("recording_changed");
       if (id) { tombstones.add(id); session = null; generation++; pendingNotification = null; stateChanged(); }
       return { id };
     },

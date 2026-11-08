@@ -100,7 +100,6 @@ import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore"
 import { CaptureSurface } from "./capture/CaptureSurface";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
-import { stopUnattendedRecordings } from "./capture/recorder/voiceNoteRecorderController";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
@@ -779,13 +778,6 @@ export function App() {
   }, [state]);
 
   const recordingPermitted = featureAccess.permitted("recording");
-  // Recording withdrawn (Home no longer permits it): the recorder closes, and a recording it left running is stopped and
-  // kept at once, not after the remount grace.
-  const recordingWasPermitted = useRef(recordingPermitted);
-  useEffect(() => {
-    if (recordingWasPermitted.current && !recordingPermitted) stopUnattendedRecordings();
-    recordingWasPermitted.current = recordingPermitted;
-  }, [recordingPermitted]);
   useEffect(() => {
     if (state !== "ready" || !tcw || LOCAL_VALIDATION || !recordingPermitted) return;
     const recheck = () => void ensureTranscriptWriterDelegation({

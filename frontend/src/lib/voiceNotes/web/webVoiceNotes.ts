@@ -29,9 +29,6 @@ export const WEB_CAPABILITIES = {
   desktopWhisper: false,
   offlineRecorder: false,
   nativeFileUpload: false,
-  scopedDiscard: true,
-  scopedStop: true,
-  unattendedStop: "scoped",
 } as const;
 export type WebCapabilities = typeof WEB_CAPABILITIES;
 
@@ -418,11 +415,9 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       });
     },
 
-    async stop(options) {
+    async stop() {
       return run(async () => {
         const l = requireLive();
-        // Checked in the same queued task as the stop: no other control can run in between.
-        if (options && l.id !== options.id) throw failure("recording_changed", "A different recording is live.");
         const { recording, error } = await finish(l, "user");
         if (!recording) throw failure(error ?? "no_audio_captured");
         return clone(recording);
@@ -497,12 +492,10 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       });
     },
 
-    async discard(options) {
+    async discard() {
       return run(async () => {
         const l = live;
         if (!l) return { id: null };
-        // Checked in the same queued task as the discard: no other control can run in between.
-        if (options && l.id !== options.id) throw failure("recording_changed", "A different recording is live.");
         l.finishing = true;
         l.capture.abort();
         await l.queue;
