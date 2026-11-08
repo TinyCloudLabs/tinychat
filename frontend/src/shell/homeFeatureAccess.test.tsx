@@ -112,6 +112,17 @@ test("opening Recording without its set shows the prompt and calls nothing that 
   expect(store.size).toBe(0);
 });
 
+test("opening Connectors without its set shows its own prompt", async () => {
+  await act(async () => root.render(
+    <Harness initial={asTcw(session(false))} answer={async () => ({ outcome: "declined" })}>
+      <HomeFeatureGate feature="connectors"><div data-testid="connectors-screen" /></HomeFeatureGate>
+    </Harness>,
+  ));
+  expect(host.querySelector("h2")?.textContent).toBe("Allow Connectors");
+  expect(host.textContent).toContain(FEATURE_ACCESS_BODY.connectors);
+  expect(host.querySelector('[data-testid="connectors-screen"]')).toBeNull();
+});
+
 test("Continue asks once for Recording; the new session opens it, and the flag follows the first successful call, not the approval", async () => {
   const firstRead = Promise.withResolvers<KvResult>();
   const release = firstRead.resolve;

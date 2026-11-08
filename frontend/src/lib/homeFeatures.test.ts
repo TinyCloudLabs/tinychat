@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { composeManifestRequest, resolveManifest, validateManifest, type Manifest } from "@tinycloud/sdk-core";
+import { NodeUserAuthorization } from "@tinycloud/node-sdk";
 import { HOME_CONNECTORS_ENTRIES, HOME_RECORDING_ENTRIES } from "@tinyboilerplate/core";
 import { encryptionDecryptGrant } from "./connectors/encryptionGrant";
 import { webAppManifestFor } from "./webSignInPrefetch";
@@ -28,8 +29,8 @@ describe("homeSignInManifest", () => {
     expect(homeSignInManifest(base, [], ADDRESS)).toEqual(base);
   });
 
-  test("Recording flagged: the base, the Recording set and the decrypt grant", () => {
-    expect(homeSignInManifest(base, ["recording"], ADDRESS).permissions).toEqual([...base.permissions!, ...HOME_RECORDING_ENTRIES, decrypt]);
+  test("Recording flagged: the base and the Recording set, with no decrypt grant (Recording keeps no secret)", () => {
+    expect(homeSignInManifest(base, ["recording"], ADDRESS).permissions).toEqual([...base.permissions!, ...HOME_RECORDING_ENTRIES]);
   });
 
   test("Connectors flagged: the base, the Connectors set and the decrypt grant", () => {
@@ -46,6 +47,32 @@ describe("homeSignInManifest", () => {
       ...HOME_CONNECTORS_ENTRIES.filter((entry) => !shared.includes(entry)),
       decrypt,
     ]);
+  });
+
+  /** The encryption abilities the SDK's sign-in builds from the grant (the sign-in and the in-place ask alike pass it as
+   * the manifest): its raw abilities, where it adds network.create to any decrypt on the owner's own network. */
+  const signInEncryptionAbilities = (manifest: Manifest) => {
+    const authorization = new NodeUserAuthorization({ manifest, includeAccountRegistryPermissions: false, domain: "home.tinycloud.xyz",
+      sessionManager: {}, wasmBindings: {} } as unknown as ConstructorParameters<typeof NodeUserAuthorization>[0]);
+    const capabilities = (authorization as unknown as { resolveSignInCapabilities(address: string, chainId: number): {
+      rawAbilities?: Record<string, string[]>; abilities: Record<string, string[]>; spaceAbilities: Record<string, Record<string, string[]>> } })
+      .resolveSignInCapabilities(ADDRESS, 1);
+    const encryption = JSON.stringify([capabilities.abilities, capabilities.spaceAbilities]).includes("tinycloud.encryption");
+    expect(encryption).toBe(false);
+    return capabilities.rawAbilities ?? {};
+  };
+
+  test("the SDK's sign-in request for Recording alone carries no encryption ability at all", () => {
+    const raw = signInEncryptionAbilities(homeSignInManifest(base, ["recording"], ADDRESS));
+    expect(Object.entries(raw).filter(([resource, actions]) => resource.includes("encryption") || actions.some((action) => action.startsWith("tinycloud.encryption")))).toEqual([]);
+  });
+
+  test("the SDK's sign-in request for Connectors, alone or with Recording, carries exactly decrypt and network.create on the owner's default network", () => {
+    for (const flags of [["connectors"], ["recording", "connectors"]] as const) {
+      expect(signInEncryptionAbilities(homeSignInManifest(base, flags, ADDRESS))).toEqual({
+        [decrypt.path]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.create"],
+      });
+    }
   });
 
   test("the composed grant is a valid manifest that adds no secrets block and leaves the base untouched", () => {
@@ -103,8 +130,11 @@ describe("whether the session covers a feature", () => {
       for (const resource of asked) expect(signed).toContainEqual(resource);
       const ownResources = asked.filter((resource) => resource.service !== "tinycloud.capabilities");
       expect(ownResources.filter((resource) => baseResources.some((entry) => JSON.stringify(entry) === JSON.stringify(resource)))).toEqual([]);
-      expect(ownResources).toContainEqual(expect.objectContaining({ service: "tinycloud.encryption", path: decrypt.path, actions: ["tinycloud.encryption/decrypt"] }));
     }
+    // The decrypt grant is part of Connectors' check only.
+    const decryptEntry = expect.objectContaining({ service: "tinycloud.encryption", path: decrypt.path, actions: ["tinycloud.encryption/decrypt"] });
+    expect(homeFeatureCoverageEntries("connectors", ADDRESS)).toContainEqual(decryptEntry);
+    expect(homeFeatureCoverageEntries("recording", ADDRESS).filter((resource) => resource.service === "tinycloud.encryption")).toEqual([]);
     expect(homeFeatureCoverageEntries("recording", ADDRESS)).toContainEqual(expect.objectContaining({ space: "applications", path: "exo/voiceNotes/hostedJobs/" }));
     expect(homeFeatureCoverageEntries("connectors", ADDRESS)).toContainEqual(expect.objectContaining({ space: "applications", path: "xyz.tinycloud.tinychat/connectors" }));
   });

@@ -41,8 +41,8 @@ export const LANDING_LINK_LABEL = "About TinyCloud Home";
 /** Recording and Connectors on the Home site ask for their own permissions in place, when the owner opens them. */
 export const FEATURE_ACCESS_TITLE = { recording: "Allow Recording", connectors: "Allow Connectors" } as const;
 export const FEATURE_ACCESS_BODY = {
-  recording: "To save your recordings, transcripts and summaries, OpenKey will ask you to let TinyCloud Home keep them in your TinyCloud space, along with your transcription service key if you add one.",
-  connectors: "To sync your meetings, OpenKey will ask you to let TinyCloud Home keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet.",
+  recording: "To save your recordings, transcripts and summaries, OpenKey will ask you to let TinyCloud Home keep them in your TinyCloud space.",
+  connectors: "To sync your meetings, OpenKey will ask you to let TinyCloud Home keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet, which are stored encrypted.",
 } as const;
 /** The calm state after "Not now": the feature waits for permission, and Continue asks again. */
 export const FEATURE_ACCESS_NEEDED = { recording: "Recording needs your permission.", connectors: "Connectors need your permission." } as const;

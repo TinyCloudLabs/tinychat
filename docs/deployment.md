@@ -171,8 +171,11 @@ TinyCloud Home site at `https://home.tinycloud.xyz`.
   `frontend/src/lib/manifestRevision.ts`) and the user signs in once more.
 - **Recording and Connectors on Home:** each has its own set
   (`HOME_RECORDING_ENTRIES`, `HOME_CONNECTORS_ENTRIES` in
-  `packages/core/src/manifest-bundle.ts`), plus the decrypt grant composed at
-  request time. When one is opened and the session does not cover its set, it
+  `packages/core/src/manifest-bundle.ts`). Only Connectors keeps secrets (its
+  connector keys), so only it adds the decrypt grant, composed at request time
+  (the SDK adds `network.create` on the owner's default network to it).
+  Recording keeps none: no secret, no decrypt grant, no encryption ability at
+  all. When one is opened and the session does not cover its set, it
   asks in place: Home signs in again in the page on a separate instance with
   the base grant plus every set the session has or the device used, plus this
   one (one OpenKey approval). It replaces the session only when the approval

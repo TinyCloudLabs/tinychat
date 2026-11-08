@@ -52,19 +52,24 @@ function flaggedEntries(flags: readonly HomeFeature[]): RequiredManifestEntry[] 
   return entries;
 }
 
+/** The decrypt grant goes with Connectors only: Recording keeps no secret. It names the owner's DID, so it is composed
+ * here, as for the plain build. */
+const withDecrypt = (features: readonly HomeFeature[], address: string) =>
+  features.includes("connectors") ? [encryptionDecryptGrant(address)] : [];
+
 /**
- * The Home site's sign-in grant: the base, plus each flagged feature's set, plus the decrypt grant when any set is
- * flagged (it names the owner's DID, so it is composed here, as for the plain build). Nothing flagged: the base itself.
+ * The Home site's sign-in grant: the base, plus each flagged feature's set, plus the decrypt grant when Connectors is
+ * flagged. Nothing flagged: the base itself.
  */
 export function homeSignInManifest(base: Manifest, flags: readonly HomeFeature[], address: string): Manifest {
   const entries = flaggedEntries(flags);
   if (entries.length === 0) return base;
-  return { ...base, permissions: [...(base.permissions ?? []), ...entries, encryptionDecryptGrant(address)] } as Manifest;
+  return { ...base, permissions: [...(base.permissions ?? []), ...entries, ...withDecrypt(flags, address)] } as Manifest;
 }
 
 /**
- * A feature's set (and the decrypt grant) resolved the way the SDK checks a manifest against a session before it
- * reuses one at sign-in: the resources of the composed request.
+ * A feature's set (and, for Connectors, the decrypt grant) resolved the way the SDK checks a manifest against a session
+ * before it reuses one at sign-in: the resources of the composed request.
  */
 export function homeFeatureCoverageEntries(feature: HomeFeature, address: string): PermissionEntry[] {
   const request = composeManifestRequest([{
@@ -72,7 +77,7 @@ export function homeFeatureCoverageEntries(feature: HomeFeature, address: string
     app_id: APP_ID,
     name: "TinyCloud Home",
     defaults: false,
-    permissions: [...HOME_FEATURE_ENTRIES[feature], encryptionDecryptGrant(address)],
+    permissions: [...HOME_FEATURE_ENTRIES[feature], ...withDecrypt([feature], address)],
   } as Manifest], { includeAccountRegistryPermissions: false });
   return request.resources as PermissionEntry[];
 }

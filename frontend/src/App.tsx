@@ -1044,8 +1044,8 @@ export function App() {
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
         uiPlatform: sdkUiPlatform(),
-        // The Home site asks for its base grant plus the sets of the features this device has used (each with the
-        // decrypt grant); with none used it has no secrets, so no decrypt grant either.
+        // The Home site asks for its base grant plus the sets of the features this device has used; only Connectors
+        // keeps secrets, so only it brings the decrypt grant.
         manifest: HOME_SITE
           ? homeSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
           : withEncryptionDecryptGrant(manifest, connectedAddress),

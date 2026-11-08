@@ -48,9 +48,10 @@ export const HOME_SIGN_IN_BUNDLE_ENTRIES: readonly RequiredManifestEntry[] = [
 export type HomeFeature = "recording" | "connectors";
 
 // Recording and Connectors on the Home site. Each set is asked for on top of HOME_SIGN_IN_BUNDLE_ENTRIES when the owner
-// opens the feature; the decrypt grant both need is composed at request time, because it names the owner's DID.
-// Secrets use the resolved shape of manifest.json's secrets block (the owner's secrets space, vault/secrets/<NAME>),
-// with its descriptions. Neither set has the applications-root storage manifest.json carries.
+// opens the feature. Only Connectors keeps secrets: its decrypt grant is composed at request time, because it names the
+// owner's DID. Recording keeps none (Powerful transcription is hosted, with no key of the owner's), so it has no secret
+// and no decrypt grant. Secrets use the resolved shape of manifest.json's secrets block (the owner's secrets space,
+// vault/secrets/<NAME>), with its descriptions. Neither set has the applications-root storage manifest.json carries.
 const HOME_MEETING_STORAGE_ENTRIES: readonly RequiredManifestEntry[] = [
   { service: "tinycloud.sql", path: "connectors", actions: ["read", "write", "schema"], description: "Store meeting metadata synced from connected sources (e.g. Fireflies) in your space's SQL database." },
   { service: "tinycloud.kv", path: "connectors/", actions: ["get", "put", "del", "list"], description: "Store transcript content synced from connected sources in your space." },
@@ -63,7 +64,6 @@ export const HOME_RECORDING_ENTRIES: readonly RequiredManifestEntry[] = [
   { service: "tinycloud.sql", path: "transcripts", actions: ["read", "write", "schema"] },
   // The one key Recording uses outside connectors/: the hosted transcription claim (frontend hostedVoiceNotes.ts).
   { service: "tinycloud.kv", space: "applications", path: "exo/voiceNotes/hostedJobs/", actions: ["get", "put"], skipPrefix: true },
-  { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/ASSEMBLYAI_API_KEY", actions: ["get", "put", "del"], skipPrefix: true, description: "Store your transcription service API key, encrypted, in your secrets space." },
 ];
 
 export const HOME_CONNECTORS_ENTRIES: readonly RequiredManifestEntry[] = [

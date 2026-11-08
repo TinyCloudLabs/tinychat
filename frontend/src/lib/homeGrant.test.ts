@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolveManifest, validateManifest } from "@tinycloud/sdk-core";
 import { HOME_CONNECTORS_ENTRIES, HOME_RECORDING_ENTRIES, HOME_SIGN_IN_BUNDLE_ENTRIES, manifestCarriesBundle } from "@tinyboilerplate/core";
 import appManifest from "../../../manifest.json";
+import { CONNECTORS } from "./connectors/registry";
 import { webAppManifestFor } from "./webSignInPrefetch";
 import {
   applyManifestRevisionGate,
@@ -90,7 +91,7 @@ describe("the sets Recording and Connectors ask for on the Home site", () => {
     { service: "tinycloud.kv", path: "connectors/", actions: ["get", "put", "del", "list"], description: "Store transcript content synced from connected sources in your space." },
   ];
 
-  test("Recording: the meeting storage, its databases, the hosted transcription claim and the AssemblyAI key, nothing more", () => {
+  test("Recording: the meeting storage, its databases and the hosted transcription claim, nothing more (no secret)", () => {
     expect(HOME_RECORDING_ENTRIES).toEqual([
       ...storage,
       { service: "tinycloud.sql", path: "details", actions: SQL },
@@ -98,7 +99,6 @@ describe("the sets Recording and Connectors ask for on the Home site", () => {
       { service: "tinycloud.sql", path: "transcripts", actions: SQL },
       // The one entry outside connectors/: the hosted transcription claim (hostedVoiceNotes.ts), read and written only.
       { service: "tinycloud.kv", space: "applications", path: "exo/voiceNotes/hostedJobs/", actions: ["get", "put"], skipPrefix: true },
-      { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/ASSEMBLYAI_API_KEY", actions: SECRET, skipPrefix: true, description: "Store your transcription service API key, encrypted, in your secrets space." },
     ]);
   });
 
@@ -111,12 +111,17 @@ describe("the sets Recording and Connectors ask for on the Home site", () => {
     ]);
   });
 
-  test("their secrets resolve to exactly what the plain build's secrets block grants", () => {
+  test("Home's secrets are Connectors' only, and exactly what the plain build's secrets block grants for the connectors", () => {
     const base = { manifest_version: 1, app_id: APP, name: "TinyCloud Home", defaults: false };
     const secretResources = (manifest: unknown) => resolved(manifest).filter((resource) => resource.space === "secrets" && resource.service !== "tinycloud.capabilities");
+    expect(secretResources({ ...base, permissions: [...HOME_RECORDING_ENTRIES] })).toEqual([]);
     const fromSets = secretResources({ ...base, permissions: [...HOME_RECORDING_ENTRIES, ...HOME_CONNECTORS_ENTRIES] });
-    expect(fromSets).toHaveLength(4);
-    expect(new Set(fromSets.map((resource) => JSON.stringify(resource)))).toEqual(new Set(secretResources(appManifest).map((resource) => JSON.stringify(resource))));
+    expect(fromSets).toHaveLength(CONNECTORS.length);
+    // The plain build's secrets for the connectors in the registry (each at its vault path).
+    const connectorPaths = CONNECTORS.map((connector) => `vault/secrets/${connector.secretScope ? `scoped/${connector.secretScope}/` : ""}${connector.secretName}`);
+    const plainConnectorSecrets = secretResources(appManifest).filter((resource) => connectorPaths.includes(resource.path));
+    expect(plainConnectorSecrets).toHaveLength(CONNECTORS.length);
+    expect(new Set(fromSets.map((resource) => JSON.stringify(resource)))).toEqual(new Set(plainConnectorSecrets.map((resource) => JSON.stringify(resource))));
   });
 });
 
