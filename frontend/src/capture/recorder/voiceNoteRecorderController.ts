@@ -65,6 +65,7 @@ import { withCaptureDeadline } from "@/lib/voiceNotes/accountHandoff";
 import { autoStopNoticeText, FINALIZATION_PENDING } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderCaptureIssue, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
 import { recordedElapsedAt } from "./recordedElapsed";
+import { admitHomeWork, holdHomeWork } from "@/lib/homeReauthorizing";
 import { clearPartialAudioIssue, dismissPartialAudioIssue, partialAudioDismissed, partialAudioScope,
   pendingAudioLossIds, prunePartialAudioIssues, savedPartialAudioIssues, savePartialAudioIssue,
   savePendingAudioLoss } from "./partialAudioIssues";
@@ -340,6 +341,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (refreshChoice()) notify();
   };
 
+  // A recording holds its place at the Home work boundary (lib/homeReauthorizing.ts) from the moment it starts
+  // (before the microphone is even asked) until the recorder is idle again, so a session swap never cuts it off.
+  let homeWork: (() => void) | null = null;
+  // A detached recorder (signed out, unmounted) holds nothing, whatever late events it still hears.
+  let homeWorkDetached = false;
+
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
   const send = (event: RecorderEvent) => {
@@ -347,6 +354,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     const next = recorderReducer(state, event);
     if (next === state) return;
     state = next;
+    // A recording the recorder picks up (one already running) holds its place too; idle releases it.
+    if (next.phase !== "idle" && homeWork === null && !homeWorkDetached) homeWork = holdHomeWork("recording");
+    if (next.phase === "idle" && homeWork !== null) { homeWork(); homeWork = null; }
     setCapturePlaybackBlocked(next.phase === "starting" || next.phase === "stopping" || next.phase === "discarding" ||
       (next.phase === "recording" && (next.controlPending === "resume" ||
         (next.mic.state !== "paused" && next.mic.state !== "interrupted" && next.mic.state !== "needs_user"))));
@@ -778,6 +788,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (!available) return () => {};
       setQuarantineAccount(tcw?.did ?? null);
       let attached = true;
+      homeWorkDetached = false;
       noteAttached = true;
       if (noteId && noteStatus === "error" && !cancelNoteRetry) scheduleNoteRetry(noteId, noteLoadVersion);
       const unsubscribeNoteSync = subscribeRecordingNoteSync(notify);
@@ -944,6 +955,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not attach capture scan", caught));
       return () => {
         attached = false;
+        // Detached (signed out or unmounted): this recorder no longer holds a place at the Home work boundary.
+        homeWorkDetached = true;
+        homeWork?.();
+        homeWork = null;
         setCapturePlaybackBlocked(false);
         noteAttached = false;
         clearNoteRetry();
@@ -963,6 +978,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     async record() {
       // Never before the recorder is reconciled, over a recording, or over a receipt still being shown.
       if (!available || !state.ready || nativeStopPending || state.phase !== "idle" || state.outcome !== null) return;
+      // Refused while a Home re-authorise is in progress; admitted, it is reserved before anything awaits.
+      const admitted = admitHomeWork("recording");
+      if (!admitted) return;
+      homeWork?.();
+      homeWork = admitted;
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);

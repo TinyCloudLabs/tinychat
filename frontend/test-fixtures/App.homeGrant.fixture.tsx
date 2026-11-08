@@ -60,8 +60,12 @@ let reauthInstances = 0;
 // Held open to stand for a slow backend check of the re-authorised sign-in (null: at once).
 let verifyGate: Promise<void> | null = null;
 let verifyCalls = 0;
-// What the re-authorise saved where the live session is persisted (BrowserSessionStorage).
+// What the re-authorise saved where the live session is persisted (BrowserSessionStorage), in order, and what was
+// saved there before it. `snapshotGate`/`saveGate` hold the read of the saved session or the save (null: at once).
 const persistedSessions: unknown[] = [];
+const OLD_SESSION = { tag: "old session" };
+let snapshotGate: { reached(): void; release: Promise<void> } | null = null;
+let saveGate: { reached(): void; release: Promise<void> } | null = null;
 let engineAvailable = false;
 let restoreResult: unknown = { kind: "signedOut" };
 const recorderEnabled: Array<boolean | undefined> = [];
@@ -114,10 +118,16 @@ mock.module("@tinyboilerplate/client", () => ({
 mock.module("@tinycloud/web-sdk", () => ({
   ...webSdkApi,
   BrowserSessionStorage: class {
-    async save(_address: string, data: unknown) { persistedSessions.push(data); }
-    async load() { return null; }
-    async clear() {}
-    exists() { return false; }
+    async save(_address: string, data: unknown) {
+      if (saveGate && data !== OLD_SESSION) { saveGate.reached(); await saveGate.release; }
+      persistedSessions.push(data);
+    }
+    async load() {
+      if (snapshotGate) { snapshotGate.reached(); await snapshotGate.release; }
+      return persistedSessions.at(-1) ?? OLD_SESSION;
+    }
+    async clear() { persistedSessions.push(null); }
+    exists() { return true; }
     isAvailable() { return true; }
   },
 }));
@@ -266,6 +276,8 @@ beforeEach(() => {
   verifyGate = null;
   verifyCalls = 0;
   persistedSessions.length = 0;
+  snapshotGate = null;
+  saveGate = null;
   engineAvailable = false;
   restoreResult = { kind: "signedOut" };
   recorderEnabled.length = 0;
@@ -507,6 +519,64 @@ test("work that starts while OpenKey is open stops the swap: nothing saved, the 
   expect(persistedSessions).toEqual([]);
   expect(mounted).not.toContain("CaptureSurface");
   expect(prompt("recording")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
+  await act(async () => { write.resolve(); await running; });
+  await navigate("/chat/feed");
+  expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
+});
+
+/** A gate a fake storage call waits at: `reached` resolves when the call gets there, `open` lets it through. */
+function gate() {
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  return { held: { reached: () => reached.resolve(), release: release.promise }, reached: reached.promise, open: () => release.resolve() };
+}
+/** Press a prompt button without waiting for what it starts. */
+async function pressInPrompt(feature: string, label: string) {
+  const button = [...prompt(feature)!.querySelectorAll("button")].find((entry) => entry.textContent === label)!;
+  await act(async () => { button.click(); await tick(); });
+}
+
+test("work that starts while the saved session is being read stops the swap before anything is written; Feed stays", async () => {
+  if (!HOME) return;
+  const snapshot = gate();
+  snapshotGate = snapshot.held;
+  await mount();
+  await signIn();
+  await navigate("/chat/capture");
+  await pressInPrompt("recording", "Continue");
+  await snapshot.reached;
+  const write = Promise.withResolvers<void>();
+  let running!: Promise<void>;
+  await act(async () => { running = laneApi.runOnSpaceLane(() => write.promise); await tick(); });
+  await act(async () => { snapshot.open(); await tick(); });
+  await settle();
+  expect(persistedSessions).toEqual([]);
+  expect(mounted).not.toContain("CaptureSurface");
+  expect(prompt("recording")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
+  await act(async () => { write.resolve(); await running; });
+  await navigate("/chat/feed");
+  expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
+});
+
+test("work that starts while the new session is being saved stops the swap at the app: the saved session is put back", async () => {
+  if (!HOME) return;
+  const save = gate();
+  saveGate = save.held;
+  await mount();
+  await signIn();
+  await navigate("/chat/capture");
+  await pressInPrompt("recording", "Continue");
+  await save.reached;
+  const write = Promise.withResolvers<void>();
+  let running!: Promise<void>;
+  await act(async () => { running = laneApi.runOnSpaceLane(() => write.promise); await tick(); });
+  await act(async () => { save.open(); await tick(); });
+  await settle();
+  // Saved, then put back: what is persisted is the session from before the ask.
+  expect(persistedSessions).toEqual([{ tag: "re-authorised session" }, OLD_SESSION]);
+  expect(mounted).not.toContain("CaptureSurface");
+  expect(prompt("recording")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
+  expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
   await act(async () => { write.resolve(); await running; });
   await navigate("/chat/feed");
   expect(tagOf(feedTcws.at(-1))).toBe("signed-in");

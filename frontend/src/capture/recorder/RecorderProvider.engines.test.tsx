@@ -19,7 +19,7 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { VoiceNoteSaveDeferred } from "@/lib/voiceNotes/voiceNotePipeline";
 import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
-import { setHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { __resetHomeWorkForTests, homeWorkRunning, setHomeReauthorizing } from "@/lib/homeReauthorizing";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -121,7 +121,7 @@ function Probe() {
   return null;
 }
 
-beforeEach(() => { value = null; __resetCaptureEngineForTests(); });
+beforeEach(() => { value = null; __resetCaptureEngineForTests(); __resetHomeWorkForTests(); });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
@@ -608,5 +608,17 @@ describe("web engine: no OnDeviceStt calls", () => {
     }
     await act(async () => { value!.record(); await tick(); });
     expect(calls).toContain("start");
+  });
+
+  test("a recording still waiting for microphone permission already counts as running, until it fails or ends", async () => {
+    const { fake } = await mount("web", NONE);
+    const permission = Promise.withResolvers<never>();
+    fake.plugin.start = () => permission.promise;
+    expect(homeWorkRunning("recording")).toBe(false);
+    await act(async () => { value!.record(); await tick(); });
+    // The engine has not reported anything yet: status() would still say stopped.
+    expect(homeWorkRunning("recording")).toBe(true);
+    await act(async () => { permission.reject(Object.assign(new Error("denied"), { code: "permission_denied" })); await tick(); });
+    expect(homeWorkRunning("recording")).toBe(false);
   });
 });

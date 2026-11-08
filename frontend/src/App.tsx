@@ -30,7 +30,7 @@ import {
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, homeSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { reauthorizeHome } from "./lib/homeReauthorize";
-import { useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
+import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type FeatureAccessOutcome, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
@@ -236,7 +236,9 @@ export function App() {
   const askForFeature = useCallback(async (feature: HomeFeature): Promise<FeatureAccessOutcome> => {
     const current = tcw;
     if (!HOME_SITE || state !== "ready" || !current || !address) return "failed";
-    if (featureInFlightRef.current !== null) return "busy";
+    // Busy: work a swap would cut off, as the prompt sees it and as the work boundary counts it at this moment.
+    const busy = () => featureInFlightRef.current !== null || homeWorkBusyNow();
+    if (busy()) return "busy";
     const epoch = sessionEpochRef.current;
     const signedOut = () => signOutInFlightRef.current || sessionEpochRef.current !== epoch;
     const result = await reauthorizeHome({
@@ -249,8 +251,8 @@ export function App() {
       // Everything the session has or this device used stays in the new grant, so allowing one never drops another.
       features: homeFeaturesToRequest(homeFeatureStore, current, address, feature),
       config: { autoCreateSpace: true, includeAccountRegistryPermissions: false, tinycloudHosts: TINYCLOUD_HOSTS, uiPlatform: sdkUiPlatform() },
-      // Checked just before the new session is saved.
-      canCommit: () => (signedOut() ? "signed-out" : featureInFlightRef.current !== null ? "busy" : null),
+      // Checked before and after the snapshot of what is saved, immediately before the new session is written.
+      canCommit: () => (signedOut() ? "signed-out" : busy() ? "busy" : null),
     });
     if (result.outcome !== "granted") return result.outcome;
     // Checked again just before the app takes it (token, session, revision): saving it is not a reason to keep it.
@@ -258,6 +260,12 @@ export function App() {
       clearPersistedSession(address);
       result.tcw.cleanup();
       return "signed-out";
+    }
+    if (busy()) {
+      // Work started while the new session was being saved: put the previous one back and keep this session.
+      await result.rollback();
+      result.tcw.cleanup();
+      return "busy";
     }
     sessionStoreRef.current.setSession(result.verified.token, result.verified.expiresIn, address);
     recordManifestRevisionIfSigned(homeFeatureStore, address, result.manifest);

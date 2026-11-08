@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { installDom } from "@/test/dom";
-import { useInFlightWork, type InFlightWork } from "./inFlightWork";
-import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities } from "./voiceNotes/captureEngine";
+import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./inFlightWork";
+import { __resetHomeWorkForTests, admitHomeWork } from "./homeReauthorizing";
+import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities, notifyCaptureCapabilitiesChanged } from "./voiceNotes/captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests, type CaptureStatus, type VoiceNotesPlugin } from "./voiceNotes/nativeVoiceNotes";
 
 const realVoiceNotes = VoiceNotes;
@@ -11,6 +12,7 @@ let restoreDom: () => void;
 let root: Root;
 let seen: InFlightWork = null;
 beforeEach(() => {
+  __resetHomeWorkForTests();
   restoreDom = installDom();
   root = createRoot(document.body.appendChild(document.createElement("div")));
   __setInstalledEngineForTests("web", captureCapabilities());
@@ -55,4 +57,33 @@ test("a failing status read does not count as a recording", async () => {
   await act(async () => root.render(<Probe />));
   await advance(0);
   expect(seen).toBeNull();
+});
+
+test("a recorder engine installed later (after Recording is allowed) is watched from then on", async () => {
+  __resetCaptureEngineForTests();
+  __setVoiceNotesForTests({ status: () => Promise.resolve({ intent: "recording" } as CaptureStatus) } as unknown as VoiceNotesPlugin, { available: false });
+  await act(async () => root.render(<Probe />));
+  await advance(0);
+  expect(seen).toBeNull();
+  await act(async () => { __setInstalledEngineForTests("web", captureCapabilities()); notifyCaptureCapabilitiesChanged(); });
+  await advance(0);
+  expect(seen).toBe("recording");
+});
+
+test("a recording or upload that has just been admitted counts at once, before the recorder or runner reports it", async () => {
+  __setVoiceNotesForTests({ status: () => Promise.resolve({ intent: "stopped" } as CaptureStatus) } as unknown as VoiceNotesPlugin, { available: true });
+  await act(async () => root.render(<Probe />));
+  await advance(0);
+  expect(seen).toBeNull();
+  const releaseRecording = admitHomeWork("recording")!;
+  await advance(0);
+  expect(seen).toBe("recording");
+  expect(homeWorkBusyNow()).toBe(true);
+  await act(async () => { releaseRecording(); });
+  const releaseUpload = admitHomeWork("upload")!;
+  await advance(0);
+  expect(seen).toBe("upload");
+  await act(async () => { releaseUpload(); });
+  expect(seen).toBeNull();
+  expect(homeWorkBusyNow()).toBe(false);
 });

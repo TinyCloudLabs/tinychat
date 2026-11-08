@@ -27,6 +27,8 @@ export interface HomeReauthorizeDeps {
   sessionStorage?: ISessionStorage;
 }
 
+type CommitBlocked = "signed-out" | "busy";
+
 export type HomeReauthorizeResult =
   | {
     outcome: "granted";
@@ -34,16 +36,28 @@ export type HomeReauthorizeResult =
     manifest: Manifest;
     verified: { token: string; expiresIn: number };
     openkey: ConnectWalletResult["openkey"];
+    /**
+     * Put back the session that was saved before this one, when the app does not take it after all. Only this attempt
+     * can, and only while nothing later has saved over it; true when it did.
+     */
+    rollback(): Promise<boolean>;
   }
-  | { outcome: "declined" | "failed" | "wrong-account" | "busy" | "signed-out" };
+  | { outcome: "declined" | "failed" | "wrong-account" | CommitBlocked };
+
+// Which attempt saved the persisted session last: a rollback by any other attempt is a no-op.
+let commitAttempts = 0;
+let lastCommitAttempt = 0;
 
 /**
  * Session storage that hides the saved session and holds the new one until `commit`. Without it, the new instance's
  * sign-in would find the saved session, judge it short of the new grant and clear it before the owner answers.
- * `commit` is all or nothing: if a save fails, what was saved before is put back and it throws, so the persisted
- * session always matches the one the app keeps.
+ * `commit` snapshots what is saved, asks `gate` once more immediately before the first write, and is all or nothing:
+ * if a save fails, the snapshot is put back and it throws, so the persisted session matches the one the app keeps.
  */
-function stagedSessionStorage(saved: ISessionStorage): { storage: ISessionStorage; commit(): Promise<void> } {
+function stagedSessionStorage(saved: ISessionStorage): {
+  storage: ISessionStorage;
+  commit(gate: () => CommitBlocked | null): Promise<CommitBlocked | (() => Promise<boolean>)>;
+} {
   let staged: Map<string, PersistedSessionData> | null = new Map();
   return {
     storage: {
@@ -53,19 +67,31 @@ function stagedSessionStorage(saved: ISessionStorage): { storage: ISessionStorag
       exists: (address) => (staged ? staged.has(address) : saved.exists(address)),
       isAvailable: () => saved.isAvailable(),
     },
-    async commit() {
+    async commit(gate) {
       const sessions = [...(staged ?? new Map<string, PersistedSessionData>())];
       const before = await Promise.all(sessions.map(([address]) => saved.load(address)));
-      try {
-        for (const [address, session] of sessions) await saved.save(address, session);
-      } catch (caught) {
+      // The snapshot took time: ask again now, with nothing written yet.
+      const blocked = gate();
+      if (blocked) return blocked;
+      const attempt = ++commitAttempts;
+      lastCommitAttempt = attempt;
+      const restore = async (): Promise<boolean> => {
+        if (lastCommitAttempt !== attempt) return false;
+        lastCommitAttempt = 0;
         for (const [index, [address]] of sessions.entries()) {
           const previous = before[index];
           await (previous ? saved.save(address, previous) : saved.clear(address)).catch(() => undefined);
         }
+        return true;
+      };
+      try {
+        for (const [address, session] of sessions) await saved.save(address, session);
+      } catch (caught) {
+        await restore();
         throw caught;
       }
       staged = null;
+      return restore;
     },
   };
 }
@@ -81,7 +107,7 @@ export async function reauthorizeHome(
     address: string;
     features: readonly HomeFeature[];
     config: Omit<TinyCloudWebConfig, "manifest" | "sessionStorage" | "siweConfig" | "nonce">;
-    canCommit(): "signed-out" | "busy" | null;
+    canCommit(): CommitBlocked | null;
   },
 ): Promise<HomeReauthorizeResult> {
   const { prefetch } = deps;
@@ -109,14 +135,15 @@ export async function reauthorizeHome(
       return { outcome: "failed" };
     }
     const verified = await deps.verify(session.siwe, session.signature);
-    const blocked = input.canCommit();
-    if (blocked) {
+    // Asked before the snapshot of what is saved and again after it, immediately before anything is written.
+    const early = input.canCommit();
+    const committed = early ?? await staged.commit(input.canCommit);
+    if (typeof committed === "string") {
       created.cleanup();
-      return { outcome: blocked };
+      return { outcome: committed };
     }
-    await staged.commit();
     prefetch.complete();
-    return { outcome: "granted", tcw: created, manifest, verified, openkey };
+    return { outcome: "granted", tcw: created, manifest, verified, openkey, rollback: committed };
   } catch (caught) {
     next?.cleanup();
     return { outcome: isSignInCancelled(caught) ? "declined" : "failed" };

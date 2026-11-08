@@ -26,7 +26,7 @@ function browserStorage(): ISessionStorage & { records: Map<string, PersistedSes
 /** A TinyCloudWeb whose sign-in does what the SDK's does with storage: look for a session to restore (clearing one
  * it would not use), ask for the signature, then save the new session. `covers`: whether the approved session covers
  * what was asked (false: OpenKey approved less). */
-function harness(options: { answer: "approve" | "cancel" | "error"; connected?: string; verify?: "ok" | "error"; covers?: boolean }) {
+function harness(options: { answer: "approve" | "cancel" | "error"; connected?: string; verify?: "ok" | "error"; covers?: boolean; saves?: PersistedSessionData }) {
   const storage = browserStorage();
   const calls = { signIn: 0, cleanup: 0, completed: 0, cancelled: 0, verified: 0, config: null as TinyCloudWebConfig | null, reauthorizingDuringSignIn: null as boolean | null };
   const deps: HomeReauthorizeDeps = {
@@ -48,7 +48,7 @@ function harness(options: { answer: "approve" | "cancel" | "error"; connected?: 
           if (await sessionStorage.load(ADDRESS)) await sessionStorage.clear(ADDRESS);
           if (options.answer === "cancel") throw { code: "USER_CANCELLED" };
           if (options.answer === "error") throw new Error("node unreachable");
-          await sessionStorage.save(ADDRESS, NEW);
+          await sessionStorage.save(ADDRESS, options.saves ?? NEW);
           return { siwe: "siwe", signature: "signature" };
         },
         hasPermissions: () => options.covers ?? true,
@@ -151,6 +151,47 @@ describe("re-authorising the Home site in place", () => {
     expect(storage.records.get(ADDRESS)).toBe(OLD);
     expect(calls.cleanup).toBe(1);
     expect(calls.completed).toBe(0);
+  });
+
+  test("work that starts while the saved session is being read is seen before anything is written: nothing saved", async () => {
+    const { deps, storage, calls } = harness({ answer: "approve" });
+    const load = storage.load;
+    const reading = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    storage.load = async (address) => { reading.resolve(); await release.promise; return load(address); };
+    const writes: unknown[] = [];
+    const save = storage.save;
+    storage.save = async (address, data) => { writes.push(data); await save(address, data); };
+    let busy = false;
+    const pending = reauthorizeHome(deps, { ...input, canCommit: () => (busy ? "busy" : null) });
+    await reading.promise;
+    busy = true;
+    release.resolve();
+    expect((await pending).outcome).toBe("busy");
+    expect(writes).toEqual([]);
+    expect(storage.records.get(ADDRESS)).toBe(OLD);
+    expect(calls.cleanup).toBe(1);
+  });
+
+  test("only the attempt that saved last can put the previous session back", async () => {
+    const FIRST = { tag: "first" } as unknown as PersistedSessionData;
+    const SECOND = { tag: "second" } as unknown as PersistedSessionData;
+    const first = harness({ answer: "approve", saves: FIRST });
+    const second = harness({ answer: "approve", saves: SECOND });
+    second.deps.sessionStorage = first.storage;
+    const one = await reauthorizeHome(first.deps, input);
+    const two = await reauthorizeHome(second.deps, input);
+    if (one.outcome !== "granted" || two.outcome !== "granted") throw new Error("both should be granted");
+    expect(first.storage.records.get(ADDRESS)).toBe(SECOND);
+    // The first attempt was saved over: its rollback must not undo the second.
+    expect(await one.rollback()).toBe(false);
+    expect(first.storage.records.get(ADDRESS)).toBe(SECOND);
+    // The second puts back what was saved before it (the first's session), once.
+    expect(await two.rollback()).toBe(true);
+    expect(first.storage.records.get(ADDRESS)).toBe(FIRST);
+    expect(await two.rollback()).toBe(false);
+    expect(await one.rollback()).toBe(false);
+    expect(first.storage.records.get(ADDRESS)).toBe(FIRST);
   });
 
   test("is marked as re-authorising only while it runs, whatever the outcome", async () => {
