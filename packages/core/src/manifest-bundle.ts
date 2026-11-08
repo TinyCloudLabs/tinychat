@@ -63,7 +63,7 @@ export const HOME_RECORDING_ENTRIES: readonly RequiredManifestEntry[] = [
   { service: "tinycloud.sql", path: "transcripts", actions: ["read", "write", "schema"] },
   // The one key Recording uses outside connectors/: the hosted transcription claim (frontend hostedVoiceNotes.ts).
   { service: "tinycloud.kv", space: "applications", path: "exo/voiceNotes/hostedJobs/", actions: ["get", "put"], skipPrefix: true },
-  { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/ASSEMBLYAI_API_KEY", actions: ["get", "put", "del"], skipPrefix: true, description: "Store your AssemblyAI API key, encrypted, in your secrets space." },
+  { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/ASSEMBLYAI_API_KEY", actions: ["get", "put", "del"], skipPrefix: true, description: "Store your transcription service API key, encrypted, in your secrets space." },
 ];
 
 export const HOME_CONNECTORS_ENTRIES: readonly RequiredManifestEntry[] = [

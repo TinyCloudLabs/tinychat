@@ -14,6 +14,7 @@ import {
   useHomeFeatureAccessState,
   type FeatureAccessOutcome,
 } from "./homeFeatureAccess";
+import { FEATURE_ACCESS_BODY } from "@/lib/homeStrings";
 
 const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const FLAG_KEY = `xyz.tinycloud.tinychat:home-features:${ADDRESS}`;
@@ -101,7 +102,7 @@ test("opening Recording without its set shows the prompt and calls nothing that 
   const base = session(false);
   await act(async () => root.render(page({ initial: asTcw(base), answer: async () => ({ outcome: "declined" }) })));
   expect(host.querySelector("h2")?.textContent).toBe("Allow Recording");
-  expect(host.textContent).toContain("To save your recordings, transcripts and summaries, OpenKey will ask you to let TinyCloud Home keep them in your space, with an AssemblyAI key if you add one.");
+  expect(host.textContent).toContain(FEATURE_ACCESS_BODY.recording);
   expect(button("Continue")?.disabled).toBe(false);
   expect(button("Not now")).toBeTruthy();
   expect(mountedRecording).toEqual([]);
