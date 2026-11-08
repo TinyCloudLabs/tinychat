@@ -517,10 +517,6 @@ const VerifiedPanel: FC<{
         </p>
       </div>
     </div>
-    <p className="text-xs text-muted-foreground">
-      Save &amp; sync stores this key in your encrypted secrets and runs an
-      initial sync.
-    </p>
     {error && (
       <p role="alert" className="text-xs text-destructive">
         {formatConnectError(error)}
@@ -2451,7 +2447,7 @@ export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null
     case "server-unavailable":
       return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyChat and retry disconnecting.";
     case "unavailable":
-      return "Calendar autojoin was stopped, but your saved Google connection isn’t available in the Exo app. Disconnect from Exo on the web or desktop to finish.";
+      return "Calendar autojoin was stopped, but your saved Google connection can’t be removed in the Exo app. Disconnect Google Meet on the web or desktop to finish.";
   }
 }
 

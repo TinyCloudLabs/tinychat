@@ -37,14 +37,18 @@ describe("resumeOnLaunch", () => {
     expect(runner.snapshot()).not.toBeNull();
   });
 
-  test("an own-key AssemblyAI upload resumes at launch, with no unlock step", async () => {
+  test("an own-key AssemblyAI upload resumes at launch and fails honestly, with no unlock step", async () => {
     const runner = createUploadRunner();
     const { deps } = setup({ engine: "assemblyai", assemblyAiMode: "own", meetingId: "m-1", attemptId: "a-1",
       jobId: "t-1", diarize: false, file: { name: "Interview.m4a", type: "audio/mp4", size: 1024, lastModified: 0 },
       owner: OWNER, saved: false });
     resumeOnLaunch(runner, deps);
     await settle();
-    expect(runner.snapshot()?.fileName).toBe("Interview.m4a");
+    const snapshot = runner.snapshot();
+    expect(snapshot?.fileName).toBe("Interview.m4a");
+    expect(snapshot?.stage).toBe("failed");
+    expect(snapshot?.error?.message).toContain("Choose the file again");
+    expect(snapshot?.error?.retry).toBe(false);
   });
 
   test("nothing stored resumes nothing", async () => {

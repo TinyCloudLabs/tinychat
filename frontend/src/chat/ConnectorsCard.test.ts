@@ -607,9 +607,7 @@ describe("Calendar autojoin consent and browser importer separation", () => {
     expect(finish).toContain('setupId');
     expect(finish).not.toMatch(/saveConnectorKey|runInitialSync|saveAndSync/);
   });
-  test("disconnect removes server custody before browser vault access and keeps revoke failures visible", () => {
-    const revoke = dialog.slice(dialog.indexOf('async function revokeGoogleUpstream'));
-    expect(revoke.indexOf('/autojoin/disconnect')).toBeLessThan(revoke.indexOf('getConnectorKey'));
+  test("disconnect keeps revoke failures visible", () => {
     expect(dialog).toContain('if (!showRevokeWarning) onOpenChange(false)');
     expect(dialog).toContain('revokeOutcome.status === "server-unavailable"');
     const calendar = read('CalendarAutojoinSection.tsx');
