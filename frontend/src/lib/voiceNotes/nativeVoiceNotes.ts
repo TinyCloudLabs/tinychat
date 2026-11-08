@@ -265,7 +265,10 @@ export interface VoiceNotesPlugin {
    * that fix the limit at start (native mobile): callers then keep the limit they started with. Rejects `no_recording` when idle.
    */
   setMaxDuration?(options: { maxDurationMs: number }): Promise<{ maxDurationMs: number }>;
-  stop(): Promise<VoiceNoteRecording>;
+  /** Stops the live recording and keeps it. With `id` (engines with `capabilities.scopedStop` only): only that
+   * recording, checked and stopped in one step, refusing with `recording_changed` if another one is live. The native
+   * mobile plugins ignore `id`; never pass it to them. */
+  stop(options?: { id: string }): Promise<VoiceNoteRecording>;
   /** Desktop finishing gate; absent on platforms whose stop already produces ready audio. */
   awaitAudioReady?(id: string): Promise<void>;
   /**

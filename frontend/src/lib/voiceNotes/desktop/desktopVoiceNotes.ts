@@ -49,6 +49,9 @@ export const DESKTOP_CAPABILITIES: CaptureCapabilities = {
   nativeFileUpload: true,
   // Checked in the run() queue, and the native durable discard is keyed by the same id (not_current otherwise).
   scopedDiscard: true,
+  // Checked in the run() queue too: every desktop start goes through that queue (no native-side starts).
+  scopedStop: true,
+  unattendedStop: "scoped",
 };
 
 let refreshSelectedWhisper: (() => Promise<void>) | null = null;
@@ -672,9 +675,11 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         return { maxDurationMs: limit };
       });
     },
-    async stop() {
+    async stop(options) {
       return run(async () => {
         if (!live) throw failure("not_recording");
+        // Checked in the same queued task as the stop: every desktop start runs in this queue too.
+        if (options && live.session.id !== options.id) throw failure("recording_changed", "A different recording is live.");
         const id = live.session.id;
         if (live.session.intent === "paused") {
           const native = await bridge.invoke<NativeStatus>("recorder_stop");

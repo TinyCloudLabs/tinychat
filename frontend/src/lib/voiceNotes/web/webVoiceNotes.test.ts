@@ -55,12 +55,12 @@ async function listen(rig: Rig) {
 }
 
 describe("capabilities and constants", () => {
-  test("a browser has none of the native capabilities, and discards by id", async () => {
+  test("a browser has none of the native capabilities, and discards and stops by id", async () => {
     const rig = await createRig();
     expect(rig.engine.capabilities).toEqual({
       nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
       background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false, nativeFileUpload: false,
-      scopedDiscard: true,
+      scopedDiscard: true, scopedStop: true, unattendedStop: "scoped",
     });
     expect(WEB_CAPABILITIES).toEqual(rig.engine.capabilities);
   });
@@ -256,6 +256,18 @@ describe("recording", () => {
     const fresh = (await starting).id;
     await expect(stale).rejects.toEqual(code("recording_changed"));
     expect(await plugin.status()).toMatchObject({ state: "recording", id: fresh });
+  });
+
+  test("stop with an id refuses unless that recording is the live one: the live recording continues, and its own id stops and keeps it", async () => {
+    const rig = await createRig();
+    const { plugin } = rig.engine;
+    const { id } = await plugin.start();
+    await rig.chunk([1, 2]);
+    await expect(plugin.stop({ id: "another-recording" })).rejects.toEqual(code("recording_changed"));
+    expect(await plugin.status()).toMatchObject({ state: "recording", id });
+    expect(rig.fake.mic.liveTracks()).not.toEqual([]);
+    expect(await plugin.stop({ id })).toMatchObject({ id });
+    expect((await plugin.listPending()).recordings.map((recording) => recording.id)).toEqual([id]);
   });
 
   test("setRecordingOptions applies to the live note; signed-out notes stay on-device", async () => {

@@ -26,6 +26,12 @@ export interface CaptureCapabilities {
   nativeFileUpload: boolean;
   /** discard({ id }) discards only that recording, checked and discarded in one step (VoiceNotesPlugin.discard). */
   scopedDiscard: boolean;
+  /** stop({ id }) stops only that recording, checked and stopped in one step (VoiceNotesPlugin.stop). */
+  scopedStop: boolean;
+  /** How a recording left running with no recorder attached is stopped (and kept): "scoped", by its id; or, where the
+   * engine cannot stop by id, "verified-status": only when a fresh status read shows exactly it live, then read again;
+   * "none": not at all. */
+  unattendedStop: "scoped" | "verified-status" | "none";
 }
 
 export type CaptureEngine = VoiceNotesPlugin & { capabilities: CaptureCapabilities };
@@ -42,6 +48,8 @@ const NATIVE_CAPABILITIES: CaptureCapabilities = {
   offlineRecorder: true,
   nativeFileUpload: false,
   scopedDiscard: false,
+  scopedStop: false,
+  unattendedStop: "verified-status",
 };
 const NATIVE_UPLOAD_CAPABILITIES: CaptureCapabilities = { ...NATIVE_CAPABILITIES, nativeFileUpload: true };
 let androidFileUploadAvailable = false;
@@ -68,6 +76,8 @@ const NO_CAPABILITIES: CaptureCapabilities = {
   offlineRecorder: false,
   nativeFileUpload: false,
   scopedDiscard: false,
+  scopedStop: false,
+  unattendedStop: "none",
 };
 
 const factories = new Map<RegisterableKind, () => Promise<CaptureEngine>>();

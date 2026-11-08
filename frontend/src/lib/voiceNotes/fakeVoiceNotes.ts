@@ -310,7 +310,10 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now(), { idB
       // A limit at or below the recorded time applies at the next tick, like any other limit.
       return { maxDurationMs: s.maxDurationMs };
     },
-    async stop() { return stop("user"); },
+    async stop(options) {
+      if (options && session && session.id !== options.id) throw failure("recording_changed");
+      return stop("user");
+    },
     async status() {
       const s = session;
       return structuredClone({ ...(s ? mic(s) : { state: "idle" as const, reason: null }), detail: s?.detail,
