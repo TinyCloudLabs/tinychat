@@ -159,6 +159,32 @@ export interface VoiceNoteRecorderController {
   subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
 
+// Waits between the engine reads of a closed recorder's held place (the last repeats).
+const ENGINE_IDLE_POLL_MS: readonly number[] = [1_000, 2_000, 5_000, 30_000];
+let engineIdleSleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+/** Test seam: how the closed recorder's poll sleeps between reads (null: the real timer). */
+export function __setEngineIdlePollForTests(sleep: ((ms: number) => Promise<void>) | null) {
+  engineIdleSleep = sleep ?? ((ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+}
+
+/** A closed recorder's place at the Home work boundary, for something it started or was recording: let go only once
+ * the engine's own status reads idle. One status read at a time, with backoff; a read that fails is tried again on the
+ * next turn, and one that never answers keeps the place. It reads the engine it began on, and stops (keeping the
+ * place) if the app replaces that engine. */
+async function holdUntilEngineIdle(release: () => void) {
+  const engine = VoiceNotes;
+  for (let turn = 0; ; turn += 1) {
+    await engineIdleSleep(ENGINE_IDLE_POLL_MS[Math.min(turn, ENGINE_IDLE_POLL_MS.length - 1)]);
+    if (VoiceNotes !== engine) return;
+    let status: CaptureStatus;
+    try { status = await engine.status(); } catch { continue; }
+    if (status.state === "idle") {
+      release();
+      return;
+    }
+  }
+}
+
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
   subscribeAppActive, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
     const timer = setTimeout(retry, delayMs);
@@ -344,8 +370,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   // A recording holds its place at the Home work boundary (lib/homeReauthorizing.ts) from the moment it starts
   // (before the microphone is even asked) until the recorder is idle again, so a session swap never cuts it off.
   let homeWork: (() => void) | null = null;
-  // A detached recorder (signed out, unmounted) holds nothing, whatever late events it still hears.
+  // A detached recorder (signed out, unmounted) takes no new place, whatever late events it still hears.
   let homeWorkDetached = false;
+  // Closed (detached): this recorder writes no state and makes no engine control call (no start, stop or discard).
+  let closed = false;
   // The start in progress (waiting on the defaults or the microphone). Detach cancels it and hands it the place.
   interface PendingStart { cancelled: boolean; release: (() => void) | null }
   let pendingStart: PendingStart | null = null;
@@ -353,6 +381,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
   const send = (event: RecorderEvent) => {
+    if (closed) return;
     const before = state;
     const next = recorderReducer(state, event);
     if (next === state) return;
@@ -792,6 +821,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       setQuarantineAccount(tcw?.did ?? null);
       let attached = true;
       homeWorkDetached = false;
+      closed = false;
       noteAttached = true;
       if (noteId && noteStatus === "error" && !cancelNoteRetry) scheduleNoteRetry(noteId, noteLoadVersion);
       const unsubscribeNoteSync = subscribeRecordingNoteSync(notify);
@@ -958,14 +988,19 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not attach capture scan", caught));
       return () => {
         attached = false;
-        // Detached (signed out or unmounted): this recorder no longer holds a place at the Home work boundary, except
-        // for a start still waiting (on the microphone): that is cancelled, and keeps its place until it has ended.
+        // Detached (signed out or unmounted): this recorder writes no more state and calls no engine control. What it
+        // was starting or recording is left to run, and keeps its place at the Home work boundary until the engine
+        // itself reads idle (holdUntilEngineIdle): a start still waiting hands its place over once it has settled.
+        closed = true;
         homeWorkDetached = true;
+        const held = homeWork;
+        homeWork = null;
         if (pendingStart) {
           pendingStart.cancelled = true;
-          pendingStart.release = homeWork;
-        } else homeWork?.();
-        homeWork = null;
+          pendingStart.release = held;
+        } else if (held) {
+          if (state.phase === "idle") held(); else void holdUntilEngineIdle(held);
+        }
         setCapturePlaybackBlocked(false);
         noteAttached = false;
         clearNoteRetry();
@@ -984,7 +1019,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async record() {
       // Never before the recorder is reconciled, over a recording, or over a receipt still being shown.
-      if (!available || !state.ready || nativeStopPending || state.phase !== "idle" || state.outcome !== null) return;
+      if (closed || !available || !state.ready || nativeStopPending || state.phase !== "idle" || state.outcome !== null) return;
       // Refused while a Home re-authorise is in progress; admitted, it is reserved before anything awaits.
       const admitted = admitHomeWork("recording");
       if (!admitted) return;
@@ -1007,6 +1042,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const started = await VoiceNotes.start({ maxDurationMs: requested,
           uploadAudio: readUploadAudioPreference(),
           ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
+        // Closed while the microphone was being asked: the recording is left running, never acted on; its place is
+        // kept until the engine reads idle (below).
+        if (attempt.cancelled) return;
         const elapsedAt = Date.now();
         nativeOptions = null;
         try {
@@ -1015,11 +1053,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         } catch (caught) {
           console.warn("[VoiceNotes] Started, but recording options could not be read", caught);
         }
-        if (attempt.cancelled) {
-          // Detached while the microphone was being asked: the recording must not go live without its recorder.
-          await VoiceNotes.discard().catch((caught: unknown) => console.warn("[VoiceNotes] Could not stop a recording started after its recorder closed", caught));
-          return;
-        }
+        if (attempt.cancelled) return;
         send({
           type: "STARTED",
           id: started.id,
@@ -1037,8 +1071,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
       } finally {
         if (pendingStart === attempt) pendingStart = null;
-        // A cancelled start lets go of its place only now, once nothing it started is running.
-        attempt.release?.();
+        // A cancelled start's place is let go only once the engine reads idle.
+        if (attempt.release) void holdUntilEngineIdle(attempt.release);
       }
     },
     async openSettings() {
@@ -1065,6 +1099,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async stop() {
       // Stop waits for STARTED: the plugin cannot cancel a start in flight.
+      if (closed) return;
       if (state.phase === "stopping" && state.error) {
         await reconcileFailedStop(state.error, state.finalizationPendingId);
         return;
@@ -1096,18 +1131,19 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       );
     },
     async pause() {
-      if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "recording" && state.mic.state !== "silenced")) return;
+      if (closed || state.phase !== "recording" || state.controlPending || (state.mic.state !== "recording" && state.mic.state !== "silenced")) return;
       send({ type: "PAUSE_REQUESTED" });
       await runControl("pause");
     },
     async resume() {
-      if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
+      if (closed || state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
       setCapturePlaybackBlocked(true);
       stopAllPlayback();
       send({ type: "RESUME_REQUESTED" });
       await runControl("resume");
     },
     async discard() {
+      if (closed) return;
       if (state.phase === "discarding" && state.error) {
         await reconcileDiscardFailure(state.recordingId, state.error);
         return;

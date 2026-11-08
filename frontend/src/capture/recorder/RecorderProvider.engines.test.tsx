@@ -21,6 +21,7 @@ import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
 import { __resetHomeWorkForTests, homeWorkRunning, setHomeReauthorizing } from "@/lib/homeReauthorizing";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
+import { __setEngineIdlePollForTests } from "./voiceNoteRecorderController";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const global = globalThis as Record<string, unknown>;
@@ -125,6 +126,7 @@ beforeEach(() => { value = null; __resetCaptureEngineForTests(); __resetHomeWork
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  __setEngineIdlePollForTests(null);
   // The model store is shared by every file in the run: leave it on its empty snapshot.
   __setOnDeviceSttForTests({ status: async () => EMPTY_STT } as unknown as OnDeviceSttPlugin);
   await onDeviceSttStore.refresh();
@@ -622,7 +624,16 @@ describe("web engine: no OnDeviceStt calls", () => {
     expect(homeWorkRunning("recording")).toBe(false);
   });
 
-  test("closed while the microphone is still being asked: still running until then, and a late start is stopped, not left live", async () => {
+  /** The closed recorder's engine reads: one turn of its poll per call. */
+  function pollTurns() {
+    const sleepers: Array<() => void> = [];
+    __setEngineIdlePollForTests(() => new Promise<void>((resolve) => { sleepers.push(resolve); }));
+    return async () => { await act(async () => { for (const wake of sleepers.splice(0)) wake(); await tick(); await tick(); }); };
+  }
+  const CONTROLS = ["start", "stop", "discard", "pause", "resume", "setRecordingOptions", "setMaxDuration"];
+
+  test("closed while the microphone is still being asked: busy until the engine reads idle, and the closed recorder never acts on the engine", async () => {
+    const turn = pollTurns();
     const { calls, fake } = await mount("web", NONE);
     const start = fake.plugin.start.bind(fake.plugin);
     const permission = Promise.withResolvers<void>();
@@ -632,11 +643,48 @@ describe("web engine: no OnDeviceStt calls", () => {
     // The recorder closes (sign-out, unmount) before the browser answers.
     await act(async () => { root!.unmount(); });
     root = null;
+    const afterClose = calls.length;
     expect(homeWorkRunning("recording")).toBe(true);
-    // The owner allows the microphone afterwards: the recording starts, and is stopped and removed at once.
+    // The owner allows the microphone afterwards: the recording starts and is left running, still busy.
     await act(async () => { permission.resolve(); await tick(); await tick(); });
-    expect(calls).toContain("discard");
-    expect((await fake.plugin.status()).intent).toBe("stopped");
+    expect((await fake.plugin.status()).state).toBe("recording");
+    await turn();
+    await turn();
+    expect(homeWorkRunning("recording")).toBe(true);
+    expect(calls.slice(afterClose).filter((call) => CONTROLS.includes(call))).toEqual([]);
+    // It ends on the engine (stopped elsewhere): the next read lets the place go.
+    await fake.plugin.stop();
+    await turn();
     expect(homeWorkRunning("recording")).toBe(false);
+    expect(calls.slice(afterClose).filter((call) => CONTROLS.includes(call))).toEqual([]);
+  });
+
+  test("closed with a recording live: busy until the engine reads idle, never stopped or discarded by the closed recorder", async () => {
+    const turn = pollTurns();
+    const { calls, fake } = await mount("web", NONE);
+    await act(async () => { value!.record(); await tick(); await tick(); });
+    expect(value!.phase).toBe("recording");
+    await act(async () => { root!.unmount(); });
+    root = null;
+    const afterClose = calls.length;
+    await turn();
+    expect(homeWorkRunning("recording")).toBe(true);
+    await fake.plugin.stop();
+    await turn();
+    expect(homeWorkRunning("recording")).toBe(false);
+    expect(calls.slice(afterClose).filter((call) => CONTROLS.includes(call))).toEqual([]);
+  });
+
+  test("a status read that never answers keeps the place, with that one read the only one in flight", async () => {
+    const turn = pollTurns();
+    const { fake } = await mount("web", NONE);
+    await act(async () => { value!.record(); await tick(); await tick(); });
+    await act(async () => { root!.unmount(); });
+    root = null;
+    let reads = 0;
+    fake.plugin.status = () => { reads += 1; return new Promise(() => {}); };
+    for (let step = 0; step < 5; step += 1) await turn();
+    expect(reads).toBe(1);
+    expect(homeWorkRunning("recording")).toBe(true);
   });
 });
