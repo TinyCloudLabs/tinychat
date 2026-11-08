@@ -52,6 +52,6 @@ export const FEATURE_ACCESS_NOT_NOW = "Not now";
 export const FEATURE_ACCESS_BUSY = "Finish the current recording or upload first.";
 export const FEATURE_ACCESS_DECLINED = "Permission wasn't given. Nothing changed.";
 export const FEATURE_ACCESS_FAILED = "Couldn't ask for permission. Nothing changed. Try again.";
-export const FEATURE_ACCESS_WRONG_ACCOUNT = "This is a different OpenKey account. Nothing changed.";
+export const FEATURE_ACCESS_WRONG_ACCOUNT = "That was a different OpenKey account from the one signed in here. Nothing changed. Try again with the same account.";
 /** A new recording or upload waits while OpenKey is open for one of these asks. */
-export const FEATURE_ACCESS_WAIT_FOR_OPENKEY = "Finish with OpenKey first, then try again.";
+export const FEATURE_ACCESS_WAIT_FOR_OPENKEY = "Finish in OpenKey first, then try again.";

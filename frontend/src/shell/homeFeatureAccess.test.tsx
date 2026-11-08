@@ -14,7 +14,7 @@ import {
   useHomeFeatureAccessState,
   type FeatureAccessOutcome,
 } from "./homeFeatureAccess";
-import { FEATURE_ACCESS_BODY } from "@/lib/homeStrings";
+import { FEATURE_ACCESS_BODY, FEATURE_ACCESS_WRONG_ACCOUNT } from "@/lib/homeStrings";
 
 const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const FLAG_KEY = `xyz.tinycloud.tinychat:home-features:${ADDRESS}`;
@@ -184,7 +184,7 @@ test("every outcome leaves the prompt usable, with plain words and both buttons"
   const cases = [
     ["declined", "Permission wasn't given. Nothing changed."],
     ["failed", "Couldn't ask for permission. Nothing changed. Try again."],
-    ["wrong-account", "This is a different OpenKey account. Nothing changed."],
+    ["wrong-account", FEATURE_ACCESS_WRONG_ACCOUNT],
     ["busy", "Finish the current recording or upload first."],
     // Granted, but the session still lacks the set (it was not swapped in): back to the ask.
     ["granted", null],

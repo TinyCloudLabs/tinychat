@@ -21,6 +21,7 @@ import { AboutPage } from "./AboutPage";
 import { assemblyAiStatus, AudioUploadPanel, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
 import type { UploadState } from "@/lib/audioUpload";
 import { setHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -266,10 +267,10 @@ test("while a Home permission ask has OpenKey open, Upload says to finish there 
   setHomeReauthorizing(true);
   try {
     const html = render();
-    expect(html).toContain("Finish with OpenKey first, then try again.");
+    expect(html).toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Transcribe<\/button>/);
   } finally {
     setHomeReauthorizing(false);
   }
-  expect(render()).not.toContain("Finish with OpenKey first, then try again.");
+  expect(render()).not.toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
 });
