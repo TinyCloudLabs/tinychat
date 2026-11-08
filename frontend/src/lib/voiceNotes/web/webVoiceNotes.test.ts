@@ -4,7 +4,7 @@ import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, type Voic
 import { FakeMediaRecorder, createRig, memoryAudioBlobs, slowTest, type Rig, type RigOptions } from "./webTestKit";
 import { DecodeCheckError, memoryLocks, openWebStore, type DecodeCheck } from "./webStore";
 import {
-  UNSUPPORTED_METHODS, WEB_MAX_DURATION_MS, WEB_MIN_DURATION_LIMIT_MS,
+  UNSUPPORTED_METHODS, WEB_CAPABILITIES, WEB_MAX_DURATION_MS, WEB_MIN_DURATION_LIMIT_MS,
 } from "./webVoiceNotes";
 
 const test = slowTest(bunTest);
@@ -55,6 +55,16 @@ async function listen(rig: Rig) {
 }
 
 describe("capabilities and constants", () => {
+  test("a browser has none of the native capabilities, and discards by id", async () => {
+    const rig = await createRig();
+    expect(rig.engine.capabilities).toEqual({
+      nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
+      background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false, nativeFileUpload: false,
+      scopedDiscard: true,
+    });
+    expect(WEB_CAPABILITIES).toEqual(rig.engine.capabilities);
+  });
+
   test("the duration bounds equal the native ones", () => {
     expect(WEB_MAX_DURATION_MS).toBe(VOICE_NOTE_MAX_DURATION_MS);
     expect(WEB_MIN_DURATION_LIMIT_MS).toBe(VOICE_NOTE_MIN_DURATION_LIMIT_MS);
