@@ -116,7 +116,7 @@ async function fixture() {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     if (url.origin !== HOST) throw new Error("Non-fixture SDK request refused");
     requests.push(url.pathname);
-    if (url.pathname === "/info") return Response.json({ protocol: 1, version: "1.20.2", nodeId: "did:key:z6MktestNode", features: ["encryption-named-keys-v1"] });
+    if (url.pathname === "/info") return Response.json({ protocol: 1, version: "1.20.2", features: ["encryption-named-keys-v1"] });
     if (url.pathname === "/delegate") return Response.json({ activated: [], skipped: [] });
     if (url.pathname === `/encryption/networks/${encodeURIComponent(network)}`) return Response.json({ networkId: network, ownerDid: network.slice(25, -8), state: "active" });
     throw new Error(`Unexpected fixture SDK route: ${url.pathname}`);
