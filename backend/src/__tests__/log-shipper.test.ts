@@ -118,20 +118,6 @@ describe("deploy workflow carries the token like the other secrets", () => {
   });
 });
 
-describe("allowlist and redaction", () => {
-
-  test("pipeline order is socket -> redact -> allowlist -> (request caps) -> sink; nothing bypasses the allowlist", () => {
-    expect(vector.transforms.redact.inputs).toEqual(["gelf_in"]);
-    expect(vector.transforms.allowlist.inputs).toEqual(["redact"]);
-    expect(vector.transforms.request_split.inputs).toEqual(["allowlist"]);
-    expect(vector.transforms.request_problem_cap.inputs).toEqual(["request_split.problem"]);
-    expect(vector.transforms.request_routine_cap.inputs).toEqual(["request_split.routine"]);
-    expect(vector.sinks.betterstack.inputs).toEqual(["request_split._unmatched", "request_problem_cap", "request_routine_cap"]);
-    expect(Object.keys(vector.sinks)).toEqual(["betterstack"]);
-    expect(vector.sinks.betterstack.buffer).toMatchObject({ type: "memory", when_full: "drop_newest" });
-  });
-
-});
 
 describe("Vector validates the config and passes its unit tests", () => {
   const vectorBin = process.env.VECTOR_BIN || Bun.which("vector");

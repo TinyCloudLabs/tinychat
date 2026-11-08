@@ -195,7 +195,7 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `backend_startup_failed` (`phase`: `startup_fatal` | `main_rejected`; closed `failure` class),
   `backend_uncaught_exception` (class name only; Bun prints an unhandled rejection the same way),
   `backend_alert` (`alert=true` lines), `backend_log_error` (other stderr lines and closed calendar failure diagnostics),
-  `backend_storage_lane_wait` (typed queue-wait diagnostics), the four hosted-AssemblyAI
+  `backend_storage_lane_wait` (typed queue-wait diagnostics), `backend_diagnostic_summary` (bounded interval counts), the four hosted-AssemblyAI
   JSON events (`assemblyai_provider_blocked`, `_provider_recovered`, `_jobs_failed_in_a_row`, `_worker_heartbeat`),
   and the per-request `tinychat_request` record (TC-2537).
   Everything else is dropped, not redacted: free text, stack frames, lines over 2048 characters.
@@ -225,6 +225,20 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   fields only. The request caps above remain unchanged; these diagnostics do not enter either request bucket.
   Native Vector tests exercise the sink-facing projection, hostile extras and the 10/20 request limits without
   contacting Better Stack. This diagnostic change does not alter lane concurrency, retry policy or history scans.
+- **Diagnostic volume bound.** Lane samples, calendar samples and every remaining non-request event each have a
+  global 10-record/60-second throttle. No `_unmatched` stream reaches the HTTP sink directly. Counting happens
+  before sampling: one in-memory reduce group tracks the two lane operations, the four calendar phases and an
+  `other_count`. It emits `backend_diagnostic_summary` at most once per 60 seconds, with those seven counters.
+  Counters saturate at 1,000,000,000 and set `counts_saturated=true` rather than growing the record. Summaries are
+  metadata-only and best effort; UDP/buffer loss, shutdown and process restart can lose counts. Idle windows emit
+  no record. The request limits remain 10 problem plus 20 routine records per 60 seconds.
+  Conservative encoded-record budgets, including framing, are 576 bytes/request, 224/lane, 320/calendar,
+  512/other and 512/summary. For one continuously running shipper, 43,200 minutes gives
+  `43,200 × (30×576 + 10×224 + 10×320 + 10×512 + 512) = 1,224,806,400` bytes per 30 days.
+  Adding the current approximately 0.9 GB/month of account usage conservatively gives about 2.13 GB, below 3 GB.
+  This includes the full new backend envelope rather than subtracting its old contribution. Caps reset on process
+  restart (at most another 28,352-byte initial allowance per reset); replicas multiply this bound. These are
+  application-payload budgets, not a guarantee about future traffic from other services or vendor billing changes.
 - **`REQUEST_LOG_HMAC_KEY`.** Generated once (`openssl rand -hex 32`) and set as the `production-api` secret; it
   reaches only the backend's encrypted CVM env (step `env:`, env-file `printf`, Compose). It is never logged or
   shipped. Rotating it changes every `account_hash`, so records before and after a rotation no longer join.

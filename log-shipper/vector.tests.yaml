@@ -703,3 +703,20 @@ tests:
             source: |
               assert!(.status == 100 || .status == 599)
               assert_eq!(keys(.), ["code", "component", "error_name", "event", "level", "phase", "status", "svc", "ts"])
+  - name: "diagnostic summary has fixed counters and saturates without copying extra values"
+    inputs:
+      - insert_at: diagnostic_summary
+        type: vrl
+        source: |
+          . = {"slow_wait_count": 1000000001, "wait_timeout_count": 12, "calendar_tick_count": 2, "calendar_tenant_reconcile_count": 3, "calendar_due_timer_count": 4, "calendar_dispatch_lag_status_count": 5, "other_count": 6, "key": "CANARY-KEY", "value": "CANARY-VALUE"}
+    outputs:
+      - extract_from: diagnostic_summary
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_diagnostic_summary")
+              assert_eq!(.slow_wait_count, 1000000000)
+              assert_eq!(.wait_timeout_count, 12)
+              assert_eq!(.counts_saturated, true)
+              assert_eq!(keys(.), ["calendar_dispatch_lag_status_count", "calendar_due_timer_count", "calendar_tenant_reconcile_count", "calendar_tick_count", "counts_saturated", "event", "level", "other_count", "slow_wait_count", "svc", "ts", "wait_timeout_count"])
+              assert!(!contains(encode_json(.), "CANARY"))

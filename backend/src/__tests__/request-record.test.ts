@@ -375,4 +375,58 @@ describe("TC-2537 request record", () => {
     expect(shipped.filter(row => row.event === "backend_storage_lane_wait")).toHaveLength(1);
     expect(shipped.filter(row => row.component === "calendar-autojoin")).toHaveLength(1);
   }, 120_000);
+
+  test.skipIf(!process.env.VECTOR_BIN)("native diagnostic floods are capped while one summary retains every outcome count", async () => {
+    const phases = ["tick", "tenant_reconcile", "due_timer", "dispatch_lag_status"];
+    const lines = Array.from({ length: 1000 }, (_, i) => [
+      { message: `[storage-lane] op=${i % 2 ? "wait-timeout" : "slow-wait"} priority=background waitedMs=1500`, level: 3 },
+      { message: JSON.stringify({
+        event: "backend_log_error", component: "calendar-autojoin", phase: phases[i % phases.length],
+        error_name: "BackendStorageLaneTimeout", code: "storage_lane_timeout",
+      }), level: 3 },
+      { message: "[unmatched-probe] code=synthetic_failure", level: 3 },
+    ]).flat();
+    const shipped = await shipThroughVector(lines);
+    expect(shipped.filter(row => row.event === "backend_storage_lane_wait")).toHaveLength(10);
+    expect(shipped.filter(row => row.component === "calendar-autojoin")).toHaveLength(10);
+    expect(shipped.filter(row => row.component === "unmatched-probe")).toHaveLength(10);
+    const summaries = shipped.filter(row => row.event === "backend_diagnostic_summary");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      slow_wait_count: 500, wait_timeout_count: 500,
+      calendar_tick_count: 250, calendar_tenant_reconcile_count: 250,
+      calendar_due_timer_count: 250, calendar_dispatch_lag_status_count: 250,
+      other_count: 1000, counts_saturated: false,
+    });
+    expect(Object.keys(summaries[0]).sort()).toEqual([
+      "calendar_dispatch_lag_status_count", "calendar_due_timer_count", "calendar_tenant_reconcile_count",
+      "calendar_tick_count", "counts_saturated", "event", "level", "other_count",
+      "slow_wait_count", "svc", "ts", "wait_timeout_count",
+    ]);
+  }, 120_000);
+
+  test.skipIf(!process.env.VECTOR_BIN)("maximum-width sink records fit the conservative monthly byte envelope", async () => {
+    const shipped = await shipThroughVector([
+      { message: JSON.stringify({
+        event: "tinychat_request", request_id: REQUEST_ID, method: "CONNECT",
+        route: `/${"a".repeat(63)}`, status: 599, duration_ms: 86399999.9,
+        stream: "aborted", code: "a".repeat(60), credits: 1000000000, account_hash: "a".repeat(64),
+      }), level: 6 },
+      { message: "[storage-lane] op=wait-timeout priority=foreground waitedMs=3600000", level: 3 },
+      { message: JSON.stringify({
+        event: "backend_log_error", component: "calendar-autojoin", phase: "dispatch_lag_status",
+        error_name: "BackendStorageLaneTimeout", code: "calendar_invalid_response", status: 599,
+      }), level: 3 },
+      { message: `[${"a.".repeat(20)}] route=${"a".repeat(40)} status=599 upstream_status=599 code=${"a".repeat(60)} reason=${"a".repeat(40)} cid=${REQUEST_ID} alert=true`, level: 3 },
+    ]);
+    for (const [event, bound] of [
+      ["tinychat_request", 576], ["backend_storage_lane_wait", 224],
+      ["backend_log_error", 320], ["backend_alert", 512], ["backend_diagnostic_summary", 512],
+    ] as const) {
+      const row = shipped.find(record => record.event === event);
+      expect(row).toBeDefined();
+      // Two bytes reserve JSON-array delimiters/newline framing beyond the encoded record.
+      expect(Buffer.byteLength(JSON.stringify(row)) + 2).toBeLessThanOrEqual(bound);
+    }
+  }, 120_000);
 });
