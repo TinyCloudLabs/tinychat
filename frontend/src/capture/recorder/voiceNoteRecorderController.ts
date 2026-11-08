@@ -160,12 +160,22 @@ export interface VoiceNoteRecorderController {
 }
 
 // Ownership: the engine's live recording belongs to the recorder attached most recently. A detached recorder never
-// stops, discards or otherwise acts on the engine, and never writes recorder state or playback: a recording its
-// start left behind is announced to that recorder (one attaching later finds it when it reconciles on attach).
+// writes recorder state or playback, and its only engine action is the one below. A recording its start left behind
+// is announced to that recorder (one attaching later finds it when it reconciles on attach). With no recorder
+// attached, an engine that discards by id (capabilities.scopedDiscard) discards exactly that recording instead, so
+// no microphone is left on with nobody to see it; the engine refuses if another recording is live by then.
 const attachedRecorders: Array<(id: string) => void> = [];
 const announceUnownedRecording = (id: string) => {
   attachedRecorders.at(-1)?.(id);
 };
+// Late recordings discarded by id (from the moment that is decided): a recorder attaching meanwhile never picks them
+// up, even from a status read answered after the discard. An id leaves the set only if its discard did not happen.
+const discardingLateStarts = new Set<string>();
+/** Tests only: forget recorders left attached by other test files sharing this module. */
+export function __resetRecorderOwnershipForTests() {
+  attachedRecorders.length = 0;
+  discardingLateStarts.clear();
+}
 
 // While that recording runs, the cancelled start keeps its Home work place, reading the engine's status with these
 // waits between reads (the last repeats), one read at a time, until the recording is no longer live.
@@ -384,10 +394,27 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     attempt.release = null;
   };
 
-  /** Hands a recording its start left behind to the recorder attached now (detach cancelled that start). */
+  /** A recording its start left behind (detach cancelled that start): the attached recorder takes it, or with none
+   * attached it is discarded by id where the engine can. Its place is kept until it is no longer live either way. */
   const handOverCancelledStart = (id: string, attempt: PendingStart) => {
-    announceUnownedRecording(id);
-    void watchCancelledStart(id, attempt);
+    if (attachedRecorders.length > 0 || !captureCapabilities().scopedDiscard) {
+      announceUnownedRecording(id);
+      void watchCancelledStart(id, attempt);
+      return;
+    }
+    discardingLateStarts.add(id);
+    void VoiceNotes.discard({ id }).then(() => true, (caught: unknown) => {
+      // recording_changed: another recording is live, which this never touches.
+      if (errorCode(caught) !== "recording_changed") console.warn("[VoiceNotes] Could not discard a recording started after its recorder closed", caught);
+      return false;
+    }).then((discarded) => {
+      if (!discarded) {
+        // Not discarded: a recorder attached by now takes it, if it is still live.
+        discardingLateStarts.delete(id);
+        announceUnownedRecording(id);
+      }
+      void watchCancelledStart(id, attempt);
+    });
   };
 
   // The reducer runs synchronously, so a second tap sees the phase the first one
@@ -981,8 +1008,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
               void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                 console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
             }
+            if (status.state === "idle") { sendMicState(status); return; }
+            // Being discarded (or discarded) by id as a closed recorder's late start: never this recorder's.
+            if (status.id && discardingLateStarts.has(status.id)) return;
             sendMicState(status);
-            if (status.state === "idle") return;
             acceptNativeOptions(status);
             send(activePickup(status));
             if (status.source && status.source !== "in_app") present();

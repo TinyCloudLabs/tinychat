@@ -47,6 +47,8 @@ export const DESKTOP_CAPABILITIES: CaptureCapabilities = {
   desktopWhisper: false,
   offlineRecorder: true,
   nativeFileUpload: true,
+  // Checked in the run() queue, and the native durable discard is keyed by the same id (not_current otherwise).
+  scopedDiscard: true,
 };
 
 let refreshSelectedWhisper: (() => Promise<void>) | null = null;
@@ -768,9 +770,11 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         emitMic(native);
       });
     },
-    async discard() {
+    async discard(options) {
       return run(async () => {
         if (!live) return { id: null };
+        // Checked in the same queued task as the discard: no other control can run in between.
+        if (options && live.session.id !== options.id) throw failure("recording_changed", "A different recording is live.");
         const id = live.session.id;
         await store.tombstoneSession(id);
         let native: NativeStatus | null = null;

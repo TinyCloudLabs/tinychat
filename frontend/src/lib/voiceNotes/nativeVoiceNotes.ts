@@ -291,7 +291,10 @@ export interface VoiceNotesPlugin {
   listPending(): Promise<{ recordings: VoiceNoteRecording[] }>;
   pause(): Promise<void>;
   resume(): Promise<void>;
-  discard(): Promise<{ id: string | null }>;
+  /** Stops the live recording and deletes it. With `id` (engines with `capabilities.scopedDiscard` only): only that
+   * recording, checked and discarded in one step, refusing with `recording_changed` if another one is live and
+   * resolving `{ id: null }` if none is. The native mobile plugins ignore `id`; never pass it to them. */
+  discard(options?: { id: string }): Promise<{ id: string | null }>;
   setRecordingOptions(options: Partial<CaptureOptions>): Promise<void>;
   getCaptureDefaults(): Promise<CaptureDefaults & { status: AccountStatus }>;
   setCaptureDefaults(options: CaptureDefaults): Promise<{ claimed: string[] }>;

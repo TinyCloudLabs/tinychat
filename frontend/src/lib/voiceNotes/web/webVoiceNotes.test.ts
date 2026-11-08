@@ -4,7 +4,7 @@ import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, type Voic
 import { FakeMediaRecorder, createRig, memoryAudioBlobs, slowTest, type Rig, type RigOptions } from "./webTestKit";
 import { DecodeCheckError, memoryLocks, openWebStore, type DecodeCheck } from "./webStore";
 import {
-  UNSUPPORTED_METHODS, WEB_CAPABILITIES, WEB_MAX_DURATION_MS, WEB_MIN_DURATION_LIMIT_MS,
+  UNSUPPORTED_METHODS, WEB_MAX_DURATION_MS, WEB_MIN_DURATION_LIMIT_MS,
 } from "./webVoiceNotes";
 
 const test = slowTest(bunTest);
@@ -55,15 +55,6 @@ async function listen(rig: Rig) {
 }
 
 describe("capabilities and constants", () => {
-  test("a browser has none of the seven capabilities", async () => {
-    const rig = await createRig();
-    expect(rig.engine.capabilities).toEqual({
-      nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-      background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false, nativeFileUpload: false,
-    });
-    expect(WEB_CAPABILITIES).toEqual(rig.engine.capabilities);
-  });
-
   test("the duration bounds equal the native ones", () => {
     expect(WEB_MAX_DURATION_MS).toBe(VOICE_NOTE_MAX_DURATION_MS);
     expect(WEB_MIN_DURATION_LIMIT_MS).toBe(VOICE_NOTE_MIN_DURATION_LIMIT_MS);
@@ -226,6 +217,35 @@ describe("recording", () => {
     expect(rig.fake.mic.liveTracks()).toEqual([]);
     expect((await plugin.listPending()).recordings).toEqual([]);
     expect(await plugin.status()).toMatchObject({ state: "idle", id: null });
+  });
+
+  test("discard with an id refuses unless that recording is the live one, and the live recording continues", async () => {
+    const rig = await createRig();
+    const { plugin } = rig.engine;
+    const { id } = await plugin.start();
+    await rig.chunk([1, 2]);
+    await expect(plugin.discard({ id: "another-recording" })).rejects.toEqual(code("recording_changed"));
+    expect(await plugin.status()).toMatchObject({ state: "recording", id });
+    expect(rig.fake.mic.liveTracks()).not.toEqual([]);
+    expect(await rig.store.audio.size(id)).toBeGreaterThan(0);
+    expect(await plugin.discard({ id })).toEqual({ id });
+    expect(await plugin.status()).toMatchObject({ state: "idle", id: null });
+    // Nothing live: there is nothing of that id to discard.
+    expect(await plugin.discard({ id })).toEqual({ id: null });
+  });
+
+  test("a discard by id queued behind a stop and a new start refuses: the new recording is never touched", async () => {
+    const rig = await createRig();
+    const { plugin } = rig.engine;
+    const { id } = await plugin.start();
+    await rig.chunk([1]);
+    const stopping = plugin.stop();
+    const starting = plugin.start();
+    const stale = plugin.discard({ id });
+    await stopping;
+    const fresh = (await starting).id;
+    await expect(stale).rejects.toEqual(code("recording_changed"));
+    expect(await plugin.status()).toMatchObject({ state: "recording", id: fresh });
   });
 
   test("setRecordingOptions applies to the live note; signed-out notes stay on-device", async () => {

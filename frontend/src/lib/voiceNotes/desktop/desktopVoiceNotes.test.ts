@@ -328,6 +328,19 @@ async function rejectedDiscardFixture() {
 }
 
 describe("desktop recorder adapter", () => {
+  test("discard with an id refuses unless that recording is the live one: nothing is retired and the recording continues", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    const { id } = await engine.plugin.start();
+    await expect(engine.plugin.discard({ id: "another-recording" })).rejects.toEqual(expect.objectContaining({ code: "recording_changed" }));
+    expect(bridge.calls).not.toContain("recorder_discard_durable");
+    expect(await engine.plugin.status()).toMatchObject({ state: "recording", id });
+    expect(await engine.plugin.discard({ id })).toEqual({ id });
+    expect(bridge.discardTargets).toEqual([id]);
+    expect(await engine.plugin.status()).toMatchObject({ state: "idle" });
+    engine.dispose();
+  });
+
   test("a failed Resume reaches recorder_resume through the real controller and desktop adapter", async () => {
     const bridge = new FakeBridge();
     const engine = await rig(bridge);
