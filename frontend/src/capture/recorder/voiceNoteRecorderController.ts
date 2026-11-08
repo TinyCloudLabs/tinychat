@@ -362,7 +362,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return true;
   };
   const acceptNativeOptions = (status: CaptureStatus | MicStateEvent) => {
-    if (!status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
+    if (closed || !status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
     nativeOptions = status.options;
     if (refreshChoice()) notify();
   };
@@ -755,10 +755,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       return Math.floor(recordedElapsedAt(state));
     },
     async setTranscriber(id, { scope }) {
-      if (!available) return "unavailable";
+      // Closed (detached): a stale callback changes nothing, now or after any wait below.
+      if (closed || !available) return "unavailable";
       if (id === "on-device" && captureEngineKind() === "tauri") {
         try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(); }
         catch { return "unavailable"; }
+        if (closed) return "unavailable";
       }
       if (id === "on-device" && !onDeviceTranscriptionAvailable()) return "unavailable";
       if (!signedIn && id !== "on-device") return "locked_signed_out";
@@ -783,11 +785,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (refreshChoice()) notify();
       }
       // Choosing Local again is also the way to retry a download that failed.
-      if (id === "on-device") ensureLocalModel(true);
+      if (id === "on-device" && !closed) ensureLocalModel(true);
       return "ok";
     },
     async setIdentifySpeakers(on, scope) {
-      if (!available) return "unavailable";
+      if (closed || !available) return "unavailable";
       const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
       if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
@@ -1076,6 +1078,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
     },
     async openSettings() {
+      if (closed) return;
       if (!captureCapabilities().openSettings) throw Object.assign(new Error("This shell cannot open settings"), { code: "unsupported" });
       await VoiceNotes.openSettings();
     },
@@ -1083,7 +1086,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     get extendLimit() {
       if (typeof VoiceNotes.setMaxDuration !== "function") return undefined;
       return async (extension: LimitExtension = VOICE_NOTE_EXTENSION_MS) => {
-        if (state.phase !== "recording" || !state.autoStop) return;
+        if (closed || state.phase !== "recording" || !state.autoStop) return;
         const noLimit = extension === "none";
         const target = noLimit ? VOICE_NOTE_SAFETY_CAP_MS : Math.min(VOICE_NOTE_SAFETY_CAP_MS, state.maxDurationMs + extension);
         const applied = await VoiceNotes.setMaxDuration!({ maxDurationMs: target });
@@ -1091,8 +1094,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       };
     },
     async dismissShortcutRecovery() {
+      if (closed) return;
       if (captureCapabilities().nativeShortcuts) {
         const status = await VoiceNotes.status();
+        if (closed) return;
         if (status.micDeniedPresentation !== undefined) await VoiceNotes.dismissShortcutRecovery();
       }
       send({ type: "PERMISSION_GRANTED" });
@@ -1125,6 +1130,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       } finally {
         nativeStopPending = false;
       }
+      // Closed while the engine stopped it: the recording is committed on the device, and saved from there by the
+      // pending saves (never by a closed recorder).
+      if (closed) return;
       captureCommitted(recording.id, recording);
       void saveStopped(recording).catch((caught: unknown) =>
         send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -1182,6 +1190,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
         needDeleteCommitted = code === "not_recording";
       }
+      // Closed meanwhile: its discard mark stays, so the pending saves and the next launch delete it, not this recorder.
+      if (closed) return;
       if (!id) {
         if (shown) unmarkDiscarded(shown);
         await reconcileDiscardFailure(shown, "Could not discard the recording.");
@@ -1216,7 +1226,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     retryPending() {
       if (retryPendingInFlight) return retryPendingInFlight;
       const run = async () => {
-        if (!available) return;
+        if (closed || !available) return;
         if (!tcw?.did || !tcw.spaceId) {
           pendingStore.reportError("Your account space is not ready to save this note. Try again after sign-in finishes.");
           return;
@@ -1230,6 +1240,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             const claimed = await withCaptureDeadline(writeAccountDefaults((native) =>
               native.status === "signed_in" && native.accountDid === tcw.did
                 ? { accountDid: native.accountDid, transitionGen: native.transitionGen } : null));
+            if (closed) return;
             if (!claimed) {
               account.reportError(`This ${recorderDevice()}'s recording account is not ready. Try again shortly.`);
               return;
