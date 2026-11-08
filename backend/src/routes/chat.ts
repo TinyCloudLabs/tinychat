@@ -41,6 +41,7 @@ import {
 } from "../billing/credits.js";
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import { selectChatModel } from "../modelSelection.js";
+import { noteRequestRecord, recordAfterHandler } from "../request-context.js";
 
 // ── RedPill config ───────────────────────────────────────────────────────────
 // REDPILL_API_KEY is required at call time. Missing key returns 500 per-request
@@ -221,7 +222,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
    * tier: the model must be allowed for the tier and the tier's credit budget
    * must not be exhausted. Actual credit usage is recorded after the stream.
    */
-  router.post("/", paidLimiter, async (req: Request, res: Response) => {
+  router.post("/", paidLimiter, recordAfterHandler(async (req: Request, res: Response) => {
     const apiKey = process.env.REDPILL_API_KEY;
     if (!apiKey) {
       res
@@ -445,7 +446,10 @@ export function createChatRouter(options?: ChatRouterOptions) {
         signal: controller.signal,
       });
     } catch (error: unknown) {
-      if (error instanceof Error && error.name === "AbortError") return; // client left
+      if (error instanceof Error && error.name === "AbortError") { // client left
+        noteRequestRecord(res, { stream: "aborted" });
+        return;
+      }
       handleRouteError(res, error, "reach RedPill API");
       return;
     }
@@ -490,11 +494,13 @@ export function createChatRouter(options?: ChatRouterOptions) {
     res.flushHeaders();
 
     if (!upstreamRes.body) {
+      noteRequestRecord(res, { stream: "error", code: "upstream_incomplete" });
       res.end();
       return;
     }
 
     const scanner = new UsageScanner();
+    let streamFailed = false;
     try {
       // Bun's fetch body is async-iterable. Forward every chunk byte-for-byte
       // while tee-ing a copy through the usage scanner.
@@ -507,9 +513,13 @@ export function createChatRouter(options?: ChatRouterOptions) {
       if (error instanceof Error && error.name === "AbortError") {
         // Client disconnected — clean exit
       } else {
+        streamFailed = true;
         console.error("[chat] stream error:", error);
       }
     } finally {
+      noteRequestRecord(res, controller.signal.aborted
+        ? { stream: "aborted" }
+        : streamFailed ? { stream: "error", code: "upstream_failed" } : { stream: "done" });
       res.end();
     }
 
@@ -531,6 +541,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
               scanner.completionText,
             );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        noteRequestRecord(res, { credits });
         // §E.6 — shadow-push to ledger (async, never blocks serving)
         if (flusher && credits > 0) {
           const now = Date.now();
@@ -566,6 +577,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
                 scanner.completionText,
               );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          noteRequestRecord(res, { credits });
           if (flusher && credits > 0) {
             const now = Date.now();
             const tierCfg = TIERS[gatedTier];
@@ -590,7 +602,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
         }
       }
     }
-  });
+  }));
 
   /**
    * GET /models

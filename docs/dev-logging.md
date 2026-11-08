@@ -118,27 +118,46 @@ Authentication/CSRF rejection before that router still has no correlation ID.
 Both headers are exposed by CORS.
 The stricter request-ID predicate does not narrow legacy correlation-ID syntax.
 
-One JSON `tinychat_request` event is emitted when the response finishes:
+One JSON `tinychat_request` event is emitted when the response finishes, or when
+the client disconnects first:
 
 ```json
-{"event":"tinychat_request","request_id":"12345678-abcd-4abc-8abc-123456789abc","request_id_replaced":false,"method":"GET","route":"/transcriptions/:id","status":200,"duration_ms":2.5,"correlation_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}
+{"event":"tinychat_request","request_id":"12345678-abcd-4abc-8abc-123456789abc","request_id_replaced":false,"method":"POST","route":"/api/chat","status":200,"duration_ms":2.5,"stream":"done","credits":13,"account_hash":"<64 hex>"}
 ```
 
 `method` is a known HTTP method or `OTHER`; `status` and `duration_ms` are
-numeric. `route` is Express's registered **terminal route template**, without
-the router mount prefix. Early middleware failures and unmatched requests use
-`unmatched`. Never use `baseUrl`, `originalUrl`, path parameters or query
-strings: even a router mount can contain credentials. `correlation_id` is
+numeric. `status` is `499` when the client closed the connection before any
+response was sent. `route` is the registered **route template**: the string
+template of the app-level mount (recorded by `recordMountTemplates`, e.g.
+`/api/connectors/webhooks/:source/:token`) followed by Express's terminal route
+template. Early middleware failures and unmatched requests use `unmatched`.
+Never use `baseUrl`, `originalUrl`, path parameters or query strings: even a
+router mount can contain credentials. `baseUrl` is only compared with the value
+seen when the mount template was recorded, never copied. `correlation_id` is
 optional and admitted only as a UUID from the response header.
+
+TC-2537 adds four optional fields. The streaming chat routes (`POST /api/chat`,
+`POST /api/agent/chat`) set `stream` (`done`, `error` or `aborted`) and, for an
+error or a server-side transport failure, a fixed `code` (for example
+`upstream_failed`, `turn_timeout`, `transport_failed`). `credits` is the credits
+recorded for the request, when any were charged; those handlers are wrapped in
+`recordAfterHandler`, so the record waits until the post-stream charge is
+recorded (at most 30 seconds after the response ended). `account_hash` is
+`hex(HMAC-SHA256(REQUEST_LOG_HMAC_KEY, "account\0" || lowercase address))` of
+the authenticated caller: a pseudonym that only the key holder can recompute
+for a known address. Without a valid key (at least 32 decoded bytes) the field
+is omitted and the backend still boots. The record is best effort: building or
+writing it never throws into, delays or fails a request.
 
 While an HTTP request or explicitly attributed queue-item context is active,
 console and dependency stdout/stderr payloads are replaced with fixed
 `tinychat_request_diagnostic` events containing
 only `request_id` and `level` (`info` or `error`). Arbitrary JSON is not trusted
 as a typed event. The terminal error handler also drops error names, messages
-and properties. No account, wallet, tenant, capability, meeting ID, transcript
-or keyed identity field is added. Existing `LOG_HASH_SALT`/keyed-hash patterns
-remain unchanged. The detached worker lifecycle also keeps payload-safe logging:
+and properties. Diagnostics carry no account, wallet, tenant, capability,
+meeting ID, transcript or keyed identity field; the only identity in any of these
+events is the request record's keyed `account_hash` (TC-2537, its own key, not
+`LOG_HASH_SALT`). The detached worker lifecycle also keeps payload-safe logging:
 unattributed diagnostics are `tinychat_background_diagnostic` events containing
 only `event` and `level`, with no request or identity field.
 Other startup/background logging and native writes that bypass JavaScript
@@ -150,7 +169,7 @@ argument list and callback overloads, including `write(chunk, undefined, callbac
 Regression checks (synthetic localhost HTTP and subprocess output only):
 
 ```sh
-bun test backend/src/__tests__/request-id.test.ts backend/src/__tests__/index-wiring.test.ts backend/src/__tests__/request-log-boundary.test.ts backend/src/__tests__/transcript-delivery.test.ts
+bun test backend/src/__tests__/request-id.test.ts backend/src/__tests__/index-wiring.test.ts backend/src/__tests__/request-log-boundary.test.ts backend/src/__tests__/transcript-delivery.test.ts backend/src/__tests__/request-record.test.ts
 ```
 
 
@@ -176,11 +195,26 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `backend_startup_failed` (`phase`: `startup_fatal` | `main_rejected`; closed `failure` class),
   `backend_uncaught_exception` (class name only; Bun prints an unhandled rejection the same way),
   `backend_alert` (`alert=true` lines) and `backend_log_error` (any other stderr line; `component`, `route`, `status`,
-  `upstream_status`, `code`, `reason`, `cid` only when they match a strict pattern), and the four hosted-AssemblyAI
-  JSON events (`assemblyai_provider_blocked`, `_provider_recovered`, `_jobs_failed_in_a_row`, `_worker_heartbeat`).
-  Everything else is dropped, not redacted: stdout request lines, free text, stack frames, lines over 2048 characters.
+  `upstream_status`, `code`, `reason`, `cid` only when they match a strict pattern), the four hosted-AssemblyAI
+  JSON events (`assemblyai_provider_blocked`, `_provider_recovered`, `_jobs_failed_in_a_row`, `_worker_heartbeat`),
+  and the per-request `tinychat_request` record (TC-2537).
+  Everything else is dropped, not redacted: free text, stack frames, lines over 2048 characters.
   A redaction transform (DIDs, `0x` addresses, JWTs, bearer tokens, URLs, emails, long base64) runs first as a second
-  barrier.
+  barrier, except on `tinychat_request` lines, whose 64-hex `account_hash` it would erase; the allowlist checks each
+  of their fields against a strict pattern instead.
+- **Request records (TC-2537).** The allowlist rebuilds each `tinychat_request` from these fields only:
+  `request_id`, `method`, `route_template` (the record's `route`), `status`, `duration_ms` (0.1 ms), `stream`, `code`,
+  `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
+  `request_id_replaced`, `correlation_id` and any other key are dropped; a malformed `request_id` or `status` drops
+  the record; a route that is not template-shaped or is longer than 64 characters ships as `unmatched`, and an
+  off-shape optional field is omitted. Bodies, prompts, replies, headers, keys, tokens, emails
+  and IPs are never fields. To bound volume on the shared Better Stack allowance, at most 10 problem records
+  (5xx, stream `error` or `aborted`) and 20 other records per minute ship; the rest are dropped (Vector `throttle`).
+  `backend/src/__tests__/request-record.test.ts` sends a chat turn carrying each kind of sensitive value and checks
+  the emitted record and, with `VECTOR_BIN`, what the real pipeline passes to the sink.
+- **`REQUEST_LOG_HMAC_KEY`.** Generated once (`openssl rand -hex 32`) and set as the `production-api` secret; it
+  reaches only the backend's encrypted CVM env (step `env:`, env-file `printf`, Compose). It is never logged or
+  shipped. Rotating it changes every `account_hash`, so records before and after a rotation no longer join.
 - **Add an event or field.** (1) Add it to `tinychat-backend` in `ops/logging/fields.json` in `tinycloud-dev` and merge;
   (2) copy that file byte-for-byte to `log-shipper/fields.json`; (3) emit it in the `allowlist` transform in
   `log-shipper/vector.yaml` with a type/range check; (4) mirror the YAML into `docker-compose.phala.yml` (`$` → `$$`);

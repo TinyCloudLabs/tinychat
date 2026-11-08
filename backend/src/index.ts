@@ -141,7 +141,7 @@ import { appCorsOptions } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
-import { createRequestContextMiddleware, installRequestLogBoundary, parseRequestIdFirstPartyOrigins } from "./request-context.js";
+import { configureRequestLogAccountHash, createRequestContextMiddleware, installRequestLogBoundary, parseRequestIdFirstPartyOrigins, recordMountTemplates } from "./request-context.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
@@ -243,6 +243,17 @@ export function validateConnectorWebhookSecrets(env: NodeJS.ProcessEnv): {
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** TC-2537: key for the request record's account_hash. Missing or weak only drops that field; it never stops a boot. */
+function requestLogHmacKey(value: string | undefined): string | undefined {
+  try {
+    assertStrongSecret("REQUEST_LOG_HMAC_KEY", value);
+    return value;
+  } catch {
+    console.warn("[startup] REQUEST_LOG_HMAC_KEY is missing or too weak; request records omit account_hash");
+    return undefined;
   }
 }
 
@@ -482,7 +493,9 @@ async function main() {
 
   const app = express();
   installRequestLogBoundary();
+  configureRequestLogAccountHash(requestLogHmacKey(process.env.REQUEST_LOG_HMAC_KEY));
   app.use(createRequestContextMiddleware());
+  recordMountTemplates(app);
   if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);

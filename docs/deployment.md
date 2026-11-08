@@ -276,6 +276,7 @@ Repository **secrets**:
 | `WEBHOOK_HMAC_MASTER` | Connector-webhook HMAC master. `openssl rand -base64 32`. Required only when `CONNECTOR_WEBHOOKS_ENABLED=true`; a weak value refuses to boot. |
 | `WEBHOOK_HMAC_MASTER_PREV` | Rotation grace key — the outgoing master, set only while a rotation drains. |
 | `LOG_HASH_SALT` | Salt for the public log stream's keyed hashes. Its own `openssl rand -base64 32` value; never derived from `WEBHOOK_HMAC_MASTER`. |
+| `REQUEST_LOG_HMAC_KEY` | Keys the `account_hash` in the backend's shipped request records (TC-2537, `docs/dev-logging.md`). Generate once with `openssl rand -hex 32` and pipe it straight into `gh secret set` (environment `production-api`); never reuse another secret. Unset or weak only omits `account_hash`. Rotating it breaks joins across the rotation. |
 | `STRIPE_SECRET_KEY` | Stripe secret key for `/api/billing` (`sk_live_…`; `sk_test_…` while testing). Optional until go-live — unset resolves everyone to the free tier and checkout/portal return `503 billing_not_configured` (`docs/stripe-setup.md`). |
 | `STRIPE_WEBHOOK_SECRET` | Signing secret (`whsec_…`) of the Stripe webhook endpoint pointing at `/api/billing/webhook`. |
 | `LEDGER_SERVICE_SECRET` | Shared secret for the Universal Ledger credits sidecar. Optional — unset disables the ledger client. |
