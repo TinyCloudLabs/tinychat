@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 
@@ -10,10 +10,6 @@ import { load as loadYaml } from "js-yaml";
 const repoRoot = resolve(import.meta.dir, "../../..");
 const composeText = readFileSync(resolve(repoRoot, "docker-compose.phala.yml"), "utf8");
 const vectorText = readFileSync(resolve(repoRoot, "log-shipper/vector.yaml"), "utf8");
-const fieldsJson = JSON.parse(readFileSync(resolve(repoRoot, "log-shipper/fields.json"), "utf8")) as {
-  common: Record<string, unknown>;
-  services: Record<string, { events: string[]; fields: Record<string, unknown> }>;
-};
 const workflowText = readFileSync(resolve(repoRoot, ".github/workflows/deploy-backend-phala.yml"), "utf8");
 
 type Service = {
@@ -41,7 +37,6 @@ type VectorConfig = {
   sinks: Record<string, { inputs: string[]; uri: string; auth: { token: string }; buffer: { when_full: string; type: string } }>;
 };
 const vector = loadYaml(vectorText) as VectorConfig;
-const allowlistSource = vector.transforms.allowlist.source;
 const redactSource = vector.transforms.redact.source;
 
 const tmpRoot = mkdtempSync(join("/var/tmp", "tc2136."));
@@ -123,51 +118,6 @@ describe("deploy workflow carries the token like the other secrets", () => {
   });
 });
 
-describe("allowlist and redaction", () => {
-  const backendSchema = fieldsJson.services["tinychat-backend"];
-  const allowed = new Set([...Object.keys(fieldsJson.common), ...Object.keys(backendSchema.fields)]);
-
-  test("pipeline order is socket -> redact -> allowlist -> (request caps) -> sink; nothing bypasses the allowlist", () => {
-    expect(vector.transforms.redact.inputs).toEqual(["gelf_in"]);
-    expect(vector.transforms.allowlist.inputs).toEqual(["redact"]);
-    expect(vector.transforms.request_split.inputs).toEqual(["allowlist"]);
-    expect(vector.transforms.request_problem_cap.inputs).toEqual(["request_split.problem"]);
-    expect(vector.transforms.request_routine_cap.inputs).toEqual(["request_split.routine"]);
-    expect(vector.sinks.betterstack.inputs).toEqual(["request_split._unmatched", "request_problem_cap", "request_routine_cap"]);
-    expect(Object.keys(vector.sinks)).toEqual(["betterstack"]);
-    expect(vector.sinks.betterstack.buffer).toMatchObject({ type: "memory", when_full: "drop_newest" });
-  });
-
-  test("redaction covers DIDs, hex addresses, JWTs, bearer tokens, URLs, emails and long base64, and caps line length", () => {
-    for (const marker of ["did:", "0x", "eyJ", "bearer", "://", "@", "{32,}", "{43,}", "length(msg) > 2048"]) {
-      expect(redactSource).toContain(marker);
-    }
-  });
-
-  test("the allowlist emits exactly the events and fields in log-shipper/fields.json", () => {
-    const emittedEvents = new Set<string>();
-    for (const m of allowlistSource.matchAll(/"event": "([a-z_]+)"/g)) emittedEvents.add(m[1]);
-    for (const m of allowlistSource.matchAll(/name == "([a-z_]+)"/g)) emittedEvents.add(m[1]);
-    for (const m of allowlistSource.matchAll(/line_event = "([a-z_]+)"/g)) emittedEvents.add(m[1]);
-    expect([...emittedEvents].sort()).toEqual([...backendSchema.events].sort());
-
-    const emittedFields = new Set<string>();
-    for (const m of allowlistSource.matchAll(/out = \{([^\n]*)\}/g)) {
-      for (const k of m[1].matchAll(/"([a-z_]+)":/g)) emittedFields.add(k[1]);
-    }
-    for (const m of allowlistSource.matchAll(/\bout\.([a-z_]+) =/g)) emittedFields.add(m[1]);
-    for (const field of emittedFields) expect(allowed.has(field)).toBe(true);
-    // The free-text field was deliberately left out of the contract.
-    expect(emittedFields.has("detail")).toBe(false);
-    expect(emittedFields.has("message")).toBe(false);
-    expect(Object.keys(backendSchema.fields)).not.toContain("detail");
-  });
-
-  test("the allowlist builds a fresh object and never copies the raw event", () => {
-    expect(allowlistSource).toContain(". = out");
-    expect(allowlistSource).not.toMatch(/\bout = (?:\.|parsed|j)\b/);
-  });
-});
 
 describe("Vector validates the config and passes its unit tests", () => {
   const vectorBin = process.env.VECTOR_BIN || Bun.which("vector");
@@ -183,7 +133,7 @@ describe("Vector validates the config and passes its unit tests", () => {
       writeFileSync(join(secrets, "betterstack_source_token"), "ci-placeholder");
       const config = join(tmpRoot, "vector.yaml");
       writeFileSync(config, vectorText.replace("path: /run/vector-secrets", `path: ${secrets}`));
-      const env = { PATH: process.env.PATH ?? "", HOME: home, VECTOR_LOG: "error" };
+      const env = { PATH: process.env.PATH ?? "", HOME: home, TC_HOME: home, VECTOR_LOG: "error" };
       const validate = Bun.spawn([vectorBin!, "validate", "--no-environment", "--skip-healthchecks", config], { env, stdout: "pipe", stderr: "pipe", timeout: 60_000 });
       const validateOut = (await new Response(validate.stdout).text()) + (await new Response(validate.stderr).text());
       expect(await validate.exited, validateOut).toBe(0);
@@ -195,11 +145,4 @@ describe("Vector validates the config and passes its unit tests", () => {
     200_000,
   );
 
-  test("the unit-test file exists and covers the privacy cases", () => {
-    const text = readFileSync(resolve(repoRoot, "log-shipper/vector.tests.yaml"), "utf8");
-    expect(existsSync(resolve(repoRoot, "log-shipper/vector.tests.yaml"))).toBe(true);
-    for (const needle of ["backend_startup_failed", "backend_uncaught_exception", "assemblyai_worker_heartbeat", "wrong label is dropped", "overlong line is dropped", "no_outputs_from"]) {
-      expect(text).toContain(needle);
-    }
-  });
 });

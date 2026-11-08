@@ -152,8 +152,8 @@ function sensitiveTurn(base: string, signal?: AbortSignal): Promise<globalThis.R
 
 const expectedHash = createHmac("sha256", HMAC_KEY).update(`account\0${ADDRESS.toLowerCase()}`).digest("hex");
 
-/** Run the emitted stdout line through the real Vector pipeline (redact -> allowlist -> caps) and return what reaches the sink. */
-async function shipThroughVector(line: string): Promise<Record<string, unknown>[]> {
+/** Run emitted lines through the real Vector pipeline and return what reaches the sink. */
+async function shipThroughVector(lines: readonly { message: string; level: number }[]): Promise<Record<string, unknown>[]> {
   const repoRoot = resolve(import.meta.dir, "../../..");
   const shipped = loadYaml(await Bun.file(resolve(repoRoot, "log-shipper/vector.yaml")).text()) as {
     transforms: Record<string, { inputs: string[] }>;
@@ -167,9 +167,9 @@ async function shipThroughVector(line: string): Promise<Record<string, unknown>[
   };
   const path = join(tmpRoot, `vector-${crypto.randomUUID()}.json`);
   writeFileSync(path, JSON.stringify(config));
-  const gelf = JSON.stringify({ message: line, level: 6, "_tc.logship": "tinychat-backend" });
+  const gelf = lines.map(line => JSON.stringify({ ...line, "_tc.logship": "tinychat-backend" })).join("\n");
   const proc = Bun.spawn([process.env.VECTOR_BIN!, "--quiet", "--config", path], {
-    env: { PATH: process.env.PATH ?? "", HOME: tmpRoot, VECTOR_LOG: "error" },
+    env: { PATH: process.env.PATH ?? "", HOME: tmpRoot, TC_HOME: tmpRoot, VECTOR_LOG: "error" },
     stdin: new Blob([gelf + "\n"]), stdout: "pipe", stderr: "pipe", timeout: 60_000,
   });
   const out = await new Response(proc.stdout).text();
@@ -316,7 +316,7 @@ describe("TC-2537 request record", () => {
         correlation_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       });
       for (const emitted of [line, injected]) {
-        const shipped = await shipThroughVector(emitted);
+        const shipped = await shipThroughVector([{ message: emitted, level: 6 }]);
         expect(shipped).toHaveLength(1);
         expect(Object.keys(shipped[0]).sort()).toEqual(SHIPPED_FIELDS.filter(key => key !== "code"));
         expect(shipped[0]).toMatchObject({
@@ -329,6 +329,104 @@ describe("TC-2537 request record", () => {
     } finally {
       await server.close();
       restore();
+    }
+  }, 120_000);
+
+  test.skipIf(!process.env.VECTOR_BIN)("lane and calendar diagnostics reach the real sink without hostile fields", async () => {
+    const shipped = await shipThroughVector([
+      { message: `[storage-lane] op=slow-wait priority=background waitedMs=1500 code=CANARY account=${ADDRESS} key=PRIVATE-KEY value=PRIVATE-VALUE`, level: 3 },
+      { message: "[storage-lane] op=wait-timeout priority=foreground waitedMs=12000", level: 3 },
+      { message: JSON.stringify({
+        event: "backend_log_error", component: "calendar-autojoin", phase: "tenant_reconcile",
+        error_name: "KvResultError", code: "unavailable_retryable", status: 503,
+        account: ADDRESS, key: "PRIVATE-KEY", value: "PRIVATE-VALUE", body: CANARY.prompt,
+      }), level: 3 },
+    ]);
+    const waits = shipped.filter(row => row.event === "backend_storage_lane_wait");
+    expect(waits).toHaveLength(2);
+    for (const row of waits) {
+      expect(Object.keys(row).sort()).toEqual(["component", "event", "level", "op", "priority", "svc", "ts", "waited_ms"]);
+    }
+    expect(waits.find(row => row.op === "slow-wait")).toMatchObject({ level: "warn", priority: "background", waited_ms: 1500 });
+    expect(waits.find(row => row.op === "wait-timeout")).toMatchObject({ level: "error", priority: "foreground", waited_ms: 12000 });
+    const calendar = shipped.find(row => row.component === "calendar-autojoin");
+    expect(Object.keys(calendar!).sort()).toEqual(["code", "component", "error_name", "event", "level", "phase", "status", "svc", "ts"]);
+    expect(calendar).toMatchObject({ phase: "tenant_reconcile", error_name: "KvResultError", code: "unavailable_retryable", status: 503 });
+    const text = JSON.stringify(shipped);
+    for (const value of [...FORBIDDEN, "PRIVATE-KEY", "PRIVATE-VALUE", "CANARY"]) expect(text).not.toContain(value);
+  }, 120_000);
+
+  test.skipIf(!process.env.VECTOR_BIN)("the real sink keeps request rate caps while passing typed diagnostics", async () => {
+    const lines = Array.from({ length: 50 }, (_, i) => ({
+      message: JSON.stringify({
+        event: "tinychat_request", request_id: crypto.randomUUID(), method: "GET",
+        route: "/api/chat", status: i < 25 ? 200 : 503, duration_ms: 1,
+      }),
+      level: 6,
+    }));
+    lines.push({ message: "[storage-lane] op=slow-wait priority=background waitedMs=1500", level: 3 });
+    lines.push({ message: JSON.stringify({
+      event: "backend_log_error", component: "calendar-autojoin", phase: "tick",
+      error_name: "BackendStorageLaneTimeout", code: "storage_lane_timeout",
+    }), level: 3 });
+    const shipped = await shipThroughVector(lines);
+    expect(shipped.filter(row => row.event === "tinychat_request" && row.status === 200)).toHaveLength(20);
+    expect(shipped.filter(row => row.event === "tinychat_request" && row.status === 503)).toHaveLength(10);
+    expect(shipped.filter(row => row.event === "backend_storage_lane_wait")).toHaveLength(1);
+    expect(shipped.filter(row => row.component === "calendar-autojoin")).toHaveLength(1);
+  }, 120_000);
+
+  test.skipIf(!process.env.VECTOR_BIN)("native diagnostic floods are capped while one summary retains every outcome count", async () => {
+    const phases = ["tick", "tenant_reconcile", "due_timer", "dispatch_lag_status"];
+    const lines = Array.from({ length: 1000 }, (_, i) => [
+      { message: `[storage-lane] op=${i % 2 ? "wait-timeout" : "slow-wait"} priority=background waitedMs=1500`, level: 3 },
+      { message: JSON.stringify({
+        event: "backend_log_error", component: "calendar-autojoin", phase: phases[i % phases.length],
+        error_name: "BackendStorageLaneTimeout", code: "storage_lane_timeout",
+      }), level: 3 },
+      { message: "[unmatched-probe] code=synthetic_failure", level: 3 },
+    ]).flat();
+    const shipped = await shipThroughVector(lines);
+    expect(shipped.filter(row => row.event === "backend_storage_lane_wait")).toHaveLength(10);
+    expect(shipped.filter(row => row.component === "calendar-autojoin")).toHaveLength(10);
+    expect(shipped.filter(row => row.component === "unmatched-probe")).toHaveLength(10);
+    const summaries = shipped.filter(row => row.event === "backend_diagnostic_summary");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      slow_wait_count: 500, wait_timeout_count: 500,
+      calendar_tick_count: 250, calendar_tenant_reconcile_count: 250,
+      calendar_due_timer_count: 250, calendar_dispatch_lag_status_count: 250,
+      other_count: 1000, counts_saturated: false,
+    });
+    expect(Object.keys(summaries[0]).sort()).toEqual([
+      "calendar_dispatch_lag_status_count", "calendar_due_timer_count", "calendar_tenant_reconcile_count",
+      "calendar_tick_count", "counts_saturated", "event", "level", "other_count",
+      "slow_wait_count", "svc", "ts", "wait_timeout_count",
+    ]);
+  }, 120_000);
+
+  test.skipIf(!process.env.VECTOR_BIN)("maximum-width sink records fit the conservative monthly byte envelope", async () => {
+    const shipped = await shipThroughVector([
+      { message: JSON.stringify({
+        event: "tinychat_request", request_id: REQUEST_ID, method: "CONNECT",
+        route: `/${"a".repeat(63)}`, status: 599, duration_ms: 86399999.9,
+        stream: "aborted", code: "a".repeat(60), credits: 1000000000, account_hash: "a".repeat(64),
+      }), level: 6 },
+      { message: "[storage-lane] op=wait-timeout priority=foreground waitedMs=3600000", level: 3 },
+      { message: JSON.stringify({
+        event: "backend_log_error", component: "calendar-autojoin", phase: "dispatch_lag_status",
+        error_name: "BackendStorageLaneTimeout", code: "calendar_invalid_response", status: 599,
+      }), level: 3 },
+      { message: `[${"a.".repeat(20)}] route=${"a".repeat(40)} status=599 upstream_status=599 code=${"a".repeat(60)} reason=${"a".repeat(40)} cid=${REQUEST_ID} alert=true`, level: 3 },
+    ]);
+    for (const [event, bound] of [
+      ["tinychat_request", 576], ["backend_storage_lane_wait", 224],
+      ["backend_log_error", 320], ["backend_alert", 512], ["backend_diagnostic_summary", 512],
+    ] as const) {
+      const row = shipped.find(record => record.event === event);
+      expect(row).toBeDefined();
+      // Two bytes reserve JSON-array delimiters/newline framing beyond the encoded record.
+      expect(Buffer.byteLength(JSON.stringify(row)) + 2).toBeLessThanOrEqual(bound);
     }
   }, 120_000);
 });

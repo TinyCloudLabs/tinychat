@@ -295,8 +295,7 @@ services:
               peeled = replace(msg, r'^(?:error|[A-Za-z0-9_.]{0,48}Error): \[startup\] ', "[startup] ")
               parsed, parse_err = parse_json(msg)
               if parse_err == null && is_object(parsed) {
-                # Structured events: the four hosted-AssemblyAI monitor events (backend/src/services/assemblyai-hosted-monitor.ts)
-                # and the per-request record (backend/src/request-context.ts).
+                # Structured events: hosted-AssemblyAI monitor events, per-request records and closed calendar diagnostics.
                 j = object!(parsed)
                 name = string(j.event) ?? ""
                 ts = gelf_ts
@@ -330,6 +329,18 @@ services:
                   }
                   account_hash = string(j.account_hash) ?? ""
                   if length(account_hash) == 64 && match(account_hash, r'^[0-9a-f]{64}$$') { out.account_hash = account_hash }
+                } else if name == "backend_log_error" && j.component == "calendar-autojoin" {
+                  phase = string(j.phase) ?? ""
+                  if !includes(["tick", "tenant_reconcile", "due_timer", "dispatch_lag_status"], phase) { abort }
+                  error_name = string(j.error_name) ?? ""
+                  if !includes(["BackendStorageLaneTimeout", "KvResultError", "GoogleCalendarError", "GoogleOAuthError", "TranscriptionApiError", "CalendarAutojoinError", "SyntaxError", "Error", "UnknownError"], error_name) { abort }
+                  code = string(j.code) ?? ""
+                  if !includes(["storage_lane_timeout", "kv_failure", "unavailable_retryable", "outcome_unknown", "request_timeout", "auth_unauthorized", "auth_forbidden", "storage_quota_exceeded", "google_calendar_failure", "scan_incomplete", "calendar_transport", "calendar_rate_limited", "calendar_unauthorized", "calendar_access_denied", "calendar_unavailable", "calendar_invalid_response", "google_oauth_failure", "network_error", "invalid_response", "invalid_grant", "invalid_client", "access_denied", "transcription_failure", "capacity_exhausted", "meeting_not_found", "autojoin_failure", "needs_reconnect", "autojoin_disabled", "connection_changed", "insufficient_scope", "calendar_state_invalid", "calendar_listing_invalid", "invalid_json", "unexpected_error"], code) { abort }
+                  out = {"svc": "backend", "event": "backend_log_error", "component": "calendar-autojoin", "level": "error", "ts": ts, "phase": phase, "error_name": error_name, "code": code}
+                  if is_integer(j.status) {
+                    status = int(j.status) ?? 0
+                    if status >= 100 && status <= 599 { out.status = status }
+                  }
                 } else if name == "assemblyai_provider_blocked" {
                   reason = string(j.reason) ?? ""
                   if !includes(["billing_blocked", "key_rejected", "rate_limited"], reason) { abort }
@@ -391,6 +402,16 @@ services:
                 name = string(m.name) ?? ""
                 if !match(name, r'^[A-Za-z0-9_.]{1,64}$$') { abort }
                 out = {"svc": "backend", "event": "backend_uncaught_exception", "level": "error", "ts": gelf_ts, "error_name": name}
+              } else if starts_with(msg, "[storage-lane]") {
+                # Match the source's fixed prefix; malformed lane lines must not reach generic stderr classification.
+                lane = parse_regex(msg, r'^\[storage-lane\] op=(?P<op>slow-wait|wait-timeout) priority=(?P<priority>foreground|background) waitedMs=(?P<waited_ms>[0-9]+)(?:\s|$$)') ?? {}
+                op = string(lane.op) ?? ""
+                priority = string(lane.priority) ?? ""
+                waited_ms = to_int(lane.waited_ms) ?? -1
+                if op == "" || priority == "" || waited_ms < 0 || waited_ms > 3600000 { abort }
+                lane_level = "warn"
+                if op == "wait-timeout" { lane_level = "error" }
+                out = {"svc": "backend", "event": "backend_storage_lane_wait", "component": "storage-lane", "level": lane_level, "ts": gelf_ts, "op": op, "priority": priority, "waited_ms": waited_ms}
               } else if from_stderr || contains(msg, " alert=true") {
                 # Plain `[component] key=value ...` lines (e.g. `[assemblyai-hosted] route=... status=... code=... alert=true`):
                 # keep only strictly-shaped tokens. Free text is never copied.
@@ -445,10 +466,93 @@ services:
             inputs: [request_split.routine]
             threshold: 20
             window_secs: 60
+          # TC-2546: every non-request sample has a finite global budget, including legacy events.
+          diagnostic_split:
+            type: route
+            inputs: [request_split._unmatched]
+            route:
+              lane: '.event == "backend_storage_lane_wait"'
+              calendar: '.component == "calendar-autojoin"'
+          lane_cap:
+            type: throttle
+            inputs: [diagnostic_split.lane]
+            threshold: 10
+            window_secs: 60
+          calendar_cap:
+            type: throttle
+            inputs: [diagnostic_split.calendar]
+            threshold: 10
+            window_secs: 60
+          other_cap:
+            type: throttle
+            inputs: [diagnostic_split._unmatched]
+            threshold: 10
+            window_secs: 60
+          # Count before sampling. Seven fixed counters make one constant-size group, never per-account state.
+          diagnostic_counts:
+            type: remap
+            inputs: [request_split._unmatched]
+            source: |
+              slow = .event == "backend_storage_lane_wait" && .op == "slow-wait"
+              timeout = .event == "backend_storage_lane_wait" && .op == "wait-timeout"
+              calendar = .event == "backend_log_error" && .component == "calendar-autojoin"
+              tick = calendar && .phase == "tick"
+              tenant = calendar && .phase == "tenant_reconcile"
+              due = calendar && .phase == "due_timer"
+              lag = calendar && .phase == "dispatch_lag_status"
+              other = !(slow || timeout || tick || tenant || due || lag)
+              slow_count = if slow { 1 } else { 0 }
+              timeout_count = if timeout { 1 } else { 0 }
+              tick_count = if tick { 1 } else { 0 }
+              tenant_count = if tenant { 1 } else { 0 }
+              due_count = if due { 1 } else { 0 }
+              lag_count = if lag { 1 } else { 0 }
+              other_count = if other { 1 } else { 0 }
+              . = {"slow_wait_count": slow_count, "wait_timeout_count": timeout_count, "calendar_tick_count": tick_count, "calendar_tenant_reconcile_count": tenant_count, "calendar_due_timer_count": due_count, "calendar_dispatch_lag_status_count": lag_count, "other_count": other_count}
+          diagnostic_reduce:
+            type: reduce
+            inputs: [diagnostic_counts]
+            end_every_period_ms: 60000
+            expire_after_ms: 60000
+            flush_period_ms: 1000
+            merge_strategies:
+              slow_wait_count: sum
+              wait_timeout_count: sum
+              calendar_tick_count: sum
+              calendar_tenant_reconcile_count: sum
+              calendar_due_timer_count: sum
+              calendar_dispatch_lag_status_count: sum
+              other_count: sum
+          diagnostic_summary:
+            type: remap
+            inputs: [diagnostic_reduce]
+            drop_on_error: true
+            source: |
+              slow = int(.slow_wait_count) ?? 0
+              timeout = int(.wait_timeout_count) ?? 0
+              tick = int(.calendar_tick_count) ?? 0
+              tenant = int(.calendar_tenant_reconcile_count) ?? 0
+              due = int(.calendar_due_timer_count) ?? 0
+              lag = int(.calendar_dispatch_lag_status_count) ?? 0
+              other = int(.other_count) ?? 0
+              saturated = slow > 1000000000 || timeout > 1000000000 || tick > 1000000000 || tenant > 1000000000 || due > 1000000000 || lag > 1000000000 || other > 1000000000
+              if slow > 1000000000 { slow = 1000000000 }
+              if timeout > 1000000000 { timeout = 1000000000 }
+              if tick > 1000000000 { tick = 1000000000 }
+              if tenant > 1000000000 { tenant = 1000000000 }
+              if due > 1000000000 { due = 1000000000 }
+              if lag > 1000000000 { lag = 1000000000 }
+              if other > 1000000000 { other = 1000000000 }
+              . = {"svc": "backend", "event": "backend_diagnostic_summary", "level": "info", "ts": format_timestamp!(now(), "%Y-%m-%dT%H:%M:%S%.3fZ"), "slow_wait_count": slow, "wait_timeout_count": timeout, "calendar_tick_count": tick, "calendar_tenant_reconcile_count": tenant, "calendar_due_timer_count": due, "calendar_dispatch_lag_status_count": lag, "other_count": other, "counts_saturated": saturated}
+          diagnostic_summary_cap:
+            type: throttle
+            inputs: [diagnostic_summary]
+            threshold: 1
+            window_secs: 60
         sinks:
           betterstack:
             type: http
-            inputs: [request_split._unmatched, request_problem_cap, request_routine_cap]
+            inputs: [request_problem_cap, request_routine_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
             method: post
             uri: "https://s2795438.us-west-2a.betterstackdata.com/"
             encoding: { codec: json }
