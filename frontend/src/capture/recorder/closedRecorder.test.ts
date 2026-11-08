@@ -10,7 +10,9 @@ import { __resetHomeWorkForTests } from "@/lib/homeReauthorizing";
 import { isDiscarded, unmarkDiscarded } from "@/lib/voiceNotes/recorderSaves";
 import { readTranscriberPreference, setDefaultIdentifySpeakers, setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
-import { partialAudioDismissed, partialAudioScope, pendingAudioLossIds, savePartialAudioIssue } from "./partialAudioIssues";
+import {
+  clearPartialAudioIssue, partialAudioDismissed, partialAudioScope, pendingAudioLossIds, savedPartialAudioIssues, savePartialAudioIssue,
+} from "./partialAudioIssues";
 import { installDom } from "@/test/dom";
 import {
   __resetRecorderOwnershipForTests, __setRecorderTrackerForTests, createVoiceNoteRecorderController, type VoiceNoteRecorderController,
@@ -59,11 +61,11 @@ afterEach(async () => {
   restoreDom();
 });
 
-/** Every engine call, by name. `hold`: calls of that name wait until released. `retain`: events the engine keeps until
- * a listener is added, then replays to it in a microtask (as the browser engine does after a reload). */
+/** Every engine call, by name. `hold`: calls of that name wait until released (or rejected). `retain`: events the engine
+ * keeps until a listener is added, then replays to it in a microtask (as the browser engine does after a reload). */
 function engineWithCalls(fake: FakeVoiceNotes) {
   const calls: string[] = [];
-  const held = new Map<string, Array<() => void>>();
+  const held = new Map<string, Array<(error?: unknown) => void>>();
   const holding = new Set<string>();
   const retained = new Map<string, unknown[]>();
   const engine = new Proxy(fake.plugin, {
@@ -82,7 +84,10 @@ function engineWithCalls(fake: FakeVoiceNotes) {
       }
       return async (...args: unknown[]) => {
         calls.push(property);
-        if (holding.has(property)) await new Promise<void>((resolve) => { held.set(property, [...(held.get(property) ?? []), resolve]); });
+        if (holding.has(property)) {
+          const error = await new Promise<unknown>((resolve) => { held.set(property, [...(held.get(property) ?? []), resolve]); });
+          if (error !== undefined) throw error;
+        }
         return (value as (...a: unknown[]) => unknown).apply(target, args);
       };
     },
@@ -91,6 +96,7 @@ function engineWithCalls(fake: FakeVoiceNotes) {
     engine, calls,
     hold: (name: string) => { holding.add(name); },
     release: (name: string) => { holding.delete(name); for (const resolve of held.get(name)?.splice(0) ?? []) resolve(); },
+    reject: (name: string, error: unknown) => { holding.delete(name); for (const resolve of held.get(name)?.splice(0) ?? []) resolve(error); },
     retain: (event: string, payload: unknown) => { retained.set(event, [...(retained.get(event) ?? []), payload]); },
   };
 }
@@ -484,4 +490,70 @@ test("a partial-audio notice is not dismissed from a closed recorder (the next r
   detach();
   expect(recorder.dismissCaptureIssue(id)).toBe(false);
   expect(partialAudioDismissed(scope, id)).toBe(false);
+});
+
+test("a default choice whose defaults read fails after the recorder closed leaves another window's newer choice", async () => {
+  const { recorder, detach, hold, reject } = await recordingOnLocal();
+  expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
+  hold("getCaptureDefaults");
+  const choosing = recorder.setIdentifySpeakers(true, "default").catch(() => "failed");
+  await flush();
+  detach();
+  // Another window chooses Off meanwhile; then the closed recorder's read fails.
+  localStorage.setItem("exo.voiceNotes.transcriber", "off");
+  reject("getCaptureDefaults", Object.assign(new Error("unavailable"), { code: "unavailable" }));
+  await choosing;
+  await flush();
+  expect(localStorage.getItem("exo.voiceNotes.transcriber")).toBe("off");
+});
+
+test("a default choice whose engine write fails still puts the engine's default back", async () => {
+  const { fake, recorder, calls } = await recordingOnLocal();
+  const write = fake.plugin.setCaptureDefaults.bind(fake.plugin);
+  let failures = 1;
+  fake.plugin.setCaptureDefaults = async (defaults) => {
+    if (failures-- > 0) throw Object.assign(new Error("write failed"), { code: "unavailable" });
+    return write(defaults);
+  };
+  const before = calls.length;
+  await expect(recorder.setTranscriber("off", { scope: "default" })).rejects.toThrow("write failed");
+  // The write, then the rollback.
+  expect(calls.slice(before).filter((call) => call === "setCaptureDefaults")).toHaveLength(2);
+});
+
+test("a committed event replayed to a recorder reattached and closed in the same turn re-persists no deleted notice", async () => {
+  const scope = partialAudioScope(account.did, account.spaceId);
+  const { fake, recorder, retain } = await signedInEngine();
+  await fake.plugin.start();
+  const { id } = await fake.plugin.stop();
+  savePartialAudioIssue(scope, id, { kind: "partial_audio" });
+  const detach = recorder.attach();
+  await flush();
+  expect(recorder.getState().captureIssues[id]?.kind).toBe("partial_audio");
+  detach();
+  // The recording is deleted elsewhere: its notice goes.
+  clearPartialAudioIssue(scope, id, false);
+  retain("committed", { id });
+  const again = recorder.attach();
+  again();
+  await flush();
+  expect(savedPartialAudioIssues(scope)[id]).toBeUndefined();
+});
+
+test("a recovered event replayed to a recorder reattached and closed in the same turn re-persists no deleted notice", async () => {
+  const scope = partialAudioScope(account.did, account.spaceId);
+  const { fake, recorder, retain } = await signedInEngine();
+  await fake.plugin.start();
+  const { id } = await fake.plugin.stop();
+  savePartialAudioIssue(scope, id, { kind: "partial_audio" });
+  const detach = recorder.attach();
+  await flush();
+  expect(recorder.getState().captureIssues[id]?.kind).toBe("partial_audio");
+  detach();
+  clearPartialAudioIssue(scope, id, false);
+  retain("recovered", { id });
+  const again = recorder.attach();
+  again();
+  await flush();
+  expect(savedPartialAudioIssues(scope)[id]).toBeUndefined();
 });

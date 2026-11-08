@@ -1236,7 +1236,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           const issue = state.captureIssues[event.id];
           if (key !== null && issue?.kind === "partial_audio") savePartialAudioIssue(key, event.id, issue);
         }),
+        // From an ended attachment neither re-persists a notice its state still holds (one deleted since would come
+        // back); a committed recording still counts as ended for the ownership model.
         VoiceNotes.addListener("recovered", (event) => {
+          if (!attached) return;
           const id = event.id ?? event.recording?.id;
           captureCommitted(id, event.recording);
           if (!event.recording) inspectSidecar(id);
@@ -1244,6 +1247,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         VoiceNotes.addListener("committed", (event) => {
           const id = event.id ?? event.recording?.id;
           if (id) endRecording(id);
+          if (!attached) return;
           captureCommitted(id, event.recording);
           if (!event.recording) inspectSidecar(id);
         }),
