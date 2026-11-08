@@ -24,6 +24,8 @@ import "@/capture/home/desktop/systemAudioStart.css";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
 import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { isHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
 import { writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
@@ -322,6 +324,8 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   }, [beginRecording, maybePromptPrivate, maybePromptPowerful, recorder.transcriber.id]);
   const record = useCallback(() => {
     if (disclosureBusy || disclosure) return;
+    // A Home permission ask has OpenKey open; a recording started now could be cut off by the session swap.
+    if (isHomeReauthorizing()) { setDisclosureError(FEATURE_ACCESS_WAIT_FOR_OPENKEY); return; }
     disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setDisclosureError(null);
     if (platform !== "tauri") { afterSystemAudio(); return; }

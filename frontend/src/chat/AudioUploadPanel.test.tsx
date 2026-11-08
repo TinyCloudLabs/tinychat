@@ -18,8 +18,11 @@ import { POWERFUL_PROVIDER_NAME, TRANSCRIBER_NAME } from "@/capture/recorder/fin
 import { SoftActions } from "@/capture/home/SoftActions";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AboutPage } from "./AboutPage";
-import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
+import { assemblyAiStatus, AudioUploadPanel, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
 import type { UploadState } from "@/lib/audioUpload";
+import { setHomeReauthorizing } from "@/lib/homeReauthorizing";
+import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 const noop = () => {};
 
@@ -248,4 +251,25 @@ test("discard cleanup offers Retry deleting without claiming the meeting was sav
   expect(html).toContain("Retry deleting</button>");
   expect(html).not.toContain(">Retry</button>");
   expect(html).not.toContain("Saved to your TinyCloud space");
+});
+
+test("while a Home permission ask has OpenKey open, Upload says to finish there first and offers no Transcribe", () => {
+  const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1", spaceId: "space-1" } as unknown as TinyCloudWeb;
+  const sessionStore = { getToken: () => "token" } as unknown as SessionStore;
+  const render = () => renderToStaticMarkup(
+    <MemoryRouter>
+      <StaticRecorderProvider value={{ available: false }}>
+        <AudioUploadPanel tcw={tcw} backendUrl="http://localhost" sessionStore={sessionStore} />
+      </StaticRecorderProvider>
+    </MemoryRouter>,
+  );
+  setHomeReauthorizing(true);
+  try {
+    const html = render();
+    expect(html).toContain("Finish with OpenKey first, then try again.");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Transcribe<\/button>/);
+  } finally {
+    setHomeReauthorizing(false);
+  }
+  expect(render()).not.toContain("Finish with OpenKey first, then try again.");
 });

@@ -6,6 +6,7 @@ import { webAppManifestFor } from "./webSignInPrefetch";
 import { needsManifestResign, recordManifestRevisionIfSigned, type RevisionStore } from "./manifestRevision";
 import {
   homeFeatureCoverageEntries,
+  homeFeaturesToRequest,
   homeSignInManifest,
   readHomeFeatures,
   rememberHomeFeature,
@@ -78,17 +79,17 @@ describe("the per-device feature flag", () => {
     expect(homeSignInManifest(base, readHomeFeatures(memoryStore({ [FLAG_KEY]: "{oops" }), ADDRESS), ADDRESS)).toEqual(base);
   });
 
-  test("remembering adds a feature name once and keeps the others", () => {
+  test("remembering adds a feature name once, keeps the others, and says it is stored", () => {
     const store = memoryStore();
-    rememberHomeFeature(store, ADDRESS, "connectors");
+    expect(rememberHomeFeature(store, ADDRESS, "connectors")).toBe(true);
     rememberHomeFeature(store, ADDRESS, "recording");
-    rememberHomeFeature(store, ADDRESS, "connectors");
+    expect(rememberHomeFeature(store, ADDRESS, "connectors")).toBe(true);
     expect(JSON.parse(store.data.get(FLAG_KEY)!)).toEqual(["connectors", "recording"]);
   });
 
-  test("an unwritable store is not an error", () => {
+  test("a store that refuses the write is not an error, and says nothing was stored", () => {
     const store = { getItem: () => null, setItem: () => { throw new Error("quota"); } };
-    expect(() => rememberHomeFeature(store, ADDRESS, "recording")).not.toThrow();
+    expect(rememberHomeFeature(store, ADDRESS, "recording")).toBe(false);
   });
 });
 
@@ -113,5 +114,16 @@ describe("whether the session covers a feature", () => {
     expect(sessionCoversHomeFeature({ hasPermissions: () => false }, "recording", ADDRESS)).toBe(false);
     expect(sessionCoversHomeFeature({}, "recording", ADDRESS)).toBe(false);
     expect(sessionCoversHomeFeature({ hasPermissions: () => { throw new Error("no session"); } }, "recording", ADDRESS)).toBe(false);
+  });
+});
+
+describe("what a re-authorise asks for", () => {
+  const coversOnly = (feature: "recording" | "connectors") => ({
+    hasPermissions: (entries: unknown) => JSON.stringify(entries) === JSON.stringify(homeFeatureCoverageEntries(feature, ADDRESS)),
+  });
+  test("the asked feature, plus every set the session covers or this device used, so a swap never drops one", () => {
+    expect(homeFeaturesToRequest(memoryStore(), coversOnly("recording"), ADDRESS, "connectors")).toEqual(["recording", "connectors"]);
+    expect(homeFeaturesToRequest(memoryStore({ [FLAG_KEY]: '["connectors"]' }), {}, ADDRESS, "recording")).toEqual(["recording", "connectors"]);
+    expect(homeFeaturesToRequest(memoryStore(), {}, ADDRESS, "connectors")).toEqual(["connectors"]);
   });
 });

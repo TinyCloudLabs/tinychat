@@ -28,11 +28,11 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
-import { homeSignInManifest, readHomeFeatures } from "./lib/homeFeatures";
+import { homeFeaturesToRequest, homeSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { reauthorizeHome } from "./lib/homeReauthorize";
-import { useInFlightWork } from "./lib/inFlightWork";
+import { useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
-import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
+import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type FeatureAccessOutcome, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -224,12 +224,21 @@ export function App() {
   const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
   const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
   // Recording and Connectors on the Home site ask for their own sets in place (shell/homeFeatureAccess.tsx). Asking
-  // signs in again on a separate instance, which replaces the session here only once it is approved and verified;
-  // declining or closing OpenKey leaves this session, the feed and chat exactly as they are.
+  // signs in again on a separate instance, which replaces the session here only once it covers what was asked, is
+  // verified, and the owner is still signed in with nothing running; anything else leaves this session, the feed and
+  // chat exactly as they are.
   const homeFeatureStore = useMemo(() => browserRevisionStore(), []);
-  const requestFeatureAccess = useCallback<RequestFeatureAccess>(async (feature) => {
+  // Advanced by every sign-in and local sign-out: an ask started under one session is never kept under another.
+  const sessionEpochRef = useRef(0);
+  const featureInFlightRef = useRef<InFlightWork>(null);
+  // One ask at a time: a second Continue while OpenKey is open joins the first instead of starting another sign-in.
+  const featureAskRef = useRef<Promise<FeatureAccessOutcome> | null>(null);
+  const askForFeature = useCallback(async (feature: HomeFeature): Promise<FeatureAccessOutcome> => {
     const current = tcw;
     if (!HOME_SITE || state !== "ready" || !current || !address) return "failed";
+    if (featureInFlightRef.current !== null) return "busy";
+    const epoch = sessionEpochRef.current;
+    const signedOut = () => signOutInFlightRef.current || sessionEpochRef.current !== epoch;
     const result = await reauthorizeHome({
       connect: () => connectWallet({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
       prefetch: createWebSignInPrefetch(BACKEND_URL, { requestNonce }),
@@ -237,10 +246,19 @@ export function App() {
       verify: (siwe, signature) => verifySession(BACKEND_URL, siwe, signature),
     }, {
       address,
-      features: [...readHomeFeatures(homeFeatureStore, address), feature],
+      // Everything the session has or this device used stays in the new grant, so allowing one never drops another.
+      features: homeFeaturesToRequest(homeFeatureStore, current, address, feature),
       config: { autoCreateSpace: true, includeAccountRegistryPermissions: false, tinycloudHosts: TINYCLOUD_HOSTS, uiPlatform: sdkUiPlatform() },
+      // Checked just before the new session is saved.
+      canCommit: () => (signedOut() ? "signed-out" : featureInFlightRef.current !== null ? "busy" : null),
     });
     if (result.outcome !== "granted") return result.outcome;
+    // Checked again just before the app takes it (token, session, revision): saving it is not a reason to keep it.
+    if (signedOut()) {
+      clearPersistedSession(address);
+      result.tcw.cleanup();
+      return "signed-out";
+    }
     sessionStoreRef.current.setSession(result.verified.token, result.verified.expiresIn, address);
     recordManifestRevisionIfSigned(homeFeatureStore, address, result.manifest);
     // Same account and space: the new instance joins the current storage session instead of opening a new one.
@@ -251,7 +269,14 @@ export function App() {
     current.cleanup();
     return "granted";
   }, [tcw, state, address, homeFeatureStore]);
+  const requestFeatureAccess = useCallback<RequestFeatureAccess>((feature) => {
+    if (featureAskRef.current) return featureAskRef.current;
+    const ask = askForFeature(feature).finally(() => { featureAskRef.current = null; });
+    featureAskRef.current = ask;
+    return ask;
+  }, [askForFeature]);
   const featureInFlight = useInFlightWork(HOME_SITE && state === "ready");
+  useEffect(() => { featureInFlightRef.current = featureInFlight; }, [featureInFlight]);
   const featureAccess = useHomeFeatureAccessState({
     homeSite: HOME_SITE,
     tcw: state === "ready" ? tcw : null,
@@ -313,6 +338,7 @@ export function App() {
     return task;
   }, [performCaptureHandoff]);
   const completeLocalSignOut = useCallback((warning: string | null, terminal = false) => {
+    sessionEpochRef.current += 1;
     nativeRenewalRef.current?.stop();
     nativeRenewalRef.current = null;
     if (tcw) {
@@ -950,6 +976,7 @@ export function App() {
 
   const signIn = useCallback(async (hints?: NativeSignInHints) => {
     let prefetch: WebSignInPrefetch | undefined;
+    sessionEpochRef.current += 1;
     setError(null);
     // Each tab's remembered place belongs to the account that left it.
     resetNavigationMemory();
@@ -1292,7 +1319,9 @@ export function App() {
       tcw={isReady ? tcw : null}
       backendUrl={BACKEND_URL}
       sessionStore={sessionStoreRef.current}
-      enabled={voiceNotesInApp && !LOCAL_VALIDATION && featureAccess.covered("recording")}
+      // The recorder's own checks (on mount and on return to the app) reach the backend and resume consented jobs
+      // unattended, so on the Home site it starts only once Recording is permitted, not merely covered.
+      enabled={voiceNotesInApp && !LOCAL_VALIDATION && featureAccess.permitted("recording")}
       onAccountReady={setCaptureReadyTcw}
       pipeline={voiceNotePipeline}
       signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}
@@ -1325,7 +1354,8 @@ export function App() {
             />
           </main>
         ) : isReady && tcw ? (
-          <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
+          // Agent access offers private memory and meeting access to agents; the Home site shows no control for it, so it is off there.
+          <AgentAccessProvider enabled={!HOME_SITE} tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
             <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION && featureAccess.permitted("recording")} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
             {/* The shell keeps ChatWorkspace mounted while another surface is

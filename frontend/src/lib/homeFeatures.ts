@@ -26,16 +26,20 @@ export function readHomeFeatures(store: Pick<Storage, "getItem"> | null, address
   return Array.isArray(parsed) ? HOME_FEATURES.filter((feature) => parsed.includes(feature)) : [];
 }
 
-/** Flag `feature` for `address` on this device. A store that refuses the write leaves the feature asking in place. */
-export function rememberHomeFeature(store: Pick<Storage, "getItem" | "setItem"> | null, address: string, feature: HomeFeature): void {
-  if (!store) return;
+/**
+ * Flag `feature` for `address` on this device; true when the flag is now stored. A store that refuses the write leaves
+ * the feature unflagged, and it is tried again only on a later visit.
+ */
+export function rememberHomeFeature(store: Pick<Storage, "getItem" | "setItem"> | null, address: string, feature: HomeFeature): boolean {
+  if (!store) return false;
   const current = readHomeFeatures(store, address);
-  if (current.includes(feature)) return;
+  if (current.includes(feature)) return true;
   try {
     store.setItem(homeFeaturesKey(address), JSON.stringify([...current, feature]));
   } catch {
-    // Not remembered: the feature asks in place next time.
+    return false;
   }
+  return readHomeFeatures(store, address).includes(feature);
 }
 
 /** The flagged sets' entries, each once, in feature order. */
@@ -80,4 +84,15 @@ export function sessionCoversHomeFeature(tcw: Partial<Pick<TinyCloudWeb, "hasPer
   } catch {
     return false;
   }
+}
+
+/** What a re-authorise asks for: `feature`, plus every set the session covers or this device used, so a swap never drops one. */
+export function homeFeaturesToRequest(
+  store: Pick<Storage, "getItem"> | null,
+  tcw: Partial<Pick<TinyCloudWeb, "hasPermissions">>,
+  address: string,
+  feature: HomeFeature,
+): HomeFeature[] {
+  const flagged = readHomeFeatures(store, address);
+  return HOME_FEATURES.filter((each) => each === feature || flagged.includes(each) || sessionCoversHomeFeature(tcw, each, address));
 }
