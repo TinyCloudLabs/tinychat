@@ -174,12 +174,16 @@ TinyCloud Home site at `https://home.tinycloud.xyz`.
   `packages/core/src/manifest-bundle.ts`), plus the decrypt grant composed at
   request time. When one is opened and the session does not cover its set, it
   asks in place: Home signs in again in the page on a separate instance with
-  the base grant plus every used set plus this one (one OpenKey approval), and
-  replaces the session only once that is approved and verified. Once a feature
+  the base grant plus every set the session has or the device used, plus this
+  one (one OpenKey approval). It replaces the session only when the approval
+  covers everything asked, the backend verifies it, the owner is still signed
+  in, and no recording, upload or save is running; otherwise nothing is saved.
+  New recordings and uploads wait while OpenKey is open. Once a feature
   has been used on a device, `xyz.tinycloud.tinychat:home-features:<address>`
   in localStorage (feature names only; kept on sign-out) makes the next
-  sign-in include its set. Background work for a feature runs only when it is
-  flagged on the device and the session covers its set. The flag never changes
+  sign-in include its set. Background work for a feature, including the
+  recorder's own checks, runs only when it is flagged on the device and the
+  session covers its set. Agent access is off on Home. The flag never changes
   the revision: any grant carrying the Home bundle records `home-1`.
 - **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
   name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
