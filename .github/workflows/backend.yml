@@ -63,7 +63,17 @@ jobs:
       - name: Package tests (core, client, server incl. node-sdk renewal)
         run: bun run test:packages
 
+      - name: Install checksum-pinned Vector (same release as the log-shipper image)
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error https://github.com/vectordotdev/vector/releases/download/v0.59.0/vector-0.59.0-x86_64-unknown-linux-gnu.tar.gz --output "$RUNNER_TEMP/vector.tar.gz"
+          printf '%s\n' "fb15878d1cd68445e0658792a8fa7ccf02ae8a353c6cc5d6fe867b171993e19f  $RUNNER_TEMP/vector.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/vector.tar.gz" -C "$RUNNER_TEMP"
+
       - name: Backend tests
+        # VECTOR_BIN runs the request-record test through the real shipper pipeline (TC-2537).
+        env:
+          VECTOR_BIN: ${{ runner.temp }}/vector-x86_64-unknown-linux-gnu/bin/vector
         run: bun run --cwd backend test
 
       - name: Vector config (log-shipper, pinned image)

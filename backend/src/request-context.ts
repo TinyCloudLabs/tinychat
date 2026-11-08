@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
-import type { RequestHandler } from "express";
+import { createHmac, randomUUID } from "node:crypto";
+import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
 
 // Legacy Private/hosted correlation headers intentionally keep their existing broader UUID syntax.
 const LEGACY_CORRELATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -10,16 +10,25 @@ const METHODS: Record<string, true> = {
   OPTIONS: true, CONNECT: true, TRACE: true,
 };
 
+export type StreamOutcome = "done" | "error" | "aborted";
+
 export type RequestEvent = {
   event: "tinychat_request";
   request_id: string;
   request_id_replaced: boolean;
   method: string;
-  /** Registered terminal route template, never baseUrl/originalUrl (which contain parameter values). */
+  /** Registered route template (mount template + terminal template), never baseUrl/originalUrl values. */
   route: string;
   status: number;
   duration_ms: number;
   correlation_id?: string;
+  /** Streaming routes only: how the stream ended, plus a fixed error code. */
+  stream?: StreamOutcome;
+  code?: string;
+  /** Credits recorded for this request, when any were charged. */
+  credits?: number;
+  /** Keyed HMAC of the authenticated account; omitted when unauthenticated or no key is configured. */
+  account_hash?: string;
 } | {
   event: "tinychat_request_diagnostic";
   request_id: string;
@@ -31,6 +40,104 @@ export type RequestEvent = {
 
 type EventSink = (event: RequestEvent) => void;
 const context = new AsyncLocalStorage<{ requestId?: string; emit: EventSink }>();
+
+/** Per-response facts a handler adds to its request record. Keyed by the response object, so it needs no async context. */
+type RecordNotes = {
+  mountBase?: string;
+  mountTemplate?: string;
+  stream?: StreamOutcome;
+  code?: string;
+  credits?: number;
+  holds: number;
+  release?: () => void;
+};
+const notes = new WeakMap<object, RecordNotes>();
+const RECORD_CODE = /^[a-z][a-z0-9_]{0,59}$/;
+/** A held record is emitted anyway this long after the response ended, so a stuck handler never loses it. */
+const RECORD_HOLD_LIMIT_MS = 30_000;
+
+let accountHashKey: string | undefined;
+
+/** Set once at startup from REQUEST_LOG_HMAC_KEY (already validated). Undefined disables account_hash. */
+export function configureRequestLogAccountHash(key: string | undefined): void {
+  accountHashKey = key?.trim() || undefined;
+}
+
+/** hex(HMAC-SHA256(key, "account\0" || lowercase address)): a stable pseudonym, never the address itself. */
+export function requestLogAccountHash(address: string): string | undefined {
+  if (!accountHashKey) return undefined;
+  return createHmac("sha256", accountHashKey).update(`account\0${address.toLowerCase()}`).digest("hex");
+}
+
+/** Add the stream outcome, a fixed error code or charged credits to this response's request record. */
+export function noteRequestRecord(res: object, fields: { stream?: StreamOutcome; code?: string; credits?: number }): void {
+  const note = notes.get(res);
+  if (!note) return;
+  if (fields.stream) note.stream = fields.stream;
+  if (fields.code !== undefined && RECORD_CODE.test(fields.code)) note.code = fields.code;
+  if (fields.credits !== undefined && Number.isSafeInteger(fields.credits) && fields.credits >= 0) {
+    note.credits = (note.credits ?? 0) + fields.credits;
+  }
+}
+
+function holdRequestRecord(res: object): () => void {
+  const note = notes.get(res);
+  if (!note) return () => {};
+  note.holds++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    note.holds--;
+    note.release?.();
+  };
+}
+
+/** For handlers that settle their outcome or charge after the response ends (streams): the request record
+ * waits until the handler's promise settles, so it carries them.
+ */
+export function recordAfterHandler(handler: (req: Request, res: Response, next: NextFunction) => unknown): RequestHandler {
+  return async (req, res, next) => {
+    const release = holdRequestRecord(res);
+    try {
+      await handler(req, res, next);
+    } finally {
+      release();
+    }
+  };
+}
+
+/** Record each string mount's template (e.g. "/api/chat") so the request record can name the full route
+ * template without reading baseUrl, whose values can carry path parameters. Call before mounting routers.
+ */
+export function recordMountTemplates(app: Express): void {
+  const use = app.use;
+  // Express types `use` as an overload set; this wrapper only passes arguments through.
+  Reflect.set(app, "use", (...args: unknown[]) => {
+    const [template, ...handlers] = args;
+    if (typeof template !== "string" || handlers.length === 0) return Reflect.apply(use, app, args);
+    const mark: RequestHandler = (req, res, next) => {
+      const note = notes.get(res);
+      if (note) {
+        note.mountBase = req.baseUrl;
+        note.mountTemplate = template;
+      }
+      next();
+    };
+    return Reflect.apply(use, app, [template, mark, ...handlers]);
+  });
+}
+
+function routeTemplate(req: Request, note: RecordNotes): string {
+  const terminal: unknown = req.route?.path;
+  if (typeof terminal !== "string") return "unmatched";
+  let route = terminal;
+  // baseUrl is compared, never copied: only the template recorded for the same mount is used.
+  if (req.baseUrl && note.mountTemplate !== undefined && note.mountBase === req.baseUrl) {
+    route = note.mountTemplate + (terminal === "/" ? "" : terminal);
+  }
+  return route.length <= 256 ? route : "unmatched";
+}
 
 /** The backend entry ID, available to outbound HTTP without threading credentials or request objects. */
 export function currentRequestId(): string | undefined {
@@ -78,22 +185,48 @@ export function createRequestContextMiddleware(emit: EventSink = emitToStdout): 
     const requestId = normalized ?? randomUUID();
     const started = performance.now();
     res.setHeader("X-Request-Id", requestId);
-    context.run({ requestId, emit }, () => {
-      res.once("finish", () => {
-        const route: unknown = req.route?.path;
+    const note: RecordNotes = { holds: 0 };
+    notes.set(res, note);
+    let ended: number | undefined;
+    let emitted = false;
+    const send = () => {
+      if (emitted || ended === undefined) return;
+      emitted = true;
+      try {
         const correlation = res.getHeader("x-correlation-id");
+        const address = req.user?.address;
+        const accountHash = address ? requestLogAccountHash(address) : undefined;
         emit({
           event: "tinychat_request",
           request_id: requestId,
           request_id_replaced: incoming !== undefined && normalized === undefined,
           method: Object.hasOwn(METHODS, req.method) ? req.method : "OTHER",
-          route: typeof route === "string" && route.length <= 256 ? route : "unmatched",
-          status: res.statusCode,
-          duration_ms: Math.max(0, performance.now() - started),
+          route: routeTemplate(req, note),
+          // 499: the client closed the connection before any response was sent.
+          status: res.headersSent ? res.statusCode : 499,
+          duration_ms: Math.max(0, ended - started),
           // Private/hosted correlation remains independent, including when callers send both IDs.
           ...(typeof correlation === "string" && LEGACY_CORRELATION_ID.test(correlation) ? { correlation_id: correlation.toLowerCase() } : {}),
+          ...(note.stream ? { stream: note.stream } : {}),
+          ...(note.code ? { code: note.code } : {}),
+          ...(note.credits !== undefined ? { credits: note.credits } : {}),
+          ...(accountHash ? { account_hash: accountHash } : {}),
         });
-      });
+      } catch {
+        // The record is best effort: it never breaks or delays a response.
+      }
+    };
+    note.release = () => { if (note.holds === 0) send(); };
+    const end = () => {
+      if (ended !== undefined) return;
+      ended = performance.now();
+      if (note.holds === 0) return send();
+      setTimeout(send, RECORD_HOLD_LIMIT_MS).unref?.();
+    };
+    context.run({ requestId, emit }, () => {
+      res.once("finish", end);
+      // A client that disconnects first may never produce "finish".
+      res.once("close", end);
       next();
     });
   };

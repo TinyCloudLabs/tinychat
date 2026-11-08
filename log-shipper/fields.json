@@ -117,7 +117,8 @@
         "assemblyai_provider_blocked",
         "assemblyai_provider_recovered",
         "assemblyai_jobs_failed_in_a_row",
-        "assemblyai_worker_heartbeat"
+        "assemblyai_worker_heartbeat",
+        "tinychat_request"
       ],
       "fields": {
         "svc": { "type": "enum", "values": ["backend"] },
@@ -125,7 +126,7 @@
         "failure": { "type": "enum", "values": ["ledger_config", "secret_reuse", "secret_too_weak", "fireflies_oauth_config", "google_oauth_config", "hosted_spool", "private_cloud_config", "unclassified"] },
         "error_name": { "type": "string", "regex": "^[A-Za-z0-9_.]{1,64}$", "max_len": 64 },
         "component": { "type": "string", "regex": "^[a-z0-9][a-z0-9_.-]{0,39}$", "max_len": 40 },
-        "route": { "type": "string", "regex": "^[a-z_]{1,40}$", "max_len": 40 },
+        "route": { "type": "string", "regex": "^(?:[a-z_]{1,40}|/[A-Za-z0-9_.:*/-]{0,159})$", "max_len": 160 },
         "status": { "type": "integer", "min": 100, "max": 599 },
         "upstream_status": { "type": "integer", "min": 100, "max": 599 },
         "code": { "type": "string", "regex": "^[a-z][a-z0-9_]{0,59}$", "max_len": 60 },
@@ -137,7 +138,13 @@
         "count": { "type": "integer", "min": 0, "max": 1000 },
         "pending_jobs": { "type": "integer", "min": 0, "max": 100000 },
         "consecutive_failed_jobs": { "type": "integer", "min": 0, "max": 100000 },
-        "oldest_pending_age_s": { "type": "number", "min": 0, "max": 31536000 }
+        "oldest_pending_age_s": { "type": "number", "min": 0, "max": 31536000 },
+        "request_id": { "type": "string", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", "max_len": 36 },
+        "method": { "type": "enum", "values": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER"] },
+        "duration_ms": { "type": "number", "min": 0, "max": 86400000 },
+        "stream": { "type": "enum", "values": ["done", "error", "aborted"] },
+        "credits": { "type": "integer", "min": 0, "max": 1000000000 },
+        "account_hash": { "type": "string", "regex": "^[0-9a-f]{64}$", "max_len": 64 }
       }
     },
     "tinycloud-mcp": { "events": [], "fields": {} },

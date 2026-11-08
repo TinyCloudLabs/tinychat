@@ -28,15 +28,19 @@ transforms:
       msg = replace(msg, r'\x1b\[[0-9;]*[A-Za-z]', "")
       # Stack frames, source snippets and the runtime banner that follow an error line carry no class or event of their own.
       if match(msg, r'^(?:\s|[0-9]+ \| |Bun v)') { abort }
-      msg = replace(msg, r'(?i)did:[a-z0-9]+:[A-Za-z0-9._:%-]+', "[did]")
-      msg = replace(msg, r'(?i)\b0x[0-9a-f]{8,}\b', "[hex]")
-      msg = replace(msg, r'eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*', "[jwt]")
-      msg = replace(msg, r'(?i)bearer\s+\S+', "bearer [redacted]")
-      msg = replace(msg, r'(?i)\b(?:sk|pk|tc|tcu|key|ghp|xox[a-z])[_-][A-Za-z0-9_-]{12,}', "[key]")
-      msg = replace(msg, r'[A-Za-z][A-Za-z0-9+.-]*://\S+', "[url]")
-      msg = replace(msg, r'[\w.+-]+@[\w-]+\.[\w.-]+', "[email]")
-      msg = replace(msg, r'[A-Za-z0-9+/=_]{32,}', "[long]")
-      msg = replace(msg, r'[A-Za-z0-9_-]{43,}', "[long]")
+      # The typed request record carries a 64-hex account_hash that `[long]` would erase; the allowlist checks
+      # every one of its fields against a strict pattern instead, so free-text redaction is not applied to it.
+      if !starts_with(msg, "{\"event\":\"tinychat_request\",") {
+        msg = replace(msg, r'(?i)did:[a-z0-9]+:[A-Za-z0-9._:%-]+', "[did]")
+        msg = replace(msg, r'(?i)\b0x[0-9a-f]{8,}\b', "[hex]")
+        msg = replace(msg, r'eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*', "[jwt]")
+        msg = replace(msg, r'(?i)bearer\s+\S+', "bearer [redacted]")
+        msg = replace(msg, r'(?i)\b(?:sk|pk|tc|tcu|key|ghp|xox[a-z])[_-][A-Za-z0-9_-]{12,}', "[key]")
+        msg = replace(msg, r'[A-Za-z][A-Za-z0-9+.-]*://\S+', "[url]")
+        msg = replace(msg, r'[\w.+-]+@[\w-]+\.[\w.-]+', "[email]")
+        msg = replace(msg, r'[A-Za-z0-9+/=_]{32,}', "[long]")
+        msg = replace(msg, r'[A-Za-z0-9_-]{43,}', "[long]")
+      }
       level_num = to_int(get(., ["level"]) ?? 6) ?? 6
       at = now()
       raw_at = get(., ["timestamp"]) ?? null
@@ -61,13 +65,42 @@ transforms:
       peeled = replace(msg, r'^(?:error|[A-Za-z0-9_.]{0,48}Error): \[startup\] ', "[startup] ")
       parsed, parse_err = parse_json(msg)
       if parse_err == null && is_object(parsed) {
-        # Structured events: the four hosted-AssemblyAI monitor events (backend/src/services/assemblyai-hosted-monitor.ts).
+        # Structured events: the four hosted-AssemblyAI monitor events (backend/src/services/assemblyai-hosted-monitor.ts)
+        # and the per-request record (backend/src/request-context.ts).
         j = object!(parsed)
         name = string(j.event) ?? ""
         ts = gelf_ts
         app_ts = string(j.ts) ?? ""
         if length(app_ts) <= 24 && match(app_ts, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$') { ts = app_ts }
-        if name == "assemblyai_provider_blocked" {
+        if name == "tinychat_request" {
+          # TC-2537 allow-list: request id, route template, method, status, duration, stream outcome and code,
+          # credits, account hash. Bodies, headers, query strings, path values, addresses and IPs are never fields.
+          request_id = string(j.request_id) ?? ""
+          if length(request_id) != 36 || !match(request_id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') { abort }
+          method = string(j.method) ?? ""
+          if !includes(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER"], method) { abort }
+          route = string(j.route) ?? ""
+          if length(route) > 160 || !match(route, r'^(?:unmatched|/[A-Za-z0-9_.:*/-]{0,159})$') { route = "unmatched" }
+          if !is_integer(j.status) { abort }
+          status = int(j.status) ?? 0
+          if status < 100 || status > 599 { abort }
+          if !(is_integer(j.duration_ms) || is_float(j.duration_ms)) { abort }
+          duration_ms = round(float(j.duration_ms) ?? to_float(j.duration_ms) ?? -1.0, precision: 1)
+          if duration_ms < 0.0 || duration_ms > 86400000.0 { abort }
+          request_level = "info"
+          if status >= 500 { request_level = "error" }
+          out = {"svc": "backend", "event": "tinychat_request", "level": request_level, "ts": ts, "request_id": request_id, "method": method, "route": route, "status": status, "duration_ms": duration_ms}
+          stream = string(j.stream) ?? ""
+          if includes(["done", "error", "aborted"], stream) { out.stream = stream }
+          code = string(j.code) ?? ""
+          if length(code) <= 60 && match(code, r'^[a-z][a-z0-9_]{0,59}$') { out.code = code }
+          if is_integer(j.credits) {
+            credits = int(j.credits) ?? -1
+            if credits >= 0 && credits <= 1000000000 { out.credits = credits }
+          }
+          account_hash = string(j.account_hash) ?? ""
+          if length(account_hash) == 64 && match(account_hash, r'^[0-9a-f]{64}$') { out.account_hash = account_hash }
+        } else if name == "assemblyai_provider_blocked" {
           reason = string(j.reason) ?? ""
           if !includes(["billing_blocked", "key_rejected", "rate_limited"], reason) { abort }
           if !is_integer(j.http_status) { abort }
@@ -164,10 +197,28 @@ transforms:
         abort
       }
       . = out
+  # TC-2537: per-request records are capped so traffic (or a request flood) cannot exhaust the shared Better Stack
+  # allowance: at most 10 problem records (5xx, stream error or aborted) and 20 routine records per minute.
+  request_split:
+    type: route
+    inputs: [allowlist]
+    route:
+      problem: '.event == "tinychat_request" && ((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+      routine: '.event == "tinychat_request" && !((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+  request_problem_cap:
+    type: throttle
+    inputs: [request_split.problem]
+    threshold: 10
+    window_secs: 60
+  request_routine_cap:
+    type: throttle
+    inputs: [request_split.routine]
+    threshold: 20
+    window_secs: 60
 sinks:
   betterstack:
     type: http
-    inputs: [allowlist]
+    inputs: [request_split._unmatched, request_problem_cap, request_routine_cap]
     method: post
     uri: "https://s2795438.us-west-2a.betterstackdata.com/"
     encoding: { codec: json }

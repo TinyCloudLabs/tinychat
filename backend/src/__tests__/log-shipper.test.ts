@@ -127,10 +127,13 @@ describe("allowlist and redaction", () => {
   const backendSchema = fieldsJson.services["tinychat-backend"];
   const allowed = new Set([...Object.keys(fieldsJson.common), ...Object.keys(backendSchema.fields)]);
 
-  test("pipeline order is socket -> redact -> allowlist -> sink; nothing bypasses the allowlist", () => {
+  test("pipeline order is socket -> redact -> allowlist -> (request caps) -> sink; nothing bypasses the allowlist", () => {
     expect(vector.transforms.redact.inputs).toEqual(["gelf_in"]);
     expect(vector.transforms.allowlist.inputs).toEqual(["redact"]);
-    expect(vector.sinks.betterstack.inputs).toEqual(["allowlist"]);
+    expect(vector.transforms.request_split.inputs).toEqual(["allowlist"]);
+    expect(vector.transforms.request_problem_cap.inputs).toEqual(["request_split.problem"]);
+    expect(vector.transforms.request_routine_cap.inputs).toEqual(["request_split.routine"]);
+    expect(vector.sinks.betterstack.inputs).toEqual(["request_split._unmatched", "request_problem_cap", "request_routine_cap"]);
     expect(Object.keys(vector.sinks)).toEqual(["betterstack"]);
     expect(vector.sinks.betterstack.buffer).toMatchObject({ type: "memory", when_full: "drop_newest" });
   });
