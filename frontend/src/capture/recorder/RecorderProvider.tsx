@@ -238,7 +238,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   useEffect(() => {
     const current = {};
     owner.current = current;
+    // A new owner starts clear: a lookup or choice still pending for the old one neither blocks nor answers it.
     setDisclosure(null);
+    setDisclosureBusy(false);
+    setDisclosureError(null);
     return () => { if (owner.current === current) owner.current = {}; };
   }, [tcw, ownerToken]);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
@@ -354,7 +357,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
         else afterSystemAudio();
       } catch (error) {
         if (owner.current === mine) setDisclosureError(`Could not start recording: ${readableError(error)}`);
-      } finally { setDisclosureBusy(false); }
+      } finally { if (owner.current === mine) setDisclosureBusy(false); }
     })();
   }, [afterSystemAudio, disclosure, disclosureBusy, platform]);
   const reviewPrivateConsent = useCallback(() => {
@@ -379,7 +382,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setDisclosure(null);
       afterSystemAudio();
     }, (error: unknown) => { if (owner.current === mine) setDisclosureError(`Could not save your choice: ${readableError(error)}`); })
-      .finally(() => setDisclosureBusy(false));
+      .finally(() => { if (owner.current === mine) setDisclosureBusy(false); });
   }, [afterSystemAudio, disclosure, disclosureBusy]);
   const closePrivate = useCallback((confirmed: boolean) => {
     if (disclosure?.kind !== "private" && disclosure?.kind !== "powerful") return;

@@ -579,7 +579,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return true;
   };
   const acceptNativeOptions = (status: CaptureStatus | MicStateEvent) => {
-    if (!status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
+    // A closed recorder takes no options read back after it closed (send() writes nothing then, either).
+    if (homeWorkDetached || !status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
     nativeOptions = status.options;
     if (refreshChoice()) notify();
   };
@@ -829,6 +830,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
 
   /** A native commit is enough for the receipt; cloud work follows independently. */
   const saveStopped = async (recording: VoiceNoteRecording) => {
+    const mine = attachment;
     const generation = currentAccountGeneration();
     const accountCurrent = () => generation === currentAccountGeneration();
     // Admission can run as soon as the local file is committed. The row
@@ -863,6 +865,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
     }
+    // Closed (or attached again) while the audio was being prepared: the committed recording is saved by the pending
+    // saves, not admitted from an attachment that has ended (work already admitted runs on).
+    if (attachment !== mine) return;
     if (recording.options?.transcriber === "assemblyai" && transcriber && generation === currentAccountGeneration()) {
       transcriber.noteSaved(recording);
     }
@@ -1051,8 +1056,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async setTranscriber(id, { scope }) {
       if (!available) return "unavailable";
-      // A recording-scoped choice is for the recording shown now, from this attachment: the desktop refresh below can
-      // outlast that recording, and the choice must not land on whichever recording is live when it returns.
+      // From this attachment only: a closed recorder changes no choice. A recording-scoped choice is for the recording
+      // shown now (stillShown, checked before the engine call): the desktop refresh below can outlast that recording,
+      // and the choice must not land on whichever recording is live when it returns. A default choice is checked inside
+      // the default-write lane, after its read and before its write.
       const mine = attachment;
       const shown = state.recordingId;
       const stillShown = () => state.phase === "recording" && !!shown && state.recordingId === shown && controls(mine, shown);
@@ -1080,29 +1087,31 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const status = await VoiceNotes.status();
         if (stillShown() && status.id === shown) acceptNativeOptions(status);
       } else {
-        await setDefaultTranscriber(id);
+        // Checked again inside the default-write lane, after its read and before its write.
+        if (!await setDefaultTranscriber(id, () => controls(mine))) return "unavailable";
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
       }
-      // Choosing Local again is also the way to retry a download that failed.
-      if (id === "on-device") ensureLocalModel(true);
+      // Choosing Local again is also the way to retry a download that failed (never from a closed recorder).
+      if (id === "on-device" && controls(mine)) ensureLocalModel(true);
       return "ok";
     },
     async setIdentifySpeakers(on, scope) {
+      const mine = attachment;
       if (!available) return "unavailable";
       const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
       if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
       if (id === "private-cloud" && !privateDiarization()) return "unavailable";
       if (scope === "recording") {
-        const mine = attachment;
         const shown = state.recordingId;
         if (!shown || !controls(mine, shown)) return "unavailable";
         await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
         const status = await VoiceNotes.status();
         if (state.recordingId === shown && controls(mine, shown) && status.id === shown) acceptNativeOptions(status);
       } else {
-        await setDefaultIdentifySpeakers(on);
+        // Checked again inside the default-write lane, after its read and before its write.
+        if (!await setDefaultIdentifySpeakers(on, () => controls(mine))) return "unavailable";
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
       }
@@ -1203,8 +1212,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           for (const listener of levelListeners) listener(levelFromAmplitude(event.sources?.mic.level ?? event.level));
           for (const listener of levelsListeners) listener(event);
         }),
-        // Retained by the shell until heard, so a reload mid-recording still saves the note.
-        VoiceNotes.addListener("autoStopped", onAutoStopped),
+        // Retained by the shell until heard, so a reload mid-recording still saves the note. Replayed to a listener
+        // whose removal may still be pending (attached and closed in one turn): a closed attachment saves nothing.
+        VoiceNotes.addListener("autoStopped", (event) => { if (attached) onAutoStopped(event); }),
         // Retained events replay when each listener is added after a WebView reload.
         // Register failures before recovered/committed: retained native events replay
         // in listener order after a WebView reload, then commit preserves audio loss.
@@ -1215,6 +1225,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             issue: { kind: "recoveryFailed", detail: event.reason ?? event.error ?? "recovery_failed" } });
         }),
         VoiceNotes.addListener("writeFailure", (event) => {
+          if (!attached) return;
           if (dismissed(event.id)) return;
           lostAudioIds.add(event.id);
           const key = scope();
@@ -1436,6 +1447,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
     },
     async openSettings() {
+      if (!controls(attachment)) return;
       if (!captureCapabilities().openSettings) throw Object.assign(new Error("This shell cannot open settings"), { code: "unsupported" });
       await VoiceNotes.openSettings();
     },
@@ -1501,6 +1513,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       // Ended for the ownership model only once a status read says so.
       confirmEnded(recording.id);
+      // Closed meanwhile: the committed recording is saved by the pending saves, not by a closed recorder; attached
+      // again, it starts from what is live.
+      if (attachment !== mine) {
+        if (attachment !== null) send({ type: "REATTACHED" });
+        return;
+      }
       captureCommitted(recording.id, recording);
       void saveStopped(recording).catch((caught: unknown) =>
         send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -1550,6 +1568,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         // Resolved is not ended: an adapter can still be retiring the capture. Held until a status read says so.
         confirmEnded(shown);
         if (discarded.id && discarded.id !== shown) confirmEnded(discarded.id);
+        // Closed (or attached again) while the engine answered: nothing more here, the discard intent (its mark) stays
+        // intact, so the pending saves and the next launch delete the recording, not this recorder.
+        if (attachment !== mine) {
+          settleIfReattached();
+          return;
+        }
         if (discarded.id && discarded.id !== id) {
           if (shown) unmarkDiscarded(shown);
           id = discarded.id;
@@ -1560,17 +1584,20 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         // no_audio_captured: the phone kept nothing.
         const code = errorCode(caught) === "recording_changed" ? "not_recording" : errorCode(caught);
         if (code === "already_committed" || code === "not_recording" || code === "no_audio_captured") confirmEnded(shown);
+        // Closed meanwhile: the same, before any bookkeeping or recovery read.
+        if (attachment !== mine) {
+          settleIfReattached();
+          return;
+        }
         if (code === "already_committed") {
           if (shown) unmarkDiscarded(shown);
-          if (attachment !== mine) settleIfReattached();
-          else await reconcileDiscardFailure(shown, `Already saved on this ${recorderDevice()}. The note is still available.`);
+          await reconcileDiscardFailure(shown, `Already saved on this ${recorderDevice()}. The note is still available.`);
           return;
         }
         if (code !== "not_recording" && code !== "no_audio_captured") {
           if (shown) unmarkDiscarded(shown);
           if (id && id !== shown) unmarkDiscarded(id);
-          if (attachment !== mine) settleIfReattached();
-          else await reconcileDiscardFailure(shown, `Could not discard the recording: ${messageOf(caught)}`);
+          await reconcileDiscardFailure(shown, `Could not discard the recording: ${messageOf(caught)}`);
           return;
         }
         needDeleteCommitted = code === "not_recording";
@@ -1608,8 +1635,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     retryPending() {
       if (retryPendingInFlight) return retryPendingInFlight;
+      const mine = attachment;
       const run = async () => {
-        if (!available) return;
+        if (!available || !controls(mine)) return;
         if (!tcw?.did || !tcw.spaceId) {
           pendingStore.reportError("Your account space is not ready to save this note. Try again after sign-in finishes.");
           return;
@@ -1620,9 +1648,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           const generation = currentAccountGeneration();
           try {
             // The same generation can claim a v2 note left unowned during sign-in.
+            // Checked again inside the default-write lane, after its read and before its write.
             const claimed = await withCaptureDeadline(writeAccountDefaults((native) =>
               native.status === "signed_in" && native.accountDid === tcw.did
-                ? { accountDid: native.accountDid, transitionGen: native.transitionGen } : null));
+                ? { accountDid: native.accountDid, transitionGen: native.transitionGen } : null, () => controls(mine)));
+            if (!controls(mine)) return;
             if (!claimed) {
               account.reportError(`This ${recorderDevice()}'s recording account is not ready. Try again shortly.`);
               return;
@@ -1668,7 +1698,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       send({ type: "DISMISSED" });
     },
     dismissCaptureIssue(id) {
-      if (state.captureIssues[id]?.kind !== "partial_audio") return false;
+      // A closed recorder shows no notice: a dismissal from it applies to nothing (the next recorder shows the notice).
+      if (!controls(attachment) || state.captureIssues[id]?.kind !== "partial_audio") return false;
       const key = scope();
       if (key === null || !dismissPartialAudioIssue(key, id)) return false;
       send({ type: "CAPTURE_DISMISSED", id });

@@ -145,9 +145,15 @@ function inOrder<T>(write: () => Promise<T>): Promise<T> {
   return run;
 }
 
+// A write whose caller has gone (a closed recorder) stops before it writes anything.
+const STALE = Symbol("stale");
+type Live = () => boolean;
+const always: Live = () => true;
+
 /** Writes the effective default for the current account to the engine and returns what it replaced, or null when nothing changed. Never during a sign-in or sign-out transition. */
-async function writeEffectiveDefaults(pref: CaptureOptions, attempting?: (before: EngineDefaults) => void): Promise<EngineDefaults | null> {
+async function writeEffectiveDefaults(pref: CaptureOptions, attempting?: (before: EngineDefaults) => void, live: Live = always): Promise<EngineDefaults | null | typeof STALE> {
   const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+  if (!live()) return STALE;
   const effective = effectiveCaptureOptions(pref, current.accountDid !== null);
   // A preference write must not re-assign the previous DID during sign-out.
   if (current.status === "transitioning" || (current.transcriber === effective.transcriber && current.identifySpeakers === effective.identifySpeakers
@@ -215,7 +221,7 @@ export function settleDefaults(): Promise<void> {
   return inOrder(async () => {
     if (unreconciled === null) return;
     try {
-      await writeEffectiveDefaults(readTranscriberPreference());
+      if (await writeEffectiveDefaults(readTranscriberPreference()) === STALE) return;
     } catch (caught) {
       console.error("[VoiceNotes] The default transcription mode is still not put right; recording is held", caught);
       throw new Error(`${readableError(caught)} (the default transcription mode could not be put right, so recording is held)`, { cause: caught });
@@ -228,13 +234,17 @@ export function settleDefaults(): Promise<void> {
  * Sets which account the engine's defaults belong to (sign-in, an aborted sign-out, claiming a note), in the same
  * lane as every other default write. The engine's defaults are read, and the transcriber and speakers are taken
  * from the stored preference, when this step runs, so it can neither restore an older mode over a choice nor be
- * overwritten by one still queued. `plan` returns the account and generation to write, or null to write nothing.
+ * overwritten by one still queued. `plan` returns the account and generation to write, or null to write nothing;
+ * `live` false when the step runs (its caller has closed) writes nothing too.
  */
 export function writeAccountDefaults(
   plan: (native: EngineDefaults) => { accountDid: string | null; transitionGen: number } | null,
+  live: Live = always,
 ): Promise<{ accountDid: string | null; transitionGen: number } | null> {
   return inOrder(async () => {
+    if (!live()) return null;
     const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+    if (!live()) return null;
     const account = plan(native);
     if (!account) return null;
     const effective = effectiveCaptureOptions(readTranscriberPreference(), account.accountDid !== null);
@@ -248,10 +258,14 @@ export function writeAccountDefaults(
  * One change to the preference, applied as one unit inside the write lane. Only the changed field is carried in; the
  * rest is read from the stored preference when the write runs, so a request queued earlier can never write back what
  * an earlier change replaced. The stored keys are read first, then the engine is written, then both keys. If any
- * step fails, `restoreAfterFailure` puts the keys and the engine back, each on its own, and the call throws.
+ * step fails, `restoreAfterFailure` puts the keys and the engine back, each on its own, and the call throws. If
+ * `live` is false when the step runs or once the engine's defaults are read (its caller has closed), nothing is
+ * written and it resolves false.
  */
-async function commitPreference(change: Partial<CaptureOptions>): Promise<void> {
+async function commitPreference(change: Partial<CaptureOptions>, live: Live = always): Promise<boolean> {
+  let applied = true;
   await inOrder(async () => {
+    if (!live()) { applied = false; return; }
     const store = storage();
     const prior = store ? { transcriber: store.getItem(TRANSCRIBER_KEY), speakers: store.getItem(SPEAKERS_KEY),
       uploadAudio: store.getItem(UPLOAD_AUDIO_KEY) } : null;
@@ -259,7 +273,7 @@ async function commitPreference(change: Partial<CaptureOptions>): Promise<void> 
     const chosenTranscriber = change.transcriber !== undefined;
     let before: EngineDefaults | null = null;
     try {
-      await writeEffectiveDefaults(pref, (current) => { before = current; });
+      if (await writeEffectiveDefaults(pref, (current) => { before = current; }, live) === STALE) { applied = false; return; }
       if (store) {
         if (chosenTranscriber) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
         store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
@@ -271,7 +285,8 @@ async function commitPreference(change: Partial<CaptureOptions>): Promise<void> 
     memoryPreference = pref;
     unreconciled = null;
   });
-  for (const listener of listeners) listener();
+  if (applied) for (const listener of listeners) listener();
+  return applied;
 }
 
 /** The effective choice changed under an unchanged preference (the Mac's Whisper became ready): rewrite the engine's default and tell the listeners. */
@@ -283,12 +298,13 @@ export async function refreshEffectiveTranscriber(): Promise<void> {
   for (const listener of listeners) listener();
 }
 
-export async function setDefaultTranscriber(transcriber: TranscriberId): Promise<void> {
-  await commitPreference({ transcriber });
+/** Resolves false, writing nothing, if `live` is false when its turn in the write lane comes (its caller closed). */
+export async function setDefaultTranscriber(transcriber: TranscriberId, live?: Live): Promise<boolean> {
+  return commitPreference({ transcriber }, live);
 }
 
-export async function setDefaultIdentifySpeakers(identifySpeakers: boolean): Promise<void> {
-  await commitPreference({ identifySpeakers });
+export async function setDefaultIdentifySpeakers(identifySpeakers: boolean, live?: Live): Promise<boolean> {
+  return commitPreference({ identifySpeakers }, live);
 }
 
 /** Legacy view helper; the controller API surfaces errors and is the new owner of choices. */

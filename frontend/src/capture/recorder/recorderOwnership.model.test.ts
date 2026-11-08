@@ -91,6 +91,7 @@ const REQUIRED = [
   "web × late start discarded by id", "desktop × late start discarded by id", "phone × late start stopped",
   "desktop × engine discard pending", "desktop × desktop retirement finishes", "desktop × action during a pending retirement",
   "phone × native start", "phone × native start while unattended",
+  "web × unattended stop of a paused recording", "desktop × unattended stop of a paused recording",
   "two attached", "adopted from a closed recorder", "record again after a receipt", "unattended past the grace",
 ];
 const MIN_PER_CELL = 5;
@@ -202,6 +203,12 @@ async function runSchedule(seed: number, base = SEED, steps = STEPS, idBase = 80
         if (recorders.some((r) => r.detach)) note("a closed recorder stopped a recording while a recorder was attached");
         did("unattended stop");
         if (kind === "phone") void liveNow().then((live) => { if (live && startedBy.get(live)?.closedWhileWaiting) did("late start stopped"); });
+        // Web and desktop stop and keep a recording its owner paused; the phone leaves it alone.
+        void fake.plugin.status().then((status) => {
+          if (status.state === "idle" || status.intent !== "paused") return;
+          if (kind === "phone") note(`the phone stopped ${status.id}, which its owner paused, with nobody attached`);
+          else did("unattended stop of a paused recording");
+        });
       } else if (target !== null && actor.controller.getState().recordingId !== target) {
         note(`${actor.name} stopped ${target}, which it does not show`);
       }
@@ -312,12 +319,15 @@ async function runSchedule(seed: number, base = SEED, steps = STEPS, idBase = 80
       const s = r.controller.getState();
       if (s.phase === "recording" && s.recordingId !== id && !(retiring !== null && s.recordingId === retiring)) fail(`${r.name} shows ${s.recordingId} recording, but ${id ?? "nothing"} is live`);
     }
-    // The policy, timed: a recording a recorder showed or started, live with no recorder attached and not paused by its
-    // owner, is stopped (or discarded, if nobody saw it) within the grace and two more turns of counted time (see
-    // advanceClock). Status reads that never answer change nothing on web and desktop; the phone, which acts only on a
-    // fresh answer, is exempt once one hangs (it never stops on a status it could not read).
+    // The policy, timed: a recording a recorder showed or started, live with no recorder attached, is stopped (or
+    // discarded, if nobody saw it) within the grace and two more turns of counted time (see advanceClock). Web and
+    // desktop stop it by id even when its owner paused it (stopped and kept); the phone, whose unscoped stop needs a
+    // fresh status showing it live and not paused, leaves a recording its owner paused alone. Status reads that never
+    // answer change nothing on web and desktop; the phone is exempt once one hangs (it never stops on a status it could
+    // not read).
     const status = await fake.plugin.status();
-    if (id && attached.length === 0 && status.intent !== "paused" && retiring === null && !native.has(id)) {
+    const leftAlone = kind === "phone" && status.intent === "paused";
+    if (id && attached.length === 0 && !leftAlone && retiring === null && !native.has(id)) {
       const entry = unattended.get(id) ?? { since: now, answeredMs: 0 };
       unattended.set(id, entry);
       const asked = endingAsked.get(id);
@@ -480,6 +490,19 @@ async function runSchedule(seed: number, base = SEED, steps = STEPS, idBase = 80
     // with nobody attached); the engine answers everything in order and never fails again, pending retirements finish,
     // and time passes.
     if (chance(0.5)) {
+      // Sometimes the owner pauses first: left paused, web and desktop still stop and keep it; the phone leaves it.
+      if (chance(0.3)) {
+        for (const r of attachedRecorders()) {
+          if (r.controller.getState().phase !== "recording") continue;
+          actor = r;
+          void r.controller.pause();
+          actor = null;
+        }
+        for (const op of controls.splice(0)) op.outcomes.run();
+        for (const read of reads.splice(0)) read.answer();
+        await flush();
+        await check("the owner pauses before the close");
+      }
       for (const r of attachedRecorders()) detach(r);
       await flush();
       await check("every recorder closes before the drain");
@@ -504,21 +527,20 @@ async function runSchedule(seed: number, base = SEED, steps = STEPS, idBase = 80
       await flush();
       await check(name);
     }
-    if (!racedOnPhone) {
-      const id = await liveNow();
-      const attached = attachedRecorders();
-      if (id && !native.has(id)) {
-        const owned = attached.some((r) => r.controller.getState().phase !== "idle" && r.controller.getState().recordingId === id);
-        const paused = (await fake.plugin.status()).intent === "paused";
-        // At rest a recorder's recording is shown, or (paused by its owner, or with a recorder attached that is busy)
-        // still followed; never live unseen and unstopped with nobody attached. The phone is exempt once a status read
-        // has hung (it stops only on a status it read).
-        if (!owned && attached.length === 0 && !paused && (kind !== "phone" || hungReads === 0)) fail(`at rest ${id} is live, unattended, and nothing stopped it`);
-      } else if (!id && hungReads === 0 && controls.length === 0 && reads.length === 0 && attached.every((r) => r.controller.getState().phase === "idle")
-        && __recorderOwnershipForTests().tracked.size === 0 && homeWorkRunning("recording")) {
-        // (A status read that never answers keeps its Home work place: nothing confirmed the end.)
-        fail("at rest nothing records, yet a Home work place is still held");
-      }
+    const id = await liveNow();
+    const attached = attachedRecorders();
+    if (!racedOnPhone && id && !native.has(id)) {
+      const owned = attached.some((r) => r.controller.getState().phase !== "idle" && r.controller.getState().recordingId === id);
+      const leftAlone = kind === "phone" && (await fake.plugin.status()).intent === "paused";
+      // At rest a recorder's recording is shown, or (paused by its owner on the phone, or with a recorder attached that
+      // is busy) still followed; never live unseen and unstopped with nobody attached. The phone is exempt once a status
+      // read has hung (it stops only on a status it read).
+      if (!owned && attached.length === 0 && !leftAlone && (kind !== "phone" || hungReads === 0)) fail(`at rest ${id} is live, unattended, and nothing stopped it`);
+    } else if (!id && hungReads === 0 && controls.length === 0 && reads.length === 0 && attached.every((r) => r.controller.getState().phase === "idle")
+      && __recorderOwnershipForTests().tracked.size === 0 && homeWorkRunning("recording")) {
+      // Also after the phone's accepted race. (A status read that never answers keeps its Home work place: nothing
+      // confirmed the end.)
+      fail("at rest nothing records, yet a Home work place is still held");
     }
   } finally {
     for (const r of recorders) if (r.detach) { r.detach(); r.detach = null; }
