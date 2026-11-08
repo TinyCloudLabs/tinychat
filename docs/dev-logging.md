@@ -226,15 +226,17 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   Native Vector tests exercise the sink-facing projection, hostile extras and the 10/20 request limits without
   contacting Better Stack. This diagnostic change does not alter lane concurrency, retry policy or history scans.
 - **Diagnostic volume bound.** Lane samples, calendar samples and every remaining non-request event each have a
-  global 10-record/60-second throttle. No `_unmatched` stream reaches the HTTP sink directly. Counting happens
+  global sustained rate of 10 records/60 seconds and a burst capacity of 10. Vector's GCRA throttle refills
+  continuously; this is not a hard tumbling-window count. No `_unmatched` stream reaches the HTTP sink directly. Counting happens
   before sampling: one in-memory reduce group tracks the two lane operations, the four calendar phases and an
   `other_count`. It emits `backend_diagnostic_summary` at most once per 60 seconds, with those seven counters.
   Counters saturate at 1,000,000,000 and set `counts_saturated=true` rather than growing the record. Summaries are
   metadata-only and best effort; UDP/buffer loss, shutdown and process restart can lose counts. Idle windows emit
   no record. The request limits remain 10 problem plus 20 routine records per 60 seconds.
   Conservative encoded-record budgets, including framing, are 576 bytes/request, 224/lane, 320/calendar,
-  512/other and 512/summary. For one continuously running shipper, 43,200 minutes gives
-  `43,200 × (30×576 + 10×224 + 10×320 + 10×512 + 512) = 1,224,806,400` bytes per 30 days.
+  512/other and 512/summary. For one continuously running shipper, the 43,200-minute rate allowance is
+  `43,200 × (30×576 + 10×224 + 10×320 + 10×512 + 512) = 1,224,806,400` bytes; adding a conservative
+  28,352-byte initial burst allowance gives at most 1,224,834,752 bytes per 30 days.
   Adding the current approximately 0.9 GB/month of account usage conservatively gives about 2.13 GB, below 3 GB.
   This includes the full new backend envelope rather than subtracting its old contribution. Caps reset on process
   restart (at most another 28,352-byte initial allowance per reset); replicas multiply this bound. These are
