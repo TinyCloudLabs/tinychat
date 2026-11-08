@@ -911,12 +911,15 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           const issue = state.captureIssues[event.id];
           if (key !== null && issue?.kind === "partial_audio") savePartialAudioIssue(key, event.id, issue);
         }),
+        // Once closed, neither re-persists a notice the closed state still holds (one deleted since would come back).
         VoiceNotes.addListener("recovered", (event) => {
+          if (closed) return;
           const id = event.id ?? event.recording?.id;
           captureCommitted(id, event.recording);
           if (!event.recording) inspectSidecar(id);
         }),
         VoiceNotes.addListener("committed", (event) => {
+          if (closed) return;
           const id = event.id ?? event.recording?.id;
           captureCommitted(id, event.recording);
           if (!event.recording) inspectSidecar(id);

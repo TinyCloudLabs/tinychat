@@ -272,14 +272,20 @@ async function commitPreference(change: Partial<CaptureOptions>, live: Live = al
     const pref = { ...readTranscriberPreference(), ...change };
     const chosenTranscriber = change.transcriber !== undefined;
     let before: EngineDefaults | null = null;
+    // Whether anything was written (the engine's default, or a stored key): only then is there anything to put back.
+    let wrote = false;
     try {
-      if (await writeEffectiveDefaults(pref, (current) => { before = current; }, live) === STALE) { applied = false; return; }
+      if (await writeEffectiveDefaults(pref, (current) => { before = current; wrote = true; }, live) === STALE) { applied = false; return; }
       if (store) {
+        wrote = true;
         if (chosenTranscriber) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
         store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
         store.setItem(UPLOAD_AUDIO_KEY, pref.uploadAudio ? "1" : "0");
       }
     } catch (caught) {
+      // Failed before writing anything (the engine's defaults could not be read): no rollback, so a newer choice
+      // stored meanwhile (another window's) stays.
+      if (!wrote) throw caught;
       throw await restoreAfterFailure(caught, store, prior, before);
     }
     memoryPreference = pref;
