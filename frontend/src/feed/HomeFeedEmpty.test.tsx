@@ -15,9 +15,9 @@ afterEach(async () => {
   restore?.(); restore = undefined;
 });
 
-function source(snapshot: HomeFeedSnapshot): HomeFeedSource {
+function source(snapshot: HomeFeedSnapshot | "loading"): HomeFeedSource {
   return {
-    async load() { return structuredClone(snapshot); },
+    async load() { return snapshot === "loading" ? new Promise<HomeFeedSnapshot>(() => {}) : structuredClone(snapshot); },
     async saveResponse() { throw new Error("not used"); },
     async markSeen() {},
     async snooze() {},
@@ -25,7 +25,7 @@ function source(snapshot: HomeFeedSnapshot): HomeFeedSource {
     subscribe() { return () => {}; },
   };
 }
-async function mount(snapshot: HomeFeedSnapshot, homeSite: boolean) {
+async function mount(snapshot: HomeFeedSnapshot | "loading", homeSite: boolean) {
   restore ??= installDom();
   const host = document.createElement("div");
   document.body.append(host);
@@ -36,10 +36,7 @@ async function mount(snapshot: HomeFeedSnapshot, homeSite: boolean) {
   return host;
 }
 const empty: HomeFeedSnapshot = { entries: [], settings: { defaultSelector: "needs-action" } };
-const controls = (host: HTMLElement) => ({
-  selects: host.querySelectorAll("select").length,
-  buttons: [...host.querySelectorAll("button")].map((node) => node.textContent?.trim()),
-});
+const views = (host: HTMLElement) => [...host.querySelectorAll('[role="group"][aria-label="Show"] button')].map((node) => node.textContent?.trim());
 
 function card(): HomeFeedEntry {
   return {
@@ -52,32 +49,45 @@ function card(): HomeFeedEntry {
   };
 }
 
-test("a new account on the Home site sees the heading and No cards yet, with no view controls", async () => {
+test("a new account on the Home site sees the heading and the No cards yet card, with no view controls", async () => {
   const host = await mount(empty, true);
   expect(host.querySelector("h1")?.textContent).toBe("Home");
   expect(host.querySelector("main")?.getAttribute("aria-label")).toBe("Home");
-  expect(host.textContent).toContain("No cards yet");
-  expect(controls(host)).toEqual({ selects: 0, buttons: [] });
+  expect(host.querySelector("h2")?.textContent).toBe("No cards yet");
+  expect(views(host)).toEqual([]);
+  expect(host.querySelector("select")).toBeNull();
 });
 
-test("the empty Home offers Open Chat and the feed guide", async () => {
+test("the empty Home offers the agent prompt to copy and the feed guide", async () => {
   const host = await mount(empty, true);
-  const chat = [...host.querySelectorAll("a")].find((node) => node.textContent === "Open Chat");
-  expect(chat?.getAttribute("href")).toBe("/chat");
+  const copied: string[] = [];
+  Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { copied.push(text); } } });
+  const copy = [...host.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Copy prompt");
+  expect(copy).toBeDefined();
+  await act(async () => copy!.click());
+  expect(copied).toHaveLength(1);
+  expect(host.textContent).toContain(copied[0]!);
   const how = [...host.querySelectorAll("a")].find((node) => node.textContent === "How agents post");
   expect(how?.getAttribute("href")).toBe(FEED_SKILL_URL);
+});
+
+test("while loading, the control row is in place and three placeholder cards show", async () => {
+  const host = await mount("loading", true);
+  expect(views(host)).toEqual(["Needs you", "All", "Done"]);
+  const list = host.querySelector('[aria-busy="true"]');
+  expect(list?.getAttribute("aria-label")).toBe("Loading your feed");
+  expect(list?.querySelectorAll("li")).toHaveLength(3);
 });
 
 test("the view controls return once the feed has a card", async () => {
   const host = await mount({ ...empty, entries: [card()] }, true);
   expect(host.textContent).not.toContain("No cards yet");
-  expect(host.querySelector('select[aria-label="Feed view"]')).not.toBeNull();
-  expect(controls(host).buttons).toContain("History");
+  expect(views(host)).toEqual(["Needs you0", "All", "Done"]);
 });
 
-test("a feed with only past cards keeps History reachable", async () => {
+test("a feed with only past cards keeps Done reachable", async () => {
   const host = await mount({ ...empty, historicalEntries: [card()] }, true);
-  expect(controls(host).buttons).toContain("History");
+  expect(views(host)).toContain("Done");
   expect(host.textContent).not.toContain("No cards yet");
 });
 
@@ -85,7 +95,7 @@ test("the plain build keeps its feed heading, controls and empty message", async
   const host = await mount(empty, false);
   expect(host.querySelector("h1")?.textContent).toBe("Feed");
   expect(host.querySelector("main")?.getAttribute("aria-label")).toBe("Feed");
-  expect(host.textContent).toContain("Nothing needs your action.");
+  expect(host.textContent).toContain("Nothing needs you right now.");
   expect(host.textContent).not.toContain("No cards yet");
-  expect(host.querySelector('select[aria-label="Feed view"]')).not.toBeNull();
+  expect(views(host)).toHaveLength(3);
 });
