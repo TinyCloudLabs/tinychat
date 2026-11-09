@@ -9,6 +9,7 @@ import { _resetCatalogCache } from "../billing/catalog.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
 import type { LedgerFlusher, LedgerUsageRecordInput } from "../billing/ledger-flusher.js";
+import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import { TIERS } from "../billing/tiers.js";
 
 const address = "0xreply-settlement";
@@ -56,6 +57,13 @@ function seedRemaining(remaining: number) {
   if (LIMIT - remaining > 0) recordUsage(address, TIERS.free, LIMIT - remaining);
 }
 const used = () => getUsage(address, TIERS.free).used;
+
+// A ledger that reports `committed` of the LIMIT used, independent of the local counter.
+const ledgerWith = (committed: number) => ({
+  rehydrateIfNeeded: async () => false,
+  getEntitlement: async () => ({ credit_limit: LIMIT, committed_credits: committed, period_anchor: "utc_day", isOutage: false }),
+  get unrehydratedServesCount() { return 0; },
+}) as unknown as LedgerRehydrator;
 
 function browser() {
   const chunks: string[] = [];
@@ -244,14 +252,14 @@ describe("Eliza /tasks path: settlement clamp only", () => {
 });
 
 describe("/api/chat: clamp and free on early failure", () => {
-  async function post(respond: () => Response) {
+  async function post(respond: () => Response, rehydrator?: LedgerRehydrator) {
     globalThis.fetch = (async (input: unknown) => {
       if (String(input).endsWith("/chat/completions")) return respond();
       return Response.json({ data: [{ id: model, context_length: 100_000, pricing: { prompt: "0.000001", completion: "0.000001" } }] });
     }) as typeof fetch;
     const app = express();
     app.use(express.json());
-    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter({ flusher }));
+    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter({ flusher, ...(rehydrator ? { rehydrator } : {}) }));
     const server = await new Promise<Server>(resolve => { const instance = app.listen(0, "127.0.0.1", () => resolve(instance)); });
     try {
       const { port } = server.address() as { port: number };
@@ -271,6 +279,14 @@ describe("/api/chat: clamp and free on early failure", () => {
       },
     }), { headers: { "Content-Type": "text/event-stream" } });
   };
+
+  test("with the ledger authoritative the allowance is what the ledger has left, not the local counter's", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    // Ledger: 900 of 1000 committed. Local counter: 0 used, so the local window alone would allow 1000.
+    await post(() => sse(frame({ choices: [{ delta: { content: "Hello" }, finish_reason: "stop" }] }), usageFrame(60_000, 22_000), "data: [DONE]\n\n"), ledgerWith(900));
+    expect(used()).toBe(100);
+    expect(enqueued[0].credits).toBe(100);
+  });
 
   test("a reply above the remaining allowance is charged only what is left", async () => {
     seedRemaining(295);
@@ -317,5 +333,17 @@ describe("a throwing ledger enqueue", () => {
     await createAgentChatHandler(run.config)(local.req, local.res, () => {});
     expect(used()).toBe(LIMIT - 500 + 150);
     expect(local.stream().match(/data: \[DONE\]/g)).toHaveLength(1);
+  });
+});
+
+describe("ledger-authoritative allowance (agent chat)", () => {
+  test("a reply is clamped to what the ledger has left even when the local counter says more", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    const local = browser();
+    const config = agentConfig(provider(() => sse(frame({ id: "c", choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }), usageFrame(60_000, 22_000), "data: [DONE]\n\n")), { rehydrator: ledgerWith(900) });
+    await createAgentChatHandler(config)(local.req, local.res, () => {});
+    expect(providerRequests).toHaveLength(1);
+    expect(used()).toBe(100);
+    expect(enqueued[0].credits).toBe(100);
   });
 });

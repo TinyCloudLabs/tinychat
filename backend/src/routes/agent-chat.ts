@@ -30,7 +30,7 @@ import {
 import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
 import { truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
 import { FALLBACK_MODEL_RATES, ratesForModel, type ModelRates } from "../billing/credits.js";
-import { createReplyBudget, type ReplyBudget } from "../billing/reply-budget.js";
+import { createReplyBudget, lengthStoppedByBudget, type ReplyBudget } from "../billing/reply-budget.js";
 import { settleReply, type ReplyOutcome } from "../billing/settle.js";
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
@@ -675,8 +675,8 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
     if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit");
     if (choice?.finish_reason != null) finish = choice.finish_reason;
   }
-  // Output cut at the budget's cap is the limit, not an incomplete provider reply.
-  if (limit.capped && finish === "length") throw new StreamFailure("budget_exhausted");
+  // Output cut at the budget's cap is the limit, not an incomplete provider reply; a model's own length stop is not.
+  if (params.budget && finish === "length" && lengthStoppedByBudget(limit, completionTokens, params.budget)) throw new StreamFailure("budget_exhausted");
   let inline = false;
   if (calls.size === 0 && content.includes("<tool_call>")) {
     parseInlineToolCalls(content).forEach((call, i) => calls.set(i, { id: `inline_${i}`, ...call })); inline = calls.size > 0;
@@ -932,8 +932,8 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       await flushPending();
     }
 
-    // Output cut at the budget's cap is the limit; text already streamed stays with the user.
-    if (limit?.capped && finish === "length") { errorCode = "budget_exhausted"; break; }
+    // Output cut at the budget's cap is the limit; text already streamed stays with the user. A model's own length stop is a normal end.
+    if (params.budget && limit && finish === "length" && lengthStoppedByBudget(limit, roundCompletionTokens, params.budget)) { errorCode = "budget_exhausted"; break; }
 
     if (generalOnly && [...toolCalls.values()].some(call => call.name !== "web_search")) { errorCode = "routing_mismatch"; break; }
     if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete");
@@ -1618,7 +1618,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       return;
     }
     const executionId = crypto.randomUUID();
-    const replyBudget = allowance === null ? undefined : createReplyBudget(allowance, rates ?? FALLBACK_MODEL_RATES);
+    const replyBudget = allowance === null ? undefined : createReplyBudget(allowance, rates ?? FALLBACK_MODEL_RATES, contextLengthFor(resolvedModel));
     // Only answer content makes a failed reply billable; error notices and tool activity do not.
     let deliveredOutput = false;
     const writeFrame = async (frame: string, notice?: boolean) => {

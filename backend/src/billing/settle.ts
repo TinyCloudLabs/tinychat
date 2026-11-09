@@ -13,8 +13,8 @@
 
 import { creditsFor, FALLBACK_MODEL_RATES, type ModelRates } from "./credits.js";
 import type { LedgerFlusher } from "./ledger-flusher.js";
-import type { BudgetWindow, TierConfig } from "./tiers.js";
-import { getUsage, isWindowSuperseded, recordUsage, windowStartFor } from "./usage.js";
+import { creditBudgetFor, type BudgetWindow, type TierConfig } from "./tiers.js";
+import { recordUsageInWindow, usedInWindow, windowStartFor } from "./usage.js";
 
 export type ReplyOutcome = "success" | "limit_stop" | "failed" | "timed_out" | "cancelled";
 
@@ -52,21 +52,18 @@ export function settleReply(input: SettleReplyInput): SettledReply {
   const { address, tier, anchor, startedAt, usage } = input;
   const rawCredits = creditsFor(input.rates ?? FALLBACK_MODEL_RATES, usage.promptTokens, usage.completionTokens);
   const windowStart = windowStartFor(tier, anchor, startedAt);
-  const superseded = isWindowSuperseded(address, tier, anchor, startedAt);
+  // Null when the window rolled over twice: no record says what it used, so only the allowance bounds the charge.
+  const windowUsed = usedInWindow(address, tier, anchor, startedAt);
   let charged = 0;
   if (!(input.outcome === "failed" && !input.deliveredOutput) && rawCredits > 0) {
-    // A superseded record no longer says what the start window used, so only the allowance bounds the charge.
-    const windowUsage = getUsage(address, tier, anchor, startedAt);
-    const left = superseded ? Number.POSITIVE_INFINITY : Math.max(0, windowUsage.limit - windowUsage.used);
+    const left = windowUsed === null ? Number.POSITIVE_INFINITY : Math.max(0, creditBudgetFor(tier.id) - windowUsed);
     charged = Math.max(0, Math.min(rawCredits, input.allowance, left));
   }
   if (charged > 0) {
     // Failures are logged without error text, which can carry keys or account data; these fields are what a later reconciliation needs.
     const reconcile = { executionId: input.executionId, account: address, model: input.model, charged, rawCredits, windowKind: tier.budgetWindow, windowStart };
-    if (!superseded) {
-      try { recordUsage(address, tier, charged, anchor, startedAt); }
-      catch { console.error("[billing] local usage recording failed", reconcile); }
-    }
+    try { recordUsageInWindow(address, tier, charged, anchor, startedAt); }
+    catch { console.error("[billing] local usage recording failed", reconcile); }
     if (input.flusher) {
       try {
         input.flusher.enqueue({
@@ -80,7 +77,7 @@ export function settleReply(input: SettleReplyInput): SettledReply {
   }
   console.info("[billing] reply settled", {
     executionId: input.executionId, outcome: input.outcome, deliveredOutput: input.deliveredOutput,
-    allowance: input.allowance, rawCredits, charged, windowKind: tier.budgetWindow, windowStart, windowSuperseded: superseded,
+    allowance: input.allowance, rawCredits, charged, windowKind: tier.budgetWindow, windowStart, windowRecordLost: windowUsed === null,
   });
   return { charged, rawCredits, windowKind: tier.budgetWindow, windowStart };
 }

@@ -11,8 +11,9 @@ import { creditsFor, type ModelRates } from "./credits.js";
 /**
  * Prompt tokens are priced from request JSON length before a call, when the
  * provider has not counted them yet. 3 chars/token overestimates English and
- * JSON (about 4) and stays below one token per char for scripts that tokenize
- * worse, so the output cap errs towards stopping early rather than late.
+ * JSON (about 4 chars/token) but UNDERestimates scripts that take about one
+ * token or more per char (CJK), so the cap can be too high there. That only
+ * costs the platform: settlement still clamps the customer's charge.
  */
 const PROMPT_CHARS_PER_TOKEN = 3;
 
@@ -24,7 +25,7 @@ export interface ReplyUsage {
 export interface CallLimit {
   /** `max_tokens` to send; undefined when neither the budget nor the caller caps output. */
   maxTokens: number | undefined;
-  /** True when the budget (not the caller's own cap) is the binding limit, so `finish_reason: "length"` means the limit was hit. */
+  /** True when the budget's cap is below every other bound (the caller's cap and the room the context leaves), so it is what a `length` finish would have hit. */
   capped: boolean;
 }
 
@@ -43,7 +44,13 @@ export interface ReplyBudget {
   limitFor(promptChars: number, existingMaxTokens?: number): CallLimit | null;
 }
 
-export function createReplyBudget(allowance: number, rates: ModelRates): ReplyBudget {
+/** A `length` finish is the budget's stop only when its cap bound the call and the reply reached it or used up the allowance; a model stopping at its own limit with credits left is a normal end. */
+export function lengthStoppedByBudget(limit: CallLimit, completionTokens: number, budget: ReplyBudget): boolean {
+  return limit.capped && (completionTokens >= (limit.maxTokens ?? Number.POSITIVE_INFINITY) || budget.exhausted());
+}
+
+/** `contextTokens` is the model's context window: a budget cap that does not fit the room it leaves is not a cap. */
+export function createReplyBudget(allowance: number, rates: ModelRates, contextTokens?: number): ReplyBudget {
   let observed: ReplyUsage = { promptTokens: 0, completionTokens: 0 };
   const spentCredits = () => creditsFor(rates, observed.promptTokens, observed.completionTokens);
   const maxTokensFor = (promptChars: number) => {
@@ -62,7 +69,8 @@ export function createReplyBudget(allowance: number, rates: ModelRates): ReplyBu
     limitFor: (promptChars, existingMaxTokens) => {
       const cap = maxTokensFor(promptChars);
       if (cap < 1) return null;
-      if (cap === Number.POSITIVE_INFINITY || (existingMaxTokens !== undefined && existingMaxTokens < cap)) return { maxTokens: existingMaxTokens, capped: false };
+      const roomInContext = contextTokens === undefined ? Number.POSITIVE_INFINITY : contextTokens - Math.ceil(promptChars / PROMPT_CHARS_PER_TOKEN);
+      if (cap >= roomInContext || (existingMaxTokens !== undefined && existingMaxTokens < cap)) return { maxTokens: existingMaxTokens, capped: false };
       return { maxTokens: cap, capped: true };
     },
   };

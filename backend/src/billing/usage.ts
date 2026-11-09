@@ -35,6 +35,9 @@ export interface UsageSnapshot {
 }
 
 const usageByAddress = new Map<string, UsageRecord>();
+// The record a rollover replaced. Replies admitted before a boundary can still settle after it; this lets them be
+// charged against (and clamped by) the window they started in. Only one window back is kept.
+const previousByAddress = new Map<string, UsageRecord>();
 
 // ── Window boundaries (UTC) ───────────────────────────────────────────────────
 
@@ -142,6 +145,7 @@ export function recordUsage(
   const start = windowStart(tier.budgetWindow, anchor, now);
   const record = usageByAddress.get(address);
   if (!record || record.periodStart !== start || record.windowKind !== tier.budgetWindow) {
+    if (record) previousByAddress.set(address, record);
     usageByAddress.set(address, { periodStart: start, windowKind: tier.budgetWindow, creditsUsed: credits });
     return;
   }
@@ -155,18 +159,32 @@ export function windowStartFor(tier: TierConfig, anchor: number | null, at: numb
 }
 
 /**
- * True when the stored record already belongs to a window newer than the one
- * containing `at`. There is one record per address, so writing `at`'s older
- * window then would erase the newer window's usage.
+ * The record that describes the tier's window containing `at`: the current one,
+ * the one a rollover replaced, "empty" when nothing has been used in that window
+ * yet, or "lost" when it is older than both (it rolled over twice).
  */
-export function isWindowSuperseded(
-  address: string,
-  tier: TierConfig,
-  anchor: number | null,
-  at: number,
-): boolean {
-  const record = usageByAddress.get(address);
-  return record !== undefined && record.periodStart > windowStartFor(tier, anchor, at);
+function recordFor(address: string, tier: TierConfig, anchor: number | null, at: number): UsageRecord | "empty" | "lost" {
+  const start = windowStartFor(tier, anchor, at);
+  const current = usageByAddress.get(address);
+  if (!current || current.periodStart < start || (current.periodStart === start && current.windowKind !== tier.budgetWindow)) return "empty";
+  if (current.periodStart === start) return current;
+  const previous = previousByAddress.get(address);
+  return previous && previous.periodStart === start && previous.windowKind === tier.budgetWindow ? previous : "lost";
+}
+
+/** Credits used in the window containing `at`, or null when no record describes it any more. */
+export function usedInWindow(address: string, tier: TierConfig, anchor: number | null, at: number): number | null {
+  const record = recordFor(address, tier, anchor, at);
+  return record === "lost" ? null : record === "empty" ? 0 : record.creditsUsed;
+}
+
+/** Add credits to the window containing `at` (current or the one before it); a window no record describes is left alone. */
+export function recordUsageInWindow(address: string, tier: TierConfig, credits: number, anchor: number | null, at: number): void {
+  if (credits <= 0) return;
+  const record = recordFor(address, tier, anchor, at);
+  if (record === "lost") return;
+  if (record === "empty") recordUsage(address, tier, credits, anchor, at);
+  else record.creditsUsed += credits;
 }
 
 function currentCredits(
@@ -186,6 +204,7 @@ function currentCredits(
 /** Clear all tracked usage. Exposed for tests. */
 export function _resetUsage(): void {
   usageByAddress.clear();
+  previousByAddress.clear();
 }
 
 /** Reset the one-shot missing-anchor warning. Exposed for tests. */

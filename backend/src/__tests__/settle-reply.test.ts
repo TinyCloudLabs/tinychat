@@ -109,12 +109,17 @@ describe("rule (c): a timed-out reply is charged at most the allowance it starte
 });
 
 describe("window at reply start", () => {
+  // Settlement happens a minute after the next UTC midnight; only `startedAt` says where the reply began.
+  let clock: ReturnType<typeof spyOn>;
+  beforeEach(() => { clock = spyOn(Date, "now").mockReturnValue(startedAt + DAY + 60_000); });
+  afterEach(() => clock.mockRestore());
+
   test("a reply that settles after midnight charges the window it started in", () => {
     const settled = settle({ allowance: 500, observed: 300, outcome: "success" });
     expect(settled).toMatchObject({ charged: 300, windowKind: "day", windowStart: startOfUtcDay(startedAt) });
     expect(usedAt(startedAt)).toBe(300);
     expect(usedAt(startedAt + DAY)).toBe(0);
-    expect(enqueued[0]).toMatchObject({ window_start: startOfUtcDay(startedAt), window_kind: "utc_day" });
+    expect(enqueued[0]).toMatchObject({ window_start: startOfUtcDay(startedAt), window_kind: "utc_day", occurred_at: startedAt + DAY + 60_000 });
   });
 
   test("a newer window's usage stays intact; the old window is charged through the ledger only, clamped to the allowance", () => {
@@ -124,6 +129,18 @@ describe("window at reply start", () => {
     expect(usedAt(startedAt + DAY)).toBe(120);
     expect(enqueued).toHaveLength(1);
     expect(enqueued[0]).toMatchObject({ credits: 500, window_start: startOfUtcDay(startedAt), window_kind: "utc_day" });
+  });
+
+  test("replies admitted before midnight cannot push the old window past its limit once the record has rolled", () => {
+    recordUsage(address, TIERS.free, 950, null, startedAt);
+    const z = settle({ allowance: 50, observed: 50, outcome: "success" });
+    // A reply after midnight rolls the single current record to the new day.
+    recordUsage(address, TIERS.free, 10, null, startedAt + DAY);
+    const x = settle({ allowance: 50, observed: 50, outcome: "success" });
+    expect([z.charged, x.charged]).toEqual([50, 0]);
+    const oldWindow = enqueued.filter(record => record.window_start === startOfUtcDay(startedAt));
+    expect(950 + oldWindow.reduce((sum, record) => sum + record.credits, 0)).toBe(LIMIT);
+    expect(usedAt(startedAt + DAY)).toBe(10);
   });
 
   test("a paid reply reports the anchored week it was charged to", () => {

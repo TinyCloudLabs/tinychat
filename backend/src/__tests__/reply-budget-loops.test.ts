@@ -36,9 +36,9 @@ function harness(provider: (body: any, index: number) => Response, options: { me
   return { config, bodies, tools, other };
 }
 
-async function run(h: ReturnType<typeof harness>, allowance: number | undefined, text = "Search for the capital of Portugal", budgetRates = rates) {
+async function run(h: ReturnType<typeof harness>, allowance: number | undefined, text = "Search for the capital of Portugal", budgetRates = rates, contextTokens = 100_000) {
   const frames: string[] = [];
-  const budget = allowance === undefined ? undefined : createReplyBudget(allowance, budgetRates);
+  const budget = allowance === undefined ? undefined : createReplyBudget(allowance, budgetRates, contextTokens);
   const result = await orchestrateToolCalling({
     config: h.config, model: "test-model", messages: [{ role: "user", content: text }], entityId: "entity",
     turnContext: { localDate: "2026-09-09", timeZone: "Europe/Lisbon" },
@@ -77,12 +77,28 @@ describe("existing tool loop under a reply budget", () => {
     expect(result.completionTokens).toBe(600);
   });
 
-  test("finish_reason length under a budget cap stops the reply as budget_exhausted and keeps the streamed text", async () => {
-    const h = harness(() => answerRound("Partial answer", "length", { prompt_tokens: 100, completion_tokens: 450 }));
+  test("finish_reason length at the budget's cap stops the reply as budget_exhausted and keeps the streamed text", async () => {
+    const h = harness(() => answerRound("Partial answer", "length", { prompt_tokens: 100, completion_tokens: 500 }));
     const { result, frames } = await run(h, 500);
     expect(result.errorCode).toBe("budget_exhausted");
     expect(content(frames)).toBe("Partial answer");
     expect(h.bodies).toHaveLength(1);
+  });
+
+  test("finish_reason length below the budget's cap is the model's own limit, not a budget stop", async () => {
+    const h = harness(() => answerRound("Partial answer", "length", { prompt_tokens: 100, completion_tokens: 450 }));
+    const { result, frames } = await run(h, 500);
+    expect(h.bodies[0].max_tokens).toBeGreaterThan(450);
+    expect(result.errorCode).toBeUndefined();
+    expect(content(frames)).toBe("Partial answer");
+  });
+
+  test("an allowance worth more output than the context holds sends no max_tokens, as before the budget existed", async () => {
+    // A Pro allowance at 25 credits per 1K output is ~1.1M tokens: far past any context window.
+    const h = harness(() => answerRound("Lisbon.", "length", { prompt_tokens: 100, completion_tokens: 450 }));
+    const { result } = await run(h, 28_000, "Search for the capital of Portugal", { creditsPerKInput: 5, creditsPerKOutput: 25, fallback: false });
+    expect(h.bodies[0].max_tokens).toBeUndefined();
+    expect(result.errorCode).toBeUndefined();
   });
 
   test("finish_reason length without a budget is not a budget stop", async () => {
@@ -144,11 +160,25 @@ describe("meeting turn under a reply budget", () => {
     expect(h.bodies[1].max_tokens).toBeLessThanOrEqual(899);
   });
 
-  test("finish_reason length under a budget cap aborts the call as budget_exhausted", async () => {
+  test("finish_reason length at the budget's cap aborts the call as budget_exhausted", async () => {
     const plan = { kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" };
-    const h = harness(() => sse({ id: "plan", choices: [{ delta: { tool_calls: [{ index: 0, id: "plan", function: { name: "prepare_meeting_turn", arguments: JSON.stringify(plan).slice(0, 20) } }] }, finish_reason: "length" }], usage: { prompt_tokens: 5, completion_tokens: 295 } }), { meeting: true });
+    const h = harness(() => sse({ id: "plan", choices: [{ delta: { tool_calls: [{ index: 0, id: "plan", function: { name: "prepare_meeting_turn", arguments: JSON.stringify(plan).slice(0, 20) } }] }, finish_reason: "length" }], usage: { prompt_tokens: 5, completion_tokens: 300 } }), { meeting: true });
     const { result } = await run(h, 300, "Summarize this meeting");
     expect(result.errorCode).toBe("budget_exhausted");
     expect(h.tools).toEqual([]);
+  });
+
+  test("finish_reason length below the budget's cap stays an incomplete provider reply", async () => {
+    const plan = { kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" };
+    const h = harness(() => sse({ id: "plan", choices: [{ delta: { tool_calls: [{ index: 0, id: "plan", function: { name: "prepare_meeting_turn", arguments: JSON.stringify(plan).slice(0, 20) } }] }, finish_reason: "length" }], usage: { prompt_tokens: 5, completion_tokens: 100 } }), { meeting: true });
+    const { result } = await run(h, 300, "Summarize this meeting");
+    expect(result.errorCode).toBe("upstream_incomplete");
+  });
+
+  test("a large allowance never raises the fixed 1024 interpretation cap or the 2048 synthesis cap", async () => {
+    const plan = { kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" };
+    const h = harness(() => planRound(plan, { prompt_tokens: 5, completion_tokens: 2 }), { meeting: true });
+    await run(h, 28_000, "Summarize this meeting", { creditsPerKInput: 5, creditsPerKOutput: 25, fallback: false }).catch(() => {});
+    expect(h.bodies[0].max_tokens).toBe(1024);
   });
 });

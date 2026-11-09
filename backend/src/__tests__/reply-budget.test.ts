@@ -79,3 +79,25 @@ describe("ReplyBudget output cap", () => {
     expect(budget.limitFor(300)).toEqual({ maxTokens: undefined, capped: false });
   });
 });
+
+describe("ReplyBudget output cap against the context window", () => {
+  const pro: ModelRates = { creditsPerKInput: 5, creditsPerKOutput: 25, fallback: false };
+
+  test("a Pro-sized allowance buys more output than the context holds, so no cap is sent", () => {
+    const budget = createReplyBudget(28_000, pro, 200_000);
+    // 28,000 credits at 25 per 1K output is ~1.1M tokens: the raw figure is meaningless as a max_tokens.
+    expect(budget.maxTokensFor(3000)).toBeGreaterThan(200_000);
+    expect(budget.limitFor(3000)).toEqual({ maxTokens: undefined, capped: false });
+    expect(budget.limitFor(3000, 1024)).toEqual({ maxTokens: 1024, capped: false });
+  });
+
+  test("a cap below the room left in the context is still applied", () => {
+    expect(createReplyBudget(500, pro, 200_000).limitFor(3000)?.capped).toBe(true);
+  });
+
+  test("the context bound is what the context has left after the prompt", () => {
+    // 3000 chars = 1000 prompt tokens: 10K-token window leaves 9000. 9000 tokens at 25/K is 225 credits.
+    expect(createReplyBudget(226, pro, 10_000).limitFor(3000)?.capped).toBe(true);
+    expect(createReplyBudget(230, pro, 10_000).limitFor(3000)?.capped).toBe(false);
+  });
+});
