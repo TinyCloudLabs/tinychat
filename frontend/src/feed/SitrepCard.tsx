@@ -35,6 +35,8 @@ interface Props {
   now: number;
   /** Expanded in place: context, links, details and history show. */
   expanded?: boolean;
+  /** A newer issuance replaced this card: drafts stay, but nothing more is sent for it. */
+  stale?: boolean;
   /** The card reference, shown under More → Details. */
   reference?: ReactNode;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
@@ -75,7 +77,7 @@ function TypedAnswerStatus({ entry, owner, answer, record, focusOnMount = false 
 
 /** Owns its draft for one complete canonical identity, not a changing list index. */
 export function SitrepCard(props: Props) {
-  const { entry, record, records, entries, owner, projection, source, now, expanded = false, reference, onSaved, onOwnerSaved, onSnoozed } = props;
+  const { entry, record, records, entries, owner, projection, source, now, expanded = false, stale = false, reference, onSaved, onOwnerSaved, onSnoozed } = props;
   const state = projection.state;
   const [text, setText] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
@@ -109,6 +111,8 @@ export function SitrepCard(props: Props) {
     finally { busyRef.current = false; setBusy(false); }
   }
   async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string) {
+    // A replaced issuance is never answered: the owner answers the newer card instead.
+    if (stale) throw new Error("This card was replaced by a newer issuance");
     const action = validateSitrepAction(record, type, data, new Date().toISOString());
     let draft = pending.current?.key === operationKey ? pending.current : undefined;
     if (!draft) {
@@ -216,12 +220,12 @@ export function SitrepCard(props: Props) {
     {record.kind === "ask" && <>
       {!asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
-      {asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy} onChoose={(choice) => void tap("answer", choice)} />}
-      {asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy} onClick={() => void tap("accept-default", record.default!)}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
+      {asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => void tap("answer", choice)} />}
+      {asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => void tap("accept-default", record.default!)}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
       {asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); void perform(() => askAnswer()); }}>
         <label className="block text-[13px] font-semibold">Your answer<textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24 resize-y`} /></label>
         {!!options.length && <p className="mt-1.5 text-[13px] text-muted-foreground">Tap an answer above to send this note with it, or save the note on its own.</p>}
-        <button className={`mt-2 ${buttonClass}`} disabled={busy || !text.trim()}>{busy && !tapped ? "Saving answer…" : "Save answer"}</button>
+        <button className={`mt-2 ${buttonClass}`} disabled={busy || stale || !text.trim()}>{busy && !tapped ? "Saving answer…" : "Save answer"}</button>
       </form>}
       {projection.parts.map((part) => <section key={part.view.approval.id} className="mt-3.5 space-y-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });

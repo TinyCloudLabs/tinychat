@@ -111,7 +111,8 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
           : card.title}
       </Heading>}
       {card.lead.text && <div ref={body} className={`mt-1 max-w-[60ch] text-[15px] leading-[1.5] ${full ? "" : "line-clamp-3"}`}><CardBody text={card.lead.text} /></div>}
-      {cut && !full && <button type="button" className={quietClass} onClick={() => setMoreText(true)}>Show more</button>}
+      {/* The 44px target overlaps the next block, so the visible gap to the options stays 12px. */}
+      {cut && !full && <button type="button" className={`${quietClass} -mb-4`} onClick={() => setMoreText(true)}>Show more</button>}
       {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
       {expanded && card.render === "thread" && card.replies?.map((reply, index) => (
         <div key={index} className="mt-3 min-w-0 border-l border-border pl-4 text-[15px]">

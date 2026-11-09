@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { SlidersHorizontalIcon } from "lucide-react";
+import { SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
@@ -105,8 +105,10 @@ function ResponseStatus({ entry, focusOnMount }: { entry: HomeFeedEntry; focusOn
 }
 
 /** An untyped card's answer: one tap on an option saves it; a note can go with it or on its own. */
-function AnswerForm({ entry, source, now, attention, expanded, reference, onSaved, onSnooze }: {
+function AnswerForm({ entry, source, now, attention, expanded, reference, stale = false, onSaved, onSnooze }: {
   entry: HomeFeedEntry; source: HomeFeedSource; now: number; attention: boolean; expanded: boolean; reference: ReactNode;
+  /** A newer issuance replaced this card: its draft stays, but it can no longer be answered. */
+  stale?: boolean;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
   onSnooze: (entry: HomeFeedEntry, until: string) => Promise<void>;
 }) {
@@ -123,7 +125,7 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, onSave
   const choices = card.choices ?? [];
   const saved = entry.state.response;
   async function save(choice?: string) {
-    if (saving || (!text.trim() && !choice)) return;
+    if (stale || saving || (!text.trim() && !choice)) return;
     setSaving(choice ?? "text"); setError(null);
     // Retain the response identity across a failed/ambiguous write. A retry of
     // the same answer cannot create a second one because its first write was lost.
@@ -158,11 +160,11 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, onSave
   return <div>
     {saved && !asking && <ResponseStatus entry={entry} focusOnMount={justSaved} />}
     {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
-    {asking && !!choices.length && <OptionButtons options={choices} saving={saving ?? undefined} disabled={!!saving} onChoose={(id) => void save(id)} />}
+    {asking && !!choices.length && <OptionButtons options={choices} saving={saving ?? undefined} disabled={!!saving || stale} onChoose={(id) => void save(id)} />}
     {asking && (noteOpen || !choices.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <label className="block text-[13px] font-semibold">Your answer<textarea aria-label="Your answer" value={text} disabled={!!saving} onInput={(event) => { setText(event.currentTarget.value); }} className={`${fieldClass} min-h-24 resize-y`} /></label>
       {!!choices.length && <p className="mt-1.5 text-[13px] text-muted-foreground">Tap an answer above to send this note with it, or save the note on its own.</p>}
-      <button type="submit" disabled={!!saving || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Saving answer…" : saved ? "Save new answer" : "Save answer"}</button>
+      <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Saving answer…" : saved ? "Save new answer" : "Save answer"}</button>
     </form>}
     {error && <p role="alert" className="mt-2 text-sm">{error}</p>}
     <QuietRow>
@@ -192,7 +194,8 @@ type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "
 
 export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: HomeFeedSource; homeSite?: boolean }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
-  const [view, setView] = useState<HomeView>("needs-you");
+  // No segment is pressed until the saved view arrives, so the row never flips while loading.
+  const [view, setView] = useState<HomeView | null>(null);
   const [active, setActive] = useState<HomeFeedEntry | null>(null);
   const [sticky, setSticky] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -200,7 +203,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
   const [filterOpen, setFilterOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ lead: string; text: string } | null>(null);
   const [viewBusy, setViewBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
@@ -212,7 +215,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const currentSource = useRef(source);
   currentSource.current = source;
   const history = view === "done";
-  const selector: FeedSelector = view === "needs-you" ? "needs-action" : "both";
+  const selector: FeedSelector = view === "all" ? "both" : "needs-action";
 
   useEffect(() => {
     let alive = true;
@@ -221,7 +224,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
     activeRef.current = null;
-    setSnapshot(null); setActive(null); setError(null); setSticky(new Map()); setExpanded(new Set());
+    setSnapshot(null); setView(null); setActive(null); setError(null); setSticky(new Map()); setExpanded(new Set());
     setExpandedGroups(new Set());
     const refresh = async () => {
       if (running) { dirty = true; return; }
@@ -244,11 +247,11 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           if (next.focusedEntry) next.focusedEntry = reconcile(next.focusedEntry);
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
-          setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? "Live updates are off. The cards shown may be out of date." : null);
+          setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
           if (!hasDefault.current && !chosenView.current) setView(next.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
           hasDefault.current = true;
         } catch {
-          if (alive) setError("Home didn't load. Check your connection, then try again.");
+          if (alive) setError({ lead: "Home didn't load.", text: "Check your connection, then try again." });
         }
       } while (alive && dirty);
       running = false;
@@ -396,7 +399,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     try {
       if (!source.setGroupPriority) throw new Error("This feed source does not provide private group storage");
       await source.setGroupPriority(entry, group, on); refreshRef.current();
-    } catch { setError("That wasn't saved. Try again."); }
+    } catch { setError({ lead: "That wasn't saved.", text: "Try again." }); }
     finally { setViewBusy(false); }
   }
 
@@ -418,13 +421,13 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     const reference = <Reference title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</Reference>;
     return <li key={key}>
       <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} expanded={open} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
-        {retained && <div role="status" className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>A newer version of this card arrived.</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
+        {retained && <div role="status" className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>A newer version of this card arrived. Answer it there; your draft stays here.</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
         <ReportLink entry={entry} />
         {context
-          ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} reference={reference} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />
+          ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />
           : unsupported
             ? <p role="status" className="mt-3.5 text-sm">This card can't be shown here yet. Your agent still has it.</p>
-            : <AnswerForm key={key} entry={entry} source={source} now={clock} attention={attention(entry)} expanded={open} reference={reference} onSaved={onSaved} onSnooze={snooze} />}
+            : <AnswerForm key={key} entry={entry} source={source} now={clock} attention={attention(entry)} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onSnooze={snooze} />}
       </FeedCardView>
     </li>;
   }
@@ -490,7 +493,10 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           {filtering && <button type="button" className={pillClass} onClick={() => setFilter(() => { setAgent(""); setKind(""); setProject(""); })}>Clear filter</button>}
         </ResponsiveSheetBody>
       </ResponsiveSheet>
-      {error && <div role="alert" className="mt-4 rounded-2xl bg-card px-4 py-3 text-sm shadow-[inset_0_0_0_1px_hsl(var(--border))]"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className={`mt-2 ${pillClass}`}>Try again</button></div>}
+      {error && <div role="alert" className="mt-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+        <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
+        <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className={`mt-2 ${pillClass}`}>Try again</button></div>
+      </div>}
       {!snapshot && !error && <ul aria-busy="true" aria-label="Loading your feed" className="mt-6 grid gap-3">
         {[0, 1, 2].map((index) => <li key={index} aria-hidden className={`${cardClass} space-y-3`}>
           <div className="flex items-center gap-2"><span className="size-7 rounded-full bg-muted" /><span className="h-3 w-2/5 rounded-full bg-muted" /></div>

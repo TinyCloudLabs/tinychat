@@ -74,6 +74,8 @@ test("the empty Home offers the agent prompt to copy and the feed guide", async 
 test("while loading, the control row is in place and three placeholder cards show", async () => {
   const host = await mount("loading", true);
   expect(views(host)).toEqual(["Needs you", "All", "Done"]);
+  // No segment is pressed until the saved view arrives.
+  expect([...host.querySelectorAll('[role="group"][aria-label="Show"] button')].map((node) => node.getAttribute("aria-pressed"))).toEqual(["false", "false", "false"]);
   const list = host.querySelector('[aria-busy="true"]');
   expect(list?.getAttribute("aria-label")).toBe("Loading your feed");
   expect(list?.querySelectorAll("li")).toHaveLength(3);

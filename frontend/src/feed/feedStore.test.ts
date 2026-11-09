@@ -318,3 +318,16 @@ test("a fresh Home recovers an officer thread from an older output issuance afte
   expect(restored?.owner?.threads).toContainEqual(message);
   expect(loaded.entries.find((entry) => entry.state.card.cardId === envelope.cardId)?.state.card.issuanceId).toBe("unrelated-new-issuance");
 });
+
+test("a write naming a replaced approval issuance is refused and never stored", async () => {
+  const fixture = await agentFixture();
+  const record = syntheticRecord("approval");
+  const original = { ...fixture.card, revision: 2, issuanceId: "approval-issuance-old", kind: "approval", payload: { sitrep: { version: 1, record } } };
+  value(await publishFeedCard(fixture.output, original));
+  const stale = (await fixture.source.load()).entries[0]!;
+  value(await publishFeedCard(fixture.output, { ...original, revision: 3, issuanceId: "approval-issuance-new" }));
+  const at = new Date().toISOString();
+  const answer = { askId: record.id as string, action: "done", text: "", at, issuedAt: record.issuedAt as string };
+  await expect(fixture.source.saveResponse(stale, { cardId: original.cardId, revision: 2, issuanceId: "approval-issuance-old", responseId: "stale-approval-write", kind: "answer", text: "go", createdAt: at }, { type: "sitrep.answer", version: 1, data: answer })).rejects.toThrow("re-issued");
+  expect(value(await fixture.responses.query("SELECT response_id FROM feed_responses")).rows).toEqual([]);
+});
