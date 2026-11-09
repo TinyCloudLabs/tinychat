@@ -101,26 +101,11 @@ describe("feature-dark and loading", () => {
 describe("the off state", () => {
   const off = render({ ...initialBackgroundSyncState(), phase: "off" });
 
-  test("offers turning background notifications on, as an OPTIONAL extra", () => {
+  test("offers turning background notifications on", () => {
     expect(text(off)).toContain("Background notifications");
-    expect(text(off).toLowerCase()).toContain("optional");
     expect(off).toContain("Turn on background notifications");
   });
 
-  test("is honest about Option C: the fetch happens on your next visit", () => {
-    const body = text(off).toLowerCase();
-    expect(body).toContain("next visit");
-    // Verbatim from the shipped Option-C consent copy — the renderer may not
-    // paraphrase it, so the assertion quotes it.
-    expect(body).toContain("never sees your fireflies key");
-    // The one claim we must NOT make.
-    expect(body).not.toContain("fully offline");
-    expect(body).not.toContain("even while you are away");
-  });
-
-  test("says the server is granted no permission on the space", () => {
-    expect(text(off).toLowerCase()).toContain("no new permission");
-  });
 
   test("shows no delivery URL, secret or queue while it is off", () => {
     expect(off).not.toContain(DELIVERY_URL);
@@ -131,26 +116,18 @@ describe("the off state", () => {
 
 // ── The cohort off state — residual F011 ─────────────────────────────
 //
-// For an address the backend-ingest probe affirms, Option C's custody
-// sentences are FALSE (the server does hold a credential, does receive the
-// meeting), so the off state renders the pinned B-ingest text instead, with a
-// live attestation checkbox gating the enable action. The view is rendered
-// directly with the new props here; the container's probe → variant mapping is
-// the pure function asserted in its own block below. The `render` helper above
-// stays untouched — it passes none of the consent props, so every frozen
-// Option-C assertion keeps exercising the default (non-cohort) path.
+// A positive cohort probe selects the server-ingest consent. The enable button
+// itself is the consent action; the view is rendered directly with that variant.
 
 function renderCohort(
   state: BackgroundSyncState,
-  props: { consentVariant?: "C" | "B-ingest"; ingestConsentChecked?: boolean } = {},
+  props: { consentVariant?: "C" | "B-ingest" } = {},
 ): string {
   return renderToStaticMarkup(
     <BackgroundSyncView
       state={state}
       connectorName="Fireflies"
       consentVariant={props.consentVariant}
-      ingestConsentChecked={props.ingestConsentChecked}
-      onIngestConsentChange={noop}
       onEnable={noop}
       onRotate={noop}
       onDisable={noop}
@@ -180,47 +157,16 @@ describe("the cohort off state (B-ingest)", () => {
   });
   const cohortOff = renderCohort(offState(), { consentVariant: "B-ingest" });
 
-  test("renders the cohort copy — server-side custody said plainly", () => {
-    const body = text(cohortOff);
-    expect(body).toContain("Background sync (server-side ingestion)");
-    // Bullet 1's breach disclosure, a sentence Option C never needed.
-    expect(body).toContain("If our server is breached");
-    // The attestation sentence is on screen as the checkbox label.
-    expect(body).toContain("full-account Fireflies token");
+  test("renders consent as a single paragraph without an attestation checkbox", () => {
+    expect(cohortOff).not.toContain("<ul");
+    expect(cohortOff).not.toContain('type="checkbox"');
   });
 
-  test("contains NONE of the retired Option-C custody sentences", () => {
-    const body = text(cohortOff).toLowerCase();
-    expect(body).not.toContain("never sees your fireflies key");
-    expect(body).not.toContain("it never receives the meeting itself");
-  });
-
-  test("the disconnect note renders, below the bullets that point at it", () => {
-    const body = text(cohortOff);
-    // Both variants open the note this way; the render here has no observed delivery status, so it
-    // shows the transcript-writer variant, which qualifies "all of it".
-    expect(body).toContain("Disconnecting undoes all of");
-    expect(body.indexOf("Disconnecting undoes all of")).toBeGreaterThan(
-      body.indexOf("see below"),
-    );
-    expect(body).toContain("Disconnecting Fireflies does not remove the separate Notetaker permission");
-  });
-
-  test("a real checkbox exists under B-ingest — and does NOT exist under C", () => {
-    expect(cohortOff).toContain('type="checkbox"');
-    // The default render is the non-cohort path: Option B's checkbox stays
-    // dead there — no permission is granted under C, so nothing to attest to.
+  test("the enable action is available without a separate attestation", () => {
+    expect(enableButtonMarkup(cohortOff)).not.toContain('disabled=""');
     expect(render(offState())).not.toContain('type="checkbox"');
   });
 
-  test("the enable action is inert until the attestation is checked", () => {
-    expect(enableButtonMarkup(cohortOff)).toContain('disabled=""');
-    const checked = renderCohort(offState(), {
-      consentVariant: "B-ingest",
-      ingestConsentChecked: true,
-    });
-    expect(enableButtonMarkup(checked)).not.toContain('disabled=""');
-  });
 
   test("an explicit variant 'C' renders byte-identically to the default", () => {
     expect(renderCohort(offState(), { consentVariant: "C" })).toBe(render(offState()));

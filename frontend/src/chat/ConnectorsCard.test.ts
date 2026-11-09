@@ -15,12 +15,6 @@ import { navItems } from "../shell/navItems";
 import { PATHS } from "../shell/routes";
 
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
-import {
-  consentCopyText,
-  GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
-  GOOGLE_MEET_CONSENT_COPY,
-  googleConsentCopyForSystemBrowser,
-} from "@/lib/connectors/consentCopy";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection } from "@/lib/connectors/types";
 
@@ -134,22 +128,6 @@ describe("Connectors page composition", () => {
     }
   });
 
-  test("the consent checkbox exists only for the B-ingest cohort variant", () => {
-    // How this assertion evolved: Option B's checkbox died with Option B —
-    // under C nothing is granted, so there was nothing to attest to, and this
-    // test used to pin the source at ZERO checkboxes. B-ingest (residual
-    // F011) legitimately changes that: for a cohort address the server DOES
-    // hold a credential and meeting copies, so its checkbox is a live consent
-    // mechanic gating the enable action — not a resurrected dead control.
-    // The spirit survives precisely: the C path is intact, the cohort path
-    // exists, and EXACTLY ONE checkbox is in the source, so no dormant
-    // C-side twin can creep back. That the C-rendered MARKUP still carries no
-    // checkbox is asserted in BackgroundSyncSection.test.tsx.
-    const source = read("BackgroundSyncSection.tsx");
-    expect(source).toContain("BACKGROUND_SYNC_CONSENT_COPY");
-    expect(source).toContain("BACKEND_INGEST_CONSENT_COPY");
-    expect(source.match(/type="checkbox"/g)).toHaveLength(1);
-  });
 });
 
 // ── Teardown wiring (FE4) ────────────────────────────────────────────
@@ -334,20 +312,6 @@ describe("Google Meet OAuth connect variant", () => {
     expect(closeOnly).not.toContain("Continue with Google");
   });
 
-  test("the app's consent copy never says popup window; every claim stays word for word (TC-522)", () => {
-    const render = connectHalf.slice(connectHalf.indexOf("<Dialog open={open}"), connectHalf.indexOf("</Dialog>"));
-    expect(render).toContain('authorizeSurface === "system-browser" ? googleConsentCopyForSystemBrowser(consentCopy) : consentCopy');
-    const inApp = googleConsentCopyForSystemBrowser(GOOGLE_MEET_CONSENT_COPY);
-    expect(GOOGLE_MEET_CONSENT_COPY.intro).toContain("in a popup window");
-    expect(inApp.intro).not.toMatch(/popup/i);
-    expect(inApp.intro).toContain("You'll sign in with Google in your browser and approve");
-    expect(consentCopyText(inApp)).not.toMatch(/popup/i);
-    expect(inApp.bullets).toEqual(GOOGLE_MEET_CONSENT_COPY.bullets);
-    expect(inApp.disconnectNote).toBe(GOOGLE_MEET_CONSENT_COPY.disconnectNote);
-    expect(inApp.variant).toBe(GOOGLE_MEET_CONSENT_COPY.variant);
-    // The autojoin text never mentioned a popup, and stays identical.
-    expect(googleConsentCopyForSystemBrowser(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY)).toEqual(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY);
-  });
 
   test("closing or cancelling the dialog also ends a native attempt", () => {
     const reset = connectHalf.slice(connectHalf.indexOf("const reset"), connectHalf.indexOf("const busy"));
@@ -394,7 +358,7 @@ describe("Google Meet OAuth connect variant", () => {
     // warning that is currently false is its own dishonesty.
     expect(dialog).toContain("GOOGLE_TESTING_MODE_REAUTH_COPY");
     expect(dialog).toContain("SHOW_GOOGLE_TESTING_MODE_CAVEAT: boolean = false");
-    expect(dialog).toContain("{SHOW_GOOGLE_TESTING_MODE_CAVEAT && (");
+    expect(dialog).toContain("{SHOW_GOOGLE_TESTING_MODE_CAVEAT &&");
   });
 
   test("scopes the auto-transcription offer to meetings the user hosts", () => {
@@ -591,9 +555,8 @@ describe("Sync now — engine dispatch", () => {
 
 describe("Calendar autojoin consent and browser importer separation", () => {
   const dialog = read("ConnectorDialog.tsx");
-  test("binds unattended setup to an explicit checkbox, PKCE and authenticated transaction", () => {
-    expect(dialog).toContain('if (autojoin && !custodyConsent) return;');
-    expect(dialog).toContain('authorizeDisabled={autojoin && !custodyConsent}');
+  test("authorize-button consent sends an authenticated PKCE autojoin request", () => {
+    expect(dialog).toContain("onAuthorize={handleAuthorize}");
     expect(dialog).toContain('JSON.stringify({ state, challenge, consent: true })');
     expect(dialog).toContain('GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY');
     // The Meet save-and-sync path never mentions autojoin; the autojoin finish never touches

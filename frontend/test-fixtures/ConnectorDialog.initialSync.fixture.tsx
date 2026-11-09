@@ -99,7 +99,7 @@ class MemoryBoundaries {
   refreshCalls = 0;
   popupCalls = 0;
   popupUrl = "";
-  autojoinBeginState = "";
+  readonly autojoinBegins: Record<string, unknown>[] = [];
   readonly autojoinEnables: unknown[] = [];
   requireRefresh = false;
   /** Drive holds 200 non-notes Docs and 3 Notes by Gemini Docs (default: no Docs at all). */
@@ -204,8 +204,9 @@ class MemoryBoundaries {
       return Response.json({ access_token: "synthetic-refreshed-access" });
     }
     if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/begin" && method === "POST") {
-      const body = JSON.parse(String(init?.body));
-      this.autojoinBeginState = body.state;
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      this.autojoinBegins.push(body);
+      this.autojoinBeginState = String(body.state);
       return Response.json({ authorizationUrl: `https://accounts.example.invalid/authorize?state=${body.state}` });
     }
     if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/exchange" && method === "POST") {
@@ -884,11 +885,12 @@ test("Calendar autojoin enables from the server credential: no Meet secret write
     sessionStore={{ getToken: () => "synthetic-session", isExpired: () => false } as unknown as SessionStore}
     open onOpenChange={(next) => { if (!next) closed++; }} onConnected={() => { connectedCalls++; }} />));
   await settle();
-  const consent = dialog().querySelector<HTMLInputElement>('input[type="checkbox"]');
-  expect(consent).toBeTruthy();
-  await act(async () => { consent!.click(); await tick(); });
+  expect(dialog().querySelector('input[type="checkbox"]')).toBeNull();
+  expect(memory.autojoinBegins).toHaveLength(0);
   await click("Continue with Google");
   await until(() => memory.popupUrl.length > 0 && memory.autojoinBeginState.length > 0, "expected the autojoin authorization URL");
+  expect(memory.autojoinBegins).toHaveLength(1);
+  expect(memory.autojoinBegins[0]).toMatchObject({ consent: true });
   expect(memory.popupUrl).toContain("accounts.example.invalid");
   await act(async () => {
     window.dispatchEvent(new window.MessageEvent("message", {

@@ -384,9 +384,7 @@ function FirefliesManagePanel({
         state={state}
         consentVariant={sync.consentVariant}
         transcriptConsent={sync.transcriptConsent}
-        ingestConsentChecked={sync.ingestConsentChecked}
         consentOpen={consentOpen}
-        onIngestConsentChange={sync.setIngestConsentChecked}
         onToggleInstant={() => {
           if (state.phase === "enabled") void disableBackgroundSync(deps, emit);
           else setConsentOpen((was) => !was);

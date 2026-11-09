@@ -17,18 +17,9 @@
 // to storage, never logged, never sent anywhere, and `GET /config` cannot
 // bring them back — losing them means rotating, which the copy says.
 //
-// CONSENT VARIANTS (residual F011). The off state selects Fireflies Option C
-// or B-ingest from the cohort probe, then selects its transcript-writer disclosure
-// from the shared delegation status. Inactive keeps the pinned original bytes;
-// unknown shows the disclosure. The renderer owns only `**bold**`/`*em*` markers.
-// Only an affirmative "ok" (`consentVariantForProbe`) selects B-ingest. Every other answer — the 404
-// that means "not in the cohort", an auth or transport failure, a thrown
-// programmer error, no `meetings` client at all — fails closed to Option C: a
-// non-cohort user must never read the cohort's custody terms, and an error
-// must never hide consent entirely. Under B-ingest the enable action is gated
-// behind a real attestation checkbox — the user is acknowledging actual
-// custody (the token, the 90-day copy), so the button stays inert until the
-// box is checked.
+// CONSENT VARIANTS. The off state selects Fireflies copy by cohort and
+// transcript-delivery status. The user's enable-button press is consent.
+
 
 import type { FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -112,8 +103,6 @@ export function BackgroundSyncSection(props: BackgroundSyncSectionProps) {
       connectorName={props.descriptor.name}
       consentVariant={sync.consentVariant}
       transcriptConsent={sync.transcriptConsent}
-      ingestConsentChecked={sync.ingestConsentChecked}
-      onIngestConsentChange={sync.setIngestConsentChecked}
       onEnable={() => void enableBackgroundSync(deps, emit)}
       onRotate={() => void rotateCredentials(deps, emit)}
       onDisable={() => void disableBackgroundSync(deps, emit)}
@@ -148,9 +137,6 @@ export interface BackgroundSyncViewProps {
   consentVariant?: OffStateConsentVariant;
   /** Unknown status shows the transcript-writer disclosure, not an untrue denial. */
   transcriptConsent?: TranscriptConsentState;
-  /** The B-ingest attestation's checked state. Unrendered (and inert) under C. */
-  ingestConsentChecked?: boolean;
-  onIngestConsentChange?: (checked: boolean) => void;
   onEnable: () => void;
   onRotate: () => void;
   onDisable: () => void;
@@ -170,8 +156,6 @@ export function BackgroundSyncView({
   connectorName,
   consentVariant = "C",
   transcriptConsent = "unknown",
-  ingestConsentChecked = false,
-  onIngestConsentChange,
   onEnable,
   onRotate,
   onDisable,
@@ -269,39 +253,15 @@ export function BackgroundSyncView({
         </>
       )}
 
-      {/* The cohort off state (F011). Same shape as C — pinned copy, then the
-          enable action — plus the two fields only B-ingest carries, rendered
-          verbatim like everything else from consentCopy.ts. */}
+      {/* The enable-button press is the consent action for either cohort. */}
       {state.phase === "off" && consentVariant === "B-ingest" && (
         <>
           <ConsentCopyBlock copy={consentCopy} />
-          {/* The disconnect note sits BELOW the bullets — the last bullet
-              points forward at it — as its own paragraph, markers resolved by
-              the same Emphasized the bullets use. */}
-          {consentCopy.disconnectNote && (
-            <p className="text-xs text-muted-foreground">
-              <Emphasized text={consentCopy.disconnectNote} />
-            </p>
-          )}
-          {/* A real, controlled checkbox, not decoration: under B-ingest the
-              user is attesting to actual custody (the token, the 90-day
-              copy), so the enable action below is inert until it is checked.
-              The pinned sentence is the label text, verbatim, which also
-              makes it the control's accessible name. */}
-          <label className="flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              className="mt-0.5 size-4 shrink-0 cursor-pointer accent-primary"
-              checked={ingestConsentChecked}
-              onChange={(event) => onIngestConsentChange?.(event.target.checked)}
-            />
-            <span>{consentCopy.consentCheckbox}</span>
-          </label>
           <div>
             <Button
               size="sm"
               onClick={onEnable}
-              disabled={busy !== null || !ingestConsentChecked}
+              disabled={busy !== null}
               className="gap-1.5"
             >
               {busy === "enabling" && (
@@ -312,6 +272,7 @@ export function BackgroundSyncView({
           </div>
         </>
       )}
+
 
       {state.phase === "enabled" && state.reveal && (
         <RevealPanel
@@ -568,47 +529,11 @@ const LastRunLine: FC<{ state: BackgroundSyncState }> = ({ state }) => {
   );
 };
 
-/**
- * A pinned consent copy, rendered verbatim — Option C for everyone, B-ingest
- * only when the off state selected it on an affirmed cohort probe.
- *
- * `consentCopy.ts` is pinned claim-by-claim against the backend's real
- * delegation scope, so this renderer restates nothing and only resolves the
- * inline `**bold**` / `*emphasis*` markers the copy carries.
- */
+/** Renders the heading and one-paragraph consent copy. */
 const ConsentCopyBlock: FC<{ copy: BackgroundSyncConsentCopy }> = ({ copy }) => (
   <div className="flex flex-col gap-2">
     <p className="text-xs font-medium text-foreground">{copy.heading}</p>
     <p className="text-xs text-muted-foreground">{copy.intro}</p>
-    <p className="text-xs font-medium text-foreground">{copy.changesHeading}</p>
-    <ul className="flex list-disc flex-col gap-1.5 pl-4">
-      {copy.bullets.map((bullet) => (
-        <li key={bullet.slice(0, 32)} className="text-xs text-muted-foreground">
-          <Emphasized text={bullet} />
-        </li>
-      ))}
-    </ul>
   </div>
 );
 
-/** Resolves `**strong**` and `*em*` runs. No other markup is interpreted. */
-const Emphasized: FC<{ text: string }> = ({ text }) => {
-  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g).filter((p) => p.length > 0);
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part.startsWith("**") && part.endsWith("**")) {
-          return (
-            <strong key={i} className="font-medium text-foreground">
-              {part.slice(2, -2)}
-            </strong>
-          );
-        }
-        if (part.startsWith("*") && part.endsWith("*")) {
-          return <em key={i}>{part.slice(1, -1)}</em>;
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
-  );
-};
