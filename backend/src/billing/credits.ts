@@ -40,6 +40,9 @@ export interface ModelRates {
   fallback: boolean;
 }
 
+/** Conservative rates for a reply whose model rates could not be resolved (spec §2.5, §7). */
+export const FALLBACK_MODEL_RATES: ModelRates = { ...FALLBACK_RATES, fallback: true };
+
 /** Clean up FP noise on ladder values (e.g. 1.5 * 0.1 ≠ 0.15 exactly). */
 function trimFpNoise(v: number): number {
   return Number(v.toPrecision(12));
@@ -144,19 +147,25 @@ export function creditsFor(
 /**
  * Chars/4 fallback when the upstream stream omitted the usage chunk. Counts
  * every message's string content as prompt and the streamed text as
- * completion, then prices the result through `creditsFor`. Replaces the
- * earlier flat token estimator (spec §4.4).
+ * completion (spec §4.4).
  */
+export function estimateTokens(
+  messages: Array<{ content?: unknown }>,
+  completionText: string,
+): { promptTokens: number; completionTokens: number } {
+  let promptChars = 0;
+  for (const message of messages) {
+    if (typeof message.content === "string") promptChars += message.content.length;
+  }
+  return { promptTokens: Math.ceil(promptChars / 4), completionTokens: Math.ceil(completionText.length / 4) };
+}
+
+/** `estimateTokens`, priced through `creditsFor`. Replaces the earlier flat token estimator (spec §4.4). */
 export function estimateCredits(
   rates: ModelRates,
   messages: Array<{ content?: unknown }>,
   completionText: string,
 ): number {
-  let promptChars = 0;
-  for (const message of messages) {
-    if (typeof message.content === "string") promptChars += message.content.length;
-  }
-  const promptTokens = Math.ceil(promptChars / 4);
-  const completionTokens = Math.ceil(completionText.length / 4);
+  const { promptTokens, completionTokens } = estimateTokens(messages, completionText);
   return creditsFor(rates, promptTokens, completionTokens);
 }

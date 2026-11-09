@@ -148,6 +148,27 @@ export function recordUsage(
   record.creditsUsed += credits;
 }
 
+/** Start (epoch ms) of the tier's window containing `at`. */
+export function windowStartFor(tier: TierConfig, anchor: number | null, at: number): number {
+  preflightAnchor(tier, anchor);
+  return windowStart(tier.budgetWindow, anchor, at);
+}
+
+/**
+ * True when the stored record already belongs to a window newer than the one
+ * containing `at`. There is one record per address, so writing `at`'s older
+ * window then would erase the newer window's usage.
+ */
+export function isWindowSuperseded(
+  address: string,
+  tier: TierConfig,
+  anchor: number | null,
+  at: number,
+): boolean {
+  const record = usageByAddress.get(address);
+  return record !== undefined && record.periodStart > windowStartFor(tier, anchor, at);
+}
+
 function currentCredits(
   address: string,
   window: BudgetWindow,

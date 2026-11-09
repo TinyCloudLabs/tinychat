@@ -230,7 +230,7 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
   const toolTrace = trace.tools as Array<Record<string, unknown>>;
   const total: OrchestrateResult = { promptTokens: 0, completionTokens: 0, completionId: "" };
   const account = (result: OrchestrateResult) => { total.promptTokens += result.promptTokens; total.completionTokens += result.completionTokens; };
-  const deliver = async (text: string, errorCode?: OrchestrateResult["errorCode"]) => { abortCheck(params.signal); if (errorCode) trace.terminal = errorCode; await params.write(params.contentFrame(text)); return { ...total, ...(errorCode ? { errorCode } : {}) }; };
+  const deliver = async (text: string, errorCode?: OrchestrateResult["errorCode"]) => { abortCheck(params.signal); if (errorCode) trace.terminal = errorCode; await params.write(params.contentFrame(text), errorCode !== undefined); return { ...total, ...(errorCode ? { errorCode } : {}) }; };
   try {
     const calendar = validCalendarDate(params.turnContext?.localDate) && validTimeZone(params.turnContext?.timeZone) ? params.turnContext : undefined;
     const interpretationMessages = trimConvoToBudget(truncateToolResults([{ role: "system", content: meetingInterpretationGuidance(calendar) }, ...params.messages]), params.contextWindowTokens) as ChatMsg[];
@@ -285,6 +285,8 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
       const general = await params.runGeneral(4 - interpretationCalls); account(general); trace.terminal = general.errorCode ?? "general";
       return { ...general, promptTokens: total.promptTokens, completionTokens: total.completionTokens };
     }
+    // Interpretation can use up the allowance: retrieval and synthesis would then be unaffordable.
+    if (params.budget?.exhausted()) { trace.terminal = "budget_exhausted"; return { ...total, errorCode: "budget_exhausted" }; }
     trace.scope = plan.scope;
     if (plan.kind === "meeting_content" && params.config.meetingContentModelAllowed && !params.config.meetingContentModelAllowed(params.model)) return await deliver("Meeting content answers are not available for this model yet.", "meeting_feature_unavailable");
     const request = { purpose: plan.kind === "meeting_metadata" ? "metadata" as const : plan.purpose, evidenceRequirement: plan.kind === "meeting_metadata" ? "overview" as const : plan.evidenceRequirement };

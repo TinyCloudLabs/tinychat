@@ -10,10 +10,8 @@ import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
   getUsage,
   isOverBudget,
-  recordUsage,
-  startOfAnchoredWeek,
-  startOfUtcDay,
 } from "../billing/usage.js";
+import { settleReply } from "../billing/settle.js";
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
@@ -33,8 +31,7 @@ import {
   type CatalogModel,
 } from "../billing/catalog.js";
 import {
-  creditsFor,
-  estimateCredits,
+  estimateTokens,
   multiplierFor,
   ratesForModel,
   type ModelRates,
@@ -156,13 +153,6 @@ class UsageScanner {
     if (typeof delta === "string") this.completionText += delta;
   }
 }
-
-/** Conservative default rates for the post-stream recording fallback (spec §7). */
-const FALLBACK_RECORDING_RATES: ModelRates = {
-  creditsPerKInput: 200,
-  creditsPerKOutput: 1000,
-  fallback: true,
-};
 
 /** Look up a model in the catalog and resolve its rates. Missing entries get
  *  the §2.5 fallback (via ratesForModel on a synthetic null-pricing model). */
@@ -296,6 +286,9 @@ export function createChatRouter(options?: ChatRouterOptions) {
     let gatedTier: TierId = "free";
     let anchor: number | null = null;
     let rates: ModelRates | null = null;
+    let budgetRemaining: number | null = null;
+    // The window and allowance a reply is charged against are those at admission.
+    const startedAt = Date.now();
     if (paywallEnabled()) {
       let resolution;
       try {
@@ -386,6 +379,10 @@ export function createChatRouter(options?: ChatRouterOptions) {
           });
           return;
         }
+        const localUsage = getUsage(address, tierConfig, anchor);
+        budgetRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
+          ? entitlement.credit_limit - entitlement.committed_credits
+          : localUsage.limit - localUsage.used;
       } else {
         if (isOverBudget(address, tierConfig, anchor)) {
           const usage = getUsage(address, tierConfig, anchor);
@@ -405,6 +402,8 @@ export function createChatRouter(options?: ChatRouterOptions) {
           });
           return;
         }
+        const localUsage = getUsage(address, tierConfig, anchor);
+        budgetRemaining = localUsage.limit - localUsage.used;
       }
 
       // Resolve the requested model's rates once per request, before any bytes
@@ -523,84 +522,19 @@ export function createChatRouter(options?: ChatRouterOptions) {
       res.end();
     }
 
-    // ── Record usage (best effort; only when gating is active) ────────────────
-    // NEVER throw after bytes were served. On any rates/catalog failure here,
-    // fall back to conservative default rates and console.error (spec §7).
-    if (paywallEnabled() && address) {
-      try {
-        const effectiveRates = rates ?? FALLBACK_RECORDING_RATES;
-        const credits = scanner.hasUsage
-          ? creditsFor(
-              effectiveRates,
-              scanner.promptTokens ?? 0,
-              scanner.completionTokens ?? 0,
-            )
-          : estimateCredits(
-              effectiveRates,
-              messages as Array<{ content?: unknown }>,
-              scanner.completionText,
-            );
-        recordUsage(address, TIERS[gatedTier], credits, anchor);
-        noteRequestRecord(res, { credits });
-        // §E.6 — shadow-push to ledger (async, never blocks serving)
-        if (flusher && credits > 0) {
-          const now = Date.now();
-          const tierCfg = TIERS[gatedTier];
-          const ws =
-            tierCfg.budgetWindow === "week"
-              ? startOfAnchoredWeek(anchor ?? now, now)
-              : startOfUtcDay(now);
-          flusher.enqueue({
-            account: address,
-            window_start: ws,
-            window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
-            credits,
-            model: resolvedModel,
-            prompt_tokens: scanner.promptTokens ?? 0,
-            completion_tokens: scanner.completionTokens ?? 0,
-            occurred_at: now,
-            signed_token_count: null,
-          });
-        }
-      } catch (error) {
-        console.error("[chat] failed to record post-stream usage:", error);
-        try {
-          const credits = scanner.hasUsage
-            ? creditsFor(
-                FALLBACK_RECORDING_RATES,
-                scanner.promptTokens ?? 0,
-                scanner.completionTokens ?? 0,
-              )
-            : estimateCredits(
-                FALLBACK_RECORDING_RATES,
-                messages as Array<{ content?: unknown }>,
-                scanner.completionText,
-              );
-          recordUsage(address, TIERS[gatedTier], credits, anchor);
-          noteRequestRecord(res, { credits });
-          if (flusher && credits > 0) {
-            const now = Date.now();
-            const tierCfg = TIERS[gatedTier];
-            const ws =
-              tierCfg.budgetWindow === "week"
-                ? startOfAnchoredWeek(anchor ?? now, now)
-                : startOfUtcDay(now);
-            flusher.enqueue({
-              account: address,
-              window_start: ws,
-              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
-              credits,
-              model: resolvedModel,
-              prompt_tokens: scanner.promptTokens ?? 0,
-              completion_tokens: scanner.completionTokens ?? 0,
-              occurred_at: now,
-              signed_token_count: null,
-            });
-          }
-        } catch (fallbackError) {
-          console.error("[chat] fallback usage recording also failed:", fallbackError);
-        }
-      }
+    // ── Settle usage (best effort; only when gating is active) ────────────────
+    // Clamped to the allowance the reply started with, and free when the stream
+    // failed before any content reached the user. NEVER throws after bytes were served.
+    if (paywallEnabled() && address && budgetRemaining !== null) {
+      const usage = scanner.hasUsage
+        ? { promptTokens: scanner.promptTokens ?? 0, completionTokens: scanner.completionTokens ?? 0 }
+        : estimateTokens(messages as Array<{ content?: unknown }>, scanner.completionText);
+      const settled = settleReply({
+        address, tier: TIERS[gatedTier], anchor, startedAt, allowance: Math.max(0, budgetRemaining), model: resolvedModel,
+        usage, rates, deliveredOutput: scanner.completionText.length > 0, executionId: crypto.randomUUID(), flusher,
+        outcome: controller.signal.aborted ? "cancelled" : streamFailed ? "failed" : "success",
+      });
+      noteRequestRecord(res, { credits: settled.charged });
     }
   }));
 
