@@ -193,7 +193,7 @@ export function SettingsPage({
             title="Agent access"
             aside={
               <InfoTip label="About agent access" className={TITLE_TIP}>
-                Lets the agent read your meeting transcripts. Public web search works without it.
+                Lets the agent read your meeting transcripts and remember things between chats. Public web search works without it.
               </InfoTip>
             }
           >
