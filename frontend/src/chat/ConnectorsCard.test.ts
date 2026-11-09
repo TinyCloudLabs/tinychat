@@ -11,9 +11,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { navItems } from "../shell/navItems";
-import { PATHS } from "../shell/routes";
-
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection } from "@/lib/connectors/types";
@@ -61,21 +58,6 @@ describe("Connectors page composition", () => {
     const usage = page.slice(page.indexOf("<MeetingSourcesFeature"));
     expect(usage).toContain("backendUrl={backendUrl}");
     expect(usage).toContain("sessionStore={sessionStore}");
-  });
-
-  test("Connectors is a first-class destination and Settings no longer owns connector UI", () => {
-    const app = read("../App.tsx");
-    const settings = read("SettingsPage.tsx");
-
-    // The shell owns the address and the navigation item (shell/routes.ts,
-    // shell/navItems.ts — see their tests); App hands the shell the page.
-    const connectors = navItems(0).find((item) => item.id === "connectors");
-    expect(PATHS.connectors).toBe("/chat/connectors");
-    expect(connectors?.href).toBe(PATHS.connectors);
-    expect(app).toContain("connectors={LOCAL_VALIDATION ? null : <ConnectorsPage");
-    expect(settings).not.toContain("ConnectorsCard");
-    expect(settings).not.toContain("TranscriberSection");
-    expect(settings).not.toContain("meetingsSlot");
   });
 
   test("Connectors navigation lives in the app shell", () => {

@@ -16,6 +16,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Loader2Icon } from "lucide-react";
 
+import { continuePausedUpload, pausedUpload } from "@/capture/upload/pausedUpload";
 import { useUploadDeps } from "@/capture/upload/useUploadDeps";
 import { RouteLine } from "@/capture/recorder/RouteLine";
 import { uploadRoute } from "@/capture/sheetRoute";
@@ -45,6 +46,8 @@ import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { localStorageVoiceNoteConsentStore } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { PlatformContext } from "@/lib/platform";
 import { FilePicker } from "./FilePicker";
+import { isHomeReauthorizing, subscribeHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
 
 /** Whether an engine can take a new upload, and if not, why (one line). */
 export type EngineStatus =
@@ -166,6 +169,12 @@ function audioText(job: UploadState): string | null {
 export interface AudioUploadViewProps {
   /** The running, failed or finished upload; null shows the form. */
   job: UploadState | null;
+  /**
+   * An upload a reload interrupted that would unlock the vault to resume (it
+   * uses the user's own AssemblyAI key): it waits for Continue instead.
+   */
+  paused?: { fileName: string } | null;
+  onContinue?: () => void;
   file: { name: string; type: string; size: number } | null;
   engine: UploadEngine;
   engines: Readonly<Record<UploadEngine, EngineStatus>>;
@@ -189,6 +198,8 @@ export interface AudioUploadViewProps {
   onOpenSettings: () => void;
   onRecheck: () => void;
   onOpenLibrary?: () => void;
+  /** A Home permission ask has OpenKey open: Retry and Discard wait until it is done (the runner refuses them now). */
+  waitForOpenKey?: boolean;
   /**
    * `inline` (default): one column. `sheet`: the Upload sheet's scrolling body,
    * with Transcribe pinned in its footer so it stays on screen.
@@ -198,6 +209,8 @@ export interface AudioUploadViewProps {
 
 export const AudioUploadView: FC<AudioUploadViewProps> = ({
   job,
+  paused = null,
+  onContinue,
   file,
   engine,
   engines,
@@ -216,10 +229,26 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   onOpenSettings,
   onRecheck,
   onOpenLibrary,
+  waitForOpenKey = false,
   layout = "inline",
 }) => {
   const inSheet = layout === "sheet";
   const body = (node: ReactNode) => (inSheet ? <ResponsiveSheetBody className="pb-5">{node}</ResponsiveSheetBody> : node);
+  if (job === null && paused !== null) {
+    return body(
+      <div className="flex flex-col gap-3" data-testid="upload-paused">
+        <p className="break-words text-headline" title={paused.fileName}>
+          {paused.fileName}
+        </p>
+        <p className="text-callout text-muted-foreground" role="status">
+          Upload paused. This upload uses a separate transcription key. Continue to unlock it and finish.
+        </p>
+        <Button type="button" size="lg" onClick={onContinue} className="w-full">
+          Continue
+        </Button>
+      </div>,
+    );
+  }
   if (job !== null && job.stage === "elsewhere") {
     return body(
       <div className="flex flex-col gap-3">
@@ -283,26 +312,29 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           </>
         )}
         {!busy && (
-          <div className="flex flex-wrap justify-end gap-2">
-            {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
-              <Button type="button" onClick={onRetry}>
-                Retry
+          <>
+            {waitForOpenKey && <p className="text-callout text-muted-foreground" role="status">{FEATURE_ACCESS_WAIT_FOR_OPENKEY}</p>}
+            <div className="flex flex-wrap justify-end gap-2">
+              {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
+                <Button type="button" disabled={waitForOpenKey} onClick={onRetry}>
+                  Retry
+                </Button>
+              )}
+              {job.cleanupPending && (
+                <Button type="button" disabled={waitForOpenKey} onClick={onRetry}>
+                  Retry deleting
+                </Button>
+              )}
+              {saved && onOpenLibrary && !job.cleanupPending && (
+                <Button type="button" variant="outline" onClick={onOpenLibrary}>
+                  Open Library
+                </Button>
+              )}
+              <Button type="button" variant={saved && !job.cleanupPending ? "default" : "outline"} disabled={waitForOpenKey} onClick={onDismiss}>
+                {saved ? "Upload another file" : "Discard"}
               </Button>
-            )}
-            {job.cleanupPending && (
-              <Button type="button" onClick={onRetry}>
-                Retry deleting
-              </Button>
-            )}
-            {saved && onOpenLibrary && !job.cleanupPending && (
-              <Button type="button" variant="outline" onClick={onOpenLibrary}>
-                Open Library
-              </Button>
-            )}
-            <Button type="button" variant={saved && !job.cleanupPending ? "default" : "outline"} onClick={onDismiss}>
-              {saved ? "Upload another file" : "Discard"}
-            </Button>
-          </div>
+            </div>
+          </>
         )}
       </div>,
     );
@@ -441,7 +473,11 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     return localStorageVoiceNoteConsentStore(privateConsentAccountDid(tcw.did));
   }, [tcw.did]);
   const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
+  const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
+  // While a Home permission ask has OpenKey open, a new upload waits: the session swap after a grant must not cut it off.
+  const reauthorizing = useSyncExternalStore(subscribeHomeReauthorizing, isHomeReauthorizing, isHomeReauthorizing);
   const { deps, origin, api, hosted } = useUploadDeps(tcw, backendUrl, sessionStore);
+  const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);
 
   const [file, setFile] = useState<File | null>(null);
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
@@ -512,8 +548,11 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   });
   const requestPowerful = powerfulConsent.request;
   const onTranscribe = useCallback(() => {
-    if (file === null) return;
+    if (file === null || isHomeReauthorizing()) return;
     const start = () => {
+      // A start deferred behind a consent can land while a Home re-authorise has OpenKey open: the runner refuses it
+      // then, so keep the chosen file for a later Transcribe.
+      if (isHomeReauthorizing()) return;
       uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
       setFile(null);
     };
@@ -531,6 +570,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     <>
       <AudioUploadView
         job={job}
+        paused={paused}
+        onContinue={onContinue}
         file={file}
         engine={engine}
         engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
@@ -539,7 +580,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         privateConsentText={privateConsentBody(privateConsentDevice(platform))}
         diarize={diarize}
         diarizeUnavailable={diarizeUnavailable}
-        fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
+        fileProblem={reauthorizing ? FEATURE_ACCESS_WAIT_FOR_OPENKEY : fileProblem(file, engine, maxBytes, assemblyAiMode)}
         onEngineChange={setEngine}
         onDiarizeChange={setDiarize}
         onFile={setFile}
@@ -553,6 +594,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
           navigate(PATHS.library);
         }}
         layout={layout}
+        waitForOpenKey={reauthorizing}
       />
       {powerfulConsent.dialog}
     </>

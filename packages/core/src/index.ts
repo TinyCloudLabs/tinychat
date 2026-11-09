@@ -29,8 +29,13 @@ export {
 // ── Sign-in manifest bundle (revision "2") ───────────────────────────
 
 export {
+  HOME_CONNECTORS_ENTRIES,
+  HOME_FEATURE_ENTRIES,
+  HOME_RECORDING_ENTRIES,
+  HOME_SIGN_IN_BUNDLE_ENTRIES,
   SIGN_IN_BUNDLE_ENTRIES,
   manifestCarriesBundle,
+  type HomeFeature,
   type RequiredManifestEntry,
 } from "./manifest-bundle.js";
 

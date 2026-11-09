@@ -47,7 +47,8 @@ export function navItems(pendingMeetings: number, homeSite: boolean = HOME_SITE)
     badge: pendingMeetings,
     ariaLabel: connectorsAriaLabel(pendingMeetings),
   };
-  // The Home site (TC-2387) leads with the feed, named Home, then Chat and Apps.
+  // The Home site (TC-2387) leads with the feed, named Home, then Chat and Apps. Recording and Connectors are always
+  // there: each asks for its own permission in place when it opens.
   return homeSite
     ? [{ id: "feed", label: NAV_LABEL_HOME, icon: HouseIcon, href: PATHS.feed }, chat, apps, capture, connectors]
     : [capture, chat, apps, { id: "feed", label: NAV_LABEL_FEED, icon: NewspaperIcon, href: PATHS.feed }, connectors];
