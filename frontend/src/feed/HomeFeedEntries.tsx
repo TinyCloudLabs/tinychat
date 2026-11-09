@@ -172,7 +172,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   // Read when a countdown commits, so an answer re-targets to a reply-only revision that arrived meanwhile.
   const live = useRef({ target, saved, text });
   live.current = { target, saved, text };
-  async function save(choice?: string, pageClosing = false) {
+  async function save(choice?: string) {
     const { target, saved, text } = live.current;
     if (saving || (!text.trim() && !choice)) return;
     setSaving(choice ?? "text"); setError(null);
@@ -188,7 +188,8 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
     };
     pendingResponse.current = { key, response };
     try {
-      const result = await source.saveResponse(target, response, undefined, { pageClosing });
+      // Held until confirmed: a page that closes before this write lands sends it at the next launch.
+      const result = await source.saveResponse(target, response, undefined, { hold: true });
       onSaved(target, result);
       pendingResponse.current = null;
       setText(""); setNoteOpen(false); setFollowup(false); setJustSaved(true);
@@ -234,11 +235,11 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   const asking = !saved || followup || !!text.trim();
   const choose = (choice: string) => {
     if (stale || saving) return;
-    countdown.start(optionText(choices.find((option) => option.id === choice)?.label ?? ""), (pageClosing) => void save(choice, pageClosing));
+    countdown.start(optionText(choices.find((option) => option.id === choice)?.label ?? ""), () => void save(choice));
   };
   const reply = () => {
     if (stale || saving || !text.trim()) return;
-    countdown.start(NOT_SENT_COPY.yourAnswer, (pageClosing) => void save(undefined, pageClosing));
+    countdown.start(NOT_SENT_COPY.yourAnswer, () => void save());
   };
   return <div>
     {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
@@ -590,7 +591,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           ? <NotSent label={refusedLabel} changed />
           : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
         {!retained && held?.outcome === "sent" && <p role="status" className="mt-3 text-[13px] text-muted-foreground">{HELD_ANSWER_COPY.sent}</p>}
-        {!retained && held?.outcome === "closed" && <p role="alert" className="mt-3 text-[13px]"><NotSent label={heldLabel} /></p>}
+        {!retained && (held?.outcome === "closed" || held?.outcome === "refused") && <p role="alert" className="mt-3 text-[13px]"><NotSent label={heldLabel} /></p>}
         <ReportLink entry={entry} />
         {context
           ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} stale={retained} reference={reference} onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />

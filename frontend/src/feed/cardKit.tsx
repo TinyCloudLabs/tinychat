@@ -231,46 +231,43 @@ export const PendingSendContext = createContext<Set<() => void> | null>(null);
  * `undo` drops it unsent; at 0 (or when the card unmounts, the view changes or the page
  * closes) `send` runs exactly once, unless the card's issuance was replaced meanwhile
  * (`guard.stale` at that moment): then nothing is written and `guard.onRefused` runs.
- * On page close, `run(true)` asks the write to hold the answer in the outbox first.
  */
 export function usePendingSend(guard: { stale: boolean; onRefused: (label: string) => void }) {
   const [pending, setPending] = useState<{ label: string; seconds: number } | null>(null);
-  const send = useRef<{ label: string; run: (pageClosing: boolean) => void } | null>(null);
+  const send = useRef<{ label: string; run: () => void } | null>(null);
   const timers = useRef<number[]>([]);
   // Read at commit time, not at tap time: a newer issuance may arrive during the countdown.
   const latest = useRef(guard);
   latest.current = guard;
   const registry = useContext(PendingSendContext);
   const stop = useCallback(() => { for (const timer of timers.current) window.clearTimeout(timer); timers.current = []; }, []);
-  const flush = useCallback((pageClosing = false) => {
+  const flush = useCallback(() => {
     const armed = send.current;
     if (!armed) return;
     send.current = null; stop(); setPending(null);
     // No write may carry a replaced card's identity.
     if (latest.current.stale) latest.current.onRefused(armed.label);
-    else armed.run(pageClosing);
+    else armed.run();
   }, [stop]);
   const undo = useCallback(() => {
     if (!send.current) return;
     send.current = null; stop(); setPending(null);
   }, [stop]);
-  const start = useCallback((label: string, run: (pageClosing: boolean) => void) => {
+  const start = useCallback((label: string, run: () => void) => {
     flush();
     send.current = { label, run };
     setPending({ label, seconds: UNDO_SECONDS });
     for (let elapsed = 1; elapsed < UNDO_SECONDS; elapsed++) {
       timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: UNDO_SECONDS - elapsed }), elapsed * 1000));
     }
-    timers.current.push(window.setTimeout(() => flush(), UNDO_SECONDS * 1000));
+    timers.current.push(window.setTimeout(flush, UNDO_SECONDS * 1000));
   }, [flush]);
   useEffect(() => {
-    const sendNow = () => flush();
-    // Closing the page mid-countdown sends too, and the answer is held in case the write can't finish.
-    const pageHide = () => flush(true);
-    registry?.add(sendNow);
-    window.addEventListener("pagehide", pageHide);
+    registry?.add(flush);
+    // Closing the page mid-countdown sends at once; the write holds the answer until it lands.
+    window.addEventListener("pagehide", flush);
     // Unmounting mid-countdown sends: the owner chose this answer.
-    return () => { registry?.delete(sendNow); window.removeEventListener("pagehide", pageHide); flush(); };
+    return () => { registry?.delete(flush); window.removeEventListener("pagehide", flush); flush(); };
   }, [registry, flush]);
   return { pending, start, undo };
 }

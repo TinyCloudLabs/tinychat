@@ -90,6 +90,8 @@ import { SettingsPage } from "./chat/SettingsPage";
 import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
+import { clearHeldAnswers } from "./feed/answerOutbox";
+import { settleHeldAnswersForSignOut } from "./feed/feedStore";
 import { AppsPage } from "./home/AppsPage";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
@@ -283,6 +285,8 @@ export function App() {
       } else cleanup();
     }
     resetNavigationMemory();
+    // Every local sign-out, session loss included, leaves no held Home answer for this space.
+    if (tcw?.spaceId) clearHeldAnswers(tcw.spaceId);
     const storedAddress = sessionStoreRef.current.getAddress() ?? address;
     if (storedAddress) clearPersistedSession(storedAddress);
     if (storedAddress) clearSendIntentsForOwner(storedAddress);
@@ -1022,6 +1026,8 @@ export function App() {
         if (!options.terminal) void nativeRenewalRef.current?.resume();
         return;
       }
+      // Home answers held from a closed page get one bounded try while the session still works.
+      if (tcw) await settleHeldAnswersForSignOut(tcw);
       let openKeyWarning: string | null = options.terminal ?? null;
       const nativeSession = isNativeOpenKeySession();
       if (nativeSession && !options.terminal) {

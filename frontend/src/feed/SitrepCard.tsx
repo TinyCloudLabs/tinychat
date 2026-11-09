@@ -113,7 +113,7 @@ export function SitrepCard(props: Props) {
     catch { setError(failure); return false; }
     finally { busyRef.current = false; setBusy(false); }
   }
-  async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string, pageClosing = false) {
+  async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string, hold = false) {
     // A replaced issuance is never answered: the owner answers the newer card instead.
     if (stale) throw new Error("This card was replaced by a newer issuance");
     const action = validateSitrepAction(record, type, data, new Date().toISOString());
@@ -132,7 +132,7 @@ export function SitrepCard(props: Props) {
     if (draft.header.kind === "message") {
       if (!source.sendMessage) throw new Error("This feed source does not provide durable card messaging");
       result = await source.sendMessage(entry, draft.header, draft.payload);
-    } else result = await source.saveResponse(entry, draft.header, draft.payload, { pageClosing });
+    } else result = await source.saveResponse(entry, draft.header, draft.payload, { hold });
     pending.current = undefined;
     onSaved(entry, result);
     onOwnerSaved();
@@ -153,14 +153,15 @@ export function SitrepCard(props: Props) {
     await source.saveOwnerState(entry, draft.event); privatePending.current = undefined; onOwnerSaved();
     return draft.event;
   }
-  async function askAnswer(action: "answer" | "drop" | "accept-default" = "answer", selected?: string, pageClosing = false) {
+  /** `hold`: an answer from the undo countdown, held in the page-close outbox until its write is confirmed. */
+  async function askAnswer(action: "answer" | "drop" | "accept-default" = "answer", selected?: string, hold = false) {
     if (record.kind !== "ask") return;
-    await send("sitrep.answer", { askId: record.id, action, ...(selected ? { choice: selected } : {}), text, at: new Date().toISOString() }, `ask:${action}:${selected ?? ""}:${text}`, false, undefined, pageClosing);
+    await send("sitrep.answer", { askId: record.id, action, ...(selected ? { choice: selected } : {}), text, at: new Date().toISOString() }, `ask:${action}:${selected ?? ""}:${text}`, false, undefined, hold);
     setText(""); setNoteOpen(false); setFollowup(false); setConfirmDrop(false); setMore(false); setJustSaved(true);
   }
-  async function tap(action: "answer" | "accept-default", selected: string, pageClosing = false) {
+  async function tap(action: "answer" | "accept-default", selected: string) {
     setTapped(selected);
-    await perform(() => askAnswer(action, selected, pageClosing), ANSWER_FAILED);
+    await perform(() => askAnswer(action, selected, true), ANSWER_FAILED);
     setTapped(undefined);
   }
   async function command(patch: Partial<SamState>, key: string) {
@@ -242,9 +243,9 @@ export function SitrepCard(props: Props) {
       </PendingAnswer>}
       {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
-      {!countdown.pending && asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => { if (!stale) countdown.start(optionLabel(choice) ?? "", (pageClosing) => void tap("answer", choice, pageClosing)); }} />}
-      {!countdown.pending && asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => countdown.start(optionLabel(record.default) ?? "its plan", (pageClosing) => void tap("accept-default", record.default!, pageClosing))}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
-      {!countdown.pending && asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); if (!stale && text.trim()) countdown.start(NOT_SENT_COPY.yourAnswer, (pageClosing) => void perform(() => askAnswer("answer", undefined, pageClosing), ANSWER_FAILED)); }}>
+      {!countdown.pending && asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => { if (!stale) countdown.start(optionLabel(choice) ?? "", () => void tap("answer", choice)); }} />}
+      {!countdown.pending && asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => countdown.start(optionLabel(record.default) ?? "its plan", () => void tap("accept-default", record.default!))}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
+      {!countdown.pending && asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); if (!stale && text.trim()) countdown.start(NOT_SENT_COPY.yourAnswer, () => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED)); }}>
         <label className="block"><span className="sr-only">Your answer</span><textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24 resize-y`} /></label>
         <button className={`mt-2 ${buttonClass}`} disabled={busy || stale || !text.trim()}>{busy && !tapped ? "Sending…" : "Send answer"}</button>
       </form>}

@@ -12,9 +12,9 @@ import { prepareSitrepImport, type PrepareSitrepImportInput } from "@tinyboilerp
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { useLocalThreadStorage } from "../lib/threadStore";
-import { heldAnswerKey } from "./answerOutbox";
+import { HELD_ANSWER_TTL_MS, heldAnswerKey, type HeldAnswer } from "./answerOutbox";
 import { HELD_ANSWER_COPY, NOT_SENT_COPY } from "./cardKit";
-import { createHomeFeedSource, HOME_FEED_RESOURCE } from "./feedStore";
+import { createHomeFeedSource, HOME_FEED_RESOURCE, SIGN_OUT_FLUSH_MS, settleHeldAnswersForSignOut } from "./feedStore";
 import { FeedViewEntries } from "./FeedView";
 import { archivePreparedOwnerBundle } from "./sitrepArchiveStore";
 import { SITREP_NOW, syntheticRecord } from "./sitrep.fixtures";
@@ -49,7 +49,15 @@ function value<T>(result: { ok: boolean; data?: T; error?: { message?: string } 
   return result.data as T;
 }
 
-function sqliteHandle(database: Database, refuseWrites: () => boolean): FeedDatabase {
+type Faults = {
+  /** Response writes fail in transport: the page went away before the request reached the node. */
+  refuseResponseWrites: boolean;
+  /** Response writes wait for this before they run: a slow write still in flight. */
+  writeGate?: Promise<void>;
+  /** Every read never answers: a hung node. */
+  hang: boolean;
+};
+function sqliteHandle(database: Database, faults: Faults, responseDatabase: boolean): FeedDatabase {
   const execute: FeedDatabase["execute"] = async (sql, params = []) => {
     const result = database.query(sql).run(...params);
     return { ok: true, data: { changes: result.changes, lastInsertRowId: Number(result.lastInsertRowid) } };
@@ -57,13 +65,14 @@ function sqliteHandle(database: Database, refuseWrites: () => boolean): FeedData
   return {
     execute,
     query: async <T,>(sql: string, params: (string | number | null | Uint8Array)[] = []) => {
+      if (faults.hang) await new Promise<never>(() => {});
       const statement = database.query(sql);
       const rows = statement.values(...params) as T[][];
       return { ok: true, data: { columns: statement.columnNames, rows, rowCount: rows.length } };
     },
     async batch(statements) {
-      // The page went away before this request reached the node.
-      if (refuseWrites()) throw new Error("connection closed");
+      if (responseDatabase && faults.refuseResponseWrites) throw new Error("connection closed");
+      if (responseDatabase) await faults.writeGate;
       database.exec("BEGIN");
       try {
         const results = [];
@@ -102,14 +111,14 @@ function observedSource(tcw: TinyCloudWeb) {
 
 type Agent = { source: FeedSource; output: FeedDatabase; responses: FeedDatabase };
 async function ownerFixture() {
-  const faults = { refuseResponseWrites: false };
+  const faults: Faults = { refuseResponseWrites: false, hang: false };
   const handles = new Map<string, { sqlite: Database; handle: FeedDatabase }>();
   function storage(resource: string) {
     let stored = handles.get(resource);
     if (!stored) {
       const sqlite = new Database(":memory:"); databases.push(sqlite);
       const responseDatabase = resource.includes("/feed_responses_");
-      stored = { sqlite, handle: sqliteHandle(sqlite, () => responseDatabase && faults.refuseResponseWrites) }; handles.set(resource, stored);
+      stored = { sqlite, handle: sqliteHandle(sqlite, faults, responseDatabase) }; handles.set(resource, stored);
     }
     return stored;
   }
@@ -121,7 +130,7 @@ async function ownerFixture() {
   await initial.source.setDefaultSelector("both");
   const registry = storage(HOME_FEED_RESOURCE);
   return {
-    spaceId, faults, registry, fresh,
+    spaceId, tcw, faults, registry, fresh,
     async agent(token: string): Promise<Agent> {
       const names = value(feedResourceNames("xyz.tinycloud.tinychat/feed", token));
       const output = storage(names.outputResource).handle;
@@ -527,7 +536,7 @@ for (const kind of ["Change answer", "Fine, go ahead"] as const) {
     const save = first.source.saveResponse;
     const built: { response: NewFeedResponse; payload?: FeedResponsePayload }[] = [];
     first.source.saveResponse = (entry, response, payload, options) => {
-      if (options?.pageClosing) built.push(structuredClone({ response, ...(payload ? { payload } : {}) }));
+      if (options?.hold) built.push(structuredClone({ response, ...(payload ? { payload } : {}) }));
       return save(entry, response, payload, options);
     };
     const view = await mount(first);
@@ -549,7 +558,8 @@ for (const kind of ["Change answer", "Fine, go ahead"] as const) {
     else expect(entry).toMatchObject({ choiceId: "hold", supersedesResponseId: earlier });
 
     const next = owner.fresh(); await mount(next); await next.settle();
-    const original = built[0]!;
+    // The last answer the page built: the one it was closing on.
+    const original = built.at(-1)!;
     const flushed = (await stored(agent)).find((row) => row.responseId === original.response.responseId);
     if (!flushed) throw new Error("The held answer was not flushed");
     expect(header(flushed)).toEqual(original.response);
@@ -561,3 +571,211 @@ for (const kind of ["Change answer", "Fine, go ahead"] as const) {
     expect((await stored(agent)).filter((row) => row.responseId === original.response.responseId)).toHaveLength(1);
   });
 }
+
+/** An answer the outbox holds, as a page that closed before its write landed left it. */
+function hold(spaceId: string, entry: HeldAnswer) {
+  window.localStorage.setItem(heldAnswerKey(spaceId, entry), JSON.stringify(entry));
+}
+function plainHeld(sourceId: string, changes: Partial<HeldAnswer> = {}): HeldAnswer {
+  return { sourceId, cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: `held-${sourceId}`, choiceId: "go", at: SITREP_NOW, ...changes };
+}
+/** An answer from another device or tab, written straight to the feed. */
+async function answerElsewhere(agent: Agent, card: FeedCard, choiceId: string, responseId = crypto.randomUUID()) {
+  return value(await appendFeedResponse(agent.output, agent.responses, { responseId, cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, kind: "answer", choiceId, createdAt: SITREP_NOW }));
+}
+async function relaunch(owner: Awaited<ReturnType<typeof ownerFixture>>) {
+  const next = owner.fresh(); const view = await mount(next);
+  await next.settle();
+  return { next, view };
+}
+
+test("a held answer never overwrites a newer answer from another device: only that answer is stored and shown", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("newer-elsewhere");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Go").click());
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  await answerElsewhere(agent, plainCard(), "hold");
+
+  const { view: relaunched } = await relaunch(owner);
+  expect((await stored(agent)).map((row) => [row.revision, row.kind, row.choiceId])).toEqual([[1, "answer", "hold"]]);
+  expect(outboxKeys()).toEqual([]);
+  expect(relaunched.host.textContent).toContain("You chose Hold.");
+  expect(relaunched.host.textContent).not.toContain("Not sent");
+  expect(relaunched.host.textContent).not.toContain(HELD_ANSWER_COPY.sent);
+});
+
+test("a held answer is not moved to a reply-only revision of a card answered meanwhile", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("newer-then-reply");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Go").click());
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  await answerElsewhere(agent, plainCard(), "hold");
+  value(await publishFeedCard(agent.output, withReplies(2, ["Holding it."], T2)));
+
+  const { view: relaunched } = await relaunch(owner);
+  expect((await stored(agent)).map((row) => [row.revision, row.kind, row.choiceId])).toEqual([[1, "answer", "hold"]]);
+  expect(outboxKeys()).toEqual([]);
+  expect(relaunched.host.textContent).toContain("You chose Hold.");
+});
+
+test("a held answer the feed refuses outright is cleared and reported not sent", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("refused");
+  value(await publishFeedCard(agent.output, plainCard()));
+  // An option this issuance never had: the feed rejects the write as invalid, not as a transport failure.
+  hold(owner.spaceId, plainHeld("refused", { choiceId: "withdrawn" }));
+  const { view } = await relaunch(owner);
+  expect(await stored(agent)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+  expect(card(view.host, "Book the Thursday flight?").querySelector('[role="alert"]')?.textContent).toBe("Not sent: your answer.");
+});
+
+test("an answer whose page-close write did land is cleared at the next launch, never reported not sent", async () => {
+  const owner = await ownerFixture();
+  // Then a reply-only revision: the card stays the same request.
+  const replied = await owner.agent("landed-reply");
+  value(await publishFeedCard(replied.output, plainCard()));
+  hold(owner.spaceId, plainHeld("landed-reply"));
+  await answerElsewhere(replied, plainCard(), "go", "held-landed-reply");
+  value(await publishFeedCard(replied.output, withReplies(2, ["Booked."], T2)));
+  // Then a newer version that changed the request.
+  const changed = await owner.agent("landed-changed");
+  value(await publishFeedCard(changed.output, plainCard({ title: "Book the Thursday train?" })));
+  hold(owner.spaceId, plainHeld("landed-changed"));
+  await answerElsewhere(changed, plainCard(), "go", "held-landed-changed");
+  value(await publishFeedCard(changed.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", title: "Book the Friday train?" })));
+
+  const { view } = await relaunch(owner);
+  expect(outboxKeys()).toEqual([]);
+  expect((await stored(replied)).map((row) => row.responseId)).toEqual(["held-landed-reply"]);
+  expect((await stored(changed)).map((row) => row.responseId)).toEqual(["held-landed-changed"]);
+  expect(view.host.textContent).not.toContain("Not sent");
+  expect(card(view.host, "Book the Thursday flight?").textContent).toContain("You chose Go.");
+});
+
+test("one space's held answers are neither sent nor deleted by another space's launch", async () => {
+  const first = await ownerFixture(); const firstAgent = await first.agent("shared-token");
+  const second = await ownerFixture(); const secondAgent = await second.agent("shared-token");
+  for (const agent of [firstAgent, secondAgent]) value(await publishFeedCard(agent.output, plainCard()));
+  hold(first.spaceId, plainHeld("shared-token"));
+  const key = heldAnswerKey(first.spaceId, plainHeld("shared-token"));
+
+  const other = await relaunch(second);
+  expect(await stored(secondAgent)).toEqual([]);
+  expect(outboxKeys()).toEqual([key]);
+  await other.view.unmount();
+
+  await relaunch(first);
+  expect((await stored(firstAgent)).map((row) => row.responseId)).toEqual(["held-shared-token"]);
+  expect(outboxKeys()).toEqual([]);
+});
+
+test("a held follow-up goes to the issuance it changes, not to a later reply-only revision", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("followup-own");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Go").click());
+  await countdown(first);
+  const earlier = (await stored(agent))[0]!.responseId;
+  await act(async () => button(view.host, "Change answer").click());
+  await act(async () => option(view.host, "Hold").click());
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  value(await publishFeedCard(agent.output, withReplies(2, ["Noted."], T2)));
+
+  await relaunch(owner);
+  expect((await stored(agent)).map((row) => [row.revision, row.kind, row.choiceId, row.supersedesResponseId])).toEqual([[1, "answer", "go", undefined], [1, "followup", "hold", earlier]]);
+  expect(outboxKeys()).toEqual([]);
+});
+
+test("a held answer for a typed card already closed or expired at its own issuance writes nothing", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("typed-closed");
+  const record = { ...syntheticRecord("ask"), status: "expired", expiredAt: SITREP_NOW };
+  const closedCard = typedCard(record);
+  value(await publishFeedCard(agent.output, closedCard));
+  hold(owner.spaceId, { sourceId: "typed-closed", cardId: closedCard.cardId, revision: 1, issuanceId: closedCard.issuanceId, responseId: "held-typed-closed", choiceId: "quick", action: "answer", at: SITREP_NOW });
+  const { view } = await relaunch(owner);
+  expect(await stored(agent)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+  expect(card(view.host, String(record.title)).querySelector('[role="alert"]')?.textContent).toBe("Not sent: Quick option.");
+});
+
+test("a held answer older than 7 days is deleted unsent, and the card can be answered again", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("expired-hold");
+  value(await publishFeedCard(agent.output, plainCard()));
+  hold(owner.spaceId, plainHeld("expired-hold", { at: new Date(Date.parse(SITREP_NOW) - HELD_ANSWER_TTL_MS - 1000).toISOString() }));
+  const { view } = await relaunch(owner);
+  expect(await stored(agent)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+  const article = card(view.host, "Book the Thursday flight?");
+  expect(article.textContent).not.toContain("Not sent");
+  expect(option(article, "Go").disabled).toBe(false);
+});
+
+test("an answer is held while its write is in flight, and cleared once the write is confirmed", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("in-flight");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const transport = owner.fresh(); const view = await mount(transport);
+  const gate = Promise.withResolvers<void>();
+  owner.faults.writeGate = gate.promise;
+  await act(async () => option(view.host, "Go").click());
+  await clock.advance(5000);
+  expect(outboxKeys()).toHaveLength(1);
+  expect(await stored(agent)).toEqual([]);
+  gate.resolve();
+  await transport.settle();
+  expect((await stored(agent)).map((row) => row.choiceId)).toEqual(["go"]);
+  expect(outboxKeys()).toEqual([]);
+});
+
+test("sign-out sends a held answer that is still valid, once, then clears it", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("sign-out-valid");
+  value(await publishFeedCard(agent.output, plainCard()));
+  hold(owner.spaceId, plainHeld("sign-out-valid"));
+  await settleHeldAnswersForSignOut(owner.tcw);
+  expect((await stored(agent)).map((row) => [row.responseId, row.choiceId])).toEqual([["held-sign-out-valid", "go"]]);
+  expect(outboxKeys()).toEqual([]);
+});
+
+test("sign-out sends nothing for a stale held answer (answered since, or replaced) and clears it", async () => {
+  const owner = await ownerFixture();
+  const answered = await owner.agent("sign-out-answered");
+  value(await publishFeedCard(answered.output, plainCard()));
+  hold(owner.spaceId, plainHeld("sign-out-answered"));
+  await answerElsewhere(answered, plainCard(), "hold");
+  const replaced = await owner.agent("sign-out-replaced");
+  value(await publishFeedCard(replaced.output, plainCard()));
+  hold(owner.spaceId, plainHeld("sign-out-replaced"));
+  value(await publishFeedCard(replaced.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", body: "Only the 11:40 is left." })));
+
+  await settleHeldAnswersForSignOut(owner.tcw);
+  expect((await stored(answered)).map((row) => row.choiceId)).toEqual(["hold"]);
+  expect(await stored(replaced)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+});
+
+test(`sign-out with a hung node gives up after ${SIGN_OUT_FLUSH_MS / 1000} s and clears the held answers`, async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("sign-out-hung");
+  value(await publishFeedCard(agent.output, plainCard()));
+  hold(owner.spaceId, plainHeld("sign-out-hung"));
+  owner.faults.hang = true;
+  let settled = false;
+  const signingOut = settleHeldAnswersForSignOut(owner.tcw).then(() => { settled = true; });
+  await clock.advance(SIGN_OUT_FLUSH_MS - 1);
+  expect(settled).toBe(false);
+  await clock.advance(1);
+  await act(async () => { await signingOut; });
+  expect(settled).toBe(true);
+  expect(outboxKeys()).toEqual([]);
+  owner.faults.hang = false;
+  expect(await stored(agent)).toEqual([]);
+});

@@ -29,7 +29,7 @@ import { OWNER_IMPORT_SCHEMA, OwnerArchiveCache } from "./sitrepArchiveStore";
 import { TypedFeedHistory } from "./loadTypedFeed";
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
-import { heldAnswers, holdAnswer, releaseAnswer, type HeldAnswer } from "./answerOutbox";
+import { clearHeldAnswers, heldAnswers, holdAnswer, releaseAnswer, type HeldAnswer } from "./answerOutbox";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 
 function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardId === b.cardId && a.revision === b.revision && a.issuanceId === b.issuanceId; }
@@ -226,16 +226,18 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       approval = typed.record.kind === "approval";
       response = { ...response, text: safeSitrepActionSummary(action) };
     }
-    // Before the first await: a closing page runs only this synchronous part for certain.
-    if (options?.pageClosing) holdAnswer(space, heldAnswerOf(entry, response, payload));
+    // Before the first await: a page that closes mid-write runs only this synchronous part for certain.
+    if (options?.hold) holdAnswer(space, heldAnswerOf(entry, response, payload));
+    const release = () => { if (options?.hold) releaseAnswer(space, { sourceId: entry.source.sourceId, ...response }); };
     if (approval) {
       const latest = unwrap(await listFeedCards(db(entry.source.output.database))).find((card) => card.cardId === response.cardId);
       if (!latest || latest.revision !== response.revision || latest.issuanceId !== response.issuanceId) throw new Error("Approval was re-issued; open its current issuance");
     }
     const result = await appendFeedResponse(db(entry.source.output.database), db(entry.source.responses.database), response, payload);
-    if (!result.ok && result.error.code === "INVALID_INPUT") throw new RefusedWrite(result.error.message);
+    // A definitive refusal clears the hold; a failed transport keeps it, so the answer still goes at the next launch.
+    if (!result.ok && result.error.code === "INVALID_INPUT") { release(); throw new RefusedWrite(result.error.message); }
     const saved = unwrap(result);
-    if (options?.pageClosing) releaseAnswer(space, { sourceId: entry.source.sourceId, ...response });
+    release();
     return saved;
   }
 
@@ -436,26 +438,36 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         const output = db(source.output.database);
         const responses = db(source.responses.database);
         try {
-          // The write started as the page closed may have landed: then it is already sent.
-          if ((await allResponses(responses)).some((response) => response.responseId === held.responseId)) { releaseAnswer(space, held); continue; }
+          const stored = (await allResponses(responses)).filter((response) => response.cardId === held.cardId && response.kind !== "message");
+          // The write started before the page closed may have landed: then it is already sent.
+          if (stored.some((response) => response.responseId === held.responseId)) { releaseAnswer(space, held); continue; }
           const revisions = (await cardHistory(output)).filter((card) => card.cardId === held.cardId).sort((a, b) => a.revision - b.revision);
           const latest = unwrap(await listFeedCards(output)).find((card) => card.cardId === held.cardId);
           const answered = revisions.find((card) => sameIdentity(card, held));
           const label = held.choiceId && answered ? optionLabel(answered, held.choiceId) : undefined;
-          const refusal = (outcome: "closed" | "replaced"): HeldAnswerOutcome => ({
+          const refusal = (outcome: "closed" | "replaced" | "refused"): HeldAnswerOutcome => ({
             sourceId: held.sourceId, cardId: held.cardId, outcome,
             ...(label ? { choiceLabel: label } : {}),
             ...(outcome === "replaced" && answered ? { answered: storedRevisionEntry(source, answered) } : {}),
           });
           const target = heldAnswerTarget(source, held, revisions, latest);
           if (typeof target === "string") { releaseAnswer(space, held); outcomes.push(refusal(target)); continue; }
+          // Nothing newer may be overwritten: the owner may have answered since, on another device or tab.
+          // A held answer goes only to a card not answered from its answered revision on; a held follow-up
+          // only while the answer it replaces is still the newest on its issuance.
+          const newest = stored.filter((response) => sameIdentity(response, held)).sort((a, b) => a.sequence - b.sequence).at(-1);
+          const newer = held.supersedesResponseId
+            ? newest?.responseId !== held.supersedesResponseId
+            : stored.some((response) => response.revision >= held.revision);
+          // The card shows that newer answer; nothing else to say.
+          if (newer) { releaseAnswer(space, held); continue; }
           const state = unwrap(await getFeedCardState(output, responses, target));
           try {
             const rebuilt = rebuildAnswer(held, state.card);
             await saveResponse({ source, state, view: { sourceId: source.sourceId, cardId: target.cardId, revision: target.revision, issuanceId: target.issuanceId } }, rebuilt.response, rebuilt.payload);
           } catch (error) {
             // The feed's definitive no: the request no longer takes this answer.
-            if (error instanceof RefusedWrite) { releaseAnswer(space, held); outcomes.push(refusal("closed")); continue; }
+            if (error instanceof RefusedWrite) { releaseAnswer(space, held); outcomes.push(refusal("refused")); continue; }
             throw error;
           }
           releaseAnswer(space, held);
@@ -510,4 +522,33 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       };
     },
   };
+}
+
+/** How long sign-out waits for this space's held answers to go before clearing them anyway. */
+export const SIGN_OUT_FLUSH_MS = 3000;
+
+/**
+ * At sign-out, with the session still live: one try, at most `boundMs`, to send this space's held
+ * answers through the same flush as a launch (the same checks, expiry included). Then every one is
+ * cleared, sent or not, also after a failure or the bound. Nothing held: no request at all.
+ */
+export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = SIGN_OUT_FLUSH_MS): Promise<void> {
+  const space = tcw.spaceId;
+  if (!space) return;
+  let timer: number | undefined;
+  try {
+    if (!heldAnswers(space).length) return;
+    await Promise.race([
+      (async () => {
+        const source = createHomeFeedSource(tcw);
+        await source.load();
+        await source.flushHeldAnswers?.();
+      })(),
+      new Promise<void>((resolve) => { timer = window.setTimeout(resolve, boundMs); }),
+    ]);
+  } catch { /* Not sent: cleared below all the same. */ }
+  finally {
+    window.clearTimeout(timer);
+    clearHeldAnswers(space);
+  }
 }

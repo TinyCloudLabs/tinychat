@@ -76,9 +76,10 @@ export interface HeldAnswerOutcome {
   cardId: string;
   /**
    * "sent": sent now, with its original responseId. Not sent: "replaced", a newer revision changed
-   * the request; "closed", the agent closed, ended or expired it.
+   * the request; "closed", the agent closed, ended or expired it; "refused", the feed rejected it.
+   * (An answer the owner already replaced with a newer one is cleared without an outcome.)
    */
-  outcome: "sent" | "replaced" | "closed";
+  outcome: "sent" | "replaced" | "closed" | "refused";
   /** The chosen option's label on the answered revision; absent for an answer in words. */
   choiceLabel?: string;
   /** "replaced": the answered revision, which stays on screen with the refusal until the owner moves on. */
@@ -86,8 +87,11 @@ export interface HeldAnswerOutcome {
 }
 
 export interface HomeFeedSaveOptions {
-  /** The page is closing: hold the answer in the outbox first, synchronously, until the write is confirmed. */
-  pageClosing?: boolean;
+  /**
+   * Hold the answer in the page-close outbox first, synchronously, until the write is confirmed
+   * or refused: a page that closes before it lands sends it at the next launch.
+   */
+  hold?: boolean;
 }
 
 /** Owner-session persistence boundary; notifications invalidate durable reads. */

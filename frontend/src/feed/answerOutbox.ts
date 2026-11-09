@@ -1,9 +1,10 @@
 import type { FeedCardIdentity } from "@tinycloud/sdk-services/feed";
 
 /**
- * The page-close outbox. An answer still counting down when the page closes is sent at once,
- * but browsers don't wait for that write, so the pending answer is first written here
- * (synchronously, in localStorage) and sent with the same responseId at the next launch.
+ * The page-close outbox. An answer leaving its undo countdown is written here first
+ * (synchronously, in localStorage) and stays until its write is confirmed or refused. Browsers
+ * don't wait for a write when the page closes, during the countdown or with the write in flight,
+ * so whatever is still held is sent with the same responseId at the next launch.
  *
  * An entry holds only what rebuilds that exact answer: the card identity, the responseId, the
  * chosen option or written text, the typed action, the answer it replaces, and its time. No
@@ -23,6 +24,8 @@ export interface HeldAnswer extends FeedCardIdentity {
 }
 
 const PREFIX = "tinychat.home.answer-outbox.v1:";
+/** A held answer older than this is deleted unsent: the card shows unanswered again and can be answered anew. */
+export const HELD_ANSWER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** One key per owner (space) and card identity. */
 export function heldAnswerKey(space: string, held: Pick<HeldAnswer, "sourceId" | "cardId" | "revision" | "issuanceId">): string {
@@ -56,17 +59,32 @@ export function releaseAnswer(space: string, held: Pick<HeldAnswer, "sourceId" |
   } catch { /* Nothing to clear. */ }
 }
 
-/** This owner's held answers. A malformed entry is removed: it can't be sent as the owner made it. */
-export function heldAnswers(space: string): HeldAnswer[] {
+function spaceKeys(storage: Storage, space: string): string[] {
+  return Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter((key): key is string => !!key?.startsWith(`${PREFIX}${space}:`));
+}
+
+/**
+ * This owner's held answers. A malformed entry is removed (it can't be sent as the owner made
+ * it), and so is one older than HELD_ANSWER_TTL_MS.
+ */
+export function heldAnswers(space: string, now = Date.now()): HeldAnswer[] {
   const held: HeldAnswer[] = [];
   try {
     const storage = window.localStorage;
-    const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter((key): key is string => !!key?.startsWith(`${PREFIX}${space}:`));
-    for (const key of keys) {
+    for (const key of spaceKeys(storage, space)) {
       const entry = parse(storage.getItem(key));
-      if (entry && heldAnswerKey(space, entry) === key) held.push(entry);
+      const age = entry ? now - Date.parse(entry.at) : NaN;
+      if (entry && heldAnswerKey(space, entry) === key && age <= HELD_ANSWER_TTL_MS) held.push(entry);
       else storage.removeItem(key);
     }
   } catch { /* localStorage disabled: nothing was held. */ }
   return held;
+}
+
+/** Removes every answer this owner holds (at sign-out, after its one bounded flush). */
+export function clearHeldAnswers(space: string): void {
+  try {
+    const storage = window.localStorage;
+    for (const key of spaceKeys(storage, space)) storage.removeItem(key);
+  } catch { /* Nothing to clear. */ }
 }
