@@ -523,16 +523,17 @@ describe("shared private access controller", () => {
       grant("OTHER-APP-GRANT", "did:key:z6MkOtherApp", [resource("kv", "xyz.tinycloud.tinychat/connectors/")]),
       grant("SAME-DID-OTHER-DATA", SERVICE, [resource("kv", "xyz.other.app/notes/")]),
     ];
-    function mcpController(revokeOk: boolean, revoked: string[]) {
+    function mcpController(revokeOk: boolean, revoked: string[], items: unknown[] = listing, mint?: () => Promise<any>) {
       return createAgentAccessController({
         backendUrl: "https://api.test",
         tcw: {
           address: () => "0xone",
-          delegations: { query: async () => ({ ok: true, data: { items: listing } }) },
+          delegations: { query: async () => ({ ok: true, data: { items } }) },
           revokeDelegation: async (cid: string) => { if (revokeOk) revoked.push(cid); return revokeOk ? { ok: true, data: { revoked: true, cid } } : { ok: false, error: { code: "x" } }; },
         } as never,
         sessionStore: { getToken: () => "token" } as never,
         appName: "test", openkeyHost: "https://openkey.test",
+        ...(mint ? { _mint: mint } : {}),
       });
     }
     const mcpActive = { ...active, revision: "mcp", mcp: { serviceDid: SERVICE } };
@@ -570,6 +571,39 @@ describe("shared private access controller", () => {
       expect(c.getSnapshot().capability).not.toBe("enabled");
       expect(c.getSnapshot().status).toBe(null);
       expect(c.getSnapshot().enableError).toContain("not confirmed");
+      c.dispose();
+    });
+
+    it("does not call a connected account disconnected when no grant matched, even if the MCP then answers none", async () => {
+      const revoked: string[] = [];
+      let connected = true;
+      globalThis.fetch = (async () => Response.json(connected ? mcpActive : { status: "none", transcriptStatus: "none", revision: "mcp", mcp: { serviceDid: SERVICE } })) as typeof fetch;
+      const c = mcpController(true, revoked, [listing[1]]); await c.refresh();
+      expect(c.getSnapshot().capability).toBe("enabled");
+      connected = false; // an unrelated 401 now reads as none
+      await c.onDisconnect();
+      expect(revoked).toEqual([]);
+      expect(c.getSnapshot().status).toBe(null);
+      expect(c.getSnapshot().enableError).toContain("not confirmed");
+      c.dispose();
+    });
+
+    it("lets a connect already on the wire land before it revokes, so the new grant is revoked too", async () => {
+      const post = deferred<Response>(); const posted = deferred<void>();
+      const revoked: string[] = [];
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        if (init?.method === "POST") { posted.resolve(); return post.promise; }
+        return Response.json(revoked.length ? { status: "none", transcriptStatus: "none", revision: "mcp", mcp: { serviceDid: SERVICE } } : mcpActive);
+      }) as typeof fetch;
+      const c = mcpController(true, revoked, listing, async () => ({ mcp: { delegation: "d" } })); await c.refresh();
+      const connecting = c.onEnable(); await posted.promise;
+      const stopping = c.onDisconnect();
+      // Every step before the revoke is a resolved promise, so a revoke that did not wait for the connect would be done within these ticks.
+      for (let tick = 0; tick < 50; tick++) await Promise.resolve();
+      expect(revoked).toEqual([]);
+      post.resolve(Response.json(mcpActive)); await connecting; await stopping;
+      expect(revoked).toEqual(["MCP-GRANT"]);
+      expect(c.getSnapshot()).toMatchObject({ capability: "available", status: "none" });
       c.dispose();
     });
   });
