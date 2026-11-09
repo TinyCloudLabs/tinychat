@@ -270,7 +270,7 @@ test("unconfirmed thread delivery stays historical until an explicit resend crea
   fixture.entry.threadRoutes = { [JSON.stringify(["ask", "ask-synthetic", messageId])]: { kind: "recipients", delivery: { version: 1, targets: [target] } } };
   const view = await mount(fixture.source);
   await more(card(view.host, String(fixture.entry.state.card.title)));
-  await act(async () => button(document, "Comment to SyntheticOfficer").click());
+  await act(async () => button(document, "Comment").click());
   expect(document.body.textContent).toContain("Existing synthetic owner message");
   expect(document.body.textContent).toContain("Unconfirmed");
   expect(fixture.saved).toEqual([]);
@@ -340,8 +340,8 @@ test("matching display labels never turn an unresolved owner into an authenticat
   fixture.entry.recipientRoute = { recipients: [], unresolved: ["SyntheticOfficer"] };
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await act(async () => button(article, "Comment to SyntheticOfficer").click());
-  await enter(article, "Tell SyntheticOfficer something", "Keep this held until its actual recipient is mapped.");
+  await act(async () => button(article, "Comment").click());
+  await enter(article, "Write a comment", "Keep this held until its actual recipient is mapped.");
   await act(async () => button(article, "Send").click());
   expect(fixture.saved).toEqual([]);
   expect(fixture.owner.heldNotes).toContainEqual(expect.objectContaining({ intendedRecipient: "SyntheticOfficer", text: "Keep this held until its actual recipient is mapped." }));
@@ -361,7 +361,7 @@ test("an explicit owner note shows its approved recipients and sends a message w
   const article = card(view.host, String(fixture.entry.state.card.title));
   await more(article);
   expect(document.body.textContent).toContain("00000000-0000-4000-8000-000000000002");
-  await act(async () => button(article, "Comment to SyntheticOfficer").click());
+  await act(async () => button(article, "Comment").click());
   await enter(article, "Tell SyntheticOfficer something", "Explicitly send this update.");
   await act(async () => button(article, "Send").click());
   expect(fixture.saved[0]?.response.kind).toBe("message");
@@ -410,7 +410,7 @@ test("a failed card message retains the exact draft until durable saving succeed
   fixture.source.sendMessage = async (...args) => { if (fail) { fail = false; throw new Error("Isolated message write refused"); } return send(...args); };
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await act(async () => button(article, "Comment to SyntheticOfficer").click());
+  await act(async () => button(article, "Comment").click());
   await enter(article, "Tell SyntheticOfficer something", "Keep this exact draft after the refused write.");
   await act(async () => button(article, "Send").click());
   expect(article.querySelector<HTMLInputElement>('[aria-label="Tell SyntheticOfficer something"]')?.value).toBe("Keep this exact draft after the refused write.");
@@ -460,7 +460,7 @@ test("an explicit owner note discloses only to resolved recipients and retains e
   const article = card(view.host, String(fixture.entry.state.card.title));
   await more(article);
   expect(document.body.textContent).toContain("Messages on this card go to: SyntheticOwner · 00000000-0000-4000-8000-000000000001");
-  await act(async () => button(article, "Comment to SyntheticOwner").click());
+  await act(async () => button(article, "Comment").click());
   await enter(article, "Tell SyntheticOwner something", "An explicit bounded owner note.");
   await act(async () => button(article, "Send").click());
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "An explicit bounded owner note.", delivery: { targets: [{ recipientKey: "known-owner", agentId: "00000000-0000-4000-8000-000000000001" }] } } });
@@ -535,7 +535,7 @@ test("an unresolved original thread destination is held instead of silently rese
   fixture.entry.threadRoutes = { [JSON.stringify(["ask", "ask-synthetic", messageId])]: { kind: "held", unresolved: ["UnmappedOwner"] } };
   const view = await mount(fixture.source);
   await more(card(view.host, String(fixture.entry.state.card.title)));
-  await act(async () => button(document, "Comment to SyntheticOfficer").click());
+  await act(async () => button(document, "Comment").click());
   expect(button(document, "Resend message").disabled).toBe(true);
   expect(document.body.textContent).toContain("UnmappedOwner");
   await act(async () => button(document, "Resend message").click());
