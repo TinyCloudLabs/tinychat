@@ -81,6 +81,12 @@ export function heldAnswers(space: string, now = Date.now()): HeldAnswer[] {
   return held;
 }
 
+/** Whether this exact answer is still held: not cleared since (sent, refused, expired, or at sign-out). */
+export function isHeld(space: string, held: Pick<HeldAnswer, "sourceId" | "cardId" | "revision" | "issuanceId" | "responseId">): boolean {
+  try { return parse(window.localStorage.getItem(heldAnswerKey(space, held)))?.responseId === held.responseId; }
+  catch { return false; }
+}
+
 /** Removes every answer this owner holds (at sign-out, after its one bounded flush). */
 export function clearHeldAnswers(space: string): void {
   try {

@@ -29,7 +29,7 @@ import { OWNER_IMPORT_SCHEMA, OwnerArchiveCache } from "./sitrepArchiveStore";
 import { TypedFeedHistory } from "./loadTypedFeed";
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
-import { clearHeldAnswers, heldAnswers, holdAnswer, releaseAnswer, type HeldAnswer } from "./answerOutbox";
+import { clearHeldAnswers, heldAnswers, holdAnswer, isHeld, releaseAnswer, type HeldAnswer } from "./answerOutbox";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 
 function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardId === b.cardId && a.revision === b.revision && a.issuanceId === b.issuanceId; }
@@ -432,6 +432,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     async flushHeldAnswers() {
       const outcomes: HeldAnswerOutcome[] = [];
       for (const held of heldAnswers(space)) {
+        // Cleared meanwhile (sign-out gave up on this flush): an entry that hasn't started is never sent.
+        if (!isHeld(space, held)) continue;
         const source = sources.find((candidate) => candidate.sourceId === held.sourceId);
         // Its agent is no longer connected: there is no card left to answer or to tell.
         if (!source) { releaseAnswer(space, held); continue; }
@@ -462,6 +464,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           // The card shows that newer answer; nothing else to say.
           if (newer) { releaseAnswer(space, held); continue; }
           const state = unwrap(await getFeedCardState(output, responses, target));
+          // Again right before the write: only a write already started may finish after a clear.
+          if (!isHeld(space, held)) continue;
           try {
             const rebuilt = rebuildAnswer(held, state.card);
             await saveResponse({ source, state, view: { sourceId: source.sourceId, cardId: target.cardId, revision: target.revision, issuanceId: target.issuanceId } }, rebuilt.response, rebuilt.payload);
@@ -531,6 +535,8 @@ export const SIGN_OUT_FLUSH_MS = 3000;
  * At sign-out, with the session still live: one try, at most `boundMs`, to send this space's held
  * answers through the same flush as a launch (the same checks, expiry included). Then every one is
  * cleared, sent or not, also after a failure or the bound. Nothing held: no request at all.
+ * A flush still running at the bound finishes only the write it already started: the flush skips
+ * every entry that is no longer held, so clearing the outbox stops the rest.
  */
 export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = SIGN_OUT_FLUSH_MS): Promise<void> {
   const space = tcw.spaceId;

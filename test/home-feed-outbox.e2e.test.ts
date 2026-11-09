@@ -194,6 +194,9 @@ describe("Home's page-close outbox in Chromium", () => {
 
       const reopened = await open(context, space, false);
       const held = await reopened.evaluate(() => window.harness.outbox());
+      // The closing tab's own write never reached the node: what follows is the resend path, not the dedupe path.
+      expect(landedBeforeReopen).toBe(0);
+      if (when !== "during the 5 s undo") expect(heldBack).toBe("dropped");
       console.log(`[${when}] in-flight write: ${heldBack ?? "none"}; writes landed before reopening: ${landedBeforeReopen}; held at reopen: ${JSON.stringify(Object.values(held))}`);
       expect(Object.keys(held)).toHaveLength(1);
       const entry = JSON.parse(Object.values(held)[0]!) as { responseId: string; choiceId: string };
@@ -204,8 +207,7 @@ describe("Home's page-close outbox in Chromium", () => {
       // An answered card leaves "Needs you": it is under All.
       await reopened.getByRole("button", { name: "All", exact: true }).click();
       await reopened.getByText("You chose Go.").waitFor();
-      // Sent at reopening only when the closing tab's own write didn't reach the node.
-      if (landedBeforeReopen === 0) await reopened.getByText("Sent when you opened Home again.").waitFor();
+      await reopened.getByText("Sent when you opened Home again.").waitFor();
       const rows = await stored(agent.responses);
       console.log(`[${when}] stored after reopening: ${JSON.stringify(rows.map((row) => [row.responseId, row.kind, row.choiceId]))}`);
       expect(rows.map((row) => [row.responseId, row.kind, row.choiceId])).toEqual([[entry.responseId, "answer", "go"]]);
