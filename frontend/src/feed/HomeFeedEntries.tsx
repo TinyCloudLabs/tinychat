@@ -9,7 +9,7 @@ import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { threadSize, ThreadView, type ThreadItem } from "./HomeCardThread";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, ANSWER_HELD_COPY, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
+import { AnsweredPanel, AnswerFailedLine, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -155,6 +155,8 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   const [noteOpen, setNoteOpen] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The answer whose send failed: whether it is still held is read when the line renders.
+  const [failed, setFailed] = useState<{ target: HomeFeedEntry; responseId: string } | null>(null);
   const [followup, setFollowup] = useState(false);
   const [later, setLater] = useState(false);
   const [more, setMore] = useState(false);
@@ -175,7 +177,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   async function save(choice?: string) {
     const { target, saved, text } = live.current;
     if (saving || (!text.trim() && !choice)) return;
-    setSaving(choice ?? "text"); setError(null);
+    setSaving(choice ?? "text"); setError(null); setFailed(null);
     const card = target.state.card;
     // Retain the response identity across a failed/ambiguous write. A retry of
     // the same answer to the same issuance cannot create a second one.
@@ -194,7 +196,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
       pendingResponse.current = null;
       setText(""); setNoteOpen(false); setFollowup(false); setJustSaved(true);
     } catch {
-      setError(ANSWER_HELD_COPY);
+      setFailed({ target, responseId: response.responseId });
     } finally { setSaving(null); }
   }
   /** A card message to the publishing agent (the existing card-message path). A retry reuses its id. */
@@ -254,7 +256,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
       </form>}
     </>}
     {thread}
-    {error && <ErrorLine>{error}</ErrorLine>}
+    {failed ? <AnswerFailedLine held={!!source.holdsAnswer?.(failed.target, failed.responseId)} /> : error && <ErrorLine>{error}</ErrorLine>}
     {!countdown.pending && <QuietRow>
       {asking && !!choices.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Answer in your own words</button>}
       {saved && !asking && <button type="button" className={quietClass} onClick={() => setFollowup(true)}>Change answer</button>}

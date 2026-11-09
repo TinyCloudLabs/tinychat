@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, ANSWER_HELD_COPY, cardTime, commentCopy, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
+import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, cardTime, commentCopy, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
@@ -95,6 +95,9 @@ export function SitrepCard(props: Props) {
   const [later, setLater] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // The answer whose send failed: whether it is still held is read when the line renders.
+  const [failedAnswer, setFailedAnswer] = useState<string | null>(null);
+  const answerId = useRef<string | undefined>(undefined);
   const [notice, setNotice] = useState<string>();
   const pending = useRef<{ key: string; header: NewFeedResponse | NewFeedMessage; payload: FeedResponsePayload } | undefined>(undefined);
   const privatePending = useRef<{ key: string; event: HomeFeedOwnerEvent } | undefined>(undefined);
@@ -104,12 +107,13 @@ export function SitrepCard(props: Props) {
   const answers = owner.answers.filter((answer) => answer.card.kind === record.kind && answer.card.id === record.id).map((answer) => answer.value);
   const claims = claimDecisionHistory(owner, record.id);
 
-  async function perform(work: () => Promise<unknown>, failure = "That wasn't saved. Try again."): Promise<boolean> {
+  async function perform(work: () => Promise<unknown>, failure = "That wasn't saved. Try again.", answer = false): Promise<boolean> {
     if (busyRef.current) return false;
     busyRef.current = true;
-    setBusy(true); setError(undefined); setNotice(undefined);
+    setBusy(true); setError(undefined); setFailedAnswer(null); setNotice(undefined);
+    if (answer) answerId.current = undefined;
     try { await work(); return true; }
-    catch { setError(failure); return false; }
+    catch { setError(failure); if (answer) setFailedAnswer(answerId.current ?? ""); return false; }
     finally { busyRef.current = false; setBusy(false); }
   }
   async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string, hold = false) {
@@ -131,7 +135,7 @@ export function SitrepCard(props: Props) {
     if (draft.header.kind === "message") {
       if (!source.sendMessage) throw new Error("This feed source does not provide durable card messaging");
       result = await source.sendMessage(entry, draft.header, draft.payload);
-    } else result = await source.saveResponse(entry, draft.header, draft.payload, { hold });
+    } else { answerId.current = draft.header.responseId; result = await source.saveResponse(entry, draft.header, draft.payload, { hold }); }
     pending.current = undefined;
     onSaved(entry, result);
     onOwnerSaved();
@@ -160,7 +164,7 @@ export function SitrepCard(props: Props) {
   }
   async function tap(action: "answer" | "accept-default", selected: string) {
     setTapped(selected);
-    await perform(() => askAnswer(action, selected, true), ANSWER_HELD_COPY);
+    await perform(() => askAnswer(action, selected, true), ANSWER_FAILED_COPY, true);
     setTapped(undefined);
   }
   async function command(patch: Partial<SamState>, key: string) {
@@ -244,7 +248,7 @@ export function SitrepCard(props: Props) {
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
       {!countdown.pending && asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => { if (!stale) countdown.start(optionLabel(choice) ?? "", () => void tap("answer", choice)); }} />}
       {!countdown.pending && asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => countdown.start(optionLabel(record.default) ?? "its plan", () => void tap("accept-default", record.default!))}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
-      {!countdown.pending && asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); if (!stale && text.trim()) countdown.start(NOT_SENT_COPY.yourAnswer, () => void perform(() => askAnswer("answer", undefined, true), ANSWER_HELD_COPY)); }}>
+      {!countdown.pending && asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); if (!stale && text.trim()) countdown.start(NOT_SENT_COPY.yourAnswer, () => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED_COPY, true)); }}>
         <label className="block"><span className="sr-only">Your answer</span><textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24 resize-y`} /></label>
         <button className={`mt-2 ${buttonClass}`} disabled={busy || stale || !text.trim()}>{busy && !tapped ? "Sending…" : "Send answer"}</button>
       </form>}
@@ -344,7 +348,7 @@ export function SitrepCard(props: Props) {
       <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>
     </QuietRow>}
     {later && <SnoozeChoices now={now} disabled={busy} onPick={(until) => void perform(async () => { await source.snooze(entry, until); setLater(false); onOwnerSaved(); onSnoozed?.(entry); })} />}
-    {error && <ErrorLine>{error}</ErrorLine>}{notice && <p role="status" className={`mt-2 ${fineClass}`}>{notice}</p>}
+    {failedAnswer !== null ? <AnswerFailedLine held={!!answerId.current && !!source.holdsAnswer?.(entry, answerId.current)} /> : error && <ErrorLine>{error}</ErrorLine>}{notice && <p role="status" className={`mt-2 ${fineClass}`}>{notice}</p>}
 
     <MoreSheet open={more} onOpenChange={setMore} title={entry.state.card.title || kindWord(record.kind)}>
       <div className="flex flex-wrap gap-2">

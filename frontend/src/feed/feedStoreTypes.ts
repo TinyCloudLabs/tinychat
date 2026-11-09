@@ -98,6 +98,8 @@ export interface HomeFeedSaveOptions {
 export interface HomeFeedSource {
   load(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot>;
   saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload, options?: HomeFeedSaveOptions): Promise<FeedResponse>;
+  /** Whether this answer is still held in the page-close outbox: only then will it be sent later. */
+  holdsAnswer?: (entry: HomeFeedEntry, responseId: string) => boolean;
   /** Sends the answers the page-close outbox holds (after load), or refuses those whose request changed. */
   flushHeldAnswers?: () => Promise<HeldAnswerOutcome[]>;
   sendMessage?: (entry: HomeFeedEntry, message: HomeFeedMessageDraft, payload?: FeedResponsePayload) => Promise<FeedResponse>;

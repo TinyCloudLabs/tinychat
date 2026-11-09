@@ -429,6 +429,10 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       return { entries: perAgent.flatMap((group) => group.entries), historicalEntries: perAgent.flatMap((group) => group.historicalEntries), settings: { defaultSelector }, sitrep, relatedEntries: [...related.values()], ...(focusedEntry ? { focusedEntry } : {}), ...(streamError ? { connectionError: `Live updates unavailable: ${streamError.message}` } : {}) };
     },
     saveResponse,
+    holdsAnswer(entry, responseId) {
+      const card = entry.state.card;
+      return isHeld(space, { sourceId: entry.source.sourceId, cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, responseId });
+    },
     async flushHeldAnswers() {
       const outcomes: HeldAnswerOutcome[] = [];
       for (const held of heldAnswers(space)) {

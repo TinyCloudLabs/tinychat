@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { act } from "react";
@@ -12,8 +12,8 @@ import { prepareSitrepImport, type PrepareSitrepImportInput } from "@tinyboilerp
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { useLocalThreadStorage } from "../lib/threadStore";
-import { HELD_ANSWER_TTL_MS, heldAnswerKey, type HeldAnswer } from "./answerOutbox";
-import { HELD_ANSWER_COPY, NOT_SENT_COPY } from "./cardKit";
+import { clearHeldAnswers, HELD_ANSWER_TTL_MS, heldAnswerKey, type HeldAnswer } from "./answerOutbox";
+import { ANSWER_FAILED_COPY, ANSWER_HELD_COPY, HELD_ANSWER_COPY, NOT_SENT_COPY } from "./cardKit";
 import { createHomeFeedSource, HOME_FEED_RESOURCE, SIGN_OUT_FLUSH_MS, settleHeldAnswersForSignOut } from "./feedStore";
 import { FeedViewEntries } from "./FeedView";
 import { archivePreparedOwnerBundle } from "./sitrepArchiveStore";
@@ -130,7 +130,8 @@ async function ownerFixture() {
     return stored;
   }
   const spaceId = `isolated-home-store-${crypto.randomUUID()}`;
-  const tcw = useLocalThreadStorage({ spaceId, hooks: {}, sql: { db: (resource: string) => storage(resource).handle } } as unknown as TinyCloudWeb);
+  const client = { spaceId, hooks: {}, sql: { db: (resource: string) => storage(resource).handle } };
+  const tcw = useLocalThreadStorage(client as unknown as TinyCloudWeb);
   /** A new Home launch on this owner's session: a new store over the same data. */
   const fresh = () => observedSource(tcw);
   const initial = fresh(); await initial.source.load();
@@ -138,6 +139,8 @@ async function ownerFixture() {
   const registry = storage(HOME_FEED_RESOURCE);
   return {
     spaceId, tcw, faults, registry, fresh,
+    /** The signed-in account changes under the open page. */
+    switchAccount() { client.spaceId = `${spaceId}-other`; },
     async agent(token: string): Promise<Agent> {
       const names = value(feedResourceNames("xyz.tinycloud.tinychat/feed", token));
       const output = storage(names.outputResource).handle;
@@ -915,3 +918,93 @@ test("a sign-out bound that lands during a held answer's reads stops its write: 
   await act(async () => { for (let index = 0; index < 400; index++) await Promise.resolve(); });
   expect(await stored(agent)).toEqual([]);
 });
+
+/** A card of either kind, its title, and the option to tap. */
+const KINDS = [
+  { kind: "plain", title: "Book the Thursday flight?", choice: "Go", publish: (agent: Agent) => publishFeedCard(agent.output, plainCard()) },
+  { kind: "typed", title: String(syntheticRecord("ask").title), choice: "Quick option", publish: (agent: Agent) => publishFeedCard(agent.output, typedCard(syntheticRecord("ask"))) },
+] as const;
+function failedLine(view: { host: HTMLElement }, title: string) {
+  return card(view.host, title).querySelector('[role="alert"]')?.textContent;
+}
+
+for (const { kind, title, choice, publish } of KINDS) {
+  describe(`the failed-answer line on a ${kind} card says Home will send it only while it is held`, () => {
+    test("a transport failure: the entry is held, and the held line shows", async () => {
+      const owner = await ownerFixture(); const agent = await owner.agent(`line-held-${kind}`);
+      value(await publish(agent));
+      const transport = owner.fresh(); const view = await mount(transport);
+      owner.faults.refuseResponseWrites = true;
+      await act(async () => option(view.host, choice).click());
+      await countdown(transport);
+      expect(outboxKeys()).toHaveLength(1);
+      expect(failedLine(view, title)).toBe(ANSWER_HELD_COPY);
+    });
+
+    test("a definitive refusal: not held, and the older line shows", async () => {
+      const owner = await ownerFixture(); const agent = await owner.agent(`line-refused-${kind}`);
+      value(await publish(agent));
+      const transport = owner.fresh(); const view = await mount(transport);
+      // The agent withdrew the card: the feed refuses the answer outright, not as a transport failure.
+      await agent.output.execute("DELETE FROM feed_cards", []);
+      await act(async () => option(view.host, choice).click());
+      await countdown(transport);
+      expect(outboxKeys()).toEqual([]);
+      expect(failedLine(view, title)).toBe(ANSWER_FAILED_COPY);
+    });
+
+    test("a failure before the answer is held (the account changed): not held, and the older line shows", async () => {
+      const owner = await ownerFixture(); const agent = await owner.agent(`line-prehold-${kind}`);
+      value(await publish(agent));
+      const transport = owner.fresh(); const view = await mount(transport);
+      owner.switchAccount();
+      await act(async () => option(view.host, choice).click());
+      await countdown(transport);
+      expect(outboxKeys()).toEqual([]);
+      expect(failedLine(view, title)).toBe(ANSWER_FAILED_COPY);
+    });
+
+    test("the entry cleared while the card is on screen (expiry or sign-out): the older line replaces the held one", async () => {
+      const owner = await ownerFixture(); const agent = await owner.agent(`line-cleared-${kind}`);
+      value(await publish(agent));
+      const transport = owner.fresh(); const view = await mount(transport);
+      owner.faults.refuseResponseWrites = true;
+      await act(async () => option(view.host, choice).click());
+      await countdown(transport);
+      expect(failedLine(view, title)).toBe(ANSWER_HELD_COPY);
+      clearHeldAnswers(owner.spaceId);
+      await transport.notify();
+      expect(failedLine(view, title)).toBe(ANSWER_FAILED_COPY);
+    });
+  });
+}
+
+for (const action of ["an option tap", "Fine, go ahead"] as const) {
+  test(`a typed ${action} whose reply was lost is stored once: the retry reuses its responseId`, async () => {
+    const owner = await ownerFixture(); const agent = await owner.agent(action === "Fine, go ahead" ? "typed-retry-default" : "typed-retry-tap");
+    const record = action === "Fine, go ahead"
+      ? { ...syntheticRecord("ask"), mode: "proceeding", default: "quick", recommend: "careful", decideBy: "2099-01-01T00:00:00.000Z" }
+      : syntheticRecord("ask");
+    value(await publishFeedCard(agent.output, typedCard(record)));
+    const transport = owner.fresh();
+    const save = transport.source.saveResponse;
+    const attempts: string[] = [];
+    transport.source.saveResponse = async (entry, response, payload, options) => {
+      attempts.push(response.responseId);
+      const saved = await save(entry, response, payload, options);
+      // The write landed, but its reply never reached the page.
+      if (attempts.length === 1) throw new Error("reply lost");
+      return saved;
+    };
+    const view = await mount(transport);
+    const tap = () => act(async () => (action === "Fine, go ahead" ? button(view.host, "Fine, go ahead") : option(view.host, "Quick option")).click());
+    await tap(); await countdown(transport);
+    expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
+    await tap(); await countdown(transport);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).toBe(attempts[0]!);
+    const rows = await stored(agent);
+    expect(rows.map((row) => row.responseId)).toEqual([attempts[0]!]);
+    expect(rows[0]!.kind).toBe("answer");
+  });
+}

@@ -208,6 +208,14 @@ export const HELD_ANSWER_COPY = {
 /** A failed answer send: the answer is held in the outbox, so it goes at the next launch. */
 export const ANSWER_HELD_COPY = "Your answer isn't sent yet. Send it again now, or Home will send it the next time you open it.";
 
+/** A failed answer send that isn't held (refused, or it failed before it was held): nothing will send it later. */
+export const ANSWER_FAILED_COPY = "Your answer wasn't saved. Try again.";
+
+/** The failed-answer line: the held promise only while the answer really is still in the outbox. */
+export function AnswerFailedLine({ held }: { held: boolean }) {
+  return <ErrorLine>{held ? ANSWER_HELD_COPY : ANSWER_FAILED_COPY}</ErrorLine>;
+}
+
 /** An answer that was never sent: the countdown label of an answer in words, and why the card refused. */
 export const NOT_SENT_COPY = {
   yourAnswer: "your answer",
