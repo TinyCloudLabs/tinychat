@@ -7,7 +7,7 @@ import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStor
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
-import { AnsweredPanel, cardClass, cardTime, chipClass, dueTime, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices } from "./cardKit";
+import { AnsweredPanel, cardClass, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -166,7 +166,7 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, stale 
       {!!choices.length && <p className="mt-1.5 text-[13px] text-muted-foreground">Tap an answer above to send this note with it, or save the note on its own.</p>}
       <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Saving answer…" : saved ? "Save new answer" : "Save answer"}</button>
     </form>}
-    {error && <p role="alert" className="mt-2 text-sm">{error}</p>}
+    {error && <ErrorLine>{error}</ErrorLine>}
     <QuietRow>
       {asking && !!choices.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Add a note</button>}
       {saved && !asking && <button type="button" className={quietClass} onClick={() => setFollowup(true)}>Change answer</button>}
