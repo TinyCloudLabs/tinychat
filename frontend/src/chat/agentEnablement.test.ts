@@ -64,20 +64,20 @@ describe("probeAgentCapability", () => {
       status: "expired",
       revision: null,
       probeFailed: false,
-      mcp: false,
+      mcpServiceDid: undefined,
     });
   });
 
-  it("reports an account served by the MCP, and leaves it unknown when the probe fails", async () => {
+  it("reports the MCP service DID for an account served by the MCP, and leaves it unknown when the probe fails", async () => {
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ status: "none", mcp: { serviceDid: "did:key:z6MkService" } }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })) as typeof fetch;
-    expect(await probeAgentSession("https://api.test", "tok")).toMatchObject({ status: "none", mcp: true });
+    expect(await probeAgentSession("https://api.test", "tok")).toMatchObject({ status: "none", mcpServiceDid: "did:key:z6MkService" });
 
     globalThis.fetch = (async () => new Response(null, { status: 502 })) as typeof fetch;
-    expect((await probeAgentSession("https://api.test", "tok")).mcp).toBeUndefined();
+    expect("mcpServiceDid" in (await probeAgentSession("https://api.test", "tok"))).toBe(false);
   });
 
   it("distinguishes a disabled route from an unhealthy backend probe", async () => {
@@ -512,6 +512,66 @@ describe("shared private access controller", () => {
     expect(c.getSnapshot().enableError).toContain("not confirmed");
     expect(c.privateAccessRef.current.active).toBe(false);
     c.dispose();
+  });
+
+  describe("Disconnect for an account served by the MCP", () => {
+    const SERVICE = "did:key:z6MkMcpService";
+    const resource = (service: string, path: string) => `tinycloud:pkh:eip155:1:0xone:applications/${service}/${path}`;
+    const grant = (cid: string, delegateDid: string, resources: string[]) => ({ cid, delegateDid, status: "active", resources: resources.map(entry => ({ resource: entry })) });
+    const listing = [
+      grant("MCP-GRANT", SERVICE, [resource("kv", "xyz.tinycloud.tinychat/connectors/"), resource("sql", "xyz.tinycloud.tinychat/connectors")]),
+      grant("OTHER-APP-GRANT", "did:key:z6MkOtherApp", [resource("kv", "xyz.tinycloud.tinychat/connectors/")]),
+      grant("SAME-DID-OTHER-DATA", SERVICE, [resource("kv", "xyz.other.app/notes/")]),
+    ];
+    function mcpController(revokeOk: boolean, revoked: string[]) {
+      return createAgentAccessController({
+        backendUrl: "https://api.test",
+        tcw: {
+          address: () => "0xone",
+          delegations: { query: async () => ({ ok: true, data: { items: listing } }) },
+          revokeDelegation: async (cid: string) => { if (revokeOk) revoked.push(cid); return revokeOk ? { ok: true, data: { revoked: true, cid } } : { ok: false, error: { code: "x" } }; },
+        } as never,
+        sessionStore: { getToken: () => "token" } as never,
+        appName: "test", openkeyHost: "https://openkey.test",
+      });
+    }
+    const mcpActive = { ...active, revision: "mcp", mcp: { serviceDid: SERVICE } };
+
+    it("revokes only the grant to the MCP service DID over the connectors data, then shows Disconnected once the MCP agrees", async () => {
+      const revoked: string[] = [];
+      const methods: string[] = [];
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        methods.push(init?.method ?? "GET");
+        return Response.json(revoked.length ? { status: "none", transcriptStatus: "none", revision: "mcp", mcp: { serviceDid: SERVICE } } : mcpActive);
+      }) as typeof fetch;
+      const c = mcpController(true, revoked); await c.refresh();
+      expect(c.getSnapshot().capability).toBe("enabled");
+      await c.onDisconnect();
+      expect(revoked).toEqual(["MCP-GRANT"]);
+      expect(methods).not.toContain("DELETE");
+      expect(c.getSnapshot()).toMatchObject({ capability: "available", status: "none", enableError: null });
+      expect(c.privateAccessRef.current.active).toBe(false);
+      c.dispose();
+    });
+
+    it("never shows Disconnected when the revoke fails", async () => {
+      globalThis.fetch = (async () => Response.json(mcpActive)) as typeof fetch;
+      const c = mcpController(false, []); await c.refresh();
+      await c.onDisconnect();
+      expect(c.getSnapshot().status).toBe(null);
+      expect(c.getSnapshot().enableError).toContain("not confirmed");
+      c.dispose();
+    });
+
+    it("never shows Disconnected when the MCP still reads the grant as active after the revoke", async () => {
+      globalThis.fetch = (async () => Response.json(mcpActive)) as typeof fetch;
+      const c = mcpController(true, []); await c.refresh();
+      await c.onDisconnect();
+      expect(c.getSnapshot().capability).not.toBe("enabled");
+      expect(c.getSnapshot().status).toBe(null);
+      expect(c.getSnapshot().enableError).toContain("not confirmed");
+      c.dispose();
+    });
   });
 
   it("cancelled reconnect refreshes the old connected state and reports failure", async () => {

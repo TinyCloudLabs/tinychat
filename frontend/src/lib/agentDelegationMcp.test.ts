@@ -9,6 +9,7 @@ import {
   isActiveAgentBundle,
   MCP_CONSENT_MANIFEST,
   mintMcpSessionDelegation,
+  revokeMcpGrants,
   TRANSCRIPT_PERMISSIONS,
 } from "./agentDelegation.js";
 
@@ -83,5 +84,28 @@ describe("ensureAgentSession for an MCP account", () => {
   it("treats the MCP's active status as an active bundle", () => {
     expect(isActiveAgentBundle({ status: "active", transcriptStatus: "active", revision: "mcp" })).toBe(true);
     expect(isActiveAgentBundle({ status: "expired", transcriptStatus: "expired", revision: "mcp" })).toBe(false);
+  });
+});
+
+describe("revokeMcpGrants", () => {
+  const connectors = (service: string) => `tinycloud:pkh:eip155:1:0xUSER:applications/${service}/xyz.tinycloud.tinychat/connectors${service === "kv" ? "/" : ""}`;
+  const item = (cid: string, delegateDid = SERVICE_DID) => ({ cid, delegateDid, status: "active", resources: [{ resource: connectors("kv") }, { resource: connectors("sql") }] });
+  const tcwWith = (pages: Array<{ items: unknown[]; nextCursor?: string }>, revoked: string[], failOn?: string) => ({
+    delegations: {
+      query: async (options: { cursor?: string }) => ({ ok: true, data: pages[options.cursor ? Number(options.cursor) : 0] }),
+    },
+    revokeDelegation: async (cid: string) => { if (cid === failOn) return { ok: false, error: {} }; revoked.push(cid); return { ok: true, data: { revoked: true, cid } }; },
+  }) as unknown as TinyCloudWeb;
+
+  it("finds grants on every page and revokes each, one revoke per grant", async () => {
+    const revoked: string[] = [];
+    const tcw = tcwWith([{ items: [item("A"), item("OTHER", "did:key:z6MkOther")], nextCursor: "1" }, { items: [item("B")] }], revoked);
+    expect(await revokeMcpGrants(tcw, SERVICE_DID)).toBe(2);
+    expect(revoked).toEqual(["A", "B"]);
+  });
+
+  it("resolves with zero when no matching grant is active, and throws when a revoke fails", async () => {
+    expect(await revokeMcpGrants(tcwWith([{ items: [item("OTHER", "did:key:z6MkOther")] }], []), SERVICE_DID)).toBe(0);
+    await expect(revokeMcpGrants(tcwWith([{ items: [item("A")] }], [], "A"), SERVICE_DID)).rejects.toThrow("not confirmed");
   });
 });

@@ -77,7 +77,13 @@ export function createHttpMcpPort(config: McpHttpConfig, ownerDid: string): McpM
     if (!structured) throw new McpPortError("MCP_BAD_RESPONSE");
     if (structured.status === "authority_required") throw new McpPortError("GRANT_REQUIRED");
     if (structured.status !== "ok") {
-      const code = (structured.error as { code?: unknown } | undefined)?.code;
+      const error = structured.error as { code?: unknown; details?: { reason?: unknown } } | undefined;
+      // After the owner revokes the grant on the node, the MCP answers 200 with AUTH_REQUIRED and one of these reasons.
+      // That is the same user-visible state as no grant: connect again.
+      if (error?.code === "AUTH_REQUIRED" && (error.details?.reason === "delegation_revoked" || error.details?.reason === "delegation_ancestor_revoked")) {
+        throw new McpPortError("GRANT_REQUIRED");
+      }
+      const code = error?.code;
       throw new McpPortError(typeof code === "string" && /^[A-Z0-9_]{1,80}$/.test(code) ? code : "MCP_ERROR");
     }
     return (structured.output ?? {}) as Record<string, unknown>;

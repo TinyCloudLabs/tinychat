@@ -4,6 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import {
   AgentOwnerMismatchError, AgentSessionError, clearAgentSessionCache, disconnectAgentSession, ensureAgentSession,
+  revokeMcpGrants,
   isActiveAgentBundle, mintAgentSessionViaFreshSignIn, mintMcpSessionViaFreshSignIn,
   type AgentSessionStatus, type AgentSessionEnvelope, type AgentSessionSnapshot,
 } from "../lib/agentDelegation";
@@ -29,8 +30,8 @@ export interface AgentSessionProbe {
   status: AgentSessionStatus | null;
   revision: string | null;
   probeFailed: boolean;
-  /** True when the backend serves this account through the MCP; absent when the probe could not tell. */
-  mcp?: boolean;
+  /** The MCP service DID when the backend serves this account through the MCP; absent otherwise (or when the probe could not tell). */
+  mcpServiceDid?: string;
 }
 export interface AgentAccessState extends AgentSessionProbe {
   enableError: string | null;
@@ -78,7 +79,7 @@ export async function probeAgentSession(backendUrl: string, token: string): Prom
       status: status === "active" && !isActiveAgentBundle(body) ? "stale" : status,
       revision: typeof body.revision === "string" ? body.revision : null,
       probeFailed: false,
-      mcp: Boolean(body.mcp?.serviceDid),
+      mcpServiceDid: body.mcp?.serviceDid,
     };
   } catch { return { capability: "unavailable", status: null, revision: null, probeFailed: true }; }
 }
@@ -216,9 +217,18 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       try {
         const token = opts.sessionStore.getToken();
         if (!token) throw new Error("Disconnection was not confirmed. Sign in and retry.");
-        const body = await disconnectAgentSession(opts.backendUrl, token);
-        if (!disposed && operation === currentOperation) {
-          apply({ capability: "available", status: "none", revision: body.revision!, probeFailed: false });
+        if (state.mcpServiceDid) {
+          // The MCP cannot revoke a grant itself; the owner revokes it on the node from this session, and the status below is
+          // read back from the MCP, so "Disconnected" is only shown once the MCP can no longer use the grant.
+          await revokeMcpGrants(opts.tcw, state.mcpServiceDid);
+          const readBack = await probeAgentSession(opts.backendUrl, token);
+          if (readBack.capability === "enabled" || readBack.status === null) throw new Error("Disconnection was not confirmed. Please retry.");
+          if (!disposed && operation === currentOperation) apply(readBack);
+        } else {
+          const body = await disconnectAgentSession(opts.backendUrl, token);
+          if (!disposed && operation === currentOperation) {
+            apply({ capability: "available", status: "none", revision: body.revision!, probeFailed: false });
+          }
         }
       } catch {
         if (operation === currentOperation) update({ status: null, enableError: "Disconnection was not confirmed. Please retry." });

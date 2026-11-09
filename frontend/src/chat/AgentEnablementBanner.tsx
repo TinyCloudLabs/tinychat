@@ -161,8 +161,6 @@ export function AgentAccessControls(props: UseAgentEnablementResult) {
   const connected = props.capability === "enabled";
   const unknown = props.status === null;
   const unverified = unknown && props.reconnectReason === "delegation_unverified";
-  // The MCP cannot revoke a grant (disconnect always fails with disconnect_unsupported), so MCP accounts get no Disconnect button.
-  const mcp = props.mcp === true;
   return (
     <div className="space-y-3">
       <p role="status" className="text-xs font-medium">
@@ -174,14 +172,13 @@ export function AgentAccessControls(props: UseAgentEnablementResult) {
           className="font-semibold">
           {props.enabling ? "Connecting…" : connected || props.reconnectReason ? "Reconnect agent" : "Connect agent"}
         </Button>
-        {!mcp && (connected || props.disconnecting || unknown) && <Button type="button" size="sm" variant="outline" onClick={() => void props.onDisconnect()}
+        {(connected || props.disconnecting || unknown) && <Button type="button" size="sm" variant="outline" onClick={() => void props.onDisconnect()}
           disabled={props.disconnecting || props.capability === "probing"}
           className="font-semibold">
           {props.disconnecting ? "Disconnecting…" : unknown && !unverified ? "Retry disconnect" : "Disconnect agent"}
         </Button>}
       </div>
       {props.enableError && <p role="alert" className="text-xs text-destructive">{props.enableError}</p>}
-      {mcp && connected && <p className="text-xs text-muted-foreground">This access ends 30 days after you connected.</p>}
       <HowItWorksLink section="agent-access" />
     </div>
   );
