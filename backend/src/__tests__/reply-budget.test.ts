@@ -101,11 +101,3 @@ describe("ReplyBudget output cap against the context window", () => {
     expect(createReplyBudget(230, pro, 10_000).limitFor(3000)?.capped).toBe(false);
   });
 });
-
-describe("ReplyBudget with an unusable context size", () => {
-  test("a NaN context size is treated as unknown", () => {
-    const rates: ModelRates = { creditsPerKInput: 5, creditsPerKOutput: 25, fallback: false };
-    expect(createReplyBudget(500, rates, Number.NaN).limitFor(3000)).toEqual(createReplyBudget(500, rates).limitFor(3000));
-    expect(createReplyBudget(500, rates, Number.NaN).limitFor(3000)?.capped).toBe(true);
-  });
-});

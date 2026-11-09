@@ -69,7 +69,7 @@ export function createReplyBudget(allowance: number, rates: ModelRates, contextT
     limitFor: (promptChars, existingMaxTokens) => {
       const cap = maxTokensFor(promptChars);
       if (cap < 1) return null;
-      const roomInContext = contextTokens === undefined || !Number.isFinite(contextTokens) ? Number.POSITIVE_INFINITY : contextTokens - Math.ceil(promptChars / PROMPT_CHARS_PER_TOKEN);
+      const roomInContext = contextTokens === undefined ? Number.POSITIVE_INFINITY : contextTokens - Math.ceil(promptChars / PROMPT_CHARS_PER_TOKEN);
       if (cap >= roomInContext || (existingMaxTokens !== undefined && existingMaxTokens < cap)) return { maxTokens: existingMaxTokens, capped: false };
       return { maxTokens: cap, capped: true };
     },
