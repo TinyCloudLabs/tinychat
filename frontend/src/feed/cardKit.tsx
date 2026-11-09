@@ -8,6 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
+import type { HomeFeedEntry } from "./feedStoreTypes";
 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 
@@ -185,22 +186,57 @@ export const UNDO_SECONDS = 5;
  */
 export const PendingSendContext = createContext<Set<() => void> | null>(null);
 
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+/**
+ * True only when `next` is `previous` plus appended agent replies: the same card from the
+ * same agent, a higher revision, every card field and payload key structurally identical
+ * (canonical JSON) except `payload.replies`, and those replies a strict append (the first k
+ * identical, at least one more). Revision, issuance and createdAt are the revision's own
+ * identity and time, so they are not compared.
+ */
+export function isReplyOnlyRevision(previous: HomeFeedEntry, next: HomeFeedEntry): boolean {
+  if (previous.source.sourceId !== next.source.sourceId || previous.source.agentDid !== next.source.agentDid) return false;
+  const before = previous.state.card; const after = next.state.card;
+  if (before.cardId !== after.cardId || after.revision <= before.revision) return false;
+  const { revision: _r1, issuanceId: _i1, createdAt: _c1, payload: beforePayload = {}, ...beforeFields } = before;
+  const { revision: _r2, issuanceId: _i2, createdAt: _c2, payload: afterPayload = {}, ...afterFields } = after;
+  if (canonical(beforeFields) !== canonical(afterFields)) return false;
+  const { replies: beforeReplies = [], ...beforeOthers } = beforePayload;
+  const { replies: afterReplies, ...afterOthers } = afterPayload;
+  if (canonical(beforeOthers) !== canonical(afterOthers)) return false;
+  if (!Array.isArray(beforeReplies) || !Array.isArray(afterReplies) || afterReplies.length <= beforeReplies.length) return false;
+  return beforeReplies.every((reply, index) => canonical(reply) === canonical(afterReplies[index]));
+}
+
 /**
  * An answer that waits UNDO_SECONDS before it is sent. `start` shows it at once;
  * `undo` drops it unsent; at 0 (or when the card unmounts, or the view changes)
- * `send` runs exactly once.
+ * `send` runs exactly once, unless the card's issuance was replaced meanwhile
+ * (`guard.stale` at that moment): then nothing is written and `guard.onRefused` runs.
  */
-export function usePendingSend() {
+export function usePendingSend(guard: { stale: boolean; onRefused: (label: string) => void }) {
   const [pending, setPending] = useState<{ label: string; seconds: number } | null>(null);
-  const send = useRef<(() => void) | null>(null);
+  const send = useRef<{ label: string; run: () => void } | null>(null);
   const timers = useRef<number[]>([]);
+  // Read at commit time, not at tap time: a newer issuance may arrive during the countdown.
+  const latest = useRef(guard);
+  latest.current = guard;
   const registry = useContext(PendingSendContext);
   const stop = useCallback(() => { for (const timer of timers.current) window.clearTimeout(timer); timers.current = []; }, []);
   const flush = useCallback(() => {
-    const run = send.current;
-    if (!run) return;
+    const armed = send.current;
+    if (!armed) return;
     send.current = null; stop(); setPending(null);
-    run();
+    // No write may carry a replaced card's identity.
+    if (latest.current.stale) latest.current.onRefused(armed.label);
+    else armed.run();
   }, [stop]);
   const undo = useCallback(() => {
     if (!send.current) return;
@@ -208,7 +244,7 @@ export function usePendingSend() {
   }, [stop]);
   const start = useCallback((label: string, run: () => void) => {
     flush();
-    send.current = run;
+    send.current = { label, run };
     setPending({ label, seconds: UNDO_SECONDS });
     for (let elapsed = 1; elapsed < UNDO_SECONDS; elapsed++) {
       timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: UNDO_SECONDS - elapsed }), elapsed * 1000));
@@ -248,8 +284,12 @@ export function PendingAnswer({ label, seconds, children, onUndo }: { label: str
   </>;
 }
 
+/**
+ * The quiet text buttons under a card. Each keeps a 44px target; when they wrap, the column
+ * gap equals the visible gap between wrapped lines (44px target - 18px text = 26px).
+ */
 export function QuietRow({ children }: { children: ReactNode }) {
-  return <div className="-mb-3 mt-0.5 flex flex-wrap gap-x-5">{children}</div>;
+  return <div className="-mb-3 mt-0.5 flex flex-wrap gap-x-[26px]">{children}</div>;
 }
 
 /** "Ask me later" presets: tonight, tomorrow morning, and so on. */
@@ -276,5 +316,8 @@ export function SheetSection({ title, children }: { title: string; children: Rea
 
 /** Mono reference line, for More → Details only. */
 export function Reference({ children, title }: { children: ReactNode; title?: string }) {
-  return <p aria-label="Card reference" className="text-[12.5px] leading-[1.4] text-muted-foreground"><code className="select-all break-all" title={title}>{children}</code></p>;
+  return <div>
+    <p className="text-[12.5px] font-semibold text-muted-foreground">Card ID</p>
+    <p aria-label="Card reference" className="text-[12.5px] leading-[1.4] text-muted-foreground"><code className="select-all break-all" title={title}>{children}</code></p>
+  </div>;
 }

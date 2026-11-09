@@ -8,7 +8,7 @@ import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { ThreadView, type ThreadItem } from "./HomeCardThread";
-import { AnsweredPanel, audienceCopy, cardClass, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
+import { AnsweredPanel, audienceCopy, cardClass, isReplyOnlyRevision, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -133,12 +133,20 @@ function plainThreadItems(entry: HomeFeedEntry, revisions: readonly HomeFeedEntr
 }
 
 /** An untyped card's answer and conversation: one tap on an option, or an answer in words, sent after a short undo window. */
-function AnswerForm({ entry, revisions, source, now, attention, expanded, reference, stale = false, onSaved, onSnooze }: {
+function AnswerForm({ entry, answered, revisions, source, now, attention, expanded, reference, stale = false, onRefused, onSaved, onSnooze }: {
   entry: HomeFeedEntry; source: HomeFeedSource; now: number; attention: boolean; expanded: boolean; reference: ReactNode;
+  /**
+   * The revision that holds the card's stored answer, when an earlier revision was answered and
+   * only agent replies followed. The answer stays bound to that issuance: it is shown on this
+   * card, and a follow-up to it still names that issuance.
+   */
+  answered?: HomeFeedEntry;
   /** The card's other revisions Home holds (for its conversation). */
   revisions: readonly HomeFeedEntry[];
   /** A newer issuance replaced this card: its draft stays, but it can no longer be answered. */
   stale?: boolean;
+  /** An answer whose countdown ended after the card was replaced: nothing was written. */
+  onRefused: (label: string) => void;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
   onSnooze: (entry: HomeFeedEntry, until: string) => Promise<void>;
 }) {
@@ -150,20 +158,27 @@ function AnswerForm({ entry, revisions, source, now, attention, expanded, refere
   const [later, setLater] = useState(false);
   const [more, setMore] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
-  const countdown = usePendingSend();
+  const countdown = usePendingSend({ stale, onRefused });
   const [composing, setComposing] = useState(false);
   const [messaging, setMessaging] = useState(false);
   const pendingResponse = useRef<{ key: string; response: NewFeedResponse } | null>(null);
   const pendingMessage = useRef<{ text: string; message: NewFeedMessage } | null>(null);
   const card = entry.state.card;
   const choices = card.choices ?? [];
-  const saved = entry.state.response;
+  // Writes go to the answered issuance when there is one, otherwise to the card as it is now.
+  const target = answered ?? entry;
+  const saved = target.state.response;
+  // Read when a countdown commits, so an answer re-targets to a reply-only revision that arrived meanwhile.
+  const live = useRef({ target, saved, text });
+  live.current = { target, saved, text };
   async function save(choice?: string) {
-    if (stale || saving || (!text.trim() && !choice)) return;
+    const { target, saved, text } = live.current;
+    if (saving || (!text.trim() && !choice)) return;
     setSaving(choice ?? "text"); setError(null);
+    const card = target.state.card;
     // Retain the response identity across a failed/ambiguous write. A retry of
-    // the same answer cannot create a second one because its first write was lost.
-    const key = JSON.stringify([choice ?? null, text.trim()]);
+    // the same answer to the same issuance cannot create a second one.
+    const key = JSON.stringify([card.cardId, card.revision, card.issuanceId, choice ?? null, text.trim()]);
     const response = pendingResponse.current?.key === key ? pendingResponse.current.response : {
       responseId: crypto.randomUUID(), cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId,
       kind: saved ? "followup" as const : "answer" as const,
@@ -172,8 +187,8 @@ function AnswerForm({ entry, revisions, source, now, attention, expanded, refere
     };
     pendingResponse.current = { key, response };
     try {
-      const result = await source.saveResponse(entry, response);
-      onSaved(entry, result);
+      const result = await source.saveResponse(target, response);
+      onSaved(target, result);
       pendingResponse.current = null;
       setText(""); setNoteOpen(false); setFollowup(false); setJustSaved(true);
     } catch {
@@ -202,7 +217,7 @@ function AnswerForm({ entry, revisions, source, now, attention, expanded, refere
   }
   const details = <MoreSheet open={more} onOpenChange={setMore} title={card.title || "This card"}>
     <SheetSection title="Details">{reference}</SheetSection>
-    <CardHistory entry={entry} now={now} />
+    <CardHistory entry={target} now={now} />
   </MoreSheet>;
   const items = plainThreadItems(entry, revisions);
   const audience = audienceCopy({ approved: [entry.source.label], fallback: entry.source.label });
@@ -229,14 +244,14 @@ function AnswerForm({ entry, revisions, source, now, attention, expanded, refere
   return <div>
     {!longThread && thread}
     {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-      {countdown.pending.label === "your answer" ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>}
+      {countdown.pending.label === "your answer" ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
     </PendingAnswer> : <>
-      {saved && !asking && <ResponseStatus entry={entry} focusOnMount={justSaved} />}
+      {saved && !asking && <ResponseStatus entry={target} focusOnMount={justSaved} />}
       {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
       {asking && !!choices.length && <OptionButtons options={choices} saving={saving ?? undefined} disabled={!!saving || stale} onChoose={choose} />}
       {asking && (noteOpen || !choices.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); reply(); }}>
-        <label className="block text-[13px] font-semibold">Your answer<textarea aria-label="Your answer" value={text} disabled={!!saving} onInput={(event) => { setText(event.currentTarget.value); }} className={`${fieldClass} min-h-24 resize-y`} /></label>
-        <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Sending…" : "Send"}</button>
+        <label className="block"><span className="sr-only">Your answer</span><textarea aria-label="Your answer" value={text} disabled={!!saving} onInput={(event) => { setText(event.currentTarget.value); }} className={`${fieldClass} min-h-24 resize-y`} /></label>
+        <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Sending…" : "Send answer"}</button>
       </form>}
     </>}
     {longThread && thread}
@@ -275,6 +290,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const [sticky, setSticky] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [awake, setAwake] = useState<ReadonlySet<string>>(() => new Set());
+  // Answers not sent because the card was replaced during their countdown, by card key.
+  const [refused, setRefused] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
@@ -290,6 +307,9 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const activeRef = useRef<HomeFeedEntry | null>(null);
   const currentSource = useRef(source);
   const pendingSends = useRef(new Set<() => void>());
+  // Every revision of each card this session has seen, so a reply-only successor can be
+  // recognised even when the store no longer returns the revision it replaced.
+  const seenRevisions = useRef(new Map<string, HomeFeedEntry[]>());
   currentSource.current = source;
   const history = view === "done";
   const selector: FeedSelector = view === "all" ? "both" : "needs-action";
@@ -300,6 +320,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     let dirty = false;
     chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
+    seenRevisions.current.clear();
     activeRef.current = null;
     setSnapshot(null); setView(null); setActive(null); setError(null); setSticky(new Map()); setExpanded(new Set()); setAwake(new Set());
     setExpandedGroups(new Set());
@@ -324,6 +345,11 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           if (next.focusedEntry) next.focusedEntry = reconcile(next.focusedEntry);
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
+          for (const entry of [...next.entries, ...(next.historicalEntries ?? []), ...(next.focusedEntry ? [next.focusedEntry] : [])]) {
+            const cardKey = JSON.stringify([entry.source.sourceId, entry.state.card.cardId]);
+            const known = seenRevisions.current.get(cardKey) ?? [];
+            seenRevisions.current.set(cardKey, [...known.filter((candidate) => keyOf(candidate) !== keyOf(entry)), entry]);
+          }
           setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
           if (!hasDefault.current && !chosenView.current) setView(next.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
           hasDefault.current = true;
@@ -339,7 +365,39 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     return () => { alive = false; unsubscribe(); refreshRef.current = () => {}; };
   }, [source]);
 
-  const entries = history ? [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()] : snapshot?.entries ?? [];
+  /** The card's revisions this session knows, latest state first by identity, oldest revision first. */
+  const revisionsOf = (entry: HomeFeedEntry): HomeFeedEntry[] => {
+    const known = new Map<string, HomeFeedEntry>();
+    const sameCard = (candidate: HomeFeedEntry) => candidate.source.sourceId === entry.source.sourceId && candidate.state.card.cardId === entry.state.card.cardId;
+    for (const candidate of seenRevisions.current.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId])) ?? []) known.set(keyOf(candidate), candidate);
+    for (const candidate of [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? []), ...(snapshot?.focusedEntry ? [snapshot.focusedEntry] : []), ...(active ? [active] : [])]) if (sameCard(candidate)) known.set(keyOf(candidate), candidate);
+    return [...known.values()].sort((a, b) => a.state.card.revision - b.state.card.revision);
+  };
+  /**
+   * A plain card's run of reply-only revisions ending at `entry`, oldest first: the revisions
+   * that differ from their predecessor only by appended agent replies. Typed cards and any
+   * other change start a new run.
+   */
+  const replyChain = (entry: HomeFeedEntry): HomeFeedEntry[] => {
+    if (isTypedPayload(entry)) return [entry];
+    const chain = [entry];
+    for (const previous of revisionsOf(entry).filter((candidate) => candidate.state.card.revision < entry.state.card.revision).reverse()) {
+      if (!isReplyOnlyRevision(previous, chain[0]!)) break;
+      chain.unshift(previous);
+    }
+    return chain;
+  };
+  /** One identity for a card across reply-only revisions: its drafts, countdowns and view state survive them. */
+  const lineageKey = (entry: HomeFeedEntry) => keyOf(replyChain(entry)[0]!);
+  /** The revision in the reply-only run that holds the stored answer, if any. */
+  const answeredIn = (entry: HomeFeedEntry) => isTypedPayload(entry) ? undefined : [...replyChain(entry)].reverse().find((candidate) => candidate.state.response);
+  const entries = history
+    ? (() => {
+      const all = [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()];
+      // A revision that only gained agent replies is shown as its latest revision, once.
+      return all.filter((entry) => !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === lineageKey(entry)));
+    })()
+    : snapshot?.entries ?? [];
   const contextFor = useMemo(() => {
     const current = typedContexts(snapshot?.entries ?? [], snapshot?.sitrep, clock);
     const retained = new Map<string, ReturnType<typeof current>>();
@@ -373,17 +431,17 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     return () => window.clearTimeout(timer);
   }, [snapshot, clock, contextFor]);
   const matchesFilters = (entry: HomeFeedEntry) => (!agent || entry.source.sourceId === agent) && (!kind || kindOf(entry) === kind) && (!project || projectOf(entry) === project);
-  const attention = (entry: HomeFeedEntry) => needsAttention(entry, clock, contextFor(entry)?.projection);
+  const attention = (entry: HomeFeedEntry) => needsAttention(entry, clock, contextFor(entry)?.projection) && !answeredIn(entry);
   const folded = (entry: HomeFeedEntry) => {
     const typed = contextFor(entry);
     if (!typed?.projection.foldedInto) return false;
     const parent = typed.entries.find((candidate) => { const context = contextFor(candidate); return context?.record.kind === "ask" && context.record.id === typed.projection.foldedInto?.id; });
     return !!parent && matchesFilters(parent) && attention(parent);
   };
-  const inDone = (entry: HomeFeedEntry) => entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || snoozedNow(entry, clock);
+  const inDone = (entry: HomeFeedEntry) => entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!answeredIn(entry) || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || snoozedNow(entry, clock);
   // A card the owner touched in this view keeps its place until the view changes,
   // so an answer stays on screen (with "Change answer") instead of vanishing under the tap.
-  const keepsNeeds = (entry: HomeFeedEntry) => sticky.get(keyOf(entry)) === true;
+  const keepsNeeds = (entry: HomeFeedEntry) => sticky.get(lineageKey(entry)) === true;
   const needing = (entry: HomeFeedEntry) => (attention(entry) && !(selector === "needs-action" && folded(entry))) || keepsNeeds(entry);
   const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry)).length;
   const matching = entries.filter((entry) => matchesFilters(entry) && (history ? inDone(entry) : selector === "both" || needing(entry)))
@@ -402,17 +460,22 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   }));
   const rows: Row[] = [...priority.priority, ...priority.rest];
   const activeKey = active ? keyOf(active) : null;
-  const selected = entries.find((entry) => keyOf(entry) === activeKey)
+  let selected = entries.find((entry) => keyOf(entry) === activeKey)
     ?? (snapshot?.focusedEntry && keyOf(snapshot.focusedEntry) === activeKey ? snapshot.focusedEntry : active);
-  const selectedKey = selected ? keyOf(selected) : null;
-  activeRef.current = selected ?? null;
   // A card the owner is working on stays bound to its exact issuance when a newer one
   // arrives: it keeps its place (in place of its successor) until the owner moves on.
-  if (selected && !rows.some((row) => (row.kind === "card" ? [row.item] : row.items).some((entry) => keyOf(entry) === selectedKey))) {
-    const successor = rows.findIndex((row) => row.kind === "card" && row.item.source.sourceId === selected.source.sourceId && row.item.state.card.cardId === selected.state.card.cardId);
-    if (successor >= 0) rows[successor] = { kind: "card", item: selected, retained: true };
-    else if (!entries.some((entry) => keyOf(entry) === selectedKey)) rows.unshift({ kind: "card", item: selected, retained: true });
+  // A successor that only appends agent replies swaps in place instead.
+  if (selected && !rows.some((row) => (row.kind === "card" ? [row.item] : row.items).some((entry) => keyOf(entry) === keyOf(selected!)))) {
+    const current = selected;
+    const successor = rows.findIndex((row) => row.kind === "card" && row.item.source.sourceId === current.source.sourceId && row.item.state.card.cardId === current.state.card.cardId);
+    const next = successor >= 0 ? rows[successor] : undefined;
+    if (next?.kind === "card" && !isTypedPayload(current) && isReplyOnlyRevision(current, next.item)) selected = next.item;
+    else if (successor >= 0) rows[successor] = { kind: "card", item: current, retained: true };
+    else if (!entries.some((entry) => keyOf(entry) === keyOf(current))) rows.unshift({ kind: "card", item: current, retained: true });
   }
+  const selectedKey = selected ? keyOf(selected) : null;
+  activeRef.current = selected ?? null;
+  useEffect(() => { if (selected && activeKey && selectedKey !== activeKey) setActive(selected); }, [selectedKey, activeKey]);
   const filteredCount = rows.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0);
 
   useEffect(() => {
@@ -451,26 +514,28 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     source.setDefaultSelector(value).catch(() => {});
   }
   function engage(entry: HomeFeedEntry) {
-    const key = keyOf(entry);
-    if (key !== activeKey) setActive(entry);
+    if (keyOf(entry) !== activeKey) setActive(entry);
+    const key = lineageKey(entry);
     if (!sticky.has(key)) setSticky((current) => new Map(current).set(key, view !== "done" && attention(entry)));
   }
   function toggle(entry: HomeFeedEntry) {
     engage(entry);
-    const key = keyOf(entry);
+    const key = lineageKey(entry);
     setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   }
   function release(entry: HomeFeedEntry) {
-    const key = keyOf(entry);
+    const key = lineageKey(entry);
+    setRefused((current) => { const next = new Map(current); next.delete(key); return next; });
     setSticky((current) => { const next = new Map(current); next.delete(key); return next; });
-    if (key === activeKey) setActive(null);
+    if (keyOf(entry) === activeKey) setActive(null);
   }
   const snooze = useCallback(async (entry: HomeFeedEntry, until: string) => {
     await source.snooze(entry, until);
     const key = keyOf(entry);
     setSnapshot((current) => updateSnapshotEntry(current, key, (candidate) => ({ ...candidate, view: { ...candidate.view, snoozedUntil: until } })));
     release(entry);
-    setAwake((current) => { const next = new Set(current); next.delete(key); return next; });
+    const lineage = lineageKey(entry);
+    setAwake((current) => { const next = new Set(current); next.delete(lineage); return next; });
   }, [source, activeKey]);
   function setFilter(update: () => void) { update(); setActive(null); setSticky(new Map()); }
 
@@ -491,10 +556,12 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
       if (context.projection.answer) return <span className={chipClass}>Answered</span>;
       return null;
     }
-    return entry.state.response ? <span className={chipClass}>Answered</span> : null;
+    return answeredIn(entry) ? <span className={chipClass}>Answered</span> : null;
   }
   function renderCard(entry: HomeFeedEntry, retained = false) {
-    const key = keyOf(entry);
+    const key = lineageKey(entry);
+    const refusedLabel = refused.get(key);
+    const onRefused = (label: string) => setRefused((current) => new Map(current).set(key, label));
     const context = contextFor(entry);
     const unsupported = isTypedPayload(entry) && !context;
     const open = expanded.has(key);
@@ -505,13 +572,15 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
       <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} expanded={open} compact={resting || unsupported} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
         {resting && <QuietRow><button type="button" className={quietClass} onClick={() => { engage(entry); setAwake((current) => new Set(current).add(key)); }}>Answer now</button></QuietRow>}
         {!resting && <>
-        {retained && <div role="status" className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>A newer version of this card arrived. Answer it there; your draft stays here.</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
+        {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
+          ? <span className="text-foreground">Not sent: {refusedLabel === "your answer" ? "your answer" : <b className="font-semibold">{refusedLabel}</b>}. This card changed. Answer the newer version.</span>
+          : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
         <ReportLink entry={entry} />
         {context
-          ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />
+          ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} stale={retained} reference={reference} onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />
           : unsupported
             ? <p role="status" className="mt-3.5 text-sm">This card can't be shown here yet. Your agent still has it.</p>
-            : <AnswerForm key={key} entry={entry} revisions={[...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].filter((candidate) => candidate !== entry && candidate.source.sourceId === entry.source.sourceId && candidate.state.card.cardId === entry.state.card.cardId)} source={source} now={clock} attention={attention(entry)} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onSnooze={snooze} />}
+            : <AnswerForm key={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock} attention={attention(entry)} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onSnooze={snooze} />}
         </>}
       </FeedCardView>
     </li>;
