@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, cardTime, fieldClass as inputClass, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
+import { AnsweredPanel, cardTime, fieldClass as inputClass, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
@@ -59,7 +59,8 @@ function TypedAnswerStatus({ entry, owner, answer, record, focusOnMount = false 
   if (!answer) return null;
   const { acknowledgement, outcome } = answerReceipt(entry, owner, answer);
   const agent = entry.source.label;
-  const label = answer.choice && record.kind === "ask" ? record.options.find((option) => option.id === answer.choice)?.label : undefined;
+  const choice = answer.choice && record.kind === "ask" ? record.options.find((option) => option.id === answer.choice) : undefined;
+  const label = choice && optionText(choice.label);
   const lead = answer.action === "code" ? `Code saved privately for ${agent}. It isn't shown again.`
     : answer.action === "drop" ? "You dropped this question."
       : answer.action === "done" ? record.kind === "approval" && record.approvalType === "go" ? "You gave the go." : "You marked this step done."
@@ -206,7 +207,7 @@ export function SitrepCard(props: Props) {
   const receipt = projection.answer && answerReceipt(entry, owner, projection.answer);
   const options = record.kind === "ask" ? record.options.map((option) => ({ id: option.id, label: option.label, detail: [option.detail, option.cost && `Cost: ${option.cost}`].filter(Boolean).join(" · ") || undefined })) : [];
   const steer = record.kind === "ask" && record.mode === "proceeding" ? steerState(record, now, answers) : undefined;
-  const optionLabel = (optionId?: string) => record.kind === "ask" ? record.options.find((option) => option.id === optionId)?.label : undefined;
+  const optionLabel = (optionId?: string) => { const option = record.kind === "ask" ? record.options.find((candidate) => candidate.id === optionId) : undefined; return option && optionText(option.label); };
 
   return <div className="text-[15px]" aria-label={`${kindWord(record.kind)} details`}>
     {Number.isFinite(deadline) && <p className={`mt-2 text-[13px] tabular-nums ${deadline - now < 86_400_000 ? "font-medium text-warning" : "text-muted-foreground"}`}>{record.kind === "ask" ? "Answer by" : "Due"} {stamp(new Date(deadline).toISOString()).replace(/^Today, /, "today ")}</p>}
@@ -275,6 +276,7 @@ export function SitrepCard(props: Props) {
         <blockquote className="border-l border-border pl-4">{record.quote}</blockquote><p><strong className="font-semibold">True today: </strong>{record.trueToday}</p>
         <ul>{record.evidence.map((evidence) => <li key={evidence.ref}>{safeUrl(evidence.ref) ? <a href={evidence.ref} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{evidence.label}</a> : <span>{evidence.label}: {evidence.ref}</span>}</li>)}</ul>
         <p>To make it true: {record.makeTrue.tc?.join(", ") || "nothing planned yet"}{record.makeTrue.effort && ` · ${record.makeTrue.effort}`}</p>
+        {!!claims.length && <ol aria-label="Your decisions" className="space-y-1">{claims.map((decision) => <li key={decision.sourceKey}>{decision.value.choice === "keep" ? "Keep" : decision.value.choice === "remove" ? "Remove" : "Ignore"} · {stamp(decision.value.at)}{decision.value.note && ` · ${decision.value.note}`}</li>)}</ol>}
       </div>}
       {record.kind === "hold" && <div className="space-y-1 text-sm">
         <p><strong className="font-semibold">On hold: </strong>{record.what}</p><p><strong className="font-semibold">Why: </strong>{record.cause}</p><p><strong className="font-semibold">Ends when: </strong>{record.exit}</p>{record.samWords && <blockquote className="border-l border-border pl-4">{record.samWords}</blockquote>}
@@ -341,6 +343,7 @@ export function SitrepCard(props: Props) {
       <SheetSection title="Details">
         <p className="text-sm">{kindWord(record.kind)} · {record.status}{pinned && ` · Priority (${pinned.reason})`}</p>
         {receipt && <p className="text-sm">{receipt.header ? "Your answer is saved here." : "Your answer comes from your archive; this device has no receipt for it."}</p>}
+        {routeReady && <p className="text-[12.5px] leading-[1.4] text-muted-foreground">Notes to {ownerLabel} go to: {destinations.map((recipient) => <span key={recipient.recipientKey} className="block break-all font-mono">{recipient.legacyName} · {recipient.runtimeTarget.agentId}</span>)}</p>}
         {reference}
       </SheetSection>
       {(error || notice) && <p role={error ? "alert" : "status"} className="text-sm">{error ?? notice}</p>}
@@ -352,6 +355,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   const [binding, setBinding] = useState(() => ({ entry: incomingEntry, approval: incomingApproval }));
   const { entry, approval } = binding;
   const [code, setCode] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
+  const [codeOpen, setCodeOpen] = useState(false);
   const pending = useRef<{ key: string; header: NewFeedResponse; payload: FeedResponsePayload } | undefined>(undefined);
   const engagedOnce = useRef(entry.state.response !== null);
   const key = homeFeedKey(entry); const incomingKey = homeFeedKey(incomingEntry);
@@ -422,16 +426,23 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   }
   const ends = requestEnds(approval.expiresAt, now);
   const link = approval.url && safeUrl(approval.url) ? new URL(approval.url) : undefined;
+  // The code box waits behind "Got a code? Paste it": reviewing comes first.
+  const codeShown = visibleForm && approval.codeExpected && (codeOpen || code.length > 0 || busy);
+  const action = visibleForm && !approval.codeExpected;
   return <div className="mt-3.5 space-y-3" onFocusCapture={() => { engagedOnce.current = true; }}>
     {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm"><p>This request was replaced. Anything you typed stays with this one; codes don't move to the new request.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
     {approval.warning && <p className="text-sm font-medium text-warning">{approval.warning}</p>}
-    {visibleForm && approval.codeExpected && <label className="block text-[13px] font-semibold">Approval code<input aria-label="Approval code" type="password" autoComplete="off" value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>}
     <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
-      {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className={buttonClass}>{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
-      {visibleForm && <button type="button" disabled={disabled || (approval.codeExpected && !validCode)} className={approval.approvalType === "go" ? primaryClass : buttonClass} onClick={() => void submit()}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : approval.codeExpected ? "Save code" : "I've done this step"}</button>}
+      {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className={action ? buttonClass : primaryClass}>{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
+      {action && <button type="button" disabled={disabled} className={approval.approvalType === "go" ? primaryClass : buttonClass} onClick={() => void submit()}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}
       {(ends || expired) && <span className={fineClass}>{expired ? "This request has ended" : ends}</span>}
     </div>
+    {visibleForm && approval.codeExpected && !codeShown && <button type="button" className={quietClass} disabled={disabled} onClick={() => { engagedOnce.current = true; setCodeOpen(true); }}>Got a code? Paste it</button>}
+    {codeShown && <div className="space-y-2">
+      <label className="block text-[13px] font-semibold">Approval code<input aria-label="Approval code" type="password" autoComplete="off" autoFocus={codeOpen && !code} value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>
+      <button type="button" disabled={disabled || !validCode} className={buttonClass} onClick={() => void submit()}>{busy ? "Saving…" : "Save code"}</button>
+    </div>}
     {expanded && <div className="space-y-1 text-sm">
       {approval.permissions && <p><strong className="font-semibold">Allows: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>For: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " (everything in it)"}</p>}
       {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also kept: {approval.keepNames.join(", ")}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
