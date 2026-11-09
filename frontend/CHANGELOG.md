@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.13.1-beta.0
+
+### Patch Changes
+
+- 631a8bb: iOS: ship the app as TinyCloud Home with bundle ID `xyz.tinycloud.home` (dev `xyz.tinycloud.home.dev`) under the TinyCloud, Inc. team (TC-518).
+
 ## 0.13.0
 
 ### Minor Changes

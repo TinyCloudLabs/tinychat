@@ -276,6 +276,7 @@ Repository **secrets**:
 | `WEBHOOK_HMAC_MASTER` | Connector-webhook HMAC master. `openssl rand -base64 32`. Required only when `CONNECTOR_WEBHOOKS_ENABLED=true`; a weak value refuses to boot. |
 | `WEBHOOK_HMAC_MASTER_PREV` | Rotation grace key — the outgoing master, set only while a rotation drains. |
 | `LOG_HASH_SALT` | Salt for the public log stream's keyed hashes. Its own `openssl rand -base64 32` value; never derived from `WEBHOOK_HMAC_MASTER`. |
+| `REQUEST_LOG_HMAC_KEY` | Keys the `account_hash` in the backend's shipped request records (TC-2537, `docs/dev-logging.md`). Generate once with `openssl rand -hex 32` and pipe it straight into `gh secret set` (environment `production-api`); never reuse another secret. Unset or weak only omits `account_hash`. Rotating it breaks joins across the rotation. |
 | `STRIPE_SECRET_KEY` | Stripe secret key for `/api/billing` (`sk_live_…`; `sk_test_…` while testing). Optional until go-live — unset resolves everyone to the free tier and checkout/portal return `503 billing_not_configured` (`docs/stripe-setup.md`). |
 | `STRIPE_WEBHOOK_SECRET` | Signing secret (`whsec_…`) of the Stripe webhook endpoint pointing at `/api/billing/webhook`. |
 | `LEDGER_SERVICE_SECRET` | Shared secret for the Universal Ledger credits sidecar. Optional — unset disables the ledger client. |
@@ -619,12 +620,15 @@ nothing below may be reported as done on its behalf.
   Adding a catalog database requires a manifest bump and another one-time
   sign-in. The `secrets` grants and backend delegation policy are unchanged.
 - **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
-  and URI before consuming the nonce. The web SDK signs the page hostname
-  (without the port) and a canonical `did:key` session verification-method
+  and URI before consuming the nonce. The web SDK signs the page host,
+  including any port, and a canonical `did:key` session verification-method
   URI, not the page origin. Production signs `tinycloud.chat`; one-label
   branch/commit previews under `tinychat-4jq.pages.dev` sign their exact
-  hostname; local web and macOS desktop sign `localhost`, and Windows desktop
-  signs `tauri.localhost`. Older clients signing the paired
+  hostname; macOS desktop signs `localhost` (the dev desktop build signs
+  `localhost` explicitly), and Windows desktop signs `tauri.localhost`. A
+  local web build served on `localhost:5186` signs `localhost:5186`, which no
+  backend accepts, so it cannot complete `/api/auth/verify`; test web sign-in
+  on a one-label `tinychat-4jq.pages.dev` preview instead. Older clients signing the paired
   `https://<hostname>` URI remain accepted for those web domains. The
   production web domain comes from `FRONTEND_URL` in
   `docker-compose.phala.yml`; the Home site (`home.tinycloud.xyz`, signing

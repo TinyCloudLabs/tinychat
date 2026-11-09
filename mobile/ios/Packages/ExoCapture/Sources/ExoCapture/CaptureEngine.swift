@@ -178,6 +178,9 @@ public final class CaptureEngine {
         debugTesting = true
     }
     var debugGraphActive: Bool { graphActive || inputRunning }
+    /// Stop finalizations (mux + commit) still running in the background. Tests drain this before
+    /// deleting their root so a late completion cannot fail a different test.
+    var debugPendingStopFinalizations: Int { pendingStopFinalizations }
     #if targetEnvironment(simulator)
     var debugSilentInputRunning: Bool { silentInput?.isRunning == true }
     func debugDeliverSilentTaps(_ buffers: Int = 1) { silentInput?.deliver(buffers: buffers) }

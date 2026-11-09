@@ -86,6 +86,11 @@ jobs:
     name: Build
     needs: plan
     uses: ./.github/workflows/ios-build.yml
+    # A called workflow sees an empty secrets context unless the caller passes secrets, even in a job that names the
+    # environment: without this the sign job ran in ios-release and still found all four secrets missing (run
+    # 42702360795). Only the sign job is in ios-release, so only it can resolve these environment secrets; the archive
+    # job has no environment and references no secret (scripts/__tests__/release.test.mjs).
+    secrets: inherit
     with:
       build-number: ${{ github.run_number }}
       sign: true

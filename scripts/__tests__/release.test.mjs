@@ -1394,8 +1394,9 @@ test('TestFlight: secrets only in tooling-only jobs, the archive built with none
   assert.ok(plan.indexOf('Require the TestFlight workflow from main') < plan.indexOf('scripts/release/ios-signing.sh check'));
   assert.match(stepNamed(plan, 'Check out the release tooling'), /ref: \$\{\{ github\.workflow_sha \}\}\n\s+sparse-checkout: scripts\/release\n\s+persist-credentials: false/);
   assert.doesNotMatch(withoutComments(plan), PROJECT_CODE);
-  assert.match(testflight, / {2}build:\n(?:.*\n)*?\s+needs: plan\n\s+uses: \.\/\.github\/workflows\/ios-build\.yml\n\s+with:\n(?:.*\n){1}\s+sign: true\n/);
-  assert.doesNotMatch(testflight, /secrets: inherit/);
+  assert.match(testflight, / {2}build:\n(?:.*\n)*?\s+needs: plan\n\s+uses: \.\/\.github\/workflows\/ios-build\.yml\n(?:\s+#.*\n)*\s+secrets: inherit\n\s+with:\n(?:.*\n){1}\s+sign: true\n/);
+  // Environment secrets reach a called workflow only through `secrets: inherit`; only the build call passes them.
+  assert.equal((testflight.match(/secrets: inherit/g) ?? []).length, 1);
 
   const build = read(repo, '.github/workflows/ios-build.yml');
   assert.match(triggers('.github/workflows/ios-build.yml'), /^ {2}workflow_call:/m);
@@ -1473,7 +1474,7 @@ test('iOS release checks the embedded WidgetKit extension and its own App Store 
   const build = read(repo, '.github/workflows/ios-build.yml');
   const check = stepNamed(jobText(build, 'archive'), 'Check the archive');
   assert.match(check, /PlugIns\/ExoWidgets\.appex/);
-  assert.match(check, /CFBundleIdentifier.*xyz\.tinycloud\.exo\.widgets/);
+  assert.match(check, /CFBundleIdentifier.*xyz\.tinycloud\.home\.widgets/);
   assert.match(check, /NSExtensionPointIdentifier.*com\.apple\.widgetkit-extension/);
   assert.match(check, /NSSupportsLiveActivities/);
   assert.match(check, /ExoWidgets privacy manifest/);
