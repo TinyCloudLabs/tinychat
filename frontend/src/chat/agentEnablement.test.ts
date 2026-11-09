@@ -606,6 +606,23 @@ describe("shared private access controller", () => {
       expect(c.getSnapshot()).toMatchObject({ capability: "available", status: "none" });
       c.dispose();
     });
+
+    it("does not hang Disconnect on a connect that is still at the sign-in step and has posted nothing", async () => {
+      const mint = deferred<any>(); const started = deferred<void>();
+      const revoked: string[] = []; const posts: string[] = [];
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        if (init?.method === "POST") posts.push("POST");
+        return Response.json(revoked.length ? { status: "none", transcriptStatus: "none", revision: "mcp", mcp: { serviceDid: SERVICE } } : mcpActive);
+      }) as typeof fetch;
+      const c = mcpController(true, revoked, listing, () => { started.resolve(); return mint.promise; }); await c.refresh();
+      const connecting = c.onEnable(); await started.promise;
+      await c.onDisconnect();
+      expect(revoked).toEqual(["MCP-GRANT"]);
+      expect(c.getSnapshot()).toMatchObject({ status: "none", disconnecting: false });
+      mint.resolve({ mcp: { delegation: "d" } }); await connecting;
+      expect(posts).toEqual([]);
+      c.dispose();
+    });
   });
 
   it("cancelled reconnect refreshes the old connected state and reports failure", async () => {

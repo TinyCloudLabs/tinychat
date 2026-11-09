@@ -221,8 +221,9 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
         if (state.mcpServiceDid) {
           // The MCP cannot revoke a grant itself; the owner revokes it on the node from this session, and the status below is
           // read back from the MCP, so "Disconnected" is only shown once the MCP can no longer use the grant.
-          // A connect already under way cannot be cancelled once its grant is on the wire: let it land first so it gets revoked too.
-          if (ceremony) await ceremony.catch(() => {});
+          // A connect whose grant is already on the wire cannot be cancelled: let it land first so it gets revoked too. Before that
+          // point an invalidated connect posts nothing, and waiting on a sign-in popup could hang Disconnect.
+          if (ceremony && replacementPending) await ceremony.catch(() => {});
           const revoked = await revokeMcpGrants(opts.tcw, state.mcpServiceDid);
           // Access that was connected but matched no grant means the match missed it: not a disconnect.
           if (revoked === 0 && wasEnabled) throw new Error("Disconnection was not confirmed. Please retry.");
