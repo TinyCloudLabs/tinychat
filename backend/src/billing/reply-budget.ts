@@ -49,7 +49,7 @@ export function lengthStoppedByBudget(limit: CallLimit, completionTokens: number
   return limit.capped && (completionTokens >= (limit.maxTokens ?? Number.POSITIVE_INFINITY) || budget.exhausted());
 }
 
-/** `contextTokens` is the model's context window: a budget cap that does not fit the room it leaves is not a cap. */
+/** `contextTokens` is the model's context window: a budget cap that does not fit the room it leaves is not a cap. A non-finite value means the size is unknown. */
 export function createReplyBudget(allowance: number, rates: ModelRates, contextTokens?: number): ReplyBudget {
   let observed: ReplyUsage = { promptTokens: 0, completionTokens: 0 };
   const spentCredits = () => creditsFor(rates, observed.promptTokens, observed.completionTokens);
@@ -69,7 +69,7 @@ export function createReplyBudget(allowance: number, rates: ModelRates, contextT
     limitFor: (promptChars, existingMaxTokens) => {
       const cap = maxTokensFor(promptChars);
       if (cap < 1) return null;
-      const roomInContext = contextTokens === undefined ? Number.POSITIVE_INFINITY : contextTokens - Math.ceil(promptChars / PROMPT_CHARS_PER_TOKEN);
+      const roomInContext = contextTokens === undefined || !Number.isFinite(contextTokens) ? Number.POSITIVE_INFINITY : contextTokens - Math.ceil(promptChars / PROMPT_CHARS_PER_TOKEN);
       if (cap >= roomInContext || (existingMaxTokens !== undefined && existingMaxTokens < cap)) return { maxTokens: existingMaxTokens, capped: false };
       return { maxTokens: cap, capped: true };
     },

@@ -154,6 +154,29 @@ describe("window at reply start", () => {
   });
 });
 
+describe("a window whose record has moved aside is still bounded by its limit", () => {
+  const twice = () => [settle({ allowance: 1000, observed: 800, outcome: "success" }), settle({ allowance: 1000, observed: 800, outcome: "success" })];
+
+  test("a record rolled forward before anything was recorded for the reply's window", () => {
+    // The reply's day has no record at all; a later day's reply already rolled the single record.
+    recordUsage(address, TIERS.free, 10, null, startedAt + DAY);
+    expect(twice().map(settled => settled.charged)).toEqual([800, 200]);
+    expect(usedAt(startedAt + DAY)).toBe(10);
+  });
+
+  test.each([
+    ["a week record that started before the day", Date.UTC(2026, 10, 6)],
+    ["a week record that starts at the same instant as the day", startOfUtcDay(startedAt)],
+  ])("a tier switch (%s) keeps the day's usage and the week's usage", (_name, anchor) => {
+    recordUsage(address, TIERS.free, 400, null, startedAt);
+    // The switch moves the day record aside and makes the week record current.
+    recordUsage(address, TIERS.plus, 10, anchor, startedAt);
+    const [first, second] = [settle({ allowance: 600, observed: 900, outcome: "success" }), settle({ allowance: 600, observed: 900, outcome: "success" })];
+    expect([first.charged, second.charged]).toEqual([600, 0]);
+    expect(getUsage(address, TIERS.plus, anchor, startedAt).used).toBe(10);
+  });
+});
+
 describe("exactly once per reply", () => {
   test("one local record and one ledger record carrying the execution id", () => {
     const executionId = "6d2c36e5-9c1d-4a38-a3ff-0e1f8c1c5a11";

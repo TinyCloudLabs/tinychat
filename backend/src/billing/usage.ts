@@ -158,32 +158,39 @@ export function windowStartFor(tier: TierConfig, anchor: number | null, at: numb
   return windowStart(tier.budgetWindow, anchor, at);
 }
 
+type WindowRecord = UsageRecord | "empty" | "gap" | "lost";
+
 /**
- * The record that describes the tier's window containing `at`: the current one,
- * the one a rollover replaced, "empty" when nothing has been used in that window
- * yet, or "lost" when it is older than both (it rolled over twice).
+ * Which record describes the tier's window containing `at`: the current one,
+ * the one a rollover replaced, or else
+ *   "empty" - nothing recorded and the current record is not newer (a write replaces it, moving it aside),
+ *   "gap"   - the current record is newer and nothing newer than `at` sits in the previous slot, so that window used nothing,
+ *   "lost"  - the previous slot holds a window at or after `at` that is not its own: it rolled twice.
  */
-function recordFor(address: string, tier: TierConfig, anchor: number | null, at: number): UsageRecord | "empty" | "lost" {
+function recordFor(address: string, tier: TierConfig, anchor: number | null, at: number): WindowRecord {
   const start = windowStartFor(tier, anchor, at);
+  const kind = tier.budgetWindow;
   const current = usageByAddress.get(address);
-  if (!current || current.periodStart < start || (current.periodStart === start && current.windowKind !== tier.budgetWindow)) return "empty";
-  if (current.periodStart === start) return current;
+  if (current && current.periodStart === start && current.windowKind === kind) return current;
   const previous = previousByAddress.get(address);
-  return previous && previous.periodStart === start && previous.windowKind === tier.budgetWindow ? previous : "lost";
+  if (previous && previous.periodStart === start && previous.windowKind === kind) return previous;
+  if (!current || current.periodStart <= start) return "empty";
+  return !previous || previous.periodStart < start ? "gap" : "lost";
 }
 
 /** Credits used in the window containing `at`, or null when no record describes it any more. */
 export function usedInWindow(address: string, tier: TierConfig, anchor: number | null, at: number): number | null {
   const record = recordFor(address, tier, anchor, at);
-  return record === "lost" ? null : record === "empty" ? 0 : record.creditsUsed;
+  return record === "lost" ? null : typeof record === "string" ? 0 : record.creditsUsed;
 }
 
-/** Add credits to the window containing `at` (current or the one before it); a window no record describes is left alone. */
+/** Add credits to the window containing `at`; a window no record describes any more is left alone. Never overwrites another window's record. */
 export function recordUsageInWindow(address: string, tier: TierConfig, credits: number, anchor: number | null, at: number): void {
   if (credits <= 0) return;
   const record = recordFor(address, tier, anchor, at);
   if (record === "lost") return;
   if (record === "empty") recordUsage(address, tier, credits, anchor, at);
+  else if (record === "gap") previousByAddress.set(address, { periodStart: windowStartFor(tier, anchor, at), windowKind: tier.budgetWindow, creditsUsed: credits });
   else record.creditsUsed += credits;
 }
 

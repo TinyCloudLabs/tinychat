@@ -107,6 +107,13 @@ describe("existing tool loop under a reply budget", () => {
     expect(result.errorCode).toBeUndefined();
     expect(h.bodies[0].max_tokens).toBeUndefined();
   });
+
+  test("finish_reason length under the cap still stops the reply when a prompt the estimate undercounted used up the allowance", async () => {
+    // Completion 300 is below the ~499-token cap, but the provider counted 400K prompt tokens (400 credits): 700 >= 500.
+    const h = harness(() => answerRound("Partial answer", "length", { prompt_tokens: 400_000, completion_tokens: 300 }));
+    const { result } = await run(h, 500);
+    expect(result.errorCode).toBe("budget_exhausted");
+  });
 });
 
 describe("meeting turn under a reply budget", () => {

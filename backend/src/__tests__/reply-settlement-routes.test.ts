@@ -347,3 +347,15 @@ describe("ledger-authoritative allowance (agent chat)", () => {
     expect(enqueued[0].credits).toBe(100);
   });
 });
+
+describe("a large paid allowance (agent chat)", () => {
+  test("sends no max_tokens: the cap is bounded by the model's context, not the allowance", async () => {
+    // About 1e9 output tokens of allowance at 10 credits per 1K: far beyond any context window.
+    process.env.CREDIT_BUDGET_FREE = "10000000";
+    const local = browser();
+    const config = agentConfig(provider(() => sse(frame({ id: "c", choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }), usageFrame(10, 5), "data: [DONE]\n\n")));
+    await createAgentChatHandler(config)(local.req, local.res, () => {});
+    expect(providerRequests).toHaveLength(1);
+    expect(providerRequests[0].max_tokens).toBeUndefined();
+  });
+});
