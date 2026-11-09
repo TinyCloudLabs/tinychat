@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { audienceCopy, displayOptions, isReplyOnlyRevision, optionText } from "./cardKit";
+import { commentCopy, displayOptions, isReplyOnlyRevision, optionText } from "./cardKit";
 import type { HomeFeedEntry } from "./feedStoreTypes";
 
 const options = [{ id: "yes", label: "Yes: node caches too (Recommended)" }, { id: "no", label: "No: client cache only" }];
@@ -18,12 +18,12 @@ test("a marker mid-label is text, not a recommendation", () => {
   expect(displayOptions([{ id: "a", label: "(Recommended) by the old plan, now dropped" }]).suggested).toBeUndefined();
 });
 
-test("the thread helper names who actually receives a message, and never counts held recipients", () => {
-  expect(audienceCopy({ approved: ["Mail agent"], fallback: "x" })).toEqual({ ask: "Ask Mail agent something", helper: "Only Mail agent sees this." });
-  expect(audienceCopy({ approved: ["A", "B"], fallback: "x" }).helper).toBe("Only A and B see this.");
-  expect(audienceCopy({ approved: ["A", "B", "C"], fallback: "x" })).toEqual({ ask: "Ask the agents on this card something", helper: "Only the 3 agents on this card see this." });
-  expect(audienceCopy({ approved: ["A"], held: ["H"], fallback: "x" }).helper).toBe("Only A sees this. H isn't connected yet, so it doesn't get it.");
-  expect(audienceCopy({ approved: [], held: ["H", "J"], fallback: "Owner" })).toEqual({ ask: "Ask Owner something", helper: "Only you see this for now. H and J aren't connected yet, so they don't get it." });
+test("the comment composer names who actually receives a comment, and never counts held recipients", () => {
+  expect(commentCopy({ approved: ["Mail agent"], fallback: "x" })).toEqual({ button: "Comment to Mail agent", input: "Tell Mail agent something", helper: "This doesn't answer the card. Only Mail agent sees this." });
+  expect(commentCopy({ approved: ["A", "B"], fallback: "x" }).helper).toBe("This doesn't answer the card. Only A and B see this.");
+  expect(commentCopy({ approved: ["A", "B", "C"], fallback: "x" })).toEqual({ button: "Comment to the agents on this card", input: "Tell the agents on this card something", helper: "This doesn't answer the card. Only the 3 agents on this card see this." });
+  expect(commentCopy({ approved: ["A"], held: ["H"], fallback: "x" }).helper).toBe("This doesn't answer the card. Only A sees this. H isn't connected yet, so it doesn't get it.");
+  expect(commentCopy({ approved: [], held: ["H", "J"], fallback: "Owner" })).toEqual({ button: "Comment to Owner", input: "Tell Owner something", helper: "This doesn't answer the card. Only you see this for now. H and J aren't connected yet, so they don't get it." });
 });
 
 function revision(revisionNumber: number, replies?: string[], change: Partial<{ body: string; choices: { id: string; label: string }[]; cardId: string; sourceId: string; agentDid: string }> = {}): HomeFeedEntry {

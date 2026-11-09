@@ -143,6 +143,12 @@ function card(host: HTMLElement, title: string) {
 function status(host: ParentNode) {
   return host.querySelector('[role="status"][aria-label="Your answer"]')?.textContent ?? null;
 }
+/** Opens the (only) collapsed card at its comments, through its comment count. */
+async function openComments(host: ParentNode) {
+  const count = host.querySelector<HTMLButtonElement>('button[aria-label$="Open comments"]');
+  expect(count).not.toBeNull();
+  await act(async () => count!.click());
+}
 /** Taps an option, then lets its 5 s undo window run out so the answer is sent. */
 async function choose(host: ParentNode, label: string) {
   await act(async () => option(host, label).click());
@@ -558,9 +564,9 @@ const writes = (responses: FeedResponse[]) => responses.map((response) => `${res
 test("a plain card's conversation interleaves the owner's messages and revision replies, oldest first", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
-  await act(async () => button(view.host, "Ask Test agent something").click());
+  await act(async () => button(view.host, "Comment to Test agent").click());
   expect(view.host.textContent).toContain("Only Test agent sees this.");
-  const input = view.host.querySelector<HTMLInputElement>('input[aria-label="Ask Test agent something"]')!;
+  const input = view.host.querySelector<HTMLInputElement>('input[aria-label="Tell Test agent something"]')!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, "Is Friday too late?");
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -574,17 +580,17 @@ test("a plain card's conversation interleaves the owner's messages and revision 
   await act(async () => store.notify());
   // Reply-only revisions swap in place, even though sending the message engaged the card.
   expect(view.host.textContent).not.toContain("A newer version of this card arrived");
-  const items = [...view.host.querySelectorAll('[aria-label="Card thread"] li')].map((item) => item.textContent);
+  const items = [...view.host.querySelectorAll('[aria-label="Comments"] li')].map((item) => item.textContent);
   expect(items).toHaveLength(2);
   expect(items[0]).toContain("Friday is fine.");
   expect(items[1]).toContain("Booked for Friday.");
-  // More than 2 messages: the earlier one waits behind "Show 1 earlier message", and the answers sit above the thread.
-  await act(async () => button(view.host, "Show 1 earlier message").click());
-  const all = [...view.host.querySelectorAll('[aria-label="Card thread"] li')].map((item) => item.textContent);
+  // More than 2 messages: the earlier one waits behind "Show 1 earlier comment", and the answers sit above the thread.
+  await act(async () => button(view.host, "Show 1 earlier comment").click());
+  const all = [...view.host.querySelectorAll('[aria-label="Comments"] li')].map((item) => item.textContent);
   expect(all[0]).toContain("You");
   expect(all[0]).toContain("Is Friday too late?");
   const answers = view.host.querySelector('[role="group"][aria-label="Answers"]')!;
-  const thread = view.host.querySelector('[aria-label="Card thread"]')!;
+  const thread = view.host.querySelector('[aria-label="Comments"]')!;
   expect(answers.compareDocumentPosition(thread) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(store.responses).toEqual([]);
 });
@@ -613,7 +619,8 @@ test("reply-only revision after an answer: no banner, the answer shows, Needs yo
   expect(view.host.textContent).not.toContain("A newer version of this card arrived");
   expect(view.host.querySelectorAll("article")).toHaveLength(1);
   expect(status(view.host)).toContain("You chose Hold.");
-  expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Noted, holding.");
+  await openComments(view.host);
+  expect(view.host.querySelector('[aria-label="Comments"]')?.textContent).toContain("Noted, holding.");
   expect(segment(view.host, "Needs you").textContent).toBe("Needs you0");
   expect(writes(store.responses)).toEqual(["1:hold"]);
   // A fresh session shows the same: the answer stays bound to revision 1 and is displayed on revision 2.
@@ -727,7 +734,8 @@ test("revision reply on an untouched card replaces it in place with the reply", 
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
   expect(view.host.textContent).not.toContain("A newer version of this card arrived");
-  expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Noted.");
+  await openComments(view.host);
+  expect(view.host.querySelector('[aria-label="Comments"]')?.textContent).toContain("Noted.");
   expect(view.host.querySelectorAll("article")).toHaveLength(1);
 });
 
@@ -756,6 +764,49 @@ test("a post card's first reply (post → thread) swaps in place and keeps the a
   expect(store.durable.entries[0]!.state.card.payload?.render).toBe("thread");
   expect(view.host.textContent).not.toContain("A newer version of this card arrived");
   expect(status(view.host)).toContain("You chose Hold.");
-  expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Noted, holding.");
+  await openComments(view.host);
+  expect(view.host.querySelector('[aria-label="Comments"]')?.textContent).toContain("Noted, holding.");
   expect(writes(store.responses)).toEqual(["1:hold"]);
+});
+
+test("a collapsed card shows its comment count, opens at its comments, and shows nothing at 0", async () => {
+  const quiet = plain("plain-two");
+  quiet.state.card.title = "Quiet question";
+  const store = persistence([plain(), quiet]);
+  store.durable.entries[0]!.responses = [{ responseId: "c-1", cardId: "plain-one", revision: 1, issuanceId: "issuance-1", kind: "message", text: "Is Friday too late?", createdAt: "2026-10-28T12:05:00Z", sequence: 1 }];
+  const view = await mount(store.source());
+  const busy = card(view.host, "Plain question");
+  const count = busy.querySelector<HTMLButtonElement>('button[aria-label$="Open comments"]')!;
+  expect(count.getAttribute("aria-label")).toBe("1 comment. Open comments");
+  expect(count.textContent).toBe("1");
+  expect(busy.querySelector('[aria-label="Comments"]')).toBeNull();
+  expect(card(view.host, "Quiet question").querySelector('button[aria-label$="Open comments"]')).toBeNull();
+  await act(async () => count.click());
+  expect(busy.querySelector("h3 button")?.getAttribute("aria-expanded")).toBe("true");
+  expect(busy.querySelector('[aria-label="Comments"]')?.textContent).toContain("Is Friday too late?");
+  expect(busy.querySelector('button[aria-label$="Open comments"]')).toBeNull();
+});
+
+test("a comment doesn't answer the card: no response is written and it stays in Needs you", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await act(async () => button(view.host, "Comment to Test agent").click());
+  expect(view.host.textContent).toContain("This doesn't answer the card. Only Test agent sees this.");
+  const input = view.host.querySelector<HTMLInputElement>('input[aria-label="Tell Test agent something"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, "Is Friday too late?");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => button(view.host, "Send").click());
+  await clock!.advance(10_000);
+  expect(store.messages).toHaveLength(1);
+  expect(store.messages[0]).toMatchObject({ kind: "message", text: "Is Friday too late?" });
+  expect(store.responses).toEqual([]);
+  expect(segment(view.host, "Needs you").textContent).toBe("Needs you1");
+  expect(status(view.host)).toBeNull();
+  expect([...view.host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Answers"] button')].every((node) => !node.disabled)).toBe(true);
+  await view.unmount();
+  const fresh = await mount(store.source());
+  expect(card(fresh.host, "Plain question")).toBeDefined();
+  expect(segment(fresh.host, "Needs you").textContent).toBe("Needs you1");
 });
