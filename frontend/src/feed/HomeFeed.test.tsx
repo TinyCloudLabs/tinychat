@@ -40,6 +40,7 @@ function persistence(entries: HomeFeedEntry[], options: { beforeSave?: () => Pro
   const archive = [...durable.entries];
   const listeners = new Set<() => void>();
   const responses: FeedResponse[] = [];
+  const messages: FeedResponse[] = [];
   const identity = (entry: HomeFeedEntry, response: NewFeedResponse) => entry.state.card.cardId === response.cardId && entry.state.card.revision === response.revision && entry.state.card.issuanceId === response.issuanceId;
   const storedEntry = (entry: HomeFeedEntry) => [...durable.entries, ...archive].find((candidate) => candidate.source.sourceId === entry.source.sourceId && identity(candidate, entry.state.card));
   function source(): HomeFeedSource {
@@ -57,6 +58,13 @@ function persistence(entries: HomeFeedEntry[], options: { beforeSave?: () => Pro
         target.state.response = saved;
         return saved;
       },
+      async sendMessage(entry, message) {
+        const saved = { ...message, sequence: 1000 + messages.length };
+        messages.push(saved);
+        const target = storedEntry(entry);
+        if (target) (target.responses ??= []).push(saved);
+        return saved;
+      },
       async markSeen(entry) {
         const target = storedEntry(entry);
         if (target) target.view.seenAt = createdAt;
@@ -69,7 +77,20 @@ function persistence(entries: HomeFeedEntry[], options: { beforeSave?: () => Pro
       subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     };
   }
-  return { durable, archive, responses, source, notify: () => { for (const listener of listeners) listener(); } };
+  /** The agent replies the feed-skill way: revision+1 of the card with the reply appended to payload.replies. */
+  function reply(cardId: string, text: string, at: string) {
+    const index = durable.entries.findIndex((entry) => entry.state.card.cardId === cardId);
+    const current = durable.entries[index]!;
+    const revision = current.state.card.revision + 1;
+    const replies = Array.isArray(current.state.card.payload?.replies) ? current.state.card.payload.replies : [];
+    const next: HomeFeedEntry = { ...structuredClone(current), responses: [],
+      state: { card: { ...structuredClone(current.state.card), revision, issuanceId: `issuance-${revision}`, createdAt: at, payload: { ...current.state.card.payload, render: "thread", replies: [...replies, { text }] } }, response: null, acknowledgement: null, outcome: null },
+      view: { sourceId: current.source.sourceId, cardId, revision, issuanceId: `issuance-${revision}` } };
+    archive.push(next);
+    durable.historicalEntries = [...(durable.historicalEntries ?? []), current];
+    durable.entries[index] = next;
+  }
+  return { durable, archive, responses, messages, reply, source, notify: () => { for (const listener of listeners) listener(); } };
 }
 
 let restore: (() => void) | undefined;
@@ -133,7 +154,7 @@ async function sendReply(host: ParentNode) {
   await clock!.advance(5000);
 }
 async function openNote(host: HTMLElement) {
-  await act(async () => button(host, "Reply in words").click());
+  await act(async () => button(host, "Answer in your own words").click());
 }
 async function typeAnswer(host: HTMLElement, value: string) {
   const node = answer(host);
@@ -406,7 +427,7 @@ test("a true latest-issuance replacement preserves the draft until explicit navi
   await act(async () => button(view.host, "Show the newer version").click());
   expect(view.host.querySelector("article h3")?.textContent).toBe("Replacement question");
   expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
-  expect(hasButton(view.host, "Reply in words")).toBe(true);
+  expect(hasButton(view.host, "Answer in your own words")).toBe(true);
   expect(store.responses).toEqual([]);
 });
 
@@ -505,7 +526,7 @@ test("a reply in words waits too, and undo keeps the draft", async () => {
   await openNote(view.host);
   await typeAnswer(view.host, "Hold until Friday");
   await act(async () => button(view.host, "Send").click());
-  expect(view.host.textContent).toContain("You replied: Hold until Friday");
+  expect(view.host.querySelector('button[aria-label^="Undo"]')).not.toBeNull();
   await act(async () => view.host.querySelector<HTMLButtonElement>('button[aria-label^="Undo"]')!.click());
   expect(answer(view.host).value).toBe("Hold until Friday");
   await sendReply(view.host);
@@ -525,4 +546,100 @@ test("leaving the view mid-countdown sends the answer at once, exactly once", as
   expect(store.responses[0]).toMatchObject({ kind: "answer", choiceId: "hold" });
   await clock!.advance(10_000);
   expect(store.responses).toHaveLength(1);
+});
+
+function plain(cardId = "plain-one"): HomeFeedEntry {
+  const entry = decision(cardId);
+  entry.state.card = { ...entry.state.card, title: "Plain question", payload: { render: "post" } };
+  return entry;
+}
+const writes = (responses: FeedResponse[]) => responses.map((response) => `${response.revision}:${response.choiceId ?? response.text}`);
+
+test("a plain card's conversation interleaves the owner's messages and revision replies, oldest first", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await act(async () => button(view.host, "Ask Test agent something").click());
+  expect(view.host.textContent).toContain("Only Test agent sees this.");
+  const input = view.host.querySelector<HTMLInputElement>('input[aria-label="Ask Test agent something"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, "Is Friday too late?");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => button(view.host, "Send").click());
+  expect(store.messages).toHaveLength(1);
+  expect(store.messages[0]).toMatchObject({ kind: "message", cardId: "plain-one", revision: 1, text: "Is Friday too late?" });
+  store.messages[0]!.createdAt = "2026-10-28T12:05:00Z";
+  store.reply("plain-one", "Friday is fine.", "2026-10-28T12:10:00Z");
+  store.reply("plain-one", "Booked for Friday.", "2026-10-28T12:20:00Z");
+  await act(async () => store.notify());
+  await act(async () => button(view.host, "Show the newer version").click());
+  const items = [...view.host.querySelectorAll('[aria-label="Card thread"] li')].map((item) => item.textContent);
+  expect(items).toHaveLength(2);
+  expect(items[0]).toContain("Friday is fine.");
+  expect(items[1]).toContain("Booked for Friday.");
+  // More than 2 messages: the earlier one waits behind "Show 1 earlier message", and the answers sit above the thread.
+  await act(async () => button(view.host, "Show 1 earlier message").click());
+  const all = [...view.host.querySelectorAll('[aria-label="Card thread"] li')].map((item) => item.textContent);
+  expect(all[0]).toContain("You");
+  expect(all[0]).toContain("Is Friday too late?");
+  const answers = view.host.querySelector('[role="group"][aria-label="Answers"]')!;
+  const thread = view.host.querySelector('[aria-label="Card thread"]')!;
+  expect(answers.compareDocumentPosition(thread) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(store.responses).toEqual([]);
+});
+
+// What happens to answer state when the agent replies with a new revision. The stale-issuance
+// rule is unchanged: these tests record today's outcomes for a carry-over design decision.
+test("revision reply after an answer: the card stays on the answered revision; the newer one is unanswered", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await choose(view.host, "Hold");
+  store.reply("plain-one", "Noted, holding.", "2026-10-28T12:10:00Z");
+  await act(async () => store.notify());
+  expect(view.host.textContent).toContain("A newer version of this card arrived");
+  expect(status(view.host)).toContain("You chose Hold.");
+  expect(segment(view.host, "Needs you").textContent).toBe("Needs you1");
+  await act(async () => button(view.host, "Show the newer version").click());
+  expect(status(view.host)).toBeNull();
+  expect([...view.host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Answers"] button')].every((node) => !node.disabled)).toBe(true);
+  expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Noted, holding.");
+  expect(writes(store.responses)).toEqual(["1:hold"]);
+});
+
+test("revision reply during the undo countdown: today the countdown still commits to the replaced revision", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await act(async () => option(view.host, "Hold").click());
+  await clock!.advance(2000);
+  store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
+  await act(async () => store.notify());
+  expect(view.host.textContent).toContain("A newer version of this card arrived");
+  expect(view.host.querySelector('button[aria-label^="Undo"]')?.getAttribute("aria-label")).toBe("Undo, 3 seconds left");
+  await clock!.advance(3000);
+  // The commit was armed before the replacement, so it writes with revision 1's identity.
+  expect(writes(store.responses)).toEqual(["1:hold"]);
+});
+
+test("revision reply with an unsent written answer: the draft stays on the replaced revision and can't be sent; the newer one starts empty", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await openNote(view.host);
+  await typeAnswer(view.host, "Hold it until Friday");
+  store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
+  await act(async () => store.notify());
+  expect(answer(view.host).value).toBe("Hold it until Friday");
+  expect(button(view.host, "Send").disabled).toBe(true);
+  await act(async () => button(view.host, "Show the newer version").click());
+  expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+  expect(store.responses).toEqual([]);
+});
+
+test("revision reply on an untouched card replaces it in place with the reply", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
+  await act(async () => store.notify());
+  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
+  expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Noted.");
+  expect(view.host.querySelectorAll("article")).toHaveLength(1);
 });

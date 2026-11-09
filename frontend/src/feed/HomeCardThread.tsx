@@ -12,8 +12,10 @@ interface Props {
   now: number;
   /** The composer is open. */
   composing: boolean;
-  /** Where a new message goes, in words: "Goes to Helper agent." */
-  recipientCopy: string;
+  /** The composer's name: "Ask Helper agent something". */
+  ask: string;
+  /** Who sees a new message: "Only Helper agent sees this." */
+  helper: string;
   onSend: (text: string) => Promise<boolean>;
   onResend: (text: string, resendOf: string) => Promise<boolean>;
   onClose: () => void;
@@ -26,14 +28,62 @@ function claimDeadline(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed + 120_000 : undefined;
 }
 
-type Item = { key: string; at: string; speaker: string; text: string; status?: ReactNode };
+export interface ThreadItem { key: string; at: string; speaker: string; text: string; status?: ReactNode }
+
+/** How many messages a typed card's thread shows: the card puts its answer first when there are more than 2. */
+export function threadSize(entry: HomeFeedEntry, record: BoardRecord, owner: SitrepOwnerData): number {
+  const linked = new Set([...Object.values(owner.threadResponses ?? {}), ...(owner.outboundNotes ?? []).map((note) => note.responseId)]);
+  return owner.threads.filter((message) => message.kind === record.kind && message.id === record.id).length
+    + (entry.responses?.filter((response) => response.kind === "message" && !linked.has(response.responseId)).length ?? 0)
+    + (owner.heldNotes?.length ?? 0);
+}
+
+/**
+ * A card's conversation: messages oldest first (only the latest 2 until "Show N earlier
+ * messages"), then the one-line composer when it is open.
+ */
+export function ThreadView({ items, now, composing, ask, helper, busy, closed, onSend, onClose }: {
+  items: readonly ThreadItem[]; now: number; composing: boolean;
+  /** The composer's name: "Ask Helper agent something". */
+  ask: string;
+  /** Who sees a new message: "Only Helper agent sees this." */
+  helper: string;
+  busy: boolean; closed: boolean;
+  onSend: (text: string) => Promise<boolean>; onClose: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [all, setAll] = useState(false);
+  const sorted = [...items].sort((a, b) => a.at.localeCompare(b.at) || a.key.localeCompare(b.key));
+  const hidden = all ? 0 : Math.max(0, sorted.length - 2);
+  if (!sorted.length && !composing) return null;
+  return <section aria-label="Card thread" className="mt-3.5 space-y-2.5">
+    {hidden > 0 && <button type="button" className={`${quietClass} -my-2`} onClick={() => setAll(true)}>{`Show ${hidden} earlier ${hidden === 1 ? "message" : "messages"}`}</button>}
+    {!!sorted.length && <ol className="space-y-2.5">
+      {sorted.slice(hidden).map((item) => <li key={item.key} className="min-w-0">
+        <p className="text-[13px] leading-[18px]"><span className="font-semibold">{item.speaker}</span> <span className="tabular-nums text-muted-foreground">· <time dateTime={item.at}>{cardTime(item.at, now)}</time></span></p>
+        <p className="whitespace-pre-wrap break-words text-[15px] leading-[1.45]">{item.text}</p>
+        {item.status && <p className="text-[13px] text-muted-foreground">{item.status}</p>}
+      </li>)}
+    </ol>}
+    {composing && <form onSubmit={(event) => { event.preventDefault(); if (text.trim()) void onSend(text.trim()).then((saved) => { if (saved) setText(""); }); }}>
+      <div className="flex items-center gap-2">
+        <input aria-label={ask} value={text} autoFocus onInput={(event) => setText(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); onClose(); } }} disabled={closed || busy} placeholder={ask}
+          className="block h-11 min-w-0 flex-1 rounded-xl bg-background px-3 text-[15px] shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:opacity-60" />
+        <button type="submit" className={buttonClass} disabled={closed || busy || !text.trim()}>Send</button>
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[13px] text-muted-foreground">{helper}</p>
+        <button type="button" className={`${quietClass} shrink-0`} onClick={onClose}>Cancel</button>
+      </div>
+    </form>}
+  </section>;
+}
 
 /**
  * The card's conversation, inline under its body: the owner's messages and the agent's
  * replies, oldest first, then the one-line composer when it is open.
  */
-export function HomeCardThread({ entry, record, owner, busy, closed, now, composing, recipientCopy, onSend, onResend, onClose }: Props) {
-  const [text, setText] = useState("");
+export function HomeCardThread({ entry, record, owner, busy, closed, now, composing, ask, helper, onSend, onResend, onClose }: Props) {
   const [localClock, setLocalClock] = useState(now);
   const clock = Math.max(now, localClock);
   const agent = entry.source.label;
@@ -82,7 +132,7 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, compos
     </>;
   }
 
-  const items: Item[] = [
+  const items: ThreadItem[] = [
     ...messages.map((message) => {
       const origin = owner.threadOrigins?.[ownerThreadResponseKey(message)];
       // Only output this card's registered agent published carries its name; archived
@@ -94,24 +144,6 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, compos
       status: entry.responseHandling?.[message.responseId]?.acknowledgement ? <span>{agent} got it</span> : undefined })),
     ...(owner.heldNotes ?? []).map((note) => ({ key: `held:${note.eventId}`, at: note.at, speaker: "You", text: note.text,
       status: <span>Kept private, not sent: {note.intendedRecipient} isn't connected yet.</span> })),
-  ].sort((a, b) => a.at.localeCompare(b.at) || a.key.localeCompare(b.key));
-
-  if (!items.length && !composing) return null;
-  return <section aria-label="Card thread" className="mt-3.5 space-y-2.5">
-    {!!items.length && <ol className="space-y-2.5">
-      {items.map((item) => <li key={item.key} className="min-w-0">
-        <p className="text-[13px] leading-[18px]"><span className="font-semibold">{item.speaker}</span> <span className="tabular-nums text-muted-foreground">· <time dateTime={item.at}>{cardTime(item.at, clock)}</time></span></p>
-        <p className="whitespace-pre-wrap break-words text-[15px] leading-[1.45]">{item.text}</p>
-        {item.status && <p className="text-[13px] text-muted-foreground">{item.status}</p>}
-      </li>)}
-    </ol>}
-    {composing && <form className="space-y-1" onSubmit={(event) => { event.preventDefault(); if (text.trim()) void onSend(text.trim()).then((saved) => { if (saved) setText(""); }); }}>
-      <div className="flex items-center gap-2">
-        <input aria-label="Card message" value={text} autoFocus onInput={(event) => setText(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); onClose(); } }} disabled={closed || busy} placeholder={`Message ${agent}`}
-          className="block h-11 min-w-0 flex-1 rounded-xl bg-background px-3 text-[15px] shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:opacity-60" />
-        <button type="submit" className={buttonClass} disabled={closed || busy || !text.trim()}>Send</button>
-      </div>
-      <p className="text-[13px] text-muted-foreground">{recipientCopy} <button type="button" className={quietClass} onClick={onClose}>Cancel</button></p>
-    </form>}
-  </section>;
+  ];
+  return <ThreadView items={items} now={clock} composing={composing} ask={ask} helper={helper} busy={busy} closed={closed} onSend={onSend} onClose={onClose} />;
 }
