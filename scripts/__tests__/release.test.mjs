@@ -1473,7 +1473,7 @@ test('iOS release checks the embedded WidgetKit extension and its own App Store 
   const build = read(repo, '.github/workflows/ios-build.yml');
   const check = stepNamed(jobText(build, 'archive'), 'Check the archive');
   assert.match(check, /PlugIns\/ExoWidgets\.appex/);
-  assert.match(check, /CFBundleIdentifier.*xyz\.tinycloud\.exo\.widgets/);
+  assert.match(check, /CFBundleIdentifier.*xyz\.tinycloud\.home\.widgets/);
   assert.match(check, /NSExtensionPointIdentifier.*com\.apple\.widgetkit-extension/);
   assert.match(check, /NSSupportsLiveActivities/);
   assert.match(check, /ExoWidgets privacy manifest/);

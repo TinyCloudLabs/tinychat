@@ -595,7 +595,8 @@ or third-party build code:
    `ExportOptions.plist` (`teamID`); the archive has none.
 4. `scripts/release/ios-signing.sh verify-ipa` requires:
    - an Apple Distribution signature from `APPLE_TEAM_ID`;
-   - an App Store profile for `xyz.tinycloud.exo`: no devices, not an in-house
+   - an App Store profile for `xyz.tinycloud.home` (and one for
+     `xyz.tinycloud.home.widgets`): no devices, not an in-house
      `ProvisionsAllDevices` profile, no `get-task-allow`.
 5. Only then does `upload` mode send **that** `.ipa` with
    `altool --upload-app`, after checking its SHA-256 is the one verified.
@@ -620,7 +621,7 @@ reviewer: Sam**, because the API key has the Admin role), secrets:
 
 | Secret | Value |
 |---|---|
-| `APPLE_TEAM_ID` | the 10-character Team ID |
+| `APPLE_TEAM_ID` | the 10-character organization Team ID (`R4QVKA785H`) |
 | `APPLE_API_KEY` | App Store Connect API key ID |
 | `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
 | `APPLE_API_PRIVATE_KEY` | the `AuthKey_<key id>.p8` file. It may arrive as is, collapsed onto one line (a masked single-line prompt), or base64; the workflow rewrites it as a PEM file and checks it with `openssl` |
@@ -631,10 +632,20 @@ second only for a run you dispatched.
 
 #### After enrollment completes (Sam)
 
-1. **Team ID**: developer.apple.com → Account → Membership details.
-2. **App ID**: Certificates, Identifiers & Profiles → Identifiers → **+** →
-   App IDs → App. Use description `Exo` and the explicit bundle ID
-   `xyz.tinycloud.exo`. Enable no capabilities for now:
+The iOS app ships as **TinyCloud Home** under the TinyCloud, Inc. organization
+team (Team ID `R4QVKA785H`), bundle ID `xyz.tinycloud.home`. Android and macOS
+keep `xyz.tinycloud.exo`; the `xyz.tinycloud.exo://` URL scheme is unchanged.
+
+1. **Team ID**: developer.apple.com → Account → Membership details. It must be
+   the organization team `R4QVKA785H`, not a personal team.
+2. **App IDs**: Certificates, Identifiers & Profiles → Identifiers → **+** →
+   App IDs → App. Register two explicit bundle IDs:
+   - description `TinyCloud Home`, bundle ID `xyz.tinycloud.home` (the app);
+   - description `TinyCloud Home Widgets`, bundle ID
+     `xyz.tinycloud.home.widgets` (the embedded `ExoWidgets` WidgetKit
+     extension; the App Store export needs a profile for it too).
+
+   Enable no capabilities for now:
    - microphone and background audio come from Info.plist (`UIBackgroundModes:
      audio`), not from capabilities;
    - **Associated Domains** comes later with the passkey work
@@ -643,9 +654,9 @@ second only for a run you dispatched.
 
    Leave certificates and profiles alone: the export creates them.
 3. **App record**: App Store Connect → Apps → **+** → New App. Platform iOS,
-   name `Exo` (if the name is taken, pick another display name; the bundle id
-   is what matters), primary language English, bundle ID `xyz.tinycloud.exo`,
-   SKU `exo-ios`.
+   name `TinyCloud Home` (if the name is taken, pick another display name; the
+   bundle id is what matters), primary language English, bundle ID
+   `xyz.tinycloud.home`, SKU `tinycloud-home-ios`.
 4. **API key**: App Store Connect → Users and Access → Integrations → App Store
    Connect API → Team Keys → **+**. Name it `GitHub TestFlight (tinychat)`
    with access **Admin**. An App Manager key is not enough: xcodebuild's cloud
@@ -666,7 +677,7 @@ second only for a run you dispatched.
    EOF
    gh api -X POST repos/TinyCloudLabs/tinychat/environments/ios-release/deployment-branch-policies -f name=main -f type=branch
    for name in APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
-     secret-bridge request "$name" --reason "Exo TestFlight: ios-release environment secret"
+     secret-bridge request "$name" --reason "TinyCloud Home TestFlight: ios-release environment secret"
    done
    # once each request is fulfilled:
    for name in APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
@@ -677,12 +688,12 @@ second only for a run you dispatched.
 6. **Run**: first `gh workflow run ios-testflight.yml --ref main -f
    mode=validate`, then without `-f mode=validate` to upload. The run summary
    names the version and build.
-7. **TestFlight**: App Store Connect → Exo → TestFlight. The build appears
+7. **TestFlight**: App Store Connect → TinyCloud Home → TestFlight. The build appears
    after Apple processes it (usually 5 to 30 minutes). Answer the export
    compliance question once. To skip it on later builds, add
    `ITSAppUsesNonExemptEncryption` to Info.plist, which is a legal call.
    Add yourself under Internal Testing, install **TestFlight** from the App
-   Store on the iPhone, and install Exo from it.
+   Store on the iPhone, and install TinyCloud Home from it.
 
 #### On-device voice-note smoke test (TC-518)
 

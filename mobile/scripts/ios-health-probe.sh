@@ -20,7 +20,7 @@ usage="usage: ios-health-probe.sh <App.app> <out-dir> [<device.txt>]"
 app=${1:?$usage}
 out=${2:?$usage}
 device_file=${3:-}
-bundle_id=xyz.tinycloud.exo
+bundle_id=xyz.tinycloud.home
 timeout_s=${HEALTH_PROBE_TIMEOUT:-120}
 
 mkdir -p "$out"

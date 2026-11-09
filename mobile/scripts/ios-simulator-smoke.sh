@@ -27,7 +27,7 @@ case "$command" in
   run) app=${2:?$usage}; out=${3:?$usage} ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac
-bundle_id=xyz.tinycloud.exo
+bundle_id=xyz.tinycloud.home
 timeout_s=${SMOKE_TIMEOUT:-120}
 settle_s=${SMOKE_SETTLE:-10}
 # Post-publication observation gap that fails the run; the 30 s default is the documented contract.
@@ -501,7 +501,7 @@ clock_pid=$!
 while [ "$SECONDS" -lt "$deadline" ]; do
   time_stage main.poll-sleep sleep 2
   if [ -f "$private_logs/watcher.exited" ]; then process_exited=1; break; fi
-  # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]".
+  # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.home[...]".
   observed_pid=$(time_stage main.launchctl-list discover_launchctl_pid)
   if [ -z "$pid" ] && [ -n "$observed_pid" ]; then
     if [ "$SECONDS" -lt "$deadline" ]; then
