@@ -7,7 +7,7 @@ import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStor
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
-import { AnsweredPanel, cardClass, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices } from "./cardKit";
+import { AnsweredPanel, cardClass, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -104,7 +104,7 @@ function ResponseStatus({ entry, focusOnMount }: { entry: HomeFeedEntry; focusOn
   </AnsweredPanel>;
 }
 
-/** An untyped card's answer: one tap on an option saves it; a note can go with it or on its own. */
+/** An untyped card's answer: one tap on an option, or a reply in words, sent after a short undo window. */
 function AnswerForm({ entry, source, now, attention, expanded, reference, stale = false, onSaved, onSnooze }: {
   entry: HomeFeedEntry; source: HomeFeedSource; now: number; attention: boolean; expanded: boolean; reference: ReactNode;
   /** A newer issuance replaced this card: its draft stays, but it can no longer be answered. */
@@ -120,6 +120,7 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, stale 
   const [later, setLater] = useState(false);
   const [more, setMore] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const countdown = usePendingSend();
   const pendingResponse = useRef<{ key: string; response: NewFeedResponse } | null>(null);
   const card = entry.state.card;
   const choices = card.choices ?? [];
@@ -157,18 +158,28 @@ function AnswerForm({ entry, source, now, attention, expanded, reference, stale 
   </MoreSheet>;
   if (!card.needsResponse) return expanded ? <QuietRow><button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>{details}</QuietRow> : null;
   const asking = !saved || followup || !!text.trim();
+  const choose = (choice: string) => {
+    if (stale || saving) return;
+    countdown.start(optionText(choices.find((option) => option.id === choice)?.label ?? ""), () => void save(choice));
+  };
+  const reply = () => {
+    if (stale || saving || !text.trim()) return;
+    countdown.start("your reply", () => void save());
+  };
+  if (countdown.pending) return <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
+    {countdown.pending.label === "your reply" ? <p>You replied: <span className="whitespace-pre-wrap">{text.trim()}</span></p> : <p>You chose <b className="font-semibold">{countdown.pending.label}</b>.</p>}
+  </PendingAnswer>;
   return <div>
     {saved && !asking && <ResponseStatus entry={entry} focusOnMount={justSaved} />}
     {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
-    {asking && !!choices.length && <OptionButtons options={choices} saving={saving ?? undefined} disabled={!!saving || stale} onChoose={(id) => void save(id)} />}
-    {asking && (noteOpen || !choices.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      <label className="block text-[13px] font-semibold">Your answer<textarea aria-label="Your answer" value={text} disabled={!!saving} onInput={(event) => { setText(event.currentTarget.value); }} className={`${fieldClass} min-h-24 resize-y`} /></label>
-      {!!choices.length && <p className="mt-1.5 text-[13px] text-muted-foreground">Tap an answer above to send this note with it, or save the note on its own.</p>}
-      <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Saving answer…" : saved ? "Save new answer" : "Save answer"}</button>
+    {asking && !!choices.length && <OptionButtons options={choices} saving={saving ?? undefined} disabled={!!saving || stale} onChoose={choose} />}
+    {asking && (noteOpen || !choices.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); reply(); }}>
+      <label className="block text-[13px] font-semibold">Reply in words<textarea aria-label="Your answer" value={text} disabled={!!saving} onInput={(event) => { setText(event.currentTarget.value); }} className={`${fieldClass} min-h-24 resize-y`} /></label>
+      <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Sending…" : "Send"}</button>
     </form>}
     {error && <ErrorLine>{error}</ErrorLine>}
     <QuietRow>
-      {asking && !!choices.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Add a note</button>}
+      {asking && !!choices.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Reply in words</button>}
       {saved && !asking && <button type="button" className={quietClass} onClick={() => setFollowup(true)}>Change answer</button>}
       {followup && <button type="button" className={quietClass} disabled={!!saving} onClick={() => { setFollowup(false); setText(""); setNoteOpen(false); }}>Keep my answer</button>}
       {attention && <button type="button" className={quietClass} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}
@@ -214,6 +225,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const committed = useRef(new Map<string, FeedResponse>());
   const activeRef = useRef<HomeFeedEntry | null>(null);
   const currentSource = useRef(source);
+  const pendingSends = useRef(new Set<() => void>());
   currentSource.current = source;
   const history = view === "done";
   const selector: FeedSelector = view === "all" ? "both" : "needs-action";
@@ -364,6 +376,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   }, [source]);
   function changeView(next: HomeView) {
     if (next === view) return;
+    // Answers still counting down are sent now: the owner chose them, then moved on.
+    for (const send of [...pendingSends.current]) send();
     chosenView.current = true; setView(next); setActive(null); setSticky(new Map()); setExpanded(new Set());
     if (next === "done") return;
     // The last view is the next session's default; a failed write only loses that preference.
@@ -475,7 +489,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   // while loading, the control row is already in place so nothing moves when cards land.
   const bare = homeSite && !!snapshot && !snapshot.entries.length && !snapshot.historicalEntries?.length;
   const selectClass = `mt-2 block h-11 w-full rounded-xl bg-background px-3 text-[15px] shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] ${focusRing}`;
-  return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={homeSite ? NAV_LABEL_HOME : "Feed"}>
+  return <PendingSendContext.Provider value={pendingSends.current}><main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={homeSite ? NAV_LABEL_HOME : "Feed"}>
     <div className="mx-auto w-full max-w-[672px] min-w-0 px-4 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10">
       <header>
         <h1 className="font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{homeSite ? NAV_LABEL_HOME : "Feed"}</h1>
@@ -531,5 +545,5 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
         ? <>{group("Needs you", rows.filter(rowNeeds), needsCount)}{group("Earlier", rows.filter((row) => !rowNeeds(row)))}</>
         : group(view === "done" ? "Done" : "Needs you", rows, undefined, true))}
     </div>
-  </main>;
+  </main></PendingSendContext.Provider>;
 }

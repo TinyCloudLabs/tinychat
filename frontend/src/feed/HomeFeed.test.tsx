@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { FeedHandling, FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { installDom } from "@/test/dom";
+import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { FeedViewEntries } from "./FeedView";
 import type { HomeFeedEntriesProps, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 
@@ -72,16 +73,19 @@ function persistence(entries: HomeFeedEntry[], options: { beforeSave?: () => Pro
 }
 
 let restore: (() => void) | undefined;
+let clock: FakeClock | undefined;
 const roots = new Set<Root>();
 const originalFetch = globalThis.fetch;
 afterEach(async () => {
   for (const root of roots) await act(async () => root.unmount());
   roots.clear();
   globalThis.fetch = originalFetch;
+  clock?.restore(); clock = undefined;
   restore?.(); restore = undefined;
 });
 async function mount(source: HomeFeedSource) {
   restore ??= installDom();
+  clock ??= installFakeClock();
   // Legacy sample transport is inert, never used as evidence of real feed data.
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   const host = document.createElement("div");
@@ -118,8 +122,18 @@ function card(host: HTMLElement, title: string) {
 function status(host: ParentNode) {
   return host.querySelector('[role="status"][aria-label="Your answer"]')?.textContent ?? null;
 }
+/** Taps an option, then lets its 5 s undo window run out so the answer is sent. */
+async function choose(host: ParentNode, label: string) {
+  await act(async () => option(host, label).click());
+  await clock!.advance(5000);
+}
+/** Sends the reply in words, then lets its undo window run out. */
+async function sendReply(host: ParentNode) {
+  await act(async () => button(host, "Send").click());
+  await clock!.advance(5000);
+}
 async function openNote(host: HTMLElement) {
-  await act(async () => button(host, "Add a note").click());
+  await act(async () => button(host, "Reply in words").click());
 }
 async function typeAnswer(host: HTMLElement, value: string) {
   const node = answer(host);
@@ -146,7 +160,7 @@ test("saving an answer waits for durability, then distinguishes saved, received,
   const view = await mount(store.source());
   await openNote(view.host);
   await typeAnswer(view.host, "Proceed with the isolated action");
-  await act(async () => button(view.host, "Save answer").click());
+  await sendReply(view.host);
   expect(answer(view.host).value).toBe("Proceed with the isolated action");
   expect(store.responses).toEqual([]);
   expect(status(view.host)).toBeNull();
@@ -173,7 +187,7 @@ test("saving an answer waits for durability, then distinguishes saved, received,
 test("one tap saves the option once, and Change answer saves a follow-up that replaces it", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
-  await act(async () => option(view.host, "Hold").click());
+  await choose(view.host, "Hold");
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", choiceId: "hold" });
   expect(store.responses[0]!.supersedesResponseId).toBeUndefined();
@@ -181,7 +195,7 @@ test("one tap saves the option once, and Change answer saves a follow-up that re
   expect(status(view.host)).toContain("You chose Hold.");
   expect(view.host.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
   await act(async () => button(view.host, "Change answer").click());
-  await act(async () => option(view.host, "Proceed").click());
+  await choose(view.host, "Proceed");
   expect(store.responses).toHaveLength(2);
   expect(store.responses[1]).toMatchObject({ kind: "followup", choiceId: "proceed", supersedesResponseId: store.responses[0]!.responseId });
   expect(status(view.host)).toContain("You chose Proceed.");
@@ -190,7 +204,7 @@ test("one tap saves the option once, and Change answer saves a follow-up that re
 test("Keep my answer leaves the saved answer untouched", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
-  await act(async () => option(view.host, "Hold").click());
+  await choose(view.host, "Hold");
   await act(async () => button(view.host, "Change answer").click());
   await act(async () => button(view.host, "Keep my answer").click());
   expect(store.responses).toHaveLength(1);
@@ -203,12 +217,12 @@ test("a rejected write keeps the draft actionable and does not imply receipt", a
   const view = await mount(store.source());
   await openNote(view.host);
   await typeAnswer(view.host, "Keep this unsaved answer");
-  await act(async () => button(view.host, "Save answer").click());
+  await sendReply(view.host);
   await act(async () => write.reject(new Error("Isolated SQL write denied")));
   expect(answer(view.host).value).toBe("Keep this unsaved answer");
   const alert = view.host.querySelector('[role="alert"]');
   expect(alert?.textContent).toBe("Your answer wasn't saved. Try again.");
-  expect(button(view.host, "Save answer").disabled).toBe(false);
+  expect(button(view.host, "Send").disabled).toBe(false);
   expect(status(view.host)).toBeNull();
   expect(store.responses).toEqual([]);
   await view.unmount();
@@ -224,10 +238,10 @@ test("a retried tap after a failed write reuses its response identity", async ()
   const ids: string[] = [];
   const base = store.source();
   const view = await mount({ ...base, async saveResponse(entry, response, payload) { ids.push(response.responseId); return base.saveResponse(entry, response, payload); } });
-  await act(async () => option(view.host, "Hold").click());
+  await choose(view.host, "Hold");
   expect(store.responses).toEqual([]);
   fail = false;
-  await act(async () => option(view.host, "Hold").click());
+  await choose(view.host, "Hold");
   expect(ids).toHaveLength(2);
   expect(ids[1]).toBe(ids[0]!);
   expect(store.responses).toHaveLength(1);
@@ -288,7 +302,7 @@ test("new urgent arrivals cannot replace the focused response or its input node"
   expect(answer(view.host) === activeInput).toBe(true);
   expect(document.activeElement === activeInput).toBe(true);
   expect(activeInput.value).toBe("Still answering the original question");
-  await act(async () => button(card(view.host, "Question decision-one"), "Save answer").click());
+  await sendReply(card(view.host, "Question decision-one"));
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, text: "Still answering the original question" });
 });
 
@@ -298,8 +312,9 @@ test("an in-flight answer retains its exact issuance and loads its outcome after
   const view = await mount(store.source());
   await openNote(view.host);
   await typeAnswer(view.host, "Answer for revision one only");
+  await sendReply(view.host);
+  // The draft's form returns once the undo window closes and the write is in flight.
   const originalInput = answer(view.host);
-  await act(async () => button(view.host, "Save answer").click());
   store.durable.entries = [decision("decision-one", 2)];
   await act(async () => store.notify());
   expect(answer(view.host) === originalInput).toBe(true);
@@ -391,7 +406,7 @@ test("a true latest-issuance replacement preserves the draft until explicit navi
   await act(async () => button(view.host, "Show the newer version").click());
   expect(view.host.querySelector("article h3")?.textContent).toBe("Replacement question");
   expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
-  expect(hasButton(view.host, "Add a note")).toBe(true);
+  expect(hasButton(view.host, "Reply in words")).toBe(true);
   expect(store.responses).toEqual([]);
 });
 
@@ -404,6 +419,7 @@ test("a (Recommended) label shows without the marker and with the Suggested tag,
   expect(proceed.textContent).toBe("Proceed Suggested");
   expect(option(view.host, "Hold").textContent).toBe("Hold");
   await act(async () => proceed.click());
+  await clock!.advance(5000);
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ kind: "answer", choiceId: "proceed" });
   expect(store.durable.entries[0]!.state.card.choices?.[0]?.label).toBe("Proceed (Recommended)");
@@ -420,12 +436,12 @@ test("a replaced issuance refuses new answers: no write ever carries the old ide
   // The old issuance stays on screen with its draft, but every way to answer it is refused.
   expect(answer(view.host).value).toBe("Drafted against revision one");
   expect(option(view.host, "Hold").disabled).toBe(true);
-  expect(button(view.host, "Save answer").disabled).toBe(true);
-  await act(async () => option(view.host, "Hold").click());
+  expect(button(view.host, "Send").disabled).toBe(true);
+  await choose(view.host, "Hold");
   await act(async () => { answer(view.host).form!.requestSubmit(); });
   expect(store.responses).toEqual([]);
   await act(async () => button(view.host, "Show the newer version").click());
-  await act(async () => option(view.host, "Hold").click());
+  await choose(view.host, "Hold");
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
   expect(store.responses.some((response) => response.revision === 1)).toBe(false);
@@ -441,7 +457,72 @@ test("a snoozed card shows no options until Answer now, then one tap saves once"
   expect(article.textContent).toContain("Snoozed until");
   expect(article.textContent).not.toContain("Choose a reversible action.");
   await act(async () => button(article, "Answer now").click());
-  await act(async () => option(view.host, "Hold").click());
+  await choose(view.host, "Hold");
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, kind: "answer", choiceId: "hold" });
+});
+
+test("an answer waits 5 seconds: nothing is written before, exactly one write at 5", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await act(async () => option(view.host, "Hold").click());
+  const undo = view.host.querySelector<HTMLButtonElement>('button[aria-label^="Undo"]');
+  expect(undo?.getAttribute("aria-label")).toBe("Undo, 5 seconds left");
+  expect(document.activeElement === undo).toBe(true);
+  expect(view.host.textContent).toContain("Sending Hold in 5 seconds. Undo available.");
+  await clock!.advance(2000);
+  expect(undo?.getAttribute("aria-label")).toBe("Undo, 3 seconds left");
+  await clock!.advance(2900);
+  expect(store.responses).toEqual([]);
+  await clock!.advance(100);
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", choiceId: "hold" });
+  expect(status(view.host)).toContain("You chose Hold.");
+  await clock!.advance(10_000);
+  expect(store.responses).toHaveLength(1);
+});
+
+test("undo at 3 seconds writes nothing and brings the options back; so do a tap on the card and Escape", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await act(async () => option(view.host, "Hold").click());
+  await clock!.advance(2000);
+  await act(async () => view.host.querySelector<HTMLButtonElement>('button[aria-label^="Undo"]')!.click());
+  expect(option(view.host, "Hold")).toBeDefined();
+  await act(async () => option(view.host, "Proceed").click());
+  await act(async () => card(view.host, "Question decision-one").querySelector<HTMLElement>("span.absolute")!.click());
+  expect(option(view.host, "Proceed")).toBeDefined();
+  await act(async () => option(view.host, "Proceed").click());
+  await act(async () => { document.activeElement!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(option(view.host, "Proceed")).toBeDefined();
+  await clock!.advance(10_000);
+  expect(store.responses).toEqual([]);
+});
+
+test("a reply in words waits too, and undo keeps the draft", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await openNote(view.host);
+  await typeAnswer(view.host, "Hold until Friday");
+  await act(async () => button(view.host, "Send").click());
+  expect(view.host.textContent).toContain("You replied: Hold until Friday");
+  await act(async () => view.host.querySelector<HTMLButtonElement>('button[aria-label^="Undo"]')!.click());
+  expect(answer(view.host).value).toBe("Hold until Friday");
+  await sendReply(view.host);
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ kind: "answer", text: "Hold until Friday" });
+  expect(store.responses[0]!.choiceId).toBeUndefined();
+});
+
+test("leaving the view mid-countdown sends the answer at once, exactly once", async () => {
+  const store = persistence([decision(), information()]);
+  const view = await mount(store.source());
+  await act(async () => option(view.host, "Hold").click());
+  await clock!.advance(1000);
+  expect(store.responses).toEqual([]);
+  await chooseView(view.host, "All");
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ kind: "answer", choiceId: "hold" });
+  await clock!.advance(10_000);
+  expect(store.responses).toHaveLength(1);
 });
