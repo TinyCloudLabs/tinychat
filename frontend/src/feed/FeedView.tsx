@@ -61,7 +61,7 @@ const INTERACTIVE = "a, button, input, textarea, select, label, summary, details
  * With `onToggle`, tapping the title or any non-interactive part of the card
  * expands it in place.
  */
-export function FeedCardView({ card, sample = true, readBody, now, chip, expanded = true, clampTitle = false, onToggle, onEngage, heading = "h2", children }: {
+export function FeedCardView({ card, sample = true, readBody, now, chip, expanded = true, clampTitle = false, compact = false, onToggle, onEngage, heading = "h2", children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
@@ -69,6 +69,8 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
   chip?: ReactNode;
   expanded?: boolean;
   clampTitle?: boolean;
+  /** Header and title only (no body): a snoozed or unreadable card. */
+  compact?: boolean;
   onToggle?: () => void;
   onEngage?: () => void;
   heading?: "h2" | "h3";
@@ -88,7 +90,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [full, card.lead.text]);
+  }, [full, compact, card.lead.text]);
   return (
     <article className={`${cardClass} ${onToggle ? "cursor-pointer" : ""}`} aria-label={card.title ?? `${card.render} by ${card.author.name}`}
       onFocusCapture={onEngage} onPointerDownCapture={onEngage} onClickCapture={onEngage}
@@ -97,11 +99,12 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
         if (target.closest(INTERACTIVE) || window.getSelection()?.toString()) return;
         onToggle();
       } : undefined}>
-      <div className="flex min-h-7 min-w-0 items-center gap-2 text-[13px] leading-[18px]">
+      {/* The agent name stays whole; a chip that doesn't fit wraps to its own line. */}
+      <div className="flex min-h-7 min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-[18px]">
         {avatar
           ? <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />
           : <span aria-hidden className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-[12.5px] font-semibold">{card.author.name.trim().charAt(0).toUpperCase() || "?"}</span>}
-        <span className="min-w-0 truncate"><span className="font-semibold">{card.author.name}</span>{when && <span className="tabular-nums text-muted-foreground"> · <time dateTime={card.at}>{when}</time></span>}</span>
+        <span className="min-w-0 break-words"><span className="font-semibold">{card.author.name}</span>{when && <span className="whitespace-nowrap tabular-nums text-muted-foreground"> · <time dateTime={card.at}>{when}</time></span>}</span>
         {sample && <span className={`ml-auto ${chipClass}`}>{FEED_STRINGS.provenance}</span>}
         {chip && <span className="ml-auto flex shrink-0">{chip}</span>}
       </div>
@@ -110,7 +113,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, expande
           ? <button type="button" aria-expanded={expanded} onClick={onToggle} className={`w-full rounded-sm text-left ${clampTitle && !expanded ? "line-clamp-2" : ""} ${focusRing}`}>{card.title}</button>
           : card.title}
       </Heading>}
-      {card.lead.text && <div ref={body} className={`mt-1 max-w-[60ch] text-[15px] leading-[1.5] ${full ? "" : "line-clamp-3"}`}><CardBody text={card.lead.text} /></div>}
+      {!compact && card.lead.text && <div ref={body} className={`mt-1 max-w-[60ch] text-[15px] leading-[1.5] ${full ? "" : "line-clamp-3"}`}><CardBody text={card.lead.text} /></div>}
       {/* The 44px target overlaps the next block, so the visible gap to the options stays 12px. */}
       {cut && !full && <button type="button" className={`${quietClass} -mb-4`} onClick={() => setMoreText(true)}>Show more</button>}
       {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}

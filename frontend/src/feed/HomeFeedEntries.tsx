@@ -199,6 +199,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const [active, setActive] = useState<HomeFeedEntry | null>(null);
   const [sticky, setSticky] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const [awake, setAwake] = useState<ReadonlySet<string>>(() => new Set());
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
@@ -224,7 +225,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
     activeRef.current = null;
-    setSnapshot(null); setView(null); setActive(null); setError(null); setSticky(new Map()); setExpanded(new Set());
+    setSnapshot(null); setView(null); setActive(null); setError(null); setSticky(new Map()); setExpanded(new Set()); setAwake(new Set());
     setExpandedGroups(new Set());
     const refresh = async () => {
       if (running) { dirty = true; return; }
@@ -391,6 +392,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     const key = keyOf(entry);
     setSnapshot((current) => updateSnapshotEntry(current, key, (candidate) => ({ ...candidate, view: { ...candidate.view, snoozedUntil: until } })));
     release(entry);
+    setAwake((current) => { const next = new Set(current); next.delete(key); return next; });
   }, [source, activeKey]);
   function setFilter(update: () => void) { update(); setActive(null); setSticky(new Map()); }
 
@@ -418,9 +420,13 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     const context = contextFor(entry);
     const unsupported = isTypedPayload(entry) && !context;
     const open = expanded.has(key);
+    // A snoozed card rests as its title until the owner asks to answer it now.
+    const resting = snoozedNow(entry, clock) && !awake.has(key) && !open;
     const reference = <Reference title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</Reference>;
     return <li key={key} className="min-w-0">
-      <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} expanded={open} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
+      <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} expanded={open} compact={resting || unsupported} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
+        {resting && <QuietRow><button type="button" className={quietClass} onClick={() => { engage(entry); setAwake((current) => new Set(current).add(key)); }}>Answer now</button></QuietRow>}
+        {!resting && <>
         {retained && <div role="status" className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>A newer version of this card arrived. Answer it there; your draft stays here.</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
         <ReportLink entry={entry} />
         {context
@@ -428,6 +434,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           : unsupported
             ? <p role="status" className="mt-3.5 text-sm">This card can't be shown here yet. Your agent still has it.</p>
             : <AnswerForm key={key} entry={entry} source={source} now={clock} attention={attention(entry)} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onSnooze={snooze} />}
+        </>}
       </FeedCardView>
     </li>;
   }
@@ -460,7 +467,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const agents = [...new Map((snapshot?.entries ?? []).map((entry) => [entry.source.sourceId, entry.source.label])).entries()];
   const projects = [...new Set((snapshot?.entries ?? []).map(projectOf).filter(Boolean))].sort();
   const kinds = [...new Set((snapshot?.entries ?? []).map(kindOf))].sort();
-  const filtering = !!(agent || kind || project);
+  const activeFilters = [agent, kind, project].filter(Boolean).length;
+  const filtering = activeFilters > 0;
   const today = (snapshot?.entries ?? []).filter((entry) => !attention(entry) && new Date(entry.state.card.createdAt).toDateString() === new Date(clock).toDateString()).length;
   // The Home site shows only the heading and its empty state until the first card arrives.
   // The Home site shows only the heading and its empty card until the first card arrives;
@@ -482,8 +490,11 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
             {option.label}{option.id === "needs-you" && snapshot && <span className="ml-1 tabular-nums">{needsCount}</span>}
           </button>)}
         </div>
-        {(agents.length > 1 || projects.length > 1 || filtering) && <button type="button" aria-label="Filter by agent or project" aria-pressed={filtering} onClick={() => setFilterOpen(true)}
-          className={`ml-auto grid size-11 shrink-0 place-items-center rounded-full shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] aria-pressed:bg-foreground aria-pressed:text-background ${focusRing}`}><SlidersHorizontalIcon aria-hidden className="size-5" /></button>}
+        {(agents.length > 1 || projects.length > 1 || filtering) && <button type="button" aria-haspopup="dialog" aria-label={`Filter by agent or project${activeFilters ? `, ${activeFilters} active` : ""}`} onClick={() => setFilterOpen(true)}
+          className={`relative ml-auto grid size-11 shrink-0 place-items-center rounded-full shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] ${focusRing}`}>
+          <SlidersHorizontalIcon aria-hidden className="size-5" />
+          {!!activeFilters && <span aria-hidden className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-foreground px-1 text-[11px] font-semibold tabular-nums text-background">{activeFilters}</span>}
+        </button>}
       </div>}
       <ResponsiveSheet open={filterOpen} onOpenChange={setFilterOpen} title={<span className="block text-[1.375rem] font-normal leading-[1.2]">Filter</span>}>
         <ResponsiveSheetBody className="space-y-4 pb-6">

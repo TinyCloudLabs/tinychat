@@ -430,3 +430,18 @@ test("a replaced issuance refuses new answers: no write ever carries the old ide
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
   expect(store.responses.some((response) => response.revision === 1)).toBe(false);
 });
+
+test("a snoozed card shows no options until Answer now, then one tap saves once", async () => {
+  const entry = decision();
+  entry.view.snoozedUntil = "2099-01-01T00:00:00Z";
+  const store = persistence([entry], { defaultSelector: "both" });
+  const view = await mount(store.source());
+  const article = card(view.host, "Question decision-one");
+  expect(article.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
+  expect(article.textContent).toContain("Snoozed until");
+  expect(article.textContent).not.toContain("Choose a reversible action.");
+  await act(async () => button(article, "Answer now").click());
+  await act(async () => option(view.host, "Hold").click());
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, kind: "answer", choiceId: "hold" });
+});
