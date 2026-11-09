@@ -1,4 +1,5 @@
 import type {
+  FeedCard,
   FeedCardState,
   FeedOwnerSettings,
   FeedOwnerView,
@@ -51,6 +52,12 @@ export interface HomeFeedEntry {
   currentIssuance?: boolean;
   historicalCommands?: HomeHistoricalCommand[];
   threadRoutes?: Record<string, HomeThreadRoute>;
+  /**
+   * A plain card's earlier revisions in the agent's output, oldest first (listFeedCardHistory).
+   * An agent's replies arrive as new revisions, so these time each reply and link a reply-only
+   * revision to the one it follows, including revisions that never loaded as entries.
+   */
+  earlierRevisions?: FeedCard[];
 }
 
 export interface HomeFeedSnapshot {
@@ -63,10 +70,25 @@ export interface HomeFeedSnapshot {
   sitrep?: SitrepOwnerData;
 }
 
+/** What happened to an answer held in the page-close outbox when Home came back. */
+export interface HeldAnswerOutcome {
+  sourceId: string;
+  cardId: string;
+  /** true: sent now, with its original responseId. false: not sent, because the request changed. */
+  sent: boolean;
+}
+
+export interface HomeFeedSaveOptions {
+  /** The page is closing: hold the answer in the outbox first, synchronously, until the write is confirmed. */
+  pageClosing?: boolean;
+}
+
 /** Owner-session persistence boundary; notifications invalidate durable reads. */
 export interface HomeFeedSource {
   load(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot>;
-  saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload): Promise<FeedResponse>;
+  saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload, options?: HomeFeedSaveOptions): Promise<FeedResponse>;
+  /** Sends the answers the page-close outbox holds (after load), or refuses those whose request changed. */
+  flushHeldAnswers?: () => Promise<HeldAnswerOutcome[]>;
   sendMessage?: (entry: HomeFeedEntry, message: HomeFeedMessageDraft, payload?: FeedResponsePayload) => Promise<FeedResponse>;
   saveOwnerState?: (entry: HomeFeedEntry, event: HomeFeedOwnerEvent) => Promise<void>;
   saveHeldNote?: (entry: HomeFeedEntry, note: SitrepHeldNote) => Promise<void>;

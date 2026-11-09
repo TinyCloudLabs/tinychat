@@ -8,7 +8,8 @@ import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { threadSize, ThreadView, type ThreadItem } from "./HomeCardThread";
-import { AnsweredPanel, cardClass, COMMENT_COPY, commentCopy, isReplyOnlyRevision, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
+import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
+import { AnsweredPanel, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -171,7 +172,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   // Read when a countdown commits, so an answer re-targets to a reply-only revision that arrived meanwhile.
   const live = useRef({ target, saved, text });
   live.current = { target, saved, text };
-  async function save(choice?: string) {
+  async function save(choice?: string, pageClosing = false) {
     const { target, saved, text } = live.current;
     if (saving || (!text.trim() && !choice)) return;
     setSaving(choice ?? "text"); setError(null);
@@ -187,7 +188,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
     };
     pendingResponse.current = { key, response };
     try {
-      const result = await source.saveResponse(target, response);
+      const result = await source.saveResponse(target, response, undefined, { pageClosing });
       onSaved(target, result);
       pendingResponse.current = null;
       setText(""); setNoteOpen(false); setFollowup(false); setJustSaved(true);
@@ -233,11 +234,11 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   const asking = !saved || followup || !!text.trim();
   const choose = (choice: string) => {
     if (stale || saving) return;
-    countdown.start(optionText(choices.find((option) => option.id === choice)?.label ?? ""), () => void save(choice));
+    countdown.start(optionText(choices.find((option) => option.id === choice)?.label ?? ""), (pageClosing) => void save(choice, pageClosing));
   };
   const reply = () => {
     if (stale || saving || !text.trim()) return;
-    countdown.start("your answer", () => void save());
+    countdown.start("your answer", (pageClosing) => void save(undefined, pageClosing));
   };
   return <div>
     {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
@@ -289,6 +290,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const [awake, setAwake] = useState<ReadonlySet<string>>(() => new Set());
   // Answers not sent because the card was replaced during their countdown, by card key.
   const [refused, setRefused] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // Answers held when the page closed and settled at this launch: sent (true) or not (false), by card.
+  const [heldOutcomes, setHeldOutcomes] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
@@ -304,9 +307,6 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const activeRef = useRef<HomeFeedEntry | null>(null);
   const currentSource = useRef(source);
   const pendingSends = useRef(new Set<() => void>());
-  // Every revision of each card this session has seen, so a reply-only successor can be
-  // recognised even when the store no longer returns the revision it replaced.
-  const seenRevisions = useRef(new Map<string, HomeFeedEntry[]>());
   currentSource.current = source;
   const history = view === "done";
   const selector: FeedSelector = view === "all" ? "both" : "needs-action";
@@ -315,11 +315,11 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     let alive = true;
     let running = false;
     let dirty = false;
+    let flushed = false;
     chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
-    seenRevisions.current.clear();
     activeRef.current = null;
-    setSnapshot(null); setView(null); setActive(null); setError(null); setSticky(new Map()); setExpanded(new Set()); setAwake(new Set());
+    setSnapshot(null); setView(null); setActive(null); setError(null); setSticky(new Map()); setExpanded(new Set()); setAwake(new Set()); setHeldOutcomes(new Map());
     setExpandedGroups(new Set());
     const refresh = async () => {
       if (running) { dirty = true; return; }
@@ -342,14 +342,18 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           if (next.focusedEntry) next.focusedEntry = reconcile(next.focusedEntry);
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
-          for (const entry of [...next.entries, ...(next.historicalEntries ?? []), ...(next.focusedEntry ? [next.focusedEntry] : [])]) {
-            const cardKey = JSON.stringify([entry.source.sourceId, entry.state.card.cardId]);
-            const known = seenRevisions.current.get(cardKey) ?? [];
-            seenRevisions.current.set(cardKey, [...known.filter((candidate) => keyOf(candidate) !== keyOf(entry)), entry]);
-          }
           setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
           if (!hasDefault.current && !chosenView.current) setView(next.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
           hasDefault.current = true;
+          // The first load registered the agents: answers held when the page last closed go now.
+          if (!flushed && source.flushHeldAnswers) {
+            flushed = true;
+            void source.flushHeldAnswers().then((outcomes) => {
+              if (!alive || !outcomes.length) return;
+              setHeldOutcomes(new Map(outcomes.map((outcome) => [JSON.stringify([outcome.sourceId, outcome.cardId]), outcome.sent])));
+              void refresh();
+            }).catch(() => { /* Held answers stay held for the next launch. */ });
+          }
         } catch {
           if (alive) setError({ lead: "Home didn't load.", text: "Check your connection, then try again." });
         }
@@ -362,12 +366,18 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     return () => { alive = false; unsubscribe(); refreshRef.current = () => {}; };
   }, [source]);
 
-  /** The card's revisions this session knows, latest state first by identity, oldest revision first. */
+  /**
+   * The card's revisions, oldest first: those Home loaded as entries (with their owner history),
+   * and the rest of the output's stored revisions, which carry no response, message or view.
+   */
   const revisionsOf = (entry: HomeFeedEntry): HomeFeedEntry[] => {
-    const known = new Map<string, HomeFeedEntry>();
-    const sameCard = (candidate: HomeFeedEntry) => candidate.source.sourceId === entry.source.sourceId && candidate.state.card.cardId === entry.state.card.cardId;
-    for (const candidate of seenRevisions.current.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId])) ?? []) known.set(keyOf(candidate), candidate);
-    for (const candidate of [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? []), ...(snapshot?.focusedEntry ? [snapshot.focusedEntry] : []), ...(active ? [active] : [])]) if (sameCard(candidate)) known.set(keyOf(candidate), candidate);
+    const known = new Map<number, HomeFeedEntry>();
+    const candidates = [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? []), ...(snapshot?.focusedEntry ? [snapshot.focusedEntry] : []), ...(active ? [active] : []), entry]
+      .filter((candidate) => candidate.source.sourceId === entry.source.sourceId && candidate.state.card.cardId === entry.state.card.cardId);
+    for (const candidate of candidates) known.set(candidate.state.card.revision, candidate);
+    for (const card of candidates.flatMap((candidate) => candidate.earlierRevisions ?? [])) {
+      if (!known.has(card.revision)) known.set(card.revision, storedRevisionEntry(entry.source, card));
+    }
     return [...known.values()].sort((a, b) => a.state.card.revision - b.state.card.revision);
   };
   /**
@@ -558,6 +568,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   function renderCard(entry: HomeFeedEntry, retained = false) {
     const key = lineageKey(entry);
     const refusedLabel = refused.get(key);
+    const heldSent = retained ? undefined : heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
     const onRefused = (label: string) => setRefused((current) => new Map(current).set(key, label));
     const context = contextFor(entry);
     const unsupported = isTypedPayload(entry) && !context;
@@ -573,6 +584,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
         {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
           ? <span className="text-foreground">Not sent: {refusedLabel === "your answer" ? "your answer" : <b className="font-semibold">{refusedLabel}</b>}. This card changed. Answer the newer version.</span>
           : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
+        {heldSent !== undefined && <p role="status" className={`mt-3 text-[13px] ${heldSent ? "text-muted-foreground" : "text-foreground"}`}>{heldSent ? HELD_ANSWER_COPY.sent : HELD_ANSWER_COPY.notSent}</p>}
         <ReportLink entry={entry} />
         {context
           ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} stale={retained} reference={reference} onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />

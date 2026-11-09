@@ -8,7 +8,6 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
-import type { HomeFeedEntry } from "./feedStoreTypes";
 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 
@@ -200,87 +199,65 @@ export function commentCopy({ approved, held = [] }: { approved: readonly string
 /** Seconds an answer waits, undoable, before it is sent. */
 export const UNDO_SECONDS = 5;
 
+/** What a card says about an answer that was waiting to be sent when the page closed. */
+export const HELD_ANSWER_COPY = {
+  /** It was sent at this launch, later than the owner chose it. */
+  sent: "Sent when you came back.",
+  /** The request changed before it could be sent, so it wasn't; the options are live again. */
+  notSent: "Your answer wasn't sent: this request changed.",
+} as const;
+
 /**
  * The list's "send now" registry: when the owner leaves the view (switches segment),
  * every answer still counting down is sent at once, because the owner chose it.
  */
 export const PendingSendContext = createContext<Set<() => void> | null>(null);
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-/**
- * True only when `next` is `previous` plus appended agent replies: the same card from the
- * same agent, a higher revision, every card field and payload key structurally identical
- * (canonical JSON) except `payload.replies`, and those replies a strict append (the first k
- * identical, at least one more). The single exception: the revision that adds a "post"
- * card's first reply may also change `payload.render` from "post" (or absent) to "thread". Revision,
- * issuance and createdAt are the revision's own identity and time, so they are not compared.
- */
-export function isReplyOnlyRevision(previous: HomeFeedEntry, next: HomeFeedEntry): boolean {
-  if (previous.source.sourceId !== next.source.sourceId || previous.source.agentDid !== next.source.agentDid) return false;
-  const before = previous.state.card; const after = next.state.card;
-  if (before.cardId !== after.cardId || after.revision <= before.revision) return false;
-  const { revision: _r1, issuanceId: _i1, createdAt: _c1, payload: beforePayload = {}, ...beforeFields } = before;
-  const { revision: _r2, issuanceId: _i2, createdAt: _c2, payload: afterPayload = {}, ...afterFields } = after;
-  if (canonical(beforeFields) !== canonical(afterFields)) return false;
-  const { replies: beforeReplies = [], ...beforeOthers } = beforePayload;
-  const { replies: afterReplies, ...afterOthers } = afterPayload;
-  if (!Array.isArray(beforeReplies) || !Array.isArray(afterReplies) || afterReplies.length <= beforeReplies.length) return false;
-  // The one allowed extra change: a "post" card's first reply turns it into a "thread". An
-  // absent render (or payload) is a post here, and only here.
-  const firstReply = (beforeOthers.render === undefined || beforeOthers.render === "post") && afterOthers.render === "thread" && beforeReplies.length === 0;
-  const { render: _beforeRender, ...beforeRest } = beforeOthers;
-  const { render: _afterRender, ...afterRest } = afterOthers;
-  if (firstReply ? canonical(beforeRest) !== canonical(afterRest) : canonical(beforeOthers) !== canonical(afterOthers)) return false;
-  return beforeReplies.every((reply, index) => canonical(reply) === canonical(afterReplies[index]));
-}
-
 /**
  * An answer that waits UNDO_SECONDS before it is sent. `start` shows it at once;
- * `undo` drops it unsent; at 0 (or when the card unmounts, or the view changes)
- * `send` runs exactly once, unless the card's issuance was replaced meanwhile
+ * `undo` drops it unsent; at 0 (or when the card unmounts, the view changes or the page
+ * closes) `send` runs exactly once, unless the card's issuance was replaced meanwhile
  * (`guard.stale` at that moment): then nothing is written and `guard.onRefused` runs.
+ * On page close, `run(true)` asks the write to hold the answer in the outbox first.
  */
 export function usePendingSend(guard: { stale: boolean; onRefused: (label: string) => void }) {
   const [pending, setPending] = useState<{ label: string; seconds: number } | null>(null);
-  const send = useRef<{ label: string; run: () => void } | null>(null);
+  const send = useRef<{ label: string; run: (pageClosing: boolean) => void } | null>(null);
   const timers = useRef<number[]>([]);
   // Read at commit time, not at tap time: a newer issuance may arrive during the countdown.
   const latest = useRef(guard);
   latest.current = guard;
   const registry = useContext(PendingSendContext);
   const stop = useCallback(() => { for (const timer of timers.current) window.clearTimeout(timer); timers.current = []; }, []);
-  const flush = useCallback(() => {
+  const flush = useCallback((pageClosing = false) => {
     const armed = send.current;
     if (!armed) return;
     send.current = null; stop(); setPending(null);
     // No write may carry a replaced card's identity.
     if (latest.current.stale) latest.current.onRefused(armed.label);
-    else armed.run();
+    else armed.run(pageClosing);
   }, [stop]);
   const undo = useCallback(() => {
     if (!send.current) return;
     send.current = null; stop(); setPending(null);
   }, [stop]);
-  const start = useCallback((label: string, run: () => void) => {
+  const start = useCallback((label: string, run: (pageClosing: boolean) => void) => {
     flush();
     send.current = { label, run };
     setPending({ label, seconds: UNDO_SECONDS });
     for (let elapsed = 1; elapsed < UNDO_SECONDS; elapsed++) {
       timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: UNDO_SECONDS - elapsed }), elapsed * 1000));
     }
-    timers.current.push(window.setTimeout(flush, UNDO_SECONDS * 1000));
+    timers.current.push(window.setTimeout(() => flush(), UNDO_SECONDS * 1000));
   }, [flush]);
   useEffect(() => {
-    registry?.add(flush);
+    const sendNow = () => flush();
+    // Closing the page mid-countdown sends too, and the answer is held in case the write can't finish.
+    const pageHide = () => flush(true);
+    registry?.add(sendNow);
+    window.addEventListener("pagehide", pageHide);
     // Unmounting mid-countdown sends: the owner chose this answer.
-    return () => { registry?.delete(flush); flush(); };
+    return () => { registry?.delete(sendNow); window.removeEventListener("pagehide", pageHide); flush(); };
   }, [registry, flush]);
   return { pending, start, undo };
 }

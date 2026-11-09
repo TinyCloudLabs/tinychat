@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { commentCopy, displayOptions, isReplyOnlyRevision, optionText } from "./cardKit";
+import { commentCopy, displayOptions, optionText } from "./cardKit";
+import { isReplyOnlyRevision } from "./replyOnlyRevision";
 import type { HomeFeedEntry } from "./feedStoreTypes";
 
 const options = [{ id: "yes", label: "Yes: node caches too (Recommended)" }, { id: "no", label: "No: client cache only" }];
