@@ -9,7 +9,7 @@ import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { threadSize, ThreadView, type ThreadItem } from "./HomeCardThread";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
+import { AnsweredPanel, ANSWER_HELD_COPY, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -194,7 +194,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
       pendingResponse.current = null;
       setText(""); setNoteOpen(false); setFollowup(false); setJustSaved(true);
     } catch {
-      setError("Your answer wasn't saved. Try again.");
+      setError(ANSWER_HELD_COPY);
     } finally { setSaving(null); }
   }
   /** A card message to the publishing agent (the existing card-message path). A retry reuses its id. */

@@ -58,6 +58,8 @@ type Faults = {
   hang: boolean;
   /** Every read fails. */
   failReads?: boolean;
+  /** The read matching `match` after `skip` earlier matches signals `reached`, then waits for `gate`: a slow read mid-flush. */
+  readPause?: { match: RegExp; skip: number; gate: Promise<void>; reached: PromiseWithResolvers<void>; used?: boolean };
 };
 function sqliteHandle(database: Database, faults: Faults, responseDatabase: boolean): FeedDatabase {
   const execute: FeedDatabase["execute"] = async (sql, params = []) => {
@@ -69,6 +71,8 @@ function sqliteHandle(database: Database, faults: Faults, responseDatabase: bool
     query: async <T,>(sql: string, params: (string | number | null | Uint8Array)[] = []) => {
       if (faults.hang) await new Promise<never>(() => {});
       if (faults.failReads) throw new Error("node unreachable");
+      const pause = faults.readPause;
+      if (pause && !pause.used && pause.match.test(sql) && pause.skip-- <= 0) { pause.used = true; pause.reached.resolve(); await pause.gate; }
       const statement = database.query(sql);
       const rows = statement.values(...params) as T[][];
       return { ok: true, data: { columns: statement.columnNames, rows, rowCount: rows.length } };
@@ -273,7 +277,7 @@ test("a retried tap reuses its responseId, so an answer whose reply was lost is 
   const view = await mount(transport);
   await act(async () => option(view.host, "Go").click());
   await countdown(transport);
-  expect(view.host.textContent).toContain("Your answer wasn't saved. Try again.");
+  expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
   await act(async () => option(view.host, "Go").click());
   await countdown(transport);
   expect(attempts).toHaveLength(2);
@@ -846,4 +850,68 @@ test("after the sign-out bound only the write already in flight lands; a held an
   await act(async () => { for (let index = 0; index < 400; index++) await Promise.resolve(); });
   const landed = [...(await stored(agents[0]!)), ...(await stored(agents[1]!))];
   expect(landed).toHaveLength(1);
+});
+
+for (const typed of [false, true]) {
+  test(`after a failed send on a ${typed ? "typed" : "plain"} card the answer is held, the options are live, and a second tap sends again`, async () => {
+    const owner = await ownerFixture(); const agent = await owner.agent(typed ? "live-typed" : "live-plain");
+    value(await publishFeedCard(agent.output, typed ? typedCard(syntheticRecord("ask")) : plainCard()));
+    const transport = owner.fresh(); const view = await mount(transport);
+    const choice = typed ? "Quick option" : "Go";
+    owner.faults.refuseResponseWrites = true;
+    await act(async () => option(view.host, choice).click());
+    await countdown(transport);
+    // The failed send is shown, the answer is held for the next launch, and nothing was stored.
+    expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
+    expect(outboxKeys()).toHaveLength(1);
+    expect(await stored(agent)).toEqual([]);
+    // Every option is enabled, and the written answer is one tap away.
+    const options = [...view.host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Answers"] button')];
+    expect(options.length).toBeGreaterThan(1);
+    expect(options.every((node) => !node.disabled)).toBe(true);
+    expect(button(view.host, "Answer in your own words").disabled).toBe(false);
+    // A second tap sends again and, once the node takes it, is stored and no longer held.
+    owner.faults.refuseResponseWrites = false;
+    await act(async () => option(view.host, choice).click());
+    await countdown(transport);
+    expect((await stored(agent)).map((row) => row.kind)).toEqual(["answer"]);
+    expect(outboxKeys()).toEqual([]);
+  });
+}
+
+test("after a failed written answer the box keeps its text and Send answer is live", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("live-written");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const transport = owner.fresh(); const view = await mount(transport);
+  await act(async () => button(view.host, "Answer in your own words").click());
+  await enter(view.host, "Your answer", "Only if the aisle seat is free");
+  owner.faults.refuseResponseWrites = true;
+  await act(async () => button(view.host, "Send answer").click());
+  await countdown(transport);
+  expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
+  expect(view.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]')?.value).toBe("Only if the aisle seat is free");
+  expect(button(view.host, "Send answer").disabled).toBe(false);
+  owner.faults.refuseResponseWrites = false;
+  await act(async () => button(view.host, "Send answer").click());
+  await countdown(transport);
+  expect((await stored(agent)).map((row) => row.text)).toEqual(["Only if the aisle seat is free"]);
+});
+
+test("a sign-out bound that lands during a held answer's reads stops its write: only the re-check right before the write can", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("slow-read");
+  value(await publishFeedCard(agent.output, plainCard()));
+  hold(owner.spaceId, plainHeld("slow-read"));
+  // The card-state read is the last read before the write. Its first run is the launch load's (skipped);
+  // the second is the flush's own, and the entry was still held when it began.
+  const gate = Promise.withResolvers<void>();
+  const reached = Promise.withResolvers<void>();
+  owner.faults.readPause = { match: /IN \('answer', 'followup'\)/, skip: 1, gate: gate.promise, reached };
+  const signingOut = settleHeldAnswersForSignOut(owner.tcw);
+  await act(async () => { await reached.promise; });
+  await clock.advance(SIGN_OUT_FLUSH_MS);
+  await act(async () => { await signingOut; });
+  expect(outboxKeys()).toEqual([]);
+  gate.resolve();
+  await act(async () => { for (let index = 0; index < 400; index++) await Promise.resolve(); });
+  expect(await stored(agent)).toEqual([]);
 });

@@ -205,6 +205,9 @@ export const HELD_ANSWER_COPY = {
   sent: "Sent when you opened Home again.",
 } as const;
 
+/** A failed answer send: the answer is held in the outbox, so it goes at the next launch. */
+export const ANSWER_HELD_COPY = "Your answer isn't sent yet. Send it again now, or Home will send it the next time you open it.";
+
 /** An answer that was never sent: the countdown label of an answer in words, and why the card refused. */
 export const NOT_SENT_COPY = {
   yourAnswer: "your answer",
