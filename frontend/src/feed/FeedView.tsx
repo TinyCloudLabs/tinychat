@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { cardClass, cardTime, chipClass, focusRing } from "./cardKit";
 import { createHomeFeedSource } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
@@ -51,41 +52,67 @@ function CardImage({ image, alt }: { image?: string; alt: string }) {
   return <img className="mt-4 max-h-80 w-full rounded-xl border border-border bg-muted object-cover" src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-export function FeedCardView({ card, sample = true, readBody }: {
+const INTERACTIVE = "a, button, input, textarea, select, label, summary, details, [role='dialog']";
+
+/**
+ * The one Home card. Collapsed, it shows the header, the title (2 lines) and the
+ * body (3 lines); `children` (answers, actions) always render inside the border.
+ * With `onToggle`, tapping the title or any non-interactive part of the card
+ * expands it in place.
+ */
+export function FeedCardView({ card, sample = true, readBody, now, chip, expanded = true, onToggle, onEngage, heading = "h2", children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
+  now?: number;
+  chip?: ReactNode;
+  expanded?: boolean;
+  onToggle?: () => void;
+  onEngage?: () => void;
+  heading?: "h2" | "h3";
+  children?: ReactNode;
 }): JSX.Element {
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
+  const Heading = heading;
+  const clamp = !expanded;
+  const when = cardTime(card.at, now ?? Date.now());
   return (
-    <article className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-4 text-card-foreground shadow-sm sm:p-5" aria-label={`${card.render} by ${card.author.name}`}>
-      <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
-        {avatar && <img src={avatar} alt="" className="size-9 shrink-0 rounded-full bg-muted object-cover" />}
-        <div className="min-w-[6rem] flex-1">
-          <p className="break-words font-semibold">{card.author.name}</p>
-          <time dateTime={card.at} className="text-xs text-muted-foreground">{new Date(card.at).toLocaleDateString()}</time>
-        </div>
-        {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
+    <article className={`${cardClass} ${onToggle ? "cursor-pointer" : ""}`} aria-label={card.title ?? `${card.render} by ${card.author.name}`}
+      onFocusCapture={onEngage} onPointerDownCapture={onEngage} onClickCapture={onEngage}
+      onClick={onToggle ? (event) => {
+        const target = event.target as Element;
+        if (target.closest(INTERACTIVE) || window.getSelection()?.toString()) return;
+        onToggle();
+      } : undefined}>
+      <div className="flex min-h-7 min-w-0 items-center gap-2 text-[13px] leading-[18px]">
+        {avatar
+          ? <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />
+          : <span aria-hidden className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-[12.5px] font-semibold">{card.author.name.trim().charAt(0).toUpperCase() || "?"}</span>}
+        <span className="min-w-0 truncate"><span className="font-semibold">{card.author.name}</span>{when && <span className="tabular-nums text-muted-foreground"> · <time dateTime={card.at}>{when}</time></span>}</span>
+        {sample && <span className={`ml-auto ${chipClass}`}>{FEED_STRINGS.provenance}</span>}
+        {chip && <span className="ml-auto flex shrink-0">{chip}</span>}
       </div>
-      {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-xl font-semibold leading-tight">{card.title}</h2>}
-      <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>
+      {card.title && <Heading className="mt-2.5 break-words text-[17px] font-semibold leading-[1.3] [text-wrap:balance]">
+        {onToggle
+          ? <button type="button" aria-expanded={expanded} onClick={onToggle} className={`w-full rounded-sm text-left ${clamp ? "line-clamp-2" : ""} ${focusRing}`}>{card.title}</button>
+          : card.title}
+      </Heading>}
+      {card.lead.text && <p className={`mt-1 max-w-[60ch] whitespace-pre-wrap break-words text-[15px] leading-[1.5] ${clamp ? "line-clamp-3" : ""}`}>{card.lead.text}</p>}
       {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
-      {card.render === "thread" && card.replies?.map((reply, index) => (
-        <div key={index} className="mt-3 min-w-0 border-l-2 border-border pl-4 text-sm">
+      {expanded && card.render === "thread" && card.replies?.map((reply, index) => (
+        <div key={index} className="mt-3 min-w-0 border-l border-border pl-4 text-[15px]">
           <p className="whitespace-pre-wrap break-words">{reply.text}</p>
         </div>
       ))}
-      {card.render === "article" && <div className="mt-4 min-w-0 border-t border-border pt-4">
-        {card.title && <h2 className="font-display text-xl font-semibold leading-tight break-words">{card.title}</h2>}
-        {card.body && (sample || readBody) && <ArticleBody body={card.body} readBody={readBody ?? readArticleBody} />}
-      </div>}
-      {card.render === "link" && card.url && <div className="mt-3 min-w-0">
+      {expanded && card.render === "article" && card.body && (sample || readBody) && <ArticleBody body={card.body} readBody={readBody ?? readArticleBody} />}
+      {card.render === "link" && card.url && <div className="mt-1 min-w-0">
         {safeUrl(card.url)
-          ? <a className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
+          ? <a className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
           : <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
       </div>}
-      {card.source && <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">Source: {card.source.url
-        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</a>
+      {children}
+      {expanded && card.source && <p className="mt-3 text-[13px] text-muted-foreground">Source: {card.source.url
+        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all underline underline-offset-[3px]">{card.source.label}</a>
         : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
     </article>
   );

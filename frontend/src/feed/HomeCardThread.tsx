@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ownerThreadResponseKey, parseThreadKey, publisherThreadReceipts, recentThread, type BoardRecord, type SitrepOwnerData, type ThreadMessage } from "@tinyboilerplate/core/feed/sitrep";
 import type { HomeFeedEntry } from "./feedStoreTypes";
+import { fieldClass, pillClass as buttonClass } from "./cardKit";
 
 interface Props {
   entry: HomeFeedEntry;
@@ -11,7 +12,6 @@ interface Props {
   now: number;
   onSend: (text: string, resendOf?: string) => Promise<boolean>;
 }
-const buttonClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
 function sameParent(entry: HomeFeedEntry, value: { cardId: string; revision: number; issuanceId: string }) { const card = entry.state.card; return card.cardId === value.cardId && card.revision === value.revision && card.issuanceId === value.issuanceId; }
 function claimDeadline(value: unknown): number | undefined {
   if (!value || typeof value !== "object" || !("state" in value) || value.state !== "claimed") return;
@@ -53,9 +53,9 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, onSend
     return { legacy, reported, handling, waitingClaim, uncertain };
   }
   return <div className="space-y-3">
-    <button type="button" className={buttonClass} onClick={() => setOpen(!open)}>{`Message ${entry.source.label}`}</button>
-    {open && <section aria-label="Card thread" className="space-y-3 rounded-xl border border-border p-3">
-      <p className="text-xs text-muted-foreground">To authenticated publisher {entry.source.label} · {entry.source.agentDid}. No implicit broadcast or owner-label routing.</p>
+    <button type="button" className={buttonClass} aria-expanded={open} onClick={() => setOpen(!open)}>{`Message ${entry.source.label}`}</button>
+    {open && <section aria-label="Card thread" className="space-y-3">
+      <p className="text-[13px] text-muted-foreground">Goes to {entry.source.label}.</p>
       <ol className="space-y-3">
         {messages.map((message) => {
           const { legacy, reported, handling, waitingClaim, uncertain } = receiptsFor(message);
@@ -74,7 +74,7 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, onSend
             {!legacy.length && !reported.length && <p className="text-xs text-muted-foreground">Logical recipient delivery: not reported</p>}
             {entry.recipientRoute?.recipients.filter((recipient) => !legacy.some((receipt) => receipt.recipientKey === recipient.recipientKey) && !reported.some((receipt) => receipt.recipientKey === recipient.recipientKey)).map((recipient) => <p key={recipient.recipientKey} className="text-xs text-muted-foreground">{recipient.legacyName}: not reported</p>)}
             {message.side === "sam" && uncertain && !waitingClaim && !closed && <div className="space-y-1">
-              <p className="text-xs text-muted-foreground">{route?.kind === "publisher" ? `Explicit resend to authenticated publisher ${entry.source.label} (${entry.source.agentDid}).` : route?.kind === "recipients" ? `Explicit resend via ${entry.source.label} to ${route.delivery.targets.map((target) => `${target.recipientKey} (${target.agentId})`).join(", ")}. The original may already have reached these destinations.` : `Held / unrouted: ${route?.kind === "held" ? route.unresolved.join(" / ") : "the original destination has no approved mapping"}. No publisher fallback.`}</p>
+              <p className="text-xs text-muted-foreground">{route?.kind === "publisher" ? `Sends it again to ${entry.source.label}.` : route?.kind === "recipients" ? `Sends it again through ${entry.source.label} to ${route.delivery.targets.map((target) => target.recipientKey).join(", ")}. The first one may already have arrived.` : `Kept private, not sent: ${route?.kind === "held" ? route.unresolved.join(" / ") : "the first recipient"} isn't connected. It isn't sent anywhere else.`}</p>
               <button type="button" disabled={busy || !routed} className={buttonClass} onClick={() => onSend(message.text, message.messageId)}>Resend message</button>
             </div>}
           </li>;
@@ -86,8 +86,8 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, onSend
           return <div key={message.responseId} className="rounded-lg bg-muted/30 p-3 text-sm"><p className="whitespace-pre-wrap">{message.text}</p><p className="text-xs">Message saved · {new Date(message.createdAt).toLocaleString()}{handling?.acknowledgement && " · Publisher received"}{handling?.outcome && ` · Publisher outcome ${handling.outcome.phase}`}</p><p className="text-xs text-muted-foreground">Logical recipient delivery: not reported. This message is not a question decision.</p></div>;
         })}
       </section>}
-      <p className="text-xs text-muted-foreground">An explicit resend creates a new immutable message. An unconfirmed original may already have arrived.</p>
-      <label className="block">Message<textarea aria-label="Card message" value={text} onInput={(event) => setText(event.currentTarget.value)} disabled={closed || busy} className="mt-2 min-h-20 w-full rounded-xl border border-border bg-background p-3 text-sm" /></label>
+      <p className="text-xs text-muted-foreground">Sending again creates a new message. A message that wasn't confirmed may already have arrived.</p>
+      <label className="block text-[13px] font-semibold">Message<textarea aria-label="Card message" value={text} onInput={(event) => setText(event.currentTarget.value)} disabled={closed || busy} className={`${fieldClass} min-h-20`} /></label>
       <button type="button" className={buttonClass} disabled={closed || busy || !text.trim()} onClick={() => { void onSend(text).then((saved) => { if (saved) setText(""); }); }}>Send message</button>
     </section>}
   </div>;
