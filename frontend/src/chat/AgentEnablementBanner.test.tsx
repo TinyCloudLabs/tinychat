@@ -94,13 +94,17 @@ describe("Settings agent controls", () => {
   it("shows both reconnect and disconnect while connected", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} />);
     expect(html).toContain("Reconnect agent"); expect(html).toContain("Disconnect agent");
-    // What access covers moved off the controls: a one-line InfoTip on the
-    // Settings card's title, and How it works → Agent access.
     expect(html).toContain('href="/chat/about#agent-access"');
-    const settings = readFileSync(join(import.meta.dir, "SettingsPage.tsx"), "utf8");
-    const card = settings.slice(settings.indexOf('title="Agent access"'), settings.indexOf("<AgentAccessControls"));
-    expect(card).toContain("<InfoTip");
-    expect(card).toContain("Public web search stays available.");
+  });
+  it("gives an MCP account no Disconnect button, since the MCP cannot revoke, and says when access ends only while connected", () => {
+    const connected = renderToStaticMarkup(<AgentAccessControls {...props} mcp />);
+    expect(connected).toContain("Reconnect agent");
+    expect(connected).not.toContain("Disconnect agent"); expect(connected).not.toContain("Retry disconnect");
+    expect(connected).toContain("This access ends 30 days after you connected.");
+    const unknown = renderToStaticMarkup(<AgentAccessControls {...props} mcp capability="available" status={null} />);
+    expect(unknown).not.toContain("Retry disconnect"); expect(unknown).not.toContain("Disconnect agent");
+    const notConnected = renderToStaticMarkup(<AgentAccessControls {...props} mcp capability="available" status="none" />);
+    expect(notConnected).toContain("Connect agent"); expect(notConnected).not.toContain("This access ends");
   });
   it("shows Connect after confirmed disconnection and keeps failures distinct", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status="none" />);

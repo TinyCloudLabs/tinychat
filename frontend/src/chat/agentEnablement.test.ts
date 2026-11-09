@@ -64,7 +64,20 @@ describe("probeAgentCapability", () => {
       status: "expired",
       revision: null,
       probeFailed: false,
+      mcp: false,
     });
+  });
+
+  it("reports an account served by the MCP, and leaves it unknown when the probe fails", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ status: "none", mcp: { serviceDid: "did:key:z6MkService" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    expect(await probeAgentSession("https://api.test", "tok")).toMatchObject({ status: "none", mcp: true });
+
+    globalThis.fetch = (async () => new Response(null, { status: 502 })) as typeof fetch;
+    expect((await probeAgentSession("https://api.test", "tok")).mcp).toBeUndefined();
   });
 
   it("distinguishes a disabled route from an unhealthy backend probe", async () => {

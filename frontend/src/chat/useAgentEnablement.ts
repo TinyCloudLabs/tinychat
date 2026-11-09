@@ -29,6 +29,8 @@ export interface AgentSessionProbe {
   status: AgentSessionStatus | null;
   revision: string | null;
   probeFailed: boolean;
+  /** True when the backend serves this account through the MCP; absent when the probe could not tell. */
+  mcp?: boolean;
 }
 export interface AgentAccessState extends AgentSessionProbe {
   enableError: string | null;
@@ -76,6 +78,7 @@ export async function probeAgentSession(backendUrl: string, token: string): Prom
       status: status === "active" && !isActiveAgentBundle(body) ? "stale" : status,
       revision: typeof body.revision === "string" ? body.revision : null,
       probeFailed: false,
+      mcp: Boolean(body.mcp?.serviceDid),
     };
   } catch { return { capability: "unavailable", status: null, revision: null, probeFailed: true }; }
 }

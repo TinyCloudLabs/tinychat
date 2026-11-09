@@ -193,7 +193,7 @@ export function SettingsPage({
             title="Agent access"
             aside={
               <InfoTip label="About agent access" className={TITLE_TIP}>
-                Private agent memory and meeting access. Public web search stays available.
+                Lets the agent read your meeting transcripts. Public web search works without it.
               </InfoTip>
             }
           >
