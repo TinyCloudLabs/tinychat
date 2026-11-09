@@ -74,8 +74,15 @@ export interface HomeFeedSnapshot {
 export interface HeldAnswerOutcome {
   sourceId: string;
   cardId: string;
-  /** true: sent now, with its original responseId. false: not sent, because the request changed. */
-  sent: boolean;
+  /**
+   * "sent": sent now, with its original responseId. Not sent: "replaced", a newer revision changed
+   * the request; "closed", the agent closed, ended or expired it.
+   */
+  outcome: "sent" | "replaced" | "closed";
+  /** The chosen option's label on the answered revision; absent for an answer in words. */
+  choiceLabel?: string;
+  /** "replaced": the answered revision, which stays on screen with the refusal until the owner moves on. */
+  answered?: HomeFeedEntry;
 }
 
 export interface HomeFeedSaveOptions {

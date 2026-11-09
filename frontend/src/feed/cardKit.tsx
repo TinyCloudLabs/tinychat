@@ -202,10 +202,23 @@ export const UNDO_SECONDS = 5;
 /** What a card says about an answer that was waiting to be sent when the page closed. */
 export const HELD_ANSWER_COPY = {
   /** It was sent at this launch, later than the owner chose it. */
-  sent: "Sent when you came back.",
-  /** The request changed before it could be sent, so it wasn't; the options are live again. */
-  notSent: "Your answer wasn't sent: this request changed.",
+  sent: "Sent when you opened Home again.",
 } as const;
+
+/** An answer that was never sent: the countdown label of an answer in words, and why the card refused. */
+export const NOT_SENT_COPY = {
+  yourAnswer: "your answer",
+  changed: "This card changed. Answer the newer version.",
+} as const;
+
+/**
+ * "Not sent: {label}." for an answer that was never sent, during its countdown or from the
+ * page-close outbox. `changed` adds why, for a card a newer version replaced; a closed card
+ * already says it ended.
+ */
+export function NotSent({ label, changed = false }: { label: string; changed?: boolean }) {
+  return <span className="text-foreground">Not sent: {label === NOT_SENT_COPY.yourAnswer ? label : <b className="font-semibold">{label}</b>}.{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
+}
 
 /**
  * The list's "send now" registry: when the owner leaves the view (switches segment),

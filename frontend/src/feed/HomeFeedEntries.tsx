@@ -3,13 +3,13 @@ import { SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
-import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
+import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { threadSize, ThreadView, type ThreadItem } from "./HomeCardThread";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
+import { AnsweredPanel, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
@@ -238,11 +238,11 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   };
   const reply = () => {
     if (stale || saving || !text.trim()) return;
-    countdown.start("your answer", (pageClosing) => void save(undefined, pageClosing));
+    countdown.start(NOT_SENT_COPY.yourAnswer, (pageClosing) => void save(undefined, pageClosing));
   };
   return <div>
     {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-      {countdown.pending.label === "your answer" ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
+      {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
     </PendingAnswer> : <>
       {saved && !asking && <ResponseStatus entry={target} focusOnMount={justSaved} />}
       {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
@@ -290,8 +290,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   const [awake, setAwake] = useState<ReadonlySet<string>>(() => new Set());
   // Answers not sent because the card was replaced during their countdown, by card key.
   const [refused, setRefused] = useState<ReadonlyMap<string, string>>(() => new Map());
-  // Answers held when the page closed and settled at this launch: sent (true) or not (false), by card.
-  const [heldOutcomes, setHeldOutcomes] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  // Answers held when the page closed and settled at this launch, by card.
+  const [heldOutcomes, setHeldOutcomes] = useState<ReadonlyMap<string, HeldAnswerOutcome>>(() => new Map());
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
@@ -350,7 +350,10 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
             flushed = true;
             void source.flushHeldAnswers().then((outcomes) => {
               if (!alive || !outcomes.length) return;
-              setHeldOutcomes(new Map(outcomes.map((outcome) => [JSON.stringify([outcome.sourceId, outcome.cardId]), outcome.sent])));
+              setHeldOutcomes(new Map(outcomes.map((outcome) => [JSON.stringify([outcome.sourceId, outcome.cardId]), outcome])));
+              // A replaced card's answer stays on screen with its refusal, as when a countdown is refused.
+              const replaced = outcomes.find((outcome) => outcome.answered)?.answered;
+              if (replaced) setActive(replaced);
               void refresh();
             }).catch(() => { /* Held answers stay held for the next launch. */ });
           }
@@ -533,6 +536,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   function release(entry: HomeFeedEntry) {
     const key = lineageKey(entry);
     setRefused((current) => { const next = new Map(current); next.delete(key); return next; });
+    setHeldOutcomes((current) => { const next = new Map(current); next.delete(JSON.stringify([entry.source.sourceId, entry.state.card.cardId])); return next; });
     setSticky((current) => { const next = new Map(current); next.delete(key); return next; });
     if (keyOf(entry) === activeKey) setActive(null);
   }
@@ -567,8 +571,9 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   }
   function renderCard(entry: HomeFeedEntry, retained = false) {
     const key = lineageKey(entry);
-    const refusedLabel = refused.get(key);
-    const heldSent = retained ? undefined : heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
+    const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
+    const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : NOT_SENT_COPY.yourAnswer;
+    const refusedLabel = refused.get(key) ?? (retained && held?.answered && keyOf(held.answered) === keyOf(entry) ? heldLabel : undefined);
     const onRefused = (label: string) => setRefused((current) => new Map(current).set(key, label));
     const context = contextFor(entry);
     const unsupported = isTypedPayload(entry) && !context;
@@ -582,9 +587,10 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
         {resting && <QuietRow><button type="button" className={quietClass} onClick={() => { engage(entry); setAwake((current) => new Set(current).add(key)); }}>Answer now</button></QuietRow>}
         {!resting && <>
         {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
-          ? <span className="text-foreground">Not sent: {refusedLabel === "your answer" ? "your answer" : <b className="font-semibold">{refusedLabel}</b>}. This card changed. Answer the newer version.</span>
+          ? <NotSent label={refusedLabel} changed />
           : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
-        {heldSent !== undefined && <p role="status" className={`mt-3 text-[13px] ${heldSent ? "text-muted-foreground" : "text-foreground"}`}>{heldSent ? HELD_ANSWER_COPY.sent : HELD_ANSWER_COPY.notSent}</p>}
+        {!retained && held?.outcome === "sent" && <p role="status" className="mt-3 text-[13px] text-muted-foreground">{HELD_ANSWER_COPY.sent}</p>}
+        {!retained && held?.outcome === "closed" && <p role="alert" className="mt-3 text-[13px]"><NotSent label={heldLabel} /></p>}
         <ReportLink entry={entry} />
         {context
           ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} stale={retained} reference={reference} onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />

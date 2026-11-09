@@ -13,6 +13,7 @@ import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { useLocalThreadStorage } from "../lib/threadStore";
 import { heldAnswerKey } from "./answerOutbox";
+import { HELD_ANSWER_COPY, NOT_SENT_COPY } from "./cardKit";
 import { createHomeFeedSource, HOME_FEED_RESOURCE } from "./feedStore";
 import { FeedViewEntries } from "./FeedView";
 import { archivePreparedOwnerBundle } from "./sitrepArchiveStore";
@@ -367,7 +368,7 @@ test("a held answer to an unanswered card goes to the reply-only revision that f
   const entry = JSON.parse(held!) as { responseId: string };
   expect((await stored(agent)).map((row) => [row.responseId, row.revision, row.choiceId])).toEqual([[entry.responseId, 2, "go"]]);
   expect(outboxKeys()).toEqual([]);
-  expect(relaunched.host.textContent).toContain("Sent when you came back.");
+  expect(relaunched.host.textContent).toContain(HELD_ANSWER_COPY.sent);
 });
 
 test("a plain card's agent replies are read across stored revisions, each timed by the revision that first carried it", async () => {
@@ -442,7 +443,7 @@ test("closing the page mid-countdown sends at once and holds only the pending an
   expect(outboxKeys()).toEqual([]);
   const rows = await stored(agent);
   expect(rows.map((row) => [row.responseId, row.choiceId])).toEqual([[entry.responseId, "go"]]);
-  expect(view.host.textContent).not.toContain("Sent when you came back.");
+  expect(view.host.textContent).not.toContain(HELD_ANSWER_COPY.sent);
 });
 
 test("an answer the closing page couldn't write is sent at the next launch with the same responseId", async () => {
@@ -463,11 +464,11 @@ test("an answer the closing page couldn't write is sent at the next launch with 
   const rows = await stored(agent);
   expect(rows.map((row) => [row.responseId, row.revision, row.choiceId])).toEqual([[entry.responseId, 1, "go"]]);
   expect(outboxKeys()).toEqual([]);
-  expect(card(relaunched.host, "Book the Thursday flight?").textContent).toContain("Sent when you came back.");
+  expect(card(relaunched.host, "Book the Thursday flight?").textContent).toContain(HELD_ANSWER_COPY.sent);
   expect(relaunched.host.textContent).toContain("You chose Go.");
 });
 
-test("a held answer whose card was replaced is not sent at the next launch, and the options are live again", async () => {
+test("a held answer whose card was replaced is not sent at the next launch: the answered card refuses it, as during the countdown", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("close-replaced");
   value(await publishFeedCard(agent.output, plainCard()));
   const first = owner.fresh(); const view = await mount(first);
@@ -482,9 +483,39 @@ test("a held answer whose card was replaced is not sent at the next launch, and 
   await next.settle();
   expect(await stored(agent)).toEqual([]);
   expect(outboxKeys()).toEqual([]);
-  const replaced = card(relaunched.host, "Book the Friday flight?");
-  expect(replaced.textContent).toContain("Your answer wasn't sent: this request changed.");
-  expect(option(replaced, "Go").disabled).toBe(false);
+  const answered = card(relaunched.host, "Book the Thursday flight?");
+  expect(answered.textContent).toContain(`Not sent: Go. ${NOT_SENT_COPY.changed}`);
+  expect(option(answered, "Go").disabled).toBe(true);
+  await click(next, button(answered, "Show the newer version"));
+  const newer = card(relaunched.host, "Book the Friday flight?");
+  expect(newer.textContent).not.toContain("Not sent");
+  expect(option(newer, "Go").disabled).toBe(false);
+});
+
+test("a held answer whose request the agent closed is not sent: the closed card says so and offers no way to answer", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("close-closed");
+  const record = syntheticRecord("ask");
+  const asked = typedCard(record);
+  value(await publishFeedCard(agent.output, asked));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Quick option").click());
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  value(await publishFeedCard(agent.output, { ...asked, revision: 2, issuanceId: "typed-card-closed", payload: { sitrep: { version: 1, record: { ...record, status: "expired", expiredAt: SITREP_NOW } } } }));
+
+  const next = owner.fresh(); const relaunched = await mount(next);
+  await next.settle();
+  expect(await stored(agent)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+  const closed = card(relaunched.host, String(record.title));
+  const line = closed.querySelector('[role="alert"]')?.textContent;
+  expect(line).toBe("Not sent: Quick option.");
+  expect(closed.textContent).toContain("Closed");
+  expect(closed.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
+  expect(closed.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+  expect([...closed.querySelectorAll("button")].some((node) => ["Fine, go ahead", "Answer in your own words", "Send answer"].includes(node.textContent?.trim() ?? ""))).toBe(false);
 });
 
 for (const kind of ["Change answer", "Fine, go ahead"] as const) {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, cardTime, commentCopy, ErrorLine, fieldClass as inputClass, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
+import { AnsweredPanel, cardTime, commentCopy, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
@@ -238,13 +238,13 @@ export function SitrepCard(props: Props) {
 
     {record.kind === "ask" && <>
       {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-        {countdown.pending.label === "your answer" ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
+        {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
       </PendingAnswer>}
       {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
       {!countdown.pending && asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => { if (!stale) countdown.start(optionLabel(choice) ?? "", (pageClosing) => void tap("answer", choice, pageClosing)); }} />}
       {!countdown.pending && asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => countdown.start(optionLabel(record.default) ?? "its plan", (pageClosing) => void tap("accept-default", record.default!, pageClosing))}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
-      {!countdown.pending && asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); if (!stale && text.trim()) countdown.start("your answer", (pageClosing) => void perform(() => askAnswer("answer", undefined, pageClosing), ANSWER_FAILED)); }}>
+      {!countdown.pending && asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); if (!stale && text.trim()) countdown.start(NOT_SENT_COPY.yourAnswer, (pageClosing) => void perform(() => askAnswer("answer", undefined, pageClosing), ANSWER_FAILED)); }}>
         <label className="block"><span className="sr-only">Your answer</span><textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24 resize-y`} /></label>
         <button className={`mt-2 ${buttonClass}`} disabled={busy || stale || !text.trim()}>{busy && !tapped ? "Sending…" : "Send answer"}</button>
       </form>}

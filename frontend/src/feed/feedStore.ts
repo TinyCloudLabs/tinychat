@@ -69,6 +69,13 @@ async function allResponses(responses: FeedReadDatabase): Promise<FeedResponse[]
 /** The feed's definitive no to a write (invalid for this card), as opposed to a failed transport. */
 class RefusedWrite extends Error {}
 
+/** An option's label as the answered revision published it (a typed question's, or the card's choice). */
+function optionLabel(card: FeedCard, choiceId: string): string | undefined {
+  const typed = parseSitrepCardPayload(card.payload?.sitrep);
+  const options = typed?.record.kind === "ask" ? typed.record.options : card.choices ?? [];
+  return options.find((option) => option.id === choiceId)?.label;
+}
+
 /** The outbox entry for an answer: only what rebuilds it (see answerOutbox.ts). */
 function heldAnswerOf(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload): HeldAnswer {
   const data = payload?.type === "sitrep.answer" && payload.data && typeof payload.data === "object" && !Array.isArray(payload.data) ? payload.data : undefined;
@@ -236,24 +243,22 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
    * Where a held answer may still land: its own issuance while that is the card's latest and
    * still open. A plain card whose later revisions only appended agent replies is the same
    * request: an unanswered card's answer moves to the latest revision, and a follow-up stays
-   * on the issuance it changes. Anything else changed the request: null, and nothing is sent.
+   * on the issuance it changes. Otherwise nothing is sent: the agent closed, ended or expired
+   * the request ("closed"), or a newer revision changed it ("replaced").
    */
-  async function heldAnswerTarget(source: FeedSource, output: FeedReadDatabase, held: HeldAnswer): Promise<FeedCardIdentity | null> {
-    const latest = unwrap(await listFeedCards(output)).find((card) => card.cardId === held.cardId);
-    if (!latest || !latest.needsResponse) return null;
-    const typed = parseSitrepCardPayload(latest.payload?.sitrep);
-    if (typed && (typed.record.status === "expired" || isClosed(typed.record))) return null;
-    if (sameIdentity(latest, held)) return latest;
-    if (typed || latest.payload?.sitrepThread !== undefined) return null;
-    const revisions = (await cardHistory(output)).filter((card) => card.cardId === held.cardId).sort((a, b) => a.revision - b.revision);
+  function heldAnswerTarget(source: FeedSource, held: HeldAnswer, revisions: readonly FeedCard[], latest: FeedCard | undefined): FeedCardIdentity | "closed" | "replaced" {
     const answered = revisions.find((card) => sameIdentity(card, held));
-    if (!answered) return null;
+    if (!latest || !answered || !latest.needsResponse) return "closed";
+    const typed = parseSitrepCardPayload(latest.payload?.sitrep);
+    if (typed && isClosed(typed.record)) return "closed";
+    if (sameIdentity(latest, held)) return latest;
+    if (typed || latest.payload?.sitrepThread !== undefined) return "replaced";
     let previous = answered;
     for (const card of revisions.filter((candidate) => candidate.revision > answered.revision)) {
-      if (!isReplyOnlyRevision(storedRevisionEntry(source, previous), storedRevisionEntry(source, card))) return null;
+      if (!isReplyOnlyRevision(storedRevisionEntry(source, previous), storedRevisionEntry(source, card))) return "replaced";
       previous = card;
     }
-    if (!sameIdentity(previous, latest)) return null;
+    if (!sameIdentity(previous, latest)) return "replaced";
     return held.supersedesResponseId ? answered : latest;
   }
 
@@ -433,18 +438,30 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         try {
           // The write started as the page closed may have landed: then it is already sent.
           if ((await allResponses(responses)).some((response) => response.responseId === held.responseId)) { releaseAnswer(space, held); continue; }
-          const target = await heldAnswerTarget(source, output, held);
-          if (!target) { releaseAnswer(space, held); outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, sent: false }); continue; }
+          const revisions = (await cardHistory(output)).filter((card) => card.cardId === held.cardId).sort((a, b) => a.revision - b.revision);
+          const latest = unwrap(await listFeedCards(output)).find((card) => card.cardId === held.cardId);
+          const answered = revisions.find((card) => sameIdentity(card, held));
+          const label = held.choiceId && answered ? optionLabel(answered, held.choiceId) : undefined;
+          const refusal = (outcome: "closed" | "replaced"): HeldAnswerOutcome => ({
+            sourceId: held.sourceId, cardId: held.cardId, outcome,
+            ...(label ? { choiceLabel: label } : {}),
+            ...(outcome === "replaced" && answered ? { answered: storedRevisionEntry(source, answered) } : {}),
+          });
+          const target = heldAnswerTarget(source, held, revisions, latest);
+          if (typeof target === "string") { releaseAnswer(space, held); outcomes.push(refusal(target)); continue; }
           const state = unwrap(await getFeedCardState(output, responses, target));
-          const rebuilt = rebuildAnswer(held, state.card);
-          await saveResponse({ source, state, view: { sourceId: source.sourceId, cardId: target.cardId, revision: target.revision, issuanceId: target.issuanceId } }, rebuilt.response, rebuilt.payload);
+          try {
+            const rebuilt = rebuildAnswer(held, state.card);
+            await saveResponse({ source, state, view: { sourceId: source.sourceId, cardId: target.cardId, revision: target.revision, issuanceId: target.issuanceId } }, rebuilt.response, rebuilt.payload);
+          } catch (error) {
+            // The feed's definitive no: the request no longer takes this answer.
+            if (error instanceof RefusedWrite) { releaseAnswer(space, held); outcomes.push(refusal("closed")); continue; }
+            throw error;
+          }
           releaseAnswer(space, held);
-          outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, sent: true });
-        } catch (error) {
-          // A failed transport keeps the answer for the next launch; a definitive refusal clears it.
-          if (!(error instanceof RefusedWrite)) continue;
-          releaseAnswer(space, held);
-          outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, sent: false });
+          outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "sent" });
+        } catch {
+          // A failed transport keeps the answer for the next launch.
         }
       }
       return outcomes;
