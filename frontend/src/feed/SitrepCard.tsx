@@ -442,6 +442,8 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   }
   const ends = requestEnds(approval.expiresAt, now);
   const link = approval.url && safeUrl(approval.url) ? new URL(approval.url) : undefined;
+  // "Allows …" belongs to permission requests (an OpenKey link or a code), never to a go/no-go.
+  const scoped = approval.approvalType !== "go" && (approval.codeExpected || (!!link && /openkey/i.test(link.hostname)));
   // The code box waits behind "Got a code? Paste it": reviewing comes first.
   const codeShown = visibleForm && approval.codeExpected && (codeOpen || code.length > 0 || busy);
   const action = visibleForm && !approval.codeExpected;
@@ -449,7 +451,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
     {approval.warning && <p className="text-sm font-medium text-warning">{approval.warning}</p>}
-    {!expanded && approval.permissions && <p className="line-clamp-2 text-sm">Allows {approval.permissions}</p>}
+    {!expanded && approval.permissions && scoped && <p className="line-clamp-2 text-sm">Allows {approval.permissions}</p>}
     <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
       {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className={action ? buttonClass : primaryClass}>{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
       {action && <button type="button" disabled={disabled} className={approval.approvalType === "go" ? primaryClass : buttonClass} onClick={() => void submit()}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}

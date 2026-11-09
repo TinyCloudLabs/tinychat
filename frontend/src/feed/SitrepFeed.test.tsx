@@ -209,6 +209,23 @@ test("typed code entry never trims invalid whitespace or copies a valid code int
   expect(view.host.textContent).not.toContain("SYNTHETIC-CODE");
 });
 
+test("\"Allows …\" shows on a collapsed approval with an OpenKey link or a code, never on a go/no-go", async () => {
+  const permissions = "read-only access to the synthetic calendar";
+  const cases: [Record<string, unknown>, boolean][] = [
+    [{ approvalType: "openkey", url: "https://openkey.so/delegate?fixture=synthetic", codeExpected: false }, true],
+    [{ approvalType: "claude", url: "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256&state=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", target: "Synthetic seat", codeExpected: true }, true],
+    [{ approvalType: "secret", url: "https://secrets.tinycloud.xyz/request?fixture=synthetic", name: "SYNTHETIC_KEY", codeExpected: false }, false],
+    [{}, false], // the synthetic approval is a go
+  ];
+  for (const [change, shown] of cases) {
+    const record: Record<string, unknown> = { ...syntheticRecord("approval"), ...change, permissions };
+    if (record.approvalType !== "go") delete record.approvalKind;
+    const view = await mount(typedFixture(record).source);
+    expect(view.host.textContent?.includes(`Allows ${permissions}`)).toBe(shown);
+    await view.unmount();
+  }
+});
+
 test("a task tick persists as owner state and an incomplete task stays in Needs action after reload", async () => {
   const fixture = typedFixture(syntheticRecord("task"));
   const view = await mount(fixture.source);
