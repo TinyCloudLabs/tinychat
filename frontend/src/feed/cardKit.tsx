@@ -199,7 +199,7 @@ function canonical(value: unknown): string {
  * same agent, a higher revision, every card field and payload key structurally identical
  * (canonical JSON) except `payload.replies`, and those replies a strict append (the first k
  * identical, at least one more). The single exception: the revision that adds a "post"
- * card's first reply may also change `payload.render` from "post" to "thread". Revision,
+ * card's first reply may also change `payload.render` from "post" (or absent) to "thread". Revision,
  * issuance and createdAt are the revision's own identity and time, so they are not compared.
  */
 export function isReplyOnlyRevision(previous: HomeFeedEntry, next: HomeFeedEntry): boolean {
@@ -212,8 +212,9 @@ export function isReplyOnlyRevision(previous: HomeFeedEntry, next: HomeFeedEntry
   const { replies: beforeReplies = [], ...beforeOthers } = beforePayload;
   const { replies: afterReplies, ...afterOthers } = afterPayload;
   if (!Array.isArray(beforeReplies) || !Array.isArray(afterReplies) || afterReplies.length <= beforeReplies.length) return false;
-  // The one allowed extra change: a "post" card's first reply turns it into a "thread".
-  const firstReply = beforeOthers.render === "post" && afterOthers.render === "thread" && beforeReplies.length === 0;
+  // The one allowed extra change: a "post" card's first reply turns it into a "thread". An
+  // absent render (or payload) is a post here, and only here.
+  const firstReply = (beforeOthers.render === undefined || beforeOthers.render === "post") && afterOthers.render === "thread" && beforeReplies.length === 0;
   const { render: _beforeRender, ...beforeRest } = beforeOthers;
   const { render: _afterRender, ...afterRest } = afterOthers;
   if (firstReply ? canonical(beforeRest) !== canonical(afterRest) : canonical(beforeOthers) !== canonical(afterOthers)) return false;
