@@ -73,10 +73,27 @@ An agent chat turn is kept within the remaining credit budget. Two env vars cont
 
 Invalid values log a warning and fall back to the default. A turn stopped by the in-turn check ends with the stream error code `budget_exhausted`; text produced before the stop remains visible.
 
-Agent turns record observed credit usage before sending success or provider-error
+The two env vars above drive the in-turn monitor of the Eliza `/tasks` path only. Every path (including that one) is also bounded by the reply allowance below.
+
+Agent turns settle observed credit usage before sending success or provider-error
 terminal frames and ending the response. An immediate follow-up `/api/chat` request
 uses that updated usage and returns HTTP 402 `credit_budget_exceeded` when the
-budget is exhausted. This does not clamp a finishing answer's charge to the cap.
+budget is exhausted.
+
+## One reply, one allowance
+
+A reply's **allowance** is the credits the account still had in its window when the reply was admitted (`limit − used`, or the ledger's `credit_limit − committed_credits` when the ledger is authoritative). The user is never charged above it, and never above what is left of that window when the reply settles.
+
+- **Stop at the limit.** On the backend-orchestrated paths (`orchestrateToolCalling`: the existing tool loop and the meeting turn) every provider call is capped before it is made. A `ReplyBudget` (`backend/src/billing/reply-budget.ts`) prices the prompt from the request's JSON length (an upper bound, 3 chars per token), subtracts the credits already spent in this reply across interpretation, tool rounds, synthesis and repair, and sends the rest as the provider `max_tokens` (never above a call's own cap). An unaffordable call is not made: the reply ends with `budget_exhausted`, no tool runs after the allowance is used up, and `finish_reason: "length"` under the budget's cap also ends as `budget_exhausted`. Text already streamed stays visible. Whether the provider counts reasoning tokens against `max_tokens` is model-specific; where it does not, only the settlement clamp bounds the charge.
+- **Settle once.** `settleReply` (`backend/src/billing/settle.ts`) is the only place a reply becomes a charge (agent chat, Eliza tasks, `/api/chat`). It runs once per reply, before the terminal frame, and charges `min(observed credits, allowance, what is left of the window the reply started in)`. Usage observed after the clamp, or above it, is platform cost: it appears only in the `[billing] reply settled` log line (`rawCredits` vs `charged`).
+- **Free when nothing was delivered.** A reply that fails before any answer content reached the user (error notices do not count) is charged 0 and writes no ledger record. A reply stopped before any provider call used nothing and costs 0. A reply stopped at the limit after a provider call is charged even if nothing was delivered, so a free retry cannot loop at platform cost. A timed-out reply is charged what it used, at most its allowance, with or without output. A client-cancelled reply is charged like a finished one.
+- **Window at reply start.** The charge goes to the window the reply started in. If that window has rolled over by settlement, the in-memory record already belongs to a newer window and is left untouched (one record per address); the old window's charge still reaches the ledger under the old window key, clamped to the allowance only. `settleReply` returns the window actually charged (`windowKind`, `windowStart`).
+- **One ledger record per reply.** The ledger `record_id` is the reply's execution id (generated per reply on every path), so a replayed enqueue is a no-op at the ledger.
+- **No mid-stream stop on `/api/chat`.** It is clamped and free on early failure, but it has no allowance-based `max_tokens` cap (only its client-supplied `max_output_tokens`).
+
+### Single instance
+
+The in-memory usage counter, each reply's allowance and the settlement clamp assume **one backend instance** (see `docs/connector-webhooks-single-instance.md`). With a second instance each keeps its own counter, so the clamp can read stale and two replies on different instances could both be charged up to the limit. Running more than one instance is a design decision, not a config change: the fix would be an atomic conditional debit in the ledger. `backend/src/__tests__/single-instance-credit-counter.test.ts` fails if `docker-compose.phala.yml` defines more than one `tinychat-backend` or replicates it.
 
 ## Paid windows are anchored, not calendar
 
