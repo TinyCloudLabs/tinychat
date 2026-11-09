@@ -198,8 +198,9 @@ function canonical(value: unknown): string {
  * True only when `next` is `previous` plus appended agent replies: the same card from the
  * same agent, a higher revision, every card field and payload key structurally identical
  * (canonical JSON) except `payload.replies`, and those replies a strict append (the first k
- * identical, at least one more). Revision, issuance and createdAt are the revision's own
- * identity and time, so they are not compared.
+ * identical, at least one more). The single exception: the revision that adds a "post"
+ * card's first reply may also change `payload.render` from "post" to "thread". Revision,
+ * issuance and createdAt are the revision's own identity and time, so they are not compared.
  */
 export function isReplyOnlyRevision(previous: HomeFeedEntry, next: HomeFeedEntry): boolean {
   if (previous.source.sourceId !== next.source.sourceId || previous.source.agentDid !== next.source.agentDid) return false;
@@ -210,8 +211,12 @@ export function isReplyOnlyRevision(previous: HomeFeedEntry, next: HomeFeedEntry
   if (canonical(beforeFields) !== canonical(afterFields)) return false;
   const { replies: beforeReplies = [], ...beforeOthers } = beforePayload;
   const { replies: afterReplies, ...afterOthers } = afterPayload;
-  if (canonical(beforeOthers) !== canonical(afterOthers)) return false;
   if (!Array.isArray(beforeReplies) || !Array.isArray(afterReplies) || afterReplies.length <= beforeReplies.length) return false;
+  // The one allowed extra change: a "post" card's first reply turns it into a "thread".
+  const firstReply = beforeOthers.render === "post" && afterOthers.render === "thread" && beforeReplies.length === 0;
+  const { render: _beforeRender, ...beforeRest } = beforeOthers;
+  const { render: _afterRender, ...afterRest } = afterOthers;
+  if (firstReply ? canonical(beforeRest) !== canonical(afterRest) : canonical(beforeOthers) !== canonical(afterOthers)) return false;
   return beforeReplies.every((reply, index) => canonical(reply) === canonical(afterReplies[index]));
 }
 

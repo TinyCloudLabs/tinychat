@@ -61,3 +61,16 @@ test("anything else is not reply-only", () => {
   const extraKey = revision(2, ["one"]); extraKey.state.card.payload = { ...extraKey.state.card.payload, render: "post" };
   expect(isReplyOnlyRevision(revision(1), extraKey)).toBe(false); // another payload key changed
 });
+
+test("a post card's first reply may turn it into a thread, and nothing else may change with it", () => {
+  const post = (replies?: string[], body?: string) => { const entry = revision(1, replies, body ? { body } : {}); entry.state.card.payload = { ...entry.state.card.payload, render: "post" }; return entry; };
+  const as = (entry: HomeFeedEntry, render: string, revisionNumber = 2) => { const next = structuredClone(entry); next.state.card.revision = revisionNumber; next.state.card.payload = { ...next.state.card.payload, render }; return next; };
+  expect(isReplyOnlyRevision(post(), revision(2, ["one"]))).toBe(true); // absent → 1
+  expect(isReplyOnlyRevision(post([]), revision(2, ["one"]))).toBe(true); // [] → 1
+  expect(isReplyOnlyRevision(revision(1), as(revision(1, ["one"]), "post"))).toBe(false); // thread → post
+  expect(isReplyOnlyRevision(post(), revision(2))).toBe(false); // post → thread, no reply
+  expect(isReplyOnlyRevision(post(), revision(2, ["one"], { body: "Changed" }))).toBe(false); // plus a body change
+  expect(isReplyOnlyRevision(post(["one"]), revision(2, ["one", "two"]))).toBe(false); // previous already had replies
+  expect(isReplyOnlyRevision(post(), as(revision(1, ["one"]), "link"))).toBe(false); // post → link
+  expect(isReplyOnlyRevision(revision(1), as(revision(1, ["one"]), "link"))).toBe(false); // thread → link
+});

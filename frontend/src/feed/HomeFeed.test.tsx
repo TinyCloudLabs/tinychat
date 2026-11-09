@@ -744,3 +744,18 @@ test("a written answer counting down when any other revision arrives is refused 
   expect(view.host.querySelector('[role="alert"]')?.textContent).toContain("Not sent: your answer. This card changed. Answer the newer version.");
   expect(answer(view.host).value).toBe("Hold it until Friday");
 });
+
+test("a post card's first reply (post → thread) swaps in place and keeps the answer", async () => {
+  const entry = plain();
+  entry.state.card.payload = { render: "post" };
+  const store = persistence([entry]);
+  const view = await mount(store.source());
+  await choose(view.host, "Hold");
+  store.reply("plain-one", "Noted, holding.", "2026-10-28T12:10:00Z");
+  await act(async () => store.notify());
+  expect(store.durable.entries[0]!.state.card.payload?.render).toBe("thread");
+  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
+  expect(status(view.host)).toContain("You chose Hold.");
+  expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Noted, holding.");
+  expect(writes(store.responses)).toEqual(["1:hold"]);
+});
