@@ -40,15 +40,16 @@ export function clientHasReplication(tcw: TinyCloudWeb): boolean {
   try { return tcw.replication !== undefined; } catch { return false; }
 }
 
-function clearCompletedMarkers(store: MarkerStore | undefined, principal: string): void {
+function clearCompletedMarkers(store: MarkerStore | undefined, principal: string): boolean {
   try {
+    if (store?.getItem(SDK_LOGOUT_MARKER_KEY) != null) return false;
     const copyPrincipal = store?.getItem(REPLICATION_COPY_KEY);
     if (copyPrincipal?.toLowerCase() === principal.toLowerCase()) {
       store?.removeItem(REPLICATION_COPY_KEY);
       store?.removeItem(REPLICATION_WIPE_PENDING_KEY);
     }
-    store?.removeItem(SDK_LOGOUT_MARKER_KEY);
-  } catch { /* A leftover marker only schedules a later cleanup attempt. */ }
+    return true;
+  } catch { return false; }
 }
 
 
@@ -72,7 +73,11 @@ export function signOutReplicaAware(tcw: TinyCloudWeb, deps: ReplicaSignOutDeps 
       return { ok: false, message: REPLICA_PURGE_FAILED_WARNING, code };
     }
     if (hasReplica) {
-      clearCompletedMarkers("store" in deps ? deps.store : browserMarkerStore(), tcw.did);
+      const store = "store" in deps ? deps.store : browserMarkerStore();
+      if (!clearCompletedMarkers(store, tcw.did)) {
+        markReplicationPurgeFailed("REPLICA_PURGE_FAILED");
+        return { ok: false, message: REPLICA_PURGE_FAILED_WARNING, code: "REPLICA_PURGE_FAILED" };
+      }
     }
     return { ok: true };
   })();

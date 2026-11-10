@@ -159,8 +159,8 @@ import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
-  restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
-  setNativeSessionActive, signInNative, signOutNative, type NativeSignInHints,
+  restoreNativeAtBoot, nativeRenewalServices, secretsAvailable, nativeSignOutPending,
+  setNativeSessionActive, setNativeSignOutPending, signInNative, signOutNative, type NativeSignInHints,
   type NativeSignInConfig,
   NATIVE_SIGN_OUT_WARNING,
 } from "./lib/openkeyNative";
@@ -355,6 +355,7 @@ export function App() {
     const accountDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
     if (tcw && clientHasReplication(tcw)) stopReplicationFill(tcw);
     historyPrefetch.clear();
+    clearBackgroundDrainRecord();
     uploadRunner.reset();
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
@@ -544,6 +545,9 @@ export function App() {
   // signal used to sign the user out here.
   const restoreSession = useCallback(async () => {
     if (restoreInFlightRef.current) return;
+    if (signOutInFlightRef.current) return;
+    const restoreEpoch = sessionEpochRef.current;
+    const mayCommitRestore = () => !signOutInFlightRef.current && sessionEpochRef.current === restoreEpoch;
     // Replication OFF for the stored account + a leftover local copy (or a pending wipe): shred its
     // keys, then erase it (once per page load, not awaited, no-op without a marker). An ON sign-in or
     // restore waits for it before building a replica. See lib/replication/replicationOffPurge.ts.
@@ -560,12 +564,22 @@ export function App() {
         // build is a one-time cleanup below, not something to restore.
         const boot = await restoreNativeAtBoot(nativeConfig,
           sessionStoreRef.current.hasSession() && !sessionStoreRef.current.isExpired());
+        if (!mayCommitRestore()) {
+          if (boot.kind === "restored") boot.tcw.cleanup();
+          return;
+        }
         if (boot.kind === "restored") {
           logSession("restore", "done");
           restoreRetryAfterRef.current = 0;
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
           setNativeSessionActive(true);
           const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
+          if (!mayCommitRestore()) {
+            nativeRenewalRef.current?.stop();
+            nativeRenewalRef.current = null;
+            nativeTcw.cleanup();
+            return;
+          }
           const accountDid = boot.tcw.did ?? `did:pkh:eip155:1:${boot.address}`;
           beginStorageAccountSession(nativeTcw, accountDid, nativeTcw.spaceId ?? null);
           associateStorageAccountClient(boot.tcw, storageScopeFor(nativeTcw)!);
@@ -575,6 +589,12 @@ export function App() {
           setSpaceId(nativeTcw.spaceId ?? null);
           setState("ready");
           void ensureTranscriptWriterDelegation({ tcw: nativeTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+          return;
+        }
+        if (boot.kind === "signOutPending") {
+          logSession("restore", "failed");
+          setError(NATIVE_SIGN_OUT_WARNING);
+          setState("recoverableError");
           return;
         }
         if (boot.kind === "storage") {
@@ -637,12 +657,14 @@ export function App() {
         servedManifestCarriesBundle: async () => manifestCarriesCurrentBundle(WEB_APP_MANIFEST),
         handoff: captureHandoff,
         clearSession: (address) => {
+          if (!mayCommitRestore()) return;
           clearPersistedSession(address);
           sessionStoreRef.current.clear();
           endStorageAccountSession();
         },
         promptGuard: resignPromptGuardRef.current,
       });
+      if (!mayCommitRestore()) return;
       if (revisionGate === "handoff_failed") { setState("recoverableError"); return; }
       if (revisionGate === "cleared") {
         setError(MANIFEST_RESIGN_NOTICE);
@@ -652,6 +674,7 @@ export function App() {
       }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
         beforeClear: async () => {
+          if (!mayCommitRestore()) return;
           if (!await captureHandoff()) throw new Error("Couldn't update this phone's recording settings. Try again.");
         },
         isOffline: browserIsOffline,
@@ -668,6 +691,10 @@ export function App() {
             ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
           }),
       });
+      if (!mayCommitRestore()) {
+        if (restored.kind === "restored") restored.tcw.cleanup();
+        return;
+      }
       switch (restored.kind) {
         case "restored": {
           logSession("restore", "done");
@@ -693,6 +720,7 @@ export function App() {
           logSession("restore", "unavailable");
           return;
         case "signedOut":
+          if (!mayCommitRestore()) return;
           if (!await captureHandoff()) { setState("recoverableError"); return; }
           endStorageAccountSession();
           setState("unauthenticated");
@@ -705,6 +733,7 @@ export function App() {
           return;
       }
     } catch (caught) {
+      if (!mayCommitRestore()) return;
       logSession("restore", "failed", caught);
       setError(describeAuthFailure(caught));
       setState("recoverableError");
@@ -969,6 +998,11 @@ export function App() {
   }, [state]);
 
   const signIn = useCallback(async (hints?: NativeSignInHints) => {
+    if (isNativeOpenKeySignIn() && nativeSignOutPending() !== false) {
+      setError(NATIVE_SIGN_OUT_WARNING);
+      setState("recoverableError");
+      return;
+    }
     let prefetch: WebSignInPrefetch | undefined;
     sessionEpochRef.current += 1;
     setError(null);
@@ -1092,10 +1126,6 @@ export function App() {
     setSigningOut(true);
     setError(null);
     try {
-      if (!await captureHandoff()) {
-        if (!options.terminal) void nativeRenewalRef.current?.resume();
-        return;
-      }
       if (!options.terminal && tcw?.did) {
         let pending: Awaited<ReturnType<typeof VoiceNotes.listPending>>["recordings"] = [];
         try {
@@ -1144,13 +1174,22 @@ export function App() {
           }
         }
       }
+      if (!await captureHandoff()) {
+        if (!options.terminal) void nativeRenewalRef.current?.resume();
+        return;
+      }
       const nativeSession = isNativeOpenKeySession();
       const openKeyClient = !nativeSession && !options.terminal ? openkeyRef.current : null;
-      completeLocalSignOut(options.terminal ?? null, Boolean(options.terminal));
+      const nativeFenceStored = nativeSession && !options.terminal ? setNativeSignOutPending(true) : true;
+      completeLocalSignOut(nativeFenceStored ? options.terminal ?? null : NATIVE_SIGN_OUT_WARNING,
+        Boolean(options.terminal));
       setPendingVoiceNoteSignOut(null);
       const epoch = sessionEpochRef.current;
       if (nativeSession && !options.terminal) {
-        void withCaptureDeadline(signOutNative()).catch((caught: unknown) => {
+        void withCaptureDeadline(signOutNative()).then(() => {
+          if (sessionEpochRef.current === epoch && !sessionStoreRef.current.hasSession()
+            && !setNativeSignOutPending(false)) setError(NATIVE_SIGN_OUT_WARNING);
+        }).catch((caught: unknown) => {
           logNativeOpenKeyError("sign-out revoke", caught);
           if (sessionEpochRef.current === epoch && !sessionStoreRef.current.hasSession()) {
             setError(NATIVE_SIGN_OUT_WARNING);

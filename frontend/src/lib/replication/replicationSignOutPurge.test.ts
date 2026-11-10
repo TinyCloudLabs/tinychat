@@ -30,7 +30,11 @@ describe("account-scoped replica sign-out", () => {
     let sdkDeniedGate = false;
     const tcw = {
       did: ALICE,
-      signOut: async () => { order.push("sign-out"); sdkDeniedGate = true; },
+      signOut: async () => {
+        order.push("sign-out");
+        sdkDeniedGate = true;
+        store.values.delete(SDK_LOGOUT_MARKER_KEY);
+      },
       replication: {
         purgeLocalCopy: async () => sdkDeniedGate
           ? { ok: true }

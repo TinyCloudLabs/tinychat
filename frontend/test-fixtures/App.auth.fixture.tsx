@@ -38,11 +38,17 @@ let signOutEvents: string[] = [];
 let widgetSawSessionsCleared: boolean | null = null;
 let pendingVoiceNotes: Array<Record<string, unknown>> = [];
 const deletedVoiceNoteIds: string[] = [];
+let clearAppSession: (() => void) | null = null;
+let restorePause = false;
+let releaseRestore: (() => void) | null = null;
+let restoreStarted: (() => void) | null = null;
+let cleanedClients = 0;
+const sessionHooks = new WeakMap<object, { handoff: () => Promise<boolean>; onCleared?: () => void }>();
 
 function fakeTcw(address: string): TinyCloudWeb {
   const tcw = { did: `did:pkh:eip155:1:${address}`, spaceId: `space-${address.slice(-2)}`, address: () => address,
     sql: {}, kv: {}, secrets: {}, signOut: async () => { signOutEvents.push("sdk-signout"); },
-    cleanup: () => {} } as unknown as TinyCloudWeb & { replication?: { close: () => Promise<void> } };
+    cleanup: () => { cleanedClients++; } } as unknown as TinyCloudWeb & { replication?: { close: () => Promise<void> } };
   lastTcw = tcw;
   return tcw;
 }
@@ -84,9 +90,32 @@ mock.module("@/lib/sessionRestore", () => ({
   browserIsOffline: () => false,
   restorePersistedSession: async (sessionStore: { getAddress: () => string | null }) => {
     const address = sessionStore.getAddress();
-    return address && window.localStorage.getItem(`tinycloud:session:${address.toLowerCase()}`)
+    const hadStoredSession = Boolean(address
+      && window.localStorage.getItem(`tinycloud:session:${address.toLowerCase()}`));
+    if (restorePause) {
+      restoreStarted?.();
+      await new Promise<void>((resolve) => { releaseRestore = resolve; });
+    }
+    return address && hadStoredSession
       ? { kind: "restored", address, tcw: fakeTcw(address) }
       : { kind: "signedOut" };
+  },
+}));
+mock.module("@/lib/sessionSignedOut", () => ({
+  clearSessionAfterHandoff: async (store: { clear: () => void }) => {
+    const hook = sessionHooks.get(store);
+    if (hook && !await hook.handoff()) throw new Error("Couldn't update this phone's recording account. Session was kept.");
+    store.clear();
+    hook?.onCleared?.();
+  },
+  registerSessionSignedOutHook: (store: object, handoff: () => Promise<boolean>, onCleared?: () => void) => {
+    const hook = { handoff, onCleared };
+    sessionHooks.set(store, hook);
+    clearAppSession = onCleared ?? null;
+    return () => {
+      if (sessionHooks.get(store) === hook) sessionHooks.delete(store);
+      clearAppSession = null;
+    };
   },
 }));
 mock.module("@/lib/openkeySignOut", () => ({
@@ -151,6 +180,7 @@ mock.module("../src/lib/voiceNotes/nativeVoiceNotes", () => ({
   VoiceNotes: {
     ...voiceNotesApi.VoiceNotes,
     getCaptureDefaults: async () => ({ status: "signed_out", accountDid: null, transitionGen: 0 }),
+    setAccountState: async () => {},
     listPending: async () => ({ recordings: pendingVoiceNotes }),
     deleteAudio: async ({ id }: { id: string }) => { deletedVoiceNoteIds.push(id); },
   },
@@ -207,6 +237,11 @@ beforeEach(() => {
   widgetSawSessionsCleared = null;
   pendingVoiceNotes = [];
   deletedVoiceNoteIds.length = 0;
+  clearAppSession = null;
+  restorePause = false;
+  releaseRestore = null;
+  restoreStarted = null;
+  cleanedClients = 0;
 });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -331,6 +366,48 @@ test("web sign-out clears SDK and app sessions before a hung OpenKey confirmatio
   await remount("web");
   expect(Boolean(host!.querySelector('[data-testid="authenticated-workspace"]'))).toBe(false);
   expect(host!.textContent).toContain("Sign in");
+});
+test("a restore finishing after local sign-out cannot restore the session", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  const address = loginAddress.toLowerCase();
+  window.localStorage.setItem(`tinycloud:session:${address}`, "sdk session");
+  window.localStorage.setItem("tinycloud:session:active-address", address);
+  window.localStorage.setItem("xyz.tinycloud.tinychat:session", JSON.stringify({
+    token: "stored-session",
+    expiresAt: Date.now() + 60_000,
+    address: loginAddress,
+  }));
+
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+  restorePause = true;
+  restoreStarted = started;
+  if (root) await act(async () => root!.unmount());
+  host?.remove();
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () => {
+    root!.render(<BrowserRouter><PlatformContext.Provider value="web"><App /></PlatformContext.Provider></BrowserRouter>);
+  });
+  const didStart = await Promise.race([
+    startedPromise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+  ]);
+  expect(didStart).toBe(true);
+  expect(clearAppSession).toBeTruthy();
+
+  await act(async () => { clearAppSession!(); await tick(); });
+  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
+
+  await act(async () => { releaseRestore?.(); releaseRestore = null; await tick(); await tick(); });
+  await settle();
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
+  expect(host!.textContent).toContain("Sign in");
+  expect(cleanedClients).toBe(1);
 });
 
 test("sign-out offers save, delete, and cancel for local-only voice notes and stays signed in after save failure", async () => {

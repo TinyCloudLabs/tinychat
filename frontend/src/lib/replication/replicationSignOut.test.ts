@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { clientHasReplication, REPLICA_PURGE_FAILED_WARNING, signOutReplicaAware } from "./replicationSignOut";
+import { REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, SDK_LOGOUT_MARKER_KEY } from "./replicationLocalStore";
 import { formatReplicationStatus } from "./ReplicationStatusLine";
 import { getReplicationStatus, recordReplicationEvent, refreshReplicationStatus, resetReplicationStatus } from "./replicationStatus";
 import { readRecordingNoteFromSpace } from "../voiceNotes/voiceNoteStore";
 import { webConnectorPort } from "../connectors/connectorPort";
 
 function fakeClient(signOut: () => Promise<void>, replication: unknown = { purgeLocalCopy: async () => ({ ok: true }) }): TinyCloudWeb {
-  return { signOut, replication } as unknown as TinyCloudWeb;
+  return { did: "did:pkh:eip155:1:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", signOut, replication } as unknown as TinyCloudWeb;
 }
 
 beforeEach(resetReplicationStatus);
@@ -20,8 +21,29 @@ describe("sign-out with replication", () => {
   });
 
   test("a clean sign-out leaves the status untouched", async () => {
-    expect(await signOutReplicaAware(fakeClient(async () => undefined))).toEqual({ ok: true });
+    const store = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+    expect(await signOutReplicaAware(fakeClient(async () => undefined), { store })).toEqual({ ok: true });
     expect(getReplicationStatus().purgeFailed).toBe(false);
+  });
+
+  test("preserves purge recovery markers when SDK signOut resolves with logout pending", async () => {
+    const principal = "did:pkh:eip155:1:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const values = new Map([
+      [SDK_LOGOUT_MARKER_KEY, "pending"],
+      [REPLICATION_COPY_KEY, principal],
+      [REPLICATION_WIPE_PENDING_KEY, "pending"],
+    ]);
+    const store = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    const result = await signOutReplicaAware(fakeClient(async () => undefined), { store });
+
+    expect(result).toEqual({ ok: false, message: REPLICA_PURGE_FAILED_WARNING, code: "REPLICA_PURGE_FAILED" });
+    expect(values.get(SDK_LOGOUT_MARKER_KEY)).toBe("pending");
+    expect(values.get(REPLICATION_COPY_KEY)).toBe(principal);
+    expect(values.get(REPLICATION_WIPE_PENDING_KEY)).toBe("pending");
   });
 
   test("a failed replica sign-out is reported", async () => {
