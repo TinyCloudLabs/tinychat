@@ -21,6 +21,7 @@ const agentEnablementApi = await import("@/chat/useAgentEnablement");
 const transcriberSyncApi = await import("@/chat/useTranscriberLibrarySync");
 const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
 const uploadResumerApi = await import("@/capture/upload/UploadResumer");
+const voiceNotesApi = await import("../src/lib/voiceNotes/nativeVoiceNotes");
 const storageDialogApi = await import("../src/chat/StorageFullDialog");
 
 let nativeMode = false;
@@ -30,10 +31,18 @@ let lastSignInConfig: Record<string, unknown> | null = null;
 let verifyCalls = 0;
 let signOutStarted: (() => void) | null = null;
 let releaseSignOut: (() => void) | null = null;
+let lastTcw: (TinyCloudWeb & { replication?: { close: () => Promise<void>; purgeLocalCopy: () => Promise<{ ok: boolean }> } }) | null = null;
+let signOutEvents: string[] = [];
+let widgetSawSessionsCleared: boolean | null = null;
+let pendingVoiceNotes: Array<Record<string, unknown>> = [];
+const deletedVoiceNoteIds: string[] = [];
 
 function fakeTcw(address: string): TinyCloudWeb {
-  return { did: `did:pkh:eip155:1:${address}`, spaceId: `space-${address.slice(-2)}`, address: () => address,
-    sql: {}, kv: {}, secrets: {} } as unknown as TinyCloudWeb;
+  const tcw = { did: `did:pkh:eip155:1:${address}`, spaceId: `space-${address.slice(-2)}`, address: () => address,
+    sql: {}, kv: {}, secrets: {}, signOut: async () => { signOutEvents.push("sdk-signout"); },
+    cleanup: () => {} } as unknown as TinyCloudWeb & { replication?: { close: () => Promise<void> } };
+  lastTcw = tcw;
+  return tcw;
 }
 
 mock.module("@tinyboilerplate/client", () => ({
@@ -71,11 +80,21 @@ mock.module("@/lib/openkeyNativeRenewal", () => ({
 mock.module("@/lib/sessionRestore", () => ({
   ...restoreApi,
   browserIsOffline: () => false,
-  restorePersistedSession: async () => ({ kind: "signedOut" }),
+  restorePersistedSession: async (sessionStore: { getAddress: () => string | null }) => {
+    const address = sessionStore.getAddress();
+    return address && window.localStorage.getItem(`tinycloud:session:${address.toLowerCase()}`)
+      ? { kind: "restored", address, tcw: fakeTcw(address) }
+      : { kind: "signedOut" };
+  },
 }));
 mock.module("@/lib/openkeySignOut", () => ({
   ...signOutApi,
   signOutOpenKeySession: async () => {
+    signOutEvents.push("openkey-widget");
+    widgetSawSessionsCleared = window.localStorage.getItem(`tinycloud:session:${loginAddress.toLowerCase()}`) === null
+      && window.localStorage.getItem(`tinycloud:session:runtime-grants:${loginAddress.toLowerCase()}`) === null
+      && window.localStorage.getItem("tinycloud:session:active-address") === null
+      && window.localStorage.getItem("xyz.tinycloud.tinychat:session") === null;
     signOutStarted?.();
     if (releaseSignOut) await new Promise<void>((resolve) => { releaseSignOut = resolve; });
     return { status: "cancelled" };
@@ -87,6 +106,7 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
   ...captureApi,
   captureCapabilities: () => ({ offlineRecorder: false, micDeniedPresentation: false }),
   captureEngineAvailable: () => false,
+  subscribeCaptureCapabilities: () => () => undefined,
 }));
 mock.module("../src/chat/ChatWorkspace", () => ({
   ChatWorkspace: ({ settings }: { settings: React.ReactNode }) => <div data-testid="authenticated-workspace">{settings}</div>,
@@ -120,6 +140,14 @@ mock.module("../src/capture/recorder/RecorderShell", () => ({
   RecorderShell: ({ chat, settings }: { chat: React.ReactNode; settings: React.ReactNode }) => <>{chat}{settings}</>,
 }));
 
+mock.module("../src/lib/voiceNotes/nativeVoiceNotes", () => ({
+  ...voiceNotesApi,
+  VoiceNotes: {
+    ...voiceNotesApi.VoiceNotes,
+    listPending: async () => ({ recordings: pendingVoiceNotes }),
+    deleteAudio: async ({ id }: { id: string }) => { deletedVoiceNoteIds.push(id); },
+  },
+}));
 const { App } = await import("../src/App");
 
 let restoreDom: (() => void) | undefined;
@@ -137,9 +165,18 @@ async function mount(platform: AppPlatform) {
   await act(async () => root!.render(<BrowserRouter><PlatformContext.Provider value={platform}><App /></PlatformContext.Provider></BrowserRouter>));
   await settle();
 }
+async function remount(platform: AppPlatform) {
+  if (root) await act(async () => root!.unmount());
+  host?.remove();
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () => root!.render(<BrowserRouter><PlatformContext.Provider value={platform}><App /></PlatformContext.Provider></BrowserRouter>));
+  await settle();
+}
 async function click(label: string) {
-  const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
-  expect(button, `missing ${label}; DOM=${host!.innerHTML}`).toBeTruthy();
+  const button = [...document.body.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
+  expect(button, `missing ${label}; DOM=${document.body.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
 }
 async function navigate(path: string) {
@@ -158,6 +195,11 @@ beforeEach(() => {
   verifyCalls = 0;
   signOutStarted = null;
   releaseSignOut = null;
+  lastTcw = null;
+  signOutEvents = [];
+  widgetSawSessionsCleared = null;
+  pendingVoiceNotes = [];
+  deletedVoiceNoteIds.length = 0;
 });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -184,15 +226,18 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   expect("keys" in config.manifest).toBe(false);
   expect("keys_app_id" in config.manifest).toBe(false);
 
+  await act(async () => { reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "full" }); await tick(); });
+  expect(isStorageReadOnly()).toBe(true);
+  expect(host!.textContent).toContain("Storage full");
+
   let started!: () => void;
   const startedPromise = new Promise<void>((resolve) => { started = resolve; });
   signOutStarted = started;
   releaseSignOut = () => {};
   await click("Test sign out");
   await startedPromise;
-  await act(async () => { reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "full" }); await tick(); });
-  expect(isStorageReadOnly()).toBe(true);
-  expect(host!.textContent).toContain("Storage full");
+  expect(Boolean(host!.querySelector('[data-testid="authenticated-workspace"]'))).toBe(false);
+  expect(host!.textContent).toContain("Sign in");
   await act(async () => { releaseSignOut?.(); releaseSignOut = null; await tick(); await tick(); });
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
@@ -216,6 +261,110 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(host!.textContent).not.toContain("Storage full");
 });
+test("web sign-out clears SDK and app sessions before a hung OpenKey confirmation returns, then restores signed out", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  const address = loginAddress.toLowerCase();
+  const did = `did:pkh:eip155:1:${loginAddress}`;
+  const spaceId = `space-${loginAddress.slice(-2)}`;
+  window.localStorage.setItem(`tinycloud:session:${address}`, JSON.stringify({
+    address: loginAddress,
+    chainId: 1,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  }));
+  window.localStorage.setItem(`tinycloud:session:runtime-grants:${address}`, "runtime grants");
+  window.localStorage.setItem("tinycloud:session:active-address", address);
+  window.localStorage.setItem("xyz.tinycloud.tinychat:session", JSON.stringify({
+    token: "stored-session",
+    expiresAt: Date.now() + 60_000,
+    address: loginAddress,
+  }));
+  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
+  expect(window.localStorage.getItem("tinycloud:session:active-address")).toBe(address);
+  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:session")).not.toBeNull();
+
+  const perAddressKeys = [
+    `tinychat:index:${did}`,
+    `xyz.tinycloud.tinychat:manifest-revision:${address}`,
+    `exo-audio-receipt-pass:${did}:${spaceId}`,
+    `exo.voiceNotes.partialAudio.${encodeURIComponent(did)}.${encodeURIComponent(spaceId)}`,
+  ];
+  for (const key of perAddressKeys) window.localStorage.setItem(key, "account data");
+  window.localStorage.setItem("exo.capture.transitionGen", "7");
+  window.localStorage.setItem("exo.voiceNotes.partialAudio.signed-out.local", "local recording");
+  expect(lastTcw).toBeTruthy();
+  lastTcw!.replication = {
+    close: async () => { signOutEvents.push("replica-close"); },
+    purgeLocalCopy: async () => { signOutEvents.push("replica-purge"); return { ok: true }; },
+  };
+
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+  signOutStarted = started;
+  releaseSignOut = () => {};
+  await click("Test sign out");
+  await startedPromise;
+
+  expect(Boolean(host!.querySelector('[data-testid="authenticated-workspace"]'))).toBe(false);
+  expect(host!.textContent).toContain("Sign in");
+  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
+  expect(window.localStorage.getItem(`tinycloud:session:runtime-grants:${address}`)).toBeNull();
+  expect(window.localStorage.getItem("tinycloud:session:active-address")).toBeNull();
+  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:session")).toBeNull();
+  expect(perAddressKeys.every((key) => window.localStorage.getItem(key) === null)).toBe(true);
+  expect(window.localStorage.getItem("exo.capture.transitionGen")).toBe("7");
+  expect(window.localStorage.getItem("exo.voiceNotes.partialAudio.signed-out.local")).toBe("local recording");
+  expect(widgetSawSessionsCleared).toBe(true);
+  expect(signOutEvents).toEqual(["replica-close", "replica-purge", "openkey-widget", "sdk-signout"]);
+
+  await act(async () => { releaseSignOut?.(); releaseSignOut = null; await tick(); });
+  await remount("web");
+  expect(Boolean(host!.querySelector('[data-testid="authenticated-workspace"]'))).toBe(false);
+  expect(host!.textContent).toContain("Sign in");
+});
+
+test("sign-out offers save, delete, and cancel for local-only voice notes and stays signed in after save failure", async () => {
+  const address = loginAddress.toLowerCase();
+  const did = `did:pkh:eip155:1:${loginAddress}`;
+  pendingVoiceNotes = [{
+    id: "pending-note",
+    owner: did,
+    ledger: { audio: { state: "pending" } },
+  }];
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  window.localStorage.setItem(`tinycloud:session:${address}`, "sdk session");
+  window.localStorage.setItem("tinycloud:session:active-address", address);
+  window.localStorage.setItem("xyz.tinycloud.tinychat:session", "app session");
+
+  await click("Test sign out");
+  await settle();
+  expect(document.body.textContent).toContain("Some voice notes aren’t saved yet");
+  expect(document.body.textContent).toContain("1 voice note is only on this device.");
+  expect(document.body.textContent).toContain("Save and sign out");
+  expect(document.body.textContent).toContain("Sign out and delete them");
+  expect(document.body.textContent).toContain("Cancel");
+  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
+  expect(signOutEvents).toEqual([]);
+
+  await click("Cancel");
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+  await click("Test sign out");
+  await click("Save and sign out");
+  await settle();
+  expect(document.body.textContent).toContain("Couldn't save your voice notes. Try again, or sign out and delete them.");
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
+  expect(signOutEvents).toEqual([]);
+
+  await click("Sign out and delete them");
+  await settle();
+  expect(deletedVoiceNoteIds).toEqual(["pending-note"]);
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
+  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
+});
 
 test("native interactive sign-in mounts the authenticated workspace", async () => {
   nativeMode = true;
@@ -225,6 +374,7 @@ test("native interactive sign-in mounts the authenticated workspace", async () =
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });
+
 test("mounted App shows one shared read-only notice outside Settings and keeps Settings detail there", async () => {
   await mount("web");
   await click("Sign in");
@@ -246,3 +396,4 @@ test("mounted App shows one shared read-only notice outside Settings and keeps S
   expect(settingsBanner?.textContent).toContain(STORAGE_FULL_DETAIL.free);
   expect(host!.querySelectorAll('[aria-label="Storage full"]')).toHaveLength(1);
 });
+

@@ -6,7 +6,7 @@ import { getReplicationStatus, recordReplicationEvent, refreshReplicationStatus,
 import { readRecordingNoteFromSpace } from "../voiceNotes/voiceNoteStore";
 import { webConnectorPort } from "../connectors/connectorPort";
 
-function fakeClient(signOut: () => Promise<void>, replication: unknown = {}): TinyCloudWeb {
+function fakeClient(signOut: () => Promise<void>, replication: unknown = { purgeLocalCopy: async () => ({ ok: true }) }): TinyCloudWeb {
   return { signOut, replication } as unknown as TinyCloudWeb;
 }
 
@@ -24,18 +24,23 @@ describe("sign-out with replication", () => {
     expect(getReplicationStatus().purgeFailed).toBe(false);
   });
 
-  test("a failed replica deny is a visible failed purge, not a failed sign-out", async () => {
-    const tcw = fakeClient(async () => {
-      throw new Error("Replica gate was not denied (REPLICA_GATED); the replica may still be restorable.");
-    });
+  test("a failed replica deny is reported when the account-local purge also fails", async () => {
+    const tcw = fakeClient(
+      async () => { throw new Error("Replica gate was not denied (REPLICA_GATED); the replica may still be restorable."); },
+      { purgeLocalCopy: async () => ({ ok: false, retryNow: false, code: "REPLICA_GATED" }) },
+    );
     const result = await signOutReplicaAware(tcw);
     expect(result).toEqual({ ok: false, message: REPLICA_PURGE_FAILED_WARNING, code: "REPLICA_GATED" });
     expect(getReplicationStatus()).toMatchObject({ purgeFailed: true, errorCode: "REPLICA_GATED" });
     expect(formatReplicationStatus(getReplicationStatus())).toContain("sign-out erase failed");
   });
 
-  test("any sign-out error on a replica client is a failed purge with a visible code", async () => {
-    const result = await signOutReplicaAware(fakeClient(async () => { throw new Error("network down"); }));
+  test("a sign-out error remains visible when the account-local purge fails", async () => {
+    const tcw = fakeClient(
+      async () => { throw new Error("network down"); },
+      { purgeLocalCopy: async () => ({ ok: false, retryNow: false, code: "STORAGE_ERROR" }) },
+    );
+    const result = await signOutReplicaAware(tcw);
     expect(result).toEqual({ ok: false, message: REPLICA_PURGE_FAILED_WARNING, code: "REPLICA_SIGNOUT_FAILED" });
   });
 

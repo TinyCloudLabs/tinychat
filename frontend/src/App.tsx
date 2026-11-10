@@ -33,12 +33,13 @@ import { reauthorizeHome } from "./lib/homeReauthorize";
 import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type FeatureAccessOutcome, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
-import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
+import { replicationConfigPatch, startReplicationFill, stopReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
 import { replicationRestorePatch } from "./lib/replication/replicationRestore";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
@@ -138,12 +139,13 @@ import { useAudioCacheBoot } from "./lib/voiceNotes/audioReceiptUpgrade";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable, subscribeCaptureCapabilities } from "./lib/voiceNotes/captureEngine";
+import { savePendingRecordings } from "./lib/voiceNotes/recorderSaves";
+import { PendingVoiceNoteSignOutDialog } from "./chat/PendingVoiceNoteSignOutDialog";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
 import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
 import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
-import { writeAccountDefaults } from "./lib/voiceNotes/transcriberPreference";
 import { advanceAccountGeneration } from "./lib/voiceNotes/accountContext";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import type {
@@ -160,7 +162,7 @@ import {
   restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
   setNativeSessionActive, signInNative, signOutNative, type NativeSignInHints,
   type NativeSignInConfig,
-  NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
+  NATIVE_SIGN_OUT_WARNING,
 } from "./lib/openkeyNative";
 import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
@@ -349,36 +351,36 @@ export function App() {
     sessionEpochRef.current += 1;
     nativeRenewalRef.current?.stop();
     nativeRenewalRef.current = null;
-    if (tcw) {
-      const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
-      if (clientHasReplication(tcw)) {
-        // Every local sign-out (including server-side session loss) must run the replica deny
-        // before the controller is torn down. signOutReplicaAware is once-per-client, so the
-        // button path's earlier call is reused.
-        void signOutReplicaAware(tcw)
-          .then((result) => {
-            if (!result.ok) setError((current) => (current?.includes(result.message) ? current : result.message));
-          }, (caught: unknown) => logNativeOpenKeyError("replica sign-out", caught))
-          .finally(cleanup);
-      } else cleanup();
-    }
-    resetNavigationMemory();
     const storedAddress = sessionStoreRef.current.getAddress() ?? address;
-    if (storedAddress) clearPersistedSession(storedAddress);
-    // The Home features flag (lib/homeFeatures.ts) stays: it is this device's record of which features were used,
-    // holds no secrets, and lets the next sign-in ask for those sets in its one approval.
-    if (storedAddress) clearSendIntentsForOwner(storedAddress);
-    clearTranscriptDelegationSchedule(storedAddress);
-    sessionStoreRef.current.clear();
-    endStorageAccountSession();
-    voiceNotePipeline?.cancelAll();
-    openkeyRef.current = null;
-    setNativeSessionActive(false);
-    historyPrefetch.clear();
-    clearAgentSessionCache();
-    clearVaultSecretCache();
+    const accountDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
+    if (tcw && clientHasReplication(tcw)) {
+      stopReplicationFill(tcw);
+      const replica = tcw.replication as unknown as { close?: () => Promise<unknown> } | undefined;
+      try { void Promise.resolve(replica?.close?.()).catch(() => undefined); } catch { /* Local clear still wins. */ }
+    }
     clearBackgroundDrainRecord();
     uploadRunner.reset();
+    voiceNotePipeline?.cancelAll();
+    endStorageAccountSession();
+    if (storedAddress) clearPersistedSession(storedAddress);
+    if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
+    sessionStoreRef.current.clear();
+    if (storedAddress) clearSendIntentsForOwner(storedAddress);
+    clearTranscriptDelegationSchedule(storedAddress);
+    clearAgentSessionCache();
+    clearVaultSecretCache();
+    resetNavigationMemory();
+    setPendingVoiceNoteSignOut(null);
+    // The Home features flag stays: it holds no secrets and lets the next sign-in ask for those sets.
+    if (tcw) {
+      const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
+      const localSignOut = signOutReplicaAware(tcw);
+      void localSignOut
+        .then((result) => {
+          if (result && !result.ok) setError((current) => (current?.includes(result.message) ? current : result.message));
+        }, (caught: unknown) => logNativeOpenKeyError("TinyCloud sign-out cleanup", caught))
+        .finally(cleanup);
+    }
     selectionControllerRef.current = null;
     memoryRef.current = null;
     setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));
@@ -393,24 +395,9 @@ export function App() {
     setPricingOpen(false);
     setError(warning);
     setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
-  }, [address, tcw, voiceNotePipeline]);
+  }, [address, did, tcw, voiceNotePipeline]);
   useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,
     () => completeLocalSignOut(null)), [captureHandoff, completeLocalSignOut]);
-  const restoreCaptureAfterAuthAbort = useCallback(async () => {
-    if (!did || !tcw || !captureEngineAvailable()) return;
-    try {
-      await withCaptureDeadline(writeAccountDefaults((current) => ({ accountDid: did, transitionGen: nextTransitionGen(current.transitionGen) })));
-      if (voiceNotePipeline && tcw.spaceId) {
-        voiceNotePipeline.resume();
-        const generation = advanceAccountGeneration();
-        void voiceNotePipeline.reconcileAll({ did, spaceId: tcw.spaceId, generation })
-          .catch((caught: unknown) => console.warn("[VoiceNotes] Could not resume saving after sign-out was cancelled", caught));
-      }
-      setCaptureFailClosed(false);
-    } catch {
-      setCaptureFailClosed(true);
-    }
-  }, [did, tcw, voiceNotePipeline]);
   const [models, setModels] = useState<ModelOption[]>(() =>
     OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })),
   );
@@ -426,6 +413,7 @@ export function App() {
   });
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [pendingVoiceNoteSignOut, setPendingVoiceNoteSignOut] = useState<{ count: number; error: string | null } | null>(null);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -1100,7 +1088,7 @@ export function App() {
     }
   }, []);
 
-  const signOut = useCallback(async (options: { terminal?: string } = {}) => {
+  const signOut = useCallback(async (options: { terminal?: string; pendingChoice?: "save" | "delete" } = {}) => {
     if (signOutInFlightRef.current) return;
     signOutInFlightRef.current = true;
     nativeRenewalRef.current?.stop();
@@ -1108,83 +1096,88 @@ export function App() {
     setError(null);
     try {
       if (!await captureHandoff()) {
-        // A terminal renewal has already exhausted its grant; restarting it
-        // would call onTerminal again and repeat this failed handoff.
         if (!options.terminal) void nativeRenewalRef.current?.resume();
         return;
       }
-      let openKeyWarning: string | null = options.terminal ?? null;
+      if (!options.terminal && tcw?.did) {
+        let pending: Awaited<ReturnType<typeof VoiceNotes.listPending>>["recordings"];
+        try {
+          ({ recordings: pending } = await VoiceNotes.listPending());
+        } catch {
+          setError("Couldn't check for voice notes that haven't been saved to TinyCloud. Try again.");
+          void nativeRenewalRef.current?.resume();
+          return;
+        }
+        const unsaved = pending.filter((note) =>
+          (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
+        if (unsaved.length > 0 && !options.pendingChoice) {
+          setPendingVoiceNoteSignOut({ count: unsaved.length, error: null });
+          return;
+        }
+        if (unsaved.length > 0 && options.pendingChoice === "save") {
+          try {
+            await savePendingRecordings(tcw);
+            const remaining = (await VoiceNotes.listPending()).recordings.filter((note) =>
+              (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
+            if (remaining.length > 0) {
+              setPendingVoiceNoteSignOut({ count: remaining.length, error: "Couldn't save your voice notes. Try again, or sign out and delete them." });
+              void nativeRenewalRef.current?.resume();
+              return;
+            }
+          } catch {
+            setPendingVoiceNoteSignOut({ count: unsaved.length, error: "Couldn't save your voice notes. Try again, or sign out and delete them." });
+            void nativeRenewalRef.current?.resume();
+            return;
+          }
+        }
+        if (unsaved.length > 0 && options.pendingChoice === "delete") {
+          try {
+            for (const note of unsaved) await VoiceNotes.deleteAudio({ id: note.id });
+          } catch {
+            const listing = await VoiceNotes.listPending().catch(() => ({ recordings: unsaved }));
+            const remaining = listing.recordings.filter((note) =>
+              (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
+            setPendingVoiceNoteSignOut({
+              count: remaining.length || unsaved.length,
+              error: "Couldn't delete all of your voice notes. Try again.",
+            });
+            void nativeRenewalRef.current?.resume();
+            return;
+          }
+        }
+      }
       const nativeSession = isNativeOpenKeySession();
+      const openKeyClient = !nativeSession && !options.terminal ? openkeyRef.current : null;
+      completeLocalSignOut(options.terminal ?? null, Boolean(options.terminal));
+      setPendingVoiceNoteSignOut(null);
+      const epoch = sessionEpochRef.current;
       if (nativeSession && !options.terminal) {
-        // Native sign-out revokes the OpenKey delegation grant and clears the
-        // secure-store session unless secure storage needs another attempt.
-        try {
-          await withCaptureDeadline(signOutNative());
-        } catch (caught) {
+        void withCaptureDeadline(signOutNative()).catch((caught: unknown) => {
           logNativeOpenKeyError("sign-out revoke", caught);
-          if (isNativeStorageError(caught)) {
-            // The SDK may still have the session and grant in secure storage.
-            // Keep the native marker and current session for another attempt.
-            setError(NATIVE_SIGN_OUT_STORAGE_WARNING);
-            await restoreCaptureAfterAuthAbort();
-            setState("ready");
-            void nativeRenewalRef.current?.resume();
-            return;
+          if (sessionEpochRef.current === epoch && !sessionStoreRef.current.hasSession()) {
+            setError(NATIVE_SIGN_OUT_WARNING);
           }
-          if (caught instanceof Error && caught.message.startsWith("Native sign-in is not configured")) {
-            // Keep the SDK record and key available for revocation once the
-            // native client is configured again.
-            setError(caught.message);
-            await restoreCaptureAfterAuthAbort();
-            setState("ready");
-            void nativeRenewalRef.current?.resume();
-            return;
+        });
+      }
+      if (!nativeSession && !options.terminal) {
+        void signOutOpenKeySession(openKeyClient, () => new OpenKey({
+          appName: APP_NAME,
+          host: OPENKEY_HOST,
+          passkeysSupported: openkeyPasskeysSupported(),
+        })).then((outcome) => {
+          if (sessionEpochRef.current !== epoch || sessionStoreRef.current.hasSession()) return;
+          if (outcome.status === "cancelled") {
+            setError(`OpenKey stayed signed in on this device. ${APP_NAME} is signed out locally. Sign out at openkey.so before choosing another account.`);
+          } else if (outcome.status === "unverified" || outcome.status === "remote-unavailable") {
+            setError(OPENKEY_SIGN_OUT_UNPROVEN_NOTE);
           }
-          openKeyWarning = NATIVE_SIGN_OUT_WARNING;
-        }
-      } else if (!nativeSession && !options.terminal) {
-        const openKeyClient = openkeyRef.current ?? new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST,
-          passkeysSupported: openkeyPasskeysSupported() });
-        // The user answers OpenKey's own confirmation here, so no deadline runs.
-        // signOutOpenKeySession reports every failure as an outcome rather than throwing.
-        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient);
-        // OpenKey clears this client's local auth before showing its widget, even
-        // when the user cancels. Never retain that spent client for another flow.
-        openkeyRef.current = null;
-
-        if (openKeyOutcome.status === "cancelled") {
-          openKeyWarning =
-            `OpenKey stayed signed in on this device. ${APP_NAME} is signed out locally. ` +
-            "Sign out at openkey.so before choosing another account.";
-        } else if (openKeyOutcome.status === "unverified" || openKeyOutcome.status === "remote-unavailable") {
-          // Revocation could not be proved (no verified answer, no sheet, or an error): a calm note, not an alarm.
-          openKeyWarning = OPENKEY_SIGN_OUT_UNPROVEN_NOTE;
-        }
+        }, (caught: unknown) => logNativeOpenKeyError("OpenKey sign-out", caught));
       }
-
-      if (tcw && !nativeSession && !options.terminal) {
-        try {
-          // Replication ON: signOut() also shreds the replica keys first; its "gate not denied"
-          // failure is a pending purge to surface, not a failed sign-out (replicationSignOut.ts).
-          const cleanup = clientHasReplication(tcw)
-            ? signOutReplicaAware(tcw).then((result) => {
-              if (!result.ok) openKeyWarning = openKeyWarning ? `${openKeyWarning} ${result.message}` : result.message;
-            })
-            : Promise.resolve(tcw.signOut?.());
-          if (captureEngineAvailable()) await withCaptureDeadline(cleanup);
-          else await cleanup;
-        } catch (caught) {
-          logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
-        }
-      }
-      // TinyCloudWeb.signOut is local cleanup. The shared completion also
-      // removes persisted account data, so a cleanup failure cannot restore it.
-      completeLocalSignOut(openKeyWarning, Boolean(options.terminal));
     } finally {
       signOutInFlightRef.current = false;
       setSigningOut(false);
     }
-  }, [tcw, captureHandoff, restoreCaptureAfterAuthAbort, completeLocalSignOut]);
+  }, [captureHandoff, completeLocalSignOut, tcw]);
 
   useEffect(() => { signOutRef.current = signOut; }, [signOut]);
 
@@ -1501,6 +1494,16 @@ export function App() {
         />
       )}
       <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} paywallEnabled={paywallEnabled} />
+      <PendingVoiceNoteSignOutDialog
+        open={pendingVoiceNoteSignOut !== null}
+        count={pendingVoiceNoteSignOut?.count ?? 0}
+        error={pendingVoiceNoteSignOut?.error ?? null}
+        busy={signingOut}
+        onSave={() => { void signOut({ pendingChoice: "save" }); }}
+        onDelete={() => { void signOut({ pendingChoice: "delete" }); }}
+        onCancel={() => setPendingVoiceNoteSignOut(null)}
+      />
+
 
       <RatesDialog
         open={ratesOpen}

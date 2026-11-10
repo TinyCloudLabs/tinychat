@@ -57,13 +57,6 @@ test("sign-in returns quietly to signed-out on cancel and shows no raw message o
   expect(app).not.toMatch(/setError\(errorMessage\(caught\)\)/);
 });
 
-test("OpenKey sign-out waits for the user: no capture deadline around it", () => {
-  const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
-  const openKey = signOut.slice(signOut.indexOf("const openKeyClient"), signOut.indexOf("openkeyRef.current = null"));
-  expect(openKey).toContain("await signOutOpenKeySession(");
-  expect(openKey).not.toContain("withCaptureDeadline");
-  expect(openKey).not.toContain("timed out");
-});
 
 test("the document title is TinyCloud Home", () => {
   expect(readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf8")).toContain("<title>TinyCloud Home</title>");
