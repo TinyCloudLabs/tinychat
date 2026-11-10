@@ -278,6 +278,17 @@ describe("mounted Meeting sources account generation", () => {
         lastSyncError: null,
         itemCount: 0,
       })).ok).toBe(true);
+      expect(await connectorStore.getConnection(fake.tcw, "fireflies")).toEqual({
+        ok: true,
+        data: {
+          connectorId: "fireflies",
+          status: "connected",
+          lastSyncedAt: null,
+          lastSyncStatus: "ok",
+          lastSyncError: null,
+          itemCount: 0,
+        },
+      });
       await act(async () => { root.render(createElement(Harness)); });
       const background = syncFireflies({
         client: api,
