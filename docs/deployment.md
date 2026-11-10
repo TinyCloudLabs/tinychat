@@ -638,7 +638,7 @@ nothing below may be reported as done on its behalf.
   no HTTP response) and fails on any HTTP status.
 - **CORS:** the backend allows `FRONTEND_URL`, the TinyCloud Home site
   (`https://home.tinycloud.xyz`, the constant `HOME_WEB_ORIGIN` in
-  `backend/src/cors-origins.ts`), Exo's fixed Tauri origins, the
+  `backend/src/cors-origins.ts`), TinyCloud Home's fixed Tauri origins, the
   TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost

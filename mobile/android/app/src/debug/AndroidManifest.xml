@@ -45,7 +45,7 @@
         <activity
             android:name="xyz.tinycloud.exo.health.HealthPermissionsRationaleActivity"
             android:exported="true"
-            android:label="Exo and Health Connect"
+            android:label="TinyCloud Home and Health Connect"
             android:theme="@style/AppTheme">
             <intent-filter>
                 <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />

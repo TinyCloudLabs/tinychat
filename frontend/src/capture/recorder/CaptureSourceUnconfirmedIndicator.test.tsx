@@ -38,7 +38,7 @@ test("warning remains across navigation and every save outcome until native stat
       </MemoryRouter>
     </StaticRecorderProvider>,
   ));
-  const expected = "The microphone Exo used may still be in use. This warning clears when macOS reports that input is no longer running or Exo restarts; another app using the same input can keep it on.";
+  const expected = "The microphone TinyCloud Home used may still be in use. This warning clears when macOS reports that input is no longer running or TinyCloud Home restarts; another app using the same input can keep it on.";
 
   for (const saveOutcome of ["before commit", "after commit", "after discard"]) {
     await render(true);

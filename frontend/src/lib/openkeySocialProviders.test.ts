@@ -25,7 +25,7 @@ describe("loadOpenKeySocialProviders (TC-1233)", () => {
     expect(calls[0].url).toBe("http://localhost:5183/api/auth/providers");
   });
 
-  test("keeps only the providers Exo can offer", async () => {
+  test("keeps only the providers TinyCloud Home can offer", async () => {
     const { fetchFn } = fetchReturning({ providers: ["apple", "github", 7, "google"] });
     expect(await loadOpenKeySocialProviders("https://openkey.so", fetchFn)).toEqual(["apple", "google"]);
   });

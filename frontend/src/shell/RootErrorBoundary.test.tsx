@@ -31,7 +31,7 @@ test("a render error shows a calm recovery screen, not a blank root", () => {
   const surface = failedBoundary().render();
   const markup = renderToStaticMarkup(surface);
   expect(markup).toContain('role="alert"');
-  expect(markup).toContain("Exo hit a snag");
+  expect(markup).toContain("TinyCloud Home hit a snag");
   expect(markup).toContain(">Reload</button>");
   expect(markup).not.toContain("app");
 });
@@ -62,7 +62,7 @@ test("a real render error in any child of the root shows the recovery screen, no
     await act(async () => {
       root.render(<RootErrorBoundary><Healthy /><Broken /></RootErrorBoundary>);
     });
-    expect(container.textContent).toContain("Exo hit a snag");
+    expect(container.textContent).toContain("TinyCloud Home hit a snag");
     expect(container.textContent).not.toContain("secretKeyFn");
     expect(container.querySelector("button")?.textContent).toBe("Reload");
   } finally {

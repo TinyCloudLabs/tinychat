@@ -35,7 +35,7 @@ describe("honestRecorderError", () => {
 
   test("recoveryFailed on the pending recording", () => {
     expect(line({ error: FINALIZATION_PENDING, finalizationPendingId: "a", captureIssues: { a: failed } }))
-      .toBe("Couldn't recover this recording. Exo will try again when it next opens.");
+      .toBe("Couldn't recover this recording. TinyCloud Home will try again when it next opens.");
   });
 
   test("write_failed on the pending recording", () => {
@@ -119,7 +119,7 @@ describe("receiptPartialNotice", () => {
     expect(notice({ captureIssues: { a: writeFailed } })).toBeNull();
   });
 
-  test("never beside 'Exo will finish it automatically', whichever recording it is about", () => {
+  test("never beside 'TinyCloud Home will finish it automatically', whichever recording it is about", () => {
     const pending = { error: FINALIZATION_PENDING, finalizationPendingId: "a" };
     expect(notice({ ...pending, captureIssues: { a: partial } })).toBeNull();
     expect(notice({ ...pending, captureIssues: { z: partial } }, "z")).toBeNull();

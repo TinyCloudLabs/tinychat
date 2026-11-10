@@ -5,7 +5,7 @@ import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTE
 describe("Mac system audio disclosure", () => {
   test("exact copy describes separate channels and the start or resume rule", () => {
     expect(SYSTEM_AUDIO_TITLE).toBe("Also record this Mac's audio?");
-    expect(SYSTEM_AUDIO_BODY).toBe("Exo can record everything this Mac plays, such as the other side of calls, videos and notifications, as Them alongside your mic as Me. Turning it off applies when you resume. Turning it on applies to your next recording.");
+    expect(SYSTEM_AUDIO_BODY).toBe("TinyCloud Home can record everything this Mac plays, such as the other side of calls, videos and notifications, as Them alongside your mic as Me. Turning it off applies when you resume. Turning it on applies to your next recording.");
     expect([SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_MIC_ONLY]).toEqual(["Record this Mac's audio", "Mic only"]);
   });
 

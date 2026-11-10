@@ -11,7 +11,7 @@ export function Footer() {
               <span className="flex size-6 items-center justify-center rounded-md bg-primary text-[10px] font-bold text-primary-foreground">
                 T
               </span>
-              TinyCloud Chat
+              TinyCloud Home
             </Link>
             <p className="max-w-sm text-xs text-muted-foreground">
               A private, multi-model chat client. Your conversations live in
@@ -34,7 +34,7 @@ export function Footer() {
         </div>
 
         <div className="mt-10 flex flex-col items-start justify-between gap-2 border-t border-border pt-6 text-xs text-muted-foreground sm:flex-row sm:items-center">
-          <span>© TinyCloud Chat</span>
+          <span>© TinyCloud Home</span>
           <span>Built on TinyCloud</span>
         </div>
       </div>
