@@ -233,6 +233,10 @@ test.each([
   expect(requests).toBe(1); expect(traces).toHaveLength(1);
   expect(traces[0]).toMatchObject({ terminal: code, tools: [] });
   expect(JSON.stringify([traces, frames])).not.toContain(failureSentinel);
+  const message = code === "upstream_failed" ? "The model service could not complete this request. Please try again later."
+    : code === "upstream_incomplete" ? "The model service returned an incomplete reply. Please try again."
+    : "The response was too large to process safely. Try a smaller request or fewer meetings.";
+  expect(output(frames).split(message)).toHaveLength(2);
   expect(output(frames)).not.toMatch(/specify|rephrase|meeting or dates/i);
 });
 
