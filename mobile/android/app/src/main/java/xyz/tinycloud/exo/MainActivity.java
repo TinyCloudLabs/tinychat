@@ -45,6 +45,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         if (BuildConfig.DEBUG) registerPlugin(ExoDevLogPlugin.class);
         registerPlugin(VoiceNotesPlugin.class);
         registerPlugin(ThemeBarsPlugin.class);
+        registerPlugin(AppLockPlugin.class);
         registerPlugin(OnDeviceSttPlugin.class);
         registerPlugin(HealthPlugin.class);
         // TC-524 location spike. Registered in every build, but only the debug manifest declares

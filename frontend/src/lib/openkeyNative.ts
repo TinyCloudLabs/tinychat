@@ -56,6 +56,14 @@ export function nativeSessionWasActive(): boolean {
   }
 }
 
+const nativeSessionListeners = new Set<(active: boolean) => void>();
+
+/** The app lock (lib/appLock.ts) follows sign-in and sign-out through this. */
+export function onNativeSessionChange(listener: (active: boolean) => void): () => void {
+  nativeSessionListeners.add(listener);
+  return () => { nativeSessionListeners.delete(listener); };
+}
+
 export function setNativeSessionActive(active: boolean): void {
   nativeSessionActive = active;
   try {
@@ -64,6 +72,7 @@ export function setNativeSessionActive(active: boolean): void {
   } catch {
     // The SDK secure store is still authoritative if web storage is unavailable.
   }
+  for (const listener of nativeSessionListeners) listener(active);
 }
 
 export function isNativeOpenKeySession(): boolean {

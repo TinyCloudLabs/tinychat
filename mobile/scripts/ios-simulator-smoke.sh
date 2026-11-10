@@ -297,7 +297,7 @@ deadline_log_at=$(date -u -r "$deadline_epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null 
   date -u -d "@$deadline_epoch" '+%Y-%m-%d %H:%M:%S')
 printf 'launch requested %s\n' "$launch_at" >>"$out/launch-timeline.log"
 log "launching $bundle_id at $launch_at"
-SIMCTL_CHILD_EXO_LOCATION_SMOKE="$location_smoke" SIMCTL_CHILD_EXO_CAPTURE_SMOKE="$capture_smoke" \
+SIMCTL_CHILD_EXO_LOCATION_SMOKE="$location_smoke" SIMCTL_CHILD_EXO_CAPTURE_SMOKE="$capture_smoke" SIMCTL_CHILD_EXO_APP_LOCK=off \
   xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$private_logs/console.log" 2>&1 &
 launcher=$!
 app_launched=1
@@ -652,6 +652,7 @@ check '.href | startswith("capacitor://localhost")' "bundled web app loaded from
 check '.platform == "ios"' 'Capacitor platform is "ios"'
 check '.mounted == true' "React mounted into #root"
 check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes plugin registered and visible to JS"
+check '.appLock.deviceSecure == false' "AppLock plugin answers status(); the smoke runs with the app lock off"
 check '.voiceNotesStatus.state == "idle"' "VoiceNotes.status() answered over the bridge (state idle)"
 check '.voiceNotesStatus.maxDurationMs == 10800000' "VoiceNotes reports the 3-hour recording limit"
 check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() answered over the bridge (missing id: not_found)"
