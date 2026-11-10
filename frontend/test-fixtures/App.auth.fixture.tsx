@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, jest, mock, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
@@ -365,7 +365,7 @@ test("web sign-out clears SDK and app sessions before a hung OpenKey confirmatio
   expect(window.localStorage.getItem("exo.capture.transitionGen")).toBe("7");
   expect(window.localStorage.getItem("exo.voiceNotes.partialAudio.signed-out.local")).toBe("local recording");
   expect(widgetSawSessionsCleared).toBe(true);
-  expect(signOutEvents).toEqual(["openkey-widget", "sdk-signout"]);
+  expect(signOutEvents).toEqual(["sdk-signout", "openkey-widget"]);
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:auth-kind")).toBeNull();
   expect(captureInstallCalls).toBeGreaterThan(0);
 
@@ -461,7 +461,7 @@ test("sign-out offers save, delete, and cancel for local-only voice notes and st
   expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
 });
-test("a late SDK session write after the sign-out timeout cannot restore in a fresh App instance", async () => {
+test("a delayed SDK session write after a hung sign-out cannot restore across reloads", async () => {
   await mount("web");
   await click("Sign in");
   await settle();
@@ -470,32 +470,64 @@ test("a late SDK session write after the sign-out timeout cannot restore in a fr
   window.localStorage.setItem("xyz.tinycloud.tinychat:session", appSession);
   const restoresBeforeSignOut = restoreCalls;
   lastTcw!.signOut = () => new Promise<void>(() => {});
+  let releaseLateWrite!: () => void;
+  const lateWrite = new Promise<void>((resolve) => {
+    releaseLateWrite = () => {
+      window.localStorage.setItem(`tinycloud:session:${address}`, "late SDK session");
+      window.localStorage.setItem("tinycloud:session:active-address", address);
+      window.localStorage.setItem("xyz.tinycloud.tinychat:session", appSession);
+      resolve();
+    };
+  });
 
   await click("Test sign out");
   await settle();
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).not.toBeNull();
   expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
 
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 5_100));
-    await tick();
-  });
-  // Model a delayed SDK persistence write after the bounded sign-out call timed out.
-  window.localStorage.setItem(`tinycloud:session:${address}`, "late SDK session");
-  window.localStorage.setItem("tinycloud:session:active-address", address);
+  jest.useFakeTimers();
+  try {
+    await act(async () => {
+      jest.advanceTimersByTime(5_100);
+      for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+    });
+  } finally {
+    jest.useRealTimers();
+  }
 
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:session")).toBeNull();
   await remount("web");
   expect(restoreCalls).toBe(restoresBeforeSignOut);
-  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:session")).toBeNull();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
   expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
   expect(window.localStorage.getItem("tinycloud:session:active-address")).toBeNull();
+
+  // A storage write that began before logout may finish after the first new App boot.
+  releaseLateWrite();
+  await lateWrite;
+  await remount("web");
+  expect(restoreCalls).toBe(restoresBeforeSignOut);
+  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:session")).toBeNull();
+  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
+  expect(window.localStorage.getItem("tinycloud:session:active-address")).toBeNull();
+
+  loginAddress = "0x00000000000000000000000000000000000000b2";
   await click("Sign in");
   await settle();
+  const otherAddress = loginAddress.toLowerCase();
+  window.localStorage.setItem(`tinycloud:session:${otherAddress}`, "new account session");
+  window.localStorage.setItem("tinycloud:session:active-address", otherAddress);
+  window.localStorage.setItem("xyz.tinycloud.tinychat:session", JSON.stringify({
+    token: "account-b-session",
+    expiresAt: Date.now() + 60_000,
+    address: loginAddress,
+  }));
+  const restoresBeforeOtherAccount = restoreCalls;
+  await remount("web");
+  expect(restoreCalls).toBe(restoresBeforeOtherAccount + 1);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
-  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
-}, 8_000);
+  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toContain(address);
+});
 
 
 test("native interactive sign-in mounts the authenticated workspace", async () => {

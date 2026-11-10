@@ -57,11 +57,21 @@ function clearCompletedMarkers(store: MarkerStore | undefined, principal: string
 export function signOutReplicaAware(tcw: TinyCloudWeb, deps: ReplicaSignOutDeps = {}): Promise<ReplicaSignOutResult> {
   const existing = inFlight.get(tcw);
   if (existing) return existing;
-  const task = (async (): Promise<ReplicaSignOutResult> => {
-    const hasReplica = clientHasReplication(tcw);
+  const hasReplica = clientHasReplication(tcw);
+  let resolveTask!: (result: ReplicaSignOutResult) => void;
+  let rejectTask!: (error: unknown) => void;
+  const pendingTask = new Promise<ReplicaSignOutResult>((resolve, reject) => {
+    resolveTask = resolve;
+    rejectTask = reject;
+  });
+  const task = hasReplica ? trackStartupPurge(pendingTask) : pendingTask;
+  inFlight.set(tcw, task);
+  const run = async (): Promise<ReplicaSignOutResult> => {
     try {
+      // Invoke signOut now so the SDK fences credential writers before another queued
+      // persistence microtask can run after the app's synchronous local clear.
       await withTimeout(
-        Promise.resolve().then(() => tcw.signOut?.()),
+        Promise.resolve(tcw.signOut?.()),
         deps.remoteTimeoutMs ?? REMOTE_SIGN_OUT_TIMEOUT_MS,
       );
     } catch (caught) {
@@ -80,7 +90,7 @@ export function signOutReplicaAware(tcw: TinyCloudWeb, deps: ReplicaSignOutDeps 
       }
     }
     return { ok: true };
-  })();
-  inFlight.set(tcw, clientHasReplication(tcw) ? trackStartupPurge(task) : task);
-  return inFlight.get(tcw)!;
+  };
+  void run().then(resolveTask, rejectTask);
+  return task;
 }
