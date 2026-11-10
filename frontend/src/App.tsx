@@ -41,6 +41,12 @@ import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
 import { uploadRunner } from "./lib/audioUpload";
+import {
+  clearWebSignOutPending,
+  hasWebSignOutPending,
+  setWebSignOutPending,
+  webSignOutPendingAddress,
+} from "./lib/sessionSignOutFence";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { createWebSignInPrefetch, WEB_APP_MANIFEST, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
@@ -184,7 +190,10 @@ import { useNativeSignIn } from "./shell/useNativeSignIn";
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
 
-const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = `Signed out of ${APP_NAME}. To use a different account, also sign out at openkey.so.`;
+const OPENKEY_SIGN_OUT_UNPROVEN_NOTE =
+  "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.";
+const WEB_SIGN_OUT_RECOVERY_WARNING =
+  "You're signed out of TinyCloud Chat, but local session cleanup is still pending. Sign in again to retry cleanup.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
 const BACKEND_URL =
@@ -347,11 +356,14 @@ export function App() {
       .catch(() => undefined);
     return task;
   }, [performCaptureHandoff]);
-  const completeLocalSignOut = useCallback((warning: string | null, terminal = false) => {
+  const completeLocalSignOut = useCallback((warning: string | null, terminal = false, webFenceToken?: string, addressOverride?: string | null) => {
     sessionEpochRef.current += 1;
     nativeRenewalRef.current?.stop();
     nativeRenewalRef.current = null;
-    const storedAddress = sessionStoreRef.current.getAddress() ?? address;
+    const storedAddress = addressOverride ?? sessionStoreRef.current.getAddress() ?? address;
+    const fenceToken = webFenceToken ?? (storedAddress && !isNativeOpenKeySession()
+      ? setWebSignOutPending(storedAddress) ?? undefined
+      : undefined);
     const accountDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
     if (tcw && clientHasReplication(tcw)) stopReplicationFill(tcw);
     historyPrefetch.clear();
@@ -377,7 +389,13 @@ export function App() {
       void localSignOut
         .then((result) => {
           if (result && !result.ok) setError((current) => (current?.includes(result.message) ? current : result.message));
-        }, (caught: unknown) => logNativeOpenKeyError("TinyCloud sign-out cleanup", caught))
+          else if (storedAddress && fenceToken && !clearWebSignOutPending(storedAddress, fenceToken)) {
+            setError(WEB_SIGN_OUT_RECOVERY_WARNING);
+          }
+        }, (caught: unknown) => {
+          logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
+          setError(WEB_SIGN_OUT_RECOVERY_WARNING);
+        })
         .finally(cleanup);
     }
     selectionControllerRef.current = null;
@@ -552,6 +570,16 @@ export function App() {
     // keys, then erase it (once per page load, not awaited, no-op without a marker). An ON sign-in or
     // restore waits for it before building a replica. See lib/replication/replicationOffPurge.ts.
     const storedAccount = sessionStoreRef.current.getAddress();
+    if (hasWebSignOutPending(storedAccount ?? undefined)) {
+      logSession("restore", "signed_out");
+      completeLocalSignOut(
+        WEB_SIGN_OUT_RECOVERY_WARNING,
+        false,
+        undefined,
+        webSignOutPendingAddress() ?? storedAccount,
+      );
+      return;
+    }
     void purgeReplicaCopyWhenOffOnce(storedAccount ? replicationPrincipalFor(storedAccount) : undefined);
     logSession("restore", "start");
     restoreInFlightRef.current = true;
@@ -740,7 +768,7 @@ export function App() {
     } finally {
       restoreInFlightRef.current = false;
     }
-  }, [captureHandoff]);
+  }, [captureHandoff, completeLocalSignOut]);
 
   useEffect(() => {
     if (restoredRef.current) return;
@@ -1088,6 +1116,9 @@ export function App() {
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
+      if (!clearWebSignOutPending(connectedAddress)) {
+        throw new Error("Couldn't finish local sign-out cleanup. Try signing in again.");
+      }
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
@@ -1126,6 +1157,33 @@ export function App() {
     setSigningOut(true);
     setError(null);
     try {
+      const nativeSession = isNativeOpenKeySession();
+      const signOutAddress = sessionStoreRef.current.getAddress() ?? address;
+      let webFenceToken: string | undefined;
+      let nativeFenceStored = true;
+      let fenceInstalled = false;
+      const installSignOutFence = () => {
+        if (fenceInstalled) return true;
+        if (nativeSession && !options.terminal) {
+          nativeFenceStored = setNativeSignOutPending(true);
+          if (!nativeFenceStored) return false;
+        } else if (!nativeSession && signOutAddress) {
+          webFenceToken = setWebSignOutPending(signOutAddress) ?? undefined;
+          if (!webFenceToken) return false;
+        }
+        sessionEpochRef.current += 1;
+        fenceInstalled = true;
+        return true;
+      };
+      const releaseSignOutFence = () => {
+        if (nativeSession && !options.terminal) return setNativeSignOutPending(false);
+        return !webFenceToken || !signOutAddress || clearWebSignOutPending(signOutAddress, webFenceToken);
+      };
+      const stopForFenceFailure = () => {
+        setError(nativeSession ? NATIVE_SIGN_OUT_WARNING
+          : "Couldn't secure local sign-out. Your session is still active; try again.");
+        void nativeRenewalRef.current?.resume();
+      };
       if (!options.terminal && tcw?.did) {
         let pending: Awaited<ReturnType<typeof VoiceNotes.listPending>>["recordings"] = [];
         try {
@@ -1142,6 +1200,10 @@ export function App() {
           setPendingVoiceNoteSignOut({ count: unsaved.length, error: null });
           return;
         }
+        if (!installSignOutFence()) {
+          stopForFenceFailure();
+          return;
+        }
         if (unsaved.length > 0 && options.pendingChoice === "save") {
           try {
             await savePendingRecordings(tcw);
@@ -1149,11 +1211,13 @@ export function App() {
               (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
             if (remaining.length > 0) {
               setPendingVoiceNoteSignOut({ count: remaining.length, error: "Couldn't save your voice notes. Try again, or sign out and delete them." });
+              if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
               void nativeRenewalRef.current?.resume();
               return;
             }
           } catch {
             setPendingVoiceNoteSignOut({ count: unsaved.length, error: "Couldn't save your voice notes. Try again, or sign out and delete them." });
+            if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
             void nativeRenewalRef.current?.resume();
             return;
           }
@@ -1169,20 +1233,24 @@ export function App() {
               count: remaining.length || unsaved.length,
               error: "Couldn't delete all of your voice notes. Try again.",
             });
+            if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
             void nativeRenewalRef.current?.resume();
             return;
           }
         }
       }
+      if (!installSignOutFence()) {
+        stopForFenceFailure();
+        return;
+      }
       if (!await captureHandoff()) {
+        if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
         if (!options.terminal) void nativeRenewalRef.current?.resume();
         return;
       }
-      const nativeSession = isNativeOpenKeySession();
       const openKeyClient = !nativeSession && !options.terminal ? openkeyRef.current : null;
-      const nativeFenceStored = nativeSession && !options.terminal ? setNativeSignOutPending(true) : true;
       completeLocalSignOut(nativeFenceStored ? options.terminal ?? null : NATIVE_SIGN_OUT_WARNING,
-        Boolean(options.terminal));
+        Boolean(options.terminal), webFenceToken);
       setPendingVoiceNoteSignOut(null);
       const epoch = sessionEpochRef.current;
       if (nativeSession && !options.terminal) {
@@ -1203,9 +1271,7 @@ export function App() {
           passkeysSupported: openkeyPasskeysSupported(),
         })).then((outcome) => {
           if (sessionEpochRef.current !== epoch || sessionStoreRef.current.hasSession()) return;
-          if (outcome.status === "cancelled") {
-            setError(`OpenKey stayed signed in on this device. ${APP_NAME} is signed out locally. Sign out at openkey.so before choosing another account.`);
-          } else if (outcome.status === "unverified" || outcome.status === "remote-unavailable") {
+          if (outcome.status === "cancelled" || outcome.status === "unverified" || outcome.status === "remote-unavailable") {
             setError(OPENKEY_SIGN_OUT_UNPROVEN_NOTE);
           }
         }, (caught: unknown) => logNativeOpenKeyError("OpenKey sign-out", caught));

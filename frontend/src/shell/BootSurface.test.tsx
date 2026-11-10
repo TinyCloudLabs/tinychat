@@ -12,7 +12,10 @@ test("ordinary signed-out screen keeps its default message", () => {
 });
 
 test("a failed sign-in or a local sign-out offers Sign in, never Try again", () => {
-  for (const error of ["Couldn't sign in. Please try again.", "OpenKey stayed signed in on this device. Exo is signed out locally.", "Signed out of Exo. To use a different account, also sign out at openkey.so."]) {
+  for (const error of [
+    "Couldn't sign in. Please try again.",
+    "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.",
+  ]) {
     const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error={error} onAction={() => {}} />);
     expect(markup).toContain(">Sign in</button>");
     expect(markup).not.toContain("Try again</button>");
