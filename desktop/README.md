@@ -189,7 +189,7 @@ up as `securitypolicyviolation` events and console errors in Web Inspector
 
 ## Releases and signing
 
-Releases come from `Desktop release (Exo)` (`.github/workflows/desktop-release.yml`),
+Releases come from `Desktop release (TinyCloud Home)` (`.github/workflows/desktop-release.yml`),
 dispatched from `main` for every `exo-desktop@<version>` tag; versions, channels,
 the `EXO_DESKTOP_SIGNING` switch and the secrets are in the root
 [README](../README.md) ("Desktop releases", "Signing mode", "Signing"). The build
@@ -203,7 +203,7 @@ preflight  [desktop-release; sign: true only; ubuntu]   checkout scripts/release
              desktop-signing.sh check (all 7 secrets present) -> fails in seconds, before any macOS minute
   └─ build  [no environment, no secret, every mode]     bun install, Vite, cargo + every build script, tauri build --no-bundle,
              tauri bundle (ad-hoc sealed, hardened runtime, Entitlements.plist) -> Info.plist + seal checked
-             -> artifact: DMG + ditto-zipped Exo.app
+             -> artifact: DMG + ditto-zipped <productName>.app
        └─ sign  [desktop-release when sign: true; dry run otherwise]
              checkout scripts/release + desktop/src-tauri/Entitlements.plist @ workflow_sha only; no bun, cargo, tauri, node
              provenance + secrets again -> unpack (archive digest, bundle id, versions, exec bit, no symlink out of the app)
@@ -257,7 +257,10 @@ gh api repos/$repo/environments/desktop-release/deployment-branch-policies --jq 
 ```
 
 Then add the 7 secrets (root README, "Signing", one-time setup) and set
-`EXO_DESKTOP_SIGNING` to `required`.
+`EXO_DESKTOP_SIGNING` to `required`. Done for TC-611 on 2026-11-10: the
+environment is `main`-only with Sam as required reviewer (self-review allowed),
+and holds the 7 secrets (Developer ID Application: TinyCloud, Inc. (R4QVKA785H);
+App Store Connect key `KLLY4KJK58`).
 
 ## Known constraints
 

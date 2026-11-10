@@ -1,6 +1,6 @@
-name: Desktop build (Exo)
+name: Desktop build (TinyCloud Home)
 
-# The one Exo build definition, called by desktop.yml (CI) and desktop-release.yml (releases), so the long native
+# The one desktop build definition, called by desktop.yml (CI) and desktop-release.yml (releases), so the long native
 # build is never duplicated. It produces the .dmg and a ditto-zipped .app as one workflow artifact.
 #
 # Info.plist versions: every build passes scripts/release/desktop-bundle-config.mjs's overlay to `tauri build`, so
@@ -26,9 +26,9 @@ name: Desktop build (Exo)
 #   main, the workflow commit and the release commit on freshly fetched main, an exo-desktop tag at the release commit)
 #   and that every signing secret is present, so a missing one fails in seconds, before any macOS build minute.
 # - build (no environment, no secret, in every mode): compiles (`tauri build --no-bundle`) and bundles
-#   (`tauri bundle`) Exo.app and a DMG, ad-hoc sealed (signingIdentity "-" from the overlay, hardened runtime and
+#   (`tauri bundle`) the app and a DMG, ad-hoc sealed (signingIdentity "-" from the overlay, hardened runtime and
 #   src-tauri/Entitlements.plist), checks Info.plist and the seal (codesign --verify --deep --strict on the app and the
-#   app in the DMG; a linker-only signature without sealed resources makes a downloaded Exo "damaged", with no Open
+#   app in the DMG; a linker-only signature without sealed resources makes a downloaded app "damaged", with no Open
 #   Anyway), and uploads the DMG and the ditto-zipped app (symlinks and permissions preserved). Unsigned builds (CI,
 #   EXO_DESKTOP_SIGNING=unsigned releases) publish exactly this artifact.
 # - sign (sign: true: the `desktop-release` environment; otherwise a dry run with no environment and no secret):
@@ -90,7 +90,7 @@ jobs:
     name: Signing preflight (desktop-release)
     if: inputs.sign
     runs-on: ubuntu-latest
-    # Signing secrets live only in this environment (deployment branches: main; no required reviewer).
+    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam).
     environment: desktop-release
     timeout-minutes: 5
     steps:
@@ -257,7 +257,7 @@ jobs:
       # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json).
       # VITE_EXO_BUILD_NUMBER is the CFBundleVersion the overlay stamps
       # (TC-840: the desktop line's build number); VITE_EXO_CHANNEL its channel.
-      - name: Build Exo desktop app
+      - name: Build the desktop app
         env:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
           VITE_EXO_BUILD_NUMBER: ${{ steps.bundle.outputs.bundle-version }}
@@ -302,8 +302,8 @@ jobs:
             exit 1
           fi
 
-      # Bundles the compiled app into Exo.app and the DMG without compiling anything, ad-hoc sealing the app.
-      - name: Bundle Exo
+      # Bundles the compiled app into <productName>.app and the DMG without compiling anything, ad-hoc sealing the app.
+      - name: Bundle the app
         env:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
         run: bun run --cwd desktop tauri bundle --config "$TAURI_BUNDLE_CONFIG"
@@ -394,7 +394,7 @@ jobs:
     # Explicit: a skipped preflight would otherwise skip this job too.
     if: ${{ !inputs.smoke && !cancelled() && needs.build.result == 'success' }}
     runs-on: macos-26
-    # Signing secrets live only in this environment (deployment branches: main; no required reviewer). This job checks
+    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam). This job checks
     # out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no bun, no
     # cargo, no tauri, no node_modules binary.
     environment: ${{ inputs.sign && 'desktop-release' || '' }}
@@ -456,21 +456,26 @@ jobs:
 
       # The build job already checked the app; this proves the hand-off kept it intact. Only the app is used: the
       # signed DMG is built here.
+      # The build job's outputs arrive as env, never interpolated into the script; unpack validates the product name
+      # (words of letters and digits) and the versions before they name anything it writes.
       - name: Unpack the app
         env:
           SHA256: ${{ needs.build.outputs.app-sha256 }}
+          PRODUCT_NAME: ${{ needs.build.outputs.product-name }}
           VERSION: ${{ needs.build.outputs.version }}
           SHORT_VERSION: ${{ needs.build.outputs.short-version }}
           BUNDLE_VERSION: ${{ needs.build.outputs.bundle-version }}
         run: |
-          zip="$RUNNER_TEMP/exo-build/macos/${{ needs.build.outputs.product-name }}-macos-arm64.app.zip"
+          zip="$RUNNER_TEMP/exo-build/macos/$PRODUCT_NAME-macos-arm64.app.zip"
           if [ "$(shasum -a 256 "$zip" | cut -d' ' -f1)" != "$SHA256" ]; then
-            echo "::error::${{ needs.build.outputs.product-name }}-macos-arm64.app.zip is not the archive the build job packaged"
+            echo "::error::$PRODUCT_NAME-macos-arm64.app.zip is not the archive the build job packaged"
             exit 1
           fi
-          app=$(scripts/release/desktop-signing.sh unpack "$zip" "$RUNNER_TEMP/exo-app" "$VERSION" "$SHORT_VERSION" "$BUNDLE_VERSION")
+          app=$(scripts/release/desktop-signing.sh unpack "$zip" "$RUNNER_TEMP/exo-app" "$PRODUCT_NAME" "$VERSION" "$SHORT_VERSION" "$BUNDLE_VERSION")
+          asset=${PRODUCT_NAME// /-}
           echo "EXO_APP=$app" >> "$GITHUB_ENV"
-          echo "EXO_DMG=$EXO_SIGNED/Exo_${VERSION}_aarch64.dmg" >> "$GITHUB_ENV"
+          echo "EXO_DMG=$EXO_SIGNED/${asset}_${VERSION}_aarch64.dmg" >> "$GITHUB_ENV"
+          echo "EXO_ZIP=$EXO_SIGNED/${asset}-macos-arm64.app.zip" >> "$GITHUB_ENV"
 
       # A throwaway keychain for the Developer ID identity, deleted below whatever happens.
       - name: Import the Developer ID certificate
@@ -484,7 +489,7 @@ jobs:
           echo "EXO_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
 
       # Signed: the Developer ID. Dry run: ad-hoc ("-") through the same codesign path. Never ad-hoc when signing.
-      - name: Sign Exo.app (inside-out)
+      - name: Sign the app (inside-out)
         env:
           IDENTITY: ${{ inputs.sign && secrets.APPLE_SIGNING_IDENTITY || '' }}
         run: |
@@ -542,7 +547,7 @@ jobs:
       # ditto keeps the stapled bundle's symlinks and permissions (upload-artifact would flatten them).
       - name: Package the signed app
         if: inputs.sign
-        run: ditto -c -k --sequesterRsrc --keepParent "$EXO_APP" "$EXO_SIGNED/Exo-macos-arm64.app.zip"
+        run: ditto -c -k --sequesterRsrc --keepParent "$EXO_APP" "$EXO_ZIP"
 
       # Only files that passed verify-desktop-signing.sh.
       - name: Upload the signed dmg + app
@@ -553,4 +558,4 @@ jobs:
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/exo-signed/*.dmg
-            ${{ runner.temp }}/exo-signed/Exo-macos-arm64.app.zip
+            ${{ runner.temp }}/exo-signed/*.app.zip

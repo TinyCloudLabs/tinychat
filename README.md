@@ -226,10 +226,10 @@ Only these holds are needed:
    `Release` run and the runs it dispatches are in progress. `Deploy production`
    has one fixed concurrency group that keeps only one pending run, so a manual
    run queued behind the dispatched one replaces (cancels) it; a manual
-   `Desktop release (Exo)` run for the same tag races the dispatched one.
+   `Desktop release (TinyCloud Home)` run for the same tag races the dispatched one.
 3. **Only if the go excludes desktop** (for example a web-only hotfix; the
    fixed group still tags `exo-desktop`): let the dispatch happen, then cancel
-   the `Desktop release (Exo)` run it started (`gh run cancel <id>`) before its
+   the `Desktop release (TinyCloud Home)` run it started (`gh run cancel <id>`) before its
    publish job. Never block it by disabling the workflow.
 
 Immediately before the merge, every dispatched workflow must read `active`, and
@@ -243,7 +243,7 @@ done
 gh variable get EXO_DESKTOP_SIGNING -R TinyCloudLabs/tinychat
 ```
 
-After the merge, watch `Release`, `Deploy production` and `Desktop release (Exo)`
+After the merge, watch `Release`, `Deploy production` and `Desktop release (TinyCloud Home)`
 to the end, then check that `gh release view exo-desktop@<version>` shows a
 published, latest release with the DMG, `.app.zip` and `SHA256SUMS.txt`. If the
 dispatch step failed anyway, start what it didn't, with the same inputs:
@@ -260,7 +260,7 @@ workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
 `bun run release:check` fails if they drift.
 
 **Desktop releases.** For every new stable `exo-desktop@<version>` tag the
-`Release` workflow runs `Desktop release (Exo)` **from main** with the tag as an
+`Release` workflow runs `Desktop release (TinyCloud Home)` **from main** with the tag as an
 input. Betas are manual: a merge that versions a beta builds no desktop release,
 so a release coordinator runs
 `gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`
@@ -270,16 +270,17 @@ CI (`.github/workflows/desktop-build.yml`) and publishes a GitHub Release with
 no manual step:
 
 - a beta (`0.2.0-beta.3`) becomes a **pre-release** titled
-  `Exo 0.2.0-beta.3 (beta)`, never marked latest;
+  `TinyCloud Home 0.2.0-beta.3 (beta)`, never marked latest;
 - a stable version becomes a published Release marked **latest**.
 
 **Signing follows the `EXO_DESKTOP_SIGNING` repository variable** (see Signing
 mode below): `required` signs, notarizes and staples both channels and refuses
 to publish unless the build reports `signed=true`; `unsigned` publishes an
-unsigned build whose title (`Exo 0.2.0-beta.3 (beta, UNSIGNED)`) and notes say
-so. An unset or unknown value fails the run before anything is built. Assets
-are `Exo_<version>_aarch64.dmg`, the matching `.app.zip` and
-`SHA256SUMS.txt`; the notes combine the desktop and
+unsigned build whose title (`TinyCloud Home 0.2.0-beta.3 (beta, UNSIGNED)`) and
+notes say so. An unset or unknown value fails the run before anything is built.
+Assets are `TinyCloud-Home_<version>_aarch64.dmg`, the matching `.app.zip` and
+`SHA256SUMS.txt` (the name is the tagged commit's `tauri.conf.json`
+`productName`, spaces as hyphens; releases before the rename are `Exo_...`); the notes combine the desktop and
 web changelog entries of the tagged commit. A published release is never
 rebuilt (cut a new version).
 
@@ -292,7 +293,7 @@ out) is refused by the plan: superseded betas are not published.
 
 Apple needs numeric bundle versions, so every build maps the semver:
 
-| Exo version | `CFBundleShortVersionString` | `CFBundleVersion` (`XYYZZSSS`) |
+| Desktop version | `CFBundleShortVersionString` | `CFBundleVersion` (`XYYZZSSS`) |
 |---|---|---|
 | `0.2.0-beta.3` | `0.2.0` | `200003` |
 | `0.2.0` | `0.2.0` | `200999` |
@@ -307,28 +308,22 @@ fails if the built Info.plist doesn't match.
 Beta desktop builds embed the beta web app, which talks to the production API
 (betas don't deploy the backend).
 
-**Signing mode.** `Desktop release (Exo)` reads the `EXO_DESKTOP_SIGNING`
+**Signing mode.** `Desktop release (TinyCloud Home)` reads the `EXO_DESKTOP_SIGNING`
 repository variable once, in its plan job, and has no default:
 
 | Value | Build | Release |
 |---|---|---|
 | `required` | Developer ID signed, notarized, stapled and verified (`desktop-build.yml` with `sign: true`, `desktop-release` environment) | published only if the build reports `signed=true` |
-| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested; ad-hoc sealed (`signingIdentity "-"`, same hardened runtime and entitlements) and the build fails unless `codesign --verify --deep --strict` accepts the app and the app in the DMG (Gatekeeper still rejects ad-hoc code) | title marked UNSIGNED; notes open with **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**; betas stay pre-releases, stables are marked latest |
+| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested; ad-hoc sealed (`signingIdentity "-"`, same hardened runtime and entitlements) and the build fails unless `codesign --verify --deep --strict` accepts the app and the app in the DMG (Gatekeeper still rejects ad-hoc code) | title marked UNSIGNED; notes open with **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine "/Applications/TinyCloud Home.app"`.**; betas stay pre-releases, stables are marked latest |
 | unset or anything else | nothing | the plan job fails with an error naming the two values |
 
 The provenance checks (the workflow runs from `main`, the tag points at a
-commit of `main`) apply in both modes. Until the Apple Developer ID exists,
-the variable is `unsigned`:
-
-```bash
-gh variable set EXO_DESKTOP_SIGNING --body unsigned -R TinyCloudLabs/tinychat
-```
-
-To switch to signed releases once Apple approves the enrollment: add the 7
-`APPLE_*` secrets to the `desktop-release` environment (one-time setup below),
-then set the variable to `required`. The next release is signed; a release
-already published unsigned stays unsigned (published releases are never
-rebuilt; cut a new version).
+commit of `main`) apply in both modes. The variable is `required` (TC-611; the
+Developer ID Application certificate of TinyCloud, Inc., team `R4QVKA785H`, is in
+the `desktop-release` environment). Releases published before that stay
+unsigned (published releases are never rebuilt; cut a new version). `unsigned`
+remains only as a deliberate fallback, for example while a revoked certificate
+is replaced:
 
 ```bash
 gh variable set EXO_DESKTOP_SIGNING --body required -R TinyCloudLabs/tinychat
@@ -341,8 +336,11 @@ build code; the job graph is in
 in the `desktop-release` GitHub environment, which must allow deployments from
 **`main` only** (set that up and check it before adding any secret:
 [desktop/README.md](desktop/README.md#before-adding-any-signing-secret-restrict-desktop-release-to-main))
-and has no required reviewer (fully automatic releases), so only `Desktop
-release (Exo)` dispatched on main reaches it. Only two jobs use it, and both
+and has a required reviewer (Sam; self-review allowed), so only `Desktop
+release (TinyCloud Home)` dispatched on main reaches it, and each signed release
+waits for approval twice: the preflight right after the plan, the sign job once
+the app is built. Approve from the run page or with
+`gh api -X POST repos/TinyCloudLabs/tinychat/actions/runs/<run id>/pending_deployments -F 'environment_ids[]=<id>' -f state=approved -f comment=...`. Only two jobs use it, and both
 check out nothing but `scripts/release` at the workflow commit: a preflight
 re-checks provenance (`github.workflow_ref` is main's `desktop-release.yml`, the
 workflow commit and the release commit are on freshly fetched `main`, and an
@@ -387,7 +385,8 @@ check it before adding any secret (it had no branch policy on 2026-10-04):
 
 ```bash
 repo=TinyCloudLabs/tinychat
-# 1. Environment deployable from main only, no reviewers. Check: the last command must print ["main"].
+# 1. Environment deployable from main only. Check: the last command must print ["main"].
+# Required reviewer (Sam, self-review allowed): Settings > Environments > desktop-release > Required reviewers.
 gh api -X PUT repos/$repo/environments/desktop-release \
   -F 'deployment_branch_policy[protected_branches]=false' \
   -F 'deployment_branch_policy[custom_branch_policies]=true'
@@ -395,8 +394,9 @@ gh api -X POST repos/$repo/environments/desktop-release/deployment-branch-polici
   -f name=main -f type=branch
 gh api repos/$repo/environments/desktop-release/deployment-branch-policies --jq '[.branch_policies[].name]'
 
-# 2. Developer ID Application certificate: Keychain Access > My Certificates > select
-# "Developer ID Application: ..." (with its private key) > Export > .p12 with a strong password.
+# 2. Developer ID Application certificate (G2 Sub-CA; only the Account Holder can create one, in the portal:
+# Certificates > + > Developer ID Application, with a CSR from `openssl req -new -key <key>`). Export it with its
+# private key as .p12 with a random password (openssl pkcs12 -export, or Keychain Access > Export).
 base64 -i DeveloperIDApplication.p12 | tr -d '\n' | gh secret set APPLE_CERTIFICATE --env desktop-release --repo $repo
 gh secret set APPLE_CERTIFICATE_PASSWORD --env desktop-release --repo $repo      # prompts
 security find-identity -v -p codesigning                                         # copy the identity string
@@ -404,7 +404,8 @@ gh secret set APPLE_SIGNING_IDENTITY --env desktop-release --repo $repo --body '
 gh secret set APPLE_TEAM_ID --env desktop-release --repo $repo --body '<TEAMID>'
 
 # 3. App Store Connect > Users and Access > Integrations > App Store Connect API > Team Keys:
-# generate a key with the Developer role, note the Key ID and Issuer ID, download AuthKey_<id>.p8 (once).
+# a team key (Developer role is enough for notarytool; the shared Admin key KLLY4KJK58 is used), note the Key ID
+# and Issuer ID, download AuthKey_<id>.p8 (once).
 gh secret set APPLE_API_KEY --env desktop-release --repo $repo --body '<Key ID>'
 gh secret set APPLE_API_ISSUER --env desktop-release --repo $repo --body '<Issuer ID>'
 gh secret set APPLE_API_PRIVATE_KEY --env desktop-release --repo $repo < AuthKey_<id>.p8
