@@ -103,16 +103,16 @@ export function NativeSignIn(props: {
           <span className="h-px flex-1 bg-border" />or<span className="h-px flex-1 bg-border" />
         </div>
         <div className="flex flex-col gap-3">
+          <Button type="button" variant="outline" size="lg" className={WRAPPING_BUTTON} disabled={busy}
+            onClick={() => props.onSignIn({ loginMethod: "google" })}>
+            <GoogleMark /><span className="min-w-0">Continue with Google</span>
+          </Button>
           {props.socialProviders?.includes("apple") && (
             <Button type="button" variant="outline" size="lg" className={WRAPPING_BUTTON} disabled={busy}
               onClick={() => props.onSignIn({ loginMethod: "apple" })}>
               <AppleMark /><span className="min-w-0">Continue with Apple</span>
             </Button>
           )}
-          <Button type="button" variant="outline" size="lg" className={WRAPPING_BUTTON} disabled={busy}
-            onClick={() => props.onSignIn({ loginMethod: "google" })}>
-            <GoogleMark /><span className="min-w-0">Continue with Google</span>
-          </Button>
           <Button type="button" variant="outline" size="lg" className={WRAPPING_BUTTON} disabled={busy}
             onClick={() => props.onSignIn({ loginMethod: "passkey" })}>
             <KeyRoundIcon aria-hidden /><span className="min-w-0">Use a passkey</span>

@@ -41,7 +41,7 @@ describe("Continue with Apple (TC-1233)", () => {
     expect(markup({ socialProviders: ["google", "apple"] })).toContain("Continue with Apple");
   });
 
-  test("sends only the apple method, even with an email typed, and sits above Google with the same button style", async () => {
+  test("sends only the apple method, even with an email typed, and sits below Google (no shift under a tap) with the same button style", async () => {
     const view = await mount({ socialProviders: ["google", "apple"] });
     const input = view.host.querySelector("input")!;
     await act(async () => {
@@ -49,7 +49,7 @@ describe("Continue with Apple (TC-1233)", () => {
       input.dispatchEvent(new InputEvent("input", { bubbles: true, data: input.value, inputType: "insertText" }));
     });
     const labels = view.buttons().map((button) => button.textContent);
-    expect(labels.indexOf("Continue with Apple")).toBeLessThan(labels.indexOf("Continue with Google"));
+    expect(labels.indexOf("Continue with Apple")).toBe(labels.indexOf("Continue with Google") + 1);
     const apple = view.buttons().find((button) => button.textContent === "Continue with Apple")!;
     const google = view.buttons().find((button) => button.textContent === "Continue with Google")!;
     expect(apple.className).toBe(google.className);
