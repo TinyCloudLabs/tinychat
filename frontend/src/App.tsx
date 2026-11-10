@@ -165,8 +165,8 @@ import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
-  restoreNativeAtBoot, nativeRenewalServices, secretsAvailable, nativeSignOutPending,
-  setNativeSessionActive, setNativeSignOutPending, signInNative, signOutNative, type NativeSignInHints,
+  restoreNativeAtBoot, nativeRenewalServices, secretsAvailable, nativeSignOutPending, loadOpenKeySocialProviders,
+  setNativeSessionActive, setNativeSignOutPending, signInNative, signOutNative, type NativeSignInHints, type OpenKeySocialProvider,
   type NativeSignInConfig,
   NATIVE_SIGN_OUT_WARNING,
 } from "./lib/openkeyNative";
@@ -1343,6 +1343,14 @@ export function App() {
     native: nativeSignIn, state, localHome: deviceCapture && state !== "recoverableError", signIn, restoreSession, settleSignedOut,
   });
   const authAction = nativeSignInFlow.authAction;
+  // Which social buttons the native sign-in screen may offer; Apple appears only once OpenKey lists it.
+  const [socialProviders, setSocialProviders] = useState<OpenKeySocialProvider[]>([]);
+  useEffect(() => {
+    if (!nativeSignInFlow.screenShown) return;
+    let live = true;
+    void loadOpenKeySocialProviders(OPENKEY_HOST).then((loaded) => { if (live) setSocialProviders(loaded); });
+    return () => { live = false; };
+  }, [nativeSignInFlow.screenShown]);
 
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
@@ -1573,7 +1581,7 @@ export function App() {
           <SignedOutSurface homeSite={HOME_SITE} platform={platform} state={state} error={error} onAction={authAction}
             native={nativeSignInFlow.screenShown
               ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
-                onClose={nativeSignInFlow.onClose} />
+                onClose={nativeSignInFlow.onClose} socialProviders={socialProviders} />
               : undefined} />
         )}
       </div>

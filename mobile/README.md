@@ -746,8 +746,10 @@ The session JWK never touches WebView localStorage. Details:
   malformed host fails sign-in with the "not configured in this build" error. The backend nonce for the session SIWE is address-less: `GET
   /api/auth/nonce` without `?address=` issues an unbound, single-use,
   5-minute nonce that `/verify` binds to the recovered signer.
-- The delegation covers the manifest's applications-space KV/SQL entries plus
-  capabilities/read — no secrets or vault. Everything that unlocks or stores
+- The delegation covers the manifest's applications-space KV, SQL and hook
+  entries (not `tinycloud.space`) plus capabilities/read, the same grant as the
+  web sign-in; OpenKey's Home native client ceiling matches it (TC-2720) and the
+  `Native ceiling` CI job checks that. No secrets or vault. Everything that unlocks or stores
   credentials (connect, Sync now, disconnect key-delete, own AssemblyAI key,
   the background drains) is gated behind `secretsAvailable()` for native
   delegation sessions and shows "set up from Exo on the web or desktop" copy.

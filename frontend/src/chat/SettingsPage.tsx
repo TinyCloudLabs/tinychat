@@ -14,11 +14,13 @@ import {
   RefreshCwIcon,
   ShieldCheckIcon,
   SunIcon,
+  Trash2Icon,
   UserIcon,
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { StorageFullMessage } from "./StorageFullDialog";
 import { openManageStorage } from "@/lib/openManageStorage";
+import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -184,6 +186,25 @@ export function SettingsPage({
                 <span>{signingOut ? "Signing out…" : "Sign out"}</span>
               </Button>
             </div>
+            {/* App Store 5.1.1(v): the account lives on OpenKey, so deletion opens OpenKey's own
+                deletion page, which asks for a fresh passkey or email code. Desktop has no
+                fixed-URL opener for it yet, so the row is phone and web only. */}
+            {appPlatform() !== "tauri" && (
+              <div className="mt-4 border-t border-border pt-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void openOpenKeyAccountDeletion()}
+                  className="h-auto min-h-[var(--tc-control-height-sm)] max-w-full gap-1.5 whitespace-normal py-1.5 text-left text-destructive"
+                >
+                  <Trash2Icon className="size-4" />
+                  <span>Delete OpenKey account</span>
+                </Button>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Permanently deletes your OpenKey account and destroys its keys. You'll confirm on openkey.so.
+                </p>
+              </div>
+            )}
           </SectionCard>
           {appsFeedEnabled && (
             <SectionCard icon={LayoutGridIcon} title="Home">
