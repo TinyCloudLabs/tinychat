@@ -136,7 +136,7 @@ describe("createTinyCloudWeb", () => {
     expect(lastTinyCloudConfig.manifest).toBe(explicitManifest);
   });
 
-  test("adds the replication option only when supplied (flag OFF keeps the config key-for-key)", () => {
+  test("does not enable replica sync for browser SIWE sign-in, even when requested", () => {
     const provider = { request: async () => null } as any;
     createTinyCloudWeb(provider, { tinycloudHosts: ["https://node.example"] });
     expect("replication" in lastTinyCloudConfig).toBe(false);
@@ -144,8 +144,8 @@ describe("createTinyCloudWeb", () => {
 
     const replication = { enabled: true, prefixes: ["app/x/"], storage: {} } as any;
     createTinyCloudWeb(provider, { tinycloudHosts: ["https://node.example"], replication });
-    expect(lastTinyCloudConfig.replication).toBe(replication);
-    expect(Object.keys(lastTinyCloudConfig).sort()).toEqual([...withoutKeys, "replication"].sort());
+    expect("replication" in lastTinyCloudConfig).toBe(false);
+    expect(Object.keys(lastTinyCloudConfig).sort()).toEqual(withoutKeys);
   });
 });
 
@@ -204,14 +204,14 @@ describe("restoreTinyCloudWebSession", () => {
     expect(lastTinyCloudConfig.sessionStorage.constructor.name).toBe("BrowserSessionStorage");
   });
 
-  test("passes replication only when supplied; otherwise the SDK config has no such key", async () => {
+  test("does not enable replica sync when restoring a persisted browser SIWE session", async () => {
     restoreResult = { status: "restored", session: { address: "0xabc" } };
     await restoreTinyCloudWebSession("0xabc", { tinycloudHosts: ["https://node.example"] });
     expect("replication" in lastTinyCloudConfig).toBe(false);
 
     const replication = { enabled: true, prefixes: ["app/x/"], storage: {} } as any;
     await restoreTinyCloudWebSession("0xabc", { replication });
-    expect(lastTinyCloudConfig.replication).toBe(replication);
+    expect("replication" in lastTinyCloudConfig).toBe(false);
   });
 
   test("keeps the SDK's spaceId when it provides one", async () => {
