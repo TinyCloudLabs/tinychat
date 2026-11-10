@@ -60,7 +60,8 @@ test("a failed native handoff leaves the bearer session intact", async () => {
   let uiChanged = false;
   const session = { clear: () => { cleared = true; } };
   const dispose = registerSessionSignedOutHook(session, async () => false, () => { uiChanged = true; });
-  await expect(clearSessionAfterHandoff(session)).rejects.toThrow("Session was kept");
+  await expect(clearSessionAfterHandoff(session)).rejects.toThrow(
+    "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
   expect(cleared).toBe(false);
   expect(uiChanged).toBe(false);
   dispose();

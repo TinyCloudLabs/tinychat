@@ -51,7 +51,11 @@ describe("sign-out with replication", () => {
       async () => { throw new Error("Replica gate was not denied (REPLICA_GATED); the replica may still be restorable."); },
     );
     const result = await signOutReplicaAware(tcw);
-    expect(result).toEqual({ ok: false, message: REPLICA_PURGE_FAILED_WARNING, code: "REPLICA_GATED" });
+    expect(result).toEqual({
+      ok: false,
+      message: "You're signed out of TinyChat, but this browser may still have a saved copy of your meetings. Reload and sign in again to remove it.",
+      code: "REPLICA_GATED",
+    });
     expect(getReplicationStatus()).toMatchObject({ purgeFailed: true, errorCode: "REPLICA_GATED" });
     expect(formatReplicationStatus(getReplicationStatus())).toContain("sign-out erase failed");
   });

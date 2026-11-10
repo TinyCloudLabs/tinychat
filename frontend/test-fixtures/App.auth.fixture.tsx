@@ -112,7 +112,7 @@ mock.module("@/lib/sessionRestore", () => ({
 mock.module("@/lib/sessionSignedOut", () => ({
   clearSessionAfterHandoff: async (store: { clear: () => void }) => {
     const hook = sessionHooks.get(store);
-    if (hook && !await hook.handoff()) throw new Error("Couldn't update this phone's recording account. Session was kept.");
+    if (hook && !await hook.handoff()) throw new Error("Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
     store.clear();
     hook?.onCleared?.();
   },

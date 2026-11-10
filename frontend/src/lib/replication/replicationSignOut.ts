@@ -7,12 +7,7 @@ import { trackStartupPurge } from "./replicationStartupPurge";
 import { markReplicationPurgeFailed } from "./replicationStatus";
 
 export const REPLICA_PURGE_FAILED_WARNING =
-  "You are signed out, but this browser's saved copy of your meetings may not have been fully removed. "
-  + "Reload and sign in again to finish removing it.";
-
-export const REPLICA_KEYS_KEPT_WARNING =
-  "You are signed out, but a saved copy of your transcripts may still be readable on this device until it is removed. "
-  + "Reload and sign in again to finish removing it.";
+  "You're signed out of TinyChat, but this browser may still have a saved copy of your meetings. Reload and sign in again to remove it.";
 
 export type ReplicaSignOutResult = { ok: true } | { ok: false; message: string; code: string };
 
