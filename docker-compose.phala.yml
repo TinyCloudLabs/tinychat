@@ -15,7 +15,7 @@ services:
       TINYCLOUD_HOST: ${TINYCLOUD_HOST:-https://tee.node.tinycloud.xyz}
       FRONTEND_URL: ${FRONTEND_URL:-https://tinycloud.chat}
       REDPILL_API_KEY: ${REDPILL_API_KEY:-}
-      REDPILL_BASE_URL: ${REDPILL_BASE_URL:-https://api.redpill.ai/v1}
+      REDPILL_BASE_URL: ${REDPILL_BASE_URL:-https://tee.redpill.ai/v1}
       REDPILL_DEFAULT_MODEL: ${REDPILL_DEFAULT_MODEL:-z-ai/glm-5.2}
       # Per-user delegated agent tools (Milestone E). All three must be set for
       # the agent/tool-calling path to turn on; unset = agent path stays off and

@@ -232,7 +232,7 @@ describe("agent chat turn budget", () => {
 
     const app = express();
     app.use(express.json());
-    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter());
+    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter({ redpillFetch: (input, init) => globalThis.fetch(input, init) }));
     const server = await new Promise<Server>(resolve => {
       const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
     });
@@ -305,7 +305,7 @@ describe("agent chat turn budget", () => {
       }) as typeof fetch;
       const app = express();
       app.use(express.json());
-      app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter());
+      app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter({ redpillFetch: (input, init) => globalThis.fetch(input, init) }));
       const server = await new Promise<Server>(resolve => {
         const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
       });

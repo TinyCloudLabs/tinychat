@@ -8,6 +8,7 @@ import { runScenario, providerResponseDiagnostic, type ProviderResponseDiagnosti
 import { MEETING_EVAL_SCENARIOS } from "./meeting-eval-fixtures.js";
 import { parseSseJson } from "../src/routes/agent-chat.js";
 import { isOfferedChatModel } from "../../packages/core/src/chatModels.js";
+import { DEFAULT_RED_PILL_BASE_URL } from "../src/redpill-aci.js";
 
 interface ProbeTiming {
   requestStartedAt?: string;
@@ -108,7 +109,7 @@ async function main() {
     const sourceHashes: Record<string, string> = {};
     for (const file of sourceFiles) sourceHashes[file] = createHash("sha256").update(await readFile(file)).digest("hex");
     const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const result = await probeInterpretation({ apiKey, baseUrl: process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1", timeoutMs, model });
+    const result = await probeInterpretation({ apiKey, baseUrl: process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL, timeoutMs, model });
     const report = { generatedAt: new Date().toISOString(), revision, sourceHashes, bunVersion: process.versions.bun ?? "unavailable", ...result };
     await destination.writeFile(JSON.stringify(report, null, 2) + "\n");
     console.log(JSON.stringify({ output, model, providerRequestCount: result.providerRequestCount, providerResponse: result.providerResponse, compatible: result.compatible, errorCode: result.errorCode, timing: result.timing }));

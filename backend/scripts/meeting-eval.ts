@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DEFAULT_RED_PILL_BASE_URL } from "../src/redpill-aci.js";
 import { OFFERED_CHAT_MODELS } from "../../packages/core/src/chatModels.js";
 import { createFixtureService, MEETING_EVAL_CALENDAR, MEETING_EVAL_SCENARIOS, scenarioScopeExpectation, type MeetingEvalScenario } from "./meeting-eval-fixtures.js";
 import { validateMeetingPlan } from "../src/transcripts/meeting-turn.js";
@@ -592,7 +593,7 @@ export async function main(args = process.argv.slice(2), providerFetch?: typeof 
     return;
   }
   const key = process.env.REDPILL_API_KEY;
-  const baseUrl = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
+  const baseUrl = process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL;
   const timeoutMs = explicitTimeoutMs ?? (process.env.AGENT_STREAM_TURN_TIMEOUT_MS === undefined ? undefined
     : validateInteger("AGENT_STREAM_TURN_TIMEOUT_MS", Number(process.env.AGENT_STREAM_TURN_TIMEOUT_MS), 2_147_483_647));
   const cwd = new URL("../../", import.meta.url).pathname;
