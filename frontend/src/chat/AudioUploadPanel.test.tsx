@@ -18,8 +18,12 @@ import { POWERFUL_PROVIDER_NAME, TRANSCRIBER_NAME } from "@/capture/recorder/fin
 import { SoftActions } from "@/capture/home/SoftActions";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AboutPage } from "./AboutPage";
-import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
+import { assemblyAiStatus, AudioUploadPanel, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
 import type { UploadState } from "@/lib/audioUpload";
+import { setHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
+import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 const noop = () => {};
 
@@ -248,4 +252,36 @@ test("discard cleanup offers Retry deleting without claiming the meeting was sav
   expect(html).toContain("Retry deleting</button>");
   expect(html).not.toContain(">Retry</button>");
   expect(html).not.toContain("Saved to your TinyCloud space");
+});
+
+test("while a Home permission ask has OpenKey open, a failed upload says to finish there first, beside Retry and Discard that wait", () => {
+  const failed = job({ stage: "failed", error: { message: "The upload stopped.", retry: true, reference: null } });
+  const waiting = renderUpload({ job: failed, waitForOpenKey: true });
+  expect(waiting).toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
+  expect(waiting).toMatch(/<button[^>]*disabled=""[^>]*>Retry<\/button>/);
+  expect(waiting).toMatch(/<button[^>]*disabled=""[^>]*>Discard<\/button>/);
+  const open = renderUpload({ job: failed });
+  expect(open).not.toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
+  expect(open).not.toMatch(/disabled=""[^>]*>(Retry|Discard)<\/button>/);
+});
+
+test("while a Home permission ask has OpenKey open, Upload says to finish there first and offers no Transcribe", () => {
+  const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1", spaceId: "space-1" } as unknown as TinyCloudWeb;
+  const sessionStore = { getToken: () => "token" } as unknown as SessionStore;
+  const render = () => renderToStaticMarkup(
+    <MemoryRouter>
+      <StaticRecorderProvider value={{ available: false }}>
+        <AudioUploadPanel tcw={tcw} backendUrl="http://localhost" sessionStore={sessionStore} />
+      </StaticRecorderProvider>
+    </MemoryRouter>,
+  );
+  setHomeReauthorizing(true);
+  try {
+    const html = render();
+    expect(html).toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Transcribe<\/button>/);
+  } finally {
+    setHomeReauthorizing(false);
+  }
+  expect(render()).not.toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
 });

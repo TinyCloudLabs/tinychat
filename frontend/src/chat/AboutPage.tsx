@@ -157,13 +157,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       </p>
       <Sub>Calendar autojoin</Sub>
       <p>
-        A notetaker joins confirmed Google Meet events on your primary calendar when you organize or accept them, from
-        one minute before start until five minutes after start or the event ends. The host still needs to admit it.
-      </p>
-      <p>
-        It works while TinyChat is closed. Recordings import when you return and unlock your space. Turning it off
-        removes the server’s saved Google token and requests stops for active autojoined bots; Google’s granted
-        permissions and your browser importer remain.
+        A notetaker joins Google Meet events on your main calendar that you organize or have accepted, even while TinyChat is closed; the host still admits it. Recordings reach your space the next time you open TinyChat. Turning it off deletes our server&apos;s copy of your Google sign-in.
       </p>
     </>
   ),

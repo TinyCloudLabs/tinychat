@@ -1,9 +1,16 @@
 import type { EIP1193Provider, requestNonce } from "@tinyboilerplate/client";
 import { validateManifest, type Manifest } from "@tinycloud/sdk-core";
 import appManifest from "../../../manifest.json";
+import homeManifest from "../../../manifest.home.json";
+import { HOME_SITE } from "./homeSite";
+
+/** The grants one build signs: the Home site asks only for what Feed, Chat and Apps use; every other web build, the full manifest. */
+export function webAppManifestFor(homeSite: boolean): Manifest {
+  return validateManifest(homeSite ? homeManifest : appManifest);
+}
 
 // Web and backend deploy independently. Sign the grants shipped with this client.
-export const WEB_APP_MANIFEST = validateManifest(appManifest);
+export const WEB_APP_MANIFEST = webAppManifestFor(HOME_SITE);
 
 // Server nonces expire at five minutes; leave one minute for SDK setup and verification.
 const MAX_NONCE_AGE_MS = 4 * 60_000;

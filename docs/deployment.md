@@ -156,6 +156,38 @@ writer. Treat write access to this repo as production access.
 The same frontend, built with `VITE_HOME_SITE=true`, is also served as the
 TinyCloud Home site at `https://home.tinycloud.xyz`.
 
+- **Sign-in grant:** the Home build signs in with `manifest.home.json`, not the
+  root `manifest.json`: only what Feed, Chat and Apps use. It has the same
+  `app_id` (`xyz.tinycloud.tinychat`), so the data is shared with
+  tinycloud.chat. It grants: KV `threads/` (chat share links); SQL `threads`
+  (chats and settings), `home_feed` and `feed/` (the feed); the hooks that
+  refresh the feed and chats; and space info (storage panel). It has no
+  secrets, no decrypt grant, and none of the canvas, connectors, details,
+  summaries or transcripts databases. tinycloud.chat keeps the full
+  `manifest.json` and signs in exactly as before. The backend keeps reading
+  `manifest.json` (`/api/server-info` and the delegation routes depend on its
+  connectors coverage), so do not narrow it. A Home session signed in under the
+  broad grant is cleared once (revision `home-1`, in
+  `frontend/src/lib/manifestRevision.ts`) and the user signs in once more.
+- **Recording and Connectors on Home:** each has its own set
+  (`HOME_RECORDING_ENTRIES`, `HOME_CONNECTORS_ENTRIES` in
+  `packages/core/src/manifest-bundle.ts`). Only Connectors keeps secrets (its
+  connector keys), so only it adds the decrypt grant, composed at request time
+  (the SDK adds `network.create` on the owner's default network to it).
+  Recording keeps none: no secret, no decrypt grant, no encryption ability at
+  all. When one is opened and the session does not cover its set, it
+  asks in place: Home signs in again in the page on a separate instance with
+  the base grant plus every set the session has or the device used, plus this
+  one (one OpenKey approval). It replaces the session only when the approval
+  covers everything asked, the backend verifies it, the owner is still signed
+  in, and no recording, upload or save is running; otherwise nothing is saved.
+  New recordings and uploads wait while OpenKey is open. Once a feature
+  has been used on a device, `xyz.tinycloud.tinychat:home-features:<address>`
+  in localStorage (feature names only; kept on sign-out) makes the next
+  sign-in include its set. Background work for a feature, including the
+  recorder's own checks, runs only when it is flagged on the device and the
+  session covers its set. Agent access is off on Home. The flag never changes
+  the revision: any grant carrying the Home bundle records `home-1`.
 - **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
   name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
   `production`.

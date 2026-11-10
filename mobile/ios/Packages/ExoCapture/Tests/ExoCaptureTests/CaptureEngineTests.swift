@@ -19,12 +19,45 @@ import XCTest
         }
     }
 
-    private func withEngine(clock: CaptureClock = SystemCaptureClock(),
+    /// Upper bound for waits on an event that normally arrives immediately (a stop completion, a
+    /// recovery adoption). Expectations return as soon as the event fires, so a generous bound only
+    /// matters when the test is already failing; shared CI runners have stalled for tens of seconds.
+    private let eventTimeout: TimeInterval = 30
+
+    /// Deterministic stand-in for the AVFoundation MPEG-4 remux. Tests of Stop, recovery and
+    /// journal orchestration do not depend on encoder output, and on a shared simulator runner the
+    /// real remux has taken 10 to 36 s per note (CI run 42464459435), which made every 10 s Stop wait
+    /// a coin flip. `testRecordedLimitCommitsRealAudio` keeps the real remux end to end.
+    private func useStubMux(_ engine: CaptureEngine) {
+        var seam = RecordingFinalizer.WaitSeam()
+        seam.workerOverride = { output, progress in
+            try progress.tick()
+            try Data("m4a".utf8).write(to: output)
+        }
+        engine.debugMuxWaitSeam = seam
+    }
+
+    /// Spins the main run loop until every Stop finalization has completed. A finalization that
+    /// outlives its test would otherwise fail on the deleted root and call XCTFail from its Stop
+    /// completion inside whichever test runs next.
+    private func drainFinalizations(_ engine: CaptureEngine) {
+        let deadline = Date(timeIntervalSinceNow: 60)
+        while engine.debugPendingStopFinalizations > 0 && Date() < deadline {
+            _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+        }
+        if engine.debugPendingStopFinalizations > 0 {
+            XCTFail("Stop finalization still pending after drain")
+        }
+    }
+
+    private func withEngine(clock: CaptureClock = SystemCaptureClock(), realMux: Bool = false,
                             _ body: (CaptureEngine) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-engine-\(UUID().uuidString)")
         let engine = try CaptureEngine(testRoot: root, clock: clock)
         engine.debugForeground = true
+        if !realMux { useStubMux(engine) }
         defer {
+            drainFinalizations(engine)
             _ = try? engine.discard()
             try? FileManager.default.removeItem(at: root)
         }
@@ -144,7 +177,7 @@ import XCTest
                 XCTAssertEqual($0 as? CaptureError, .recordingInProgress)
             }
             release.signal()
-            wait(for: [completed], timeout: 10)
+            wait(for: [completed], timeout: eventTimeout)
             XCTAssertEqual(sttWakeups, 1)
             XCTAssertFalse(recovered)
             XCTAssertEqual(try engine.library.listCommitted().filter { $0["id"] as? String == id }.count, 1)
@@ -190,7 +223,7 @@ import XCTest
             XCTAssertEqual(autoStops, 0)
             XCTAssertEqual(failures, 0)
             release.signal()
-            wait(for: [completed], timeout: 10)
+            wait(for: [completed], timeout: eventTimeout)
             XCTAssertEqual(try engine.library.listCommitted().filter { $0["id"] as? String == id }.count, 1)
         }
     }
@@ -205,7 +238,7 @@ import XCTest
                 if case .success = result { XCTFail("Stop unexpectedly succeeded") }
                 failed.fulfill()
             }
-            wait(for: [failed], timeout: 1)
+            wait(for: [failed], timeout: eventTimeout)
             XCTAssertEqual(engine.status()["id"] as? String, id)
             XCTAssertTrue(engine.debugGraphActive)
             XCTAssertTrue(engine.library.isLiveCapture(id))
@@ -215,7 +248,7 @@ import XCTest
                 if case .failure(let error) = result { XCTFail("Retry Stop failed: \(error)") }
                 completed.fulfill()
             }
-            wait(for: [completed], timeout: 10)
+            wait(for: [completed], timeout: eventTimeout)
             XCTAssertEqual(try engine.library.listCommitted().filter { $0["id"] as? String == id }.count, 1)
         }
     }
@@ -234,6 +267,7 @@ import XCTest
                                              "transcriber": "on-device", "identifySpeakers": false])
         let resumed = try CaptureEngine(testRoot: root, clock: clock)
         resumed.debugForeground = true
+        useStubMux(resumed)
         let adopted = expectation(description: "parked session adopted")
         let observer = resumed.observe { name, data, _ in
             guard name == "presentRecorder", data["id"] as? String == id else { return }
@@ -246,12 +280,13 @@ import XCTest
             try? resumed.awaitRecovery()
             recoveryCompleted.fulfill()
         }
-        wait(for: [adopted, recoveryCompleted], timeout: 10)
+        wait(for: [adopted, recoveryCompleted], timeout: eventTimeout)
         XCTAssertEqual(resumed.status()["id"] as? String, id)
         XCTAssertEqual(resumed.status()["state"] as? String, "paused")
         XCTAssertEqual(resumed.status()["pausedMs"] as? Int64, 5_000)
         clock.advance(by: 3_600_001)
         let expired = try CaptureEngine(testRoot: root, clock: clock)
+        useStubMux(expired)
         expired.recoverOnce()
         try expired.awaitRecovery()
         let saved = try expired.library.readSidecar(id)
@@ -273,7 +308,7 @@ import XCTest
                 if case .failure(let error) = result { XCTFail("Stop failed: \(error)") }
                 stopped.fulfill()
             }
-            wait(for: [stopped], timeout: 10)
+            wait(for: [stopped], timeout: eventTimeout)
             let first = try XCTUnwrap(journal.first { $0["e"] as? String == "first_audio" }?["t"] as? Int64)
             let end = try XCTUnwrap(journal.last { $0["e"] as? String == "capture_stopped" }?["t"] as? Int64)
             XCTAssertGreaterThanOrEqual(end, first)
@@ -307,7 +342,7 @@ import XCTest
             }
             engine.recoverOnce()
             try engine.awaitRecovery()
-            wait(for: [announced], timeout: launch == 0 ? 2 : 0.1)
+            wait(for: [announced], timeout: launch == 0 ? eventTimeout : 0.1)
             XCTAssertEqual(probes, 0)
             XCTAssertEqual(failures, launch == 0 ? 1 : 0)
             XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
@@ -429,7 +464,7 @@ import XCTest
             engine.stop { _ in stopped.fulfill() }
             XCTAssertFalse(engine.debugGraphActive)
             XCTAssertFalse(engine.debugRetryPending)
-            wait(for: [stopped], timeout: 10)
+            wait(for: [stopped], timeout: eventTimeout)
         }
     }
 
@@ -596,7 +631,7 @@ import XCTest
             XCTAssertEqual(engine.status()["elapsedMs"] as? Int64, 2_999)
             clock.advance(by: 1)
             engine.debugWatchdogTick()
-            wait(for: [inputStopped, stopped], timeout: 10)
+            wait(for: [inputStopped, stopped], timeout: eventTimeout)
             XCTAssertEqual(stoppedAt, 1_700_000_005_100)
             XCTAssertEqual(engine.status()["state"] as? String, "idle")
             XCTAssertEqual(engine.status()["reason"] as? String, "max_duration")
@@ -610,7 +645,7 @@ import XCTest
 
     func testRecordedLimitCommitsRealAudio() throws {
         let clock = TestClock()
-        try withEngine(clock: clock) { engine in
+        try withEngine(clock: clock, realMux: true) { engine in
             engine.debugSuppressTaps()
             let id = try XCTUnwrap(engine.start(requestedLimitMs: 3_000)["id"] as? String)
             try enqueueTone(engine)
@@ -704,7 +739,7 @@ import XCTest
                 $0["e"] as? String == "stop" && $0["reason"] as? String == "max_duration"
             })
             // Recovery runs under the same mux rule as Stop; drop the injected faults so it can succeed.
-            engine.debugMuxWaitSeam = nil
+            useStubMux(engine)
             engine.debugMuxWaitTimeout = nil
             cancelGate.signal()
             wait(for: [recovered, committed], timeout: 30)
@@ -1185,7 +1220,7 @@ import XCTest
                     try engine.resume()
                     XCTAssertTrue(engine.debugLimitTimerArmed)
                 }
-                if let stopped { wait(for: [stopped], timeout: 10) }
+                if let stopped { wait(for: [stopped], timeout: eventTimeout) }
             }
         }
     }

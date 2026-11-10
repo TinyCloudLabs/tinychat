@@ -23,7 +23,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(HealthPlugin())
         #endif
         #if DEBUG
-        if Bundle.main.bundleIdentifier == "xyz.tinycloud.exo.dev" {
+        if Bundle.main.bundleIdentifier == "xyz.tinycloud.home.dev" {
             bridge?.registerPluginInstance(ExoDevLogPlugin())
         }
         // TC-524 location spike: Debug builds only (LocationRecorder.swift). Release has no location code at all.
