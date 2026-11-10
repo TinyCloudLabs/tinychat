@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * Plan the GitHub Release for one exo-desktop@<version> tag. desktop-release.yml runs this (from main, its trusted
+ * Plan the GitHub Release for one exo-desktop@<version> tag (the desktop app, TinyCloud Home). desktop-release.yml runs this (from main, its trusted
  * copy) after fetching main and the exo-desktop tags fresh: the tag must name a release version, point at a commit of
  * --main (release tags are created only by the Release workflow; see the rulesets in docs/deployment.md), and match
  * desktop/package.json at that commit. Version, changelogs and the bundled web version are read from that commit, not
  * from the checkout. A beta becomes a pre-release, a stable version a published Release marked latest. A beta older
  * than the latest stable exo-desktop tag on --main (0.2.0-beta.3 once 0.2.0 is tagged) is refused: superseded betas
  * are not published. Writes the release notes to --notes and tag, sha, version, channel, prerelease, title,
- * asset-prefix, signing to $GITHUB_OUTPUT.
+ * asset-prefix, signing to $GITHUB_OUTPUT. The title and asset prefix use that commit's tauri.conf.json productName
+ * ("TinyCloud Home 0.15.0 (beta)", TinyCloud-Home_0.15.0-beta.1_aarch64).
  *
  * --signing is the EXO_DESKTOP_SIGNING repository variable and must be set explicitly: `required` (Developer ID
  * signed and notarized; publishing refuses anything else) or `unsigned` (ad-hoc sealed only, no Developer ID or
@@ -16,7 +17,7 @@
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { DESKTOP, FRONTEND, STABLE_VERSION, VERSION, changelogSection, desktopBundleVersions, git, repoRoot, setOutput } from './lib.mjs';
+import { DESKTOP, FRONTEND, STABLE_VERSION, VERSION, changelogSection, desktopBundleVersions, desktopProduct, git, repoRoot, setOutput } from './lib.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -59,19 +60,21 @@ if (prerelease) {
     throw new Error(`${values.tag} is older than the latest stable release ${prefix}${latestStable} on ${values.main}: betas superseded by a stable release are not published`);
   }
 }
+// The app's name at the release commit (TinyCloud Home; Exo before the rename) titles the release and its assets.
+const { productName, assetName } = desktopProduct(show(DESKTOP.tauriConf) ?? '{}');
 const frontendVersion = JSON.parse(show('frontend/package.json')).version;
 const desktopChanges = changelogSection(show('desktop/CHANGELOG.md') ?? '', version);
 const webChanges = changelogSection(show('frontend/CHANGELOG.md') ?? '', version);
 
 const notes = [
-  ...(unsigned ? ['> **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**', ''] : []),
-  ...(prerelease ? [`> **Beta.** A pre-release of Exo ${shortVersion}, built from \`main\`. It uses the production API (api.tinycloud.chat).`, ''] : []),
+  ...(unsigned ? [`> **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: \`xattr -dr com.apple.quarantine "/Applications/${productName}.app"\`.**`, ''] : []),
+  ...(prerelease ? [`> **Beta.** A pre-release of ${productName} ${shortVersion}, built from \`main\`. It uses the production API (api.tinycloud.chat).`, ''] : []),
   ...(desktopChanges ? ['## Desktop', '', desktopChanges, ''] : []),
   ...(webChanges ? [`## Web app (bundled, ${FRONTEND}@${frontendVersion})`, '', webChanges, ''] : []),
   ...(!desktopChanges && !webChanges ? ['No changes in this release.', ''] : []),
   '## Build',
   '',
-  `- Exo ${version} for Apple Silicon Macs, macOS 14.2 or later, built from \`${sha}\`.`,
+  `- ${productName} ${version} for Apple Silicon Macs, macOS 14.2 or later, built from \`${sha}\`.`,
   `- Bundles the web app ${FRONTEND}@${frontendVersion}.`,
   `- Info.plist: CFBundleShortVersionString ${shortVersion}, CFBundleVersion ${bundleVersion}.`,
   unsigned
@@ -88,6 +91,6 @@ setOutput('version', version);
 setOutput('channel', prerelease ? 'beta' : 'stable');
 setOutput('prerelease', String(prerelease));
 const labels = [...(prerelease ? ['beta'] : []), ...(unsigned ? ['UNSIGNED'] : [])];
-setOutput('title', labels.length ? `Exo ${version} (${labels.join(', ')})` : `Exo ${version}`);
-setOutput('asset-prefix', `Exo_${version}_aarch64`);
+setOutput('title', labels.length ? `${productName} ${version} (${labels.join(', ')})` : `${productName} ${version}`);
+setOutput('asset-prefix', `${assetName}_${version}_aarch64`);
 setOutput('signing', values.signing);
