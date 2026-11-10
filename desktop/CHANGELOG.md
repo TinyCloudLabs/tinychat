@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.14.0-beta.6
+
+### Patch Changes
+
+- 2357deb: Desktop releases are Developer ID signed, notarized and stapled: the app opens from the downloaded DMG without Open Anyway. Release titles and assets are named after the app (TinyCloud Home).
+
 ## 0.14.0-beta.5
 
 No changes in this release.
