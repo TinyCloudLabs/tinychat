@@ -79,10 +79,9 @@ export function createTinyCloudWeb(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
-    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    // Replication stays configured when requested; the controller handles grant refusals.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
-    // These browser sessions carry SIWE/CACAO, not a replica device UCAN.
-    // Keep the SDK controller absent so reads and timers cannot start a sync.
+    ...(config?.replication ? { replication: config.replication } : {}),
   };
 
   return new TinyCloudWeb(tcwConfig);
@@ -225,10 +224,9 @@ export async function restoreTinyCloudWebSession(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
-    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    // Replication stays configured when requested; the controller handles grant refusals.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
-    // These browser sessions carry SIWE/CACAO, not a replica device UCAN.
-    // Keep the SDK controller absent so reads and timers cannot start a sync.
+    ...(config?.replication ? { replication: config.replication } : {}),
   };
 
   if (config?.provider) {

@@ -136,16 +136,10 @@ describe("createTinyCloudWeb", () => {
     expect(lastTinyCloudConfig.manifest).toBe(explicitManifest);
   });
 
-  test("does not enable replica sync for browser SIWE sign-in, even when requested", () => {
-    const provider = { request: async () => null } as any;
-    createTinyCloudWeb(provider, { tinycloudHosts: ["https://node.example"] });
-    expect("replication" in lastTinyCloudConfig).toBe(false);
-    const withoutKeys = Object.keys(lastTinyCloudConfig).sort();
-
+  test("forwards replication configuration for browser sign-in", () => {
     const replication = { enabled: true, prefixes: ["app/x/"], storage: {} } as any;
-    createTinyCloudWeb(provider, { tinycloudHosts: ["https://node.example"], replication });
-    expect("replication" in lastTinyCloudConfig).toBe(false);
-    expect(Object.keys(lastTinyCloudConfig).sort()).toEqual(withoutKeys);
+    createTinyCloudWeb({ request: async () => null } as any, { replication });
+    expect(lastTinyCloudConfig.replication).toBe(replication);
   });
 });
 
@@ -204,14 +198,11 @@ describe("restoreTinyCloudWebSession", () => {
     expect(lastTinyCloudConfig.sessionStorage.constructor.name).toBe("BrowserSessionStorage");
   });
 
-  test("does not enable replica sync when restoring a persisted browser SIWE session", async () => {
+  test("forwards replication configuration when restoring a browser session", async () => {
     restoreResult = { status: "restored", session: { address: "0xabc" } };
-    await restoreTinyCloudWebSession("0xabc", { tinycloudHosts: ["https://node.example"] });
-    expect("replication" in lastTinyCloudConfig).toBe(false);
-
     const replication = { enabled: true, prefixes: ["app/x/"], storage: {} } as any;
     await restoreTinyCloudWebSession("0xabc", { replication });
-    expect("replication" in lastTinyCloudConfig).toBe(false);
+    expect(lastTinyCloudConfig.replication).toBe(replication);
   });
 
   test("keeps the SDK's spaceId when it provides one", async () => {

@@ -124,11 +124,21 @@ export const REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS = 45_000;
 export interface ReplicationFillDeps {
   firstLoadSettled?: () => Promise<void>;
   prefixes?: readonly string[];
+  /** Test seam: avoid wall-clock spacing in focused queue tests. */
+  startGapMs?: number;
 }
 
 function sleep(ms: number): Promise<void> {
   // Executor form on purpose: this tsconfig's lib has no Promise.withResolvers.
   return new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+}
+
+const terminalGrantRefusals = new WeakSet<TinyCloudWeb>();
+
+function isNonCompactGrantRefusal(error: unknown): boolean {
+  return error instanceof Error &&
+    error.name === "ReplicaError" &&
+    (error as Error & { code?: unknown }).code === "GRANT_FORMAT_UNSUPPORTED";
 }
 
 /**
@@ -141,19 +151,21 @@ function sleep(ms: number): Promise<void> {
  * then syncs the prefixes one by one with at most REPLICATION_FILL_POOL_SIZE in flight and starts
  * spaced REPLICATION_FILL_START_GAP_MS apart, so a burst of kv/sync does not queue the app's reads.
  * Switch-off / sign-out (controller gone) stops every prefix not yet started; one already started is
- * left to the SDK's own teardown. A failing sync (for example a gated restore) is reported through the
- * SDK's events and the status line, never thrown into sign-in, and does not stop the other prefixes.
+ * left to the SDK's own teardown. A non-compact-UCAN refusal is terminal for this client session:
+ * close the controller and log once. Other sync errors do not stop later prefixes.
  */
 export function startReplicationFill(
   tcw: TinyCloudWeb,
   isEnabled: () => boolean = () => isReplicationEnabled({ principal: tcw.did }),
   deps: ReplicationFillDeps = {},
 ): void {
-  const canStart = (): boolean => clientHasReplication(tcw) && isEnabled();
+  if (terminalGrantRefusals.has(tcw)) return;
+  const canStart = (): boolean => !terminalGrantRefusals.has(tcw) && clientHasReplication(tcw) && isEnabled();
   if (!canStart()) return;
   if (!deps.firstLoadSettled) resetAppFirstLoad(); // a new sign-in/restore waits for ITS first load
   const firstLoadSettled = deps.firstLoadSettled ?? appFirstLoadSettled;
   const queue = [...(deps.prefixes ?? replicationPrefixes())];
+  const startGapMs = deps.startGapMs ?? REPLICATION_FILL_START_GAP_MS;
   void (async () => {
     await startupPurgeSettled();
     let cancelDeadline = (): void => {};
@@ -163,17 +175,43 @@ export function startReplicationFill(
     });
     await Promise.race([firstLoadSettled().catch(() => undefined), deadline]);
     cancelDeadline();
-    // Starts are taken one at a time, each followed by the gap, so they are ordered and spaced.
+
+    const syncPrefix = async (prefix: string): Promise<void> => {
+      if (!canStart()) return;
+      try {
+        await tcw.replication?.sync({ prefix });
+      } catch (error) {
+        if (!isNonCompactGrantRefusal(error) || terminalGrantRefusals.has(tcw)) return;
+        terminalGrantRefusals.add(tcw);
+        queue.length = 0;
+        console.debug("[replication] stopped for session: compact UCAN required");
+        try {
+          await tcw.replication?.close();
+        } catch {
+          // The grant refusal is terminal even if teardown itself fails.
+        }
+      }
+    };
+
+    // The refusal is session-wide: check one prefix before starting parallel work, so the
+    // non-compact grant can cause at most one attempted sync for this session.
+    const firstPrefix = queue.shift();
+    if (firstPrefix) {
+      await syncPrefix(firstPrefix);
+      if (terminalGrantRefusals.has(tcw)) return;
+      if (startGapMs > 0) await sleep(startGapMs);
+    }
+
+    // Other errors retain existing behavior: continue remaining prefixes, spaced and bounded.
     let turn: Promise<void> = Promise.resolve();
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         const prefix = queue.shift()!;
-        let sync: Promise<unknown> | undefined;
+        let sync: Promise<void> | undefined;
         const slot = turn.then(() => {
           if (!canStart()) { queue.length = 0; return undefined; }
-          // Caught at once (the gap below must not leave a rejection unhandled); the SDK reports it.
-          try { sync = Promise.resolve(tcw.replication?.sync({ prefix })).catch(() => undefined); } catch { /* reported by the SDK events */ }
-          return sleep(REPLICATION_FILL_START_GAP_MS);
+          sync = syncPrefix(prefix);
+          return startGapMs > 0 ? sleep(startGapMs) : Promise.resolve();
         });
         turn = slot;
         await slot;

@@ -10,8 +10,8 @@ async function flush(): Promise<void> {
   for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
 }
 
-function clientWith(sync: () => Promise<void>): TinyCloudWeb {
-  return { did: "did:pkh:eip155:1:0xaaaa", replication: { sync } } as unknown as TinyCloudWeb;
+function clientWith(sync: () => Promise<void>, close?: () => Promise<void>): TinyCloudWeb {
+  return { did: "did:pkh:eip155:1:0xaaaa", replication: { sync, close } } as unknown as TinyCloudWeb;
 }
 
 beforeEach(resetReplicationStatus);
@@ -19,7 +19,7 @@ beforeEach(resetReplicationStatus);
 describe("first sync after sign-in / restore", () => {
   test("ON with a controller: sync() is called once", async () => {
     let calls = 0;
-    startReplicationFill(clientWith(async () => { calls += 1; }), () => true, { firstLoadSettled: async () => {}, prefixes: ["p/"] });
+    startReplicationFill(clientWith(async () => { calls += 1; }), () => true, { firstLoadSettled: async () => {}, prefixes: ["p/"], startGapMs: 0 });
     await flush();
     expect(calls).toBe(1);
   });
@@ -49,6 +49,62 @@ describe("first sync after sign-in / restore", () => {
     expect(await startupPurgeSettled()).toBeUndefined();
   });
 
+  test("a non-compact-UCAN refusal terminates sync for the current session", async () => {
+    let calls = 0;
+    let closeCalls = 0;
+    const error = Object.assign(
+      new Error("The grant is not a compact UCAN. SIWE/CACAO grants cannot back a replica."),
+      { name: "ReplicaError", code: "GRANT_FORMAT_UNSUPPORTED" },
+    );
+    const client = clientWith(async () => { calls += 1; throw error; }, async () => { closeCalls += 1; });
+    const debugCalls: unknown[][] = [];
+    const originalDebug = console.debug;
+    console.debug = (...args: unknown[]) => { debugCalls.push(args); };
+    try {
+      startReplicationFill(client, () => true, { firstLoadSettled: async () => {}, prefixes: ["p/one", "p/two", "p/three"], startGapMs: 0 });
+      await flush();
+      startReplicationFill(client, () => true, { firstLoadSettled: async () => {}, prefixes: ["p/one"], startGapMs: 0 });
+      await flush();
+    } finally {
+      console.debug = originalDebug;
+    }
+    expect(calls).toBe(1);
+    expect(closeCalls).toBe(1);
+    expect(debugCalls).toHaveLength(1);
+  });
+
+  test("a different ReplicaError leaves later prefix attempts enabled", async () => {
+    let calls = 0;
+    startReplicationFill(clientWith(async () => {
+      calls += 1;
+      const error = new Error("temporary network failure");
+      error.name = "ReplicaError";
+      throw error;
+    }), () => true, { firstLoadSettled: async () => {}, prefixes: ["p/one", "p/two"], startGapMs: 0 });
+    await flush();
+    expect(calls).toBe(2);
+  });
+
+  test("a new session can start after the previous session's grant refusal", async () => {
+    const refusal = Object.assign(
+      new Error("The grant is not a compact UCAN. SIWE/CACAO grants cannot back a replica."),
+      { name: "ReplicaError", code: "GRANT_FORMAT_UNSUPPORTED" },
+    );
+    const refused = clientWith(async () => { throw refusal; }, async () => {});
+    let newSessionCalls = 0;
+    const nextSession = clientWith(async () => { newSessionCalls += 1; });
+    const originalDebug = console.debug;
+    console.debug = () => {};
+    try {
+      startReplicationFill(refused, () => true, { firstLoadSettled: async () => {}, prefixes: ["p/one"], startGapMs: 0 });
+      await flush();
+      startReplicationFill(nextSession, () => true, { firstLoadSettled: async () => {}, prefixes: ["p/one"], startGapMs: 0 });
+      await flush();
+    } finally {
+      console.debug = originalDebug;
+    }
+    expect(newSessionCalls).toBe(1);
+  });
   test("does not run while a removal of the copy is in flight, then runs once", async () => {
     let calls = 0;
     const removal = Promise.withResolvers<void>();
