@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { navItems } from "./navItems";
-import { homeDestination, homePath } from "./routes";
+import { HOME_DESTINATION, HOME_PATH } from "./routes";
 
 describe("navigation on the Home site", () => {
   test("leads with Home (the feed), then Chat, Apps, Recording, Connectors", () => {
@@ -24,17 +24,9 @@ describe("navigation on the Home site", () => {
   });
 });
 
-describe("where the web opens", () => {
-  test("the Home site opens on the feed; other web builds on Chat", () => {
-    expect(homeDestination("web", true)).toBe("feed");
-    expect(homePath("web", true)).toBe("/chat/feed");
-    expect(homeDestination("web", false)).toBe("chat");
-    expect(homePath("web", false)).toBe("/chat");
-  });
-
-  test("the phone app and the desktop app ignore the Home site", () => {
-    expect(homeDestination("ios", true)).toBe("capture");
-    expect(homeDestination("android", true)).toBe("capture");
-    expect(homeDestination("tauri", true)).toBe("chat");
+describe("where Home opens", () => {
+  test("every build and platform is at home on the feed", () => {
+    expect(HOME_DESTINATION).toBe("feed");
+    expect(HOME_PATH).toBe("/chat/feed");
   });
 });

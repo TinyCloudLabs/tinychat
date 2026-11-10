@@ -5,9 +5,5 @@
  */
 export const HOME_SITE = import.meta.env.VITE_HOME_SITE === "true";
 
-/** The product name on screen, in the install prompt and in the OpenKey prompt. */
-export function appNameFor(homeSite: boolean): string {
-  return homeSite ? "TinyCloud Home" : "Exo";
-}
-
-export const APP_NAME = appNameFor(HOME_SITE);
+/** The product name on screen, in the install prompt and in the OpenKey prompt, on every build. */
+export const APP_NAME = "TinyCloud Home";

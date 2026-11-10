@@ -14,7 +14,7 @@ This app was generated with:
 
 ## UI Style
 
-Exo's look comes from tokens, not per-component values. The palette (Exo's
+TinyCloud Home's look comes from tokens, not per-component values. The palette (TinyCloud Home's
 neutral zinc greys, light and dark, following the system theme), the type roles (Literata for
 display titles only, the system sans for everything else), radius, shadow and
 motion are defined in `frontend/src/index.css` and `frontend/tailwind.config.js`.

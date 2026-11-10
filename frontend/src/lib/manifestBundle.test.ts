@@ -83,7 +83,7 @@ describe("manifest bundle, resolved by the real resolveManifest", () => {
     expect(entry.map((resource) => resource.path)).toEqual([`${APP}/`]);
   });
 
-  test("the Exo mailbox is exactly requests/ [get, list, del] and jobs/ [get, put, del] on kv", () => {
+  test("the TinyCloud Home mailbox is exactly requests/ [get, list, del] and jobs/ [get, put, del] on kv", () => {
     const mailbox = resolved().filter((entry) => entry.path.startsWith(`${APP}/exo/`));
     expect(mailbox).toEqual([
       { service: "tinycloud.kv", space: "applications", path: `${APP}/exo/v1/requests/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] },

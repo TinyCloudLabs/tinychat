@@ -2126,7 +2126,7 @@ if command -v sha256sum >/dev/null; then exec sha256sum "$@"; else exec /usr/bin
   open: `#!/bin/bash\nprintf 'open %s\\n' "$1" >> "$STUB_LOG/calls.log"\n`,
 };
 
-function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, args = [] } = {}) {
+function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, installedAs = 'TinyCloud Home.app', args = [] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'exo-update-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dirs = Object.fromEntries(['bin', 'home', 'apps', 'release', 'log', 'tmp'].map((name) => [name, join(root, name)]));
@@ -2134,15 +2134,15 @@ function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, kill
   // The release asset desktop-release-plan.mjs names after tauri.conf.json's productName.
   const version = '9.9.9';
   const dmg = `${desktopProduct(readFileSync(join(repo, 'desktop/src-tauri/tauri.conf.json'), 'utf8')).assetName}_${version}_aarch64.dmg`;
-  const app = (dir, build) => {
-    mkdirSync(join(dir, 'Exo.app/Contents'), { recursive: true });
-    writeFileSync(join(dir, 'Exo.app/Contents/Info.plist'), `${build}\n`);
+  const app = (dir, name, build) => {
+    mkdirSync(join(dir, name, 'Contents'), { recursive: true });
+    writeFileSync(join(dir, name, 'Contents/Info.plist'), `${build}\n`);
   };
-  if (installed) app(dirs.apps, 'old-build');
-  app(join(dirs.release, 'content'), 'new-build');
+  if (installed) app(dirs.apps, installedAs, 'old-build');
+  app(join(dirs.release, 'content'), 'TinyCloud Home.app', 'new-build');
   writeFileSync(join(dirs.release, dmg), 'fake dmg bytes');
   const digest = createHash('sha256').update(sums === 'bad' ? 'other bytes' : 'fake dmg bytes').digest('hex');
-  writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'Exo_other_aarch64.dmg' : dmg}\n`);
+  writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'TinyCloud-Home_other_aarch64.dmg' : dmg}\n`);
   for (const [name, body] of Object.entries(EXO_UPDATE_STUBS)) {
     writeFileSync(join(dirs.bin, name), body);
     chmodSync(join(dirs.bin, name), 0o755);
@@ -2161,9 +2161,10 @@ function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, kill
   return {
     status: result.status, stderr: result.stderr,
     calls: read(join(dirs.log, 'calls.log')), curl: read(join(dirs.log, 'curl.log')),
-    build: read(join(dirs.apps, 'Exo.app/Contents/Info.plist')).trim(),
+    build: read(join(dirs.apps, existsSync(join(dirs.apps, 'TinyCloud Home.app')) ? 'TinyCloud Home.app' : installedAs, 'Contents/Info.plist')).trim(),
+    apps: readdirSync(dirs.apps).filter((name) => name.endsWith('.app')),
     state: read(join(dirs.home, '.exo-update')).trim(),
-    leftovers: [...readdirSync(dirs.apps).filter((name) => name !== 'Exo.app'), ...readdirSync(dirs.tmp)],
+    leftovers: [...readdirSync(dirs.apps).filter((name) => name !== 'TinyCloud Home.app' && name !== installedAs), ...readdirSync(dirs.tmp)],
   };
 }
 
@@ -2186,6 +2187,14 @@ for (const shell of ['bash', 'sh']) {
     for (const call of run.curl.trim().split('\n')) assert.match(call, /--proto =https --proto-redir =https/);
     assert.equal(runExoUpdate(t, shell, { installed: false }).build, 'new-build', 'first install');
     assert.equal(runExoUpdate(t, shell, { args: ['beta'] }).build, 'new-build', 'beta channel');
+  });
+
+  test(`exo-update.sh (${shell}) replaces an install from before the rename (Exo.app) with TinyCloud Home.app`, (t) => {
+    const run = runExoUpdate(t, shell, { installedAs: 'Exo.app' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.build, 'new-build');
+    assert.deepEqual(run.apps, ['TinyCloud Home.app'], 'the old Exo.app is gone, not left beside the new app');
+    assert.deepEqual(run.leftovers, []);
   });
 
   test(`exo-update.sh (${shell}) keeps the installed app on a mismatched or missing checksum`, (t) => {

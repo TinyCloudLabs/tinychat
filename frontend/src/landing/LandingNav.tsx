@@ -36,7 +36,7 @@ export function LandingNav() {
           <span className="flex size-7 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
             T
           </span>
-          TinyCloud Chat
+          TinyCloud Home
         </Link>
 
         <nav className="hidden items-center gap-7 text-sm text-muted-foreground md:flex">

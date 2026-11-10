@@ -83,7 +83,7 @@ export function setSecretsAvailableForTests(available: boolean | null): void {
 
 /** User-facing message for secrets-dependent features inside the app. */
 export const SECRETS_UNAVAILABLE_IN_APP_MESSAGE =
-  "This uses stored credentials, which aren't available in the Exo app yet. Set it up from Exo on the web or desktop — everything you connect there works here.";
+  "This uses stored credentials, which aren't available in the TinyCloud Home app yet. Set it up from TinyCloud Home on the web or desktop — everything you connect there works here.";
 
 // ── Capabilities ──────────────────────────────────────────────────────
 
@@ -249,7 +249,7 @@ export function nativeSignInErrorMessage(error: unknown): string {
 }
 
 export const NATIVE_SIGN_OUT_WARNING =
-  "Exo signed out locally. OpenKey will retry any queued revocation when the app opens again. Check your grants at openkey.so if it remains active.";
+  "TinyCloud Home signed out locally. OpenKey will retry any queued revocation when the app opens again. Check your grants at openkey.so if it remains active.";
 export const NATIVE_SIGN_OUT_STORAGE_WARNING =
   "Couldn't access secure storage on this device. Your OpenKey session may still be stored. Please try signing out again when storage is available.";
 

@@ -22,7 +22,7 @@ span, and retries. On Android 31+, audio-mode changes label a call interruption
 and trigger a restart when normal mode returns. Device additions/removals
 update the input list; a route rebuild opens a new segment and a short
 `route_change` omitted span. Other apps playing media do not cause audio focus
-changes because Exo does not request focus.
+changes because TinyCloud Home does not request focus.
 
 Input ids are `<type>:<productName>` and the preference is durable. Duplicate
 ids are shown once. The active id comes from the actual
@@ -37,12 +37,12 @@ opens a short route-change span and restarts on the available route.
 If Android denies a resumed mic start with `SecurityException`, the state is
 `needs_user` / `resume_not_allowed`. A start that does not reach the recording
 state reports `needs_user` / `mic_unavailable`. The high-priority “Tap to
-resume recording” alert opens Exo and has a validated Resume action. The
+resume recording” alert opens TinyCloud Home and has a validated Resume action. The
 paused foreground notification remains the route for locked-screen Resume.
 Automatic restart failures stay `interrupted` with the omitted span open.
 Retries use 0.5, 1, 2, 5, 10, then 30-second intervals for at most 10 minutes;
 only a manual failure or exhaustion moves to `needs_user` and posts the alert.
-Opening Exo attempts one restart if the session needs attention.
+Opening TinyCloud Home attempts one restart if the session needs attention.
 
 ## Emulator verification
 
@@ -100,7 +100,7 @@ confirm it remains paused. After ten minutes paused and locked, Resume from
 the notification, pull the note, and check the new segment's `mean_volume`.
 With the system recorder holding the mic, record which outcome occurs: genuine
 start failure → `mic_unavailable`; successful but silenced start → an
-`isClientSilenced` span; or Exo receives normal input. Also check Stop during
+`isClientSilenced` span; or TinyCloud Home receives normal input. Also check Stop during
 a route rebuild and that interruption → Pause makes an old alert action stale.
 The `start.beforeAttach` case passed on an emulator. Do not run instrumented
 tests on the physical phone; the plan's Moto-specific case remains an explicit

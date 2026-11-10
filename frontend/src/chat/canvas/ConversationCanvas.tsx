@@ -38,7 +38,7 @@ interface ConversationCanvasProps {
  */
 export const CANVAS_SWITCH_WARNING =
   "Canvas keeps this chat's other branches and pinned documents in your TinyCloud space. "
-  + "When you continue from an earlier message, the chat itself changes to that branch everywhere: here, on your other devices, in other Exo app versions and in share links. "
+  + "When you continue from an earlier message, the chat itself changes to that branch everywhere: here, on your other devices, in other TinyCloud Home app versions and in share links. "
   + "The other branches stay in Canvas. Pinned documents are sent with your next messages but never become part of the chat or its share links.";
 
 export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onSwitchToChat, onCanvasChange }: ConversationCanvasProps) {

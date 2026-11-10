@@ -1,4 +1,4 @@
-# Exo development logs
+# TinyCloud Home development logs
 
 Development builds write one JSON object per line. Each entry has `at`,
 `kind`, and `source_id` (null for session, request, and native bridge events).
