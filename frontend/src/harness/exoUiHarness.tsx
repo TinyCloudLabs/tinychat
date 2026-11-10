@@ -192,7 +192,7 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
 function Index() {
   return (
     <main className="mx-auto max-w-xl px-4 py-8">
-      <h1 className="font-display text-title-1">Exo UI screens</h1>
+      <h1 className="font-display text-title-1">TinyCloud Home UI screens</h1>
       <ul className="mt-4 flex flex-col gap-2 text-body">
         {SCREENS.map((screen) => (
           <li key={screen.id} className="flex items-baseline gap-3">

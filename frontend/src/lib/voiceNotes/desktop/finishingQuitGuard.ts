@@ -1,6 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export const FINISHING_QUIT_COPY = "Exo is finishing a recording. Quit anyway? It finishes next time you open Exo.";
+export const FINISHING_QUIT_COPY = "TinyCloud Home is finishing a recording. Quit anyway? It finishes next time you open TinyCloud Home.";
 
 /** One decision per close request. The native stop journal survives either choice. */
 export function askToQuitDuringFinishing(doc: Document = document): Promise<boolean> {

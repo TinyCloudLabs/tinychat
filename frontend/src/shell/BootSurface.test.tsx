@@ -7,7 +7,7 @@ test("ordinary signed-out screen keeps its default message", () => {
   const markup = renderToStaticMarkup(<BootSurface state="unauthenticated" error={null} onAction={() => {}} />);
   expect(markup).toContain("Sign in to continue.");
   expect(markup).toContain("<h1");
-  expect(markup).toContain(">Exo</h1>");
+  expect(markup).toContain(">TinyCloud Home</h1>");
   expect(markup).not.toContain("TinyCloud Chat");
 });
 
@@ -15,6 +15,9 @@ test("a failed sign-in or a local sign-out offers Sign in, never Try again", () 
   for (const error of [
     "Couldn't sign in. Try again.",
     "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.",
+    "Couldn't sign in. Please try again.",
+    "OpenKey stayed signed in on this device. TinyCloud Home is signed out locally.",
+    "Signed out of TinyCloud Home. To use a different account, also sign out at openkey.so.",
   ]) {
     const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error={error} onAction={() => {}} />);
     expect(markup).toContain(">Sign in</button>");
@@ -35,12 +38,14 @@ test("the old WebView message carries a link to update it", () => {
 });
 
 test("an ordinary error shows no link", () => {
-  const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error="Couldn't sign in. Try again." onAction={() => {}} />);
-  expect(markup).not.toContain("<a ");
+  for (const error of ["Couldn't sign in. Try again.", "Couldn't sign in. Please try again."]) {
+    const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error={error} onAction={() => {}} />);
+    expect(markup).not.toContain("<a ");
+  }
 });
 
-test("the product name on the boot screen is the one it is given", () => {
-  const markup = renderToStaticMarkup(<BootSurface state="booting" error={null} onAction={() => {}} appName="TinyCloud Home" />);
+test("the booting screen shows the fixed product name", () => {
+  const markup = renderToStaticMarkup(<BootSurface state="booting" error={null} onAction={() => {}} />);
   expect(markup).toContain(">TinyCloud Home</h1>");
   expect(markup).not.toContain(">Exo</h1>");
 });

@@ -119,8 +119,8 @@ const toasts = (page: Page, message: string) =>
 const view = (page: Page) => page.getByTestId("desktop-recorder");
 const ring = (page: Page) => view(page).locator("button.pr-ring");
 
-const RECORDING = /^● \d+:\d\d · Exo$/;
-const PAUSED = /^❚❚ \d+:\d\d · Exo$/;
+const RECORDING = /^● \d+:\d\d · TinyCloud Home$/;
+const PAUSED = /^❚❚ \d+:\d\d · TinyCloud Home$/;
 
 describe.serial(`web recorder chrome (${engineName})`, () => {
   test("the tab title follows the recording and is restored exactly after discard", async () => {

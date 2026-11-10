@@ -48,14 +48,14 @@ afterEach(() => { vi.useRealTimers(); });
 describe("persisted Google Meet sync log", () => {
   test("a finished run is stored under its own account and read back after a reload", async () => {
     const storage = new MemoryStorage();
-    const stop = startPersistingGmeetRunLog(ALICE, { storage: asStorage(storage), build: () => "Exo test-build" });
+    const stop = startPersistingGmeetRunLog(ALICE, { storage: asStorage(storage), build: () => "TinyCloud Home test-build" });
     await runFor(ALICE);
     stop();
     expect([...storage.items.keys()]).toEqual([gmeetSyncLogStorageKey("did:pkh:eip155:1:0xalice")]);
     // A new page load has no in-memory run; the stored one is what "Copy sync log" copies.
     _resetGmeetSyncSingleFlightForTests();
     const log = loadGmeetSyncLog(ALICE, null, asStorage(storage));
-    expect(log).toMatchObject({ build: "Exo test-build", result: { kind: "ok", connectionSaved: true } });
+    expect(log).toMatchObject({ build: "TinyCloud Home test-build", result: { kind: "ok", connectionSaved: true } });
     expect(log?.timeline.length).toBeGreaterThan(0);
   });
 

@@ -8,7 +8,7 @@ import type { BatchResponse } from "./anarlog/transcription.gen";
 
 /** Source of local transcripts saved in the Meetings store. */
 export const LOCAL_MEETING_SOURCE = "exo-local";
-export const LOCAL_MEETING_SOURCE_LABEL = "Exo Local";
+export const LOCAL_MEETING_SOURCE_LABEL = "TinyCloud Home Local";
 
 export type WhisperModel =
   | "QuantizedTinyEn"

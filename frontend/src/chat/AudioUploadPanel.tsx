@@ -254,7 +254,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
       <div className="flex flex-col gap-3">
         <p className="text-callout text-muted-foreground" role="status">
           {job.fileName ? <>&ldquo;{job.fileName}&rdquo; is </> : "An upload is "}
-          being transcribed in another Exo tab or window. It continues there.
+          being transcribed in another TinyCloud Home tab or window. It continues there.
         </p>
         <Button type="button" variant="outline" onClick={onRetry} className="w-full">
           Check again
@@ -443,7 +443,7 @@ export function assemblyAiStatus(
   mode: AssemblyAiKeyMode,
   hostedCaps: { state: "checking" } | { state: "ok"; caps: Pick<HostedAssemblyAiCapabilities, "hosted"> } | { state: "failed" },
 ): EngineStatus {
-  if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through Exo's server." };
+  if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through TinyCloud Home's server." };
   if (hostedCaps.state === "checking") return { state: "checking" };
   if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach the Powerful transcription service.", action: "recheck" };
   return hostedCaps.caps.hosted
@@ -522,7 +522,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
 
   const privateStatus: EngineStatus =
     origin === null
-      ? { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet. Use Powerful instead." }
+      ? { state: "unavailable", reason: "Private transcription isn't set up in this version of TinyCloud Home yet. Use Powerful instead." }
       : caps.state === "checking"
         ? { state: "checking" }
         : caps.state === "failed"

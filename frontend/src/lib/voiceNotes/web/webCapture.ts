@@ -61,7 +61,7 @@ export function pickRecorderMimeType(Recorder: Pick<typeof MediaRecorder, "isTyp
   return PREFERRED_MIME_TYPES.find((type) => Recorder.isTypeSupported(type)) ?? null;
 }
 
-export const UNSUPPORTED_FORMAT_MESSAGE = "This browser cannot record audio in a format Exo can save. Try Chrome, Edge, Firefox or Safari.";
+export const UNSUPPORTED_FORMAT_MESSAGE = "This browser cannot record audio in a format TinyCloud Home can save. Try Chrome, Edge, Firefox or Safari.";
 
 export type InputLoss = { reason: "permission_revoked" | "mic_unavailable"; detail?: string };
 

@@ -25,6 +25,23 @@ export const DESKTOP = {
   crate: 'exo-desktop',
 };
 
+// tauri.conf.json's productName names the app bundle ("<name>.app"), the DMG volume and, with spaces as hyphens,
+// the release assets ("<Name-With-Hyphens>_<version>_aarch64.dmg"). Words of letters and digits only, so it is safe
+// in paths and asset names.
+export const DESKTOP_PRODUCT_NAME = /^[A-Za-z0-9]+(?: [A-Za-z0-9]+)*$/;
+
+/** productName and identifier from a tauri.conf.json text; assetName is productName with spaces as hyphens. */
+export function desktopProduct(confText) {
+  const { productName, identifier } = JSON.parse(confText);
+  if (typeof productName !== 'string' || !DESKTOP_PRODUCT_NAME.test(productName)) {
+    throw new Error(`${DESKTOP.tauriConf} productName must be words of letters and digits, got ${JSON.stringify(productName)}`);
+  }
+  if (typeof identifier !== 'string' || !/^[a-z0-9]+(?:\.[a-z0-9-]+)+$/.test(identifier)) {
+    throw new Error(`${DESKTOP.tauriConf} identifier must be a reverse-DNS bundle id, got ${JSON.stringify(identifier)}`);
+  }
+  return { productName, identifier, assetName: productName.replaceAll(' ', '-') };
+}
+
 // Stable X.Y.Z, or X.Y.Z-beta.N while main is in Changesets pre mode (tag "beta").
 export const VERSION = /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
 export const STABLE_VERSION = /^\d+\.\d+\.\d+$/;

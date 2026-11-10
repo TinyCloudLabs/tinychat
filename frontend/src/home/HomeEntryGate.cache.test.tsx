@@ -6,7 +6,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { RootRoute } from "../landing/RootRoute";
-import { setAppsFeedEnabled } from "../lib/appsFeedFeature";
 import { useLocalThreadStorage } from "../lib/threadStore";
 import { accountStorageKey } from "../lib/voiceNotes/sourcePins";
 import { installDom } from "../test/dom";
@@ -51,7 +50,6 @@ function Screen({ load }: { load: () => Promise<FirstScreen> }) {
 async function mount(load: () => Promise<FirstScreen>, beforeRender?: () => void) {
   expect(process.env.HOME).toBe(testHome);
   restoreDom = installDom();
-  setAppsFeedEnabled(true);
   beforeRender?.();
   const host = document.createElement("div");
   document.body.append(host);
@@ -59,7 +57,7 @@ async function mount(load: () => Promise<FirstScreen>, beforeRender?: () => void
   await act(async () => root!.render(
     <MemoryRouter initialEntries={["/"]}>
       <Routes>
-        <Route path="/" element={<RootRoute nativeShell={false} homeShell />} />
+        <Route path="/" element={<RootRoute />} />
         <Route path="/chat/*" element={<Screen load={load} />} />
       </Routes>
     </MemoryRouter>,

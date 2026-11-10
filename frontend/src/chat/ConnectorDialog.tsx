@@ -1303,7 +1303,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           if (nativeGenerationRef.current !== generation) return;
           stateRef.current = state;
           verifierRef.current = verifier;
-          if (autojoin) throw new Error("Enable Calendar autojoin from Exo on the web.");
+          if (autojoin) throw new Error("Enable Calendar autojoin from TinyCloud Home on the web.");
           const bearer = sessionStore.getToken();
           if (!bearer || sessionStore.isExpired()) { failWith({ kind: "session", message: "" }); return; }
           const code = await startDesktopGoogleOAuth({ backendUrl, bearer, state, challenge,
@@ -1499,7 +1499,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
         {phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}
         {phase === "authorize" && desktopAutojoinUnavailable && (
-          <p className="text-xs text-muted-foreground">Enable Calendar autojoin from Exo on the web.</p>
+          <p className="text-xs text-muted-foreground">Enable Calendar autojoin from TinyCloud Home on the web.</p>
         )}
         {phase === "authorize" && authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable && (
           <AuthorizePanel copy={consentCopy} error={error} />
@@ -1599,7 +1599,7 @@ const WaitCallbackPanel: FC<{ systemBrowser: boolean }> = ({ systemBrowser }) =>
     </p>
     <p className="text-xs text-muted-foreground">
       {systemBrowser
-        ? "Finish signing in and approve the requested permissions in the browser. Exo comes back here when you’re done."
+        ? "Finish signing in and approve the requested permissions in the browser. TinyCloud Home comes back here when you’re done."
         : "Finish signing in and approve the requested permissions in the Google window. If you don’t see it, check for a blocked or hidden popup."}
     </p>
   </div>
@@ -2623,9 +2623,9 @@ function formatOAuthError(error: OAuthErrorState): string {
     case "desktop-error":
       return error.message;
     case "native-unavailable":
-      return "Connecting Google isn’t available in the Exo app yet. Connect it from Exo on the web; the connection lives in your TinyCloud space, so it works here too.";
+      return "Connecting Google isn’t available in the TinyCloud Home app yet. Connect it from TinyCloud Home on the web; the connection lives in your TinyCloud space, so it works here too.";
     case "browser-unavailable":
-      return "Exo couldn’t open the browser for Google sign-in. Nothing was connected — press “Continue with Google” to try again.";
+      return "TinyCloud Home couldn’t open the browser for Google sign-in. Nothing was connected — press “Continue with Google” to try again.";
     case "crypto-unavailable":
       return "This browser couldn’t prepare a secure sign-in. Google Meet needs a secure (https) page with Web Crypto available.";
     case "cancelled":

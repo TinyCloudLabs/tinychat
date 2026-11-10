@@ -84,7 +84,7 @@ export interface SessionLocks {
 
 export function webLocks(): SessionLocks {
   const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
-  if (!locks) throw failure("unsupported", "This browser has no Web Locks, so Exo cannot tell which recordings belong to this tab.");
+  if (!locks) throw failure("unsupported", "This browser has no Web Locks, so TinyCloud Home cannot tell which recordings belong to this tab.");
   return {
     hold: (name) => new Promise((resolve, reject) => {
       locks.request(name, { ifAvailable: true }, async (lock) => {

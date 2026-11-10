@@ -341,7 +341,7 @@ describe("the scan failure", () => {
   test("one quiet card above Recent, and the detail is not shown", () => {
     const html = home({ scanFailure: "scan_io_error: /var/mobile" });
     expect(html).toContain(
-      "Exo couldn&#x27;t check for unfinished recordings. It will try again when it next opens.",
+      "TinyCloud Home couldn&#x27;t check for unfinished recordings. It will try again when it next opens.",
     );
     expect(html).not.toContain("scan_io_error");
     expect(html.indexOf("recovery-scan-failure")).toBeLessThan(

@@ -67,7 +67,7 @@ export function FirstScreenControl({ tcw, did }: { tcw: TinyCloudWeb; did?: stri
       {choice === null ? <span className="text-xs text-muted-foreground">{text.loading}</span> : (
         <select id="home-first-screen" value={choice} disabled={saving}
           onChange={(event) => void save(event.target.value as FirstScreen)}
-          className="min-h-11 rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+          className="min-h-11 rounded-lg border border-border bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 fine:min-h-9 fine:text-sm">
           <option value="feed">{text.feed}</option>
           <option value="apps">{text.apps}</option>
         </select>

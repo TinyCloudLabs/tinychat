@@ -1,9 +1,9 @@
-// Exo's addresses, in one pure module (TC-761).
+// TinyCloud Home's addresses, in one pure module (TC-761).
 //
 //     Capture  /chat/capture → Library /chat/capture/library → a note /chat/capture/library/:id
 //     Chat     /chat
 //     Connectors /chat/connectors
-//     Feed     /chat/feed (experimental Home entry from `/`)
+//     Feed     /chat/feed (the first screen, entered from `/`)
 //     Apps     /chat/apps
 //     Settings /chat/settings (global, behind the gear)
 //     How it works /chat/about (global, from Settings and the screens' hints)
@@ -14,8 +14,6 @@
 // storage, which is what makes the whole map directly testable.
 
 import { ABOUT_PATH } from "../lib/about";
-import { HOME_SITE } from "../lib/homeSite";
-import type { AppPlatform } from "../lib/platform";
 import type { SizeClass } from "../lib/sizeClass";
 
 export const PATHS = {
@@ -136,21 +134,15 @@ export function parentPath(screen: Screen): string | null {
   return screen.destination ? DESTINATION_ROOTS[screen.destination] : null;
 }
 
-/** The phone app opens on Capture; the Home site (TC-2387) on Home; the desktop app, the web and the PWA on Chat. */
-export function homeDestination(platform: AppPlatform, homeSite: boolean = HOME_SITE): Destination {
-  if (platform === "ios" || platform === "android") return "capture";
-  return homeSite && platform === "web" ? "feed" : "chat";
-}
-
-export function homePath(platform: AppPlatform, homeSite: boolean = HOME_SITE): string {
-  return DESTINATION_ROOTS[homeDestination(platform, homeSite)];
-}
+/** Every platform's home is Feed (TC-2040): where Back and a signed-out redirect go, on web, desktop, iOS and Android. */
+export const HOME_DESTINATION: Destination = "feed";
+export const HOME_PATH = DESTINATION_ROOTS[HOME_DESTINATION];
 
 /**
  * Whether a screen sends a settled signed-out user home. Settings and
  * Connectors only exist signed in. Capture never redirects: the sign-in surface
- * renders in place, so the phone app lands on Capture after signing in and a
- * note's address survives a cold sign-in. How it works holds no account data,
+ * renders in place, so a recording started signed out stays on Capture after
+ * signing in and a note's address survives a cold sign-in. How it works holds no account data,
  * so it keeps its address the same way and shows once the user signs in.
  */
 export function redirectsWhenSignedOut(screen: Screen): boolean {

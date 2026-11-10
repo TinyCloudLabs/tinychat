@@ -114,7 +114,7 @@ import { TinyCloudButtonSync } from "./chat/TinyCloudButtonSync";
 import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
 import {
-  homePath,
+  HOME_PATH,
   legacyRedirectFor,
   redirectsWhenSignedOut,
   screenFor,
@@ -636,7 +636,7 @@ export function App() {
         if (boot.kind === "unavailable") {
           logSession("restore", "unavailable");
           restoreRetryAfterRef.current = Date.now() + 15_000;
-          setError("Exo can't connect right now. Your recordings stay on this phone.");
+          setError("TinyCloud Home can't connect right now. Your recordings stay on this phone.");
           setState("offline");
           return;
         }
@@ -1379,9 +1379,9 @@ export function App() {
   // authentication is still deciding the address is held and BootSurface shows.
   useEffect(() => {
     if (authSettledSignedOut && (screen.destination === "connectors" || (!deviceCapture && redirectsWhenSignedOut(screen)))) {
-      navigate(homePath(platform), { replace: true });
+      navigate(HOME_PATH, { replace: true });
     }
-  }, [authSettledSignedOut, deviceCapture, screen, platform, navigate]);
+  }, [authSettledSignedOut, deviceCapture, screen, navigate]);
 
   // Forward a retired address (LEGACY_REDIRECTS) to its canonical home.
   // `replace` keeps the dead route out of history, so Back does not bounce
@@ -1392,8 +1392,8 @@ export function App() {
     // legacy address until authentication settles, or the cold forward lands
     // home instead of Library.
     if (!isReady && !authSettledSignedOut) return;
-    navigate(isReady ? legacy.to : homePath(platform), { replace: true });
-  }, [legacy, isReady, authSettledSignedOut, platform, navigate]);
+    navigate(isReady ? legacy.to : HOME_PATH, { replace: true });
+  }, [legacy, isReady, authSettledSignedOut, navigate]);
 
   // A1 trigger (a): entering the settings page recovers a config-null session
   // (the Plan & Usage card lives there). No-op when a config is already held.
@@ -1409,9 +1409,9 @@ export function App() {
     if (typeof idx === "number" && idx > 0) {
       navigate(-1);
     } else {
-      navigate(homePath(platform), { replace: true });
+      navigate(HOME_PATH, { replace: true });
     }
-  }, [navigate, platform]);
+  }, [navigate]);
 
   // The composer's toolbar: the model chip (a sheet on phones) and, with the
   // paywall on, the usage chip. App owns both, so they survive ChatWorkspace's
@@ -1570,6 +1570,8 @@ export function App() {
             platform={platform}
             pendingMeetings={0}
             chat={<BootSurface state={state} error={error} onAction={authAction} />}
+            // Feed is the first screen: signed out it asks to sign in in place, under the Feed tab.
+            feed={<BootSurface state={state} error={error} onAction={authAction} />}
             capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
               resign={state === "unauthenticated" && error === MANIFEST_RESIGN_NOTICE}
               onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}
@@ -1588,7 +1590,7 @@ export function App() {
       {shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,
         nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
-        Recordings are being kept unassigned until Exo can update this phone.
+        Recordings are being kept unassigned until TinyCloud Home can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
       </div>}
       <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={nativeSignInFlow.micRecoveryContinue} />
@@ -1744,7 +1746,7 @@ function SharedThreadSurface(props: { token: string; onClose: () => void }) {
         <div className="min-w-0">
           <div className="text-xs font-medium text-muted-foreground">Shared chat</div>
           <h1 className="truncate text-sm font-semibold text-foreground">
-            {thread?.title ?? "TinyCloud Chat"}
+            {thread?.title ?? "TinyCloud Home"}
           </h1>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={props.onClose}>
@@ -1806,7 +1808,7 @@ function SharedMessage({ item }: { item: StoredMessageItem }) {
         <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
           T
         </span>
-        <span>TinyCloud Chat</span>
+        <span>TinyCloud Home</span>
       </div>
       <div className="whitespace-pre-wrap break-words pl-7 text-sm leading-relaxed text-foreground">
         {text}

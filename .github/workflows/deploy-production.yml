@@ -232,9 +232,10 @@ jobs:
       - name: Refuse a build that is not the Home site
         run: |
           # A redeploy of a tag older than the Home build would otherwise publish the plain site to the Home project.
-          name=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("frontend/dist/manifest.webmanifest","utf8")).name)')
-          if [ "$name" != "TinyCloud Home" ]; then
-            echo "::error::frontend/dist/manifest.webmanifest names the app '$name', not 'TinyCloud Home'; this ref does not build the Home site (VITE_HOME_SITE), so nothing was uploaded"
+          # Both builds are named TinyCloud Home; only the Home site's installed-app id is /chat/feed.
+          id=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("frontend/dist/manifest.webmanifest","utf8")).id)')
+          if [ "$id" != "/chat/feed" ]; then
+            echo "::error::frontend/dist/manifest.webmanifest has id '$id', not '/chat/feed'; this ref does not build the Home site (VITE_HOME_SITE), so nothing was uploaded"
             exit 1
           fi
 

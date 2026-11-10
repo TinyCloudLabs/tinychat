@@ -129,12 +129,12 @@ function encodePayload(payload: AnyTinychatSharePayload): string {
 export function decodeTinychatShareToken(token: string): AnyTinychatSharePayload {
   const value = token.trim();
   if (!value.startsWith(SHARE_TOKEN_PREFIX)) {
-    throw new Error("Invalid TinyCloud Chat share link");
+    throw new Error("Invalid TinyCloud Home share link");
   }
 
   const parsed = JSON.parse(base64UrlDecode(value.slice(SHARE_TOKEN_PREFIX.length))) as unknown;
   if (!parsed || typeof parsed !== "object") {
-    throw new Error("Unsupported TinyCloud Chat share link");
+    throw new Error("Unsupported TinyCloud Home share link");
   }
   const candidate = parsed as Record<string, unknown>;
   const common =
@@ -152,7 +152,7 @@ export function decodeTinychatShareToken(token: string): AnyTinychatSharePayload
     candidate.key === snapshotKeyFor(candidate.id) &&
     (candidate.kv as { path?: unknown }).path === candidate.key;
   if (!legacy && !snapshot) {
-    throw new Error("Unsupported TinyCloud Chat share link");
+    throw new Error("Unsupported TinyCloud Home share link");
   }
 
   return parsed as AnyTinychatSharePayload;
@@ -326,7 +326,7 @@ export async function createTinychatShareLink(
     path: key,
     actions: ["tinycloud.kv/get"],
     expiry: expiresAt,
-    description: `TinyCloud Chat: ${title}`,
+    description: `TinyCloud Home: ${title}`,
   });
   if (!grant.ok) {
     await tcw.kv.delete(key);
