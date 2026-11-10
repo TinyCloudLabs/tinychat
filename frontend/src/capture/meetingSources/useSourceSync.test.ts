@@ -289,6 +289,10 @@ describe("mounted Meeting sources account generation", () => {
           itemCount: 0,
         },
       });
+      connectorStore._resetConnectorSchemaMemoForTests();
+      const schemaRecheckStart = fake.sql.log.length;
+      expect((await connectorStore.ensureSchema(fake.tcw)).ok).toBe(true);
+      expect(fake.sql.log.slice(schemaRecheckStart).filter(({ sql }) => /^CREATE TABLE/i.test(sql))).toHaveLength(0);
       await act(async () => { root.render(createElement(Harness)); });
       const background = syncFireflies({
         client: api,
