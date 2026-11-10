@@ -12,8 +12,8 @@ import xyz.tinycloud.exo.R
 import xyz.tinycloud.exo.capture.core.LaunchSource
 
 /**
- * Quick Settings "Record" tile. It never touches the mic itself: Android 14 only allows a
- * microphone foreground service from a visible activity, so it opens MainActivity with RECORD.
+ * Quick Settings "Record" tile. It never touches the mic itself: a microphone foreground service
+ * must start while the app is visible (while-in-use rules), so it opens MainActivity with RECORD.
  */
 class RecordTileService : TileService() {
     override fun onStartListening() {
@@ -21,7 +21,8 @@ class RecordTileService : TileService() {
         val live = !CaptureEngine.get(this).status().isNull("id")
         tile.state = if (live) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = getString(R.string.capture_tile_label)
-        if (Build.VERSION.SDK_INT >= 29) tile.subtitle = getString(R.string.app_name)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tile.subtitle = getString(R.string.app_name)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) tile.stateDescription = if (live) getString(R.string.capture_recording) else null
         tile.updateTile()
     }
 
@@ -32,7 +33,7 @@ class RecordTileService : TileService() {
     @SuppressLint("StartActivityAndCollapseDeprecated")
     private fun launch() {
         val intent = launchIntent(this)
-        if (Build.VERSION.SDK_INT >= 34) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startActivityAndCollapse(PendingIntent.getActivity(this, 0, intent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
         } else {

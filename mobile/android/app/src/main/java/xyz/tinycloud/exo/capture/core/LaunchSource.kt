@@ -7,5 +7,5 @@ object LaunchSource {
     const val TILE = "tile"
     private val allowed = setOf(TILE)
 
-    @JvmStatic fun record(extra: String?): String = if (extra in allowed) extra!! else APP_SHORTCUT
+    @JvmStatic fun record(extra: String?): String = extra?.takeIf { it in allowed } ?: APP_SHORTCUT
 }

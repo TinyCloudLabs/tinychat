@@ -33,8 +33,8 @@ Both ship with the APK and need no setup. The launcher shortcut "Record"
 `MainActivity` with `xyz.tinycloud.exo.capture.RECORD`. The tile adds the
 `xyz.tinycloud.exo.capture.extra.SOURCE` extra `tile`; `LaunchSource` allowlists
 it, and anything else records as `app_shortcut`. The tile never opens the mic
-itself, because Android 14 only allows a microphone foreground service from a
-visible activity. On a locked device it asks for unlock first. It shows as
+itself, because a microphone foreground service must start while the app is
+visible. On a locked device it asks for unlock first. It shows as
 active while a recording is live; tapping it then just shows the recorder.
 
 ## Device checks
