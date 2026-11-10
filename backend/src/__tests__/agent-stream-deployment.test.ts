@@ -53,6 +53,61 @@ describe("agent stream deployment policy", () => {
     }
   });
 
+  test("allows all-account MCP deployment without Eliza config but requires MCP service auth", () => {
+    const mcpOnly = {
+      ...streamEnv,
+      MCP_CHAT_ENABLED: "true",
+      MCP_CHAT_TEST_ACCOUNTS: "*",
+      AGENT_DID: "",
+      ELIZA_SERVICE_URL: "",
+      ELIZA_SERVICE_SECRET: "",
+    };
+    expect(checkDeployment(mcpOnly).exitCode).toBe(0);
+
+    const missingCredential = checkDeployment({ ...mcpOnly, MCP_CHAT_SERVICE_CREDENTIAL: "" });
+    expect(missingCredential.exitCode).not.toBe(0);
+    expect(missingCredential.output).toContain("MCP_CHAT_SERVICE_CREDENTIAL");
+  });
+
+  test("requires Eliza config unless MCP is enabled for every account", () => {
+    const restricted = checkDeployment({
+      ...streamEnv,
+      MCP_CHAT_ENABLED: "true",
+      MCP_CHAT_TEST_ACCOUNTS: "0x1111111111111111111111111111111111111111",
+      ELIZA_SERVICE_URL: "",
+    });
+    expect(restricted.exitCode).not.toBe(0);
+    expect(restricted.output).toContain("ELIZA_SERVICE_URL");
+  });
+  test("requires complete non-whitespace MCP wiring for named-account deployments", () => {
+    const named = {
+      ...streamEnv,
+      MCP_CHAT_ENABLED: "true",
+      MCP_CHAT_TEST_ACCOUNTS: "0x1111111111111111111111111111111111111111",
+      MCP_CHAT_URL: "https://mcp.example/mcp",
+      MCP_CHAT_SERVICE_DID: "did:service",
+      MCP_CHAT_SERVICE_CREDENTIAL: "synthetic-mcp-secret",
+      MCP_CHAT_SERVICE_CREDENTIAL_HEADER: "X-Service-Credential",
+      MCP_CHAT_OWNER_DID_HEADER: "X-Owner-DID",
+    };
+    expect(checkDeployment(named).exitCode).toBe(0);
+    for (const setting of ["MCP_CHAT_URL", "MCP_CHAT_SERVICE_DID", "MCP_CHAT_SERVICE_CREDENTIAL",
+      "MCP_CHAT_SERVICE_CREDENTIAL_HEADER", "MCP_CHAT_OWNER_DID_HEADER"]) {
+      for (const value of ["", " \t "]) {
+        const result = checkDeployment({ ...named, [setting]: value });
+        expect(result.exitCode).not.toBe(0);
+        expect(result.output).toContain(setting);
+        expect(result.output).not.toContain("synthetic-mcp-secret");
+      }
+    }
+  });
+
+  test("requires the MCP URL whenever the switch is enabled, even before accounts are listed", () => {
+    const result = checkDeployment({ ...streamEnv, MCP_CHAT_ENABLED: "true", MCP_CHAT_URL: " \t " });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain("MCP_CHAT_URL");
+  });
+
   test("accepts explicit values including the scheduler boundaries", () => {
     expect(checkDeployment(streamEnv).exitCode).toBe(0);
     expect(checkDeployment({ ...streamEnv, AGENT_STREAM_HEARTBEAT_MS: "1", AGENT_STREAM_TURN_TIMEOUT_MS: "2147483647" }).exitCode).toBe(0);

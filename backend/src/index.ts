@@ -304,11 +304,12 @@ async function main() {
     return;
   }
   const redpillApiKey = process.env.REDPILL_API_KEY;
+  const mcpChat = mcpChatFromEnv(process.env);
   let agentStreamPolicy: AgentStreamPolicy | undefined;
   try {
     agentStreamPolicy = agentStreamPolicyFromEnv(
       process.env,
-      Boolean(AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET && redpillApiKey),
+      Boolean(((AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) || mcpChat.mcpMeetings) && redpillApiKey),
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : "Invalid agent stream configuration");
@@ -1027,7 +1028,6 @@ async function main() {
   }
 
   // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
-  const mcpChat = mcpChatFromEnv(process.env);
   if ((AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) || mcpChat.mcpMeetings) {
     const elizaServiceUrl = ELIZA_SERVICE_URL?.replace(/\/$/, "");
     const meetingRollout = meetingRolloutFromEnv(process.env);
