@@ -13,7 +13,7 @@ test("ordinary signed-out screen keeps its default message", () => {
 
 test("a failed sign-in or a local sign-out offers Sign in, never Try again", () => {
   for (const error of [
-    "Couldn't sign in. Please try again.",
+    "Couldn't sign in. Try again.",
     "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.",
   ]) {
     const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error={error} onAction={() => {}} />);
@@ -35,7 +35,7 @@ test("the old WebView message carries a link to update it", () => {
 });
 
 test("an ordinary error shows no link", () => {
-  const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error="Couldn't sign in. Please try again." onAction={() => {}} />);
+  const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error="Couldn't sign in. Try again." onAction={() => {}} />);
   expect(markup).not.toContain("<a ");
 });
 

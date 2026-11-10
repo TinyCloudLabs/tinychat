@@ -30,6 +30,7 @@ test("off Android the same failure never mentions the Android WebView", () => {
 });
 
 test("an unknown error is never shown raw", () => {
+  expect(SIGN_IN_FAILED_MESSAGE).toBe("Couldn't sign in. Try again.");
   expect(authErrorMessage(new Error("HTTP 500 at https://internal/x"), "android")).toBe(SIGN_IN_FAILED_MESSAGE);
   expect(authErrorMessage({ code: "TIMEOUT", message: "timeout" }, "web")).toBe(SIGN_IN_FAILED_MESSAGE);
   expect(authErrorMessage("boom", "web")).toBe(SIGN_IN_FAILED_MESSAGE);

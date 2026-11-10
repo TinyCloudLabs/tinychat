@@ -42,7 +42,7 @@ export function PendingVoiceNoteSignOutDialog({
             Save and sign out
           </Button>
           <Button type="button" variant="destructive" onClick={onDelete} disabled={busy} className="min-h-11 w-full">
-            Sign out and delete them
+            {count === 1 ? "Sign out and delete it" : "Sign out and delete them"}
           </Button>
           <Button type="button" variant="ghost" onClick={onCancel} disabled={busy} className="min-h-11 w-full">
             Cancel

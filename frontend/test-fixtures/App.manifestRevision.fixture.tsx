@@ -229,10 +229,11 @@ test("a session recorded under the withdrawn revision \"1\" is forced the same w
 });
 
 test("a failed handoff keeps the session: it is not cleared, nothing restores, and the notice is not shown", async () => {
-  handoffResult = { ok: false, failClosed: false, message: "Couldn't update this phone's recording settings. Try again." };
+  handoffResult = { ok: false, failClosed: false, message: "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again." };
   seedSession();
   await mount();
   expect(events).toEqual(["handoff"]);
+  expect(host!.textContent).toContain("Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
   expect(localStorage.getItem(APP_SESSION_KEY)).not.toBeNull();
   expect(host!.textContent).not.toContain(NOTICE);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();

@@ -146,8 +146,8 @@ describe("NativeSignIn busy and error states", () => {
   });
 
   test("a failed sign-in shows its message as an alert and offers the buttons again", async () => {
-    const view = await mount({ state: "recoverableError", error: "Couldn't sign in. Please try again." });
-    expect(view.host.querySelector('[role="alert"]')?.textContent).toBe("Couldn't sign in. Please try again.");
+    const view = await mount({ state: "recoverableError", error: "Couldn't sign in. Try again." });
+    expect(view.host.querySelector('[role="alert"]')?.textContent).toBe("Couldn't sign in. Try again.");
     expect(view.button("Continue with Google").disabled).toBe(false);
     await view.click(view.button("Use a passkey"));
     expect(view.calls).toEqual([{ loginMethod: "passkey" }]);
@@ -170,7 +170,7 @@ describe("NativeSignIn busy and error states", () => {
   });
 
   test("an ordinary error shows no link", () => {
-    expect(markup({ state: "recoverableError", error: "Couldn't sign in. Please try again." })).not.toContain("<a ");
+    expect(markup({ state: "recoverableError", error: "Couldn't sign in. Try again." })).not.toContain("<a ");
   });
 });
 

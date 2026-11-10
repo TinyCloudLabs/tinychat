@@ -160,7 +160,7 @@ import type {
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
-import { isSignInCancelled } from "./lib/authErrors";
+import { isSignInCancelled, UserFacingError } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
@@ -193,7 +193,7 @@ export { stateLabel, type AppState } from "./lib/appState";
 const OPENKEY_SIGN_OUT_UNPROVEN_NOTE =
   "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.";
 const WEB_SIGN_OUT_RECOVERY_WARNING =
-  "You're signed out of TinyCloud Chat, but local session cleanup is still pending. Sign in again to retry cleanup.";
+  "You're signed out of TinyChat, but this device didn't finish clearing your session. Sign in again, then sign out.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
 const BACKEND_URL =
@@ -344,7 +344,7 @@ export function App() {
       setCaptureFailClosed(false);
       return true;
     } catch {
-      setError("Couldn't update this phone's recording settings. Try again.");
+      setError("Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
       return false;
     }
   }, [did, tcw, voiceNotePipeline]);
@@ -703,7 +703,7 @@ export function App() {
       const restored = await restorePersistedSession(sessionStoreRef.current, {
         beforeClear: async () => {
           if (!mayCommitRestore()) return;
-          if (!await captureHandoff()) throw new Error("Couldn't update this phone's recording settings. Try again.");
+          if (!await captureHandoff()) throw new UserFacingError("Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
         },
         isOffline: browserIsOffline,
         loadManifest: async () => WEB_APP_MANIFEST,
@@ -1117,7 +1117,7 @@ export function App() {
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       if (!clearWebSignOutPending(connectedAddress)) {
-        throw new Error("Couldn't finish local sign-out cleanup. Try signing in again.");
+        throw new UserFacingError("Sign-out didn't finish on this device. Sign in again, then sign out.");
       }
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
@@ -1181,7 +1181,7 @@ export function App() {
       };
       const stopForFenceFailure = () => {
         setError(nativeSession ? NATIVE_SIGN_OUT_WARNING
-          : "Couldn't secure local sign-out. Your session is still active; try again.");
+          : "Couldn't sign you out on this device. You're still signed in. Try again.");
         void nativeRenewalRef.current?.resume();
       };
       if (!options.terminal && tcw?.did) {
@@ -1190,7 +1190,7 @@ export function App() {
           if (!captureEngineAvailable()) await enableWebCaptureEngine();
           if (captureEngineAvailable()) ({ recordings: pending } = await VoiceNotes.listPending());
         } catch {
-          setError("Couldn't check for voice notes that haven't been saved to TinyCloud. Try again.");
+          setError("Couldn't check whether your voice notes are saved, so you're still signed in. Try again.");
           void nativeRenewalRef.current?.resume();
           return;
         }
@@ -1210,13 +1210,23 @@ export function App() {
             const remaining = (await VoiceNotes.listPending()).recordings.filter((note) =>
               (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
             if (remaining.length > 0) {
-              setPendingVoiceNoteSignOut({ count: remaining.length, error: "Couldn't save your voice notes. Try again, or sign out and delete them." });
+              setPendingVoiceNoteSignOut({
+                count: remaining.length,
+                error: remaining.length === 1
+                  ? "Couldn't save your voice note. Try again, or sign out and delete it."
+                  : "Couldn't save your voice notes. Try again, or sign out and delete them.",
+              });
               if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
               void nativeRenewalRef.current?.resume();
               return;
             }
           } catch {
-            setPendingVoiceNoteSignOut({ count: unsaved.length, error: "Couldn't save your voice notes. Try again, or sign out and delete them." });
+            setPendingVoiceNoteSignOut({
+              count: unsaved.length,
+              error: unsaved.length === 1
+                ? "Couldn't save your voice note. Try again, or sign out and delete it."
+                : "Couldn't save your voice notes. Try again, or sign out and delete them.",
+            });
             if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
             void nativeRenewalRef.current?.resume();
             return;
@@ -1231,7 +1241,7 @@ export function App() {
               (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
             setPendingVoiceNoteSignOut({
               count: remaining.length || unsaved.length,
-              error: "Couldn't delete all of your voice notes. Try again.",
+              error: "Couldn't delete all your voice notes, so you're still signed in. Try again.",
             });
             if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
             void nativeRenewalRef.current?.resume();
