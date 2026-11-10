@@ -24,25 +24,21 @@ describe("sign-out with replication", () => {
     expect(getReplicationStatus().purgeFailed).toBe(false);
   });
 
-  test("a failed replica deny is reported when the account-local purge also fails", async () => {
+  test("a failed replica sign-out is reported", async () => {
     const tcw = fakeClient(
       async () => { throw new Error("Replica gate was not denied (REPLICA_GATED); the replica may still be restorable."); },
-      { purgeLocalCopy: async () => ({ ok: false, retryNow: false, code: "REPLICA_GATED" }) },
     );
     const result = await signOutReplicaAware(tcw);
     expect(result).toEqual({ ok: false, message: REPLICA_PURGE_FAILED_WARNING, code: "REPLICA_GATED" });
     expect(getReplicationStatus()).toMatchObject({ purgeFailed: true, errorCode: "REPLICA_GATED" });
     expect(formatReplicationStatus(getReplicationStatus())).toContain("sign-out erase failed");
   });
-
-  test("a sign-out error remains visible when the account-local purge fails", async () => {
-    const tcw = fakeClient(
-      async () => { throw new Error("network down"); },
-      { purgeLocalCopy: async () => ({ ok: false, retryNow: false, code: "STORAGE_ERROR" }) },
-    );
+  test("a sign-out error remains visible for a replica-enabled client", async () => {
+    const tcw = fakeClient(async () => { throw new Error("network down"); });
     const result = await signOutReplicaAware(tcw);
     expect(result).toEqual({ ok: false, message: REPLICA_PURGE_FAILED_WARNING, code: "REPLICA_SIGNOUT_FAILED" });
   });
+
 
   test("a sign-out error on a client without replication is rethrown for the caller's existing handling", async () => {
     const offClient = { signOut: async () => { throw new Error("network down"); } } as unknown as TinyCloudWeb;

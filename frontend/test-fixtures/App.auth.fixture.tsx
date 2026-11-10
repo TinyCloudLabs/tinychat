@@ -25,6 +25,8 @@ const voiceNotesApi = await import("../src/lib/voiceNotes/nativeVoiceNotes");
 const storageDialogApi = await import("../src/chat/StorageFullDialog");
 
 let nativeMode = false;
+let captureInstallCalls = 0;
+let captureEngineInstalled = false;
 let loginAddress = "0x00000000000000000000000000000000000000a1";
 let signInCalls = 0;
 let lastSignInConfig: Record<string, unknown> | null = null;
@@ -102,10 +104,13 @@ mock.module("@/lib/openkeySignOut", () => ({
 }));
 mock.module("@/lib/connectors/encryptionGrant", () => ({ ...grantApi, withEncryptionDecryptGrant: (manifest: unknown) => manifest }));
 mock.module("@/lib/voiceNotes/voiceNotePipeline", () => ({ ...pipelineApi, createVoiceNotePipeline: () => null }));
+mock.module("../src/lib/voiceNotes/web/registerWebEngine", () => ({
+  enableWebCaptureEngine: async () => { captureInstallCalls++; captureEngineInstalled = true; },
+}));
 mock.module("@/lib/voiceNotes/captureEngine", () => ({
   ...captureApi,
   captureCapabilities: () => ({ offlineRecorder: false, micDeniedPresentation: false }),
-  captureEngineAvailable: () => false,
+  captureEngineAvailable: () => captureEngineInstalled,
   subscribeCaptureCapabilities: () => () => undefined,
 }));
 mock.module("../src/chat/ChatWorkspace", () => ({
@@ -136,6 +141,7 @@ mock.module("../src/capture/recorder/RecorderProvider", () => ({
   RecorderProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 mock.module("../src/capture/upload/UploadResumer", () => ({ ...uploadResumerApi, UploadResumer: () => null }));
+mock.module("../src/capture/recorder/RecordingOverlay", () => ({ RecordingOverlay: () => null }));
 mock.module("../src/capture/recorder/RecorderShell", () => ({
   RecorderShell: ({ chat, settings }: { chat: React.ReactNode; settings: React.ReactNode }) => <>{chat}{settings}</>,
 }));
@@ -144,6 +150,7 @@ mock.module("../src/lib/voiceNotes/nativeVoiceNotes", () => ({
   ...voiceNotesApi,
   VoiceNotes: {
     ...voiceNotesApi.VoiceNotes,
+    getCaptureDefaults: async () => ({ status: "signed_out", accountDid: null, transitionGen: 0 }),
     listPending: async () => ({ recordings: pendingVoiceNotes }),
     deleteAudio: async ({ id }: { id: string }) => { deletedVoiceNoteIds.push(id); },
   },
@@ -191,7 +198,7 @@ async function navigate(path: string) {
 beforeEach(() => {
   nativeMode = false;
   loginAddress = "0x00000000000000000000000000000000000000a1";
-  signInCalls = 0;
+  captureEngineInstalled = false;
   verifyCalls = 0;
   signOutStarted = null;
   releaseSignOut = null;
@@ -291,11 +298,11 @@ test("web sign-out clears SDK and app sessions before a hung OpenKey confirmatio
     `exo.voiceNotes.partialAudio.${encodeURIComponent(did)}.${encodeURIComponent(spaceId)}`,
   ];
   for (const key of perAddressKeys) window.localStorage.setItem(key, "account data");
+  window.localStorage.setItem("xyz.tinycloud.tinychat:auth-kind", "native");
   window.localStorage.setItem("exo.capture.transitionGen", "7");
   window.localStorage.setItem("exo.voiceNotes.partialAudio.signed-out.local", "local recording");
   expect(lastTcw).toBeTruthy();
   lastTcw!.replication = {
-    close: async () => { signOutEvents.push("replica-close"); },
     purgeLocalCopy: async () => { signOutEvents.push("replica-purge"); return { ok: true }; },
   };
 
@@ -316,7 +323,9 @@ test("web sign-out clears SDK and app sessions before a hung OpenKey confirmatio
   expect(window.localStorage.getItem("exo.capture.transitionGen")).toBe("7");
   expect(window.localStorage.getItem("exo.voiceNotes.partialAudio.signed-out.local")).toBe("local recording");
   expect(widgetSawSessionsCleared).toBe(true);
-  expect(signOutEvents).toEqual(["replica-close", "replica-purge", "openkey-widget", "sdk-signout"]);
+  expect(signOutEvents).toEqual(["openkey-widget", "sdk-signout"]);
+  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:auth-kind")).toBeNull();
+  expect(captureInstallCalls).toBeGreaterThan(0);
 
   await act(async () => { releaseSignOut?.(); releaseSignOut = null; await tick(); });
   await remount("web");

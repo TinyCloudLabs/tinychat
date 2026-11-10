@@ -5,6 +5,12 @@ export function installDom() {
   const dom = new Window({ url: "http://localhost/chat/capture" });
   Object.assign(dom, { TypeError, Error });
   const target = globalThis as typeof globalThis & Record<string, unknown>;
+  for (const name of ["localStorage", "sessionStorage"] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    if (descriptor && "value" in descriptor && descriptor.value !== undefined) {
+      Object.defineProperty(dom, name, { configurable: true, value: descriptor.value });
+    }
+  }
   const names = ["window", "document", "navigator", "localStorage", "sessionStorage", "HTMLElement", "HTMLInputElement", "Element", "Node", "NodeFilter", "KeyboardEvent", "CompositionEvent", "Event", "CustomEvent", "FocusEvent", "InputEvent", "MouseEvent", "PointerEvent", "MutationObserver", "customElements", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const;
   const previous = new Map<string, PropertyDescriptor | undefined>();
   for (const name of names) {

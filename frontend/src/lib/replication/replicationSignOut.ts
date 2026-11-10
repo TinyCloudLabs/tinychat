@@ -21,8 +21,6 @@ export interface ReplicaSignOutDeps {
   remoteTimeoutMs?: number;
 }
 
-type PurgeLocalCopyResult = { ok: true } | { ok: false; retryNow?: boolean; code?: string };
-type PurgeableReplica = { purgeLocalCopy?: () => Promise<PurgeLocalCopyResult> };
 
 const GATE_NOT_DENIED = /Replica gate was not denied(?: \(([^)]*)\))?/;
 const REMOTE_SIGN_OUT_TIMEOUT_MS = 5_000;
@@ -53,35 +51,13 @@ function clearCompletedMarkers(store: MarkerStore | undefined, principal: string
   } catch { /* A leftover marker only schedules a later cleanup attempt. */ }
 }
 
-async function purgeAccountCopy(tcw: TinyCloudWeb): Promise<PurgeLocalCopyResult> {
-  const purge = (tcw.replication as unknown as PurgeableReplica | undefined)?.purgeLocalCopy;
-  if (!purge) return { ok: false, code: "PURGE_UNAVAILABLE" };
-  let result: PurgeLocalCopyResult;
-  try {
-    result = await purge.call(tcw.replication);
-    if (!result.ok && result.retryNow) result = await purge.call(tcw.replication);
-  } catch {
-    return { ok: false, code: "STORAGE_ERROR" };
-  }
-  return result;
-}
 
-/** Purge this client's local replica before best-effort SDK session sign-out. */
+/** Stop the SDK session; its signOut path owns replica denial, key shredding, and local-copy erasure. */
 export function signOutReplicaAware(tcw: TinyCloudWeb, deps: ReplicaSignOutDeps = {}): Promise<ReplicaSignOutResult> {
   const existing = inFlight.get(tcw);
   if (existing) return existing;
   const task = (async (): Promise<ReplicaSignOutResult> => {
     const hasReplica = clientHasReplication(tcw);
-    let removal: PurgeLocalCopyResult | null = null;
-    if (hasReplica) {
-      removal = await purgeAccountCopy(tcw);
-      if (removal.ok) {
-        const store = "store" in deps ? deps.store : browserMarkerStore();
-        clearCompletedMarkers(store, tcw.did);
-      }
-    }
-
-    let signOutCode: string | null = null;
     try {
       await withTimeout(
         Promise.resolve().then(() => tcw.signOut?.()),
@@ -91,14 +67,14 @@ export function signOutReplicaAware(tcw: TinyCloudWeb, deps: ReplicaSignOutDeps 
       if (!hasReplica) throw caught;
       const text = caught instanceof Error ? caught.message : String(caught);
       const match = GATE_NOT_DENIED.exec(text);
-      signOutCode = match ? match[1]?.trim() || "REPLICA_GATE_NOT_DENIED" : "REPLICA_SIGNOUT_FAILED";
+      const code = match ? match[1]?.trim() || "REPLICA_GATE_NOT_DENIED" : "REPLICA_SIGNOUT_FAILED";
+      markReplicationPurgeFailed(code);
+      return { ok: false, message: REPLICA_PURGE_FAILED_WARNING, code };
     }
-    if (!hasReplica || removal?.ok) return { ok: true };
-
-    const code = signOutCode ?? removal?.code ?? "REPLICA_PURGE_FAILED";
-    markReplicationPurgeFailed(code);
-    const message = removal?.retryNow ? REPLICA_KEYS_KEPT_WARNING : REPLICA_PURGE_FAILED_WARNING;
-    return { ok: false, message, code };
+    if (hasReplica) {
+      clearCompletedMarkers("store" in deps ? deps.store : browserMarkerStore(), tcw.did);
+    }
+    return { ok: true };
   })();
   inFlight.set(tcw, clientHasReplication(tcw) ? trackStartupPurge(task) : task);
   return inFlight.get(tcw)!;

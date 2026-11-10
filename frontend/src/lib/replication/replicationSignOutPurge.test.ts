@@ -20,41 +20,48 @@ function memoryStore(initial: Record<string, string> = {}) {
 beforeEach(resetReplicationStatus);
 
 describe("account-scoped replica sign-out", () => {
-  test("purges its local replica before a bounded SDK sign-out and clears completed purge markers", async () => {
+  test("SDK signOut owns replica erasure and clears completed markers", async () => {
     const store = memoryStore({
       [REPLICATION_COPY_KEY]: ALICE,
       [REPLICATION_WIPE_PENDING_KEY]: "1",
       [SDK_LOGOUT_MARKER_KEY]: "pending",
     });
     const order: string[] = [];
+    let sdkDeniedGate = false;
     const tcw = {
       did: ALICE,
-      signOut: () => { order.push("sign-out"); return new Promise<void>(() => {}); },
+      signOut: async () => { order.push("sign-out"); sdkDeniedGate = true; },
       replication: {
-        purgeLocalCopy: async () => { order.push("purge-local-copy"); return { ok: true }; },
+        purgeLocalCopy: async () => sdkDeniedGate
+          ? { ok: true }
+          : { ok: false, retryNow: false, code: "principal_active" },
       },
     } as unknown as TinyCloudWeb;
 
-    expect(await signOutReplicaAware(tcw, { store, remoteTimeoutMs: 1 })).toEqual({ ok: true });
-    expect(order).toEqual(["purge-local-copy", "sign-out"]);
+    expect(await signOutReplicaAware(tcw, { store, remoteTimeoutMs: 10 })).toEqual({ ok: true });
+    expect(order).toEqual(["sign-out"]);
     expect(store.values.size).toBe(0);
   });
-
-  test("retries one account-local purge when the SDK says device keys may remain", async () => {
-    let attempts = 0;
+  test("a hung SDK sign-out is bounded and does not claim the replica erase completed", async () => {
+    const store = memoryStore({ [REPLICATION_COPY_KEY]: ALICE });
+    let purgeCalls = 0;
     const tcw = {
       did: ALICE,
-      signOut: async () => undefined,
+      signOut: () => new Promise<void>(() => {}),
       replication: {
-        purgeLocalCopy: async () => ++attempts === 1
-          ? { ok: false, retryNow: true, code: "STORAGE_ERROR" }
-          : { ok: true },
+        purgeLocalCopy: async () => { purgeCalls++; return { ok: true }; },
       },
     } as unknown as TinyCloudWeb;
 
-    expect(await signOutReplicaAware(tcw, { store: memoryStore() })).toEqual({ ok: true });
-    expect(attempts).toBe(2);
+    expect(await signOutReplicaAware(tcw, { store, remoteTimeoutMs: 1 })).toEqual({
+      ok: false,
+      message: expect.any(String),
+      code: "REPLICA_SIGNOUT_FAILED",
+    });
+    expect(purgeCalls).toBe(0);
+    expect(store.values.get(REPLICATION_COPY_KEY)).toBe(ALICE);
   });
+
 
   test("does not remove a different account's copy marker", async () => {
     const store = memoryStore({ [REPLICATION_COPY_KEY]: BOB });

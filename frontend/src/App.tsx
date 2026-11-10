@@ -139,7 +139,7 @@ import { useAudioCacheBoot } from "./lib/voiceNotes/audioReceiptUpgrade";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable, subscribeCaptureCapabilities } from "./lib/voiceNotes/captureEngine";
-import { savePendingRecordings } from "./lib/voiceNotes/recorderSaves";
+import { deletePendingRecordings, savePendingRecordings } from "./lib/voiceNotes/recorderSaves";
 import { PendingVoiceNoteSignOutDialog } from "./chat/PendingVoiceNoteSignOutDialog";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
 import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
@@ -353,12 +353,8 @@ export function App() {
     nativeRenewalRef.current = null;
     const storedAddress = sessionStoreRef.current.getAddress() ?? address;
     const accountDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
-    if (tcw && clientHasReplication(tcw)) {
-      stopReplicationFill(tcw);
-      const replica = tcw.replication as unknown as { close?: () => Promise<unknown> } | undefined;
-      try { void Promise.resolve(replica?.close?.()).catch(() => undefined); } catch { /* Local clear still wins. */ }
-    }
-    clearBackgroundDrainRecord();
+    if (tcw && clientHasReplication(tcw)) stopReplicationFill(tcw);
+    historyPrefetch.clear();
     uploadRunner.reset();
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
@@ -370,6 +366,8 @@ export function App() {
     clearAgentSessionCache();
     clearVaultSecretCache();
     resetNavigationMemory();
+    openkeyRef.current = null;
+    setNativeSessionActive(false);
     setPendingVoiceNoteSignOut(null);
     // The Home features flag stays: it holds no secrets and lets the next sign-in ask for those sets.
     if (tcw) {
@@ -1091,7 +1089,6 @@ export function App() {
   const signOut = useCallback(async (options: { terminal?: string; pendingChoice?: "save" | "delete" } = {}) => {
     if (signOutInFlightRef.current) return;
     signOutInFlightRef.current = true;
-    nativeRenewalRef.current?.stop();
     setSigningOut(true);
     setError(null);
     try {
@@ -1100,9 +1097,10 @@ export function App() {
         return;
       }
       if (!options.terminal && tcw?.did) {
-        let pending: Awaited<ReturnType<typeof VoiceNotes.listPending>>["recordings"];
+        let pending: Awaited<ReturnType<typeof VoiceNotes.listPending>>["recordings"] = [];
         try {
-          ({ recordings: pending } = await VoiceNotes.listPending());
+          if (!captureEngineAvailable()) await enableWebCaptureEngine();
+          if (captureEngineAvailable()) ({ recordings: pending } = await VoiceNotes.listPending());
         } catch {
           setError("Couldn't check for voice notes that haven't been saved to TinyCloud. Try again.");
           void nativeRenewalRef.current?.resume();
@@ -1132,7 +1130,7 @@ export function App() {
         }
         if (unsaved.length > 0 && options.pendingChoice === "delete") {
           try {
-            for (const note of unsaved) await VoiceNotes.deleteAudio({ id: note.id });
+            await deletePendingRecordings(unsaved);
           } catch {
             const listing = await VoiceNotes.listPending().catch(() => ({ recordings: unsaved }));
             const remaining = listing.recordings.filter((note) =>

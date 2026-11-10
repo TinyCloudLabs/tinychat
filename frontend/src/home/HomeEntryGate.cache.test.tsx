@@ -48,10 +48,11 @@ function Screen({ load }: { load: () => Promise<FirstScreen> }) {
   return <HomeEntryGate load={load} cached={cached}><p data-testid="screen">{pathname}</p></HomeEntryGate>;
 }
 
-async function mount(load: () => Promise<FirstScreen>) {
+async function mount(load: () => Promise<FirstScreen>, beforeRender?: () => void) {
   expect(process.env.HOME).toBe(testHome);
   restoreDom = installDom();
   setAppsFeedEnabled(true);
+  beforeRender?.();
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -135,10 +136,17 @@ describe("Home entry with a device-local copy of the choice", () => {
     expect(screenAt(host)).toBe("/chat/feed");
   });
 
-  test("storage that throws is ignored: a read inside the window still decides", async () => {
-    useStorage({ throwing: true });
+  test("a failing first-screen cache read is ignored while the node read still decides", async () => {
+    useStorage();
     jest.useFakeTimers();
-    const host = await mount(async () => "apps");
+    const host = await mount(async () => "apps", () => {
+      const storage = window.localStorage;
+      const getItem = storage.getItem.bind(storage);
+      storage.getItem = (key: string) => {
+        if (key === accountStorageKey(FIRST_SCREEN_CACHE_KEY, DID)) throw new Error("storage unavailable");
+        return getItem(key);
+      };
+    });
     await act(async () => {});
     expect(screenAt(host)).toBe("/chat/apps");
   });

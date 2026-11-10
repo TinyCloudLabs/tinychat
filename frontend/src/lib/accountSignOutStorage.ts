@@ -11,6 +11,7 @@ export function clearAccountSignOutStorage(
   const encodedDid = encodeURIComponent(did).toLowerCase();
   const manifestRevisionPrefix = `xyz.tinycloud.tinychat:manifest-revision:${address.toLowerCase()}`;
   const indexPrefix = `tinychat:index:${normalizedDid}`;
+  const memoryPrefix = `tinychat:memory:${normalizedDid}`;
 
   for (let index = storage.length - 1; index >= 0; index--) {
     let key: string | null;
@@ -19,7 +20,8 @@ export function clearAccountSignOutStorage(
     const normalizedKey = key.toLowerCase();
     const accountExoKey = (normalizedKey.startsWith("exo.") || normalizedKey.startsWith("exo-"))
       && (normalizedKey.includes(normalizedDid) || normalizedKey.includes(encodedDid));
-    if (normalizedKey.startsWith(indexPrefix) || normalizedKey.startsWith(manifestRevisionPrefix) || accountExoKey) {
+    if (normalizedKey.startsWith(indexPrefix) || normalizedKey.startsWith(memoryPrefix)
+      || normalizedKey.startsWith(manifestRevisionPrefix) || accountExoKey) {
       try { storage.removeItem(key); } catch { /* Keep clearing the remaining account keys. */ }
     }
   }

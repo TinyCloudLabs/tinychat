@@ -13,4 +13,5 @@ test("mounted App completes browser and native interactive sign-in across accoun
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   const output = `${result.stdout}\n${result.stderr}`;
   expect(output).toContain("0 fail");
+  expect(output).toMatch(/[1-9]\d* pass/);
 });

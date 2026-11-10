@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { streamChat } from "./chatApi";
 import { createTranscriberClient } from "./transcriberApi";
@@ -84,16 +83,3 @@ test("simultaneous 401 responses share one durable handoff", async () => {
   dispose();
 });
 
-test("the App registers the shared clear completion that leaves ready UI", () => {
-  const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
-  expect(app).toContain("registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,");
-  expect(app).toContain("() => completeLocalSignOut(null)");
-  const completion = app.slice(app.indexOf("const completeLocalSignOut = useCallback"),
-    app.indexOf("useEffect(() => registerSessionSignedOutHook"));
-  expect(completion).toContain("clearSendIntentsForOwner(storedAddress)");
-  expect(completion.indexOf("clearSendIntentsForOwner(storedAddress)")).toBeLessThan(
-    completion.indexOf("sessionStoreRef.current.clear()"),
-  );
-  expect(completion).toContain("setTcw(null);");
-  expect(completion).toContain('setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");');
-});

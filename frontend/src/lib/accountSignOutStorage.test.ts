@@ -20,6 +20,7 @@ describe("clearAccountSignOutStorage", () => {
     const otherDid = "did:pkh:eip155:1:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const storage = memoryStorage({
       [`tinychat:index:${did}`]: "account index",
+      [`tinychat:memory:${did}`]: "cached memory",
       [`xyz.tinycloud.tinychat:manifest-revision:${address.toLowerCase()}`]: "revision",
       [`exo-audio-receipt-pass:${did}:applications`]: "receipt",
       [`exo.voiceNotes.partialAudio.${encodeURIComponent(did)}.applications`]: "partial audio metadata",
@@ -32,6 +33,7 @@ describe("clearAccountSignOutStorage", () => {
     clearAccountSignOutStorage(did, address, storage);
 
     expect(storage.values.has(`tinychat:index:${did}`)).toBe(false);
+    expect(storage.values.has(`tinychat:memory:${did}`)).toBe(false);
     expect(storage.values.has(`xyz.tinycloud.tinychat:manifest-revision:${address.toLowerCase()}`)).toBe(false);
     expect(storage.values.has(`exo-audio-receipt-pass:${did}:applications`)).toBe(false);
     expect(storage.values.has(`exo.voiceNotes.partialAudio.${encodeURIComponent(did)}.applications`)).toBe(false);
