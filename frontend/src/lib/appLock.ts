@@ -12,7 +12,7 @@
 //
 // The native plugin (AppLockPlugin.swift / AppLockPlugin.java) measures time in
 // the background and covers the window while backgrounded, so the app switcher
-// shows no data; every decision is made here.
+// shows no data (iOS, and Android 13+); every decision is made here.
 import { useSyncExternalStore } from "react";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { appPlatform } from "./platform";
@@ -230,10 +230,8 @@ export function createAppLock(deps: AppLockDeps): AppLock {
     },
     getSnapshot: () => snapshot,
     unlocked() {
-      if (!snapshot.state.locked) return Promise.resolve();
-      const { promise, resolve } = Promise.withResolvers<void>();
-      unlockWaiters.push(resolve);
-      return promise;
+      // Not Promise.withResolvers: newer than this project's lib target and some Android WebViews.
+      return snapshot.state.locked ? new Promise((resolve) => { unlockWaiters.push(resolve); }) : Promise.resolve();
     },
     async start() {
       if (!native || started) return;
