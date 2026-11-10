@@ -12,6 +12,7 @@
 // already covers them (augmentSignInEntriesWithReplication in node-sdk). Flag OFF: no sync entry,
 // so existing sessions get exactly what they got before.
 import type { TinyCloudWebConfig } from "@tinyboilerplate/client";
+import { isReplicaError, ReplicaErrorCode } from "@tinycloud/replica";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { noteReplicationCopyPossible } from "./replicationCopyMarker";
 import { isReplicationEnabled } from "./replicationFlag";
@@ -136,9 +137,7 @@ function sleep(ms: number): Promise<void> {
 const terminalGrantRefusals = new WeakSet<TinyCloudWeb>();
 
 function isNonCompactGrantRefusal(error: unknown): boolean {
-  return error instanceof Error &&
-    error.name === "ReplicaError" &&
-    (error as Error & { code?: unknown }).code === "GRANT_FORMAT_UNSUPPORTED";
+  return isReplicaError(error, ReplicaErrorCode.GRANT_FORMAT_UNSUPPORTED);
 }
 
 /**
@@ -148,8 +147,8 @@ function isNonCompactGrantRefusal(error: unknown): boolean {
  * Only when this client HAS a replication controller and the user's opt-in is ON (re-checked before
  * EVERY prefix start), and never while a removal of the copy is in flight. The fill waits for the
  * app's first data load to settle (success or error; at most REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS),
- * then syncs the prefixes one by one with at most REPLICATION_FILL_POOL_SIZE in flight and starts
- * spaced REPLICATION_FILL_START_GAP_MS apart, so a burst of kv/sync does not queue the app's reads.
+ * then probes one prefix before starting the remaining bounded, spaced worker fill. This prevents a
+ * session-wide non-compact grant refusal from fanning out across concurrent prefix starts.
  * Switch-off / sign-out (controller gone) stops every prefix not yet started; one already started is
  * left to the SDK's own teardown. A non-compact-UCAN refusal is terminal for this client session:
  * close the controller and log once. Other sync errors do not stop later prefixes.
@@ -176,25 +175,30 @@ export function startReplicationFill(
     await Promise.race([firstLoadSettled().catch(() => undefined), deadline]);
     cancelDeadline();
 
-    const syncPrefix = async (prefix: string): Promise<void> => {
-      if (!canStart()) return;
+    const stopForGrantRefusal = (error: unknown): void => {
+      if (!isNonCompactGrantRefusal(error) || terminalGrantRefusals.has(tcw)) return;
+      terminalGrantRefusals.add(tcw);
+      queue.length = 0;
+      console.debug("[replication] stopped for session: compact UCAN required");
       try {
-        await tcw.replication?.sync({ prefix });
-      } catch (error) {
-        if (!isNonCompactGrantRefusal(error) || terminalGrantRefusals.has(tcw)) return;
-        terminalGrantRefusals.add(tcw);
-        queue.length = 0;
-        console.debug("[replication] stopped for session: compact UCAN required");
-        try {
-          await tcw.replication?.close();
-        } catch {
-          // The grant refusal is terminal even if teardown itself fails.
-        }
+        void Promise.resolve(tcw.replication?.close()).catch(() => undefined);
+      } catch {
+        // The grant refusal is terminal even if teardown itself fails.
       }
     };
 
-    // The refusal is session-wide: check one prefix before starting parallel work, so the
-    // non-compact grant can cause at most one attempted sync for this session.
+    const syncPrefix = (prefix: string): Promise<unknown> => {
+      if (!canStart()) return Promise.resolve();
+      try {
+        return Promise.resolve(tcw.replication?.sync({ prefix })).catch(stopForGrantRefusal);
+      } catch (error) {
+        stopForGrantRefusal(error);
+        return Promise.resolve();
+      }
+    };
+
+    // The grant refusal applies to the entire session. Probe one prefix before starting
+    // workers so a rejected grant cannot fan out into several concurrent retries.
     const firstPrefix = queue.shift();
     if (firstPrefix) {
       await syncPrefix(firstPrefix);
@@ -202,12 +206,12 @@ export function startReplicationFill(
       if (startGapMs > 0) await sleep(startGapMs);
     }
 
-    // Other errors retain existing behavior: continue remaining prefixes, spaced and bounded.
+    // Once the first sync succeeds, other errors retain the existing bounded fill behavior.
     let turn: Promise<void> = Promise.resolve();
     const worker = async (): Promise<void> => {
       while (queue.length > 0) {
         const prefix = queue.shift()!;
-        let sync: Promise<void> | undefined;
+        let sync: Promise<unknown> | undefined;
         const slot = turn.then(() => {
           if (!canStart()) { queue.length = 0; return undefined; }
           sync = syncPrefix(prefix);

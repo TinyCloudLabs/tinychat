@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { ReplicaError, ReplicaErrorCode } from "@tinycloud/replica";
 import { startReplicationFill } from "./replicationClient";
 import { replicationDebugEnabled, formatReplicationStatus, REPLICATION_DEBUG_KEY } from "./ReplicationStatusLine";
 import { startupPurgeSettled, trackStartupPurge } from "./replicationStartupPurge";
@@ -52,9 +53,9 @@ describe("first sync after sign-in / restore", () => {
   test("a non-compact-UCAN refusal terminates sync for the current session", async () => {
     let calls = 0;
     let closeCalls = 0;
-    const error = Object.assign(
-      new Error("The grant is not a compact UCAN. SIWE/CACAO grants cannot back a replica."),
-      { name: "ReplicaError", code: "GRANT_FORMAT_UNSUPPORTED" },
+    const error = new ReplicaError(
+      ReplicaErrorCode.GRANT_FORMAT_UNSUPPORTED,
+      "The grant is not a compact UCAN. SIWE/CACAO grants cannot back a replica.",
     );
     const client = clientWith(async () => { calls += 1; throw error; }, async () => { closeCalls += 1; });
     const debugCalls: unknown[][] = [];
@@ -86,9 +87,9 @@ describe("first sync after sign-in / restore", () => {
   });
 
   test("a new session can start after the previous session's grant refusal", async () => {
-    const refusal = Object.assign(
-      new Error("The grant is not a compact UCAN. SIWE/CACAO grants cannot back a replica."),
-      { name: "ReplicaError", code: "GRANT_FORMAT_UNSUPPORTED" },
+    const refusal = new ReplicaError(
+      ReplicaErrorCode.GRANT_FORMAT_UNSUPPORTED,
+      "The grant is not a compact UCAN. SIWE/CACAO grants cannot back a replica.",
     );
     const refused = clientWith(async () => { throw refusal; }, async () => {});
     let newSessionCalls = 0;

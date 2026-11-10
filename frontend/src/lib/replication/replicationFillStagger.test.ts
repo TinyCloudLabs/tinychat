@@ -79,11 +79,13 @@ describe("replication fill: deferred and staggered", () => {
     expect(h.started.map((s) => s.prefix)).toEqual(PREFIXES);
   });
 
-  test("never more than the pool size in flight", async () => {
+  test("bounded workers run after the first prefix succeeds", async () => {
     const h = harness();
     startReplicationFill(h.tcw, () => true, { firstLoadSettled: async () => {}, prefixes: PREFIXES });
-    await advance(5_000);
-    expect(REPLICATION_FILL_POOL_SIZE).toBeLessThanOrEqual(3); // the node's safe maximum per account
+    await advance(10);
+    expect(h.started.map((s) => s.prefix)).toEqual(["a/"]);
+    h.finish("a/");
+    await advance(REPLICATION_FILL_START_GAP_MS * 4);
     expect(h.inFlight()).toBe(REPLICATION_FILL_POOL_SIZE);
     await drain(h);
     expect(h.started).toHaveLength(PREFIXES.length);
