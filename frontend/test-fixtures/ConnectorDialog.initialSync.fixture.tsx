@@ -100,6 +100,7 @@ class MemoryBoundaries {
   popupCalls = 0;
   popupUrl = "";
   readonly autojoinBegins: Record<string, unknown>[] = [];
+  autojoinBeginState = "";
   readonly autojoinEnables: unknown[] = [];
   requireRefresh = false;
   /** Drive holds 200 non-notes Docs and 3 Notes by Gemini Docs (default: no Docs at all). */
