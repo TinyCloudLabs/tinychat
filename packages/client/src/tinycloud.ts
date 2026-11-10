@@ -83,7 +83,6 @@ export function createTinyCloudWeb(
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     // These browser sessions carry SIWE/CACAO, not a replica device UCAN.
     // Keep the SDK controller absent so reads and timers cannot start a sync.
-    autoBootstrapAccount: false,
   };
 
   return new TinyCloudWeb(tcwConfig);
