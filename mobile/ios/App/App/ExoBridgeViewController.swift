@@ -1,3 +1,4 @@
+import ActivityKit
 import Capacitor
 import CaptureCore
 import Darwin
@@ -129,6 +130,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
                     _ = AppLifecycleHooks.performShortcut(UIApplicationShortcutItem(
                         type: "xyz.tinycloud.exo.record", localizedTitle: "Record"))
                 }
+                if ProcessInfo.processInfo.environment["EXO_SHORTCUT_SMOKE"] == "1" { self.runShortcutProbe() }
             }
             if ProcessInfo.processInfo.environment["EXO_CAPTURE_SMOKE"] == "1" {
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -207,6 +209,51 @@ class ExoBridgeViewController: CAPBridgeViewController {
             }
             print("EXO_LOCATION_SMOKE \(line)")
             Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_LOCATION_SMOKE \(line, privacy: .public)")
+        }
+    }
+
+    /// With `EXO_SHORTCUT_SMOKE=1`, once the main probe has published: run the App Shortcut's start path
+    /// (`RecordingShortcut`, which StartRecordingIntent and the quick action call), check the engine, the Live
+    /// Activity and the bridge all see the recording with its source, that a second shortcut keeps the same
+    /// recording, then discard it and check the activity ends. Logs one `EXO_SHORTCUT_SMOKE {json}` line.
+    private static let shortcutBridgeScript = """
+        const status = await Promise.race([window.Capacitor.nativePromise("VoiceNotes", "status", {}),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000))]);
+        return JSON.stringify({ state: status.state, source: status.source, id: status.id });
+        """
+
+    private func runShortcutProbe() {
+        Task { @MainActor [weak self] in
+            var out: [String: Any] = [:]
+            let activeIDs = { Activity<RecordingActivityAttributes>.activities
+                .filter { $0.activityState == .active }.map(\.attributes.recordingId) }
+            do {
+                try await RecordingShortcut.start(.intent, foreground: .already)
+                let status = CaptureEngine.shared.status()
+                let id = status["id"] as? String
+                out["started"] = id != nil
+                out["state"] = status["state"]
+                out["source"] = status["source"]
+                out["activity"] = id.map { activeIDs().contains($0) } ?? false
+                if let webView = self?.webView {
+                    let value = try await webView.callAsyncJavaScript(Self.shortcutBridgeScript, contentWorld: .page)
+                    let bridge = (value as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]
+                    out["bridge"] = ["state": bridge?["state"] ?? NSNull(), "source": bridge?["source"] ?? NSNull(),
+                                     "sameId": (bridge?["id"] as? String) == id]
+                }
+                try await RecordingShortcut.start(.control, foreground: .already)
+                out["secondKeptRecording"] = CaptureEngine.shared.status()["id"] as? String == id
+                out["discarded"] = try CaptureEngine.shared.discard() == id
+                for _ in 0..<50 where !activeIDs().isEmpty { try await Task.sleep(for: .milliseconds(100)) }
+                out["activityEnded"] = activeIDs().isEmpty
+            } catch {
+                out["error"] = String(describing: error)
+            }
+            let data = try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])
+            let line = data.map { String(decoding: $0, as: UTF8.self) } ?? Self.smokeProbeError("unserializable")
+            print("EXO_SHORTCUT_SMOKE \(line)")
+            fflush(stdout)
+            Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_SHORTCUT_SMOKE \(line, privacy: .public)")
         }
     }
 
