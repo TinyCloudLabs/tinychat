@@ -536,4 +536,3 @@ const ConsentCopyBlock: FC<{ copy: BackgroundSyncConsentCopy }> = ({ copy }) => 
     <p className="text-xs text-muted-foreground">{copy.intro}</p>
   </div>
 );
-
