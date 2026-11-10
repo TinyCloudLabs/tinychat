@@ -112,6 +112,8 @@ class FakeSqlDb {
   nextCreateError: SqlError | null = null;
   /** When set, the NEXT non-DDL execute() fails with the given error. Consumed on use. */
   nextExecuteError: SqlError | null = null;
+  /** Records statements sent to the fake SQL service. */
+  queries: string[] = [];
   /** When set, the NEXT query() fails with the given error. Consumed on use. */
   nextQueryError: SqlError | null = null;
   /** Mirror TinyCloud rows that return JSON-valued TEXT cells already decoded. */
@@ -123,6 +125,7 @@ class FakeSqlDb {
   }
 
   async query(sql: string, params: unknown[] = []): Promise<SqlResult> {
+    this.queries.push(sql);
     return this.tracker.run("sql.query", () => this.queryImpl(sql, params));
   }
 
@@ -1567,6 +1570,18 @@ describe("connectorStore Drive Notes lifecycle", () => {
 // ── updateSyncState + getConnection ─────────────────────────────────────
 
 describe("connectorStore.updateSyncState / getConnection", () => {
+  test("missing connector state table is detected read-only without querying it", async () => {
+    const f = makeFake();
+
+    const result = await getConnection(f.tcw, "fireflies");
+
+    expect(result).toEqual({ ok: true, data: null });
+    expect(f.sql.queries).toHaveLength(1);
+    expect(f.sql.queries[0]).toMatch(/FROM sqlite_master/i);
+    expect(f.sql.queries[0]).not.toMatch(/FROM connector_state/i);
+    expect(f.sql.createAttempts).toBe(0);
+  });
+
   test("updateSyncState upserts and getConnection returns the row", async () => {
     const f = makeFake();
     const initial = await getConnection(f.tcw, "fireflies");
