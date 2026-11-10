@@ -195,7 +195,7 @@ export function SettingsPage({
                   variant="outline"
                   size="sm"
                   onClick={() => void openOpenKeyAccountDeletion()}
-                  className="gap-1.5 text-destructive"
+                  className="h-auto min-h-[var(--tc-control-height-sm)] max-w-full gap-1.5 whitespace-normal py-1.5 text-left text-destructive"
                 >
                   <Trash2Icon className="size-4" />
                   <span>Delete OpenKey account</span>
