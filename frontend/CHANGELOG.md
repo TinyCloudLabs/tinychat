@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.4
+
+### Minor Changes
+
+- 657b2ef: Settings → Account has "Delete OpenKey account" (TC-2721, App Store 5.1.1(v)). It opens OpenKey's deletion page, `https://openkey.so/dashboard/settings/delete-account` on the configured `VITE_OPENKEY_HOST`, in the system browser sheet on the phone or a new tab on the web. The row isn't shown on desktop, which has no fixed-URL opener for it yet.
+
 ## 0.14.0-beta.3
 
 ### Minor Changes
