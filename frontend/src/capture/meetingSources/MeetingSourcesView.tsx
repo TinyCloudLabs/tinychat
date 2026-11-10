@@ -51,7 +51,7 @@ export function MeetingSourcesWindow({
             <div className="ms-head-copy">
               <Dialog.Title className="soft-title ms-title">Meeting sources</Dialog.Title>
               <Dialog.Description className="ms-sub">
-                Bring meeting notes into your private space. <HowItWorks />
+                Bring meeting notes into your TinyCloud space. <HowItWorks />
               </Dialog.Description>
             </div>
             <Dialog.Close ref={closeRef} className="ms-close" aria-label="Close">

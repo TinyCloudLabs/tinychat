@@ -15,10 +15,10 @@ export const POWERFUL_CONSENT_TITLE = "Use Powerful transcription?";
 export const POWERFUL_CONSENT_ACTION = "Use Powerful transcription";
 /** The Powerful provider's name. The ONE place it is written: it appears only in the consent small print and About; change a provider here. */
 export const POWERFUL_PROVIDER_NAME = "AssemblyAI";
-/** The one "not private" line every Powerful explanation uses: recorder mode scale, upload route text, Settings. */
-export const POWERFUL_NOT_PRIVATE_LINE = "Not private: Powerful sends your audio through Exo's server to an outside transcription service. Exo deletes the service's copy once the transcript is saved.";
+/** Shared Powerful explanation for the recorder mode scale, upload route text, and Settings. */
+export const POWERFUL_NOT_PRIVATE_LINE = "Powerful sends your audio through Exo's server to an outside transcription service. Provider retention and deletion policies apply; saving to TinyCloud does not guarantee erasure of every copy.";
 function powerfulConsentBody(audio: string): string {
-  return `Powerful sends ${audio} through Exo's server to an outside transcription service, for the most accurate transcript with speaker labels. It isn't private. Exo deletes the service's copy as soon as the transcript is saved.`;
+  return `Powerful sends ${audio} through Exo's server to an outside transcription service, for the most accurate transcript with speaker labels. Provider retention and deletion policies apply; saving to TinyCloud does not guarantee erasure of every copy.`;
 }
 export const POWERFUL_CONSENT_BODY = powerfulConsentBody("this note's audio");
 export const POWERFUL_CONSENT_UPLOAD_BODY = powerfulConsentBody("this audio");
@@ -29,7 +29,7 @@ export function privateConsentDevice(platform: AppPlatform): string {
 }
 
 export function privateConsentBody(device: string): string {
-  return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. Exo never sees it.`;
+  return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription for cloud processing. This is not an end-to-end encryption guarantee for stored audio or transcripts. See How it works for processing and storage boundaries.`;
 }
 
 /** One name per transcription mode, keyed by the provider's transcriber id; every surface that names a mode reads this. */
@@ -108,7 +108,7 @@ export const FINAL_COPY = {
   needsApp: "needs the app",
   get onThisPhone() { return `on ${captureDeviceName()}`; },
   onThisMac: "on this Mac",
-  sealedEnclave: "sealed enclave",
+  sealedEnclave: "cloud processing",
   identifySpeakers: "Identify speakers",
   notSupported: "Not supported",
   speakerTurns: "Labels each speaker's turns",
@@ -134,16 +134,16 @@ export const FINAL_COPY = {
     },
     skipExplanation:
       "Saves the recording without a transcript. Audio follows your Upload audio to TinyCloud setting.",
-    localPhoneCaption: "Nothing leaves it; a little slower.",
+    localPhoneCaption: "On-device transcription; upload settings still apply.",
     localDesktopCaption: "Whisper on this Mac, after you stop.",
-    get localPhoneExplanation() { return `${captureDeviceName().replace(/^t/, "T")} transcribes it after you stop. Nothing leaves it.`; },
+    get localPhoneExplanation() { return `${captureDeviceName().replace(/^t/, "T")} transcribes it after you stop. Audio follows your Upload audio to TinyCloud setting; saved transcripts use hosted storage.`; },
     localDesktopExplanation: (model: string) =>
-      `Whisper ${model} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
+      `Whisper ${model} transcribes on this Mac after you stop. Audio follows your Upload audio to TinyCloud setting; saved transcripts use hosted storage. Change the model in ⚙︎ Settings.`,
     localWebExplanation:
       "Runs on your phone or Mac in the Exo app. Not available in the browser.",
-    privateCaption: "Fast, accurate, and sealed from Exo.",
+    privateCaption: "Cloud transcription via TinyCloud.",
     privateExplanation:
-      "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
+      "Audio is sent to TinyCloud Private Transcription. Ordinary hosted audio and transcripts are plaintext at rest; cloud processing does not make stored data end-to-end encrypted.",
     powerfulCaption: "Most accurate, with speaker labels.",
     powerfulExplanation: POWERFUL_NOT_PRIVATE_LINE,
   },

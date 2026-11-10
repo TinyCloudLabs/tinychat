@@ -198,7 +198,7 @@ export function SettingsPage({
             title="Agent access"
             aside={
               <InfoTip label="About agent access" className={TITLE_TIP}>
-                Private agent memory and meeting access. Public web search stays available.
+                Scoped access to agent memory and meetings. Public web search stays available.
               </InfoTip>
             }
           >

@@ -1,9 +1,5 @@
-// How it works (/chat/about, TC-761): the explanations the screens used to
-// carry inline. Screens keep a short label, a one-line InfoTip, and a
-// HowItWorksLink to one of these sections; `lib/about.ts` owns the ids and
-// titles, this file the words. Every claim here is one the app already made on
-// its screens or in its disclosures: this page moves copy, it never adds
-// promises.
+// How it works (/chat/about, TC-761): explanations linked from the app's screens.
+// `lib/about.ts` owns the section ids and titles; this file owns the disclosures.
 import { useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -131,7 +127,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
   library: (
     <>
       <p>
-        Library holds everything your connected sources have synced into your private space, along with your voice
+        Library holds everything your connected sources have synced into your TinyCloud space, along with your voice
         notes, uploads and notetaker transcripts.
       </p>
       <p>
@@ -143,7 +139,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
   connectors: (
     <>
       <p>
-        Connectors bring meeting notes and transcripts into your private space. You choose each source, when it syncs,
+        Connectors bring meeting notes and transcripts into your TinyCloud space. You choose each source, when it syncs,
         and when its access ends. Synced data is stored in your space.
       </p>
       <Sub>Background notifications</Sub>
@@ -164,7 +160,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
   "agent-access": (
     <>
       <p>
-        Agent access controls private agent memory and meeting access. Public web search stays available without it.
+        Agent access controls scoped access to agent memory and meetings. Public web search stays available without it.
       </p>
       <p>
         Connecting asks you once to authorize access: you sign with your passkey, or sign in with OpenKey where passkeys
@@ -183,6 +179,18 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         Your conversations live in your TinyCloud space, and so do your transcripts, synced meetings and what the
         assistant remembers. Voice notes are saved there, and so is a copy of each file you upload. The audio of a
         desktop local recording stays on that Mac.
+      </p>
+      <p>
+        Ordinary hosted data is plaintext at rest, not generally end-to-end encrypted. The host can access stored
+        content. Application access uses capability-based scopes you approve; this is access control, not an
+        at-rest encryption guarantee. OpenKey-managed keys are not keys held exclusively by you.
+      </p>
+      <p>
+        Revocation depends on the access path. Current node delegation revocation is available; host deletion
+        propagation is planned. Revoking access or deleting data cannot recall copies already read.
+      </p>
+      <p>
+        <a className="underline" href="https://docs.tinycloud.xyz/concepts/security-and-trust">Security and trust: storage, keys, and access boundaries</a>
       </p>
       <p>
         The assistant’s memory is a document in your space. You can edit or clear it at any time in Settings; clearing

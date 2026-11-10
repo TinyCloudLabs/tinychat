@@ -97,8 +97,8 @@ const ThreadListItem: FC = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete thread?</AlertDialogTitle>
             <AlertDialogDescription>
-              This action cannot be undone. The chat and all of its messages
-              will be permanently removed from your TinyCloud space.
+              This action cannot be undone in the app. It requests deletion of this chat
+              and its messages from your TinyCloud space; it cannot recall copies already read.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
