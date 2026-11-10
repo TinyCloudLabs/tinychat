@@ -8,7 +8,8 @@ import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { __resetStorageStatusForTests, isStorageReadOnly, reportStorageError, reportStoragePlanTier,
   STORAGE_FULL_DETAIL, STORAGE_FULL_RECORDING_LINE, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
 
-const restoreImportDom = installDom();
+const restoreImportDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
+const authStorage = { localStorage: window.localStorage, sessionStorage: window.sessionStorage };
 const clientApi = await import("@tinyboilerplate/client");
 const nativeApi = await import("@/lib/openkeyNative");
 const renewalApi = await import("@/lib/openkeyNativeRenewal");
@@ -195,7 +196,7 @@ async function settle() {
   await act(async () => { await tick(); await tick(); await tick(); });
 }
 async function mount(platform: AppPlatform) {
-  restoreDom = installDom();
+  restoreDom = installDom(authStorage);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -226,6 +227,8 @@ async function navigate(path: string) {
 }
 
 beforeEach(() => {
+  authStorage.localStorage.clear();
+  authStorage.sessionStorage.clear();
   nativeMode = false;
   loginAddress = "0x00000000000000000000000000000000000000a1";
   captureEngineInstalled = false;

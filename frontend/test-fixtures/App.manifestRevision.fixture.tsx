@@ -159,7 +159,7 @@ function qualifyBrowser() {
 }
 
 async function mount(platform: AppPlatform = "web") {
-  restoreDom = installDom();
+  restoreDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
   qualifyBrowser();
   host = document.createElement("div");
   document.body.append(host);

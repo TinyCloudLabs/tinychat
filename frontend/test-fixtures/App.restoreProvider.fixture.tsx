@@ -106,7 +106,7 @@ async function settle() {
   await act(async () => { await tick(); await tick(); await tick(); });
 }
 async function mount(platform: AppPlatform = "web") {
-  restoreDom = installDom();
+  restoreDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);

@@ -1,19 +1,19 @@
 import { Window } from "happy-dom";
 
 /** Installs an isolated browser DOM for interaction tests that mount React. */
-export function installDom() {
+export function installDom(storage?: { localStorage?: Storage; sessionStorage?: Storage }) {
   const dom = new Window({ url: "http://localhost/chat/capture" });
   Object.assign(dom, { TypeError, Error });
   const target = globalThis as typeof globalThis & Record<string, unknown>;
+  const storageByName = { localStorage: storage?.localStorage, sessionStorage: storage?.sessionStorage };
   for (const name of ["localStorage", "sessionStorage"] as const) {
-    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
-    if (descriptor && "value" in descriptor && descriptor.value !== undefined) {
-      Object.defineProperty(dom, name, { configurable: true, value: descriptor.value });
-    }
+    const value = storageByName[name];
+    if (value) Object.defineProperty(dom, name, { configurable: true, value });
   }
-  const names = ["window", "document", "navigator", "localStorage", "sessionStorage", "HTMLElement", "HTMLInputElement", "Element", "Node", "NodeFilter", "KeyboardEvent", "CompositionEvent", "Event", "CustomEvent", "FocusEvent", "InputEvent", "MouseEvent", "PointerEvent", "MutationObserver", "customElements", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const;
+  const names = ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element", "Node", "NodeFilter", "KeyboardEvent", "CompositionEvent", "Event", "CustomEvent", "FocusEvent", "InputEvent", "MouseEvent", "PointerEvent", "MutationObserver", "customElements", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const;
+  const installedNames = storage ? [...names, "localStorage", "sessionStorage"] : names;
   const previous = new Map<string, PropertyDescriptor | undefined>();
-  for (const name of names) {
+  for (const name of installedNames) {
     previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(target, name, { configurable: true, writable: true, value: name === "window" ? dom : name === "document" ? dom.document : name === "navigator" ? dom.navigator : name in dom ? (dom as unknown as Record<string, unknown>)[name] : (dom.window as unknown as Record<string, unknown>)[name] });
   }
