@@ -183,6 +183,7 @@ import { useNativeSignIn } from "./shell/useNativeSignIn";
 export { stateLabel, type AppState } from "./lib/appState";
 
 const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = `Signed out of ${APP_NAME}. To use a different account, also sign out at openkey.so.`;
+const OPENKEY_SIGN_OUT_TIMEOUT_ERROR = "OpenKey sign-out could not be confirmed. Try again.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
 const BACKEND_URL =
@@ -1145,9 +1146,18 @@ export function App() {
       } else if (!nativeSession && !options.terminal) {
         const openKeyClient = openkeyRef.current ?? new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST,
           passkeysSupported: openkeyPasskeysSupported() });
-        // The user answers OpenKey's own confirmation here, so no deadline runs.
-        // signOutOpenKeySession reports every failure as an outcome rather than throwing.
-        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient);
+        const openKeyOutcome = await withCaptureDeadline(
+          signOutOpenKeySession(openKeyClient, () => openKeyClient),
+        ).catch(async () => {
+          // The server may have revoked the OpenKey session without delivering its acknowledgement to this page.
+          // Keep the TinyCloud session usable so the user can retry with a fresh OpenKey client.
+          openkeyRef.current = null;
+          setError(OPENKEY_SIGN_OUT_TIMEOUT_ERROR);
+          await restoreCaptureAfterAuthAbort();
+          setState("ready");
+          return null;
+        });
+        if (!openKeyOutcome) return;
         // OpenKey clears this client's local auth before showing its widget, even
         // when the user cancels. Never retain that spent client for another flow.
         openkeyRef.current = null;

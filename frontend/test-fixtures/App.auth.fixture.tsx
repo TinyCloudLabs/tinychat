@@ -17,6 +17,8 @@ const signOutApi = await import("@/lib/openkeySignOut");
 const pipelineApi = await import("@/lib/voiceNotes/voiceNotePipeline");
 const grantApi = await import("@/lib/connectors/encryptionGrant");
 const captureApi = await import("@/lib/voiceNotes/captureEngine");
+const accountHandoffApi = await import("@/lib/voiceNotes/accountHandoff");
+const realWithCaptureDeadline = accountHandoffApi.withCaptureDeadline;
 const agentEnablementApi = await import("@/chat/useAgentEnablement");
 const transcriberSyncApi = await import("@/chat/useTranscriberLibrarySync");
 const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
@@ -30,6 +32,8 @@ let lastSignInConfig: Record<string, unknown> | null = null;
 let verifyCalls = 0;
 let signOutStarted: (() => void) | null = null;
 let releaseSignOut: (() => void) | null = null;
+let signOutCalls = 0;
+let fastSignOutDeadline = false;
 
 function fakeTcw(address: string): TinyCloudWeb {
   return { did: `did:pkh:eip155:1:${address}`, spaceId: `space-${address.slice(-2)}`, address: () => address,
@@ -76,6 +80,7 @@ mock.module("@/lib/sessionRestore", () => ({
 mock.module("@/lib/openkeySignOut", () => ({
   ...signOutApi,
   signOutOpenKeySession: async () => {
+    signOutCalls++;
     signOutStarted?.();
     if (releaseSignOut) await new Promise<void>((resolve) => { releaseSignOut = resolve; });
     return { status: "cancelled" };
@@ -88,18 +93,25 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
   captureCapabilities: () => ({ offlineRecorder: false, micDeniedPresentation: false }),
   captureEngineAvailable: () => false,
 }));
+mock.module("@/lib/voiceNotes/accountHandoff", () => ({
+  ...accountHandoffApi,
+  withCaptureDeadline: <T,>(operation: Promise<T>, timeoutMs?: number) =>
+    realWithCaptureDeadline(operation, fastSignOutDeadline && signOutCalls > 0 ? 20 : timeoutMs),
+}));
 mock.module("../src/chat/ChatWorkspace", () => ({
   ChatWorkspace: ({ settings }: { settings: React.ReactNode }) => <div data-testid="authenticated-workspace">{settings}</div>,
 }));
 mock.module("../src/chat/SettingsPage", () => ({
-  SettingsPage: ({ onSignOut }: { onSignOut: () => void }) => (
+  SettingsPage: ({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: boolean }) => (
     <>
       {window.location.pathname === "/chat/settings" && isStorageReadOnly() && (
         <div data-testid="settings-storage-full-banner" role="region" aria-label="Storage full">
           <storageDialogApi.StorageFullMessage detail />
         </div>
       )}
-      <button onClick={() => void onSignOut()}>Test sign out</button>
+      <button disabled={signingOut} onClick={() => void onSignOut()}>
+        {signingOut ? "Signing out…" : "Test sign out"}
+      </button>
     </>
   ),
 }));
@@ -158,6 +170,8 @@ beforeEach(() => {
   verifyCalls = 0;
   signOutStarted = null;
   releaseSignOut = null;
+  signOutCalls = 0;
+  fastSignOutDeadline = false;
 });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -215,6 +229,29 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   expect(verifyCalls).toBe(3);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(host!.textContent).not.toContain("Storage full");
+});
+test("a hung OpenKey acknowledgement stops blocking Settings and can be retried", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+
+  let attempts = 0;
+  signOutStarted = () => { attempts++; };
+  releaseSignOut = () => {};
+  fastSignOutDeadline = true;
+  await click("Test sign out");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); await tick(); });
+
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+  expect(host!.textContent).not.toContain("Signing out…");
+  const retry = [...host!.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Test sign out");
+  expect(retry?.disabled).toBe(false);
+
+  await click("Test sign out");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); await tick(); });
+  expect(attempts).toBe(2);
+  expect(signOutCalls).toBe(2);
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });
 
 test("native interactive sign-in mounts the authenticated workspace", async () => {
