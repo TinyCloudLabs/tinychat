@@ -13,4 +13,6 @@ export const FEED_STRINGS = {
   getStartedHeading: "Get started",
   getStartedBody: "Ask your agent to post to your feed. Its cards show up here.",
   howAgentsPost: "How agents post",
+  mobileUnavailableHeading: "Feed isn't available in the mobile app yet",
+  mobileUnavailableBody: "Open TinyCloud on the web or the desktop app to see your feed.",
 } as const;

@@ -746,8 +746,14 @@ The session JWK never touches WebView localStorage. Details:
   malformed host fails sign-in with the "not configured in this build" error. The backend nonce for the session SIWE is address-less: `GET
   /api/auth/nonce` without `?address=` issues an unbound, single-use,
   5-minute nonce that `/verify` binds to the recovered signer.
-- The delegation covers the manifest's applications-space KV/SQL entries plus
-  capabilities/read — no secrets or vault. Everything that unlocks or stores
+- The delegation covers only the manifest's applications-space KV/SQL entries
+  that OpenKey's Exo native ceiling covers (`NATIVE_CEILING` in
+  `openkeyNative.ts`: KV `threads/`, `connectors/`; SQL `threads`, `canvas`,
+  `connectors`) plus capabilities/read. OpenKey's PAR refuses the whole
+  request if one entry is outside that ceiling, so widen it only after the
+  registered client is widened (TC-1990); `openkeyNative.ceiling.test.ts`
+  fails otherwise. No secrets, vault, feed databases or hooks: the Feed shows
+  "isn't available in the mobile app yet" (TC-2720). Everything that unlocks or stores
   credentials (connect, Sync now, disconnect key-delete, own AssemblyAI key,
   the background drains) is gated behind `secretsAvailable()` for native
   delegation sessions and shows "set up from Exo on the web or desktop" copy.

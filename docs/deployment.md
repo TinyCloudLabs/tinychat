@@ -673,9 +673,10 @@ nothing below may be reported as done on its behalf.
   app-path grant, which is the proof that the sign-in is for TinyChat. The root
   KV grant and the two named runnable catalog databases are tolerated next to
   it but never count as that proof on their own; other grants are rejected.
-  Native sign-in cannot request the broad entries until OpenKey's native
-  client policy and ceiling are changed (TC-1990), and the served revision-3
-  manifest lists them, so native sign-in is expected to fail until then. The
+  Native sign-in requests only the entries inside OpenKey's Exo native client
+  ceiling (`NATIVE_CEILING` in `frontend/src/lib/openkeyNative.ts`); the broad
+  entries, the feed databases and hooks stay web-only until OpenKey's native
+  client policy and ceiling are changed (TC-1990, TC-2720). The
   web sign-in does not use that client ceiling. Set
   `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
   never use the API host as the signed audience.

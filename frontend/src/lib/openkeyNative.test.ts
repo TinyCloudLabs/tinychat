@@ -898,9 +898,9 @@ describe("describeAuthFailure redaction", () => {
   });
 });
 
-describe("native feed grant upgrade", () => {
+describe("native grant upgrade", () => {
   const required = nativePermissions(APP_MANIFEST as unknown as Manifest);
-  for (const missing of ["xyz.tinycloud.tinychat/feed/", "sql/xyz.tinycloud.tinychat/feed/"]) {
+  for (const missing of ["xyz.tinycloud.tinychat/threads/", "xyz.tinycloud.tinychat/canvas"]) {
     test(`a live grant missing ${missing} requests one re-sign before installation`, async () => {
       const flow = makeFlow();
       flow.openkey.current = async () => ({
@@ -913,6 +913,15 @@ describe("native feed grant upgrade", () => {
       expect(flow.order).not.toContain("signOut");
     });
   }
+  test("a live grant without feed databases or hooks restores: the feed is web-only natively (TC-2720)", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => ({
+      tokens: { accessToken: "a", refreshToken: "r" }, sessionKey, delegation: { ...delegation, permissions: required },
+    });
+    expect(required.some((permission) => permission.path.includes("feed") || permission.service === "tinycloud.hooks")).toBe(false);
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
+    expect(flow.order).not.toContain("signOut");
+  });
   test("another owner's full space does not satisfy the current owner's required scopes", async () => {
     const flow = makeFlow();
     flow.openkey.current = async () => ({

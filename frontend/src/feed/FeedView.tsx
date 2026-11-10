@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useContext, useEffect, useMemo, useState, type JSX } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createHomeFeedSource } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
+import { PlatformContext } from "../lib/platform";
 
 // These keys belong to the bundled sample only. A real card's media key is never a web URL.
 const sampleAssets: Record<string, string> = {
@@ -164,8 +165,23 @@ export function FeedViewEntries({ realEntries, source }: { realEntries: unknown;
   return source ? <HomeFeedEntries source={source} /> : <SampleFeedEntries realEntries={realEntries} />;
 }
 
+/**
+ * The phone apps sign in natively, and OpenKey's native ceiling grants neither
+ * the feed databases nor hook subscriptions (TC-2720, TC-1990), so the feed is
+ * web and desktop only there: a clear state instead of a load that cannot succeed.
+ */
 export function FeedView({ tcw }: { tcw: TinyCloudWeb | null }): JSX.Element {
-  const source = useMemo(() => tcw ? createHomeFeedSource(tcw) : null, [tcw]);
+  const platform = useContext(PlatformContext);
+  const mobile = platform === "ios" || platform === "android";
+  const source = useMemo(() => tcw && !mobile ? createHomeFeedSource(tcw) : null, [tcw, mobile]);
+  if (mobile) {
+    return <main aria-label="Feed" className="h-full overflow-y-auto bg-background p-6 text-foreground">
+      <div role="status" className="mx-auto max-w-2xl rounded-xl border border-border bg-card p-6 text-sm">
+        <h1 className="font-display text-lg font-semibold">{FEED_STRINGS.mobileUnavailableHeading}</h1>
+        <p className="mt-2 text-muted-foreground">{FEED_STRINGS.mobileUnavailableBody}</p>
+      </div>
+    </main>;
+  }
   return source
     ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
