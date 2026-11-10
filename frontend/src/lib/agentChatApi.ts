@@ -86,26 +86,29 @@ export type AgentStreamErrorCode =
   | "interpretation_timeout"
   | "result_size_limit"
   | "budget_exhausted"
+  | "private_response_unverified"
   | "agent_failed";
 
 /** Expected stream failures carry only bounded codes and safe display copy. */
 export class AgentStreamError extends Error {
   constructor(readonly code: AgentStreamErrorCode) {
-    super(code === "turn_timeout"
-      ? "This reply took too long to finish. You can try again."
-      : code === "interpretation_failed"
-        ? "The model could not prepare a valid meeting request. Please try again."
-        : code === "interpretation_timeout"
-          ? "Understanding this request took too long. Please try again."
-          : code === "upstream_failed"
-            ? "The model service could not complete this request. Please try again later."
-            : code === "upstream_incomplete"
-              ? "The model service returned an incomplete reply. Please try again."
-              : code === "result_size_limit"
-                ? "The response was too large to process safely. Try a smaller request or fewer meetings."
-                : code === "budget_exhausted"
-                  ? "You've reached today's credit limit, so this reply stopped early. What's below is what was produced before the limit."
-                  : "The connection ended before the reply finished. You can try again.");
+    super(code === "private_response_unverified"
+      ? "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again."
+      : code === "turn_timeout"
+        ? "This reply took too long to finish. You can try again."
+        : code === "interpretation_failed"
+          ? "The model could not prepare a valid meeting request. Please try again."
+          : code === "interpretation_timeout"
+            ? "Understanding this request took too long. Please try again."
+            : code === "upstream_failed"
+              ? "The model service could not complete this request. Please try again later."
+              : code === "upstream_incomplete"
+                ? "The model service returned an incomplete reply. Please try again."
+                : code === "result_size_limit"
+                  ? "The response was too large to process safely. Try a smaller request or fewer meetings."
+                  : code === "budget_exhausted"
+                    ? "You've reached today's credit limit, so this reply stopped early. What's below is what was produced before the limit."
+                    : "The connection ended before the reply finished. You can try again.");
     this.name = "AgentStreamError";
   }
 }
@@ -296,7 +299,8 @@ export async function* streamAgentChat(
           if (json?.stream_error) {
             const code = json.stream_error.code;
             throw new AgentStreamError(
-              code === "turn_timeout" || code === "upstream_incomplete" || code === "upstream_failed" || code === "interpretation_failed"
+              code === "turn_timeout" || code === "upstream_incomplete" || code === "upstream_failed"
+                || code === "private_response_unverified" || code === "interpretation_failed"
                 || code === "interpretation_timeout" || code === "result_size_limit" || code === "budget_exhausted"
                 ? code : "agent_failed",
             );

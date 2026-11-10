@@ -28,6 +28,7 @@ import { createAgentRouter } from "./routes/agent.js";
 import { meetingRolloutFromEnv } from "./transcripts/meeting-rollout.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter, defaultModel } from "./routes/chat.js";
+import { redPillAciFetch } from "./redpill-aci.js";
 import { LedgerFlusher } from "./billing/ledger-flusher.js";
 import { LedgerRehydrator } from "./billing/ledger-rehydrate.js";
 import { isOfferedModel } from "./billing/catalog.js";
@@ -1064,7 +1065,8 @@ async function main() {
                 elizaServiceUrl: elizaServiceUrl ?? "",
                 elizaServiceSecret: ELIZA_SERVICE_SECRET ?? "",
                 redpillApiKey: diagnosticKey ?? redpillApiKey,
-                redpillBaseUrl: diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
+                redpillBaseUrl: diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://tee.redpill.ai/v1",
+                redpillFetch: redPillAciFetch(diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://tee.redpill.ai/v1"),
                 defaultModel,
                 isModelOffered: (m: string) => isOfferedModel(m),
                 flusher: ledgerFlusher,
@@ -1083,7 +1085,12 @@ async function main() {
   app.use(
     "/api/chat",
     authMiddleware,
-    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator, paidLimiter: paidChatLimiter }),
+    createChatRouter({
+      flusher: ledgerFlusher,
+      rehydrator: ledgerRehydrator,
+      redpillFetch: redPillAciFetch(process.env.REDPILL_BASE_URL ?? "https://tee.redpill.ai/v1"),
+      paidLimiter: paidChatLimiter,
+    }),
   );
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());

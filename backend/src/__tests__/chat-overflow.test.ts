@@ -7,6 +7,7 @@ import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { _resetUsage } from "../billing/usage.js";
 import { createChatRouter } from "../routes/chat.js";
 import { createApiBodyParser } from "../body-parsing.js";
+import { RedPillAttestationError } from "../redpill-aci.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const OFFERED_MODEL = "z-ai/glm-5.2";
@@ -17,10 +18,10 @@ function authStub(req: Request, _res: Response, next: NextFunction) {
 }
 
 /** Exercise the production API parser, retaining a smaller-limit control. */
-function createApp(jsonLimit?: string) {
+function createApp(jsonLimit?: string, redpillFetch?: typeof fetch) {
   const app = express();
   app.use(jsonLimit ? express.json({ limit: jsonLimit }) : createApiBodyParser());
-  app.use("/api/chat", authStub, createChatRouter());
+  app.use("/api/chat", authStub, createChatRouter({ redpillFetch: redpillFetch ?? globalThis.fetch }));
   return app;
 }
 
@@ -51,7 +52,7 @@ function stubChatUpstream(opts: {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("api.redpill.ai") && url.endsWith("/chat/completions")) {
+    if (url.includes("redpill.ai") && url.endsWith("/chat/completions")) {
       return new Response(opts.body, {
         status: opts.status,
         headers: { "content-type": opts.contentType ?? "application/json" },
@@ -69,7 +70,7 @@ function stubChatSse(sseChunks: string[]): () => void {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("api.redpill.ai") && url.endsWith("/chat/completions")) {
+    if (url.includes("redpill.ai") && url.endsWith("/chat/completions")) {
       return new Response(sseChunks.join(""), {
         status: 200,
         headers: { "content-type": "text/event-stream" },
@@ -186,6 +187,65 @@ describe("POST /api/chat upstream context-overflow classification (§C.12)", () 
   });
 });
 
+describe("POST /api/chat attestation gate", () => {
+  test("requires the verified-provider constraint on each model request", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestBody = "";
+    const redpillFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = String(init?.body ?? "");
+      return new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "synthetic verified reply" } }] })}\n\ndata: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream", "x-receipt-id": "fixture-receipt" } },
+      );
+    }) as typeof fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/chat/completions")) {
+        return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const res = await post(createApp(undefined, redpillFetch), JSON.stringify({
+        model: OFFERED_MODEL,
+        messages: [{ role: "user", content: "synthetic question" }],
+      }));
+      expect(requestBody).not.toBe("");
+      expect(JSON.parse(requestBody).provider).toEqual({ aci_verified: true });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("synthetic verified reply");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("withholds a model reply when its receipt verification fails", async () => {
+    const originalFetch = globalThis.fetch;
+    const redpillFetch = (async () => { throw new RedPillAttestationError(); }) as typeof fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/chat/completions")) {
+        return new Response(
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "must not be shown" } }] })}\n\ndata: [DONE]\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const res = await post(createApp(undefined, redpillFetch), JSON.stringify({
+        model: OFFERED_MODEL,
+        messages: [{ role: "user", content: "synthetic question" }],
+      }));
+      expect(res.status).toBe(502);
+      const body = await res.text();
+      expect(body).toContain("private_response_unverified");
+      expect(body).toContain("isn't shown");
+      expect(body).not.toContain("synthetic receipt-verification failure");
+      expect(body).not.toContain("must not be shown");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
 describe("global body limit raised 64kb → 1mb (Wall A, §C.4a)", () => {
   test("chat_body_over_64kb_reaches_handler", async () => {
     // A ~100 KB body (>64 KB, <1 MB) must reach the handler under the 1 MB limit

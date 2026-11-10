@@ -42,12 +42,13 @@ import {
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import { selectChatModel } from "../modelSelection.js";
 import { noteRequestRecord, recordAfterHandler } from "../request-context.js";
+import { PRIVATE_RESPONSE_UNVERIFIED_MESSAGE, RedPillAttestationError, redPillAciFetch } from "../redpill-aci.js";
 
 // ── RedPill config ───────────────────────────────────────────────────────────
 // REDPILL_API_KEY is required at call time. Missing key returns 500 per-request
 // so the server boots cleanly even without a key configured.
 
-const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
+const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://tee.redpill.ai/v1";
 
 // Reactive context-overflow classifier (§C.12): matches an upstream 400/413 body
 // that reads like a context-window / token-length failure. Kept as a single
@@ -197,6 +198,8 @@ function gateAnnotation(
 export interface ChatRouterOptions {
   flusher?: LedgerFlusher;
   rehydrator?: LedgerRehydrator;
+  /** Verified RedPill fetch; override is for isolated tests only. */
+  redpillFetch?: typeof fetch;
   /** The paid-chat rate limiter (`applyRateLimiters`), run before the send handler. */
   paidLimiter?: RequestHandler;
 }
@@ -204,6 +207,7 @@ export interface ChatRouterOptions {
 export function createChatRouter(options?: ChatRouterOptions) {
   const flusher = options?.flusher;
   const rehydrator = options?.rehydrator;
+  const redpillFetch = options?.redpillFetch ?? redPillAciFetch(REDPILL_BASE_URL);
   const router = Router();
   const paidLimiter: RequestHandler = options?.paidLimiter ?? ((_req, _res, next) => next());
 
@@ -430,7 +434,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
 
     let upstreamRes: globalThis.Response;
     try {
-      upstreamRes = await fetch(`${REDPILL_BASE_URL}/chat/completions`, {
+      upstreamRes = await redpillFetch(`${REDPILL_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -438,6 +442,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
         },
         body: JSON.stringify({
           model: resolvedModel,
+          provider: { aci_verified: true },
           messages,
           stream: true,
           stream_options: { include_usage: true },
@@ -448,6 +453,13 @@ export function createChatRouter(options?: ChatRouterOptions) {
     } catch (error: unknown) {
       if (error instanceof Error && error.name === "AbortError") { // client left
         noteRequestRecord(res, { stream: "aborted" });
+        return;
+      }
+      if (error instanceof RedPillAttestationError) {
+        console.warn("[chat] RedPill reply receipt was not verified");
+        res.status(502).json({
+          error: { code: error.code, message: PRIVATE_RESPONSE_UNVERIFIED_MESSAGE },
+        });
         return;
       }
       handleRouteError(res, error, "reach RedPill API");

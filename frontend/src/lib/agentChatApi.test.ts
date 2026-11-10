@@ -119,6 +119,7 @@ describe("agent stream lifecycle", () => {
     ["interpretation_timeout", "Understanding this request took too long. Please try again."],
     ["result_size_limit", "The response was too large to process safely. Try a smaller request or fewer meetings."],
     ["budget_exhausted", "You've reached today's credit limit, so this reply stopped early. What's below is what was produced before the limit."],
+    ["private_response_unverified", "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again."],
     ["agent_failed", interruptionMessage],
   ] as const) {
     it(`handles ${code} before legacy text or any callbacks, after malformed data`, async () => {

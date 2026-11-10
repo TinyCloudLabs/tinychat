@@ -45,6 +45,7 @@ import {
 import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
 import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
 
+import { RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, redPillAciFetch } from "../redpill-aci.js";
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
   creditsPerKInput: 200,
@@ -123,9 +124,10 @@ export interface AgentChatConfig {
   defaultModel: () => string;
   /** True when the model may be proxied (phala/* and not blocklisted). */
   isModelOffered: (model: string) => boolean;
-  /** Injectable fetch (tests). Defaults to global fetch. */
+  /** Injectable model fetch for tests; production wiring uses the ACI verifier. */
+  redpillFetch?: typeof fetch;
+  /** Injectable fetch for tool/service requests in tests. */
   fetchImpl?: typeof fetch;
-  /** Max tool→result rounds before forcing a final answer (default 3). */
   maxRounds?: number;
   /** Selected once after admission; task mode takes precedence over legacy controllers. */
   elizaTasksEnabled?: boolean;
@@ -642,9 +644,10 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
   const maxChars = request.maxOutputTokens === 1024 ? 12288 : 24576;
   params.onPhase?.(request.phase);
-  const upstream = await fetchForTurn(params.config.fetchImpl ?? fetch, `${params.config.redpillBaseUrl}/chat/completions`, {
+  const redpillFetch = params.config.redpillFetch ?? params.config.fetchImpl ?? redPillAciFetch(params.config.redpillBaseUrl);
+  const upstream = await fetchForTurn(redpillFetch, `${params.config.redpillBaseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
-    body: JSON.stringify({ model: params.model, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
+    body: JSON.stringify({ model: params.model, provider: { aci_verified: true }, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
   }, request.signal);
   if (!upstream.ok || !upstream.body) { if (upstream.body) ignoreCleanup(() => upstream.body!.cancel()); throw new StreamFailure("upstream_failed"); }
   let content = "", completionId = "", promptTokens = 0, completionTokens = 0, finish: unknown;
@@ -678,6 +681,7 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
 async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = false): Promise<OrchestrateResult> {
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
+  const redpillFetch = config.redpillFetch ?? config.fetchImpl ?? redPillAciFetch(config.redpillBaseUrl);
   const maxRounds = generalOnly ? Math.min(config.maxRounds ?? 3, 3) : config.maxRounds ?? 3;
   // Missing access outranks model admission: changing the model cannot fix it.
   const accessIssue = config.privateAccessActive === false ? config.privateAccessIssue ?? "delegation_required" : undefined;
@@ -749,7 +753,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     const bufferMeetingAnswer = meetingCitations.length > 0;
 
     params.onPhase?.(repairing ? "repair" : isSynthesisRound ? "synthesis" : "model");
-    const upstream = await fetchForTurn(fetchImpl, `${config.redpillBaseUrl}/chat/completions`, {
+    const upstream = await fetchForTurn(redpillFetch, `${config.redpillBaseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -759,6 +763,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
         cleanSynthesis
           ? {
               model,
+              provider: { aci_verified: true },
               messages: generalOnly ? [
                 { role: "system", content: "Answer the user's question using the supplied public-web results. Cite source links for factual claims supported by those results." },
                 { role: "user", content: `Question: ${lastUserQuestion}\n\nPublic-web results:\n${toolResults.map(message => message.content).join("\n\n")}` },
@@ -774,6 +779,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
             }
           : {
               model,
+              provider: { aci_verified: true },
               messages: convo,
               tools: generalOnly ? [WEB_SEARCH_TOOL] : [WEB_SEARCH_TOOL, ...TINYCLOUD_MEETING_TOOLS],
               tool_choice: forceAnswer ? "none" : "auto",
@@ -1006,7 +1012,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
 }
 
-export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
+export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "private_response_unverified" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
 class StreamFailure extends Error {
@@ -1082,6 +1088,9 @@ async function fetchForTurn(fetchImpl: typeof fetch, url: string, init: RequestI
     return await withAbort(operation, signal);
   } catch (error) {
     throwIfAborted(signal);
+    if (error instanceof RedPillAttestationError) throw new StreamFailure("private_response_unverified");
+    if (error instanceof RedPillResponseLimitError) throw new StreamFailure("result_size_limit");
+    if (error instanceof RedPillAciError) throw new StreamFailure("upstream_failed");
     throw error instanceof StreamFailure ? error : new StreamFailure("upstream_failed");
   }
 }
@@ -1600,7 +1609,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           completionId: final.answerIsProviderVerbatim && !compositeAnswer ? final.finalProviderCompletionId ?? "" : "" });
       } else {
         const code = result.errorCode ?? final?.code;
-        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
+        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "private_response_unverified", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
         await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed"));
       }
       return;

@@ -113,6 +113,21 @@ describe("streamChat context-overflow classification (§C.12)", () => {
     expect(paywall).toBeInstanceOf(PaywallError);
     expect(paywall).not.toBeInstanceOf(ContextOverflowError);
   });
+  test("shows the approved message when a confidential-model reply is not attested", async () => {
+    const error = await firstError(new Response(
+      JSON.stringify({
+        error: {
+          code: "private_response_unverified",
+          message: "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again.",
+        },
+      }),
+      { status: 502, headers: { "content-type": "application/json" } },
+    ));
+    expect(error).toMatchObject({
+      message: "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again.",
+    });
+    expect(error).not.toBeInstanceOf(ContextOverflowError);
+  });
 });
 
 describe("completeChat output caps", () => {

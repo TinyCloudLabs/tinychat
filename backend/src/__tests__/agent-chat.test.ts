@@ -20,6 +20,7 @@ import {
 import type { Request, Response } from "express";
 import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projection.js";
 import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
+import { RedPillAttestationError } from "../redpill-aci.js";
 
 const AGENT_ID = "92361e74-91ed-43a2-9656-5cc37ff3a07a";
 const ADDR = "0xabc";
@@ -1543,7 +1544,9 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       const handler = createAgentChatHandler({
         ...baseConfig((async (...args: Parameters<typeof fetch>) => {
           called = true;
-          expect(JSON.parse(args[1]!.body as string).model).toBe(id);
+          const body = JSON.parse(args[1]!.body as string);
+          expect(body.model).toBe(id);
+          expect(body.provider).toEqual({ aci_verified: true });
           return makeCompletionFetch()(...args);
         }) as typeof fetch),
         isModelOffered: isOfferedModel,
@@ -1671,6 +1674,18 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       } finally { restore(); }
     });
   }
+  it("fails closed when an agent model response receipt is unverified", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    const restore = stubCatalogFetch();
+    try {
+      const { req, res } = makeReqRes();
+      const redpillFetch = (async () => { throw new RedPillAttestationError(); }) as typeof fetch;
+      await createAgentChatHandler({ ...baseConfig(makeCompletionFetch()), redpillFetch })(req, res);
+      const body = res.chunks.join("");
+      expect(body).toContain('"stream_error":{"code":"private_response_unverified"}');
+      expect(body).not.toContain("unverified content sentinel");
+    } finally { restore(); }
+  });
 
   it("A5c: recordUsage is called with summed credits when paywall is on", async () => {
     process.env.PAYWALL_ENABLED = "true";

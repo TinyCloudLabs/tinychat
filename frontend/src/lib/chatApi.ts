@@ -88,7 +88,7 @@ export class ContextOverflowError extends Error {
  */
 export async function classifyContextOverflow(
   res: Response,
-): Promise<{ overflow: ContextOverflowError | null; detail: string }> {
+): Promise<{ overflow: ContextOverflowError | null; detail: string; code?: string }> {
   let bodyText = "";
   try {
     bodyText = await res.text();
@@ -113,10 +113,15 @@ export async function classifyContextOverflow(
   } catch {
     // non-JSON body (Wall-A PayloadTooLargeError) — status drives the decision.
   }
+  const errorCode = typeof code === "string" ? code : undefined;
   if (res.status === 413 || code === "context_overflow") {
-    return { overflow: new ContextOverflowError(detail || undefined), detail };
+    return {
+      overflow: new ContextOverflowError(detail || undefined),
+      detail,
+      ...(errorCode ? { code: errorCode } : {}),
+    };
   }
-  return { overflow: null, detail };
+  return { overflow: null, detail, ...(errorCode ? { code: errorCode } : {}) };
 }
 
 // ── Billing-event emitter (paywall + receipt) ───────────────────────
@@ -297,8 +302,9 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
     // adapter can compact-and-retry. Kept ahead of the generic throw below and
     // distinct from the 401/402/403 branches handled earlier (§F.8). This
     // consumes the body, so the generic branch reads statusText only.
-    const { overflow, detail } = await classifyContextOverflow(res);
+    const { overflow, detail, code } = await classifyContextOverflow(res);
     if (overflow) throw overflow;
+    if (code === "private_response_unverified") throw new Error(detail);
     throw new Error(`Chat request failed (${res.status}): ${detail}`);
   }
 
