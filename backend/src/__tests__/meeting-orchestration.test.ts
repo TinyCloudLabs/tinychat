@@ -17,7 +17,7 @@ function outcome(ref = "meeting-a", state = "read") {
     coverage: { purpose: state === "metadata" ? "metadata" : "summary", overviewPresent: state !== "metadata", actionsPresent: false, bodyAttempted: false, bodyRequired: false, evidenceRetained: 1, omittedEvidenceCount: 0, omissionReasons: [], support: "sufficient" } };
 }
 function config(fetchImpl: typeof fetch): AgentChatConfig {
-  return { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
+  return { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
 }
 function output(frames: string[]) { return frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content ?? ""; } catch { return ""; } }).join(""); }
 async function scenario(plan: unknown, service: (name: string, body: any, signal?: AbortSignal | null) => Promise<Response> | Response, options: { capability?: unknown; signal?: AbortSignal; remainingMs?: () => number; noPlan?: boolean } = {}) {

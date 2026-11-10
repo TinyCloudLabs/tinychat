@@ -3,6 +3,28 @@ import type { AciConnection, ConnectAciOptions } from "@phala/aci-verifier/runti
 
 export const PRIVATE_RESPONSE_UNVERIFIED_MESSAGE =
   "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again.";
+export const DEFAULT_RED_PILL_BASE_URL = "https://tee.redpill.ai/v1";
+
+export function validateRedPillBaseUrl(baseURL: string): string {
+  let url: URL;
+  try {
+    url = new URL(baseURL);
+  } catch {
+    throw new Error("Invalid confidential model endpoint: expected the attested gateway");
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "tee.redpill.ai" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.port !== "" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error("Invalid confidential model endpoint: expected the attested gateway");
+  }
+  return baseURL;
+}
 
 export class RedPillAciError extends Error {
   readonly code = "upstream_failed";
@@ -101,11 +123,12 @@ function replayResponse(chunks: Uint8Array[], response: Response): Response {
   return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
-/** Create one lazily-attested, receipt-verifying fetch for a RedPill base URL. */
+/** Create one lazily-attested, receipt-verifying fetch for the approved gateway. */
 export function createRedPillAciFetch(
   baseURL: string,
   connect: AciConnector = connectAci,
 ): typeof fetch {
+  validateRedPillBaseUrl(baseURL);
   let connectionPromise: Promise<AciConnection> | undefined;
   const connection = (): Promise<AciConnection> => {
     if (connectionPromise) return connectionPromise;

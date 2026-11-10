@@ -27,7 +27,7 @@ async function run(replies: Array<Response | (() => Promise<Response>)>, options
     if (!reply) throw new Error("Unexpected extra model request");
     return typeof reply === "function" ? reply() : reply;
   }) as typeof fetch;
-  const config: AgentChatConfig = { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: trace => { traces.push(trace); }, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
+  const config: AgentChatConfig = { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: trace => { traces.push(trace); }, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
   const result = await orchestrateToolCalling({ config, model: "test-model", messages: options.messages ?? [{ role: "user", content: "Summarize that meeting's decisions and action items." }], entityId: "entity", roomId: "room", signal: options.signal, remainingMs: options.remainingMs, write: frame => { frames.push(frame); } });
   const answer = frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content ?? ""; } catch { return ""; } }).join("");
   return { result, requests, tools, answer, traces };

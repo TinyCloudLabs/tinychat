@@ -126,7 +126,7 @@ function fixture(rounds: Round[], tail: "final" | "none") {
     agentId: "92361e74-91ed-43a2-9656-5cc37ff3a07a", entityIdFor: () => "8ed637c2-9747-4d8e-a36f-803e1c24bc10",
     streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 5000, drainGraceMs: 100 },
     elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "local-test", redpillApiKey: "unused", redpillBaseUrl: "https://provider.test/v1",
-    defaultModel: () => model, isModelOffered: value => value === model, fetchImpl,
+    defaultModel: () => model, isModelOffered: value => value === model, redpillFetch: fetchImpl, fetchImpl,
     elizaTasksEnabled: true,
     streamRuntime: { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), log: () => {} },
     flusher: { enqueue() {} } as unknown as AgentChatConfig["flusher"],
@@ -217,6 +217,7 @@ describe("agent chat turn budget", () => {
         { headers: { "Content-Type": "text/event-stream" } },
       );
     }) as typeof fetch;
+    run.config.redpillFetch = run.config.fetchImpl;
     const catalogFetch = globalThis.fetch;
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
       if (String(input).endsWith("/chat/completions")) {
@@ -290,6 +291,7 @@ describe("agent chat turn budget", () => {
           { headers: { "Content-Type": "text/event-stream" } },
         );
       }) as typeof fetch;
+      run.config.redpillFetch = run.config.fetchImpl;
       const catalogFetch = globalThis.fetch;
       globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
         if (String(input).endsWith("/chat/completions")) {

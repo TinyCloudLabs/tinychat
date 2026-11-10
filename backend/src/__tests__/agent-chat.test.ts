@@ -75,6 +75,7 @@ function baseConfig(fetchImpl: typeof fetch): AgentChatConfig {
     redpillBaseUrl: "https://redpill.test/v1",
     defaultModel: () => "phala/gpt-oss-120b",
     isModelOffered: (m) => m.startsWith("phala/"),
+    redpillFetch: fetchImpl,
     fetchImpl,
     maxRounds: 3,
   };
@@ -251,6 +252,56 @@ describe("parseSseJson", () => {
 });
 
 describe("orchestrateToolCalling", () => {
+  it("never uses the generic fetch implementation for model requests", async () => {
+    let genericCalls = 0;
+    const genericFetch = (async () => {
+      genericCalls++;
+      return { ok: true, body: sseStream([dataFrame({ choices: [{ delta: { content: "unverified" }, finish_reason: "stop" }] })]) };
+    }) as typeof fetch;
+
+    await expect(orchestrateToolCalling({
+      config: {
+        ...baseConfig(genericFetch),
+        redpillFetch: undefined,
+        redpillBaseUrl: "https://api.redpill.ai/v1",
+      },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "Hello" }],
+      entityId: "e",
+      write: () => {},
+    })).rejects.toThrow();
+
+    expect(genericCalls).toBe(0);
+  });
+  it("meeting interpretation never uses the generic fetch implementation for model requests", async () => {
+    let genericCalls = 0;
+    const genericFetch = (async () => {
+      genericCalls++;
+      return { ok: true, body: sseStream([dataFrame({ choices: [{ delta: { content: "unverified" }, finish_reason: "stop" }] })]) };
+    }) as typeof fetch;
+
+    const frames: string[] = [];
+    const result = await orchestrateToolCalling({
+      config: {
+        ...baseConfig(genericFetch),
+        redpillFetch: undefined,
+        redpillBaseUrl: "https://api.redpill.ai/v1",
+        meetingContentRetrievalEnabled: true,
+        meetingContentModelAllowed: () => true,
+        mcpOwner: "synthetic-owner",
+      },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "What happened in my last meeting?" }],
+      entityId: "e",
+      write: frame => frames.push(frame),
+    });
+
+    expect(result.errorCode).toBe("agent_failed");
+    expect(genericCalls).toBe(0);
+    expect(forwardedContent(frames)).not.toContain("unverified");
+  });
+
+
   describe("legacy result size limits", () => {
     for (const adapter of ["stream", "bodyless"] as const) {
       for (const length of [65536, 65537]) {
@@ -1663,14 +1714,15 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
             dataFrame({ usage: { prompt_tokens: 10, completion_tokens: 3 } }),
           ]),
         };
-        if (secondRound === "exception") throw new Error("synthetic failure after observed usage");
-        return new Response("failed", { status: 503 });
+        if (secondRound === "exception") throw new Error("provider-private-error-detail");
+        return new Response("provider-private-error-detail", { status: 503 });
       }) as typeof fetch;
       try {
         const { req, res } = makeReqRes();
         await createAgentChatHandler(baseConfig(fetchImpl))(req, res);
         expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
         expect(res.chunks.join("")).toContain('"stream_error":{"code":"upstream_failed"}');
+        expect(res.chunks.join("")).not.toContain("provider-private-error-detail");
       } finally { restore(); }
     });
   }

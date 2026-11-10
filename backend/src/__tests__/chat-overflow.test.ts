@@ -110,8 +110,7 @@ afterEach(() => {
 });
 
 describe("POST /api/chat upstream context-overflow classification (§C.12)", () => {
-  test("upstream_context_error_maps_to_413_context_overflow", async () => {
-    // A 400 whose body reads like a context-length failure → typed 413.
+  test("maps context errors to a safe typed 413", async () => {
     const upstreamBody = JSON.stringify({
       error: { message: "This model's maximum context length is 64000 tokens." },
     });
@@ -124,14 +123,14 @@ describe("POST /api/chat upstream context-overflow classification (§C.12)", () 
       expect(res.status).toBe(413);
       const body = (await res.json()) as any;
       expect(body.error.code).toBe("context_overflow");
-      // The upstream detail is surfaced verbatim as the message.
-      expect(body.error.message).toBe(upstreamBody);
+      expect(body.error.message).toBe("This request exceeds the model context limit. Try a smaller request.");
+      expect(JSON.stringify(body)).not.toContain(upstreamBody);
     } finally {
       restore();
     }
   });
 
-  test("a 413 upstream with a token-limit body is also classified as context_overflow", async () => {
+  test("classifies token-limit 413s without relaying provider text", async () => {
     const upstreamBody = JSON.stringify({ error: "tokens exceed limit for this request" });
     const restore = stubChatUpstream({ status: 413, body: upstreamBody });
     try {
@@ -142,18 +141,15 @@ describe("POST /api/chat upstream context-overflow classification (§C.12)", () 
       expect(res.status).toBe(413);
       const body = (await res.json()) as any;
       expect(body.error.code).toBe("context_overflow");
-      expect(body.error.message).toBe(upstreamBody);
+      expect(body.error.message).toBe("This request exceeds the model context limit. Try a smaller request.");
+      expect(JSON.stringify(body)).not.toContain(upstreamBody);
     } finally {
       restore();
     }
   });
 
-  test("upstream_non_context_error_still_502_passthrough", async () => {
-    // A non-context upstream error keeps the baseline 502 passthrough shape (§F.11).
-    const upstreamBody = JSON.stringify({
-      error: "upstream_boom",
-      message: "internal server error",
-    });
+  test("returns a safe 502 without provider error details", async () => {
+    const upstreamBody = JSON.stringify({ error: "upstream_boom", message: "internal server error" });
     const restore = stubChatUpstream({ status: 500, body: upstreamBody });
     try {
       const res = await post(
@@ -161,18 +157,17 @@ describe("POST /api/chat upstream context-overflow classification (§C.12)", () 
         JSON.stringify({ model: OFFERED_MODEL, messages: [{ role: "user", content: "hi" }] }),
       );
       expect(res.status).toBe(502);
-      const body = (await res.json()) as any;
-      // Baseline passthrough: the upstream JSON is echoed verbatim, NOT wrapped
-      // in the { error: { code: "context_overflow" } } shape.
-      expect(body.error).toBe("upstream_boom");
-      expect(body.message).toBe("internal server error");
+      const body = await res.text();
+      expect(body).toContain("upstream_failed");
+      expect(body).toContain("The model service could not complete this request. Try again later.");
+      expect(body).not.toContain(upstreamBody);
+      expect(body).not.toContain("upstream_boom");
     } finally {
       restore();
     }
   });
 
-  test("a context-shaped body on a NON-4xx status still passes through as 502", async () => {
-    // Only 400/413 are reclassified; a 500 mentioning "context" is still a 502.
+  test("does not classify context-shaped text on a 500 or relay it", async () => {
     const upstreamBody = JSON.stringify({ error: "maximum context length reached" });
     const restore = stubChatUpstream({ status: 500, body: upstreamBody });
     try {
@@ -181,6 +176,7 @@ describe("POST /api/chat upstream context-overflow classification (§C.12)", () 
         JSON.stringify({ model: OFFERED_MODEL, messages: [{ role: "user", content: "hi" }] }),
       );
       expect(res.status).toBe(502);
+      expect(await res.text()).not.toContain(upstreamBody);
     } finally {
       restore();
     }

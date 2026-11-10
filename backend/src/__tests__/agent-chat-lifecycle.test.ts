@@ -39,7 +39,7 @@ function response() {
   return { req, res };
 }
 function config(fetchImpl: typeof fetch, runtime = clock()): AgentChatConfig {
-  return { agentId: "sentinel-agent", entityIdFor: () => "sentinel-entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "sentinel-secret", redpillApiKey: "sentinel-key", redpillBaseUrl: "https://provider.test", defaultModel: () => "phala/test", isModelOffered: () => true, fetchImpl, maxRounds: 3,
+  return { agentId: "sentinel-agent", entityIdFor: () => "sentinel-entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "sentinel-secret", redpillApiKey: "sentinel-key", redpillBaseUrl: "https://provider.test", defaultModel: () => "phala/test", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, maxRounds: 3,
     streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 100, drainGraceMs: 20 }, streamRuntime: runtime,
   } as AgentChatConfig;
 }

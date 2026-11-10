@@ -53,7 +53,7 @@ async function run(options: { elizaUrl?: string; replies: Array<() => Response>;
   }) as typeof fetch;
   const config: AgentChatConfig = {
     agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: options.elizaUrl ?? "", elizaServiceSecret: options.elizaUrl ? "eliza-secret" : "", redpillApiKey: "test", redpillBaseUrl: "https://model.test",
-    defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: trace => { traces.push(trace); },
+    defaultModel: () => "test-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: trace => { traces.push(trace); },
     streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 }, maxRounds: 3,
     mcpMeetings: mcpTools(options.body, toolCalls), mcpOwner: OWNER,
     ...(options.rollout ? { meetingContentRetrievalEnabled: true, meetingContentModelAllowed: () => options.modelAllowed ?? true } : {}),
@@ -182,7 +182,7 @@ describe("validated pipeline over the real MCP wrapper (SQLite stand-in for the 
     const frames: string[] = [];
     const config: AgentChatConfig = {
       agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "", elizaServiceSecret: "", redpillApiKey: "test", redpillBaseUrl: "https://model.test",
-      defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true, meetingContentModelAllowed: () => true, backendRevision: "rev-1",
+      defaultModel: () => "test-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true, meetingContentModelAllowed: () => true, backendRevision: "rev-1",
       streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 }, mcpMeetings: createMcpMeetingTools(() => port), mcpOwner: OWNER,
     };
     await orchestrateToolCalling({ config, model: "test-model", messages: [{ role: "user", content: "Summarize my planning meeting." }], entityId: "entity", roomId: "room", write: frame => { frames.push(frame); } });

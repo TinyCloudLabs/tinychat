@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AciConnection, AciReceiptAudit, ConnectAciOptions } from "@phala/aci-verifier/runtime";
-import { createRedPillAciFetch, RedPillAttestationError } from "../redpill-aci.js";
+import { createRedPillAciFetch, RedPillAttestationError, validateRedPillBaseUrl } from "../redpill-aci.js";
 
 const BASE_URL = "https://tee.redpill.ai/v1";
 const RECEIPT_ID = "fixture-receipt-001";
@@ -88,5 +88,17 @@ describe("RedPill ACI fetch", () => {
       body: JSON.stringify({ model: "z-ai/glm-5.3", messages: [] }),
     })).rejects.toBeInstanceOf(RedPillAttestationError);
     expect(fixture.calls).toEqual([]);
+  });
+
+  test("allows only the TLS attested gateway origin", () => {
+    expect(validateRedPillBaseUrl("https://tee.redpill.ai/v1")).toBe("https://tee.redpill.ai/v1");
+    for (const url of [
+      "https://api.redpill.ai/v1",
+      "http://tee.redpill.ai/v1",
+      "https://tee.redpill.ai.attacker.invalid/v1",
+      "https://user@tee.redpill.ai/v1",
+    ]) {
+      expect(() => validateRedPillBaseUrl(url)).toThrow();
+    }
   });
 });

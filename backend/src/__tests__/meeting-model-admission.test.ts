@@ -17,7 +17,7 @@ function config(fetchImpl: typeof fetch): AgentChatConfig {
   return {
     agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test",
     elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test",
-    defaultModel: () => kimi, isModelOffered: () => true, fetchImpl, meetingTrace: () => {},
+    defaultModel: () => kimi, isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: () => {},
     meetingContentRetrievalEnabled: true, meetingContentModelAllowed: model => model === glm,
     streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 },
   };

@@ -304,7 +304,9 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
     // consumes the body, so the generic branch reads statusText only.
     const { overflow, detail, code } = await classifyContextOverflow(res);
     if (overflow) throw overflow;
-    if (code === "private_response_unverified") throw new Error(detail);
+    if (code === "private_response_unverified") {
+      throw new Error("Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again.");
+    }
     throw new Error(`Chat request failed (${res.status}): ${detail}`);
   }
 
