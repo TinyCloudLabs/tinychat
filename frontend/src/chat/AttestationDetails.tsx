@@ -246,10 +246,9 @@ export const AttestationDetails: FC<{
       {!responseVerified && context === "message" && (
         /* REQUIRED honesty line — tier 2 does not bind the reply to the enclave. */
         <p className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
-          This model does not sign individual responses, so the reply above is{" "}
-          <span className="font-semibold">not</span> cryptographically bound to
-          the enclave. The attestation proves a genuine Intel TDX enclave
-          produced it.
+          The gateway that serves this model runs in a verified Intel TDX enclave, but it doesn't sign individual replies,
+          so this reply isn't cryptographically tied to the enclave. This verifies the gateway and its enclave, not the
+          model's own code.
         </p>
       )}
 

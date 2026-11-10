@@ -196,18 +196,19 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       <p>Each reply carries one of three verification badges.</p>
       <List>
         <li>
-          <strong className="font-semibold">Response verified</strong>: the model’s Intel TDX quote is verified on-chain,
-          and the reply carries a valid signature that binds it to the enclave.
+          <strong className="font-semibold">Response verified</strong>: the gateway that serves the model runs in an
+          Intel TDX enclave whose quote is verified on-chain, and this reply is signed by that enclave.
         </li>
         <li>
-          <strong className="font-semibold">Enclave attested</strong>: the endpoint is a genuine Intel TDX enclave, but the
-          model does not sign individual responses, so the reply is not cryptographically bound to the enclave.
+          <strong className="font-semibold">Enclave attested</strong>: the gateway runs in a verified Intel TDX enclave,
+          but it doesn't sign individual replies, so this reply isn't tied to the enclave.
         </li>
         <li>
-          <strong className="font-semibold">Not verifiable</strong>: the model didn’t return a verifiable on-chain
-          attestation. Confidential models that publish an Intel TDX quote can be verified.
+          <strong className="font-semibold">Not verifiable</strong>: the gateway didn't return an attestation that can be
+          checked. Confidential models whose gateway publishes an Intel TDX quote can be verified.
         </li>
       </List>
+      <p>This verifies the gateway and its enclave, not the model's own code.</p>
       <Sub>The backend</Sub>
       <p>
         Settings checks TinyChat’s own backend from your browser. It verifies the TDX quote (relayed via Phala and
