@@ -50,6 +50,7 @@ test("step 1 failure leaves credentials authorized and never cancels a save", as
     failClosed: false,
     message: "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.",
   });
+  expect(order).toEqual([]);
   expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_in");
 });
 
