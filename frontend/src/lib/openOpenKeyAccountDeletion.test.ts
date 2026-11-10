@@ -19,6 +19,6 @@ describe("openOpenKeyAccountDeletion", () => {
   test("on web it opens the deletion page in a new tab without giving that page access to the app", async () => {
     const open = spyOn(window, "open").mockImplementation(() => null);
     await openOpenKeyAccountDeletion();
-    expect(open).toHaveBeenCalledWith(openKeyAccountDeletionUrl(), "_blank", "noopener,noreferrer");
+    expect(open).toHaveBeenCalledWith("https://openkey.so/dashboard/settings/delete-account", "_blank", "noopener,noreferrer");
   });
 });
