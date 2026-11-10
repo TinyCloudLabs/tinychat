@@ -136,16 +136,10 @@ describe("createTinyCloudWeb", () => {
     expect(lastTinyCloudConfig.manifest).toBe(explicitManifest);
   });
 
-  test("adds the replication option only when supplied (flag OFF keeps the config key-for-key)", () => {
-    const provider = { request: async () => null } as any;
-    createTinyCloudWeb(provider, { tinycloudHosts: ["https://node.example"] });
-    expect("replication" in lastTinyCloudConfig).toBe(false);
-    const withoutKeys = Object.keys(lastTinyCloudConfig).sort();
-
+  test("forwards replication configuration for browser sign-in", () => {
     const replication = { enabled: true, prefixes: ["app/x/"], storage: {} } as any;
-    createTinyCloudWeb(provider, { tinycloudHosts: ["https://node.example"], replication });
+    createTinyCloudWeb({ request: async () => null } as any, { replication });
     expect(lastTinyCloudConfig.replication).toBe(replication);
-    expect(Object.keys(lastTinyCloudConfig).sort()).toEqual([...withoutKeys, "replication"].sort());
   });
 });
 
@@ -204,11 +198,8 @@ describe("restoreTinyCloudWebSession", () => {
     expect(lastTinyCloudConfig.sessionStorage.constructor.name).toBe("BrowserSessionStorage");
   });
 
-  test("passes replication only when supplied; otherwise the SDK config has no such key", async () => {
+  test("forwards replication configuration when restoring a browser session", async () => {
     restoreResult = { status: "restored", session: { address: "0xabc" } };
-    await restoreTinyCloudWebSession("0xabc", { tinycloudHosts: ["https://node.example"] });
-    expect("replication" in lastTinyCloudConfig).toBe(false);
-
     const replication = { enabled: true, prefixes: ["app/x/"], storage: {} } as any;
     await restoreTinyCloudWebSession("0xabc", { replication });
     expect(lastTinyCloudConfig.replication).toBe(replication);

@@ -440,7 +440,22 @@ export async function getConnection(
   tcw: TinyCloudWeb,
   connectorId: ConnectorId,
 ): Promise<StoreResult<ConnectorConnection | null>> {
-  const res = await store(tcw).query(
+  const db = store(tcw);
+  const schema = await db.query(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ["connector_state"],
+  );
+  if (!schema.ok) {
+    const code = (schema.error as { code?: string }).code ?? "";
+    const msg = (schema.error.message ?? "").toLowerCase();
+    if (code === "AUTH_UNAUTHORIZED" || msg.includes("unauthorized") || msg.includes("not authorized")) {
+      return { ok: true, data: null };
+    }
+    return fail(schema.error, "getConnection schema probe", storageScopeFor(tcw));
+  }
+  if (schema.data.rows.length === 0) return { ok: true, data: null };
+
+  const res = await db.query(
     `SELECT connector_id, status, last_synced_at, last_sync_status, last_sync_error, item_count
      FROM connector_state WHERE connector_id = ?`,
     [connectorId],

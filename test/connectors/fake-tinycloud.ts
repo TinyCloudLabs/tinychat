@@ -142,6 +142,10 @@ export class FakeSqlDb {
     this.log.push({ sql: sql.trim(), params });
     this.beforeStatement?.(sql, params);
     if (/FROM\s+sqlite_schema/i.test(sql)) return ok(this.voiceNoteCommits.size > 0 ? [[1]] : []);
+    if (/FROM\s+sqlite_master/i.test(sql)) {
+      const existing = params.map(String).filter((table) => this.createdTables.has(table));
+      return ok(existing.map((table) => [table]));
+    }
     if (/FROM\s+voice_note_transcript\s+WHERE\s+source_id\s*=\s*\?/i.test(sql)) {
       const commit = this.voiceNoteCommits.get(String(params[0]));
       if (commit === undefined) return ok([]);
