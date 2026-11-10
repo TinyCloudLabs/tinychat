@@ -194,6 +194,8 @@ const OPENKEY_SIGN_OUT_UNPROVEN_NOTE =
   "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.";
 const WEB_SIGN_OUT_RECOVERY_WARNING =
   "You're signed out of TinyChat, but this device didn't finish clearing your session. Sign in again, then sign out.";
+const WEB_SIGN_OUT_ABORT_WARNING =
+  "You're still signed in on this tab. If you reload or close it, you'll need to sign in again.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
 const BACKEND_URL =
@@ -1216,7 +1218,7 @@ export function App() {
                   ? "Couldn't save your voice note. Try again, or sign out and delete it."
                   : "Couldn't save your voice notes. Try again, or sign out and delete them.",
               });
-              if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
+              if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_ABORT_WARNING);
               void nativeRenewalRef.current?.resume();
               return;
             }
@@ -1227,7 +1229,7 @@ export function App() {
                 ? "Couldn't save your voice note. Try again, or sign out and delete it."
                 : "Couldn't save your voice notes. Try again, or sign out and delete them.",
             });
-            if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
+            if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_ABORT_WARNING);
             void nativeRenewalRef.current?.resume();
             return;
           }
@@ -1243,7 +1245,7 @@ export function App() {
               count: remaining.length || unsaved.length,
               error: "Couldn't delete all your voice notes, so you're still signed in. Try again.",
             });
-            if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
+            if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_ABORT_WARNING);
             void nativeRenewalRef.current?.resume();
             return;
           }
@@ -1254,7 +1256,7 @@ export function App() {
         return;
       }
       if (!await captureHandoff()) {
-        if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_RECOVERY_WARNING);
+        if (!releaseSignOutFence()) setError(WEB_SIGN_OUT_ABORT_WARNING);
         if (!options.terminal) void nativeRenewalRef.current?.resume();
         return;
       }

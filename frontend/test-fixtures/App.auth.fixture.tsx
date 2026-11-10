@@ -530,6 +530,46 @@ test("failed pending-note deletion keeps the owner signed in with recovery copy"
     .toBe("Couldn't delete all your voice notes, so you're still signed in. Try again.");
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
+  expect(host!.textContent).not.toContain("You're still signed in on this tab. If you reload or close it, you'll need to sign in again.");
+});
+
+test("a failed note deletion with a retained sign-out fence reports the signed-in state", async () => {
+  const address = loginAddress.toLowerCase();
+  const did = `did:pkh:eip155:1:${loginAddress}`;
+  setPendingVoiceNotes([{ id: "pending-note-fenced-delete", owner: did, ledger: { audio: { state: "pending" } } }]);
+  authStorage.localStorage.setItem(pendingVoiceNotesDeleteFailureKey, "true");
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  window.localStorage.setItem(`tinycloud:session:${address}`, "sdk session");
+  await click("Test sign out");
+  await settle();
+
+  const storage = window.localStorage;
+  const fenceKey = "xyz.tinycloud.tinychat:signout-pending";
+  const originalRemoveItem = storage.removeItem.bind(storage);
+  Object.defineProperty(storage, "removeItem", {
+    configurable: true,
+    value: (key: string) => {
+      if (key === fenceKey) throw new Error("storage unavailable");
+      originalRemoveItem(key);
+    },
+  });
+  try {
+    await click("Sign out and delete it");
+    await settle();
+    expect(document.body.querySelector('[data-testid="pending-voice-note-signout"] [role="alert"]')?.textContent)
+      .toBe("Couldn't delete all your voice notes, so you're still signed in. Try again.");
+    expect(host!.textContent)
+      .toContain("You're still signed in on this tab. If you reload or close it, you'll need to sign in again.");
+    expect(host!.textContent)
+      .not.toContain("You're signed out of TinyChat, but this device didn't finish clearing your session.");
+    expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+    expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
+    expect(window.localStorage.getItem(fenceKey)).not.toBeNull();
+  } finally {
+    Object.defineProperty(storage, "removeItem", { configurable: true, value: originalRemoveItem });
+  }
 });
 
 test("sign-out recovery copy distinguishes a local-clear failure from an unfinished SDK cleanup", async () => {
