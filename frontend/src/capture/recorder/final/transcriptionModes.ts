@@ -97,7 +97,7 @@ export const MODE_STOPS: readonly ModeStop[] = [
     id: "powerful",
     transcriber: "assemblyai",
     shortName: COPY.powerfulName,
-    subLabel: { phone: "via TinyCloud Home's server", desktop: "via TinyCloud Home's server", web: "via TinyCloud Home's server" },
+    subLabel: { phone: "via Home's server", desktop: "via Home's server", web: "via Home's server" },
     captions: { phone: COPY.powerfulCaption, desktop: COPY.powerfulCaption, web: COPY.powerfulCaption },
     explanations: { phone: explain(COPY.powerfulExplanation), desktop: explain(COPY.powerfulExplanation), web: explain(COPY.powerfulExplanation) },
     privacyDots: 1,
