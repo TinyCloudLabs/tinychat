@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.5
+
+### Patch Changes
+
+- 451ae7e: Native sign-in on iOS and Android asks for every applications-space KV, SQL and hook entry of the manifest, the same grant as the web sign-in, so the Home feed works on the phone apps (TC-2720). Space info stays web-only until the backend accepts it. A CI job checks the native request against production OpenKey's ceiling.
+
 ## 0.14.0-beta.4
 
 ### Minor Changes
