@@ -133,18 +133,41 @@ jobs:
           AGENT_DID: ${{ vars.AGENT_DID }}
           ELIZA_SERVICE_URL: ${{ vars.ELIZA_SERVICE_URL }}
           ELIZA_SERVICE_SECRET: ${{ secrets.ELIZA_SERVICE_SECRET }}
+          MCP_CHAT_ENABLED: ${{ vars.MCP_CHAT_ENABLED || 'false' }}
+          MCP_CHAT_TEST_ACCOUNTS: ${{ vars.MCP_CHAT_TEST_ACCOUNTS }}
+          MCP_CHAT_SERVICE_DID: ${{ vars.MCP_CHAT_SERVICE_DID }}
+          MCP_CHAT_SERVICE_CREDENTIAL: ${{ secrets.MCP_CHAT_SERVICE_CREDENTIAL }}
         run: |
           missing=()
-          for item in \
-            PHALA_CVM_ID \
-            PHALA_CLOUD_API_KEY \
-            BACKEND_PRIVATE_KEY \
-            CLOUDFLARE_API_TOKEN \
-            CERTBOT_EMAIL \
-            REDPILL_API_KEY \
-            AGENT_DID \
-            ELIZA_SERVICE_URL \
-            ELIZA_SERVICE_SECRET; do
+          required=(
+            PHALA_CVM_ID
+            PHALA_CLOUD_API_KEY
+            BACKEND_PRIVATE_KEY
+            CLOUDFLARE_API_TOKEN
+            CERTBOT_EMAIL
+            REDPILL_API_KEY
+          )
+
+          # Only an explicit all-account MCP rollout can omit the legacy Eliza courier.
+          mcp_all_accounts=false
+          if [ "${MCP_CHAT_ENABLED:-}" = "true" ]; then
+            IFS=',' read -r -a mcp_accounts <<< "${MCP_CHAT_TEST_ACCOUNTS:-}"
+            for account in "${mcp_accounts[@]}"; do
+              account="${account//[[:space:]]/}"
+              if [ "$account" = "*" ]; then
+                mcp_all_accounts=true
+                break
+              fi
+            done
+          fi
+
+          if [ "$mcp_all_accounts" = true ]; then
+            required+=(MCP_CHAT_SERVICE_DID MCP_CHAT_SERVICE_CREDENTIAL)
+          else
+            required+=(AGENT_DID ELIZA_SERVICE_URL ELIZA_SERVICE_SECRET)
+          fi
+
+          for item in "${required[@]}"; do
             if [ -z "${!item}" ]; then
               missing+=("$item")
               echo "::error title=Missing deployment config::$item is not configured"
@@ -805,10 +828,10 @@ jobs:
           probe_url "health" "$HEALTH_URL" || exit 1
           probe_url "server-info" "$INFO_URL" || exit 1
 
-          # /api/agent mounts only when AGENT_DID / ELIZA_SERVICE_URL /
-          # ELIZA_SERVICE_SECRET all reach the backend. Mounted → 401
-          # (auth-gated); 404 means the agent env was dropped and web
-          # search is silently dead (2026-07-07 regression).
+          # /api/agent mounts when either the complete legacy Eliza courier
+          # config or complete native MCP chat wiring is present. In MCP-only
+          # mode, a 401 confirms the route is mounted and auth-gated; 404 means
+          # neither configuration reached the backend (2026-07-07 regression).
           AGENT_URL="${PRODUCTION_API_URL%/}/api/agent/session"
           echo "Probing agent route at $AGENT_URL (expect 401)"
           AGENT_STATUS=0
@@ -821,7 +844,7 @@ jobs:
             sleep 10
           done
           if [ "$AGENT_STATUS" != "401" ]; then
-            echo "::error title=Agent route probe failed::GET /api/agent/session returned $AGENT_STATUS (expected 401). The agent router is not mounted — AGENT_DID / ELIZA_SERVICE_URL / ELIZA_SERVICE_SECRET did not reach the backend, so web search is disabled."
+            echo "::error title=Agent route probe failed::GET /api/agent/session returned $AGENT_STATUS (expected 401). Neither the legacy Eliza config nor complete MCP chat wiring mounted the agent router."
             exit 1
           fi
           echo "Agent route probe passed (401 = mounted, auth-gated)."
