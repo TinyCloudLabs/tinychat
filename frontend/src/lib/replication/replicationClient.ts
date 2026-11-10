@@ -139,8 +139,10 @@ async function isNonCompactGrantRefusal(error: unknown): Promise<boolean> {
   if (!(error instanceof Error) || error.name !== "ReplicaError" ||
       (error as Error & { code?: unknown }).code !== "GRANT_FORMAT_UNSUPPORTED") return false;
   // Keep replica code out of the root bundle when replication is disabled.
-  const { isReplicaError, ReplicaErrorCode } = await import("@tinycloud/replica");
-  return isReplicaError(error, ReplicaErrorCode.GRANT_FORMAT_UNSUPPORTED);
+  const replica = await import("@tinycloud/replica").catch(() => undefined);
+  return replica
+    ? replica.isReplicaError(error, replica.ReplicaErrorCode.GRANT_FORMAT_UNSUPPORTED)
+    : false;
 }
 
 /**
