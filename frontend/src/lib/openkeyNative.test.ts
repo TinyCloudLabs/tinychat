@@ -290,12 +290,14 @@ describe("nativePermissions", () => {
     expect(permissions.some((p) => p.space !== "applications")).toBe(false);
   });
 
-  test("never requests the broad Home entries natively: only paths under the app's own folder", () => {
+  test("requests every applications-space KV, SQL and hook entry the web grants, except space info (TC-2720)", () => {
     const permissions = nativePermissions(APP_MANIFEST as unknown as Manifest);
-    const data = permissions.filter((p) => p.service === "tinycloud.kv" || p.service === "tinycloud.sql");
-    expect(data.length).toBeGreaterThan(0);
-    expect(data.every((p) => p.path.startsWith("xyz.tinycloud.tinychat/"))).toBe(true);
-    expect(data.some((p) => p.path === "" || p.path.includes("xyz.tinycloud.sample."))).toBe(false);
+    const expected = (APP_MANIFEST.permissions as { service: string; space?: string }[])
+      .filter((p) => (p.space ?? "applications") === "applications" && p.service !== "tinycloud.space");
+    expect(permissions.slice(1).map((p) => p.service)).toEqual(expected.map((p) => p.service));
+    expect(permissions.some((p) => p.service === "tinycloud.kv" && p.path === "")).toBe(true);
+    expect(permissions.some((p) => p.path === "xyz.tinycloud.sample.recipes/recipes")).toBe(true);
+    expect(permissions.some((p) => p.service === "tinycloud.space")).toBe(false);
   });
 });
 

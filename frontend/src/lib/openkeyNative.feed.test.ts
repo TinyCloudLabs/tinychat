@@ -23,15 +23,14 @@ test("the Home owner can initialize feed databases, save answers and subscribe w
   expect(grants.find((grant) => grant.path === `sql/${app}/threads`)?.actions).toEqual(["tinycloud.hooks/subscribe"]);
 });
 
-test("a changed manifest cannot widen native feed hooks to other apps, actions or spaces", () => {
+test("the native request carries the manifest as written; OpenKey's ceiling, not the app, refuses widening (TC-2720)", () => {
+  const widened = { service: "tinycloud.hooks", path: "sql/other.app/feed/", actions: ["register"], skipPrefix: true };
   const grants = nativePermissions(manifest([
-    { service: "tinycloud.hooks", path: "sql/", actions: ["subscribe"], skipPrefix: true },
-    { service: "tinycloud.hooks", path: "sql/other.app/feed/", actions: ["subscribe"], skipPrefix: true },
-    { service: "tinycloud.hooks", path: `sql/${app}/feed/`, actions: ["register"], skipPrefix: true },
-    { service: "tinycloud.hooks", path: `sql/${app}/feed/`, actions: ["subscribe", "register"], skipPrefix: true },
+    widened,
     { service: "tinycloud.hooks", space: "secrets", path: `sql/${app}/feed/`, actions: ["subscribe"], skipPrefix: true },
-    { service: "tinycloud.sql", path: "feed/", actions: ["read", "write", "schema", "drop"] },
+    { service: "tinycloud.space", path: "", actions: ["info"], skipPrefix: true },
   ]));
-  expect(grants.filter((grant) => grant.service === "tinycloud.hooks")).toEqual([]);
-  expect(grants.filter((grant) => grant.service === "tinycloud.sql")).toEqual([]);
+  expect(grants.slice(1)).toEqual([
+    { service: "tinycloud.hooks", space: "applications", path: "sql/other.app/feed/", actions: ["tinycloud.hooks/register"] },
+  ]);
 });
