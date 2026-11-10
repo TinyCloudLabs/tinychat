@@ -1,9 +1,9 @@
 /** Release evidence only. Run explicitly with REDPILL_API_KEY; never part of CI. */
 import { OFFERED_CHAT_MODELS } from "../packages/core/src/chatModels";
-import { DEFAULT_RED_PILL_BASE_URL } from "../backend/src/redpill-aci.ts";
+import { DEFAULT_RED_PILL_BASE_URL, validateRedPillBaseUrl } from "../backend/src/redpill-aci.ts";
 const output = new URL("../artifacts/model-router-live-evidence.json", import.meta.url);
 const key = process.env.REDPILL_API_KEY;
-const base = process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL;
+const base = validateRedPillBaseUrl(process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL);
 const evidence: Array<Record<string, unknown>> = [];
 
 async function completion(model: string, messages: unknown[], extra: Record<string, unknown> = {}) {

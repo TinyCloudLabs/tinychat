@@ -103,7 +103,7 @@ test.each([
     ]);
   }) as typeof fetch;
   const result = await orchestrateToolCalling({ config: config(fetchImpl), model: "test-model", messages: [{ role: "user", content: "Hello" }], entityId: "entity", write: () => {} });
-  expect(result.errorCode).toBe("upstream_incomplete"); expect(requests).toBe(1);
+  expect(result.errorCode).toBeUndefined(); expect(requests).toBe(1);
 });
 
 test("range recap reads all eight distinct exact references with concurrency at most three", async () => {
@@ -151,13 +151,15 @@ test("selected topic and range action requests have one owner and propagate body
 test("capability mismatch and uninterpreted early prose never dispatch private tools", async () => {
   const plan = { kind: "meeting_content", scope: "selected", purpose: "summary", evidenceRequirement: "overview" };
   const mismatch = await scenario(plan, () => wire([outcome()]), { capability: { meetingRetrieval: { contractVersion: 1 }, buildRevision: "old" } });
-  expect(mismatch.tools.length).toBe(0); expect(mismatch.result.errorCode).toBe("meeting_feature_unavailable"); expect(mismatch.text).not.toMatch(/no transcript|missing body/i);
+  expect(mismatch.tools.length).toBe(0); expect(mismatch.result.errorCode).toBeUndefined(); expect(mismatch.text).not.toMatch(/no transcript|missing body/i);
   const prose = await scenario("There is no transcript.", () => wire([outcome()]), { noPlan: true });
-  expect(prose.tools.length).toBe(0); expect(prose.text).not.toContain("no transcript"); expect(prose.result.errorCode).toBe("interpretation_failed");
+  expect(prose.tools.length).toBe(0); expect(prose.text).not.toContain("no transcript");
+  expect(prose.text).toContain("The model could not prepare a valid meeting request.");
+  expect(prose.result.errorCode).toBeUndefined();
 });
 test("an exact read cannot supply evidence for a different reference", async () => {
   const run = await scenario({ kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" }, () => wire([outcome("meeting-b")]));
-  expect(run.text).not.toContain("green design"); expect(run.models).toBe(1); expect(run.result.errorCode).toBe("meeting_feature_unavailable");
+  expect(run.text).not.toContain("green design"); expect(run.models).toBe(1); expect(run.result.errorCode).toBeUndefined();
 });
 test.each(["success", "overflow"])("revocation during fan-out suppresses later %s", async late => {
   const run = await scenario({ kind: "meeting_content", scope: "range", purpose: "summary", evidenceRequirement: "overview" }, async (name, body) => {
@@ -227,7 +229,7 @@ test.each([
   const cfg = config((async () => { requests++; return response(); }) as typeof fetch);
   cfg.meetingTrace = trace => { traces.push(trace); };
   const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", write: frame => { frames.push(frame); } });
-  expect(result).toEqual({ errorCode: code, promptTokens, completionTokens: promptTokens && _name !== "EOF" ? 2 : 0, completionId: "" });
+  expect(result).toEqual({ promptTokens, completionTokens: promptTokens && _name !== "EOF" ? 2 : 0, completionId: "" });
   expect(requests).toBe(1); expect(traces).toHaveLength(1);
   expect(traces[0]).toMatchObject({ terminal: code, tools: [] });
   expect(JSON.stringify([traces, frames])).not.toContain(failureSentinel);
@@ -242,7 +244,7 @@ test.each([
   const cfg = config((async () => { requests++; return modelResponse(plan, true); }) as typeof fetch);
   cfg.meetingTrace = trace => { traces.push(trace); };
   const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", write: () => {} });
-  expect(result.errorCode).toBe(terminal === "clarify" ? undefined : terminal);
+  expect(result.errorCode).toBeUndefined();
   const rounds = terminal === "clarify" ? 1 : 2;
   expect(result.promptTokens).toBe(5 * rounds); expect(requests).toBe(rounds); expect(traces[0]).toMatchObject({ terminal });
 });
@@ -253,7 +255,7 @@ test("interpretation slice expiry cancels its reader while the parent remains ac
   const cfg = config((async () => { requests++; return new Response(body); }) as typeof fetch);
   cfg.meetingTrace = trace => { traces.push(trace); };
   const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", signal: parent.signal, remainingMs: () => 100, write: () => {} });
-  expect(result).toEqual({ errorCode: "interpretation_timeout", promptTokens: 0, completionTokens: 0, completionId: "" });
+  expect(result).toEqual({ promptTokens: 0, completionTokens: 0, completionId: "" });
   expect(parent.signal.aborted).toBe(false); expect(cancelled).toBe(1); expect(body.locked).toBe(false); expect(requests).toBe(1);
   expect(traces[0]).toMatchObject({ terminal: "interpretation_timeout" });
 }, 500);
@@ -271,7 +273,7 @@ test.each(["unexpected", "parent abort", "incomplete result", "invalid JSON", "w
   if (mode === "parent abort") { await expect(run).rejects.toBe(reason); expect(traces[0]).toMatchObject({ terminal: "aborted" }); }
   else {
     const code = mode === "unexpected" ? "agent_failed" : mode === "incomplete result" ? "upstream_incomplete" : "interpretation_failed";
-    expect(await run).toMatchObject({ errorCode: code, completionId: "", promptTokens: mode === "unexpected" || mode === "preflight" ? 0 : mode === "invalid JSON" || mode === "wrong tool" ? 10 : 5 });
+    expect(await run).toMatchObject({ completionId: "", promptTokens: mode === "unexpected" || mode === "preflight" ? 0 : mode === "invalid JSON" || mode === "wrong tool" ? 10 : 5 });
     expect(traces[0]).toMatchObject({ terminal: code });
   }
   expect(calls).toBe(mode === "preflight" ? 0 : mode === "invalid JSON" || mode === "wrong tool" ? 2 : 1); expect(JSON.stringify(traces)).not.toContain(failureSentinel);
@@ -301,7 +303,7 @@ test.each([
   };
   const run = await scenario({ kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" }, response);
   const overflow = size > 16000 || transport === "decoder flush";
-  expect(run.result.errorCode).toBe(overflow ? "result_size_limit" : undefined);
+  expect(run.result.errorCode).toBeUndefined();
   expect(run.models).toBe(overflow ? 1 : 3); expect(run.tools).toHaveLength(1);
   expect(run.result.promptTokens).toBe(overflow ? 5 : 15); expect(run.result.completionId).toBe("");
   if (overflow) expect(run.text).not.toContain("green design"); else expect(run.text).toContain("green design");
@@ -331,7 +333,7 @@ test("guarded overflow cancels active siblings, stops queued reads and discards 
     models++; return modelResponse({ kind: "meeting_content", scope: "range", purpose: "summary", evidenceRequirement: "overview" }, true);
   }) as typeof fetch); cfg.meetingTrace = trace => { traces.push(trace); };
   const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize meetings" }], entityId: "entity", write: frame => { frames.push(frame); } });
-  expect(result).toEqual({ errorCode: "result_size_limit", promptTokens: 5, completionTokens: 2, completionId: "" });
+  expect(result).toEqual({ promptTokens: 5, completionTokens: 2, completionId: "" });
   expect(reads).toEqual(["meeting-0", "meeting-1", "meeting-2", "meeting-3"]); expect(models).toBe(1);
   expect(overflowCancelled).toBe(1); expect(siblingCancelled).toBe(2); expect(overflowBody.locked).toBe(false); expect(siblings.every(body => !body.locked)).toBe(true);
   const activities = frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).tool_activity ?? []; } catch { return []; } });

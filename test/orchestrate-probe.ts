@@ -3,7 +3,7 @@
 // classified, so we can see: tool dispatch, content frames, usage. Diagnoses the
 // empty-answer live e2e turn.
 import { orchestrateToolCalling } from "../backend/src/routes/agent-chat.ts";
-import { DEFAULT_RED_PILL_BASE_URL } from "../backend/src/redpill-aci.ts";
+import { DEFAULT_RED_PILL_BASE_URL, validateRedPillBaseUrl } from "../backend/src/redpill-aci.ts";
 
 const backendEnvText = await Bun.file(new URL("../backend/.env", import.meta.url).pathname).text();
 const elizaEnvText = await Bun.file(new URL("../../tinycloud-agents/packages/eliza-service/.env", import.meta.url).pathname).text();
@@ -18,7 +18,7 @@ const config = {
   elizaServiceUrl: "http://localhost:3000",
   elizaServiceSecret: readEnv(elizaEnvText, "ELIZA_SERVICE_SECRET"),
   redpillApiKey: readEnv(backendEnvText, "REDPILL_API_KEY"),
-  redpillBaseUrl: readEnv(backendEnvText, "REDPILL_BASE_URL") || DEFAULT_RED_PILL_BASE_URL,
+  redpillBaseUrl: validateRedPillBaseUrl(readEnv(backendEnvText, "REDPILL_BASE_URL") || DEFAULT_RED_PILL_BASE_URL),
   defaultModel: () => "phala/gpt-oss-120b",
   isModelOffered: () => true,
   maxRounds: 3,
