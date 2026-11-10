@@ -1,7 +1,7 @@
 // Exo's own first screen on iOS and Android (TC-941). It collects only an
-// email address and the chosen method; the code, the passkey and Google's
-// pages all happen on openkey.so in the system sheet, which opens on the step
-// these hints name. App.tsx shows it only where `isNativeOpenKeySignIn()`.
+// email address and the chosen method; the code, the passkey and Google's or
+// Apple's pages all happen on openkey.so in the system sheet, which opens on
+// the step these hints name. App.tsx shows it only where `isNativeOpenKeySignIn()`.
 import { KeyRoundIcon } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
@@ -9,7 +9,7 @@ import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { Button } from "@/components/ui/button";
 import type { AppState } from "../lib/appState";
 import { errorLinkFor } from "../lib/authErrors";
-import { normalizeLoginHint, type NativeSignInHints } from "../lib/openkeyNative";
+import { normalizeLoginHint, type NativeSignInHints, type OpenKeySocialProvider } from "../lib/openkeyNative";
 import { bootMessage } from "./BootSurface";
 
 export const NATIVE_SIGN_IN_SUBCOPY = "Your notes and recordings sync to your own TinyCloud space.";
@@ -30,12 +30,24 @@ function GoogleMark() {
   );
 }
 
+// Apple's logo for "Continue with Apple" (Apple's button guidelines: the logo
+// and label in the button's text colour, the same size as the other buttons).
+function AppleMark() {
+  return (
+    <svg viewBox="0 0 15 18" aria-hidden className="!h-[18px] !w-[15px]" fill="currentColor">
+      <path d="M12.55 9.55c.02-2.02 1.65-2.99 1.73-3.04a3.7 3.7 0 0 0-2.91-1.57c-1.23-.13-2.43.74-3.05.74-.64 0-1.6-.73-2.64-.71a3.86 3.86 0 0 0-3.25 1.98c-1.42 2.46-.36 6.07 1 8.06.68.97 1.47 2.06 2.51 2.02 1.02-.04 1.4-.65 2.63-.65 1.22 0 1.58.65 2.64.63 1.09-.02 1.78-.98 2.43-1.96a8.05 8.05 0 0 0 1.11-2.26 3.49 3.49 0 0 1-2.2-3.24ZM10.57 3.63A3.55 3.55 0 0 0 11.38 1a3.63 3.63 0 0 0-2.35 1.25 3.4 3.4 0 0 0-.83 2.53 3 3 0 0 0 2.37-1.15Z" />
+    </svg>
+  );
+}
+
 export function NativeSignIn(props: {
   state: AppState;
   error: string | null;
   onSignIn: (hints: NativeSignInHints) => void;
   /** Back to the local home this screen was opened from; absent when there is none to go back to. */
   onClose?: () => void;
+  /** From OpenKey's `GET /api/auth/providers`; Apple is offered only once OpenKey lists it. */
+  socialProviders?: readonly OpenKeySocialProvider[];
 }) {
   const [email, setEmail] = useState("");
   const loginHint = normalizeLoginHint(email);
@@ -91,6 +103,12 @@ export function NativeSignIn(props: {
           <span className="h-px flex-1 bg-border" />or<span className="h-px flex-1 bg-border" />
         </div>
         <div className="flex flex-col gap-3">
+          {props.socialProviders?.includes("apple") && (
+            <Button type="button" variant="outline" size="lg" className={WRAPPING_BUTTON} disabled={busy}
+              onClick={() => props.onSignIn({ loginMethod: "apple" })}>
+              <AppleMark /><span className="min-w-0">Continue with Apple</span>
+            </Button>
+          )}
           <Button type="button" variant="outline" size="lg" className={WRAPPING_BUTTON} disabled={busy}
             onClick={() => props.onSignIn({ loginMethod: "google" })}>
             <GoogleMark /><span className="min-w-0">Continue with Google</span>

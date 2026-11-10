@@ -297,7 +297,35 @@ export function isNativeStorageError(error: unknown): boolean {
 export interface NativeSignInHints {
   /** Only with `loginMethod: "email"`. A normalised address (see `normalizeLoginHint`). */
   loginHint?: string;
-  loginMethod: "email" | "passkey" | "google";
+  // Spelled out: @openkey/sdk-capacitor 0.2.0-beta.0's .d.ts re-exports NativeLoginMethod from @openkey/core,
+  // which it bundles rather than depends on, so the type does not resolve here.
+  loginMethod: "email" | "passkey" | "google" | "apple";
+}
+
+/** The social sign-ins OpenKey can finish in its sheet. */
+export type OpenKeySocialProvider = "google" | "apple";
+
+/**
+ * The social providers OpenKey has turned on (`GET /api/auth/providers`), so
+ * Exo never offers a button whose sheet would fail. Any failure reads as none:
+ * email and passkey never wait on this.
+ */
+export async function loadOpenKeySocialProviders(
+  openKeyHost: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<OpenKeySocialProvider[]> {
+  try {
+    const response = await fetchFn(`${deriveOAuthHost(openKeyHost)}/api/auth/providers`, {
+      headers: { Accept: "application/json" },
+      credentials: "omit",
+    });
+    if (!response.ok) return [];
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("providers" in body) || !Array.isArray(body.providers)) return [];
+    return body.providers.filter((id: unknown): id is OpenKeySocialProvider => id === "google" || id === "apple");
+  } catch {
+    return [];
+  }
 }
 
 /** The login_hint rule: no whitespace, exactly one "@" with text either side, at most 254 characters. Lowercased. Null when it is not an address. */
