@@ -76,10 +76,9 @@ describe("first sync after sign-in / restore", () => {
 
   test("a different ReplicaError leaves later prefix attempts enabled", async () => {
     let calls = 0;
+    const error = new ReplicaError(ReplicaErrorCode.NETWORK_ERROR, "temporary network failure");
     startReplicationFill(clientWith(async () => {
       calls += 1;
-      const error = new Error("temporary network failure");
-      error.name = "ReplicaError";
       throw error;
     }), () => true, { firstLoadSettled: async () => {}, prefixes: ["p/one", "p/two"], startGapMs: 0 });
     await flush();

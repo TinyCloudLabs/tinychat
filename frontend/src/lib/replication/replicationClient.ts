@@ -12,7 +12,6 @@
 // already covers them (augmentSignInEntriesWithReplication in node-sdk). Flag OFF: no sync entry,
 // so existing sessions get exactly what they got before.
 import type { TinyCloudWebConfig } from "@tinyboilerplate/client";
-import { isReplicaError, ReplicaErrorCode } from "@tinycloud/replica";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { noteReplicationCopyPossible } from "./replicationCopyMarker";
 import { isReplicationEnabled } from "./replicationFlag";
@@ -136,7 +135,11 @@ function sleep(ms: number): Promise<void> {
 
 const terminalGrantRefusals = new WeakSet<TinyCloudWeb>();
 
-function isNonCompactGrantRefusal(error: unknown): boolean {
+async function isNonCompactGrantRefusal(error: unknown): Promise<boolean> {
+  if (!(error instanceof Error) || error.name !== "ReplicaError" ||
+      (error as Error & { code?: unknown }).code !== "GRANT_FORMAT_UNSUPPORTED") return false;
+  // Keep replica code out of the root bundle when replication is disabled.
+  const { isReplicaError, ReplicaErrorCode } = await import("@tinycloud/replica");
   return isReplicaError(error, ReplicaErrorCode.GRANT_FORMAT_UNSUPPORTED);
 }
 
@@ -175,8 +178,8 @@ export function startReplicationFill(
     await Promise.race([firstLoadSettled().catch(() => undefined), deadline]);
     cancelDeadline();
 
-    const stopForGrantRefusal = (error: unknown): void => {
-      if (!isNonCompactGrantRefusal(error) || terminalGrantRefusals.has(tcw)) return;
+    const stopForGrantRefusal = async (error: unknown): Promise<void> => {
+      if (!await isNonCompactGrantRefusal(error) || terminalGrantRefusals.has(tcw)) return;
       terminalGrantRefusals.add(tcw);
       queue.length = 0;
       console.debug("[replication] stopped for session: compact UCAN required");
@@ -192,8 +195,7 @@ export function startReplicationFill(
       try {
         return Promise.resolve(tcw.replication?.sync({ prefix })).catch(stopForGrantRefusal);
       } catch (error) {
-        stopForGrantRefusal(error);
-        return Promise.resolve();
+        return stopForGrantRefusal(error);
       }
     };
 
