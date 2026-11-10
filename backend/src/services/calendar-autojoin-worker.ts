@@ -1,5 +1,6 @@
 import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./calendar-autojoin-share.js";
 import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
+import { logCalendarAutojoinFailure } from "./calendar-autojoin-diagnostics.js";
 import {
   type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
@@ -136,7 +137,7 @@ export class CalendarAutojoinWorker {
   tick(): Promise<void> {
     if (this.stopping) return Promise.resolve();
     if (this.running) return this.running;
-    const run = this.reconcile().catch(() => { console.warn("[calendar-autojoin] code=tick_failed"); });
+    const run = this.reconcile().catch(error => { logCalendarAutojoinFailure("tick", error); });
     this.running = run;
     void run.finally(() => { if (this.running === run) this.running = null; });
     return run;
@@ -157,7 +158,7 @@ export class CalendarAutojoinWorker {
       while (cursor < tenants.length && !this.stopping) {
         const connection = tenants[cursor++]!;
         try { await this.reconcileTenant(connection.tenant, counts); }
-        catch { console.warn("[calendar-autojoin] code=tenant_reconcile_failed"); }
+        catch (error) { logCalendarAutojoinFailure("tenant_reconcile", error); }
       }
     }));
     // Counts only: never ids, titles or addresses.
@@ -269,7 +270,7 @@ export class CalendarAutojoinWorker {
     if (!entry) return;
     this.dueTimers.delete(key);
     if (this.inFlight.has(key)) { this.refire.set(key, entry.row); return; }
-    const run = this.runRow(entry.row).catch(() => { console.warn("[calendar-autojoin] code=due_timer_failed"); });
+    const run = this.runRow(entry.row).catch(error => { logCalendarAutojoinFailure("due_timer", error); });
     this.timerRuns.add(run);
     void run.finally(() => this.timerRuns.delete(run));
   }
@@ -485,7 +486,7 @@ export class CalendarAutojoinWorker {
           await this.dispatchStore.updateConnection(row.tenant, current => current?.subject === row.subject
             && current.generation === connection.generation && (current.lastDispatchLag?.sentAt ?? -Infinity) <= lag.sentAt
             ? { ...current, lastDispatchLag: lag } : current);
-        } catch { console.warn("[calendar-autojoin] code=dispatch_lag_status_failed"); }
+        } catch (error) { logCalendarAutojoinFailure("dispatch_lag_status", error); }
       }
       if (response.meeting) { await this.acceptRecording(row, response.meeting); return; }
       if (!response.error) return;

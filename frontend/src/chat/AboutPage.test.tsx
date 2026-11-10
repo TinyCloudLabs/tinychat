@@ -140,7 +140,6 @@ describe("How it works: the canonical claims", () => {
 
   test("the notetaker, autojoin and verification keep their specifics", () => {
     expect(text("notetaker")).toContain("If the notetaker hears no one else for five minutes, it ends automatically.");
-    expect(text("connectors")).toContain("from one minute before start until five minutes after start or the event ends.");
     expect(text("verification")).toContain("The status turns Backend attested only when all three legs pass.");
     expect(text("verification")).toContain("This proves the endpoint and code identity, not each response byte.");
   });

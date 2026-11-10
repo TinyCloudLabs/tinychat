@@ -43,6 +43,7 @@ import {
   logCreditGateDeny,
 } from "../billing/ledger-gate.js";
 import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
+import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
 
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
@@ -1033,6 +1034,14 @@ export interface AgentStreamRuntime {
   log(summary: AgentStreamSummary): void;
 }
 
+/** The request record's coarse view of a turn's end: client-side ends are aborted, server-side ones error. */
+function recordedOutcome(outcome: AgentStreamSummary["outcome"]): { stream: StreamOutcome; code?: string } {
+  if (outcome === "success") return { stream: "done" };
+  if (outcome === "cancelled") return { stream: "aborted" };
+  if (outcome === "transport_failed") return { stream: "aborted", code: "transport_failed" };
+  return { stream: "error", code: outcome };
+}
+
 const streamRuntime: AgentStreamRuntime = {
   now: () => performance.now(),
   setTimeout: (callback, ms) => setTimeout(callback, ms),
@@ -1244,6 +1253,7 @@ class AgentStreamOwner {
   private close(outcome: AgentStreamSummary["outcome"], destroy: boolean): void {
     if (this.state === "closed") return;
     this.outcome ??= outcome;
+    noteRequestRecord(this.res, recordedOutcome(this.outcome));
     this.state = "closed";
     this.runtime.clearTimeout(this.heartbeat);
     this.runtime.clearTimeout(this.deadline);
@@ -1270,7 +1280,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
   const taskClient = createAgentTaskClient({ baseUrl: config.elizaServiceUrl, apiKey: config.elizaServiceSecret, fetch: config.fetchImpl });
   const budgetStopMode = parseBudgetStopMode(process.env.AGENT_CHAT_BUDGET_STOP_MODE);
   const budgetPreflightMode = parseBudgetPreflightMode(process.env.AGENT_CHAT_BUDGET_PREFLIGHT);
-  return async (req: Request, res: Response) => {
+  return recordAfterHandler(async (req: Request, res: Response) => {
     if (!req.user) {
       res.status(401).json({ error: "unauthenticated", message: "Authentication required" });
       return;
@@ -1558,7 +1568,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       // erase it because a subsequent content/write/end/enqueue operation fails.
       if (paywallEnabled() && address) {
         const credits = creditsFor(rates ?? FALLBACK_RECORDING_RATES, result.usage.promptTokens, result.usage.completionTokens);
-        try { recordUsage(address, TIERS[gatedTier], credits, anchor); }
+        try { recordUsage(address, TIERS[gatedTier], credits, anchor); noteRequestRecord(res, { credits }); }
         catch { console.error("[agent-chat] task local usage recording failed"); }
         if (config.flusher && credits > 0) {
           const now = Date.now();
@@ -1606,20 +1616,19 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           onUsage: usage => { observedUsage = usage; },
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
         });
-        await streamOwner.complete(orchestrateResult);
       } catch (error) {
-        orchestrateResult = null;
-        await streamOwner.fail(error);
+        // Preserve the failure for terminal delivery after observed usage settles.
+        orchestrateResult = { ...observedUsage, completionId: "",
+          errorCode: error instanceof StreamFailure ? error.code : "agent_failed" };
       }
     } else {
       await streamOwner.fail(new StreamFailure("agent_failed"));
     }
-    // A completed result stays provisional through final writes and end().
-    if (streamOwner.deliveryException) orchestrateResult = null;
     // Content delivery and cancellation must not erase already observed usage.
     orchestrateResult ??= { ...observedUsage, completionId: "" };
 
-    // A4: post-stream usage recording — mirrors chat.ts:335-372.
+    // Record usage before terminal metadata and stream end so follow-up requests
+    // see the completed turn's charge during their budget preflight.
     // NEVER throw after bytes were served. Falls back to conservative rates on any failure.
     if (paywallEnabled() && address && orchestrateResult) {
       try {
@@ -1630,6 +1639,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           orchestrateResult.completionTokens,
         );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        noteRequestRecord(res, { credits });
         // §E.6 — shadow-push to ledger (async, never blocks serving)
         if (config.flusher && credits > 0) {
           const now = Date.now();
@@ -1659,6 +1669,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
             orchestrateResult.completionTokens,
           );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          noteRequestRecord(res, { credits });
           if (config.flusher && credits > 0) {
             const now = Date.now();
             const tierCfg = TIERS[gatedTier];
@@ -1683,6 +1694,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         }
       }
     }
+    // Also await an already claimed timeout/cancellation terminal's drain.
+    await streamOwner.complete(orchestrateResult);
     } finally { releaseAccess?.(); }
-  };
+  });
 }

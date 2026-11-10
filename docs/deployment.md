@@ -156,6 +156,38 @@ writer. Treat write access to this repo as production access.
 The same frontend, built with `VITE_HOME_SITE=true`, is also served as the
 TinyCloud Home site at `https://home.tinycloud.xyz`.
 
+- **Sign-in grant:** the Home build signs in with `manifest.home.json`, not the
+  root `manifest.json`: only what Feed, Chat and Apps use. It has the same
+  `app_id` (`xyz.tinycloud.tinychat`), so the data is shared with
+  tinycloud.chat. It grants: KV `threads/` (chat share links); SQL `threads`
+  (chats and settings), `home_feed` and `feed/` (the feed); the hooks that
+  refresh the feed and chats; and space info (storage panel). It has no
+  secrets, no decrypt grant, and none of the canvas, connectors, details,
+  summaries or transcripts databases. tinycloud.chat keeps the full
+  `manifest.json` and signs in exactly as before. The backend keeps reading
+  `manifest.json` (`/api/server-info` and the delegation routes depend on its
+  connectors coverage), so do not narrow it. A Home session signed in under the
+  broad grant is cleared once (revision `home-1`, in
+  `frontend/src/lib/manifestRevision.ts`) and the user signs in once more.
+- **Recording and Connectors on Home:** each has its own set
+  (`HOME_RECORDING_ENTRIES`, `HOME_CONNECTORS_ENTRIES` in
+  `packages/core/src/manifest-bundle.ts`). Only Connectors keeps secrets (its
+  connector keys), so only it adds the decrypt grant, composed at request time
+  (the SDK adds `network.create` on the owner's default network to it).
+  Recording keeps none: no secret, no decrypt grant, no encryption ability at
+  all. When one is opened and the session does not cover its set, it
+  asks in place: Home signs in again in the page on a separate instance with
+  the base grant plus every set the session has or the device used, plus this
+  one (one OpenKey approval). It replaces the session only when the approval
+  covers everything asked, the backend verifies it, the owner is still signed
+  in, and no recording, upload or save is running; otherwise nothing is saved.
+  New recordings and uploads wait while OpenKey is open. Once a feature
+  has been used on a device, `xyz.tinycloud.tinychat:home-features:<address>`
+  in localStorage (feature names only; kept on sign-out) makes the next
+  sign-in include its set. Background work for a feature, including the
+  recorder's own checks, runs only when it is flagged on the device and the
+  session covers its set. Agent access is off on Home. The flag never changes
+  the revision: any grant carrying the Home bundle records `home-1`.
 - **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
   name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
   `production`.
@@ -276,6 +308,7 @@ Repository **secrets**:
 | `WEBHOOK_HMAC_MASTER` | Connector-webhook HMAC master. `openssl rand -base64 32`. Required only when `CONNECTOR_WEBHOOKS_ENABLED=true`; a weak value refuses to boot. |
 | `WEBHOOK_HMAC_MASTER_PREV` | Rotation grace key — the outgoing master, set only while a rotation drains. |
 | `LOG_HASH_SALT` | Salt for the public log stream's keyed hashes. Its own `openssl rand -base64 32` value; never derived from `WEBHOOK_HMAC_MASTER`. |
+| `REQUEST_LOG_HMAC_KEY` | Keys the `account_hash` in the backend's shipped request records (TC-2537, `docs/dev-logging.md`). Generate once with `openssl rand -hex 32` and pipe it straight into `gh secret set` (environment `production-api`); never reuse another secret. Unset or weak only omits `account_hash`. Rotating it breaks joins across the rotation. |
 | `STRIPE_SECRET_KEY` | Stripe secret key for `/api/billing` (`sk_live_…`; `sk_test_…` while testing). Optional until go-live — unset resolves everyone to the free tier and checkout/portal return `503 billing_not_configured` (`docs/stripe-setup.md`). |
 | `STRIPE_WEBHOOK_SECRET` | Signing secret (`whsec_…`) of the Stripe webhook endpoint pointing at `/api/billing/webhook`. |
 | `LEDGER_SERVICE_SECRET` | Shared secret for the Universal Ledger credits sidecar. Optional — unset disables the ledger client. |
@@ -619,12 +652,15 @@ nothing below may be reported as done on its behalf.
   Adding a catalog database requires a manifest bump and another one-time
   sign-in. The `secrets` grants and backend delegation policy are unchanged.
 - **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
-  and URI before consuming the nonce. The web SDK signs the page hostname
-  (without the port) and a canonical `did:key` session verification-method
+  and URI before consuming the nonce. The web SDK signs the page host,
+  including any port, and a canonical `did:key` session verification-method
   URI, not the page origin. Production signs `tinycloud.chat`; one-label
   branch/commit previews under `tinychat-4jq.pages.dev` sign their exact
-  hostname; local web and macOS desktop sign `localhost`, and Windows desktop
-  signs `tauri.localhost`. Older clients signing the paired
+  hostname; macOS desktop signs `localhost` (the dev desktop build signs
+  `localhost` explicitly), and Windows desktop signs `tauri.localhost`. A
+  local web build served on `localhost:5186` signs `localhost:5186`, which no
+  backend accepts, so it cannot complete `/api/auth/verify`; test web sign-in
+  on a one-label `tinychat-4jq.pages.dev` preview instead. Older clients signing the paired
   `https://<hostname>` URI remain accepted for those web domains. The
   production web domain comes from `FRONTEND_URL` in
   `docker-compose.phala.yml`; the Home site (`home.tinycloud.xyz`, signing

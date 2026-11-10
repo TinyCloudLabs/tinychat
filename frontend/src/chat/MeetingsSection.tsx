@@ -38,6 +38,7 @@ import {
   type MergedMeeting,
   type MeetingsViewState,
 } from "@/lib/connectors/meetingsView";
+import { useHomeFeatureAccess } from "@/shell/homeFeatureAccess";
 
 /** One opened meeting. `missing` is its own state: retention or a purge took it. */
 export interface OpenMeetingState {
@@ -297,7 +298,7 @@ export interface MeetingsSectionProps {
  * no key material and no storage handle — a session token is the whole
  * requirement, which is the point of the read API.
  */
-export const MeetingsSection: FC<MeetingsSectionProps> = ({
+const MeetingsSectionView: FC<MeetingsSectionProps> = ({
   backendUrl,
   sessionStore,
   source = DEFAULT_MEETINGS_SOURCE,
@@ -388,3 +389,11 @@ export const MeetingsSection: FC<MeetingsSectionProps> = ({
     />
   );
 };
+
+/**
+ * The meetings list asks the backend's meetings route, which is Connectors': on the Home site it shows only once
+ * Connectors is permitted. Everywhere else it always shows.
+ */
+export const MeetingsSection: FC<MeetingsSectionProps> = (props) =>
+  useHomeFeatureAccess().permitted("connectors") ? <MeetingsSectionView {...props} /> : null;
+
