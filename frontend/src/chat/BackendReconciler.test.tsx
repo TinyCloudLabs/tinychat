@@ -259,9 +259,13 @@ describe("BackendReconciler wiring", () => {
     expect(MODULE).toContain("reconcileBackendMeetings");
   });
 
-  test("never logs, never touches SQL", () => {
+  test("never logs, never unlocks, never touches SQL", () => {
     expect(MODULE).not.toContain("console.");
+    expect(MODULE).not.toContain("unlockSecrets");
     expect(MODULE).not.toContain("tcw.sql");
+    // Re-armed by the same unlock event the drain listens for, so a vault unlocked
+    // after sign-in still gets its copy without a poll.
+    expect(MODULE).toContain("onSecretsUnlocked");
   });
 
   test("App mounts it behind the signed-in gate, with the shell's own deps", () => {

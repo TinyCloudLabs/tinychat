@@ -4,7 +4,7 @@
 // WHY IT IS NOT PART OF THE MEETINGS VIEW. W5's read API is the surface a user
 // sees, and its whole point is that it needs NO vault and NO key — so
 // `MeetingsSection` deliberately holds no TinyCloud handle. The reconcile is the
-// opposite: it exists only when a vault IS readable, and it writes the user's own
+// opposite: it exists only when a vault IS unlocked, and it writes the user's own
 // space. Keeping it here, beside the Option-C drainer, is what lets both stay
 // true at once.
 //
@@ -16,7 +16,8 @@
 // returns nothing anyway — plan §5.3 — so in practice the two never contend; the
 // lane is what makes that a guarantee instead of a coincidence.)
 //
-// PACED, NEVER POLLED. One run per mount.
+// PACED, NEVER POLLED. One run per mount, plus a re-arm on the same unlock event
+// the drain listens for, so a vault unlocked after sign-in still gets its copy.
 // No timers. A run is cheap when there is nothing to do: the discovery filter is
 // one metadata GET that comes back empty.
 //
@@ -33,6 +34,7 @@ import {
   type BackendReconcileMeetingsClient,
   type BackendReconcileSecrets,
 } from "@/lib/connectors/backendReconcile";
+import { onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { DEFAULT_MEETINGS_SOURCE } from "@/lib/connectors/meetingsView";
 import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import { backendPendingRows, writePendingReconcileSnapshot } from "@/lib/connectors/pendingReconcileSnapshot";
@@ -84,22 +86,28 @@ export async function runBackendReconcile(
       }),
     );
   } catch {
-    // Nothing to do and nobody to tell: the next mount retries, and the server
-    // still lists the row as unreconciled.
+    // Nothing to do and nobody to tell: the next mount, or the next unlock,
+    // retries, and the server still lists the row as unreconciled.
   }
 }
 
 /**
- * Fire-and-forget on mount. Registration is effect-time (never module load).
+ * Fire-and-forget on mount, re-armed by an unlock. Registration is effect-time
+ * (never module load) so a sign-out cleanly unhooks it, exactly as the drainer's
+ * listener does.
  */
 export function useBackendReconcile(options: BackendReconcileMountOptions): void {
   const { tcw, sessionStore, backendUrl, source, meetings, secrets } = options;
-  // The latest options, read by the effect without re-running it.
+  // The latest options, read by the listener without re-registering it.
   const latest = useRef(options);
   latest.current = options;
 
   useEffect(() => {
     void runBackendReconcile(latest.current);
+    const off = onSecretsUnlocked(() => {
+      void runBackendReconcile(latest.current);
+    });
+    return off;
     // Same dependency shape as the drainer: the shell's identities, not the ref.
   }, [tcw, sessionStore, backendUrl, source, meetings, secrets]);
 }

@@ -3,7 +3,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTranscriberClient, type TranscriberClient, type TranscriberListRow, type TranscriberMeeting, type TranscriberTranscript } from "@/lib/transcriberApi";
 import { listSavedTranscriberMeetingIds, listSavedTranscriberVersions, refreshTranscriberMeeting, saveTranscriberMeeting, TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
-import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
+import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { secretsAvailable } from "@/lib/openkeyNative";
 import { captureEvents } from "@/capture/captureEvents";
 import { enqueueDrainWork } from "./useBackgroundDrain";
@@ -400,6 +400,7 @@ export function useTranscriberLibrarySync(input: {
     // A hidden tab makes no scheduled reads; focus, visibilitychange and online start a pass on return.
     const tick = () => { if (document.visibilityState !== "hidden") start(true); };
     run();
+    const unsubscribe = onSecretsUnlocked(run);
     const timer = window.setInterval(tick, TRANSCRIBER_LIBRARY_RETRY_MS);
     const onReturn = () => { if (document.visibilityState === "visible") run(); };
     window.addEventListener("focus", run);
@@ -407,6 +408,7 @@ export function useTranscriberLibrarySync(input: {
     document.addEventListener("visibilitychange", onReturn);
     return () => {
       cancelled = true;
+      unsubscribe();
       unsubscribeChanges();
       channel?.close();
       window.clearInterval(timer);

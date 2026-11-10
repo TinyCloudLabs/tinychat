@@ -182,8 +182,8 @@ export interface DisconnectWebhooks {
 }
 
 export interface DisconnectSecrets {
-  /** False in native app sessions, which carry no secrets. */
-  available(): boolean;
+  isUnlocked(): boolean;
+  unlock(): Promise<{ ok: true } | { ok: false; error?: { message?: string } }>;
   deleteKey(): Promise<{ ok: true } | { ok: false; error?: { message?: string } }>;
 }
 
@@ -404,14 +404,17 @@ async function disableWebhooks(deps: DisconnectDeps): Promise<StepOutcome> {
 }
 
 async function deleteKey(deps: DisconnectDeps): Promise<StepOutcome> {
-  if (!deps.secrets.available()) {
-    return {
-      failure: {
-        step: "delete-key",
-        message: "Your API key can’t be removed in the Exo app. Disconnect on the web or desktop to remove it.",
-        retryable: false,
-      },
-    };
+  if (!deps.secrets.isUnlocked()) {
+    const unlock = await deps.secrets.unlock();
+    if (!unlock.ok) {
+      return {
+        failure: {
+          step: "delete-key",
+          message: `Couldn't unlock your secrets: ${unlock.error?.message ?? "unlock was not completed"}.`,
+          retryable: true,
+        },
+      };
+    }
   }
   const del = await deps.secrets.deleteKey();
   if (!del.ok) {

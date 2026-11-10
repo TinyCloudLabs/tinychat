@@ -1,6 +1,6 @@
 // In-memory fake of the TinyCloudWeb surfaces the connectors code touches.
 // See docs/connectors-spec.md §10. Backs: sql.db(name).{execute,query,batch},
-// kv.{get,put,list,delete}, secrets.{isUnlocked,put,get,delete}, did,
+// kv.{get,put,list,delete}, secrets.{isUnlocked,unlock,put,get,delete}, did,
 // spaceId, ensureOwnedSpaceHosted.
 //
 // The SQL fake understands ONLY the statement shapes connectorStore.ts
@@ -613,12 +613,16 @@ export class FakeKv {
 type SecretsErr = { code: string; message: string };
 
 export class FakeSecrets {
-  /** TinyChat's vault is network-encrypted: always unlocked, with no unlock step. */
-  readonly isUnlocked = true;
+  isUnlocked = false;
   /** scope → name → value. Public so drivers can assert what landed where. */
   readonly store = new Map<string, Map<string, string>>();
   /** When true, the NEXT put() fails NOT_FOUND-shaped (exercises the ensureOwnedSpaceHosted retry). */
   nextPutRejectsNotFound = false;
+
+  async unlock(): Promise<OkErr<void, SecretsErr>> {
+    this.isUnlocked = true;
+    return { ok: true, data: undefined as unknown as void };
+  }
 
   async put(
     name: string,

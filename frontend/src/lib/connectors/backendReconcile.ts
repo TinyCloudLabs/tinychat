@@ -64,7 +64,7 @@ export const RECONCILE_MAX_PER_RUN = 100;
 
 /** Why a run did nothing. All three are DEFINED product states, not errors. */
 export type BackendReconcileBlocked =
-  /** The session's secrets report locked (a native app session carries none). */
+  /** The browser vault is locked. A user-initiated unlock is the only way in. */
   | "vault-locked"
   /** 404 on the list: the flag is dark, or this address is not in the cohort. */
   | "feature-dark"

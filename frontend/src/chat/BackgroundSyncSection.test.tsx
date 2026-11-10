@@ -268,15 +268,6 @@ describe("queue states", () => {
     expect(html).toContain("Sync queued meetings");
   });
 
-  test("while the sign-in notice shows, the count stays and no Sync is offered", () => {
-    const queue = { pendingCount: 2, deadCount: 0, rateLimited: false, blockedReason: null };
-    const locked = render(enabledState({ queue, ingestBlocked: "secrets-locked" }));
-    expect(text(locked)).toContain("2 meetings waiting");
-    expect(locked).not.toContain("Sync queued meetings");
-    const readable = render(enabledState({ queue, ingestBlocked: null }));
-    expect(readable).toContain("Sync queued meetings");
-  });
-
   test("a dead-letter is its own visible state, even with nothing pending", () => {
     const html = render(
       enabledState({ queue: { pendingCount: 0, deadCount: 2, rateLimited: false, blockedReason: null } }),
@@ -318,6 +309,19 @@ describe("queue states", () => {
 
   test("an empty queue is allowed to say so", () => {
     expect(text(render(enabledState())).toLowerCase()).toContain("nothing waiting");
+  });
+});
+
+describe("locked secrets", () => {
+  test("pending work with a locked vault offers the unlock as a user action", () => {
+    const html = render(
+      enabledState({
+        ingestBlocked: "secrets-locked",
+        queue: { pendingCount: 2, deadCount: 0, rateLimited: false, blockedReason: null },
+      }),
+    );
+    expect(html).toContain("Sync queued meetings");
+    expect(text(html).toLowerCase()).toContain("unlock");
   });
 });
 

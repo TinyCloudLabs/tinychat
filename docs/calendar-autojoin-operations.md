@@ -133,7 +133,7 @@ Connection and occurrence keys live under `calendar-autojoin/v1/`; secrets use t
 is unresolved. Sent markers have no expiry, survive recording deletion and reconnect, and must
 not be swept with ordinary expired occurrence records. Resolved detail rows are retained 30 days.
 
-Library import happens while the user is signed in with the app open. Completion requires both
+Library import happens when the user's storage session is unlocked. Completion requires both
 the SQL meeting and its transcript KV body, including an explicit empty array for a valid empty
 transcript. A partial write is repaired on return or on a subsequent open-app retry. Server-side
 delegations are not used to write the user's library.
@@ -152,7 +152,7 @@ admission. In a configured test account:
 1. Connect Google, enable autojoin with custody consent, and verify a successful scan.
 2. Create an accepted timed Meet on the primary calendar. Close the browser before its start.
    Confirm the bot requests entry from 60 seconds before start; admit it and speak a short phrase.
-3. Reopen the app signed in. Verify one owned recording imports with Calendar title/start
+3. Reopen the app and unlock storage. Verify one owned recording imports with Calendar title/start
    and a transcript; navigate away from Sources during import and verify it still completes.
 4. Test Disable during an active or uncertain send. Confirm new sends stop, the active/recovered
    bot stops, and existing recordings remain. Re-enable must not clear that old stop intent.

@@ -1,5 +1,6 @@
 import type { UploadState } from "@/lib/audioUpload";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import type { PausedUpload } from "../upload/pausedUpload";
 import type { LibraryItem } from "../library/LibraryRow";
 
 /** Capture publishes its current inventory; the sidebar owns the control and survives navigation. */
@@ -7,8 +8,10 @@ export interface SidebarActivitySnapshot {
   items: readonly LibraryItem[];
   views: ReadonlyMap<string, NotePipelineView>;
   upload: UploadState | null;
+  paused: PausedUpload | null;
   onOpenNote: (id: string) => void;
   onOpenUpload: () => void;
+  onContinueUpload: () => void;
   onRetryUpload: () => void;
 }
 

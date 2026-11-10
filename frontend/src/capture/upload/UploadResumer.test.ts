@@ -5,6 +5,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createUploadRunner, uploadRunner, type PendingUpload, type PendingUploadStore, type UploadDeps } from "@/lib/audioUpload";
 import type { PrivateCloudApi } from "@/lib/privateCloud";
+import { pausedUpload } from "./pausedUpload";
 import { resumeOnLaunch } from "./UploadResumer";
 import { buildUploadDeps } from "./useUploadDeps";
 
@@ -24,7 +25,7 @@ function setup(stored: PendingUpload | null) {
   return { deps: { ...built, pending, lock: async () => () => {} } as UploadDeps, hostedCalls };
 }
 
-afterEach(() => { uploadRunner.reset(); });
+afterEach(() => { pausedUpload.set(null); uploadRunner.reset(); });
 
 describe("resumeOnLaunch", () => {
   test("a hosted AssemblyAI upload resumes without a key or vault", async () => {
@@ -32,30 +33,18 @@ describe("resumeOnLaunch", () => {
     const { deps } = setup({ engine: "assemblyai", assemblyAiMode: "hosted", meetingId: "m-1", attemptId: "a-1",
       jobId: "t-1", diarize: false, file: { name: "Interview.m4a", type: "audio/mp4", size: 1024, lastModified: 0 },
       owner: OWNER, saved: false });
-    resumeOnLaunch(runner, deps);
+    resumeOnLaunch(runner, deps, false);
     await settle();
     expect(runner.snapshot()).not.toBeNull();
-  });
-
-  test("an own-key AssemblyAI upload resumes at launch and fails honestly, with no unlock step", async () => {
-    const runner = createUploadRunner();
-    const { deps } = setup({ engine: "assemblyai", assemblyAiMode: "own", meetingId: "m-1", attemptId: "a-1",
-      jobId: "t-1", diarize: false, file: { name: "Interview.m4a", type: "audio/mp4", size: 1024, lastModified: 0 },
-      owner: OWNER, saved: false });
-    resumeOnLaunch(runner, deps);
-    await settle();
-    const snapshot = runner.snapshot();
-    expect(snapshot?.fileName).toBe("Interview.m4a");
-    expect(snapshot?.stage).toBe("failed");
-    expect(snapshot?.error?.message).toContain("Choose the file again");
-    expect(snapshot?.error?.retry).toBe(false);
+    expect(pausedUpload.snapshot()).toBeNull();
   });
 
   test("nothing stored resumes nothing", async () => {
     const runner = createUploadRunner();
-    resumeOnLaunch(runner, setup(null).deps);
+    resumeOnLaunch(runner, setup(null).deps, false);
     await settle();
     expect(runner.snapshot()).toBeNull();
+    expect(pausedUpload.snapshot()).toBeNull();
   });
 });
 

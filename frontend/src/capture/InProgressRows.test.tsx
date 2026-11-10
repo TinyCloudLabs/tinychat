@@ -12,10 +12,12 @@ function render(voice?: Partial<VoiceInProgress>): string {
   return renderToStaticMarkup(
     <InProgressRowsView
       upload={null}
+      paused={null}
       meetings={[]}
       busyId={null}
       voice={voice ? { listing: { state: "ok", count: 0 }, saving: false, lastError: null, limitNotice: null, onSaveNow: noop, ...voice } : undefined}
       onOpenUpload={noop}
+      onContinue={noop}
       onOpenMeeting={noop}
       onEnd={noop}
     />,

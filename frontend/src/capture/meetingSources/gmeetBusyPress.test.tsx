@@ -46,9 +46,12 @@ function heldRun(tcw: TinyCloudWeb): HeldRun {
 function deps(patch: Partial<SourceSyncDeps> = {}): SourceSyncDeps {
   return {
     secretsAvailable: () => true,
+    isSecretsUnlocked: () => true,
+    unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
     getConnectorKey: (async () => ({ ok: true, data: "key" })) as SourceSyncDeps["getConnectorKey"],
     isGmeetSyncInFlight: () => false,
     isGmeetNotesSyncInFlight: () => false,
+    awaitSessionSync: async () => {},
     runGmeetSyncNow: async () => ({ ok: true }),
     runFirefliesSyncNow: async () => ({ ok: true }),
     ...patch,
@@ -59,16 +62,27 @@ const input = { tcw: ALICE, backendUrl: "https://x.test", sessionStore: session 
 afterEach(() => { _resetGmeetSyncSingleFlightForTests(); });
 
 describe("a refused press", () => {
-  test("Full rescan whose slot is claimed while the press reads the vault queues behind it, without being asked", async () => {
+  test("Full rescan whose own unlock started the session-start run queues behind it, without being asked", async () => {
+    let unlocked = false;
     let running = false;
+    let awaited = 0;
     let ran = 0;
     const result = await runSourceSync(gmeet, { ...input, driveMode: "snapshot" }, deps({
-      getConnectorKey: (async () => { running = true; return { ok: true, data: "key" }; }) as SourceSyncDeps["getConnectorKey"],
+      isSecretsUnlocked: () => unlocked,
+      unlockSecrets: (async () => { unlocked = true; running = true; return { ok: true, data: undefined }; }) as SourceSyncDeps["unlockSecrets"],
       isGmeetSyncInFlight: () => running,
+      awaitSessionSync: async () => { awaited++; },
       runGmeetSyncNow: async () => (ran++, { ok: true }),
     }));
     expect(result).toEqual({ busy: "queue" });
+    expect(awaited).toBe(1); // It waited for the run its unlock started before looking at the slot.
     expect(ran).toBe(0);
+  });
+
+  test("a press that did not unlock does not wait for the session-start run", async () => {
+    let awaited = 0;
+    await runSourceSync(gmeet, input, deps({ awaitSessionSync: async () => { awaited++; } }));
+    expect(awaited).toBe(0);
   });
 
   test("Sync now while the background Notes reconcile runs is offered a wait, not an error", async () => {

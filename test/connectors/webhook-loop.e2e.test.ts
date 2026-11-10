@@ -54,7 +54,10 @@ import {
   transcriptKvKey,
 } from "../../frontend/src/lib/connectors/connectorStore";
 import { syncFireflies } from "../../frontend/src/lib/connectors/firefliesSync";
-import { saveConnectorKey } from "../../frontend/src/lib/connectors/connectorSecrets";
+import {
+  saveConnectorKey,
+  unlockSecrets,
+} from "../../frontend/src/lib/connectors/connectorSecrets";
 import { CONNECTORS } from "../../frontend/src/lib/connectors/registry";
 import {
   createConnectorWebhooksClient,
@@ -171,6 +174,8 @@ async function enable(address: string): Promise<EnabledUser> {
 /** A user's space, with the Fireflies key stored where only the browser can read it. */
 async function browserSpace(did: string): Promise<FakeTinyCloud> {
   const fake = makeFakeTinyCloud({ did });
+  const unlocked = await unlockSecrets(fake.tcw);
+  expect(unlocked.ok).toBe(true);
   const saved = await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY);
   expect(saved.ok).toBe(true);
   return fake;

@@ -20,7 +20,7 @@ unattended access until rebound. Disable removes server custody; Disconnect addi
 revocation and removes browser credentials while preserving recordings.
 
 The existing Google connector exposes the toggle, status, scan time, consent, and outcomes. A single
-app-shell library hook imports completed owned recordings while the user is signed in, independently
+app-shell library hook imports completed owned recordings while the user is unlocked, independently
 of Sources navigation, and repairs SQL-success/KV-failure imports without overwriting existing titles
 or transcript bodies. Empty transcripts are explicitly persisted as `[]`.
 

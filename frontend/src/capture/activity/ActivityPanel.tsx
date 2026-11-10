@@ -3,6 +3,7 @@ import { ActivityIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppPlatform } from "@/lib/platform";
 import type { UploadState } from "@/lib/audioUpload";
+import type { PausedUpload } from "@/capture/upload/pausedUpload";
 import { logPipeline } from "@/lib/debugLog";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { LibraryItem } from "../library/LibraryRow";
@@ -45,14 +46,14 @@ export const ActivityNoteSection = memo(function ActivityNoteSection(props: Acti
   </section>;
 }, (before, after) => before.item === after.item && before.onOpenNote === after.onOpenNote && before.onClose === after.onClose && sameJobs(before.jobs, after.jobs));
 
-export function ActivityPanel(props: { items: readonly LibraryItem[]; views: ReadonlyMap<string, NotePipelineView>; platform: AppPlatform; onOpenNote: (id: string) => void; upload?: UploadState | null; onOpenUpload?: () => void; onRetryUpload?: () => void; active?: boolean; defaultOpen?: boolean }) {
+export function ActivityPanel(props: { items: readonly LibraryItem[]; views: ReadonlyMap<string, NotePipelineView>; platform: AppPlatform; onOpenNote: (id: string) => void; upload?: UploadState | null; paused?: PausedUpload | null; onOpenUpload?: () => void; onContinueUpload?: () => void; onRetryUpload?: () => void; active?: boolean; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(props.defaultOpen ?? false);
   const close = useMemo(() => () => setOpen(false), []);
   const notes = useMemo(() => {
     const voice = activityNotes(props.items, props.views, props.platform);
-    const file = activityForFileUpload(props.upload ?? null, { open: props.onOpenUpload ?? (() => {}), retry: props.onRetryUpload ?? (() => {}) });
+    const file = activityForFileUpload(props.upload ?? null, props.paused ?? null, { open: props.onOpenUpload ?? (() => {}), continue: props.onContinueUpload ?? (() => {}), retry: props.onRetryUpload ?? (() => {}) });
     return file ? [...voice, { item: { id: "__file_upload__", sourceId: "__file_upload__", source: "exo-upload", title: file.title, startedAt: null, durationSecs: null } as LibraryItem, jobs: file.jobs, openLabel: "Open upload" }] : voice;
-  }, [props.items, props.views, props.platform, props.upload, props.onOpenUpload, props.onRetryUpload]);
+  }, [props.items, props.views, props.platform, props.upload, props.paused, props.onOpenUpload, props.onContinueUpload, props.onRetryUpload]);
   const previous = useRef(new Map<string, string>());
   useEffect(() => {
     const next = new Map<string, string>();

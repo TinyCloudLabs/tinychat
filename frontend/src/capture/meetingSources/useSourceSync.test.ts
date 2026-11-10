@@ -29,9 +29,12 @@ const input = { tcw: {} as TinyCloudWeb, backendUrl: "https://x.test", sessionSt
 function deps(patch: Partial<SourceSyncDeps> = {}): SourceSyncDeps {
   return {
     secretsAvailable: () => true,
+    isSecretsUnlocked: () => true,
+    unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
     getConnectorKey: (async () => ({ ok: true, data: "key" })) as SourceSyncDeps["getConnectorKey"],
     isGmeetSyncInFlight: () => false,
     isGmeetNotesSyncInFlight: () => false,
+    awaitSessionSync: async () => {},
     runGmeetSyncNow: async () => ({ ok: true }),
     runFirefliesSyncNow: async () => ({ ok: true }),
     ...patch,
@@ -317,9 +320,12 @@ function depsForSourceSync(
 ): SourceSyncDeps {
   return {
     secretsAvailable: () => true,
+    isSecretsUnlocked: () => true,
+    unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
     getConnectorKey: (async () => ({ ok: true, data: "test-source-sync-key" })) as SourceSyncDeps["getConnectorKey"],
     isGmeetSyncInFlight: () => false,
     isGmeetNotesSyncInFlight: () => false,
+    awaitSessionSync: async () => {},
     runGmeetSyncNow: async () => ({ ok: true }),
     runFirefliesSyncNow: async (input) => {
       const result = await syncFireflies({

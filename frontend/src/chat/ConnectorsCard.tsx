@@ -1,7 +1,8 @@
 // Connectors card — spec §9. Registry-driven rows; loads connection
 // state on mount via connectorStore.getConnection (SQL only — never touches
-// tcw.secrets on mount). Sync now runs the real sync engine for the row, keyed via
-// connectorSecrets — ONE ENGINE PER CONNECTOR,
+// tcw.secrets on mount so opening Connectors cannot trigger the wallet
+// unlock popup). Sync now runs the real sync engine for the row, keyed via
+// connectorSecrets after an interactive unlock — ONE ENGINE PER CONNECTOR,
 // dispatched from the registry id (see `handleSyncNow`), never a shared
 // default. Connect + Disconnect flows are handed off to ConnectorDialog
 // (spec §9): a Radix Dialog wraps the key entry → validate → save → initial
@@ -49,8 +50,14 @@ import {
   GmeetLiveLine,
   type GmeetPressMode,
 } from "./GmeetCardStatus";
+import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
-import { getConnectorKey, type SecretsErr } from "@/lib/connectors/connectorSecrets";
+import {
+  getConnectorKey,
+  isSecretsUnlocked,
+  unlockSecrets,
+  type SecretsErr,
+} from "@/lib/connectors/connectorSecrets";
 import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
@@ -456,6 +463,19 @@ export function ConnectorsCard({
         queuedSync: null,
       });
       try {
+      if (!isSecretsUnlocked(tcw)) {
+        const unlock = await unlockSecrets<SecretsErr>(tcw);
+        if (!unlock.ok) {
+          patchRow(d.id, {
+            syncing: false,
+            actionError: unlock.error?.message ?? "Could not unlock secrets",
+          });
+          return;
+        }
+        // The unlock re-arms the session-start sync, which takes the engine's slot. That run is this
+        // press's own: wait for its foreground part, then queue behind its Notes (below) rather than refuse.
+        if (engine === "gmeet") await awaitGmeetSessionSync();
+      }
       // The registry row names the secret — API key for Fireflies, refresh
       // token for Google Meet. This file spells neither, which is what lets the
       // flip commit change what is read without touching here.

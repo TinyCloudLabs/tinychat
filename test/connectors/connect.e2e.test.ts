@@ -9,7 +9,7 @@
 //   2. validateKey() happy — returns { ok: true } with a user shape.
 //   3. validateKey() invalid-key mode — returns typed { ok: false, error.kind:
 //      "invalid-key" } (NOT network-error, NOT graphql-error).
-//   4. Connect-flow key custody — running the exact validate → save
+//   4. Connect-flow key custody — running the exact validate → unlock → save
 //      steps the ConnectorDialog runs stores the key ONLY in fake secrets at
 //      the global `FIREFLIES_API_KEY` path shared with Listen. It appears NOWHERE in fake
 //      KV or fake SQL — the connect step must not touch data storage.
@@ -21,7 +21,11 @@ import {
   type FirefliesResult,
   type FirefliesUser,
 } from "../../frontend/src/lib/connectors/firefliesClient";
-import { saveConnectorKey } from "../../frontend/src/lib/connectors/connectorSecrets";
+import {
+  isSecretsUnlocked,
+  saveConnectorKey,
+  unlockSecrets,
+} from "../../frontend/src/lib/connectors/connectorSecrets";
 import { CONNECTORS } from "../../frontend/src/lib/connectors/registry";
 import type { ConnectorDescriptor } from "../../frontend/src/lib/connectors/types";
 
@@ -142,7 +146,13 @@ describe("connect + key custody e2e (spec §10 driver 1)", () => {
     const validated = await client.validateKey();
     expect(validated.ok).toBe(true);
 
-    // 2. Save the key via the same wrapper the dialog uses (no unlock step).
+    // 2. Unlock secrets (the ConnectorDialog does this before saving).
+    expect(isSecretsUnlocked(fake.tcw)).toBe(false);
+    const unlocked = await unlockSecrets(fake.tcw);
+    expect(unlocked.ok).toBe(true);
+    expect(isSecretsUnlocked(fake.tcw)).toBe(true);
+
+    // 3. Save the key via the same wrapper the dialog uses.
     const saved = await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY);
     expect(saved.ok).toBe(true);
 

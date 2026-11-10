@@ -2348,7 +2348,7 @@ describe("Notes reconcile at scale", () => {
           recordPurge: step("record-purge", { status: "ok", value: null }),
           clearPurgeLedger: step("clear-ledger", { status: "ok", value: null }),
         },
-        secrets: { available: () => true, deleteKey: step("delete-key", { ok: true }) },
+        secrets: { isUnlocked: () => true, unlock: step("unlock", { ok: true }), deleteKey: step("delete-key", { ok: true }) },
         store: {
           listKnownSourceIds: step("collect-ids", ok<string[]>([])),
           purgeConnector: step("purge-local", ok(undefined)),

@@ -40,6 +40,7 @@ import {
 import {
   deleteConnectorKey,
   saveConnectorKey,
+  unlockSecrets,
 } from "../../frontend/src/lib/connectors/connectorSecrets";
 import { syncFireflies } from "../../frontend/src/lib/connectors/firefliesSync";
 import { CONNECTORS } from "../../frontend/src/lib/connectors/registry";
@@ -106,8 +107,10 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     handle.resetCounters();
     const fake = makeFakeTinyCloud({ did: "did:test:disconnect-no-purge" });
 
-    // Connect: save key. Result-shaped; we want a real key
+    // Connect: unlock + save key. Both are Result-shaped; we want a real key
     // in real fake storage before we sync — this is the disconnect precondition.
+    const unlocked = await unlockSecrets(fake.tcw);
+    expect(unlocked.ok).toBe(true);
     const saved = await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY);
     expect(saved.ok).toBe(true);
     expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(
@@ -212,6 +215,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     const fake = makeFakeTinyCloud({ did: "did:test:disconnect-with-purge" });
 
     // Connect + sync — real path.
+    expect((await unlockSecrets(fake.tcw)).ok).toBe(true);
     expect((await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY)).ok).toBe(
       true,
     );
@@ -300,6 +304,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     const fake = makeFakeTinyCloud({ did: "did:test:disconnect-reconnect" });
 
     // First cycle: connect + sync + purge to reach a truly empty state.
+    expect((await unlockSecrets(fake.tcw)).ok).toBe(true);
     expect((await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY)).ok).toBe(
       true,
     );

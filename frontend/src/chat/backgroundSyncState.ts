@@ -19,8 +19,10 @@
  *    mint/rotate response and the user closing it. Nothing here persists,
  *    logs, or re-fetches them — `GET /config` cannot bring them back, so
  *    losing them means rotating;
- *  - MOUNT NEVER DRAINS BLIND. `loadOnMount` may process automatically when the
- *    vault is readable, and otherwise only counts what is waiting.
+ *  - MOUNT NEVER UNLOCKS. `loadOnMount` may process automatically when the
+ *    vault is *already* open, and otherwise only counts what is waiting.
+ *    `secrets.unlock()` is reachable from exactly one place: the user-initiated
+ *    `syncQueuedMeetings`.
  *
  * Option C, restated: the backend queues `(meetingId, kind)` and nothing else.
  * The Fireflies key and every write to the user's space belong to the browser —
@@ -183,9 +185,13 @@ export interface BackgroundSyncWebhooks {
   clearPurgeLedger(source: string): Promise<ConnectorWebhooksResult<null>>;
 }
 
-/** The vault, read silently. Nothing here prompts or signs. */
+/**
+ * The vault. `unlock` is present because ONE user-initiated action may perform
+ * it; `loadOnMount` never calls it, and that is asserted by test.
+ */
 export interface BackgroundSyncSecrets {
   isUnlocked(): boolean;
+  unlock(): Promise<{ ok: true } | { ok: false; error?: { message?: string } }>;
 }
 
 export interface BackgroundSyncDeps {
@@ -448,8 +454,7 @@ export function queueNotices(state: BackgroundSyncState): QueueNotice[] {
         kind: "pending",
         title: `${plural(queue.pendingCount, "meeting")} waiting`,
         detail: `Fireflies told us ${queue.pendingCount} ${queue.pendingCount === 1 ? "is" : "are"} ready. Your browser collects and saves them — that needs your Fireflies key, so it happens here.`,
-        // Signed out of the vault, a sync only retries into the same auth error.
-        action: state.ingestBlocked === "secrets-locked" ? null : "sync",
+        action: "sync",
         tone: "info",
       });
     }
@@ -469,13 +474,13 @@ export function queueNotices(state: BackgroundSyncState): QueueNotice[] {
       kind: "ingest-blocked",
       title:
         state.ingestBlocked === "secrets-locked"
-          ? "Sign in again to collect waiting meetings"
+          ? "Your keys are locked"
           : "No Fireflies key on this device",
       detail:
         state.ingestBlocked === "secrets-locked"
-          ? "Your sign-in has ended. Waiting meetings stay queued until you sign in again."
+          ? "Waiting meetings stay queued until you unlock. Nothing is unlocked without you asking for it."
           : "Reconnect Fireflies above to give this browser the key it needs to collect waiting meetings.",
-      action: null,
+      action: state.ingestBlocked === "secrets-locked" ? "sync" : null,
       tone: "warn",
     });
   }
@@ -498,7 +503,7 @@ export function queueNotices(state: BackgroundSyncState): QueueNotice[] {
  *
  * Reads `GET /config`; then, when background notifications are on, either
  * processes the queue (vault already open — the "next visit" of the consent
- * copy) or merely counts it. It never drains a queue it is
+ * copy) or merely counts it. It NEVER unlocks and never drains a queue it is
  * not about to process, so a locked visit cannot burn a delivery's attempts.
  */
 export async function loadOnMount(
@@ -742,14 +747,30 @@ async function readQueue(
 /**
  * The user-initiated "Sync queued meetings".
  *
- * The same drain → ingest → refresh sequence a readable-vault visit runs by
- * itself, run because the user asked for it.
+ * This is the ONLY path that may unlock the vault, and it does so because the
+ * user asked for it by name. Everything after the unlock is the same
+ * drain → ingest → refresh sequence an already-unlocked visit runs by itself.
  */
 export async function syncQueuedMeetings(
   deps: BackgroundSyncDeps,
   emit: BackgroundSyncEmit,
 ): Promise<void> {
   emit((s) => ({ ...s, busy: "syncing", notice: null, ingestBlocked: null }));
+  if (!deps.secrets.isUnlocked()) {
+    const unlocked = await deps.secrets.unlock();
+    if (!unlocked.ok) {
+      emit((s) => ({
+        ...s,
+        busy: null,
+        notice: {
+          tone: "error",
+          message: `Couldn't unlock your keys: ${unlocked.error?.message ?? "unlock was not completed"}`,
+          retryable: true,
+        },
+      }));
+      return;
+    }
+  }
   await processQueue(deps, emit);
   emit((s) => ({ ...s, busy: null }));
 }

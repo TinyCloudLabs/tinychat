@@ -1,11 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
+  UNLOCK_NEEDS_SIGN_IN_MESSAGE,
   deleteConnectorKey,
   getConnectorKey,
   isSecretsUnlocked,
+  notifySecretsUnlockedForTests,
+  onSecretsUnlocked,
+  resetSecretsUnlockedListenersForTests,
   saveConnectorKey,
+  unlockSecrets,
 } from "./connectorSecrets";
 import { CONNECTORS } from "./registry";
 import type { ConnectorDescriptor } from "./types";
@@ -24,6 +29,7 @@ interface StoredKey {
 }
 
 interface FakeCalls {
+  unlockCount: number;
   putCount: number;
   getCount: number;
   deleteCount: number;
@@ -55,6 +61,7 @@ function makeFake(
 ): Fake {
   const entries = new Map<string, StoredKey>();
   const calls: FakeCalls = {
+    unlockCount: 0,
     putCount: 0,
     getCount: 0,
     deleteCount: 0,
@@ -70,6 +77,11 @@ function makeFake(
   const secrets = {
     get isUnlocked(): boolean {
       return !state.locked;
+    },
+    async unlock(): Promise<Result<void, SecretErr>> {
+      calls.unlockCount++;
+      state.locked = false;
+      return { ok: true, data: undefined as unknown as void };
     },
     lock(): void {
       state.locked = true;
@@ -202,7 +214,7 @@ describe("connectorSecrets happy path", () => {
 });
 
 describe("connectorSecrets locked vault", () => {
-  test("get/put/delete propagate VAULT_LOCKED without throwing", async () => {
+  test("get/put/delete propagate VAULT_LOCKED without throwing; unlockSecrets clears the lock", async () => {
     const f = makeFake({ locked: true });
     expect(isSecretsUnlocked(f.tcw)).toBe(false);
 
@@ -221,6 +233,13 @@ describe("connectorSecrets locked vault", () => {
     const del = await deleteConnectorKey(f.tcw, FIREFLIES);
     expect(del.ok).toBe(false);
     if (!del.ok) expect(del.error.code).toBe("VAULT_LOCKED");
+
+    // Unlock, then put succeeds.
+    const unlocked = await unlockSecrets(f.tcw);
+    expect(unlocked.ok).toBe(true);
+    expect(f.calls.unlockCount).toBe(1);
+    const put2 = await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(put2.ok).toBe(true);
   });
 });
 
@@ -282,5 +301,220 @@ describe("connectorSecrets delete", () => {
     const res = await deleteConnectorKey(f.tcw, FIREFLIES);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error.code).toBe("KEY_NOT_FOUND");
+  });
+});
+
+describe("connectorSecrets unlock on a restored session", () => {
+  /** tcw whose unlock returns the vault's cold-cache failure verbatim. */
+  function unlockFailingTcw(error: SecretErr): TinyCloudWeb {
+    return {
+      secrets: {
+        isUnlocked: false,
+        unlock: async (): Promise<Result<void, SecretErr>> => ({
+          ok: false,
+          error,
+        }),
+      },
+    } as unknown as TinyCloudWeb;
+  }
+
+  test("cold-cache VAULT_LOCKED is rewritten into an actionable sign-in message", async () => {
+    // Exactly what DataVaultService.unlock returns when the session was
+    // restored (no wallet signer) and IndexedDB holds no master signature.
+    const tcw = unlockFailingTcw({
+      code: "VAULT_LOCKED",
+      message: "Signer is required when no cached master signature exists",
+    });
+
+    const res = await unlockSecrets<SecretErr>(tcw);
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.message).toBe(UNLOCK_NEEDS_SIGN_IN_MESSAGE);
+      // The code survives for logs.
+      expect(res.error.code).toBe("VAULT_LOCKED");
+    }
+  });
+
+  test("other VAULT_LOCKED failures keep the SDK's own message", async () => {
+    const tcw = unlockFailingTcw({
+      code: "VAULT_LOCKED",
+      message: "Vault is locked",
+    });
+
+    const res = await unlockSecrets<SecretErr>(tcw);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toBe("Vault is locked");
+  });
+});
+
+// ── I2: the unlock event registry ────────────────────────────────────
+//
+// `unlockSecrets` is the ONE choke point every production unlock site shares
+// (the section's deps, the card's "Sync now", the dialog's "Save & sync" and
+// its teardown deps), so anything that wants to react to a user-initiated
+// unlock subscribes HERE instead of to four call sites.
+//
+// The registry is deliberately zero-dependency and lives in `lib/`: the import
+// direction is chat → lib, never lib → chat. And it is strictly an OUTPUT — a
+// listener learns that the vault opened; nothing a listener does can make this
+// module open it.
+
+describe("I2 unlock events", () => {
+  beforeEach(() => {
+    resetSecretsUnlockedListenersForTests();
+  });
+
+  /** tcw whose unlock fails with the given error, verbatim. */
+  function failingUnlockTcw(error: SecretErr): TinyCloudWeb {
+    return {
+      secrets: {
+        isUnlocked: false,
+        unlock: async (): Promise<Result<void, SecretErr>> => ({
+          ok: false,
+          error,
+        }),
+      },
+    } as unknown as TinyCloudWeb;
+  }
+
+  test("a successful unlock notifies every listener, in registration order", async () => {
+    const f = makeFake({ locked: true });
+    const seen: string[] = [];
+    onSecretsUnlocked(() => seen.push("a"));
+    onSecretsUnlocked(() => seen.push("b"));
+
+    const res = await unlockSecrets<SecretErr>(f.tcw);
+
+    expect(res.ok).toBe(true);
+    expect(seen).toEqual(["a", "b"]);
+    // The notify rides the ONE unlock the caller asked for — it never calls
+    // back into the vault itself.
+    expect(f.calls.unlockCount).toBe(1);
+    expect(isSecretsUnlocked(f.tcw)).toBe(true);
+  });
+
+  test("a failed unlock notifies nobody — including the rewritten missing-signer path", async () => {
+    const seen: string[] = [];
+    onSecretsUnlocked(() => seen.push("notified"));
+
+    // The cold-cache failure, whose message this module rewrites. Rewriting an
+    // error is still a failure: the vault did not open, so no re-arm may fire.
+    const rewritten = await unlockSecrets<SecretErr>(
+      failingUnlockTcw({
+        code: "VAULT_LOCKED",
+        message: "Signer is required when no cached master signature exists",
+      }),
+    );
+    expect(rewritten.ok).toBe(false);
+    if (!rewritten.ok)
+      expect(rewritten.error.message).toBe(UNLOCK_NEEDS_SIGN_IN_MESSAGE);
+
+    // And any other failure.
+    const plain = await unlockSecrets<SecretErr>(
+      failingUnlockTcw({ code: "VAULT_LOCKED", message: "Vault is locked" }),
+    );
+    expect(plain.ok).toBe(false);
+
+    expect(seen).toEqual([]);
+  });
+
+  test("a throwing listener neither corrupts the unlock result nor starves the others", async () => {
+    const f = makeFake({ locked: true });
+    const seen: string[] = [];
+    onSecretsUnlocked(() => {
+      seen.push("a");
+      throw new Error("a subscriber blew up");
+    });
+    onSecretsUnlocked(() => seen.push("b"));
+
+    // The caller is awaiting an unlock, not a subscriber: a broken listener
+    // must not reject this promise nor turn a real unlock into a failure.
+    const res = await unlockSecrets<SecretErr>(f.tcw);
+
+    expect(res.ok).toBe(true);
+    expect(seen).toEqual(["a", "b"]);
+    expect(isSecretsUnlocked(f.tcw)).toBe(true);
+  });
+
+  test("the disposer unregisters, and re-registering the same callback is not a double notify", async () => {
+    const f = makeFake({ locked: true });
+    let count = 0;
+    const listener = () => {
+      count++;
+    };
+    const off = onSecretsUnlocked(listener);
+    onSecretsUnlocked(listener);
+
+    await unlockSecrets<SecretErr>(f.tcw);
+    expect(count).toBe(1);
+
+    off();
+    f.locked = true;
+    await unlockSecrets<SecretErr>(f.tcw);
+    expect(count).toBe(1);
+  });
+
+  test("with no listeners at all an unlock is exactly what it was before", async () => {
+    const f = makeFake({ locked: true });
+    const res = await unlockSecrets<SecretErr>(f.tcw);
+    expect(res.ok).toBe(true);
+    expect(f.calls.unlockCount).toBe(1);
+  });
+});
+
+describe("I2 unlock events — notify re-entrancy guard", () => {
+  beforeEach(() => {
+    resetSecretsUnlockedListenersForTests();
+  });
+
+  test("a listener that re-triggers the notify loop does not loop; others still run exactly once", () => {
+    const calls: string[] = [];
+    let retriggered = false;
+    onSecretsUnlocked(() => {
+      calls.push("a");
+      if (!retriggered) {
+        retriggered = true;
+        // Nested and synchronous, while the outer notification is mid-loop.
+        // Unbounded, this is the self-feed the audit called out; bounded to
+        // once, a missing guard shows up as duplication instead of a hang.
+        notifySecretsUnlockedForTests();
+      }
+    });
+    onSecretsUnlocked(() => {
+      calls.push("b");
+    });
+
+    notifySecretsUnlockedForTests();
+
+    // The nested notification was suppressed entirely: one pass, in order.
+    // (Defense in depth — our production subscriber re-arms a drain and never
+    // unlocks, so suppression loses nothing.)
+    expect(calls).toEqual(["a", "b"]);
+  });
+
+  test("the guard resets after every pass — even a throwing one — so later unlocks still notify", async () => {
+    const calls: string[] = [];
+    let retriggered = false;
+    onSecretsUnlocked(() => {
+      calls.push("a");
+      if (!retriggered) {
+        retriggered = true;
+        notifySecretsUnlockedForTests();
+      }
+      throw new Error("a subscriber blew up mid-pass");
+    });
+    onSecretsUnlocked(() => {
+      calls.push("b");
+    });
+
+    // A suppression pass whose first listener also throws…
+    notifySecretsUnlockedForTests();
+    expect(calls).toEqual(["a", "b"]);
+
+    // …leaves the guard DOWN: the next real unlock notifies normally.
+    const f = makeFake({ locked: true });
+    const res = await unlockSecrets<SecretErr>(f.tcw);
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual(["a", "b", "a", "b"]);
   });
 });

@@ -187,18 +187,18 @@ test("each voice job kind has running, waiting and attention fixtures", () => {
   }
 });
 
-test("file import covers uploading, queued, saving, failed and audio storage", () => {
-  const actions = { open: () => {}, retry: () => {} };
+test("file import covers paused, uploading, queued, saving, failed and audio storage", () => {
+  const actions = { open: () => {}, continue: () => {}, retry: () => {} };
   const base: UploadState = { engine: "assemblyai", fileName: "Interview.m4a", stage: "uploading", uploadPct: 42, detail: null, audio: { stage: "storing", pct: 10 }, error: null, savedTitle: null, cleanupPending: false };
-  expect(activityForFileUpload(null, actions)).toBeNull();
+  expect(activityForFileUpload(null, { fileName: base.fileName }, actions)?.jobs[0]?.action?.label).toBe("Continue");
   for (const [stage, state, kind] of [["uploading", "running", "upload-audio"], ["queued", "waiting", "transcribe"], ["transcribing", "running", "transcribe"], ["saving", "running", "sync"], ["failed", "needs-attention", "upload-audio"]] as const) {
-    const item = activityForFileUpload({ ...base, stage, error: stage === "failed" ? { message: "raw", reference: "ref-2", retry: true } : null }, actions);
+    const item = activityForFileUpload({ ...base, stage, error: stage === "failed" ? { message: "raw", reference: "ref-2", retry: true } : null }, null, actions);
     expect(item?.title).toBe("Interview.m4a");
     expect(item?.jobs[0]?.state).toBe(state);
     expect(item?.jobs[0]?.kind).toBe(kind);
   }
-  expect(activityForFileUpload({ ...base, stage: "saved", audio: { stage: "stored", pct: 100 } }, actions)).toBeNull();
-  expect(activityForFileUpload({ ...base, stage: "saved", audio: { stage: "failed", pct: null } }, actions)?.jobs[0]?.state).toBe("needs-attention");
+  expect(activityForFileUpload({ ...base, stage: "saved", audio: { stage: "stored", pct: 100 } }, null, actions)).toBeNull();
+  expect(activityForFileUpload({ ...base, stage: "saved", audio: { stage: "failed", pct: null } }, null, actions)?.jobs[0]?.state).toBe("needs-attention");
 });
 
 test("storage-full sync failure shows approved Details copy, never the raw quota code", () => {

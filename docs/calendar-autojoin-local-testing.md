@@ -128,7 +128,7 @@ backend identity/space. Stop and drain the previous writer before moving that id
 machine, or use a separate development identity and state.
 
 Start the backend from `backend/` with `bun src/index.ts` and the frontend from `frontend/` with
-`bun run dev --host 127.0.0.1 --port 5186 --strictPort`. Use normal Chrome sign-in.
+`bun run dev --host 127.0.0.1 --port 5186 --strictPort`. Use normal Chrome sign-in and storage unlock.
 
 ## Required live evidence
 
@@ -139,7 +139,7 @@ Start the backend from `backend/` with `bun src/index.ts` and the frontend from 
    test account: autojoin applies to all eligible primary-calendar events, including private ones.
 3. Close Tinychat tabs while keeping the host's Meet and runtime running. Observe bot admission
    within the dispatch window, speak a synthetic phrase, and finish/stop the recording.
-4. Reopen Tinychat signed in. Verify one completed owned recording imports into the library
+4. Reopen Tinychat and unlock storage. Verify one completed owned recording imports into the library
    with Calendar metadata and a persisted transcript containing that phrase. Navigation/reload must
    not duplicate the recording or overwrite an edited title.
 5. Verify Disable stops active autojoined bots, prevents new sends, and preserves recordings and

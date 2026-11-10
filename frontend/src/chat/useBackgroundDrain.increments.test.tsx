@@ -32,8 +32,8 @@
 //     route is open (the section itself is visible there);
 //   * the count folds into the EXISTING aria-label in generic copy — never a
 //     provider name — and reverts to the exact existing strings when hidden;
-//   * it clears reactively through I0: a later settle (headless, focus-armed,
-//     or a Settings publish) recomputes it to 0 with no reload;
+//   * it clears reactively through I0: a later settle (headless, unlock-armed,
+//     focus-armed, or a Settings publish) recomputes it to 0 with no reload;
 //   * sign-out clears the record — and ONLY the record, so the page load's
 //     latches survive by design.
 
@@ -64,6 +64,11 @@ import {
   type BackgroundDrainOptions,
   type BackgroundDrainRecord,
 } from "./useBackgroundDrain";
+import {
+  onSecretsUnlocked,
+  resetSecretsUnlockedListenersForTests,
+  unlockSecrets,
+} from "@/lib/connectors/connectorSecrets";
 import {
   initialBackgroundSyncState,
   type BackgroundSyncState,
@@ -812,9 +817,269 @@ describe("I1 badge — the pill clamps its display, the label does not", () => {
   });
 });
 
+// ── I2: drain-on-unlock re-arm ───────────────────────────────────────
+//
+// The mount drain almost always runs against a LOCKED vault — unlock state is
+// not persisted, so a boot-time session restore leaves the vault shut until
+// something calls `unlock()`, and the headless path is rightly forbidden from
+// doing that. So the mount pass counts and ingests nothing, and today nothing
+// ever revisits it. I2 closes that loop from the other side: when the user
+// unlocks the vault for ANY reason, the drain re-arms.
+//
+// The rules this section pins:
+//
+//   * the seam is `onSecretsUnlocked` — the lib-side registry fed by the ONE
+//     `unlockSecrets` choke point, so all four production unlock sites are
+//     covered and nothing else is;
+//   * the re-arm bypasses pacing (an unlock is the strong signal the counted
+//     backlog just became ingestable) but still enters through
+//     `enqueueDrainWork`, so it serializes behind whatever flow unlocked;
+//   * DIRECTION IS ONE-WAY: unlock → drain, never drain → unlock. A re-armed
+//     run whose vault is locked again only counts, exactly like a mount;
+//   * signed out, dark, and unmounted are all free no-ops.
+
+function unlockableTcw(): TinyCloudWeb {
+  return {
+    secrets: {
+      isUnlocked: false,
+      unlock: async () => ({ ok: true, data: undefined }),
+    },
+  } as unknown as TinyCloudWeb;
+}
+
+/** Register the re-arm exactly as the hook's effect does, drive a real
+ *  user-initiated unlock through the choke point, and hand back the promise
+ *  the listener started so the test can await the lane. */
+async function unlockAndAwaitRearm(options: BackgroundDrainOptions): Promise<void> {
+  const armed: Promise<void>[] = [];
+  const off = onSecretsUnlocked(() => {
+    armed.push(resumeBackgroundDrain(options, "unlock"));
+  });
+  const res = await unlockSecrets<{ code?: string; message?: string }>(unlockableTcw());
+  off();
+  expect(res.ok).toBe(true);
+  expect(armed).toHaveLength(1);
+  await armed[0];
+}
+
+describe("I2 unlock re-arm — the re-armed run", () => {
+  beforeEach(() => {
+    resetSecretsUnlockedListenersForTests();
+  });
+
+  test("a user unlock drains the counted backlog through the shared lane", async () => {
+    const b = backend({ pending: [item("m1"), item("m2")] });
+
+    // Mount, locked: the queue is counted and nothing is ingested. This is the
+    // state almost every page load is really in.
+    await start(b, { tcw: explodingVaultTcw(false) });
+    expect(b.events).toEqual(["config", "pending"]);
+    expect(b.queue()).toHaveLength(2);
+    expect(badgePendingCount(readBackgroundDrainRecord())).toBe(2);
+
+    // The user unlocks from one of the four sites. Same options the mount used,
+    // with the vault now open.
+    const rec = recordingIngest(b);
+    await unlockAndAwaitRearm(
+      drainOptions(b, {
+        tcw: explodingVaultTcw(true),
+        ingest: (_d, items) => rec.run(items),
+      }),
+    );
+
+    // ONE ingest call carrying the whole surfaced queue, in order.
+    expect(rec.calls).toEqual([[item("m1"), item("m2")]]);
+    expect(b.queue()).toHaveLength(0);
+    // And the badge settles with it — no reload.
+    expect(badgePendingCount(readBackgroundDrainRecord())).toBe(0);
+    expect(readBackgroundDrainRecord()?.connectors[0]?.pendingCount).toBe(0);
+  });
+
+  test("the re-arm bypasses pacing — a just-finished mount attempt does not block it", async () => {
+    const b = backend({ pending: [item("m1")] });
+    await start(b, { tcw: explodingVaultTcw(false) });
+    const afterMount = [...b.events];
+
+    // The mount latch (and, once I3 lands, the freshly burned attempt
+    // timestamp) would swallow any paced trigger arriving this soon. An unlock
+    // is not paced: it is the signal that the counted backlog became
+    // ingestable, so it runs immediately.
+    const rec = recordingIngest(b);
+    await unlockAndAwaitRearm(
+      drainOptions(b, {
+        tcw: explodingVaultTcw(true),
+        ingest: (_d, items) => rec.run(items),
+      }),
+    );
+
+    expect(b.events.length).toBeGreaterThan(afterMount.length);
+    expect(rec.calls).toHaveLength(1);
+    expect(b.queue()).toHaveLength(0);
+  });
+
+  test("a re-arm enqueued mid-flight serializes behind the work already on the lane", async () => {
+    const b = backend({ pending: [item("m1")] });
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Stand in for the flow that triggered the unlock (a Settings sync, a card
+    // "Sync now") — it is already on the lane when the notify fires.
+    const holding = enqueueDrainWork(async () => {
+      b.events.push("holder:start");
+      await held;
+      b.events.push("holder:end");
+    });
+
+    const rec = recordingIngest(b);
+    const armed = resumeBackgroundDrain(
+      drainOptions(b, {
+        tcw: explodingVaultTcw(true),
+        ingest: (_d, items) => rec.run(items),
+      }),
+      "unlock",
+    );
+
+    // Let every microtask that could jump the queue run.
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(b.events).toEqual(["holder:start"]);
+
+    release();
+    await holding;
+    await armed;
+
+    expect(b.events[0]).toBe("holder:start");
+    expect(b.events[1]).toBe("holder:end");
+    // The re-armed run started only after the holder finished.
+    expect(b.events[2]).toBe("config");
+    expect(b.queue()).toHaveLength(0);
+  });
+
+  test("a re-armed run whose vault is locked again only COUNTS — it never unlocks", async () => {
+    const b = backend({ pending: [item("m1"), item("m2")] });
+    await start(b, { tcw: explodingVaultTcw(false) });
+    expect(b.queue()).toHaveLength(2);
+
+    // The vault relocked between the notify and the run (or the unlock was for
+    // a different space). The re-armed run is a headless run like any other:
+    // reaching `unlock` at all throws in this fixture.
+    await unlockAndAwaitRearm(drainOptions(b, { tcw: explodingVaultTcw(false) }));
+
+    expect(b.events).toEqual(["config", "pending", "config", "pending"]);
+    expect(b.queue()).toHaveLength(2);
+    expect(badgePendingCount(readBackgroundDrainRecord())).toBe(2);
+  });
+});
+
+describe("I2 unlock re-arm — the free no-ops", () => {
+  beforeEach(() => {
+    resetSecretsUnlockedListenersForTests();
+  });
+
+  test("signed out: a re-arm with no tcw touches nothing", async () => {
+    const b = backend({ pending: [item("m1")] });
+    await resumeBackgroundDrain(drainOptions(b, { tcw: null }), "unlock");
+    expect(b.events).toEqual([]);
+    expect(readBackgroundDrainRecord()).toBeNull();
+
+    // And the page load's mount attempt is still available afterwards.
+    await start(b, { tcw: explodingVaultTcw(false) });
+    expect(b.events).toEqual(["config", "pending"]);
+  });
+
+  test("dark stays latched across re-arms: one probe per page load, never one per unlock", async () => {
+    const b = backend({ config: { status: "feature-dark" } });
+    await start(b);
+    expect(b.events).toEqual(["config"]);
+    expect(readBackgroundDrainRecord()?.featureDark).toBe(true);
+
+    await unlockAndAwaitRearm(drainOptions(b, { tcw: explodingVaultTcw(true) }));
+    await unlockAndAwaitRearm(drainOptions(b, { tcw: explodingVaultTcw(true) }));
+
+    // Still exactly one probe. A dark deployment is every user's path today.
+    expect(b.events).toEqual(["config"]);
+  });
+
+  test("after the disposer runs — the unmounted app shell — an unlock re-arms nothing", async () => {
+    const b = backend({ pending: [item("m1")] });
+    const armed: Promise<void>[] = [];
+    const off = onSecretsUnlocked(() => {
+      armed.push(resumeBackgroundDrain(drainOptions(b), "unlock"));
+    });
+    off();
+
+    const res = await unlockSecrets<{ code?: string; message?: string }>(unlockableTcw());
+    expect(res.ok).toBe(true);
+    expect(armed).toHaveLength(0);
+    expect(b.events).toEqual([]);
+  });
+
+  test("a re-arm never rejects, even when the client throws", async () => {
+    const b = backend({ pending: [item("m1")] });
+    const exploding = {
+      ...b.webhooks,
+      getConfig: async () => {
+        throw new Error("network is down");
+      },
+    };
+    const options = drainOptions(b, { tcw: explodingVaultTcw(true) });
+    const resolved = await resumeBackgroundDrain(
+      { ...options, hooks: { ...options.hooks, webhooks: exploding } },
+      "unlock",
+    ).then(
+      () => "resolved",
+      () => "rejected",
+    );
+    expect(resolved).toBe("resolved");
+    // Quiet by contract: the failure is recorded as "we don't know", nothing
+    // is surfaced, and the lane is not poisoned.
+    expect(readBackgroundDrainRecord()?.connectors[0]?.phase).toBe("unavailable");
+    const after = backend({ pending: [item("m2")] });
+    await resumeBackgroundDrain(drainOptions(after, { tcw: explodingVaultTcw(false) }), "unlock");
+    expect(after.events).toEqual(["config", "pending"]);
+  });
+});
+
+describe("I2 unlock re-arm — wiring and direction (source-asserted)", () => {
+  const read = (rel: string) => readFileSync(join(import.meta.dir, rel), "utf8");
+
+  test("the hook's mount effect registers the re-arm and unregisters on cleanup", () => {
+    const drain = read("useBackgroundDrain.ts");
+    expect(drain).toContain("onSecretsUnlocked");
+    expect(drain).toContain("resumeBackgroundDrain");
+    // Registration is effect-time, inside the hook — never a module-load side
+    // effect (that would leak across test files and outlive sign-out).
+    const at = drain.indexOf("export function useBackgroundDrain");
+    expect(at).toBeGreaterThan(0);
+    const hook = drain.slice(at);
+    expect(hook).toContain("onSecretsUnlocked");
+    // Symmetric cleanup: the effect returns its own disposer.
+    expect(hook).toMatch(/return\s*\(\)\s*=>/);
+    // No timers, ever.
+    expect(drain).not.toContain("setInterval");
+    expect(drain).not.toContain("setTimeout");
+  });
+
+  test("direction is one-way: the re-arm path cannot reach an unlock", () => {
+    // The drain module still does not even import the interactive helper — the
+    // registry is an OUTPUT of `unlockSecrets`, never an input to it.
+    expect(read("useBackgroundDrain.ts")).not.toContain("unlockSecrets");
+    // And the headless deps' hard-wired refusal is untouched.
+    expect(read("useBackgroundDrain.ts")).toContain("The headless drain never unlocks.");
+  });
+
+  test("the registry keeps lib/ free of any chat/ import", () => {
+    const secrets = read("../lib/connectors/connectorSecrets.ts");
+    expect(secrets).toContain("onSecretsUnlocked");
+    expect(secrets).not.toContain("@/chat");
+    expect(secrets).not.toContain("useBackgroundDrain");
+    expect(secrets).not.toContain("../../chat");
+  });
+});
+
 // ── I3: the focus-gated re-check ─────────────────────────────────────
 //
-// I3 covers the long-lived case: a chat
+// I2 covers the user who unlocks. I3 covers the OTHER long-lived case: a chat
 // tab left open all day, where the mount attempt happened hours ago and nothing
 // ever revisits the queue. The "once per session" boolean becomes a
 // `lastAttemptStartedAt` timestamp so a returning user's focus can be gated on
@@ -831,6 +1096,8 @@ describe("I1 badge — the pill clamps its display, the label does not", () => {
 //     dark-latched tick attempt nothing, so they burn nothing;
 //   * DARK SURVIVES EVERY RE-ARM. A route-disabled deployment — every user's
 //     path today — pays ONE probe per page load, never one per focus;
+//   * an unlock re-arm bypasses the window (I2) but still records its attempt,
+//     which pushes the next eligible tick out by a full window;
 //   * a focus attempt is a headless run like any other: same lane, same one
 //     pass, no unlock, quiet on failure.
 
@@ -1071,7 +1338,37 @@ describe("I3 focus re-check — the ticks that burn nothing", () => {
   });
 });
 
-describe("I3 focus re-check — account changes", () => {
+describe("I3 focus re-check — interplay with the I2 unlock re-arm", () => {
+  test("an unlock re-arm bypasses the window but still records its attempt", async () => {
+    const b = backend({ pending: [item("m1")] });
+    const c = clock();
+
+    // Mount, then an unlock one minute later: not paced, so it runs.
+    await start(b, { tcw: explodingVaultTcw(false), now: c.now });
+    c.set(T0 + MINUTE);
+    await resumeBackgroundDrain(
+      drainOptions(b, { tcw: explodingVaultTcw(false), now: c.now }),
+      "unlock",
+    );
+    expect(b.events).toEqual(["config", "pending", "config", "pending"]);
+
+    // The unlock attempt pushed the next focus tick out by a FULL window from
+    // the unlock — not from the mount.
+    c.set(T0 + FOCUS_DEBOUNCE_MS);
+    await resumeBackgroundDrain(
+      drainOptions(b, { tcw: explodingVaultTcw(false), now: c.now }),
+      "focus",
+    );
+    expect(b.events).toEqual(["config", "pending", "config", "pending"]);
+
+    c.set(T0 + MINUTE + FOCUS_DEBOUNCE_MS);
+    await resumeBackgroundDrain(
+      drainOptions(b, { tcw: explodingVaultTcw(false), now: c.now }),
+      "focus",
+    );
+    expect(b.events).toHaveLength(6);
+  });
+
   test("sign-out → sign-in inside ONE page load is picked up by the next eligible tick", async () => {
     const b = backend({ pending: [item("m1"), item("m2")] });
     const c = clock();
@@ -1153,13 +1450,10 @@ describe("I0 record store — a clear strands in-flight runs (account switch)", 
 
     // A re-armed run starts under A and stalls on the wire…
     const gate = gatedBackend(b);
-    const options = drainOptions(b, {
-      tcw: explodingVaultTcw(false),
-      now: () => Date.now() + FOCUS_DEBOUNCE_MS,
-    });
+    const options = drainOptions(b, { tcw: explodingVaultTcw(false) });
     const inflight = resumeBackgroundDrain(
       { ...options, hooks: { ...options.hooks, webhooks: gate.webhooks } },
-      "focus",
+      "unlock",
     );
 
     // …and A signs out while it is in flight. The clear must win: nothing
@@ -1258,12 +1552,8 @@ describe("I0 record store — the headless commit is authoritative (pruning)", (
     // merge would leave the old entry pinning the badge at a count nobody can
     // act on for the rest of the page load.
     await resumeBackgroundDrain(
-      drainOptions(b, {
-        tcw: explodingVaultTcw(false),
-        connection: null,
-        now: () => Date.now() + FOCUS_DEBOUNCE_MS,
-      }),
-      "focus",
+      drainOptions(b, { tcw: explodingVaultTcw(false), connection: null }),
+      "unlock",
     );
     expect(readBackgroundDrainRecord()?.connectors).toEqual([]);
     expect(badgePendingCount(readBackgroundDrainRecord())).toBe(0);
@@ -1288,7 +1578,6 @@ describe("I0 record store — the headless commit is authoritative (pruning)", (
     const options = drainOptions(b, {
       tcw: explodingVaultTcw(false),
       connectors: [fireflies, twin],
-      now: () => Date.now() + FOCUS_DEBOUNCE_MS,
     });
     await resumeBackgroundDrain(
       {
@@ -1298,7 +1587,7 @@ describe("I0 record store — the headless commit is authoritative (pruning)", (
           getConnection: async () => ({ ok: true, data: answers.shift() ?? null }),
         },
       },
-      "focus",
+      "unlock",
     );
 
     expect(readBackgroundDrainRecord()?.connectors.map((e) => e.source)).toEqual([
@@ -1322,7 +1611,7 @@ describe("I0 record store — the headless commit is authoritative (pruning)", (
     const b = backend({ pending: [item("m1")] });
     await resumeBackgroundDrain(
       drainOptions(b, { tcw: explodingVaultTcw(false), connectors: [twin, fireflies] }),
-      "focus",
+      "unlock",
     );
 
     expect(sub.count()).toBe(0);
@@ -1340,8 +1629,8 @@ describe("I1 badge — disconnect prunes the connector's entry", () => {
     expect(badgePendingCount(readBackgroundDrainRecord())).toBe(2);
 
     // The teardown finished: the connector is gone, and so is its claim on the
-    // header. Without this, the next headless run is a focus-tick
-    // away — the badge would pin the stale count until then.
+    // header. Without this, the next headless run is a focus-tick (or an
+    // unlock) away — the badge would pin the stale count until then.
     const sub = listen();
     removeBackgroundDrainConnectorRecord(fireflies.source);
     expect(sub.count()).toBe(1);
@@ -1382,13 +1671,10 @@ describe("I1 badge — disconnect prunes the connector's entry", () => {
         return b.webhooks.getConfig();
       },
     };
-    const options = drainOptions(b, {
-      tcw: explodingVaultTcw(false),
-      now: () => Date.now() + FOCUS_DEBOUNCE_MS,
-    });
+    const options = drainOptions(b, { tcw: explodingVaultTcw(false) });
     const inflight = resumeBackgroundDrain(
       { ...options, hooks: { ...options.hooks, webhooks: gated } },
-      "focus",
+      "unlock",
     );
 
     // …and the user disconnects mid-flight. The remove settles the badge…
@@ -1405,11 +1691,8 @@ describe("I1 badge — disconnect prunes the connector's entry", () => {
     // A FRESH post-remove attempt owns the new generation and still commits —
     // the boundary strands the past, never the future.
     await resumeBackgroundDrain(
-      drainOptions(b, {
-        tcw: explodingVaultTcw(false),
-        now: () => Date.now() + 2 * FOCUS_DEBOUNCE_MS,
-      }),
-      "focus",
+      drainOptions(b, { tcw: explodingVaultTcw(false) }),
+      "unlock",
     );
     expect(readBackgroundDrainRecord()?.connectors[0]?.pendingCount).toBe(2);
   });

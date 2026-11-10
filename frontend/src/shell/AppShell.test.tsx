@@ -129,7 +129,7 @@ describe("mounting", () => {
       transcript: { inSpace: null, cloud: null, onDevice: null }, notes: { state: "idle" } };
     sidebarActivityStore.publish(owner, { items: [{ id: "row", source: "exo-voice-note", sourceId: "rec", title: "Voice note", startedAt: null, durationSecs: null }],
       views: new Map([["rec", { input, pipeline: notePipeline(input), provider: "off", onAction: () => {}, actionError: null }]]),
-      upload: null, onOpenNote: () => {}, onOpenUpload: () => {}, onRetryUpload: () => {} });
+      upload: null, paused: null, onOpenNote: () => {}, onOpenUpload: () => {}, onContinueUpload: () => {}, onRetryUpload: () => {} });
     try {
       for (const path of [PATHS.chat, PATHS.connectors, PATHS.settings]) {
         const markup = wrap(<AppShellView screen={screenFor(path)} platform="tauri" pendingMeetings={0} {...SLOTS}

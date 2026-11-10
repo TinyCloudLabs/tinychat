@@ -8,7 +8,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
+import {
+  isSecretsUnlocked,
+  unlockSecrets,
+  type SecretsErr,
+} from "@/lib/connectors/connectorSecrets";
 import { ingestQueuedMeetings } from "@/lib/connectors/targetedSync";
 import {
   subscribeTranscriptConsent, transcriptConsentState, type TranscriptConsentState,
@@ -139,6 +143,8 @@ export function useBackgroundSync({
       webhooks,
       secrets: {
         isUnlocked: () => isSecretsUnlocked(tcw),
+        // Reachable ONLY from the user-initiated sync action — never on mount.
+        unlock: () => unlockSecrets<SecretsErr>(tcw),
       },
       ingest: (items) =>
         ingestQueuedMeetings({ tcw, descriptor, items, webhooks }),

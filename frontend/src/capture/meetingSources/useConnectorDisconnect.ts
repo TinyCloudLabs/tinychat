@@ -21,7 +21,12 @@ import {
   type UpstreamRevokeState,
 } from "@/chat/ConnectorDialog";
 import { removeBackgroundDrainConnectorRecord } from "@/chat/useBackgroundDrain";
-import { deleteConnectorKey, type SecretsErr } from "@/lib/connectors/connectorSecrets";
+import {
+  deleteConnectorKey,
+  isSecretsUnlocked,
+  unlockSecrets,
+  type SecretsErr,
+} from "@/lib/connectors/connectorSecrets";
 import {
   type DisconnectMode,
   disconnectRetry,
@@ -34,7 +39,6 @@ import {
 } from "@/lib/connectors/connectorLifecycle";
 import * as connectorStore from "@/lib/connectors/connectorStore";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
-import { secretsAvailable } from "@/lib/openkeyNative";
 
 export interface ConnectorDisconnectController {
   running: boolean;
@@ -95,8 +99,8 @@ export function useConnectorDisconnect(input: {
     if (oauth && resume === null) {
       const outcome = await revokeGoogleUpstream({ tcw, descriptor, backendUrl, sessionStore });
       setRevoke(outcome);
-      if (outcome.status === "unavailable" || outcome.status === "server-unavailable") {
-        // Nothing has happened yet: the honest state is "not disconnected".
+      if (outcome.status === "locked" || outcome.status === "server-unavailable") {
+        // Nothing has happened yet: the honest state is "not disconnected, try again".
         setRunning(false);
         return;
       }
@@ -108,7 +112,8 @@ export function useConnectorDisconnect(input: {
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark,
       secrets: {
-        available: secretsAvailable,
+        isUnlocked: () => isSecretsUnlocked(tcw),
+        unlock: () => unlockSecrets<SecretsErr>(tcw),
         deleteKey: () => deleteConnectorKey<SecretsErr>(tcw, descriptor),
       },
       store: {

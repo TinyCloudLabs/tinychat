@@ -1,6 +1,6 @@
 // "Sync now" for the Meeting sources window: the same two engines the
 // Connectors card runs (`runFirefliesSyncNow`, `runGmeetSyncNow`), the same
-// sequence in front of them — secrets available, the registry
+// sequence in front of them — secrets available, vault unlocked, the registry
 // row's secret read — and the same reload of the connection afterwards, which
 // is the source of truth for the count and the "synced" time.
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -8,7 +8,13 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { formatRowError, runFirefliesSyncNow, runGmeetSyncNow } from "@/chat/ConnectorsCard";
-import { getConnectorKey, type SecretsErr } from "@/lib/connectors/connectorSecrets";
+import { awaitGmeetSessionSync } from "@/chat/useGmeetSessionSync";
+import {
+  getConnectorKey,
+  isSecretsUnlocked,
+  unlockSecrets,
+  type SecretsErr,
+} from "@/lib/connectors/connectorSecrets";
 import {
   getGmeetLiveStatus,
   isGmeetNotesSyncInFlight,
@@ -31,8 +37,8 @@ export type DriveMode = "auto" | "snapshot";
  * A press the engine could not take because another Google Meet sync holds it. It is never an error
  * message: the row shows that sync's progress and offers to run the press once it ends.
  *  - `offer`: the user can see the run and chooses to wait (a button).
- *  - `queue`: the run claimed the slot while the press read the vault, so the press waits behind it
- *    without asking.
+ *  - `queue`: the run started under the press itself (its own unlock started the session-start sync, or
+ *    it claimed the slot while the press read the vault), so the press waits behind it without asking.
  */
 export interface SourceSyncBusy { busy: "offer" | "queue" }
 
@@ -51,9 +57,13 @@ type SyncOutcome =
 
 export interface SourceSyncDeps {
   secretsAvailable: () => boolean;
+  isSecretsUnlocked: (tcw: TinyCloudWeb) => boolean;
+  unlockSecrets: typeof unlockSecrets;
   getConnectorKey: typeof getConnectorKey;
   isGmeetSyncInFlight: () => boolean;
   isGmeetNotesSyncInFlight: () => boolean;
+  /** Resolves once the session-start run's foreground part has finished (at once when none is running). */
+  awaitSessionSync: () => Promise<void>;
   runGmeetSyncNow: (
     input: SyncEngineInput & {
       backendUrl: string;
@@ -67,9 +77,12 @@ export interface SourceSyncDeps {
 
 const DEFAULT_DEPS: SourceSyncDeps = {
   secretsAvailable,
+  isSecretsUnlocked,
+  unlockSecrets,
   getConnectorKey,
   isGmeetSyncInFlight,
   isGmeetNotesSyncInFlight,
+  awaitSessionSync: awaitGmeetSessionSync,
   runGmeetSyncNow,
   runFirefliesSyncNow,
 };
@@ -106,6 +119,13 @@ export async function runSourceSync(
       d.id === "google-meet" && (driveMode === "snapshot" ? deps.isGmeetSyncInFlight() : deps.isGmeetNotesSyncInFlight());
     if (cannotJoin()) return { busy: "offer" };
     if (!deps.secretsAvailable()) return SECRETS_UNAVAILABLE_IN_APP_MESSAGE;
+    if (!deps.isSecretsUnlocked(tcw)) {
+      const unlock = await deps.unlockSecrets<SecretsErr>(tcw);
+      if (!unlock.ok) return unlock.error?.message ?? "Could not unlock secrets";
+      // A successful unlock re-arms the session-start sync, which takes the engine's slot. That run belongs
+      // to this press, so wait for its foreground part and queue behind its Notes rather than refuse.
+      if (d.id === "google-meet") await deps.awaitSessionSync();
+    }
     if (input.isCurrent?.() === false) return null;
     const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
     if (!key.ok) {

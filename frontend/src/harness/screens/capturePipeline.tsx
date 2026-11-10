@@ -40,9 +40,9 @@ const pipelines = new Map<string, NotePipeline>([
   ["rec-signed-out", signedOut],
 ]);
 const idle: InProgressRowsViewProps = {
-  upload: null, meetings: [], busyId: null,
+  upload: null, paused: null, meetings: [], busyId: null,
   voice: { listing: { state: "ok", count: 2 }, saving: false, lastError: null, limitNotice: null, onSaveNow: noop },
-  onOpenUpload: noop, onOpenMeeting: noop, onEnd: noop,
+  onOpenUpload: noop, onContinue: noop, onOpenMeeting: noop, onEnd: noop,
 };
 
 function SoftFrame(props: { children: React.ReactNode; title: string }) {
