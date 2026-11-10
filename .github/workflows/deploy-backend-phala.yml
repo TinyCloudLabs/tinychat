@@ -135,8 +135,11 @@ jobs:
           ELIZA_SERVICE_SECRET: ${{ secrets.ELIZA_SERVICE_SECRET }}
           MCP_CHAT_ENABLED: ${{ vars.MCP_CHAT_ENABLED || 'false' }}
           MCP_CHAT_TEST_ACCOUNTS: ${{ vars.MCP_CHAT_TEST_ACCOUNTS }}
+          MCP_CHAT_URL: ${{ vars.MCP_CHAT_URL || 'https://mcp.tinycloud.xyz/mcp' }}
           MCP_CHAT_SERVICE_DID: ${{ vars.MCP_CHAT_SERVICE_DID }}
           MCP_CHAT_SERVICE_CREDENTIAL: ${{ secrets.MCP_CHAT_SERVICE_CREDENTIAL }}
+          MCP_CHAT_SERVICE_CREDENTIAL_HEADER: ${{ vars.MCP_CHAT_SERVICE_CREDENTIAL_HEADER || 'X-TinyCloud-Service-Credential' }}
+          MCP_CHAT_OWNER_DID_HEADER: ${{ vars.MCP_CHAT_OWNER_DID_HEADER || 'X-TinyCloud-Owner-DID' }}
         run: |
           missing=()
           required=(
@@ -149,26 +152,32 @@ jobs:
           )
 
           # Only an explicit all-account MCP rollout can omit the legacy Eliza courier.
+          mcp_has_accounts=false
           mcp_all_accounts=false
           if [ "${MCP_CHAT_ENABLED:-}" = "true" ]; then
+            required+=(MCP_CHAT_URL MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER)
             IFS=',' read -r -a mcp_accounts <<< "${MCP_CHAT_TEST_ACCOUNTS:-}"
             for account in "${mcp_accounts[@]}"; do
               account="${account//[[:space:]]/}"
+              if [ -n "$account" ]; then
+                mcp_has_accounts=true
+              fi
               if [ "$account" = "*" ]; then
                 mcp_all_accounts=true
-                break
               fi
             done
           fi
 
-          if [ "$mcp_all_accounts" = true ]; then
+          if [ "$mcp_has_accounts" = true ]; then
             required+=(MCP_CHAT_SERVICE_DID MCP_CHAT_SERVICE_CREDENTIAL)
-          else
+          fi
+          if [ "$mcp_all_accounts" != true ]; then
             required+=(AGENT_DID ELIZA_SERVICE_URL ELIZA_SERVICE_SECRET)
           fi
 
           for item in "${required[@]}"; do
-            if [ -z "${!item}" ]; then
+            value="${!item}"
+            if [ -z "${value//[[:space:]]/}" ]; then
               missing+=("$item")
               echo "::error title=Missing deployment config::$item is not configured"
             fi

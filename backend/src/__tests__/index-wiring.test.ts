@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { validateAgentStreamPolicy } from "../agent-stream-policy.js";
+import { mcpChatFromEnv } from "../mcp-meetings/config.js";
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -89,11 +91,12 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
       createTranscriptionApiClient: () => ({}),
     },
-    // MCP chat is off in these startups; the stub is the disabled result of the real parser.
-    "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    // Real wiring parser; MCP operations remain inert until a request uses them.
+    "./mcp-meetings/config.js": { mcpChatFromEnv },
     "./routes/agent.js": {
-      createAgentRouter: (config: unknown) => {
+      createAgentRouter: (config: any) => {
         agentConfig = config;
+        if (config.chat) validateAgentStreamPolicy(config.chat.streamPolicy);
         calls.push("agent-router");
         throw stopped;
       },
@@ -160,6 +163,30 @@ describe("agent stream startup policy wiring", () => {
     });
     expect(result.calls).toContain("agent-router");
     expect(result.calls).not.toContain("listen");
+  });
+  test("mounts MCP-only agent chat without Eliza configuration", async () => {
+    const result = await runIsolatedStartup({
+      BACKEND_PRIVATE_KEY: "synthetic-private-key",
+      ...STREAM_ENV,
+      REDPILL_API_KEY: "synthetic-provider-key",
+      MCP_CHAT_ENABLED: "true",
+      MCP_CHAT_TEST_ACCOUNTS: "0x1111111111111111111111111111111111111111",
+      MCP_CHAT_URL: "https://mcp.example/mcp",
+      MCP_CHAT_SERVICE_DID: "did:service",
+      MCP_CHAT_SERVICE_CREDENTIAL: "synthetic-mcp-secret",
+      MCP_CHAT_SERVICE_CREDENTIAL_HEADER: "X-Service-Credential",
+      MCP_CHAT_OWNER_DID_HEADER: "X-Owner-DID",
+    });
+    expect(result.logs).toEqual([]);
+    expect(result.calls).toContain("agent-router");
+    expect(result.agentConfig?.chat?.streamPolicy).toEqual({
+      heartbeatMs: 17,
+      turnTimeoutMs: 251,
+      drainGraceMs: 31,
+    });
+    expect(result.agentConfig?.agentDid).toBeUndefined();
+    expect(result.agentConfig?.elizaServiceUrl).toBeUndefined();
+    expect(result.agentConfig?.elizaServiceSecret).toBeUndefined();
   });
 
   test("wires explicit meeting account and evaluated-model allowlists with rollout off by default", async () => {
