@@ -1462,6 +1462,8 @@ export function App() {
             platform={platform}
             pendingMeetings={0}
             chat={<BootSurface state={state} error={error} onAction={authAction} />}
+            // Feed is the first screen: signed out it asks to sign in in place, under the Feed tab.
+            feed={<BootSurface state={state} error={error} onAction={authAction} />}
             capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
               resign={state === "unauthenticated" && error === MANIFEST_RESIGN_NOTICE}
               onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}

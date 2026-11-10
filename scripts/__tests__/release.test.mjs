@@ -2126,20 +2126,20 @@ if command -v sha256sum >/dev/null; then exec sha256sum "$@"; else exec /usr/bin
   open: `#!/bin/bash\nprintf 'open %s\\n' "$1" >> "$STUB_LOG/calls.log"\n`,
 };
 
-function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, installedAs = 'TinyCloud Home.app', args = [] } = {}) {
+function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, installedAs = 'TinyCloud Home.app', releaseApp = 'TinyCloud Home.app', releaseDmg, args = [] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'exo-update-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dirs = Object.fromEntries(['bin', 'home', 'apps', 'release', 'log', 'tmp'].map((name) => [name, join(root, name)]));
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
   // The release asset desktop-release-plan.mjs names after tauri.conf.json's productName.
   const version = '9.9.9';
-  const dmg = `${desktopProduct(readFileSync(join(repo, 'desktop/src-tauri/tauri.conf.json'), 'utf8')).assetName}_${version}_aarch64.dmg`;
+  const dmg = releaseDmg ?? `${desktopProduct(readFileSync(join(repo, 'desktop/src-tauri/tauri.conf.json'), 'utf8')).assetName}_${version}_aarch64.dmg`;
   const app = (dir, name, build) => {
     mkdirSync(join(dir, name, 'Contents'), { recursive: true });
     writeFileSync(join(dir, name, 'Contents/Info.plist'), `${build}\n`);
   };
   if (installed) app(dirs.apps, installedAs, 'old-build');
-  app(join(dirs.release, 'content'), 'TinyCloud Home.app', 'new-build');
+  app(join(dirs.release, 'content'), releaseApp, 'new-build');
   writeFileSync(join(dirs.release, dmg), 'fake dmg bytes');
   const digest = createHash('sha256').update(sums === 'bad' ? 'other bytes' : 'fake dmg bytes').digest('hex');
   writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'TinyCloud-Home_other_aarch64.dmg' : dmg}\n`);
@@ -2194,6 +2194,15 @@ for (const shell of ['bash', 'sh']) {
     assert.equal(run.status, 0, run.stderr);
     assert.equal(run.build, 'new-build');
     assert.deepEqual(run.apps, ['TinyCloud Home.app'], 'the old Exo.app is gone, not left beside the new app');
+    assert.deepEqual(run.leftovers, []);
+  });
+
+  test(`exo-update.sh (${shell}) still installs a release from before the rename (Exo_<v>_aarch64.dmg holding Exo.app)`, (t) => {
+    const run = runExoUpdate(t, shell, { installedAs: 'Exo.app', releaseApp: 'Exo.app', releaseDmg: 'Exo_9.9.9_aarch64.dmg' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.build, 'new-build');
+    assert.deepEqual(run.apps, ['TinyCloud Home.app']);
+    assert.match(run.curl, /Exo_9\.9\.9_aarch64\.dmg/);
     assert.deepEqual(run.leftovers, []);
   });
 

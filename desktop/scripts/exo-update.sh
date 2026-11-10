@@ -90,17 +90,23 @@ if [ "$CURRENT" = "$APP" ] && [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$TAG $(i
   exit 0
 fi
 
-DMG="TinyCloud-Home_${V}_aarch64.dmg"
 BASE="https://github.com/$REPO/releases/download/exo-desktop%40$V"
+
+# Releases before the rename ship Exo_<v>_aarch64.dmg holding Exo.app; later ones TinyCloud-Home_<v>_aarch64.dmg
+# holding TinyCloud Home.app. The checksum list names the DMG this release has.
+fetch "$BASE/SHA256SUMS.txt" "$TMP/SHA256SUMS.txt"
+DMG=
+for candidate in "TinyCloud-Home_${V}_aarch64.dmg" "Exo_${V}_aarch64.dmg"; do
+  if grep -q " $candidate\$" "$TMP/SHA256SUMS.txt"; then DMG="$candidate"; break; fi
+done
+if [ -z "$DMG" ]; then
+  echo "The release's SHA256SUMS.txt has no entry for TinyCloud-Home_${V}_aarch64.dmg or Exo_${V}_aarch64.dmg, so nothing was installed." >&2
+  exit 1
+fi
+LINE=$(grep " $DMG\$" "$TMP/SHA256SUMS.txt")
 
 echo "Downloading TinyCloud Home $V..."
 fetch "$BASE/$DMG" "$TMP/$DMG" progress
-fetch "$BASE/SHA256SUMS.txt" "$TMP/SHA256SUMS.txt"
-LINE=$(grep " $DMG\$" "$TMP/SHA256SUMS.txt" || true)
-if [ -z "$LINE" ]; then
-  echo "The release's SHA256SUMS.txt has no entry for $DMG, so nothing was installed." >&2
-  exit 1
-fi
 if ! (cd "$TMP" && printf '%s\n' "$LINE" | shasum -a 256 -c - >/dev/null); then
   echo "The download didn't match its checksum, so nothing was installed." >&2
   exit 1
@@ -124,7 +130,9 @@ MOUNTED=1
 hdiutil attach -nobrowse -readonly -quiet -mountpoint "$MNT" "$TMP/$DMG"
 # Copy the new app in full, then swap; cleanup puts the old app back if the swap is cut short.
 rm -rf "$NEW" "$OLD"
-ditto "$MNT/TinyCloud Home.app" "$NEW"
+SOURCE="$MNT/TinyCloud Home.app"
+[ -e "$SOURCE" ] || SOURCE="$MNT/Exo.app"
+ditto "$SOURCE" "$NEW"
 if [ -e "$CURRENT" ]; then mv "$CURRENT" "$OLD"; fi
 mv "$NEW" "$APP"
 rm -rf "$OLD"
