@@ -12,10 +12,10 @@
     "mobile"
   ],
   "overrides": {
-    "@tinycloud/sdk-core": "3.11.0",
+    "@tinycloud/sdk-core": "3.11.2",
     "@tinycloud/sdk-services": "3.11.0",
-    "@tinycloud/web-sdk": "3.11.0",
-    "@tinycloud/node-sdk": "3.11.0",
+    "@tinycloud/web-sdk": "3.11.2",
+    "@tinycloud/node-sdk": "3.11.2",
     "@tinycloud/node-sdk-wasm": "1.7.8",
     "@tinycloud/web-sdk-wasm": "1.7.7",
     "ethers": "6.16.0",
@@ -53,7 +53,7 @@
     "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.1",
     "@tinyboilerplate/core": "workspace:*",
-    "@tinycloud/node-sdk": "3.11.0",
+    "@tinycloud/node-sdk": "3.11.2",
     "@tinycloud/sdk-services": "3.11.0",
     "eslint": "^10.1.0",
     "husky": "^9.1.7",
