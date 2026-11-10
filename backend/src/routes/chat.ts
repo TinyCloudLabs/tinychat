@@ -42,7 +42,7 @@ import {
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import { selectChatModel } from "../modelSelection.js";
 import { noteRequestRecord, recordAfterHandler } from "../request-context.js";
-import { PRIVATE_RESPONSE_UNVERIFIED_MESSAGE, RedPillAttestationError, redPillAciFetch } from "../redpill-aci.js";
+import { PRIVATE_RESPONSE_UNVERIFIED_MESSAGE, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, redPillAciFetch } from "../redpill-aci.js";
 
 // ── RedPill config ───────────────────────────────────────────────────────────
 // REDPILL_API_KEY is required at call time. Missing key returns 500 per-request
@@ -459,6 +459,20 @@ export function createChatRouter(options?: ChatRouterOptions) {
         console.warn("[chat] RedPill reply receipt was not verified");
         res.status(502).json({
           error: { code: error.code, message: PRIVATE_RESPONSE_UNVERIFIED_MESSAGE },
+        });
+        return;
+      }
+      if (error instanceof RedPillAciError) {
+        console.warn("[chat] model service request failed");
+        res.status(502).json({
+          error: { code: error.code, message: "The model service could not complete this request. Try again later." },
+        });
+        return;
+      }
+      if (error instanceof RedPillResponseLimitError) {
+        console.warn("[chat] verified model response exceeded size limit");
+        res.status(502).json({
+          error: { code: error.code, message: "The response was too large to process safely. Try a smaller request." },
         });
         return;
       }

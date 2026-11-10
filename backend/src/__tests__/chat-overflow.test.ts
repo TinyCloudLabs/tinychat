@@ -7,7 +7,7 @@ import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { _resetUsage } from "../billing/usage.js";
 import { createChatRouter } from "../routes/chat.js";
 import { createApiBodyParser } from "../body-parsing.js";
-import { RedPillAttestationError } from "../redpill-aci.js";
+import { RedPillAciError, RedPillAttestationError, RedPillResponseLimitError } from "../redpill-aci.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const OFFERED_MODEL = "z-ai/glm-5.2";
@@ -244,6 +244,22 @@ describe("POST /api/chat attestation gate", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+  test.each([
+    [new RedPillAciError(), "upstream_failed", "The model service could not complete this request. Try again later."],
+    [new RedPillResponseLimitError(), "result_size_limit", "The response was too large to process safely. Try a smaller request."],
+  ] as const)("keeps internal ACI errors off the chat screen", async (error, code, message) => {
+    const redpillFetch = (async () => { throw error; }) as typeof fetch;
+    const res = await post(createApp(undefined, redpillFetch), JSON.stringify({
+      model: OFFERED_MODEL,
+      messages: [{ role: "user", content: "synthetic question" }],
+    }));
+    const body = await res.text();
+    expect(res.status).toBe(502);
+    expect(body).toContain(code);
+    expect(body).toContain(message);
+    expect(body).not.toContain("RedPill");
+    expect(body).not.toContain(error.message);
   });
 });
 describe("global body limit raised 64kb → 1mb (Wall A, §C.4a)", () => {
