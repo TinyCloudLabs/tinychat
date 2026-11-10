@@ -94,65 +94,31 @@ const CAPABILITIES_READ: NativeDelegationPermission = {
   actions: ["tinycloud.capabilities/read"],
 };
 
-const NATIVE_SERVICES = new Set(["tinycloud.kv", "tinycloud.sql"]);
-
 /**
- * Owner-app paths admitted by native sign-in. Feed authority belongs to Home;
- * agents receive separate exact database grants without response-write access.
+ * Services native sign-in requests. `tinycloud.space` (space info for the
+ * storage panel) is left out until the backend's native ReCap check accepts it
+ * (TC-2720 follow-up); secrets and vault never reach a native session.
  */
-const NATIVE_CEILING = new Set([
-  "tinycloud.kv:threads/",
-  "tinycloud.kv:connectors/",
-  "tinycloud.sql:threads",
-  "tinycloud.sql:canvas",
-  "tinycloud.sql:connectors",
-  "tinycloud.sql:home_feed",
-  "tinycloud.sql:feed/",
-]);
-
-const NATIVE_FEED_SQL_ACTIONS: Record<string, true> = {
-  "tinycloud.sql/read": true,
-  "tinycloud.sql/write": true,
-  "tinycloud.sql/schema": true,
-};
+const NATIVE_SERVICES: Record<string, true> = { "tinycloud.kv": true, "tinycloud.sql": true, "tinycloud.hooks": true };
 
 /**
- * The owner's applications-space manifest entries within Home's native scope,
- * plus capabilities/read. Non-feed broad app entries remain web-only. Hook
- * authority is limited separately to subscriptions for Home's own feed and
- * synced settings; adding another hook action or another app path admits nothing.
+ * The delegation's permission list: every applications-space KV, SQL and hook
+ * entry of the manifest, exactly as the web sign-in grants it, plus the
+ * mandatory capabilities/read. OpenKey's TinyCloud Home native client ceiling
+ * matches the served manifest (TC-2720) and refuses the whole request if any
+ * entry is outside it, so a manifest change must widen that ceiling first; the
+ * native-ceiling CI job PARs this exact request against production OpenKey.
  */
 export function nativePermissions(manifest: Manifest): NativeDelegationPermission[] {
   const permissions: NativeDelegationPermission[] = [CAPABILITIES_READ];
   const prefix = manifest.prefix === undefined ? manifest.app_id : manifest.prefix;
   for (const entry of manifest.permissions ?? []) {
-    const space = entry.space ?? "applications";
-    if (space !== "applications") continue;
-    const path = entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`;
-    const actions = entry.actions.map((action) =>
-      action.includes("/") ? action : `${entry.service}/${action}`,
-    );
-    if (entry.service === "tinycloud.hooks") {
-      const ownFeedScope = prefix !== "" && (
-        path === `sql/${prefix}/feed/` ||
-        path === `sql/${prefix}/home_feed` ||
-        path === `sql/${prefix}/threads`
-      );
-      if (!ownFeedScope || actions.length === 0 || !actions.every((action) => action === "tinycloud.hooks/subscribe")) continue;
-    } else {
-      if (!NATIVE_SERVICES.has(entry.service)) continue;
-      if (prefix !== "" && !NATIVE_CEILING.has(`${entry.service}:${path.slice(prefix.length + 1)}`)) continue;
-      if (prefix !== "" && !path.startsWith(`${prefix}/`)) continue;
-      const feedSql = entry.service === "tinycloud.sql" && (
-        path === `${prefix}/home_feed` || path === `${prefix}/feed/`
-      );
-      if (feedSql && (actions.length === 0 || !actions.every((action) => NATIVE_FEED_SQL_ACTIONS[action] === true))) continue;
-    }
+    if ((entry.space ?? "applications") !== "applications" || NATIVE_SERVICES[entry.service] !== true) continue;
     permissions.push({
       service: entry.service,
       space: "applications",
-      path,
-      actions,
+      path: entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`,
+      actions: entry.actions.map((action) => action.includes("/") ? action : `${entry.service}/${action}`),
     });
   }
   return permissions;
