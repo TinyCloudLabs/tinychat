@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.3
+
+### Minor Changes
+
+- ab71584: Native sign-in offers "Continue with Apple" once OpenKey lists Apple in `GET /api/auth/providers`; it opens Sign in with Apple in the existing OpenKey sheet (TC-1233). Updates `@openkey/sdk-capacitor` to the release that accepts `loginMethod: "apple"`.
+
 ## 0.14.0-beta.2
 
 ### Patch Changes
