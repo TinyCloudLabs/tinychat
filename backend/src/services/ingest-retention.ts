@@ -23,7 +23,11 @@ export const RETENTION_SWEEP_INTERVAL_MS = 5 * 60_000;
 
 /** The slice of `ContentStore` this needs. Narrowed so it cannot reach a read or a purge. */
 export interface RetentionSweepTarget {
-  sweepRetention(input: { source: string; address: string }): Promise<{
+  sweepRetention(input: {
+    source: string;
+    address: string;
+    safetyMarginMs?: number;
+  }): Promise<{
     swept: number;
     bytesFreed: number;
     tombstones: number;
@@ -70,8 +74,11 @@ function warnRetention(fields: string): void {
 export class IngestRetentionSweeper {
   private timer: ReturnType<typeof setInterval> | null = null;
   private passing = false;
+  private readonly intervalMs: number;
 
-  constructor(private readonly deps: IngestRetentionSweeperDeps) {}
+  constructor(private readonly deps: IngestRetentionSweeperDeps) {
+    this.intervalMs = deps.intervalMs ?? RETENTION_SWEEP_INTERVAL_MS;
+  }
 
   isRunning(): boolean {
     return this.timer !== null;
@@ -100,7 +107,11 @@ export class IngestRetentionSweeper {
         addresses += 1;
         try {
           // Sequential by construction — one node call at a time, across every tenant.
-          const result = await this.deps.content.sweepRetention({ source, address });
+          const result = await this.deps.content.sweepRetention({
+            source,
+            address,
+            safetyMarginMs: this.intervalMs,
+          });
           swept += result.swept;
         } catch {
           // One tenant's substrate failure is not the directory's. Count and continue.
@@ -130,7 +141,7 @@ export class IngestRetentionSweeper {
   /** Start with a pass immediately, then sweep periodically without keeping the process open. */
   start(): void {
     if (this.timer !== null) return;
-    const intervalMs = this.deps.intervalMs ?? RETENTION_SWEEP_INTERVAL_MS;
+    const intervalMs = this.intervalMs;
     this.runPass();
     this.timer = setInterval(() => this.runPass(), intervalMs);
     this.timer.unref?.();

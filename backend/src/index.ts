@@ -1301,7 +1301,8 @@ async function main() {
       }
       await connectorControl.clearQuarantinedLedger?.(source, address);
     },
-    sweepQueue: ({ source, address }) => connectorQueue.sweep(source, address),
+    sweepQueue: ({ source, address }, safetyMarginMs) =>
+      connectorQueue.sweep(source, address, safetyMarginMs),
     intervalMs: drainIntervalFromEnv(process.env),
   });
 
