@@ -1,8 +1,9 @@
+import { IngestInstanceGuard, type InstanceLeaseRecord } from "../services/ingest-instance.js";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { ContentStore, InMemoryContentBlobStore, contentMasterFingerprint, type ContentContinuityStorage, type SealedBlob } from "../services/content-store.js";
 
-const master = "test-content-master-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const master = createHash("sha256").update("tc2843-test-master").digest("hex");
 function fixture() {
   let canary: SealedBlob | null = null;
   let writes = 0;
@@ -84,4 +85,59 @@ test("enrolled canary rejects tampering and an explicitly wrong expected digest"
   f.storage.readCanary = async () => ({ ...saved, ciphertext: "invalid" });
   await expect(f.store().assertContinuity(f.storage, {})).rejects.toThrow();
   expect(f.writes()).toBe(1);
+});
+
+test("set-but-blank pins refuse both enrollment and existing canaries", async () => {
+  const f = fixture();
+  await expect(f.store().assertContinuity(f.storage, { ...fresh, CONNECTOR_CONTENT_EXPECTED_SHA256: " " })).rejects.toThrow();
+  await f.store().assertContinuity(f.storage, fresh);
+  await expect(f.store().assertContinuity(f.storage, { CONNECTOR_CONTENT_EXPECTED_SHA256: "\t " })).rejects.toThrow();
+  expect(f.writes()).toBe(1);
+});
+
+test("real stored index under a wrong master refuses enrollment without writes", async () => {
+  const blobs = new InMemoryContentBlobStore();
+  const target = { source: "fireflies", address: "0x1111111111111111111111111111111111111111" };
+  const good = new ContentStore(blobs, { master: () => master });
+  const now = new Date().toISOString();
+  expect((await good.upsert({ ...target, sourceId: "meeting-1", kind: "transcript", content: { sentences: ["private"] }, receivedAt: now, fetchedAt: now })).ok).toBe(true);
+  const f = fixture();
+  f.storage.findIndex = async () => target;
+  const wrong = createHash("sha256").update("different-key").digest("hex");
+  await expect(new ContentStore(blobs, { master: () => wrong }).assertContinuity(f.storage, { ...fresh, CONNECTOR_CONTENT_EXPECTED_SHA256: contentMasterFingerprint(wrong) })).rejects.toThrow();
+  expect(f.writes()).toBe(0);
+});
+
+test("singleton claim precedes archive reads; overlapping fresh startup cannot overwrite A's canary", async () => {
+  const f = fixture();
+  let lease: InstanceLeaseRecord | null = null;
+  const leaseStore = { read: async () => lease, write: async (value: InstanceLeaseRecord) => { lease = value; }, clear: async () => { lease = null; } };
+  const aGuard = new IngestInstanceGuard(leaseStore, { instanceId: "A" });
+  const bGuard = new IngestInstanceGuard(leaseStore, { instanceId: "B" });
+  let resume!: () => void;
+  const paused = new Promise<void>(resolve => { resume = resolve; });
+  let enter!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const delayedB = { claim: async () => { enter(); await paused; return bGuard.claim(); } };
+  const b = f.store(createHash("sha256").update("B-key").digest("hex")).assertContinuity(f.storage, fresh, delayedB);
+  await entered;
+  const a = f.store();
+  await a.assertContinuity(f.storage, fresh, aGuard);
+  const now = new Date().toISOString();
+  expect((await a.upsert({ source: "fireflies", address: "0x1111111111111111111111111111111111111111", sourceId: "overlap-meeting", kind: "transcript", content: { sentences: ["A's sealed content"] }, receivedAt: now, fetchedAt: now })).ok).toBe(true);
+  // A has stored real content while B is still booting.
+  f.storage.findIndex = async () => ({ source: "fireflies", address: "0x1111111111111111111111111111111111111111" });
+  resume();
+  await expect(b).rejects.toThrow("refusing startup and writes");
+  expect(f.writes()).toBe(1);
+  await f.store().assertContinuity(f.storage, {}, aGuard);
+});
+
+test("unset master never enrolls, allows empty storage, and refuses existing sealed data", async () => {
+  const f = fixture();
+  await f.store("").assertContinuity(f.storage, fresh);
+  expect(f.writes()).toBe(0);
+  f.storage.findIndex = async () => ({ source: "fireflies", address: "0x1111111111111111111111111111111111111111" });
+  await expect(f.store("").assertContinuity(f.storage, fresh)).rejects.toThrow();
+  expect(f.writes()).toBe(0);
 });

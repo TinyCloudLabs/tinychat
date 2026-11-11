@@ -102,6 +102,7 @@ import { ConnectorTeardownService } from "./services/connector-teardown.js";
 import {
   ContentStore,
   currentContentMaster,
+  assertNoContentKey,
   KvContentBlobStore,
   validateContentCustodyConfig,
 } from "./services/content-store.js";
@@ -125,7 +126,7 @@ import {
 } from "./services/google-oauth.js";
 import { ConnectorFetchWorker } from "./services/fetch-worker.js";
 import { FirefliesMeetingFetcher } from "./services/fireflies-fetch.js";
-import { backendIngestEnabled, IngestModeService } from "./services/ingest-mode.js";
+import { backendIngestEnabled as ingestFlagEnabled, IngestModeService } from "./services/ingest-mode.js";
 import {
   IngestInstanceGuard,
   IngestInstanceSupervisor,
@@ -291,6 +292,8 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
+  const hasContentMaster = Boolean(process.env.CONNECTOR_CONTENT_MASTER?.trim());
+  const backendIngestEnabled = () => ingestFlagEnabled() && hasContentMaster;
   const localValidation = localValidationFromEnv(process.env);
   const requestIdFirstPartyOrigins = parseRequestIdFirstPartyOrigins(process.env.REQUEST_ID_FIRST_PARTY_ORIGINS);
   let transcriptDeliveryConfig;
@@ -478,6 +481,11 @@ async function main() {
     host: TINYCLOUD_HOST,
     localValidation,
   });
+
+  if (!hasContentMaster) {
+    const noKeyBlobs = new KvContentBlobStore(node);
+    await assertNoContentKey(noKeyBlobs);
+  }
 
   // §E.6/E.7 — construct and start the ledger flusher + rehydrator when configured.
   let ledgerFlusher: LedgerFlusher | undefined;
@@ -732,6 +740,9 @@ async function main() {
   // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
   logGlobalBucketRoutes(globalRoutes);
 
+  if (!hasContentMaster) {
+    mountContentContinuityRoute(app, process.env, "", did, async () => ({ ok: false, id: null }));
+  }
   app.get("/health", (_req, res) => {
     // TEMPORARY: aggregate route templates and counts only, our one view of the global bucket
     // until the tinychat log shipper (TC-959) is live. Remove this field then.
@@ -850,7 +861,8 @@ async function main() {
         purgeLedger: connectorWebhooks.control,
         master: () => contentMaster,
       });
-      await contentStore.assertContinuity(contentBlobs, process.env);
+      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
+      await contentStore.assertContinuity(contentBlobs, process.env, ingestGuard);
       mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
         contentStore.probeIndex(await contentBlobs.findIndex()),
       );
@@ -913,7 +925,7 @@ async function main() {
       // must never resolve to "nobody does". Constraint and its exit:
       // `docs/connector-webhooks-single-instance.md`.
       const supervisor = new IngestInstanceSupervisor({
-        guard: new IngestInstanceGuard(new KvInstanceLeaseStore(node)),
+        guard: ingestGuard,
         worker: new ConnectorFetchWorker({
           queue: connectorWebhooks.queue,
           modes: connectorWebhooks.modes,

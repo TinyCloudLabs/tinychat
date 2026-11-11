@@ -20,6 +20,10 @@ export function mountContentContinuityRoute(
       return;
     }
     if (!(await limiters.success(req, res))) return;
+    if (!master.trim()) {
+      res.status(503).json({ error: "content_master_unset", backendDid, index: { ok: false, id: null } });
+      return;
+    }
     let index: { ok: boolean; id: string | null };
     try { index = await probe(); } catch { index = { ok: false, id: null }; }
     res.json({ contentMasterSha256: contentMasterFingerprint(master), backendDid, index });

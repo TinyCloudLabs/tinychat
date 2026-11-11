@@ -22,6 +22,7 @@ import type {
 } from "./fetch-worker.js";
 import {
   assertStrongSecret,
+  assertNewContentMaster,
   isValidMeetingId,
   isValidSource,
   keyedLogHash,
@@ -204,6 +205,14 @@ export interface ContentStoreStats {
  */
 export function contentMasterFingerprint(master: string): string {
   return createHash("sha256").update(master, "utf8").digest("hex");
+}
+
+export async function assertNoContentKey(storage: ContentContinuityStorage): Promise<void> {
+  try {
+    if (await storage.readCanary() !== null || await storage.findIndex() !== null || await storage.hasContent()) throw new Error();
+  } catch {
+    throw new Error("connector content continuity failed; refusing startup and writes");
+  }
 }
 
 export interface ContentContinuityStorage {
@@ -460,16 +469,23 @@ export class ContentStore implements ContentSink, RetentionGuard {
   async assertContinuity(
     storage: ContentContinuityStorage,
     env: NodeJS.ProcessEnv,
+    guard?: { claim(): Promise<{ status: string }> },
   ): Promise<void> {
     try {
+      if (!this.master()) {
+        await assertNoContentKey(storage);
+        return;
+      }
+      if (guard && (await guard.claim()).status !== "held") throw new Error();
       const digest = contentMasterFingerprint(this.master());
       const pin = env.CONNECTOR_CONTENT_EXPECTED_SHA256?.trim();
+      if (pin !== undefined && pin !== digest) throw new Error();
       const canary = await storage.readCanary();
       if (canary !== null) {
-        if (pin && pin !== digest) throw new Error();
         if (this.unseal("continuity", "backend", "canary", canary) !== "tinychat-content-canary-v1") throw new Error();
         return;
       }
+      assertNewContentMaster(this.master());
       const target = await storage.findIndex();
       if (target) {
         if (pin !== digest || !(await this.probeIndex(target)).ok) throw new Error();
@@ -477,6 +493,9 @@ export class ContentStore implements ContentSink, RetentionGuard {
         if (await storage.hasContent()) throw new Error();
         if (env.CONNECTOR_CONTENT_ENROLL_FRESH !== "true" || (pin !== undefined && pin !== digest)) throw new Error();
       }
+      // Recheck after archive I/O as well as taking the singleton seat before the first read.
+      // A delayed boot must never replace a canary enrolled while it was inspecting archives.
+      if (await storage.readCanary() !== null) throw new Error();
       await storage.writeCanary(this.sealBlob("continuity", "backend", "canary", "tinychat-content-canary-v1"));
       const saved = await storage.readCanary();
       if (!saved || this.unseal("continuity", "backend", "canary", saved) !== "tinychat-content-canary-v1") throw new Error();

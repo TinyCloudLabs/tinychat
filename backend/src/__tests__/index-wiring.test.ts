@@ -63,6 +63,11 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
   const express = Object.assign(() => fakeApp, { raw: middleware, json: middleware });
   const moduleExports = {};
   const known: Record<string, any> = {
+    "./services/content-store.js": {
+      KvContentBlobStore: class {},
+      assertNoContentKey: async () => {},
+      ContentStore: class { async assertContinuity() {} },
+    },
     fs: { existsSync: () => false },
     path: load("node:path"),
     url: load("node:url"),
@@ -809,6 +814,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/content-continuity.js": { mountContentContinuityRoute: noop },
     "./services/content-store.js": {
       ...contentStore,
+      assertNoContentKey: async () => {},
       currentContentMaster: () => env.CONNECTOR_CONTENT_MASTER,
       ContentStore: class extends contentStore.ContentStore {
         async assertContinuity() {}

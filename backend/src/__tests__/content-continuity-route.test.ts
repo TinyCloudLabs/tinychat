@@ -25,3 +25,19 @@ test("admin GET returns commitment, DID and read-only result without secret or c
     expect(probes).toBe(1);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test("unset master diagnostic returns an error without hashing the empty string", async () => {
+  const app = express();
+  const key = "admin-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  mountContentContinuityRoute(app, { CREDENTIAL_COUNT_ADMIN_KEY: key }, "", "did:key:backend", async () => { throw new Error("must not probe"); });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/api/ops/content-continuity`, { headers: { "x-admin-key": key } });
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error).toBe("content_master_unset");
+    expect(body.contentMasterSha256).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain(contentMasterFingerprint(""));
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});

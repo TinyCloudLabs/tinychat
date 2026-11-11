@@ -170,6 +170,25 @@ export function assertStrongSecret(
   return bytes;
 }
 
+/** New content-key enrollment requires encoded random key material, never a passphrase.
+ * Encoding/byte checks reject obvious low-entropy inputs; operators must generate random bytes.
+ */
+export function assertNewContentMaster(value: string): void {
+  const key = value.trim();
+  const hex = /^(?:[0-9a-fA-F]{2}){32,}$/.test(key);
+  const normalized = key.replace(/-/g, "+").replace(/_/g, "/");
+  const bytes = Buffer.from(key, hex ? "hex" : "base64");
+  const canonicalBase64 = /^[A-Za-z0-9+/_-]+={0,2}$/.test(key)
+    && bytes.toString("base64").replace(/=+$/, "") === normalized.replace(/=+$/, "");
+  let repeated = false;
+  for (let period = 1; period <= bytes.length / 2; period++) {
+    if (bytes.every((byte, index) => byte === bytes[index % period])) { repeated = true; break; }
+  }
+  if ((!hex && !canonicalBase64) || bytes.length < 32 || new Set(bytes).size < 16 || repeated) {
+    throw new Error("[startup] FATAL: new content master must encode at least 32 random bytes as hex or base64");
+  }
+}
+
 // ── Master keys + HKDF derivation (§4.2) ─────────────────────────────
 
 const validatedMasters = new Set<string>();
