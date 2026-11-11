@@ -207,6 +207,11 @@ test("v1 copies require native ownership proof, and an explicit claim hides the 
     active = "did:A";
     beginStorageAccountSession({}, "did:A", "space:A");
     expect((await fresh.loadNote(legacyId))?.md).toBe("A legacy text");
+    const adoptedId = id();
+    await fresh.adoptNote({ recordingId: adoptedId, md: "Already saved remote text", moments: [],
+      createdAt: "2026-11-11T00:00:00Z", editedAt: "2026-11-11T00:00:00Z", revision: 3 }, "did:A");
+    await fresh.deleteSyncedNote(adoptedId, "did:A");
+    expect(await fresh.loadNote(adoptedId)).toBeNull();
     await fresh.deleteSyncedNote(purgeLegacyId, "did:A");
     expect((await fresh.loadNote(purgeLegacyId))?.md).toBe("Unsynced legacy moments");
     await fresh.saveNote(unownedId, "Signed-out text", { owner: null });
@@ -258,4 +263,22 @@ test("another tab's account marker denies both directions instead of adopting it
   beginStorageAccountSession({}, "did:B", "space:B");
   values.set("exo.recordingNotes.account", JSON.stringify("did:A"));
   await expect(loadNote(recordingId)).rejects.toThrow("account changed");
+});
+
+
+test("a newly adopted space copy is synced, while adopting over a local edit never acknowledges that edit", async () => {
+  const { deleteSyncedNote } = await import("./recordingNotes");
+  const remoteId = id();
+  const localId = id();
+  const remote = { recordingId: remoteId, md: "Text already in the space", moments: [],
+    createdAt: "2026-11-11T00:00:00Z", editedAt: "2026-11-11T00:00:00Z", revision: 4 };
+  await adoptNote(remote, OWNER);
+  // The persisted acknowledgement is also what the local-copy move guard reads.
+  expect(JSON.parse(values.get(`exo.voiceNotes.note.${JSON.stringify([OWNER, remoteId])}`)!).syncedRevision).toBe(remote.revision);
+  await saveNote(localId, "Only local edit", { owner: OWNER });
+  expect((await adoptNote({ ...remote, recordingId: localId }, OWNER)).md).toBe("Only local edit");
+  await deleteSyncedNote(remoteId, OWNER);
+  await deleteSyncedNote(localId, OWNER);
+  expect(await loadNote(remoteId)).toBeNull();
+  expect((await loadNote(localId))?.md).toBe("Only local edit");
 });

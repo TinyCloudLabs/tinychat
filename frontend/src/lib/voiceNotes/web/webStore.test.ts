@@ -1,5 +1,6 @@
+import { hasVerifiedSpaceCopy } from "../audioPlaybackCache";
 import { beginStorageAccountSession, endStorageAccountSession } from "@/lib/storageStatus";
-import { loadNote, saveNote, markNoteSynced } from "../recordingNotes";
+import { adoptNote, loadNote, saveNote, markNoteSynced } from "../recordingNotes";
 import { describe, expect, test as bunTest } from "bun:test";
 import { createHash } from "node:crypto";
 import { base64ToBytes } from "../voiceNoteAudio";
@@ -1276,4 +1277,43 @@ test("TC-2785 purge retains synced notes while local reruns or audio preparation
   for (const state of ["queued", "running", "preparing"]) expect(await store.audio.size(`active-${state}`)).toBe(10);
   await store.setCaptureDefaults({ accountDid: "did:A", transitionGen: 4, transcriber: "on-device", identifySpeakers: false });
   expect((await store.listPending()).recordings).toHaveLength(3);
+});
+
+
+test("TC-2785 sign-out clears an adopted space note without deleting an unsynced local edit", async () => {
+  beginStorageAccountSession({}, "did:A", "test");
+  const store = await harness().open();
+  const remoteId = "adopted-space-copy";
+  const localId = "adopted-over-local-edit";
+  try {
+    for (const id of [remoteId, localId]) {
+      const note = await noteWith(store, id, [bytesOf(10)], "did:A");
+      await store.updateLedger({ id, did: "did:A", rev: note.rev!, patch: {
+        audio: { state: "saved", rowId: `row-${id}`, at: 1, verifiedInSpace: { sha256: "a".repeat(64), size: 10 } },
+        transcriptSync: { state: "saved", rev: 0, at: 1 },
+      } });
+    }
+    const remote = { recordingId: remoteId, md: "Text already in the space", moments: [],
+      createdAt: "2026-11-11T00:00:00Z", editedAt: "2026-11-11T00:00:00Z", revision: 4 };
+    await adoptNote(remote, "did:A");
+    await saveNote(localId, "Only local edit", { owner: "did:A" });
+    await adoptNote({ ...remote, recordingId: localId }, "did:A");
+    // App’s local-only audio choice does not count either already-synced recording.
+    expect((await store.listPending()).recordings.filter((note) => !hasVerifiedSpaceCopy(note))).toEqual([]);
+    await store.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+    expect((await store.listPending()).recordings).toEqual([]);
+    expect(await store.audio.size(remoteId)).toBe(0);
+    expect(await store.audio.size(localId)).toBe(0);
+    expect(await loadNote(remoteId, "did:A")).toBeNull();
+    endStorageAccountSession();
+    expect(await loadNote(localId)).toBeNull();
+    beginStorageAccountSession({}, "did:B", "test-B");
+    expect(await loadNote(localId)).toBeNull();
+    beginStorageAccountSession({}, "did:A", "test");
+    expect((await loadNote(localId))?.md).toBe("Only local edit");
+    expect(await loadNote(remoteId)).toBeNull();
+  } finally {
+    store.close();
+    endStorageAccountSession();
+  }
 });

@@ -1278,9 +1278,16 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
       counts.replace();
       counts.failDownload();
-      await expect(playFromSpace(seen.at(-1)!)).rejects.toThrow();
+      // Let IndexedDB callbacks settle before Bun polls the rejection matcher.
+      const failedDownload = await playFromSpace(seen.at(-1)!).then(
+        () => { throw new Error("Expected the replacement download to fail"); }, (error: unknown) => error,
+      );
+      await expect(Promise.reject(failedDownload)).rejects.toThrow();
       counts.offline();
-      await expect(playFromSpace(seen.at(-1)!)).rejects.toThrow("This audio changed; reconnect to play the latest version");
+      const offlineFailure = await playFromSpace(seen.at(-1)!).then(
+        () => { throw new Error("Expected offline playback to refuse the old audio"); }, (error: unknown) => error,
+      );
+      await expect(Promise.reject(offlineFailure)).rejects.toThrow("This audio changed; reconnect to play the latest version");
       expect(counts.local()).toBe(0);
     }, true);
   });

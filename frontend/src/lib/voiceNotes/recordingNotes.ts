@@ -244,11 +244,19 @@ export function adoptNote(remote: Omit<RecordingNote, "savedEditAt"> & { savedEd
       if (savedEditAt !== mine) await writeStored({ ...stored, savedEditAt }, boundOwner);
       return loaded({ ...stored, savedEditAt });
     }
-    const record: Omit<RecordingNote, "moments"> = { recordingId: remote.recordingId, md: remote.md,
+    const record: StoredRecordingNote = { recordingId: remote.recordingId, md: remote.md,
       createdAt: remote.createdAt, editedAt: remote.editedAt, savedEditAt: remote.savedEditAt ?? null,
-      revision: remote.revision };
-    await writeStored(record, boundOwner);
-    return loaded(record);
+      revision: remote.revision, syncedRevision: remote.revision };
+    let adopted = record;
+    let discarded = false;
+    await updateOwnedNote(remote.recordingId, boundOwner, (current) => {
+      if (!current) return record;
+      if ("deleted" in current) discarded = true;
+      else adopted = current;
+      return null;
+    });
+    if (discarded) throw new Error("This recording was discarded");
+    return loaded(adopted);
   });
 }
 
