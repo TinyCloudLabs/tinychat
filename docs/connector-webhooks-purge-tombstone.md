@@ -90,24 +90,7 @@ offers a retry", "…on disable stops the teardown with a retry") and by `Connec
 Backend ingest stores content rows for 14 days from `storedAt`. A lease-held sweeper enumerates
 every existing content index, not just the current ingest cohort, so rows keep expiring when the
 backend-ingest flag is off or an address leaves the cohort. Tombstones share the row's expiry and
-are pruned at that boundary; they cannot retain an id after its content row expires. A provider
-replay after the window may be delivered once again, subject to the browser's check against the
-user's own space. The §6.2 purge ledger separately tracks disconnect/user-purge IDs for at most 14
-days. Infrastructure backup/log retention remains to confirm with Amos.
+are pruned at that boundary; they cannot retain an ID after its content row expires.
+The §6.2 purge ledger separately tracks disconnect/user-purge IDs for at most 14 days.
 
-The **per-user overflow caps** (500 meetings / 200 MB, oldest-drop) record **no** tombstone, on
-purpose. The two markers above both mean *the user no longer has this*; a cap eviction means only
-*this did not fit today*. The cost, stated plainly: because a delivery carrying no provider
-timestamp is replayable indefinitely (§1 above), a replay of an evicted meeting re-fetches and
-re-stores it, evicting the current oldest row in turn — at the caps, the policy behaves as churn
-rather than as a hard bound. It is bounded and visible: every drop is counted
-(`stats().droppedOverflow`) and logged `op=overflow-drop reason=user_meeting_cap|user_byte_cap` with
-a hashed id.
-
-The alternative — tombstoning evicted ids — would permanently deny a heavy user a meeting they
-could otherwise re-sync after pruning, which is why it is not the default. Pinned by
-`backend/src/__tests__/connector-content-store.test.ts` (`[delta-08] overflow eviction is
-deliberately NON-permanent`).
-
-**Open for an operator decision, NOT decided here:** whether to add an eviction tombstone (a
-`reason`-tagged `RetentionTombstone`) once real cohort volumes show the churn loop actually firing.
+The per-user overflow caps (500 meetings / 200 MB, oldest-drop) do not create retention tombstones. Purge markers represent deletion requests; overflow eviction drops the oldest item to stay within the cap. Drops are counted (`stats().droppedOverflow`) and logged as `op=overflow-drop reason=user_meeting_cap|user_byte_cap` with a hashed ID. The behavior is pinned by `backend/src/__tests__/connector-content-store.test.ts` (`[delta-08] overflow eviction is deliberately NON-permanent`).
