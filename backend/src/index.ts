@@ -22,6 +22,7 @@ import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { mcpChatFromEnv } from "./mcp-meetings/config.js";
+import { botsFromEnv, createBotsRouter } from "./routes/bots.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
@@ -1025,6 +1026,9 @@ async function main() {
       }),
     );
   }
+
+  // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
+  app.use("/api/bots", createBotsRouter({ config: botsFromEnv(process.env), authMiddleware, paidLimiter: paidChatLimiter }));
 
   // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
   const mcpChat = mcpChatFromEnv(process.env);

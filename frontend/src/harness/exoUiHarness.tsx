@@ -52,6 +52,7 @@ import { savedNoteScreens } from "./screens/savedNote";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
 import { homeScreens } from "./screens/home";
+import { botsScreens } from "./screens/bots";
 import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
 
@@ -68,6 +69,7 @@ const SCREENS: HarnessScreen[] = [
   ...legacyScreens,
   ...shellScreens,
   ...homeScreens,
+  ...botsScreens,
   ...sheetsScreens,
   ...recorderScreens,
   recorderFinalHaloScreen,

@@ -37,6 +37,12 @@ services:
       MCP_CHAT_GRANT_EXPIRED_ERROR: ${MCP_CHAT_GRANT_EXPIRED_ERROR:-}
       MCP_CHAT_GRANT_REJECTED_ERROR: ${MCP_CHAT_GRANT_REJECTED_ERROR:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Tiny bots (Home Main bot chat); off unless enabled, configured, and the account is listed.
+      BOTS_ENABLED: ${BOTS_ENABLED:-false}
+      BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
+      BOTS_SERVICE_URL: ${BOTS_SERVICE_URL:-}
+      BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET:-}
+      BOTS_POST_TIMEOUT_MS: ${BOTS_POST_TIMEOUT_MS:-}
       # Optional meeting rollout; empty allowlists admit no accounts or models.
       MEETING_CONTENT_RETRIEVAL_ENABLED: ${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}
       MEETING_CONTENT_TEST_ACCOUNTS: ${MEETING_CONTENT_TEST_ACCOUNTS:-}
