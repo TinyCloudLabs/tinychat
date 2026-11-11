@@ -14,7 +14,7 @@ import {
 } from "@tinycloud/web-sdk";
 import type { ConnectWalletResult, EIP1193Provider, TinyCloudWebConfig } from "@tinyboilerplate/client";
 import { isSignInCancelled } from "./authErrors";
-import { homeSignInManifest, type HomeFeature } from "./homeFeatures";
+import { homeSignInManifest, webSignInManifest, type HomeFeature } from "./homeFeatures";
 import { setHomeReauthorizing } from "./homeReauthorizing";
 import type { WebSignInPrefetch } from "./webSignInPrefetch";
 
@@ -106,6 +106,7 @@ export async function reauthorizeHome(
   input: {
     address: string;
     features: readonly HomeFeature[];
+    homeSite?: boolean;
     config: Omit<TinyCloudWebConfig, "manifest" | "sessionStorage" | "siweConfig" | "nonce">;
     canCommit(): CommitBlocked | null;
   },
@@ -117,7 +118,8 @@ export async function reauthorizeHome(
     const { address, openkey, web3Provider } = await deps.connect();
     // Another account in OpenKey would sign in as someone else: refuse before anything is signed.
     if (address.toLowerCase() !== input.address.toLowerCase()) return { outcome: "wrong-account" };
-    const manifest = homeSignInManifest(await prefetch.manifest(), input.features, address);
+    const compose = input.homeSite === false ? webSignInManifest : homeSignInManifest;
+    const manifest = compose(await prefetch.manifest(), input.features, address);
     const nonce = await prefetch.nonceForSigning(address);
     const staged = stagedSessionStorage(deps.sessionStorage ?? new BrowserSessionStorage());
     const created = deps.createTcw(prefetch.guardSigning(web3Provider), {

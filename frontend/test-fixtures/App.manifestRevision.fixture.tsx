@@ -105,7 +105,7 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
 }));
 mock.module("@/lib/voiceNotes/nativeVoiceNotes", () => ({
   ...nativeVoiceNotesApi,
-  VoiceNotes: { ...nativeVoiceNotesApi.VoiceNotes, getCaptureDefaults: async () => ({ status: "signed_in", accountDid: PRINCIPAL, transitionGen: 0 }) },
+  VoiceNotes: { ...nativeVoiceNotesApi.VoiceNotes, status: async () => ({ intent: "stopped" }), getCaptureDefaults: async () => ({ status: "signed_in", accountDid: PRINCIPAL, transitionGen: 0 }) },
 }));
 mock.module("@/lib/voiceNotes/accountHandoff", () => ({
   ...handoffApi,

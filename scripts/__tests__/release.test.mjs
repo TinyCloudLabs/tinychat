@@ -738,7 +738,8 @@ test('web-home deploys the Home build after web, only when requested and configu
   const guard = /- name: Refuse a build that is not the Home site\n((?: {8,}.*\n)+)/.exec(job)?.[1];
   assert.ok(guard, 'web-home has a guard step for the Home build');
   assert.match(guard, /frontend\/dist\/manifest\.webmanifest/);
-  assert.match(guard, /TinyCloud Home/);
+  // Both builds are named TinyCloud Home; only the Home build's manifest id is /chat/feed.
+  assert.match(guard, /if \[ "\$id" != "\/chat\/feed" \]; then/);
   assert.match(guard, /::error::/);
   assert.ok(stepAt('Build the Home site') < stepAt('Refuse a build that is not the Home site'), 'the guard comes after the build');
   assert.ok(stepAt('Refuse a build that is not the Home site') < stepAt('Upload to the Home Pages project'), 'the guard comes before the upload');

@@ -15,6 +15,24 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.10
+
+### Patch Changes
+
+- 761a6ba: The web build includes connector secret permissions and the decrypt permission at sign-in for devices that have used Connectors. First use requests access through OpenKey in place. Remove the unused custom AssemblyAI key permission from the manifest.
+
+## 0.14.0-beta.9
+
+### Minor Changes
+
+- aaf1236: iOS: TinyCloud Home ships recording shortcuts that work right after install (TC-2740). Siri, Spotlight, the Shortcuts app and the Action button get **Record** ("Start recording in TinyCloud Home", "Record a note in TinyCloud Home") and **Stop Recording**; Control Center and the Lock Screen get a **Record a Voice Note** control that records without unlocking; the home-screen quick action uses the same start. Every recording shows a Live Activity with a timer and a Stop button. The test-only "TinyCloud Home probe" control and shortcut are gone.
+
+## 0.14.0-beta.8
+
+### Minor Changes
+
+- b589ec8: Android: add a Quick Settings "Record" tile that opens TinyCloud Home and starts a voice note, and relabel the launcher shortcut "Record".
+
 ## 0.14.0-beta.7
 
 ### Minor Changes

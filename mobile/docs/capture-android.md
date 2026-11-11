@@ -25,6 +25,18 @@ then moves remote cleanup into the outbox and removes local artifacts. Legacy
 orphan audio is probed with `MediaExtractor`; playable orphans are imported as
 `ownerUnknown`, and unplayable ones move to quarantine.
 
+## Launch surfaces
+
+Both ship with the APK and need no setup. The launcher shortcut "Record"
+(`record_voice_note`, long-press the app icon) and the Quick Settings tile
+"Record" (`RecordTileService`; add it from the Quick Settings edit panel) open
+`MainActivity` with `xyz.tinycloud.exo.capture.RECORD`. The tile adds the
+`xyz.tinycloud.exo.capture.extra.SOURCE` extra `tile`; `LaunchSource` allowlists
+it, and anything else records as `app_shortcut`. The tile never opens the mic
+itself, because a microphone foreground service must start while the app is
+visible. On a locked device it asks for unlock first. It shows as
+active while a recording is live; tapping it then just shows the recorder.
+
 ## Device checks
 
 Build with `bun run --cwd mobile sync android` and `cd mobile/android &&
