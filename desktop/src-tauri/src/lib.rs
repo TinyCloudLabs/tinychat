@@ -96,6 +96,7 @@ pub fn run() {
                     meter,
                 )) as std::sync::Arc<dyn audio_actual::AudioProvider>,
             )
+            .manage(record_launch::StartRequest::default())
             .plugin(tauri_plugin_settings::init())
             .plugin(tauri_plugin_transcription::init())
             .plugin(tauri_plugin_local_stt::init(
@@ -132,6 +133,7 @@ pub fn run() {
             recorder::engine::recorder_discard_durable,
             recorder::engine::recorder_finish,
             recorder_quit_anyway,
+            record_launch::recorder_take_start_request,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
@@ -181,6 +183,7 @@ pub fn run() {
             recorder::engine::recorder_discard_durable,
             recorder::engine::recorder_finish,
             recorder_quit_anyway,
+            record_launch::recorder_take_start_request,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
