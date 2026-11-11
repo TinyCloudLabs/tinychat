@@ -166,6 +166,7 @@ function contentStats(
     tombstoneRefusals: 0,
     purgeRefusals: 0,
     writeFailures: 0,
+    unreadableIndexes: 0,
     swept: 0,
     reconciled: 0,
     ...overrides,
@@ -245,6 +246,13 @@ describe("W8 — counters (plan §8.1 W8)", () => {
     expect(serialized).not.toContain(SECRET_A);
   });
 
+  test("[delta-09] unreadable content indexes are counted in the operator snapshot", async () => {
+    const snapshot = await collectIngestObservability({
+      content: () => contentStats({ unreadableIndexes: 2 }),
+    });
+
+    expect(snapshot.unreadableIndexes).toBe(2);
+  });
   test("[delta-09] every W8 counter is present: deliveries, fetch ok/fail, DLQ depth, overflow drops, reconcile lag, credential-op audit", async () => {
     recordReconcileLag(90_000);
     recordCredentialAudit("op=credential-store result=ok source=fireflies aid=abc");
@@ -259,7 +267,12 @@ describe("W8 — counters (plan §8.1 W8)", () => {
       worker: () =>
         workerStats({ fetched: 7, failed: 2, deadLettered: 3, p95LagMs: 1_000 }),
       content: () =>
-        contentStats({ droppedOverflow: 4, rejectedTooLarge: 1, reconciled: 1 }),
+        contentStats({
+          droppedOverflow: 4,
+          rejectedTooLarge: 1,
+          reconciled: 1,
+          unreadableIndexes: 2,
+        }),
       deadLetters: probe,
       cohort: async () =>
         new Set([ADDRESS_A.toLowerCase(), ADDRESS_B.toLowerCase()]),
@@ -282,6 +295,7 @@ describe("W8 — counters (plan §8.1 W8)", () => {
     expect(snapshot.credentialOps.store).toBe(1);
     expect(snapshot.credentialOps.total).toBe(1);
     expect(snapshot.cohortSize).toBe(2);
+    expect(snapshot.unreadableIndexes).toBe(2);
   });
 
   test("[delta-09] DLQ depth is read one tenant at a time — never concurrently on one space", async () => {
@@ -424,7 +438,8 @@ describe("W8 — the operator surface (delta 9: DLQ depth visible)", () => {
     );
     const reporter = new IngestObservabilityReporter({
       worker: () => workerStats({ fetched: 4, failed: 1, deadLettered: 3 }),
-      content: () => contentStats({ droppedOverflow: 2 }),
+      content: () =>
+        contentStats({ droppedOverflow: 2, unreadableIndexes: 3 }),
       deadLetters: probe,
       cohort: async () =>
         new Set([ADDRESS_A.toLowerCase(), ADDRESS_B.toLowerCase()]),
@@ -447,7 +462,8 @@ describe("W8 — the operator surface (delta 9: DLQ depth visible)", () => {
     expect(line).toContain("deliveries=4");
     expect(line).toContain("fetch_ok=4");
     expect(line).toContain("fetch_fail=4");
-    expect(line).toContain("overflow_drops=2");
+    expect(line).toContain("content_index_unreadable=3");
+    expect(emitted.snapshot.unreadableIndexes).toBe(3);
     expect(emitted.snapshot.dlqDepth).toBe(3);
 
     const all = capture.lines.join("\n");
