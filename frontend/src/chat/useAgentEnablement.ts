@@ -157,6 +157,22 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       scheduleProbe(result.probeFailed);
     }
   };
+  const waitForInitialProbe = (signal: AbortSignal): Promise<void> => {
+    if (state.capability !== "probing" || signal.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const finish = () => {
+        listeners.delete(onChange);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const onChange = () => {
+        if (state.capability !== "probing") finish();
+      };
+      listeners.add(onChange);
+      signal.addEventListener("abort", finish, { once: true });
+      onChange();
+    });
+  };
   const invalidate = () => {
     operation++;
     probeSequence++;
@@ -245,7 +261,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     scheduleProbe();
   };
   return {
-    agentEnabledRef, activeThreadIdRef, privateAccessRef, refresh, onEnable, onDisconnect, onDelegationError,
+    agentEnabledRef, activeThreadIdRef, privateAccessRef, refresh, waitForInitialProbe, onEnable, onDisconnect, onDelegationError,
     getSnapshot: () => state,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     /** Notification carries no grants or state; receiving tabs always ask the server. */
@@ -287,7 +303,15 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
         document.removeEventListener("visibilitychange", visible);
       };
     },
-    dispose: () => { listening = false; clearPollTimer(); invalidate(); disposed = true; agentEnabledRef.current = false; listeners.clear(); },
+    dispose: () => {
+      listening = false;
+      clearPollTimer();
+      if (state.capability === "probing") update({ capability: "unavailable" });
+      invalidate();
+      disposed = true;
+      agentEnabledRef.current = false;
+      listeners.clear();
+    },
   };
 }
 export type AgentAccessController = ReturnType<typeof createAgentAccessController>;
@@ -304,6 +328,7 @@ function agentAccessOff(opts: UseAgentEnablementOptions): AgentAccessController 
   const off = createAgentAccessController(opts);
   return {
     ...off,
+    waitForInitialProbe: async () => {},
     refresh: async () => {},
     onEnable: async () => {},
     onDisconnect: async () => {},
