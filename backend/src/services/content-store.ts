@@ -121,9 +121,10 @@ const GCM_IV_BYTES = 12;
 const GCM_TAG_BYTES = 16;
 const DEK_BYTES = 32;
 
-/** The one key path prefix. Backend-own keys are auto-prefixed under `ops.tinychat.backend`. */
+/** Backend-owned ContentStore keys. */
 const CONTENT_KEY_PREFIX = "connector-content";
 const CONTENT_INDEX_KEY_PREFIX = "connector-content-index";
+const CONTENT_KEY_FAILURE_PREFIX = "connector-content-key-failure";
 
 // ── Result / row shapes ──────────────────────────────────────────────
 
@@ -228,6 +229,13 @@ export interface ContentBlobStore {
     blob: SealedBlob,
   ): Promise<void>;
   remove(source: string, address: string, sourceId: string): Promise<void>;
+  readKeyFailureSince(source: string, address: string): Promise<string | null>;
+  writeKeyFailureSince(
+    source: string,
+    address: string,
+    firstFailureAt: string,
+  ): Promise<void>;
+  clearKeyFailureSince(source: string, address: string): Promise<void>;
   /** W7's teardown primitive: every blob and the index for ONE tenant. */
   removeAll(source: string, address: string): Promise<void>;
 }
@@ -424,6 +432,13 @@ class ContentIndexUnreadableError extends Error {
   }
 }
 
+class ContentMasterUnavailableError extends Error {
+  constructor() {
+    super("content master is unavailable");
+    this.name = "ContentMasterUnavailableError";
+  }
+}
+
 export class ContentStore implements ContentSink, RetentionGuard {
   private readonly now: () => number;
   private readonly master: () => string;
@@ -466,6 +481,78 @@ export class ContentStore implements ContentSink, RetentionGuard {
   stats(): ContentStoreStats {
     return { ...this.counters };
   }
+  private contentMaster(): string {
+    try {
+      return this.master();
+    } catch {
+      throw new ContentMasterUnavailableError();
+    }
+  }
+  private async noteRetentionFailure(
+    source: string,
+    address: string,
+  ): Promise<number | null> {
+    try {
+      const existing = await this.blobs.readKeyFailureSince(source, address);
+      const recorded = existing === null ? NaN : Date.parse(existing);
+      if (Number.isFinite(recorded)) return recorded;
+      const firstFailureAt = this.now();
+      await this.blobs.writeKeyFailureSince(
+        source,
+        address,
+        new Date(firstFailureAt).toISOString(),
+      );
+      errorContent(
+        `op=retention result=content_index_unavailable first_failure=true ` +
+          `source=${source} aid=${hashed(address)}`,
+      );
+      return firstFailureAt;
+    } catch {
+      errorContent(
+        `op=retention result=failure_marker_unavailable source=${source} ` +
+          `aid=${hashed(address)}`,
+      );
+      return null;
+    }
+  }
+
+  private async clearRetentionFailure(
+    source: string,
+    address: string,
+  ): Promise<void> {
+    try {
+      await this.blobs.clearKeyFailureSince(source, address);
+    } catch {
+      warnContent(
+        `op=retention result=failure_marker_clear_failed source=${source} ` +
+          `aid=${hashed(address)}`,
+      );
+    }
+  }
+
+  private async removeExpiredBlobs(
+    source: string,
+    address: string,
+    cutoff: number,
+  ): Promise<number> {
+    let removed = 0;
+    try {
+      for (const blob of await this.blobs.listContentIds(source, address)) {
+        const storedAt = Date.parse(blob.storedAt ?? blob.updatedAt);
+        if (!Number.isFinite(storedAt) || storedAt <= cutoff) {
+          await this.blobs.remove(source, address, blob.sourceId);
+          removed += 1;
+        }
+      }
+    } catch {
+      errorContent(
+        `op=retention result=age_fallback_failed source=${source} ` +
+          `aid=${hashed(address)}`,
+      );
+    }
+    return removed;
+  }
+
 
   /**
    * The worker's {@link ContentSink}. Upsert identity is `(source, source_id)` SCOPED BY
@@ -736,7 +823,35 @@ export class ContentStore implements ContentSink, RetentionGuard {
   ): Promise<{ removed: number }> {
     const target = normalizeTarget(source, address);
     return this.lane(target.source, target.address, async () => {
-      const index = await this.openIndex(target.source, target.address);
+      let index: ContentIndex;
+      try {
+        this.contentMaster();
+        index = await this.openIndex(target.source, target.address);
+      } catch (error) {
+        if (
+          !(error instanceof ContentIndexUnreadableError) &&
+          !(error instanceof ContentMasterUnavailableError)
+        ) {
+          throw error;
+        }
+        const firstFailureAt = await this.noteRetentionFailure(
+          target.source,
+          target.address,
+        );
+        let removed = 0;
+        if (
+          firstFailureAt !== null &&
+          this.now() - firstFailureAt >= this.retentionMs
+        ) {
+          removed = await this.removeExpiredBlobs(
+            target.source,
+            target.address,
+            this.now() - this.retentionMs,
+          );
+        }
+        return { removed };
+      }
+      await this.clearRetentionFailure(target.source, target.address);
       const now = this.now();
       const cutoff = now - this.retentionMs;
       const keep: ContentMeta[] = [];
@@ -822,28 +937,29 @@ export class ContentStore implements ContentSink, RetentionGuard {
       const safetyMarginMs = Math.max(0, input.safetyMarginMs ?? 0);
       const cutoff = now - Math.max(0, this.retentionMs - safetyMarginMs);
       try {
+        this.contentMaster();
         index = await this.openIndex(target.source, target.address);
       } catch (error) {
-        if (!(error instanceof ContentIndexUnreadableError)) throw error;
-        errorContent(
-          `op=retention-sweep result=unreadable_index source=${target.source} ` +
-            `aid=${hashed(target.address)}`,
-        );
-        let swept = 0;
-        for (const blob of await this.blobs.listContentIds(
+        if (
+          !(error instanceof ContentIndexUnreadableError) &&
+          !(error instanceof ContentMasterUnavailableError)
+        ) {
+          throw error;
+        }
+        const firstFailureAt = await this.noteRetentionFailure(
           target.source,
           target.address,
-        )) {
-          const storedAt = Date.parse(blob.storedAt ?? blob.updatedAt);
-          if (!Number.isFinite(storedAt) || storedAt <= cutoff) {
-            await this.blobs.remove(
+        );
+        const failureHorizonElapsed =
+          firstFailureAt !== null &&
+          now - firstFailureAt >= this.retentionMs;
+        const swept = failureHorizonElapsed
+          ? await this.removeExpiredBlobs(
               target.source,
               target.address,
-              blob.sourceId,
-            );
-            swept += 1;
-          }
-        }
+              cutoff,
+            )
+          : 0;
         return {
           swept,
           bytesFreed: 0,
@@ -852,6 +968,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
           unreadableIndex: true,
         };
       }
+      await this.clearRetentionFailure(target.source, target.address);
       const expirationCutoff = now + safetyMarginMs;
       const stamp = new Date(now).toISOString();
 
@@ -1129,13 +1246,14 @@ export class ContentStore implements ContentSink, RetentionGuard {
     try {
       if (
         blob.keyFingerprint !== undefined &&
-        blob.keyFingerprint !== contentMasterFingerprint(this.master())
+        blob.keyFingerprint !== contentMasterFingerprint(this.contentMaster())
       ) {
         throw new ContentIndexUnreadableError();
       }
       const plaintext = this.unseal(source, address, "index", blob);
       index = parseIndex(plaintext, this.now());
-    } catch {
+    } catch (error) {
+      if (error instanceof ContentMasterUnavailableError) throw error;
       throw new ContentIndexUnreadableError();
     }
     const now = this.now();
@@ -1203,7 +1321,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
   ): SealedBlob {
     const aad = envelopeAad(source, address, scope);
     const dek = randomBytes(DEK_BYTES);
-    const master = this.master();
+    const master = this.contentMaster();
     return {
       ciphertext: seal(dek, Buffer.from(plaintext, "utf8"), aad),
       wrappedDEK: seal(keyEncryptionKey(master, source, address), dek, aad),
@@ -1222,7 +1340,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     blob: SealedBlob,
   ): string {
     const aad = envelopeAad(source, address, scope);
-    const kek = keyEncryptionKey(this.master(), source, address);
+    const kek = keyEncryptionKey(this.contentMaster(), source, address);
     const dek = open(kek, blob.wrappedDEK, aad);
     return open(dek, blob.ciphertext, aad).toString("utf8");
   }
@@ -1417,6 +1535,7 @@ function normalizeTarget(
  */
 export class InMemoryContentBlobStore implements ContentBlobStore {
   private readonly blobs = new Map<string, string>();
+  private readonly keyFailures = new Map<string, string>();
 
   async readIndex(source: string, address: string): Promise<SealedBlob | null> {
     return this.get(indexSlot(source, address));
@@ -1428,6 +1547,27 @@ export class InMemoryContentBlobStore implements ContentBlobStore {
     blob: SealedBlob,
   ): Promise<void> {
     this.blobs.set(indexSlot(source, address), JSON.stringify(blob));
+  }
+  async readKeyFailureSince(
+    source: string,
+    address: string,
+  ): Promise<string | null> {
+    return this.keyFailures.get(indexSlot(source, address)) ?? null;
+  }
+
+  async writeKeyFailureSince(
+    source: string,
+    address: string,
+    firstFailureAt: string,
+  ): Promise<void> {
+    this.keyFailures.set(indexSlot(source, address), firstFailureAt);
+  }
+
+  async clearKeyFailureSince(
+    source: string,
+    address: string,
+  ): Promise<void> {
+    this.keyFailures.delete(indexSlot(source, address));
   }
 
   async read(
@@ -1483,6 +1623,7 @@ export class InMemoryContentBlobStore implements ContentBlobStore {
         this.blobs.delete(key);
       }
     }
+    this.keyFailures.delete(indexSlot(source, address));
   }
 
   /** Every stored byte, exactly as the substrate would hold it. */
@@ -1508,6 +1649,11 @@ function contentSlot(
   sourceId: string,
 ): string {
   return `content:${source} ${address} ${sourceId}`;
+}
+
+function keyFailureKey(source: string, address: string): string {
+  if (!isValidSource(source)) throw new Error("Invalid content source");
+  return `${CONTENT_KEY_FAILURE_PREFIX}/${source}/${normalizeWebhookAddress(address)}`;
 }
 
 /**
@@ -1544,6 +1690,66 @@ export class KvContentBlobStore implements ContentBlobStore {
   ): Promise<void> {
     return this.run(() => this.writeBlob(indexKey(source, address), blob));
   }
+  async readKeyFailureSince(
+    source: string,
+    address: string,
+  ): Promise<string | null> {
+    const key = keyFailureKey(source, address);
+    const result = await this.run(() =>
+      withSessionRefresh(this.node, async () => {
+        const value = await this.node.kv.get(key);
+        if (isKvMissingKeyResult(value, key)) return null;
+        return assertKvResult(value);
+      }),
+    );
+    let raw: unknown = result;
+    while (
+      typeof raw === "object" &&
+      raw !== null &&
+      "data" in raw
+    ) {
+      raw = (raw as { data: unknown }).data;
+    }
+    if (raw === null || raw === undefined) return null;
+    const value =
+      typeof raw === "string"
+        ? (() => {
+            try {
+              return JSON.parse(raw) as unknown;
+            } catch {
+              return null;
+            }
+          })()
+        : raw;
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      typeof (value as { firstFailureAt?: unknown }).firstFailureAt !== "string"
+    ) {
+      throw new Error("content key failure marker is unreadable");
+    }
+    return (value as { firstFailureAt: string }).firstFailureAt;
+  }
+
+  async writeKeyFailureSince(
+    source: string,
+    address: string,
+    firstFailureAt: string,
+  ): Promise<void> {
+    const key = keyFailureKey(source, address);
+    await this.run(() =>
+      withSessionRefresh(this.node, async () => {
+        assertKvResult(
+          await this.node.kv.put(key, { firstFailureAt }),
+        );
+      }),
+    );
+  }
+
+  clearKeyFailureSince(source: string, address: string): Promise<void> {
+    return this.run(() => this.deleteKey(keyFailureKey(source, address)));
+  }
+
 
   read(
     source: string,
@@ -1633,6 +1839,9 @@ export class KvContentBlobStore implements ContentBlobStore {
       );
     }
     await this.run(() => this.deleteKey(indexKey(source, address)));
+    await this.run(() =>
+      this.deleteKey(keyFailureKey(source, address)),
+    );
   }
 
   private async readBlob(key: string): Promise<SealedBlob | null> {
@@ -1762,7 +1971,11 @@ export function createContentIndexDirectory(
     }
 
     const entries = new Map<string, ContentIndexLocation>();
-    for (const prefix of [CONTENT_INDEX_KEY_PREFIX, CONTENT_KEY_PREFIX]) {
+    for (const prefix of [
+      CONTENT_INDEX_KEY_PREFIX,
+      CONTENT_KEY_PREFIX,
+      CONTENT_KEY_FAILURE_PREFIX,
+    ]) {
       const marker = `${prefix}/`;
       const response = await withSessionRefresh(node, async () =>
         assertKvResult(await kv.list!({ prefix: marker })),
@@ -1772,13 +1985,16 @@ export function createContentIndexDirectory(
         if (markerIndex < 0) continue;
         const parts = key.slice(markerIndex + marker.length).split("/");
         const isIndex = prefix === CONTENT_INDEX_KEY_PREFIX;
-        if (parts.length !== (isIndex ? 2 : 3)) continue;
+        const isFailure = prefix === CONTENT_KEY_FAILURE_PREFIX;
+        if (parts.length !== (isIndex || isFailure ? 2 : 3)) continue;
         const [source, rawAddress, sourceId] = parts;
         if (
           source === undefined ||
           rawAddress === undefined ||
           !isValidSource(source) ||
-          (!isIndex && (sourceId === undefined || !isValidMeetingId(sourceId)))
+          (!isIndex &&
+            !isFailure &&
+            (sourceId === undefined || !isValidMeetingId(sourceId)))
         ) continue;
         let address: string;
         try {
