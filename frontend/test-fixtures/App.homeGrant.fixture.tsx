@@ -235,7 +235,7 @@ function memoryLocalStorage(): Storage {
   };
 }
 async function mount(path = "/chat") {
-  restoreDom = installDom();
+  restoreDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
   window.history.pushState({}, "", path);
   host = document.createElement("div");
   document.body.append(host);

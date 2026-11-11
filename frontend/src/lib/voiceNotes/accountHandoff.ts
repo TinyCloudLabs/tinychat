@@ -4,7 +4,7 @@ import { deviceName } from "@/lib/platform";
 import type { VoiceNotePipeline } from "./voiceNotePipeline";
 
 const TRANSITION_KEY = "exo.capture.transitionGen";
-const FAILURE = `Couldn't update ${deviceName()}'s recording settings. Try again.`;
+const FAILURE = "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.";
 export class AccountStateTimeout extends Error {}
 
 export function nextTransitionGen(nativeGen: number): number {
