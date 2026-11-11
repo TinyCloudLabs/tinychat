@@ -20,7 +20,7 @@ export const STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE = `${TRANSCRIPT_NOT_SAVED_SE
 export const STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE =
   `${TRANSCRIPT_NOT_SAVED_SENTENCE} Your recording is safe on this device. ${TRANSCRIBE_AGAIN_SENTENCE}`;
 const STORAGE_DELETION_NOTE =
-  "Some deletions may lower your storage usage, but Exo can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
+  "Some deletions may lower your storage usage, but TinyCloud Home can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
 const STORAGE_NO_LARGER_PLAN = "There's no larger plan to buy.";
 /** Detail under the main line on the detailed surfaces. Free sees only the first sentence; paid and unknown get both. */
 export const STORAGE_FULL_DETAIL: Record<"free" | "paid", string> = {

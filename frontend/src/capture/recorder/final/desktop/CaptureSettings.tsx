@@ -433,7 +433,7 @@ export function SettingsPanel({
     return (
       <>
         <p className="cs-lede">
-          Local transcription and meeting audio need the Exo app.
+          Local transcription and meeting audio need the TinyCloud Home app.
         </p>
         <MicrophoneSection microphone={microphone} />
         <AudioCacheSettings />

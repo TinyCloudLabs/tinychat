@@ -70,7 +70,7 @@ try {
   await waitForSignIn(context, config);
   console.log("Signed in.");
 
-  const composer = page.getByPlaceholder(/Message TinyCloud Chat/i);
+  const composer = page.getByPlaceholder(/Message TinyCloud Home/i);
   await composer.waitFor({ state: "visible", timeout: 30_000 });
 
   // Give the capability probe a moment to flip the agent path on (enabled).

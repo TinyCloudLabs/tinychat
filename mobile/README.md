@@ -1,12 +1,12 @@
-# Exo mobile
+# TinyCloud Home mobile
 
-iOS and Android app for **Exo**, wrapped in [Capacitor 8](https://capacitorjs.com)
+iOS and Android app for **TinyCloud Home**, wrapped in [Capacitor 8](https://capacitorjs.com)
 around the existing `frontend/` React app (the same SPA that ships to the web and
 to the Tauri desktop app), plus native plugins for what a web view cannot do.
 
 ## Layout
 
-- `capacitor.config.ts`: app id `xyz.tinycloud.exo`, name `Exo`, `webDir`
+- `capacitor.config.ts`: app id `xyz.tinycloud.exo`, name `TinyCloud Home`, `webDir`
   `../frontend/dist`. `EXO_DEV_SERVER_URL` switches it to live reload.
 - `android/`: Gradle project. App-local plugin code lives in
   `app/src/main/java/xyz/tinycloud/exo/`.
@@ -138,7 +138,7 @@ app's signing identity, which does not exist yet.
 and `/exchange` accepts any signed-in session. So an app that starts its *own*
 flow, gets a victim to consent on Google's real screen and captures the return
 can redeem the code into its own account (RFC 8252 §8.6). PKCE only protects
-flows Exo started. Two switches, both off by default:
+flows TinyCloud Home started. Two switches, both off by default:
 
 - backend `GOOGLE_OAUTH_NATIVE_RETURN=true`: accept `native.` states at `/start`
   and `/autojoin/begin`, and let `/callback` redirect them to the deep link.
@@ -317,12 +317,12 @@ delivers with the **app signing key** (Play App Signing), a different
 certificate. Android installs an update only over an app signed with the same
 certificate, so the two can't update each other: a phone with the sideloaded
 APK can't take the Play version (or the reverse) without uninstalling first,
-which deletes Exo's local data (sign-in, pending voice notes).
+which deletes TinyCloud Home's local data (sign-in, pending voice notes).
 
 - Until the Play app exists, the artifact's APK is for internal testers only.
   Tell them to uninstall it before installing from Play.
 - Once Play has the release, sideload Play's own build instead: Play Console →
-  Exo → App bundle explorer → the release → Downloads → **Signed, universal
+  TinyCloud Home → App bundle explorer → the release → Downloads → **Signed, universal
   APK**. It is signed with the app signing key, so it and Play installs update
   each other.
 
@@ -389,7 +389,7 @@ which deletes Exo's local data (sign-in, pending voice notes).
 ### Play Console checklist (internal testing)
 
 - [ ] Google Play developer account (organization; D-U-N-S number needed) and
-  the app: name **Exo**, package `xyz.tinycloud.exo` (permanent once uploaded),
+  the app: name **TinyCloud Home**, package `xyz.tinycloud.exo` (permanent once uploaded),
   app, free.
 - [ ] Play App Signing: accept Google-managed signing on the first upload. The
   CI artifact's `.aab` is signed with the upload key above. Record Play's
@@ -398,14 +398,14 @@ which deletes Exo's local data (sign-in, pending voice notes).
 - [ ] **Internal testing** track: create a release, upload the first `.aab` by
   hand (the Play API cannot create an app's first release), add a tester list
   (emails or a Google Group), share the opt-in link.
-- [ ] **Privacy policy URL.** Required for an app that records audio. Exo has no
+- [ ] **Privacy policy URL.** Required for an app that records audio. TinyCloud Home has no
   privacy policy page yet.
 - [ ] **Data safety.** Answer for the whole app, web view included:
   - Audio, voice or sound recordings: collected, not shared, for app
     functionality. Recording starts only when the user taps Record, and the
     note is stored in the user's own TinyCloud space (KV and SQL in their
     space on the TinyCloud node, written by the app through the TinyCloud
-    SDK, not by the Exo backend). Encrypted in transit (HTTPS).
+    SDK, not by the TinyCloud Home backend). Encrypted in transit (HTTPS).
   - Also declare the account data used for OpenKey sign-in (email) and the
     chat/meeting content the app stores in the user's space. Check current
     behavior before answering, including what can be deleted and how.
@@ -416,7 +416,7 @@ which deletes Exo's local data (sign-in, pending voice notes).
   Play asks for a short video of that flow.
 - [ ] **`RECORD_AUDIO` justification.** It has no Play declaration form;
   Data safety and the store listing cover it. Use: "Records voice notes only
-  after the user taps Record; the system mic indicator and Exo's notification
+  after the user taps Record; the system mic indicator and TinyCloud Home's notification
   are shown while recording." The OS permission prompt comes from the
   VoiceNotes plugin on first record.
 - [ ] **`POST_NOTIFICATIONS`** (Android 13+) is declared for the recording
@@ -449,9 +449,9 @@ TinyCloud brand blue `#4473B9`:
 - The web app's (PWA) manifest icons, `any` and `maskable` at 192 and 512 px,
   and its 180 px `apple-touch-icon`, in `frontend/public/icons/`.
 
-**Exo has no designed mark yet.** The source is the TinyCloud cloud mark
+**TinyCloud Home has no designed mark yet.** The source is the TinyCloud cloud mark
 (`logo/tinycloud-icon.png` in TinyCloudLabs/docs; the desktop icons are
-still placeholders). For a real Exo icon, replace `tinycloud-mark.png` with
+still placeholders). For a real TinyCloud Home icon, replace `tinycloud-mark.png` with
 the designed mark (transparent background, about 3:2) and rerun the script.
 Raster sources up to roughly 500 px wide, like this one, are slightly soft at
 the iOS 1024 px size. A vector or 2048 px export avoids that.
@@ -542,7 +542,7 @@ Xcode 26.6.
 
 ### Privacy manifest
 
-`App/App/PrivacyInfo.xcprivacy` covers Exo's own code: the App target and the
+`App/App/PrivacyInfo.xcprivacy` covers TinyCloud Home's own code: the App target and the
 bundled web app. Capacitor and Cordova ship their own manifests, and neither
 uses a required-reason API.
 
@@ -746,8 +746,10 @@ The session JWK never touches WebView localStorage. Details:
   malformed host fails sign-in with the "not configured in this build" error. The backend nonce for the session SIWE is address-less: `GET
   /api/auth/nonce` without `?address=` issues an unbound, single-use,
   5-minute nonce that `/verify` binds to the recovered signer.
-- The delegation covers the manifest's applications-space KV/SQL entries plus
-  capabilities/read — no secrets or vault. Everything that unlocks or stores
+- The delegation covers the manifest's applications-space KV, SQL and hook
+  entries (not `tinycloud.space`) plus capabilities/read, the same grant as the
+  web sign-in; OpenKey's Home native client ceiling matches it (TC-2720) and the
+  `Native ceiling` CI job checks that. No secrets or vault. Everything that unlocks or stores
   credentials (connect, Sync now, disconnect key-delete, own AssemblyAI key,
   the background drains) is gated behind `secretsAvailable()` for native
   delegation sessions and shows "set up from Exo on the web or desktop" copy.

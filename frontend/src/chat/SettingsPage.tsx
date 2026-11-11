@@ -14,11 +14,13 @@ import {
   RefreshCwIcon,
   ShieldCheckIcon,
   SunIcon,
+  Trash2Icon,
   UserIcon,
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { StorageFullMessage } from "./StorageFullDialog";
 import { openManageStorage } from "@/lib/openManageStorage";
+import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -51,7 +53,6 @@ import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
-import { setAppsFeedEnabled, useAppsFeedEnabled } from "../lib/appsFeedFeature";
 import { TinyCloudSettings } from "./TinyCloudSettings";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
@@ -104,7 +105,6 @@ export function SettingsPage({
   const agentAccess = useAgentAccess();
   const recordingCovered = useHomeFeatureAccess().covered("recording");
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
-  const appsFeedEnabled = useAppsFeedEnabled();
   const compact = useSizeClass().size === "compact";
   const usage = billingStatus?.usage;
   const hasLimit = !!usage && usage.limit > 0;
@@ -184,12 +184,29 @@ export function SettingsPage({
                 <span>{signingOut ? "Signing out…" : "Sign out"}</span>
               </Button>
             </div>
+            {/* App Store 5.1.1(v): the account lives on OpenKey, so deletion opens OpenKey's own
+                deletion page, which asks for a fresh passkey or email code. Desktop has no
+                fixed-URL opener for it yet, so the row is phone and web only. */}
+            {appPlatform() !== "tauri" && (
+              <div className="mt-4 border-t border-border pt-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void openOpenKeyAccountDeletion()}
+                  className="h-auto min-h-[var(--tc-control-height-sm)] max-w-full gap-1.5 whitespace-normal py-1.5 text-left text-destructive"
+                >
+                  <Trash2Icon className="size-4" />
+                  <span>Delete OpenKey account</span>
+                </Button>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Permanently deletes your OpenKey account and destroys its keys. You'll confirm on openkey.so.
+                </p>
+              </div>
+            )}
           </SectionCard>
-          {appsFeedEnabled && (
-            <SectionCard icon={LayoutGridIcon} title="Home">
-              <FirstScreenControl tcw={tcw} did={did} />
-            </SectionCard>
-          )}
+          <SectionCard icon={LayoutGridIcon} title="Home">
+            <FirstScreenControl tcw={tcw} did={did} />
+          </SectionCard>
           {/* Agent access offers meeting access to agents, which the Home site does not. */}
           {!HOME_SITE && (<>
           <SectionCard
@@ -305,21 +322,8 @@ export function SettingsPage({
           <SectionCard icon={SunIcon} title="Appearance">
             <AppearanceControl />
           </SectionCard>
-          <SectionCard icon={DatabaseIcon} title="Experimental Features">
-              <div data-testid="apps-feed-setting-row" className="mb-4 flex items-center justify-between gap-3">
-                <div className="flex min-w-0 flex-1 items-center">
-                  <p className="text-sm font-medium">Apps and Feed</p>
-                  <InfoTip label="About Apps and Feed" className="-my-3 fine:-my-1">
-                    Show Apps and Feed in navigation and choose one as your Home screen.
-                  </InfoTip>
-                </div>
-                <button type="button" role="switch" aria-checked={appsFeedEnabled} aria-label="Enable Apps and Feed" onClick={() => setAppsFeedEnabled(!appsFeedEnabled)} className="-my-2.5 flex h-11 w-12 shrink-0 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:h-6 fine:w-11">
-                  <span aria-hidden className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${appsFeedEnabled ? "bg-primary" : "bg-muted"}`}>
-                    <span className={`absolute top-1 size-4 rounded-full bg-background transition-transform ${appsFeedEnabled ? "left-6" : "left-1"}`} />
-                  </span>
-                </button>
-              </div>
-              {conversationCanvas.eligible && <>
+          {conversationCanvas.eligible && (
+            <SectionCard icon={DatabaseIcon} title="Experimental Features">
                 <div data-testid="canvas-setting-row" className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center">
                   <p className="text-sm font-medium">Conversation Canvas</p>
@@ -335,8 +339,8 @@ export function SettingsPage({
                 </button>
                 </div>
                 {conversationCanvas.error && <p role="alert" className="mt-2 text-xs text-destructive">{conversationCanvas.error}</p>}
-              </>}
-          </SectionCard>
+            </SectionCard>
+          )}
           <Link
             to={PATHS.about}
             className="tap-transparent flex min-h-14 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold tracking-tight transition-colors hover:bg-surface-2 active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-12"

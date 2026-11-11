@@ -290,12 +290,14 @@ describe("nativePermissions", () => {
     expect(permissions.some((p) => p.space !== "applications")).toBe(false);
   });
 
-  test("never requests the broad Home entries natively: only paths under the app's own folder", () => {
+  test("requests every applications-space KV, SQL and hook entry the web grants, except space info (TC-2720)", () => {
     const permissions = nativePermissions(APP_MANIFEST as unknown as Manifest);
-    const data = permissions.filter((p) => p.service === "tinycloud.kv" || p.service === "tinycloud.sql");
-    expect(data.length).toBeGreaterThan(0);
-    expect(data.every((p) => p.path.startsWith("xyz.tinycloud.tinychat/"))).toBe(true);
-    expect(data.some((p) => p.path === "" || p.path.includes("xyz.tinycloud.sample."))).toBe(false);
+    const expected = (APP_MANIFEST.permissions as { service: string; space?: string }[])
+      .filter((p) => (p.space ?? "applications") === "applications" && p.service !== "tinycloud.space");
+    expect(permissions.slice(1).map((p) => p.service)).toEqual(expected.map((p) => p.service));
+    expect(permissions.some((p) => p.service === "tinycloud.kv" && p.path === "")).toBe(true);
+    expect(permissions.some((p) => p.path === "xyz.tinycloud.sample.recipes/recipes")).toBe(true);
+    expect(permissions.some((p) => p.service === "tinycloud.space")).toBe(false);
   });
 });
 
@@ -866,6 +868,29 @@ describe("persisted widget session on a native cold boot", () => {
       else (globalThis as { localStorage?: unknown }).localStorage = prior;
       restoreSdkGlobals();
     }
+  });
+
+  test("a persisted sign-out fence retries secure-store deletion before reading the session", async () => {
+    const flow = makeFlow();
+    flow.openkey.signOut = async () => { flow.order.push("signOut"); throw new Error("secure store unavailable"); };
+    flow.openkey.current = async () => { flow.order.push("current"); return null; };
+    const boot = await restoreNativeAtBoot(config, false, {
+      ...flow.deps,
+      readSignOutFence: () => true,
+    } as NativeSignInDeps);
+    expect(boot.kind).toBe("signOutPending");
+    expect(flow.order).toEqual(["signOut"]);
+  });
+
+  test("an unreadable native sign-out fence fails closed before reading the session", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => { flow.order.push("current"); return null; };
+    const boot = await restoreNativeAtBoot(config, false, {
+      ...flow.deps,
+      readSignOutFence: () => null,
+    } as NativeSignInDeps);
+    expect(boot.kind).toBe("signOutPending");
+    expect(flow.order).toEqual([]);
   });
 });
 

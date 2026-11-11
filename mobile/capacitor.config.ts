@@ -9,7 +9,7 @@ const devServerUrl = process.env.EXO_DEV_SERVER_URL;
 
 const config: CapacitorConfig = {
   appId: "xyz.tinycloud.exo",
-  appName: "Exo",
+  appName: "TinyCloud Home",
   webDir: "../frontend/dist",
   // Capacitor logs raw bridge arguments/results, including OpenKey session
   // material. debugLog.ts records redacted method/outcome events instead.

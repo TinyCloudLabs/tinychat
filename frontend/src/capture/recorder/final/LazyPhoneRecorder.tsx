@@ -120,7 +120,7 @@ export function LoadFailed({
   const recording = recorder.phase !== "idle";
   const [confirming, setConfirming] = useState(defaultConfirming);
   // Reload Exo while a web recording runs would stop it: ask first. A phone's recording is native and keeps going.
-  const asks = label === "Reload Exo" && recording && web;
+  const asks = label === "Reload TinyCloud Home" && recording && web;
   return (
     <Surface>
       <p role="alert" className="m-0">
@@ -130,7 +130,7 @@ export function LoadFailed({
       {confirming && asks ? (
         <>
           <p className="m-0">
-            Reloading stops this recording in the browser. Exo recovers what was
+            Reloading stops this recording in the browser. TinyCloud Home recovers what was
             recorded when the page reopens.
           </p>
           <button
@@ -185,7 +185,7 @@ class LoadBoundary extends Component<
     if (!this.state.failed) return this.props.children;
     // The browser may keep a failed URL, so asking again for it won't help; only a reload does.
     return this.props.retried || isChunkLoadError(this.state.error) ? (
-      <LoadFailed label="Reload Exo" onRetry={this.props.reload} />
+      <LoadFailed label="Reload TinyCloud Home" onRetry={this.props.reload} />
     ) : (
       <LoadFailed onRetry={this.props.onRetry} />
     );
@@ -217,7 +217,7 @@ export function LazyPhoneRecorder({
   const Recorder = phoneRecorderFor(load);
   if (preloadFailed)
     return (
-      <LoadFailed label="Reload Exo" onRetry={reload} />
+      <LoadFailed label="Reload TinyCloud Home" onRetry={reload} />
     );
   return (
     <LoadBoundary

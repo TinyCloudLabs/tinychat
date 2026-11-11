@@ -235,7 +235,7 @@ export function LoadFailedView({
             className="pr-retry"
             onClick={recording ? onAskReload : reload}
           >
-            Reload Exo
+            Reload TinyCloud Home
           </button>
         ) : (
           <button type="button" className="pr-retry" onClick={onRetry}>
@@ -247,11 +247,11 @@ export function LoadFailedView({
         <ConfirmDialog
           titleId={`${ids}-rt`}
           descriptionId={`${ids}-rd`}
-          title="Reload Exo?"
+          title="Reload TinyCloud Home?"
           description={
             web
-              ? "Reloading stops this recording in the browser. Exo recovers what was recorded when the page reopens."
-              : "The recording keeps going while Exo reloads."
+              ? "Reloading stops this recording in the browser. TinyCloud Home recovers what was recorded when the page reopens."
+              : "The recording keeps going while TinyCloud Home reloads."
           }
           keep={{ label: "Keep recording", onPress: onKeep }}
           other={{ label: "Reload", tone: "danger", onPress: reload }}

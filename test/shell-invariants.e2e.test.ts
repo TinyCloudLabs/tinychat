@@ -437,14 +437,14 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.evaluate(() => window.shellHarness!.back());
     await page.waitForFunction(() => document.querySelectorAll('[role="dialog"][data-state="open"]').length === 0);
 
-    // No overlay left: Chat is not the Android app's home, so Back goes to Capture…
+    // No overlay left: Chat is not the app's home, so Back goes to Feed…
     await page.evaluate(() => window.shellHarness!.back());
-    await page.waitForFunction(() => window.location.pathname === "/chat/capture");
+    await page.waitForFunction(() => window.location.pathname === "/chat/feed");
     // …and at home it minimises, never exits.
     await settle(page);
     await page.evaluate(() => window.shellHarness!.back());
     expect(await page.evaluate(() => window.shellHarness!.minimized())).toBe(1);
-    expect(await page.evaluate(() => window.location.pathname)).toBe("/chat/capture");
+    expect(await page.evaluate(() => window.location.pathname)).toBe("/chat/feed");
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);

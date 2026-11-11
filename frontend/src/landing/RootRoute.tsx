@@ -1,30 +1,22 @@
 import { Navigate, useLocation } from "react-router-dom";
 
 import { PATHS } from "../shell/routes";
-import { useAppsFeedEnabled } from "../lib/appsFeedFeature";
 import { LandingPage } from "./LandingPage";
 
-// What `/` shows. The native mobile shell (Capacitor) IS the app, so it opens
-// straight on Capture (TC-761); a signed-out user sees the sign-in surface there.
-// The web opens Chat until the experimental Apps and Feed surfaces are enabled.
-// The desktop app keeps the marketing landing page.
+// What `/` shows on every platform (web, desktop, iOS and Android): TinyCloud
+// Home's first screen. It goes to Feed marked as a Home entry, and HomeEntryGate
+// (home/HomeEntryGate.tsx) moves it to Apps when the user chose Apps in
+// Settings; signed out, the sign-in surface renders in place and the entry is
+// decided once sign-in finishes.
 //
 // `replace` keeps `/` out of history, so Android's back button minimises the
-// app from Capture instead of bouncing through the redirect.
-export function RootRoute({ nativeShell, homeShell = false }: { nativeShell: boolean; homeShell?: boolean }) {
-  if (nativeShell) return <Navigate to={PATHS.capture} replace />;
-  if (homeShell) return <HomeEntry />;
-  return <LandingPage />;
-}
-
-/** `/` on the web: opt-in users can still use their synced Home choice. */
-function HomeEntry() {
+// app from the first screen instead of bouncing through the redirect.
+export function RootRoute() {
   const { search, hash } = useLocation();
-  const enabled = useAppsFeedEnabled();
-  return <Navigate to={{ pathname: enabled ? PATHS.feed : PATHS.chat, search, hash }} state={enabled ? { homeEntry: true } : undefined} replace />;
+  return <Navigate to={{ pathname: PATHS.feed, search, hash }} state={{ homeEntry: true }} replace />;
 }
 
-/** `/about`: the marketing landing page, kept reachable when web `/` opens the app. */
+/** `/about`: the marketing landing page, kept reachable now that `/` opens the app. */
 export function LandingRoute() {
   return <LandingPage />;
 }

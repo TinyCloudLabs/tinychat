@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Release gate for a signed Exo build: exits 1 unless the .app and the .dmg are Developer ID signed by the expected
+# Release gate for a signed desktop (TinyCloud Home) build: exits 1 unless the .app and the .dmg are Developer ID signed by the expected
 # team, hardened, carry the audio-input entitlement, and are notarized with stapled tickets. Never let an unsigned or
 # unnotarized build through.
-# Usage: verify-desktop-signing.sh <Exo.app> <Exo.dmg> <team id>
+# Usage: verify-desktop-signing.sh <app> <dmg> <team id>
 set -euo pipefail
 
-app=${1:?usage: verify-desktop-signing.sh <Exo.app> <Exo.dmg> <team id>}
-dmg=${2:?usage: verify-desktop-signing.sh <Exo.app> <Exo.dmg> <team id>}
-team=${3:?usage: verify-desktop-signing.sh <Exo.app> <Exo.dmg> <team id>}
+app=${1:?usage: verify-desktop-signing.sh <app> <dmg> <team id>}
+dmg=${2:?usage: verify-desktop-signing.sh <app> <dmg> <team id>}
+team=${3:?usage: verify-desktop-signing.sh <app> <dmg> <team id>}
 
 fail() {
   echo "::error::$1"
@@ -60,4 +60,4 @@ require "Gatekeeper accepts the disk image as notarized" "$dmg_gatekeeper" "acce
 xcrun stapler validate "$dmg" || fail "no valid stapled notarization ticket on $dmg"
 pass "disk image has a stapled ticket"
 
-echo "Exo is Developer ID signed (team $team), hardened, notarized and stapled."
+echo "$(basename "$app") is Developer ID signed (team $team), hardened, notarized and stapled."

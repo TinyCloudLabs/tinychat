@@ -8,7 +8,6 @@ import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
 import { firstNonEmpty } from "./src/lib/buildEnv";
-import { homeSiteIndexHtml } from "./src/lib/homeSiteHtml";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromApp = createRequire(import.meta.url);
@@ -52,7 +51,7 @@ export default defineConfig(({ command, mode }) => {
     if (!valid)
       throw new Error("VITE_EXO_PTX_UPLOAD_ORIGIN must be a bare HTTPS origin for production builds");
   }
-  // The home.tinycloud.xyz build (TC-2387) installs as TinyCloud Home and opens on Home.
+  // The home.tinycloud.xyz build (TC-2387) keeps its own installed-app id, so existing installs stay one app.
   const homeSite = loadEnv(mode, rootDir, "VITE_").VITE_HOME_SITE === "true";
   return ({
   define: {
@@ -63,10 +62,6 @@ export default defineConfig(({ command, mode }) => {
   // Vite externalizes Node builtins in the browser, which silently broke the
   // GPU cert-chain check and an on-chain quote encoding. Polyfill the globals.
   plugins: [
-    ...(homeSite ? [{
-      name: "tinychat-home-site-html",
-      transformIndexHtml: (html: string) => homeSiteIndexHtml(html),
-    }] : []),
     {
       name: "tinychat-agent-artifacts",
       apply: "build",
@@ -89,11 +84,11 @@ export default defineConfig(({ command, mode }) => {
       devOptions: { enabled: process.env.VITE_PWA_DEV === "true" },
       manifest: {
         id: homeSite ? "/chat/feed" : "/chat",
-        // The product is Exo; the in-app UI still says "TinyCloud Chat" until the rename (TC-526).
-        name: homeSite ? "TinyCloud Home" : "Exo",
-        short_name: homeSite ? "Home" : "Exo",
-        description: homeSite ? "Updates and decisions from your agents, in your TinyCloud space." : "Private chat and meeting memory on TinyCloud.",
-        start_url: homeSite ? "/chat/feed" : "/chat",
+        name: "TinyCloud Home",
+        short_name: "Home",
+        description: "Your feed, chat, recordings and apps, in your TinyCloud space.",
+        // `/` opens the first screen the user chose (Feed unless they picked Apps).
+        start_url: "/",
         scope: "/",
         display: "standalone",
         // A manifest takes one color: Day's --background (lib/theme.ts THEME_COLOR). index.html's

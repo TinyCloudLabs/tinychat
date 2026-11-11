@@ -319,6 +319,15 @@ async function deleteDiscardedOnce(id: string): Promise<string | null> {
   return null;
 }
 
+/** Delete selected device-only notes through the shared tombstone and note-removal path. */
+export async function deletePendingRecordings(recordings: readonly Pick<VoiceNoteRecording, "id">[]): Promise<void> {
+  for (const { id } of recordings) {
+    markDiscarded(id);
+    const error = await deleteDiscarded(id);
+    if (error) throw new Error(error);
+  }
+}
+
 /**
  * What saving one recording came to. Saving to the space retains the local
  * copy. `cleanupError` reports a native ledger update failure; the next run

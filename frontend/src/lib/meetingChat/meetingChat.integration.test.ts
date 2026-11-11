@@ -177,7 +177,7 @@ function sqliteSpace() {
 }
 
 describe("exo-local recordings in meeting chat", () => {
-  test("a saved Exo Local transcript is discovered by SQL and grounds a meeting-chat answer", async () => {
+  test("a saved TinyCloud Home Local transcript is discovered by SQL and grounds a meeting-chat answer", async () => {
     const space = sqliteSpace();
     const saved = await saveLocalTranscript(space as never, prepareLocalTranscript({
       sessionId: "exo-session",

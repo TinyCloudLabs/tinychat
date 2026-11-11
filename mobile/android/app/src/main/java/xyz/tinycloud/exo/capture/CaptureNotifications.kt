@@ -42,7 +42,7 @@ object CaptureNotifications {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         alertChannel(context).notify(PARKED_ID, NotificationCompat.Builder(context, ALERT_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("Recording paused — open Exo to resume")
+            .setContentTitle("Recording paused — open TinyCloud Home to resume")
             .setContentIntent(open).setAutoCancel(true).build())
     }
 

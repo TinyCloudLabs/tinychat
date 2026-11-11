@@ -35,7 +35,7 @@ function LegacyShell(props: { children: ReactNode }) {
               <span className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
                 T
               </span>
-              <span className="hidden sm:inline">TinyCloud Chat</span>
+              <span className="hidden sm:inline">TinyCloud Home</span>
             </span>
           </div>
           <span className="hidden sm:inline-flex">

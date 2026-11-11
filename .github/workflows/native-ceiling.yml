@@ -1,0 +1,54 @@
+name: Native ceiling
+
+# Native (iOS/Android) sign-in sends every applications-space entry of
+# manifest.json to OpenKey, which refuses the whole request if one entry is
+# outside the TinyCloud Home native client's ceiling (TC-2720, TC-1989). This
+# job sends that exact request to production OpenKey as a throwaway PAR.
+# It fails only when OpenKey refuses the request; an unreachable production
+# is reported as a warning (frontend/scripts/native-ceiling-check.ts).
+
+on:
+  pull_request:
+    paths:
+      - "manifest.json"
+      - "frontend/src/lib/openkeyNative.ts"
+      - "frontend/.env.production"
+      - "frontend/scripts/native-ceiling-check.ts"
+      - ".github/workflows/native-ceiling.yml"
+  push:
+    branches: [main]
+    paths:
+      - "manifest.json"
+      - "frontend/src/lib/openkeyNative.ts"
+      - "frontend/.env.production"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-ceiling-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-ceiling:
+    name: Native sign-in request fits OpenKey's ceiling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: PAR the native request against production OpenKey
+        run: bun frontend/scripts/native-ceiling-check.ts

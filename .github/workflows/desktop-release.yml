@@ -1,6 +1,7 @@
-name: Desktop release (Exo)
+name: Desktop release (TinyCloud Home)
 
-# Builds and publishes Exo for one exo-desktop@<version> tag. It always runs from main, so the workflow code is
+# Builds and publishes the desktop app (TinyCloud Home; productName in desktop/src-tauri/tauri.conf.json) for one
+# exo-desktop@<version> tag. It always runs from main, so the workflow code is
 # main's, never a tag's: the Release workflow dispatches it for every new exo-desktop tag with
 #   gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>
 # (the same command retries a failed release). The plan job refuses any other ref, requires the tag to point at a
@@ -14,7 +15,8 @@ name: Desktop release (Exo)
 # - required: Developer ID signed, notarized and stapled (desktop-build.yml with sign: true: the app is built with no
 #   environment and no secret, then signed by a job in the desktop-release environment, which only main can deploy to,
 #   that runs only scripts/release from the workflow commit and Apple's tools); publishing requires the build's
-#   signed=true;
+#   signed=true. desktop-release has a required reviewer (Sam), so a signed release waits for approval twice: the
+#   signing preflight right after the plan, and the sign job once the app is built;
 # - unsigned (until the Apple Developer ID exists): desktop-build.yml with sign: false, so no environment and no
 #   signing secret is requested (the app is only ad-hoc sealed); the release title and notes say UNSIGNED.
 # Any other value, including unset, fails the plan before anything is built. The provenance checks (main only, tag
@@ -22,10 +24,10 @@ name: Desktop release (Exo)
 # the same job; a draft left by a failed run is reused, a published release is never touched again (cut a new
 # version instead).
 #
-# TODO(updater, PR F, right after the first signed release): add tauri-plugin-updater with
-# bundle.createUpdaterArtifacts, sign Exo.app.tar.gz with TAURI_SIGNING_PRIVATE_KEY from the desktop-release
-# environment, and attach latest.json to stable releases (endpoint: releases/latest/download/latest.json, which only
-# works because desktop is the only thing that creates GitHub Releases).
+# Releases carry no in-app updater yet (TC-611 follow-up): tauri-plugin-updater with bundle.createUpdaterArtifacts,
+# the .app.tar.gz signed with TAURI_SIGNING_PRIVATE_KEY in the sign job, and latest.json attached to stable releases
+# (endpoint: releases/latest/download/latest.json, which only works because desktop is the only thing that creates
+# GitHub Releases). desktop/scripts/exo-update.sh is the manual updater meanwhile.
 
 on:
   workflow_dispatch:
@@ -103,6 +105,11 @@ jobs:
     name: Build
     needs: plan
     uses: ./.github/workflows/desktop-build.yml
+    # A called workflow sees an empty secrets context unless the caller passes secrets, even in a job that names the
+    # environment (ios-testflight.yml hit this in run 42702360795). Only the preflight and sign jobs of
+    # desktop-build.yml are in desktop-release, so only they resolve its secrets, and only with sign: true; the build
+    # job has no environment and references no secret (scripts/__tests__/release.test.mjs).
+    secrets: inherit
     with:
       ref: ${{ needs.plan.outputs.sha }}
       artifact-name: exo-${{ needs.plan.outputs.version }}-macos-arm64
@@ -157,7 +164,7 @@ jobs:
         run: |
           mkdir assets
           mapfile -t dmgs < <(find build -name '*.dmg')
-          mapfile -t zips < <(find build -name 'Exo-macos-arm64.app.zip')
+          mapfile -t zips < <(find build -name '*.app.zip')
           if [ "${#dmgs[@]}" -ne 1 ] || [ "${#zips[@]}" -ne 1 ]; then
             echo "::error::Expected one .dmg and one .app.zip, found: ${dmgs[*]} ${zips[*]}"
             exit 1

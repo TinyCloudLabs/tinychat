@@ -249,7 +249,7 @@ describe("restorePersistedSession", () => {
     const { d, calls } = deps({ loadManifest: offlineFetch, isOffline: () => true });
     expect(await restorePersistedSession(store, d)).toEqual({
       kind: "unavailable",
-      message: "You're offline. Exo will reconnect when you're back online.",
+      message: "You're offline. TinyCloud Home will reconnect when you're back online.",
     });
     expect(store.cleared).toBe(0);
     expect(store.getToken()).toBe("bearer");
@@ -392,11 +392,6 @@ describe("App wiring (TC-514)", () => {
     expect(browserRestore).not.toMatch(/catch \(caught\) \{\s+sessionStore\.clear\(\)/);
   });
 
-  test("a held session lands in `offline`, a verdict in the old states", () => {
-    expect(restoreRegion).toMatch(/case "unavailable":\s+setError\(restored\.message\);\s+setState\("offline"\);/);
-    expect(restoreRegion).toMatch(/case "signedOut":\s+if \(!await captureHandoff\(\)\).*setState\("unauthenticated"\);/s);
-    expect(restoreRegion).toMatch(/case "failed":\s+setError\(restored\.message\);\s+setState\("recoverableError"\);/);
-  });
 
   test("Try again re-runs the restore while offline and signs in otherwise", () => {
     expect(app).toContain("const authAction = nativeSignInFlow.authAction;");

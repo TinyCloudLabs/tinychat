@@ -63,7 +63,6 @@ describe("TinyChat manifest and backend policy", () => {
     expect(grants).toEqual({
       FIREFLIES_API_KEY: { actions: ["read", "write", "delete"], scope: undefined },
       GRANOLA_API_KEY: { actions: ["read", "write", "delete"], scope: undefined },
-      ASSEMBLYAI_API_KEY: { actions: ["read", "write", "delete"], scope: undefined },
       REFRESH_TOKEN: { scope: "google-meet", actions: ["read", "write", "delete"] },
     });
   });
@@ -73,7 +72,7 @@ describe("TinyChat manifest and backend policy", () => {
 
     expect(secrets.FIREFLIES_API_KEY?.scope).toBeUndefined();
     expect(secrets.GRANOLA_API_KEY?.scope).toBeUndefined();
-    expect(secrets.ASSEMBLYAI_API_KEY?.scope).toBeUndefined();
+    expect(secrets.ASSEMBLYAI_API_KEY).toBeUndefined();
     expect(secrets.REFRESH_TOKEN?.scope).toBe("google-meet");
   });
 

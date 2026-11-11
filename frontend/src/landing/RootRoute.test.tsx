@@ -1,53 +1,64 @@
-// `/` is the marketing page on the web and in the desktop app, and the app
-// itself inside the native mobile shell (TC-522).
+// `/` opens TinyCloud Home's first screen on every platform: the web, the
+// desktop app and the native mobile shell (TC-2040, TC-2050).
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isValidElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, Navigate } from "react-router-dom";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
-import { PATHS } from "../shell/routes";
+import { installDom } from "../test/dom";
 import { RootRoute } from "./RootRoute";
 
+let root: Root | null = null;
+let restoreDom: (() => void) | null = null;
+afterEach(async () => {
+  if (root) await act(async () => root!.unmount());
+  root = null;
+  restoreDom?.();
+  restoreDom = null;
+});
+
+function Where() {
+  const { pathname, search, hash, state } = useLocation();
+  return <p data-entry={String((state as { homeEntry?: boolean } | null)?.homeEntry === true)}>{pathname + search + hash}</p>;
+}
+
+async function open(entry: string) {
+  restoreDom = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () => root!.render(
+    <MemoryRouter initialEntries={[entry]}>
+      <Routes>
+        <Route path="/" element={<RootRoute />} />
+        <Route path="*" element={<Where />} />
+      </Routes>
+    </MemoryRouter>,
+  ));
+  return host.innerHTML;
+}
+
 describe("RootRoute", () => {
-  test("the native shell replaces / with Capture, the phone app's landing", () => {
-    const element = RootRoute({ nativeShell: true });
-    expect(isValidElement(element)).toBe(true);
-    expect(element.type).toBe(Navigate);
-    expect(element.props).toEqual({ to: "/chat/capture", replace: true });
-    expect(PATHS.capture).toBe("/chat/capture");
+  test("replaces / with Feed, marked as a Home entry so the first-screen choice applies", async () => {
+    expect(await open("/")).toBe('<p data-entry="true">/chat/feed</p>');
   });
 
-  test("the native shell never renders the landing page", () => {
-    const markup = renderToStaticMarkup(
-      <MemoryRouter initialEntries={["/"]}>
-        <RootRoute nativeShell />
-      </MemoryRouter>,
-    );
-    expect(markup).not.toContain("Open app");
-  });
-
-  test("web and desktop still open on the landing page", () => {
-    const markup = renderToStaticMarkup(
-      <MemoryRouter initialEntries={["/"]}>
-        <RootRoute nativeShell={false} />
-      </MemoryRouter>,
-    );
-    expect(markup).toContain("Open app");
-    expect(markup).toContain('href="/chat"');
+  test("keeps the query and a #share= fragment", async () => {
+    expect(await open("/?x=1#share=abc")).toBe('<p data-entry="true">/chat/feed?x=1#share=abc</p>');
   });
 });
 
 // main.tsx calls createRoot on import, so its wiring is asserted against the
 // source, as ConnectorsPage.test.tsx does for App.tsx.
-describe("main.tsx routes / through RootRoute", () => {
+describe("main.tsx routes / through RootRoute on every platform", () => {
   const main = readFileSync(join(import.meta.dir, "..", "main.tsx"), "utf8");
 
-  test("the native flag is Capacitor's, and / renders RootRoute with it", () => {
-    expect(main).toContain("const nativeShell = Capacitor.isNativePlatform();");
-    expect(main).toContain('<Route path="/" element={<RootRoute nativeShell={nativeShell} homeShell={platform === "web"} />} />');
+  test("/ renders RootRoute with no platform switch, and /chat/* mounts App directly", () => {
+    expect(main).toContain('<Route path="/" element={<RootRoute />} />');
+    expect(main).toContain('<Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />');
     expect(main).not.toContain("<LandingPage");
   });
 });

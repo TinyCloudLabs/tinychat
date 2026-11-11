@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "app_id": "xyz.tinycloud.tinychat",
   "name": "TinyCloud Home",
-  "description": "TinyCloud Chat — a private AI chatbot. Conversations are stored in your TinyCloud space.",
+  "description": "TinyCloud Home: your feed, chat, recordings and apps. Conversations, notes and feed cards are stored in your TinyCloud space.",
   "defaults": false,
   "permissions": [
     {
@@ -132,10 +132,6 @@
     "GRANOLA_API_KEY": {
       "actions": ["read", "write", "delete"],
       "description": "Store your Granola API key, encrypted, in your secrets space."
-    },
-    "ASSEMBLYAI_API_KEY": {
-      "actions": ["read", "write", "delete"],
-      "description": "Store your transcription service API key, encrypted, in your secrets space."
     },
     "REFRESH_TOKEN": {
       "scope": "google-meet",

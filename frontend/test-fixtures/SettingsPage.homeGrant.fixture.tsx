@@ -16,16 +16,16 @@ import { HomeFeatureAccessContext, type HomeFeatureAccess } from "@/shell/homeFe
 const HOME = process.env.VITE_HOME_SITE === "true";
 
 // Every card Settings shows, in order. A lost or added card fails the test. The Home build never shows agent access
-// (or Local copy, which sits inside the Data area on the plain build), and shows its own "Home" card, because Apps and
-// Feed are on there by default; Recording's cards wait for Recording's permission.
+// (or Local copy, which sits inside the Data area on the plain build), nor Experimental Features (its only row,
+// Conversation Canvas, is off there). Both builds show the "Home" card; Recording's cards wait for Recording's permission.
 const PLAIN_CARDS = [
-  "Account", "Agent access", "Use with your agent", "Memory", "Transcription", "Word fixes", "Meeting summaries",
+  "Account", "Home", "Agent access", "Use with your agent", "Memory", "Transcription", "Word fixes", "Meeting summaries",
   "Voice notes", "Infrastructure", "Audio storage", "Data", "TinyCloud", "Appearance", "Experimental Features",
 ];
-const HOME_ASKING_CARDS = ["Account", "Home", "Memory", "Word fixes", "Infrastructure", "Data", "TinyCloud", "Appearance", "Experimental Features"];
+const HOME_ASKING_CARDS = ["Account", "Home", "Memory", "Word fixes", "Infrastructure", "Data", "TinyCloud", "Appearance"];
 const HOME_RECORDING_CARDS = [
   "Account", "Home", "Memory", "Transcription", "Word fixes", "Meeting summaries", "Voice notes", "Infrastructure",
-  "Audio storage", "Data", "TinyCloud", "Appearance", "Experimental Features",
+  "Audio storage", "Data", "TinyCloud", "Appearance",
 ];
 
 let cleanDom: (() => void) | undefined;

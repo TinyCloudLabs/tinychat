@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Developer ID signing for Exo desktop releases. desktop-build.yml's preflight and sign jobs run it from the workflow
+# Developer ID signing for desktop (TinyCloud Home) releases. desktop-build.yml's preflight and sign jobs run it from the workflow
 # commit's scripts/release, never from the built tree, on runners that never run project code: only Apple's tools touch
 # the app (codesign, security, hdiutil, notarytool, stapler). In CI (sign: false) the sign job runs unpack, sign and
 # dmg with the ad-hoc identity "-" as a dry run, so every desktop PR exercises the hand-off and the signing commands.
@@ -11,25 +11,29 @@
 #       refuse unless this is main's desktop-release.yml dispatched on main, the workflow commit and <build sha> are on
 #       freshly fetched main, and an exo-desktop release tag points at <build sha>. Needs a checkout with history and
 #       WORKFLOW_REF, WORKFLOW_SHA, GITHUB_REPOSITORY, GITHUB_EVENT_NAME, GITHUB_REF
-#   desktop-signing.sh unpack <app.zip> <dir> <version> <short version> <bundle version>
-#       unzip the build's ditto-zipped Exo.app into <dir>, require xyz.tinycloud.exo at those versions with an executable
-#       main binary and no symlink leaving the bundle; prints the app's path
+#   desktop-signing.sh unpack <app.zip> <dir> <product name> <version> <short version> <bundle version>
+#       unzip the build's ditto-zipped "<product name>.app" into <dir>, require xyz.tinycloud.exo at those versions with
+#       an executable main binary and no symlink leaving the bundle; prints the app's path
 #   desktop-signing.sh keychain <dir>
 #       a temporary keychain <dir>/exo-signing.keychain-db holding APPLE_CERTIFICATE (base64 .p12), which must provide
 #       the codesigning identity APPLE_SIGNING_IDENTITY; prints its path. Delete it with `security delete-keychain`
-#   desktop-signing.sh sign <Exo.app> <entitlements> <identity> [keychain]
+#   desktop-signing.sh sign <app> <entitlements> <identity> [keychain]
 #       sign inside-out without --deep: every nested Mach-O file and code bundle, deepest first, then the app with the
 #       entitlements; hardened runtime throughout, secure timestamp unless the identity is "-" (ad-hoc). Then verifies
-#   desktop-signing.sh dmg <Exo.app> <out.dmg> <identity> [keychain]
-#       an hdiutil UDZO image of the app plus an /Applications link, checked by mounting it, then signed unless the
-#       identity is "-"
+#   desktop-signing.sh dmg <app> <out.dmg> <identity> [keychain]
+#       an hdiutil UDZO image of the app plus an /Applications link, named after the app, checked by mounting it, then
+#       signed unless the identity is "-"
 #   desktop-signing.sh write-key <dir>
 #       the App Store Connect key, written as ios-signing.sh write-key does; prints its path
-#   desktop-signing.sh notarize <Exo.app | .dmg> <AuthKey.p8>
+#   desktop-signing.sh notarize <app | .dmg> <AuthKey.p8>
 #       submit to notarytool and wait (an app goes as a ditto zip), print Apple's log unless Accepted, staple the file
 set -euo pipefail
 
+# The bundle id stays xyz.tinycloud.exo after the rename to TinyCloud Home: macOS keys the app's data, keychain items
+# and permissions (microphone, screen recording) to it, and the updater path depends on it.
 BUNDLE_ID=xyz.tinycloud.exo
+# tauri.conf.json's productName, as scripts/release/lib.mjs DESKTOP_PRODUCT_NAME allows: words of letters and digits.
+PRODUCT_NAME_RE='^[A-Za-z0-9]+( [A-Za-z0-9]+)*$'
 SECRETS=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY)
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -95,9 +99,10 @@ escapes() {
 }
 
 unpack() {
-  local zip=${1:-} dir=${2:-} version=${3:-} short=${4:-} build=${5:-} app plist exe link
-  [ -n "$build" ] || fail "usage: desktop-signing.sh unpack <app.zip> <dir> <version> <short version> <bundle version>"
-  # The build job's outputs are only strings: they must look like versions before they name or check anything.
+  local zip=${1:-} dir=${2:-} name=${3:-} version=${4:-} short=${5:-} build=${6:-} app plist exe link
+  [ -n "$build" ] || fail "usage: desktop-signing.sh unpack <app.zip> <dir> <product name> <version> <short version> <bundle version>"
+  # The build job's outputs are only strings: they must look like a name and versions before they name or check anything.
+  [[ $name =~ $PRODUCT_NAME_RE ]] || fail "the build reports product name '$name', not words of letters and digits"
   [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || fail "the build reports version '$version', not X.Y.Z or X.Y.Z-beta.N"
   [ "$short" = "${version%%-*}" ] || fail "the build reports short version '$short' for $version"
   [[ $build =~ ^[1-9][0-9]*$ ]] || fail "the build reports bundle version '$build', not a number"
@@ -105,9 +110,9 @@ unpack() {
   rm -rf "$dir"
   mkdir -p "$dir"
   ditto -x -k "$zip" "$dir"
-  app="$dir/Exo.app"
+  app="$dir/$name.app"
   plist="$app/Contents/Info.plist"
-  [ -f "$plist" ] || fail "$(basename "$zip") holds no Exo.app"
+  [ -f "$plist" ] || fail "$(basename "$zip") holds no $name.app"
   [ "$(plist_value CFBundleIdentifier "$plist")" = "$BUNDLE_ID" ] || fail "the app is not $BUNDLE_ID"
   [ "$(plist_value CFBundleShortVersionString "$plist")" = "$short" ] || fail "the app is not version $short"
   [ "$(plist_value CFBundleVersion "$plist")" = "$build" ] || fail "the app is not build $build"
@@ -117,7 +122,7 @@ unpack() {
   while IFS= read -r link; do
     if escapes "${link#"$app"/}" "$(readlink "$link")"; then fail "symlink ${link#"$dir"/} points outside the app ($(readlink "$link"))"; fi
   done < <(find "$app" -type l)
-  echo "Exo $version ($short, $build) unpacked: $(du -sh "$app" | cut -f1)" >&2
+  echo "$name $version ($short, $build) unpacked: $(du -sh "$app" | cut -f1)" >&2
   echo "$app"
 }
 
@@ -178,7 +183,7 @@ nested_code() {
 
 sign() {
   local app=${1:-} entitlements=${2:-} identity=${3:-} keychain=${4:-} opts details path count=0
-  [ -n "$identity" ] || fail "usage: desktop-signing.sh sign <Exo.app> <entitlements> <identity> [keychain]"
+  [ -n "$identity" ] || fail "usage: desktop-signing.sh sign <app> <entitlements> <identity> [keychain]"
   [ -f "$app/Contents/Info.plist" ] || fail "no app bundle at $app"
   [ -f "$entitlements" ] || fail "no entitlements at $entitlements"
   plutil -lint "$entitlements" >/dev/null || fail "$entitlements is not a valid plist"
@@ -197,24 +202,25 @@ sign() {
   codesign -d --entitlements - --xml "$app" 2>/dev/null | grep -qF com.apple.security.device.audio-input ||
     fail "the app's signature lacks the audio-input entitlement"
   if [ "$identity" = - ]; then
-    echo "Exo.app re-sealed ad-hoc inside-out ($count nested), hardened runtime, entitlements from $entitlements"
+    echo "$(basename "$app") re-sealed ad-hoc inside-out ($count nested), hardened runtime, entitlements from $entitlements"
   else
-    echo "Exo.app signed with Developer ID inside-out ($count nested), hardened runtime, entitlements from $entitlements"
+    echo "$(basename "$app") signed with Developer ID inside-out ($count nested), hardened runtime, entitlements from $entitlements"
   fi
 }
 
 dmg() {
-  local app=${1:-} out=${2:-} identity=${3:-} keychain=${4:-} staging mnt attempt opts
-  [ -n "$identity" ] || fail "usage: desktop-signing.sh dmg <Exo.app> <out.dmg> <identity> [keychain]"
+  local app=${1:-} out=${2:-} identity=${3:-} keychain=${4:-} staging mnt attempt opts bundle
+  [ -n "$identity" ] || fail "usage: desktop-signing.sh dmg <app> <out.dmg> <identity> [keychain]"
   [ -f "$app/Contents/Info.plist" ] || fail "no app bundle at $app"
+  bundle=$(basename "$app")
   staging=$(mktemp -d "${RUNNER_TEMP:-/tmp}/exo-dmg.XXXXXX")
-  ditto "$app" "$staging/Exo.app"
+  ditto "$app" "$staging/$bundle"
   ln -s /Applications "$staging/Applications"
   mkdir -p "$(dirname "$out")"
   rm -f "$out"
   # Hosted runners sometimes report "Resource busy" on the first try.
   for attempt in 1 2 3; do
-    if hdiutil create -volname Exo -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$out"; then break; fi
+    if hdiutil create -volname "${bundle%.app}" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$out"; then break; fi
     [ "$attempt" -lt 3 ] || fail "hdiutil create failed for $out"
     sleep 10
   done
@@ -222,9 +228,9 @@ dmg() {
   hdiutil verify "$out"
   mnt=$(mktemp -d "${RUNNER_TEMP:-/tmp}/exo-dmg-mount.XXXXXX")
   hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$out" >/dev/null
-  if ! codesign --verify --deep --strict --verbose=2 "$mnt/Exo.app" || [ "$(readlink "$mnt/Applications")" != /Applications ]; then
+  if ! codesign --verify --deep --strict --verbose=2 "$mnt/$bundle" || [ "$(readlink "$mnt/Applications")" != /Applications ]; then
     hdiutil detach "$mnt" >/dev/null || true
-    fail "$(basename "$out") does not hold a valid Exo.app and an /Applications link"
+    fail "$(basename "$out") does not hold a valid $bundle and an /Applications link"
   fi
   hdiutil detach "$mnt" >/dev/null
   if [ "$identity" != - ]; then
@@ -233,12 +239,12 @@ dmg() {
     codesign "${opts[@]}" "$out" || fail "codesign failed for $out"
     codesign --verify --strict --verbose=2 "$out" || fail "codesign --verify failed for $out"
   fi
-  echo "$(basename "$out"): $(du -h "$out" | cut -f1), mounts with a valid Exo.app$([ "$identity" = - ] || echo ', signed')"
+  echo "$(basename "$out"): $(du -h "$out" | cut -f1), mounts with a valid $bundle$([ "$identity" = - ] || echo ', signed')"
 }
 
 notarize() {
   local file=${1:-} key=${2:-} submit result status id
-  [ -n "$key" ] || fail "usage: desktop-signing.sh notarize <Exo.app | .dmg> <AuthKey.p8>"
+  [ -n "$key" ] || fail "usage: desktop-signing.sh notarize <app | .dmg> <AuthKey.p8>"
   [ -e "$file" ] || fail "nothing to notarize at $file"
   [ -f "$key" ] || fail "no App Store Connect key at $key"
   [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ] || fail "APPLE_API_KEY and APPLE_API_ISSUER are required"
@@ -266,14 +272,14 @@ notarize() {
 case "${1:-}" in
   check) check ;;
   provenance) provenance "${2:-}" ;;
-  unpack) unpack "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
+  unpack) unpack "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
   keychain) keychain "${2:-}" ;;
   sign) sign "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
   dmg) dmg "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
   write-key) exec "$here/ios-signing.sh" write-key "${2:-}" ;;
   notarize) notarize "${2:-}" "${3:-}" ;;
   *)
-    echo "usage: desktop-signing.sh check | provenance <sha> | unpack <zip> <dir> <version> <short> <build> | keychain <dir>" \
+    echo "usage: desktop-signing.sh check | provenance <sha> | unpack <zip> <dir> <name> <version> <short> <build> | keychain <dir>" \
       "| sign <app> <entitlements> <identity> [keychain] | dmg <app> <dmg> <identity> [keychain] | write-key <dir>" \
       "| notarize <app|dmg> <key>" >&2
     exit 2
