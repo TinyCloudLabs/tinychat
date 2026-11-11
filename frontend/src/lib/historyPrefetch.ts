@@ -124,8 +124,8 @@ export function createPrefetchQueue(fetcher: ThreadFetcher, copy?: () => ThreadC
         if (inFlight.get(id) === self.p) {
           inFlight.delete(id);
           staleInFlight.delete(id);
+          sent.delete(id);
         }
-        sent.delete(id);
       }
     })();
     self.p = p;

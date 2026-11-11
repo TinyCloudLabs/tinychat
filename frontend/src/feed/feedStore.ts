@@ -193,12 +193,27 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
 
   async function loadFeed(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot> {
     assertAccount();
+    const readRegistry = async () => {
+      await ensureSchema();
+      const [agents, events] = await Promise.all([
+        registry.query("SELECT agent_id,agent_did,label,output_resource,response_resource,authorization_json FROM feed_agents ORDER BY agent_id", []),
+        registry.query("SELECT agent_id,card_id,revision,issuance_id,kind,created_at,snoozed_until,seq FROM feed_view_events ORDER BY seq", []),
+      ]);
+      return { agents, events };
+    };
     await ensureSchema();
-    const [agentResult, eventResult, savedDefault] = await Promise.all([
-      registry.query("SELECT agent_id,agent_did,label,output_resource,response_resource,authorization_json FROM feed_agents ORDER BY agent_id", []),
-      registry.query("SELECT agent_id,card_id,revision,issuance_id,kind,created_at,snoozed_until,seq FROM feed_view_events ORDER BY seq", []),
-      getSetting(tcw, HOME_FEED_DEFAULT_KEY),
-    ]);
+    const [firstRows, savedDefault] = await Promise.all([readRegistry(), getSetting(tcw, HOME_FEED_DEFAULT_KEY)]);
+    let registryRows = firstRows;
+    // The device skipped the registry CREATE batch on its marker. Feed errors are
+    // redacted ("SQL operation failed"), so a missing table can't be told apart:
+    // when these reads fail, drop the marker and read once more after the batch.
+    if ((!registryRows.agents.ok || !registryRows.events.ok) && hasLocalMarker(schemaMarker)) {
+      clearLocalMarker(schemaMarker);
+      schema = undefined;
+      registryRows = await readRegistry();
+    }
+    const agentResult = registryRows.agents;
+    const eventResult = registryRows.events;
     // The node authorizes the full resource but stores by basename. Reject
     // aliases here instead of accidentally merging two agents' databases.
     const basenames = new Set([HOME_FEED_RESOURCE.split("/").at(-1)!, THREADS_SQL_DB_NAME.split("/").at(-1)!]);
@@ -381,19 +396,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   }
 
   return {
-    async load(focused) {
-      try {
-        return await loadFeed(focused);
-      } catch (error) {
-        // The device skipped the registry CREATE batch on its marker. Feed errors are
-        // redacted ("SQL operation failed"), so a missing table can't be told apart:
-        // on any failure, drop the marker and retry once with the (idempotent) batch.
-        if (!hasLocalMarker(schemaMarker)) throw error;
-        clearLocalMarker(schemaMarker);
-        schema = undefined;
-        return loadFeed(focused);
-      }
-    },
+    load: (focused) => loadFeed(focused),
     async cached() {
       const local = await readLocal<LocalFeed>(localKey);
       if (!local) return null;
