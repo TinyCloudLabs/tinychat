@@ -238,6 +238,8 @@ export interface ContentStoreOptions {
    * the same ledger the drain and `POST …/purged` already read and write.
    */
   purgeLedger?: ContentPurgeLedgerReader;
+  /** Sync-off gate, backed by the connector's durable disabled marker. */
+  isDisabled?: (address: string) => Promise<boolean>;
   retentionMs?: number;
   maxMeetingBytes?: number;
   maxUserMeetings?: number;
@@ -248,6 +250,7 @@ export interface ContentStoreOptions {
 /** Fixed, short codes. A provider payload or a title must never become one. */
 const INVALID_TARGET = "invalid_target";
 const CONTENT_TOO_LARGE = "content_too_large";
+const SYNC_DISABLED = "sync_disabled";
 const RETENTION_TOMBSTONED = "retention_tombstoned";
 const CONTENT_STORE_FAILED = "content_store_failed";
 /** W7: distinct from the retention code so an operator can tell a purge from an aged-out sweep. */
@@ -402,6 +405,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
   private readonly maxUserMeetings: number;
   private readonly maxUserBytes: number;
   private readonly maxUserTombstones: number;
+  private readonly isDisabled: ((address: string) => Promise<boolean>) | null;
   private readonly purgeLedger: ContentPurgeLedgerReader | null;
   private readonly lanes = new Map<string, Promise<unknown>>();
   private readonly counters: ContentStoreStats = {
@@ -428,6 +432,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     this.maxUserMeetings = options.maxUserMeetings ?? MAX_USER_MEETINGS;
     this.maxUserBytes = options.maxUserBytes ?? MAX_USER_CONTENT_BYTES;
     this.maxUserTombstones = options.maxUserTombstones ?? MAX_USER_TOMBSTONES;
+    this.isDisabled = options.isDisabled ?? null;
     this.purgeLedger = options.purgeLedger ?? null;
   }
 
@@ -464,6 +469,23 @@ export class ContentStore implements ContentSink, RetentionGuard {
     const { source, address, sourceId } = target;
     return this.lane(source, address, async () => {
       try {
+        if (this.isDisabled !== null) {
+          let disabled: boolean;
+          try {
+            disabled = await this.isDisabled(address);
+          } catch {
+            // Failure to read the durable marker must not collect another server copy.
+            disabled = true;
+          }
+          if (disabled) {
+            warnContent(
+              `op=upsert result=${SYNC_DISABLED} source=${source} ` +
+                `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+            );
+            return { ok: false, code: SYNC_DISABLED };
+          }
+        }
+
         const index = await this.openIndex(source, address);
 
         // Step -1, before any fetch result is believed: the retention tombstone. A provider can
@@ -616,8 +638,8 @@ export class ContentStore implements ContentSink, RetentionGuard {
 
   /**
    * W5's reconcile-ack: the browser wrote the user's OWN space, so stamp `reconciledAt`. The
-   * server copy is RETAINED (D2a): reconcile does not shorten retention, because a second
-   * device still has to be able to read the meeting.
+   * server copy remains available while sync is on; if sync is off, the route deletes this
+   * reconciled copy after the acknowledgement.
    *
    * Throws on a failed write — a stamp reported for a write that did not land makes the browser
    * stop re-reconciling a meeting the server still believes is unreconciled.
@@ -676,6 +698,85 @@ export class ContentStore implements ContentSink, RetentionGuard {
       return true;
     });
   }
+  /**
+   * Sync-off cleanup. Reconciled meetings already exist in the owner's space, so remove their
+   * server rows and blobs immediately. Unreconciled rows remain available until acknowledgement
+   * or the 14-day retention boundary. Tombstones are IDs too and are cleared for this tenant.
+   */
+  async deleteReconciled(
+    source: string,
+    address: string,
+  ): Promise<{ removed: number }> {
+    const target = normalizeTarget(source, address);
+    return this.lane(target.source, target.address, async () => {
+      const index = await this.openIndex(target.source, target.address);
+      const now = this.now();
+      const cutoff = now - this.retentionMs;
+      const keep: ContentMeta[] = [];
+      const remove = new Set<string>();
+      for (const meta of index.meetings) {
+        const storedAt = Date.parse(meta.storedAt);
+        if (
+          meta.reconciledAt !== undefined ||
+          !Number.isFinite(storedAt) ||
+          storedAt <= cutoff
+        ) {
+          remove.add(meta.sourceId);
+        } else {
+          keep.push(meta);
+        }
+      }
+
+      const indexedIds = new Set(index.meetings.map((meta) => meta.sourceId));
+      for (const blob of await this.blobs.listContentIds(
+        target.source,
+        target.address,
+      )) {
+        if (remove.has(blob.sourceId)) continue;
+        if (indexedIds.has(blob.sourceId)) continue;
+
+        // An orphan can still be the only copy. Keep it only while its sealed metadata proves it
+        // is unreconciled and within retention; unreadable or malformed orphans cannot be exposed
+        // for reconciliation and must not become unbounded retained IDs.
+        try {
+          const orphan = await this.readMeeting(
+            target.source,
+            target.address,
+            blob.sourceId,
+          );
+          const storedAt = Date.parse(orphan?.meta.storedAt ?? "");
+          if (
+            orphan === null ||
+            orphan.meta.reconciledAt !== undefined ||
+            !Number.isFinite(storedAt) ||
+            storedAt <= cutoff
+          ) {
+            remove.add(blob.sourceId);
+          }
+        } catch {
+          remove.add(blob.sourceId);
+        }
+      }
+      for (const sourceId of remove) {
+        await this.blobs.remove(target.source, target.address, sourceId);
+      }
+      if (remove.size > 0 || index.tombstones.length > 0) {
+        await this.writeIndex(target.source, target.address, {
+          meetings: keep,
+          tombstones: [],
+        });
+      }
+
+      if (remove.size > 0 || index.tombstones.length > 0) {
+        logContent(
+          `op=sync-off-cleanup result=ok source=${target.source} ` +
+            `aid=${hashed(target.address)} removed=${remove.size} tombstones=${index.tombstones.length}`,
+        );
+      }
+      return { removed: remove.size };
+    });
+  }
+
 
   /**
    * Delete stored content and its replay tombstone at the same 14-day boundary. Retention is

@@ -664,6 +664,8 @@ async function main() {
         new KvContentBlobStore(node, backendStorageLane),
         {
           purgeLedger: connectorControl,
+          isDisabled: async (address: string) =>
+            (await connectorControl.readDisabled(address)) !== null,
         },
       );
     }
@@ -826,6 +828,8 @@ async function main() {
         queue: connectorWebhooks.queue,
         control: connectorWebhooks.control,
         limiters: connectorWebhooks.limiters,
+        deleteReconciled: (source: string, address: string) =>
+          getContentStore().deleteReconciled(source, address),
         // W1 — the same ingest-mode service the delivery path reads. For a cohort address the
         // fetch worker is the queue's SOLE consumer, so /drain surfaces nothing and /ack is an
         // idempotent no-op here; every non-cohort address is untouched Option C.
@@ -913,6 +917,10 @@ async function main() {
         createConnectorMeetingsRouter({
           content: contentStore,
           modes: connectorWebhooks.modes,
+          isDisabled: async (address: string) =>
+            (await connectorWebhooks.control.readDisabled(address)) !== null,
+          deleteReconciled: (source: string, address: string) =>
+            contentStore.deleteReconciled(source, address),
         }),
       );
 
@@ -940,6 +948,8 @@ async function main() {
           }),
           // Refetch BY ID with the user's own credential; the fetcher never sees a stored link.
           fetcher: new FirefliesMeetingFetcher(),
+          isDisabled: async (address: string) =>
+            (await connectorWebhooks.control.readDisabled(address)) !== null,
           content: contentStore,
           // W4's retention + purge tombstones: a swept or purged id is never re-stored by a
           // replayed delivery.
