@@ -101,6 +101,34 @@ host bundle identifier, so it does not share an upstream app's vault. A
 macOS prompts for microphone and system-audio capture when those sources are
 used. `Entitlements.plist` grants audio input to signed bundles.
 
+### Start recording from anywhere
+
+TinyCloud Home registers a global shortcut, **⌘⇧⌥R** (Command-Shift-Option-R;
+Ctrl+Shift+Alt+R on other platforms), as soon as it launches. No setup is
+needed. Three modifiers keep it clear of common bindings such as ⌘⇧R (a
+browser's hard reload) and ⌘⇧5 (the system screen recorder). The menu-bar icon
+(a record symbol) has **Start recording** and **Open TinyCloud Home**.
+
+The shortcut and **Start recording** bring the main window forward, hold a
+start request natively and emit `exo://recorder-start-requested`. The recorder
+(`RecorderProvider`, via `frontend/src/capture/recorder/recordShortcut.ts`)
+claims the request with `recorder_take_start_request`, once when it starts
+listening and again on each event, so a press made while the webview is still
+loading is not lost and a press is handled at most once. A request expires
+after 15 seconds. The recorder handles a claimed request like its Record button:
+it starts a recording through the same disclosures and native capture path and
+opens the recorder, or just opens the recorder when a recording or its receipt
+is already showing. If the recorder is not ready yet, the request waits up to
+15 seconds for it. **Open TinyCloud Home** only brings the window forward. If
+another app already owns the shortcut, TinyCloud Home logs a warning and the
+menu-bar item still works.
+
+Both are registered in Rust (`src-tauri/src/record_launch.rs`). The webview
+gets only `recorder_take_start_request`, which returns whether a request was
+waiting. No capability grants the global-shortcut or tray commands to the
+webview, and the IPC self-test checks that `plugin:global-shortcut|register`,
+`plugin:global-shortcut|unregister_all` and `plugin:tray|new` stay denied.
+
 ## Native transcription eval (A2)
 
 `desktop/Cargo.toml` is a separate Linux evaluation workspace; the Tauri app
