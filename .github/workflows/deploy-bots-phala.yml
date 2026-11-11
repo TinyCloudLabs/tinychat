@@ -81,6 +81,18 @@ jobs:
             exit 1
           fi
 
+      # Keep guard policy at the workflow revision even for old application refs.
+      - name: Check out trusted OS guard
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .os-guard
+          sparse-checkout: |
+            /.github/scripts/phala-os-guard.sh
+            /.github/scripts/test-phala-os-guard.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Summarize deployment target
         run: |
           {
@@ -150,10 +162,9 @@ jobs:
           fi
           echo "$RAW" | jq '{success, username, workspace, profile}'
 
-      # Fail closed before any image is built or the CVM is touched unless it runs the pinned production OS, or the one
-      # pinned dev OS in .github/scripts/phala-dev-os-allowlist.txt after a fresh integrity check.
+      # Bots always requires the exact pinned production OS; no transition override.
       - name: Test the OS image guard
-        run: bash .github/scripts/test-phala-os-guard.sh
+        run: bash .os-guard/.github/scripts/test-phala-os-guard.sh
 
       - name: Require a permitted OS image on the CVM
         env:
@@ -166,7 +177,7 @@ jobs:
             exit 1
           fi
           echo "$RAW" | jq '{id, name, status, app_id, instance_type, gateway, updated_at, created_at}'
-          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
+          bash .os-guard/.github/scripts/phala-os-guard.sh <<<"$RAW"
 
       # The ingress needs the CVM's own gateway (GATEWAY_DOMAIN in the compose), read from the CVM like the backend does.
       - name: Resolve Phala gateway CNAME
@@ -368,7 +379,7 @@ jobs:
             echo "$RAW" | jq '{success, error, details}'
             exit 1
           fi
-          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
+          bash .os-guard/.github/scripts/phala-os-guard.sh <<<"$RAW"
           echo "- OS image: \`$(jq -r '.os.name' <<<"$RAW")\` (\`$(jq -r '.os.os_image_hash' <<<"$RAW")\`)" >> "$GITHUB_STEP_SUMMARY"
 
       # `phala deploy` updates the encrypted env but not the CVM's allowed_envs whitelist, so sync it to the env file.
