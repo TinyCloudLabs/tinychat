@@ -42,13 +42,6 @@ export interface IngestRetentionSweeperDeps {
   intervalMs?: number;
 }
 
-/** Keep retention active for old data after the ingest feature is switched off. */
-export function shouldStartRetentionSweep(
-  backendIngestEnabled: boolean,
-  existingIndexes: readonly RetentionIndex[],
-): boolean {
-  return backendIngestEnabled || existingIndexes.length > 0;
-}
 
 export interface RetentionPassResult {
   addresses: number;

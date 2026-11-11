@@ -556,8 +556,9 @@ above for the listed addresses. This is deliberate and operator-signed
   `CONNECTOR_CONTENT_MASTER`, for **14 days** (`RETENTION_WINDOW_DAYS` in
   `backend/src/services/content-store.ts`). Rows and retention tombstones expire at the
   same boundary. A provider replay after 14 days may be delivered once again, subject
-  to the browser's duplicate check against the user's own space. Disconnect/purge deletes
-  the stored meetings and the credential immediately; queue and purge-ledger IDs clear at once.
+  to the browser's duplicate check against the user's own space. Disconnect/purge
+  deletes the stored meetings and the credential immediately; queue and purge-ledger
+  IDs clear at once.
 - What does **not** change: the backend still holds **no connector delegation**.
   Custody is out of band (plan §6), so no new permission is minted inside a
   user's space and `backendDelegationPermissions()` stays `threads/`-only for

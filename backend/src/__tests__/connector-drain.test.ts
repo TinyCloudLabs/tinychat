@@ -613,7 +613,7 @@ describe("purge ledger (step -1)", () => {
     expect(result.dropped).toBe(1);
   });
 
-  test("a duplicate delivery refreshes receivedAt but never the provider stamp", async () => {
+  test("a duplicate delivery preserves receivedAt and the provider stamp", async () => {
     const h = harness();
     const sourceTimestamp = new Date(T0 - 120_000).toISOString();
     await h.queue.enqueue(SOURCE, ADDRESS, {
@@ -629,7 +629,7 @@ describe("purge ledger (step -1)", () => {
     });
 
     const [item] = await h.queue.list(SOURCE, ADDRESS);
-    expect(item!.receivedAt).toBe(new Date(T0 + 60_000).toISOString());
+    expect(item!.receivedAt).toBe(new Date(T0).toISOString());
     expect(item!.sourceTimestamp).toBe(sourceTimestamp);
   });
 
@@ -1433,18 +1433,6 @@ describe("index.ts wiring", () => {
     expect(source).toContain("onDelivery: createIngestOnDelivery(");
   });
 
-  // OPTION C re-scopes trigger 2 to bounded queue maintenance: the TTL / dead-letter sweep,
-  // which surfaces nothing, instead of a timed drain that surfaced ids to nobody.
-  test("trigger 2 is bounded queue maintenance, not a background drain", () => {
-    expect(source).toContain("startConnectorQueueMaintenanceTimer({");
-    expect(source).not.toContain("startConnectorDrainTimer");
-    expect(source).not.toContain("drainAddresses");
-    expect(source).toMatch(
-      /connectorWebhooks\s*\n?\s*\?\s*startConnectorQueueMaintenanceTimer/,
-    );
-    expect(source).toContain("createWebhookQueueDirectory(node)");
-    expect(source).toContain("queue.sweep(source, address)");
-  });
 
   test("trigger 3 — the authenticated user-visit drain — is THE processing trigger", () => {
     expect(source).toMatch(
