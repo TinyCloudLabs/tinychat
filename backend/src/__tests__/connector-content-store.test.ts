@@ -1119,9 +1119,11 @@ describe("W4 content store — retention", () => {
       expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-legacy-updated-at")).not.toBeNull();
       expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-under-wrong-key")).not.toBeNull();
       expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
+      expect(wrongKeyStore.stats().unreadableIndexes).toBe(1);
       await expect(
         wrongKeyStore.deleteReconciled(SOURCE, ADDRESS_A),
       ).rejects.toThrow("content index is unreadable");
+      expect(wrongKeyStore.stats().unreadableIndexes).toBe(2);
       expect(errors.filter((line) => line.includes("first_failure=true"))).toHaveLength(1);
       expect(errors.join(" ")).not.toContain(ADDRESS_A);
 
