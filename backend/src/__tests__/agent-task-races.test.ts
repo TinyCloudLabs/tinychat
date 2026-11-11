@@ -130,7 +130,7 @@ describe("task accounting terminal races", () => {
     expect(local.summaries[0].outcome).toBe("result_size_limit");
   });
 
-  test("paid task rounds aggregate credits once into the new anchored week after crossing its boundary", async () => {
+  test("paid task rounds charge the anchored week they started in when settling after its boundary", async () => {
     const anchor = Date.parse("2026-09-01T00:00:00Z");
     const boundary = anchor + 7 * 24 * 60 * 60 * 1000;
     let now = boundary - 10;
@@ -146,8 +146,9 @@ describe("task accounting terminal races", () => {
       now = boundary + 10;
       local.finish(); await bounded(local.accounted.promise);
       expect(local.entries).toHaveLength(1);
-      expect(local.entries[0]).toMatchObject({ prompt_tokens: 34, completion_tokens: 10, credits: 1, window_kind: "anchored_week", window_start: boundary, occurred_at: now });
-      expect(getUsage(address, TIERS.plus, anchor).used).toBe(1);
+      expect(local.entries[0]).toMatchObject({ prompt_tokens: 34, completion_tokens: 10, credits: 1, window_kind: "anchored_week", window_start: boundary - 7 * 24 * 60 * 60 * 1000, occurred_at: now });
+      expect(getUsage(address, TIERS.plus, anchor).used).toBe(0);
+      expect(getUsage(address, TIERS.plus, anchor, boundary - 10).used).toBe(8);
       local.res.emit("drain"); await bounded(Promise.resolve(pending));
       expect(local.chunks.join("").match(/data: \[DONE\]/g)).toHaveLength(1);
     } finally { local.req.emit("aborted"); await Promise.resolve(pending); clock.mockRestore(); }

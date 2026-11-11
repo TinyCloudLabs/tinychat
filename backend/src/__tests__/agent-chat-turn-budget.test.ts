@@ -262,10 +262,10 @@ describe("agent chat turn budget", () => {
       );
       expect(followUpStatus).toBe(402);
       expect(followUpBody).toMatchObject({
-        error: "credit_budget_exceeded", tier: "free", usage: { used: 820, limit: 500 },
+        error: "credit_budget_exceeded", tier: "free", usage: { used: 500, limit: 500 },
       });
-      expect(usageAtEnd).toBe(820);
-      expect(getUsage(address, TIERS.free).used).toBe(820);
+      expect(usageAtEnd).toBe(500);
+      expect(getUsage(address, TIERS.free).used).toBe(500);
     } finally {
       await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
     }
@@ -331,12 +331,12 @@ describe("agent chat turn budget", () => {
         expect(stream.match(/data: \[DONE\]/g)).toHaveLength(1);
         expect(followUpStatus).toBe(402);
         expect(followUpBody).toMatchObject({
-          error: "credit_budget_exceeded", tier: "free", usage: { used: 820, limit: 500 },
+          error: "credit_budget_exceeded", tier: "free", usage: { used: 500, limit: 500 },
         });
-        expect(usageAtEnd).toBe(820);
-        expect(getUsage(address, TIERS.free).used).toBe(820);
+        expect(usageAtEnd).toBe(500);
+        expect(getUsage(address, TIERS.free).used).toBe(500);
         expect(entries).toEqual([expect.objectContaining({
-          credits: 820, prompt_tokens: 60_000, completion_tokens: 22_000,
+          credits: 500, prompt_tokens: 60_000, completion_tokens: 22_000,
         })]);
       } finally {
         await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));

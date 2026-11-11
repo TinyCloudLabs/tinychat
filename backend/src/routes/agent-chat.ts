@@ -26,13 +26,12 @@ import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
   getUsage,
   isOverBudget,
-  recordUsage,
-  startOfAnchoredWeek,
-  startOfUtcDay,
 } from "../billing/usage.js";
 import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
 import { truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
-import { creditsFor, ratesForModel, type ModelRates } from "../billing/credits.js";
+import { FALLBACK_MODEL_RATES, ratesForModel, type ModelRates } from "../billing/credits.js";
+import { createReplyBudget, lengthStoppedByBudget, type ReplyBudget } from "../billing/reply-budget.js";
+import { settleReply, type ReplyOutcome } from "../billing/settle.js";
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
@@ -44,13 +43,6 @@ import {
 } from "../billing/ledger-gate.js";
 import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
 import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
-
-// Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
-const FALLBACK_RECORDING_RATES: ModelRates = {
-  creditsPerKInput: 200,
-  creditsPerKOutput: 1000,
-  fallback: true,
-};
 
 // Look up a model in the catalog and resolve its rates. Missing entries get the fallback.
 // Duplicated from chat.ts (sanctioned — chat.ts must stay untouched).
@@ -350,6 +342,11 @@ function contentFrame(text: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
 }
 
+/** True for a frame built by `contentFrame`. */
+function isContentFrame(frame: string): boolean {
+  return frame.startsWith('data: {"choices":[{"delta":{"content":');
+}
+
 function toolActivityFrame(name: string, status: "running" | "done" | "error", id?: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: {} }], tool_activity: { name, status, ...(id ? { id } : {}) } })}\n\n`;
 }
@@ -573,13 +570,16 @@ export interface OrchestrateParams {
   entityId: string;
   roomId?: string;
   turnContext?: AgentTurnContext;
-  write: (frame: string) => unknown | Promise<unknown>;
+  /** `notice` marks an error message rather than answer content (it does not make the reply billable). */
+  write: (frame: string, notice?: boolean) => unknown | Promise<unknown>;
   signal?: AbortSignal;
   onPhase?: (phase: StreamPhase) => void;
   isAborted?: () => boolean;
   /** Remaining time on the existing SSE owner's deadline. */
   remainingMs?: () => number;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
+  /** Stops the reply at the allowance it started with: caps each provider call and refuses calls and tools it cannot afford. */
+  budget?: ReplyBudget;
 }
 
 export interface OrchestrateResult {
@@ -596,7 +596,11 @@ export interface OrchestrateResult {
  * model's final answer. Returns final ID and summed usage to the lifecycle owner,
  * which alone writes terminal metadata and the protocol terminal.
  */
-export async function orchestrateToolCalling(params: OrchestrateParams): Promise<OrchestrateResult> {
+export async function orchestrateToolCalling(input: OrchestrateParams): Promise<OrchestrateResult> {
+  // The budget follows the reply's cumulative usage as the loops report it.
+  const params: OrchestrateParams = input.budget
+    ? { ...input, onUsage: usage => { input.budget!.observe(usage); input.onUsage?.(usage); } }
+    : input;
   if (params.config.privateAccessActive === false) return orchestrateExistingLoop(params, true);
   if (!params.config.meetingContentRetrievalEnabled) return orchestrateExistingLoop(params);
   // Model admission applies before interpretation: an unqualified interpreter
@@ -642,9 +646,12 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
   const maxChars = request.maxOutputTokens === 1024 ? 12288 : 24576;
   params.onPhase?.(request.phase);
+  const base = { model: params.model, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), stream: true, stream_options: { include_usage: true } };
+  const limit = params.budget ? params.budget.limitFor(JSON.stringify(base).length, request.maxOutputTokens) : { maxTokens: request.maxOutputTokens, capped: false };
+  if (!limit) throw new StreamFailure("budget_exhausted");
   const upstream = await fetchForTurn(params.config.fetchImpl ?? fetch, `${params.config.redpillBaseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
-    body: JSON.stringify({ model: params.model, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
+    body: JSON.stringify({ ...base, max_tokens: limit.maxTokens }),
   }, request.signal);
   if (!upstream.ok || !upstream.body) { if (upstream.body) ignoreCleanup(() => upstream.body!.cancel()); throw new StreamFailure("upstream_failed"); }
   let content = "", completionId = "", promptTokens = 0, completionTokens = 0, finish: unknown;
@@ -668,6 +675,8 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
     if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit");
     if (choice?.finish_reason != null) finish = choice.finish_reason;
   }
+  // Output cut at the budget's cap is the limit, not an incomplete provider reply; a model's own length stop is not.
+  if (params.budget && finish === "length" && lengthStoppedByBudget(limit, completionTokens, params.budget)) throw new StreamFailure("budget_exhausted");
   let inline = false;
   if (calls.size === 0 && content.includes("<tool_call>")) {
     parseInlineToolCalls(content).forEach((call, i) => calls.set(i, { id: `inline_${i}`, ...call })); inline = calls.size > 0;
@@ -749,13 +758,8 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     const bufferMeetingAnswer = meetingCitations.length > 0;
 
     params.onPhase?.(repairing ? "repair" : isSynthesisRound ? "synthesis" : "model");
-    const upstream = await fetchForTurn(fetchImpl, `${config.redpillBaseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.redpillApiKey}`,
-      },
-      body: JSON.stringify(
+    // The body is built first: its size prices the prompt against the reply budget.
+    const requestBody = (
         cleanSynthesis
           ? {
               model,
@@ -780,8 +784,17 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
               ...(isSynthesisRound ? { reasoning_effort: "low" } : {}),
               stream: true,
               stream_options: { include_usage: true },
-            },
-      ),
+            }
+    );
+    const limit = params.budget?.limitFor(JSON.stringify(requestBody).length);
+    if (limit === null) { errorCode = "budget_exhausted"; break; }
+    const upstream = await fetchForTurn(fetchImpl, `${config.redpillBaseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.redpillApiKey}`,
+      },
+      body: JSON.stringify(limit?.maxTokens === undefined ? requestBody : { ...requestBody, max_tokens: limit.maxTokens }),
     }, params.signal);
 
     if (!upstream.ok || !upstream.body) {
@@ -919,9 +932,14 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       await flushPending();
     }
 
+    // Output cut at the budget's cap is the limit; text already streamed stays with the user. A model's own length stop is a normal end.
+    if (params.budget && limit && finish === "length" && lengthStoppedByBudget(limit, roundCompletionTokens, params.budget)) { errorCode = "budget_exhausted"; break; }
+
     if (generalOnly && [...toolCalls.values()].some(call => call.name !== "web_search")) { errorCode = "routing_mismatch"; break; }
     if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete");
     if (finish === "tool_calls") {
+      // A round that used up the allowance must not run its tools: nothing after them could be afforded.
+      if (params.budget?.exhausted()) { errorCode = "budget_exhausted"; break; }
       const calls = [...toolCalls.values()];
       if (!calls.length) throw new StreamFailure("upstream_incomplete");
       for (const call of calls) {
@@ -1347,6 +1365,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     let anchor: number | null = null;
     let rates: ModelRates | null = null;
     let budgetRemaining: number | null = null;
+    // The window and allowance a reply is charged against are those at admission.
+    const startedAt = Date.now();
     if (paywallEnabled()) {
       let resolution;
       try {
@@ -1487,6 +1507,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       res.status(503).json({ error: "eliza_unavailable" });
       return;
     }
+    const allowance = budgetRemaining === null ? null : Math.max(0, budgetRemaining);
     const taskSelected = !mcpSelected && config.elizaTasksEnabled === true &&
       (!config.elizaTasksAccountAllowed || config.elizaTasksAccountAllowed(address));
     owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
@@ -1541,7 +1562,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       if (accessFrame && !enqueue(accessFrame)) return;
       const executionId = crypto.randomUUID();
       const budgetMonitor = budgetRemaining !== null && budgetStopMode !== "off"
-        ? createTurnBudgetMonitor({ mode: budgetStopMode, remaining: budgetRemaining, rates: rates ?? FALLBACK_RECORDING_RATES })
+        ? createTurnBudgetMonitor({ mode: budgetStopMode, remaining: budgetRemaining, rates: rates ?? FALLBACK_MODEL_RATES })
         : undefined;
       const result = await taskClient.run({
         version: 1, executionId, entityId,
@@ -1564,25 +1585,18 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         onDelegationError: (code: string) => { enqueue(delegationErrorFrame(code)); },
         onUsage: budgetMonitor,
       });
+      const final = result.final;
+      const code = result.errorCode ?? final?.code;
+      const completed = !result.cancelled && !result.errorCode && final && ["success", "partial", "clarification"].includes(final.outcome);
       // Accounting has settled even if the browser failed or cancelled. Never
       // erase it because a subsequent content/write/end/enqueue operation fails.
-      if (paywallEnabled() && address) {
-        const credits = creditsFor(rates ?? FALLBACK_RECORDING_RATES, result.usage.promptTokens, result.usage.completionTokens);
-        try { recordUsage(address, TIERS[gatedTier], credits, anchor); noteRequestRecord(res, { credits }); }
-        catch { console.error("[agent-chat] task local usage recording failed"); }
-        if (config.flusher && credits > 0) {
-          const now = Date.now();
-          const tierCfg = TIERS[gatedTier];
-          try {
-            config.flusher.enqueue({
-              account: address, model: resolvedModel, credits,
-              window_start: tierCfg.budgetWindow === "week" ? startOfAnchoredWeek(anchor ?? now, now) : startOfUtcDay(now),
-              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
-              prompt_tokens: result.usage.promptTokens, completion_tokens: result.usage.completionTokens,
-              occurred_at: now, signed_token_count: null,
-            });
-          } catch { console.error("[agent-chat] task usage enqueue failed"); }
-        }
+      if (paywallEnabled() && address && allowance !== null) {
+        const outcome: ReplyOutcome = completed ? "success"
+          : code === "budget_exhausted" ? "limit_stop"
+            : code === "turn_timeout" || final?.outcome === "timed_out" ? "timed_out"
+              : result.cancelled ? "cancelled" : "failed";
+        const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
+        noteRequestRecord(res, { credits: settled.charged });
       }
       console.info("[agent-chat] task accounting", {
         executionId, model: resolvedModel, complete: result.observationComplete,
@@ -1591,20 +1605,26 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         startedAttempts: result.usage.startedAttempts, reportedAttempts: result.usage.reportedAttempts,
         finalizedAttempts: result.usage.finalizedAttempts,
       });
-      const final = result.final;
-      if (!result.cancelled && !result.errorCode && final && ["success", "partial", "clarification"].includes(final.outcome)) {
+      if (completed) {
         const compositeAnswer = streamedContent && final.answer?.delivery === "buffered";
         if (final.answer?.delivery === "buffered") enqueue(contentFrame((compositeAnswer ? "\n\n" : "") + final.answer.text!));
         await delivery;
         await streamOwner.complete({ promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens,
           completionId: final.answerIsProviderVerbatim && !compositeAnswer ? final.finalProviderCompletionId ?? "" : "" });
       } else {
-        const code = result.errorCode ?? final?.code;
         const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
         await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed"));
       }
       return;
     }
+    const executionId = crypto.randomUUID();
+    const replyBudget = allowance === null ? undefined : createReplyBudget(allowance, rates ?? FALLBACK_MODEL_RATES, contextLengthFor(resolvedModel));
+    // Only answer content makes a failed reply billable; error notices and tool activity do not.
+    let deliveredOutput = false;
+    const writeFrame = async (frame: string, notice?: boolean) => {
+      await streamOwner.write(frame);
+      if (!notice && isContentFrame(frame)) deliveredOutput = true;
+    };
     let orchestrateResult: OrchestrateResult | null = null;
     let observedUsage = { promptTokens: 0, completionTokens: 0 };
     if (await streamOwner.open()) {
@@ -1614,7 +1634,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
-          write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
+          write: writeFrame, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
+          ...(replyBudget ? { budget: replyBudget } : {}),
         });
       } catch (error) {
         // Preserve the failure for terminal delivery after observed usage settles.
@@ -1627,72 +1648,17 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     // Content delivery and cancellation must not erase already observed usage.
     orchestrateResult ??= { ...observedUsage, completionId: "" };
 
-    // Record usage before terminal metadata and stream end so follow-up requests
+    // Settle before terminal metadata and stream end so follow-up requests
     // see the completed turn's charge during their budget preflight.
-    // NEVER throw after bytes were served. Falls back to conservative rates on any failure.
-    if (paywallEnabled() && address && orchestrateResult) {
-      try {
-        const effectiveRates = rates ?? FALLBACK_RECORDING_RATES;
-        const credits = creditsFor(
-          effectiveRates,
-          orchestrateResult.promptTokens,
-          orchestrateResult.completionTokens,
-        );
-        recordUsage(address, TIERS[gatedTier], credits, anchor);
-        noteRequestRecord(res, { credits });
-        // §E.6 — shadow-push to ledger (async, never blocks serving)
-        if (config.flusher && credits > 0) {
-          const now = Date.now();
-          const tierCfg = TIERS[gatedTier];
-          const ws =
-            tierCfg.budgetWindow === "week"
-              ? startOfAnchoredWeek(anchor ?? now, now)
-              : startOfUtcDay(now);
-          config.flusher.enqueue({
-            account: address,
-            window_start: ws,
-            window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
-            credits,
-            model: resolvedModel,
-            prompt_tokens: orchestrateResult.promptTokens,
-            completion_tokens: orchestrateResult.completionTokens,
-            occurred_at: now,
-            signed_token_count: null,
-          });
-        }
-      } catch {
-        console.error("[agent-chat] post-stream usage recording failed");
-        try {
-          const credits = creditsFor(
-            FALLBACK_RECORDING_RATES,
-            orchestrateResult.promptTokens,
-            orchestrateResult.completionTokens,
-          );
-          recordUsage(address, TIERS[gatedTier], credits, anchor);
-          noteRequestRecord(res, { credits });
-          if (config.flusher && credits > 0) {
-            const now = Date.now();
-            const tierCfg = TIERS[gatedTier];
-            const ws =
-              tierCfg.budgetWindow === "week"
-                ? startOfAnchoredWeek(anchor ?? now, now)
-                : startOfUtcDay(now);
-            config.flusher.enqueue({
-              account: address,
-              window_start: ws,
-              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
-              credits,
-              model: resolvedModel,
-              prompt_tokens: orchestrateResult.promptTokens,
-              completion_tokens: orchestrateResult.completionTokens,
-              occurred_at: now,
-              signed_token_count: null,
-            });
-          }
-        } catch {
-          console.error("[agent-chat] fallback usage recording failed");
-        }
-      }
+    // Never throws after bytes were served.
+    if (paywallEnabled() && address && allowance !== null) {
+      const failure = orchestrateResult.errorCode;
+      const cancelledByClient = streamOwner.signal.aborted && !(streamOwner.signal.reason instanceof StreamFailure);
+      const outcome: ReplyOutcome = failure === "budget_exhausted" ? "limit_stop"
+        : failure === "turn_timeout" ? "timed_out"
+          : cancelledByClient ? "cancelled" : failure ? "failed" : "success";
+      const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: orchestrateResult, rates, outcome, deliveredOutput, executionId, flusher: config.flusher });
+      noteRequestRecord(res, { credits: settled.charged });
     }
     // Also await an already claimed timeout/cancellation terminal's drain.
     await streamOwner.complete(orchestrateResult);

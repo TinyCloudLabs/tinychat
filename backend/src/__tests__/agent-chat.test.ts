@@ -1464,14 +1464,14 @@ describe("orchestrateToolCalling", () => {
 });
 
 describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
-  for (const [failure, code, completed] of [
-    ["invalid-plan", "interpretation_failed", true],
-    ["incomplete-finish", "upstream_incomplete", true],
-    ["provider-error", "upstream_failed", false],
-    ["incomplete-read", "upstream_incomplete", true],
-    ["tool-overflow", "result_size_limit", true],
+  for (const [failure, code] of [
+    ["invalid-plan", "interpretation_failed"],
+    ["incomplete-finish", "upstream_incomplete"],
+    ["provider-error", "upstream_failed"],
+    ["incomplete-read", "upstream_incomplete"],
+    ["tool-overflow", "result_size_limit"],
   ] as const) {
-    it(`returns one terminal for ${failure} and accounts observed usage exactly once`, async () => {
+    it(`returns one terminal for ${failure} and charges nothing when no output was delivered`, async () => {
       process.env.PAYWALL_ENABLED = "true";
       process.env.STRIPE_SECRET_KEY = "sk_test";
       _setStripeClient(mockStripe(null));
@@ -1512,9 +1512,8 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         expect(logs[0]).toMatchObject({ outcome: code });
         if (failure !== "tool-overflow") expect(traces).toEqual([expect.objectContaining({ terminal: code })]);
         expect(JSON.stringify({ logs, traces })).not.toMatch(/PRIVATE|invalid JSON|private-completion-id/);
-        expect(entries).toHaveLength(completed ? 1 : 0);
-        expect(getUsage(ADDR, TIERS.free, null).used).toBe(completed ? rounds : 0);
-        if (completed) expect(entries[0]).toMatchObject({ prompt_tokens: 17 * rounds, completion_tokens: 5 * rounds, credits: rounds });
+        expect(entries).toHaveLength(0);
+        expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
       } finally { restore(); }
     });
   }
@@ -1579,7 +1578,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
     expect(res.headersSent).toBe(false); expect(res.chunks).toHaveLength(0);
   });
 
-  it("does not log raw failures in either post-stream accounting catch", async () => {
+  it("does not log raw failures from post-stream accounting", async () => {
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test";
     _setStripeClient(mockStripe(null));
@@ -1592,7 +1591,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         ...baseConfig(makeCompletionFetch()),
         flusher: { enqueue: () => { throw new Error("sentinel-accounting-error-with-secret"); } } as AgentChatConfig["flusher"],
       })(req, res);
-      expect(logged).toHaveLength(2);
+      expect(logged).toHaveLength(1);
       expect(JSON.stringify(logged)).not.toContain("sentinel");
       expect(res.chunks.join("").match(/data: \[DONE\]/g)).toHaveLength(1);
     } finally { error.mockRestore(); restore(); }
@@ -1646,7 +1645,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
   }
 
   for (const secondRound of ["exception", "http-error"] as const) {
-    it(`preserves prior-round accounting disposition for ${secondRound}`, async () => {
+    it(`is free when round two fails before any output (${secondRound})`, async () => {
       process.env.PAYWALL_ENABLED = "true";
       process.env.STRIPE_SECRET_KEY = "sk_test";
       _setStripeClient(mockStripe(null));
@@ -1666,7 +1665,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       try {
         const { req, res } = makeReqRes();
         await createAgentChatHandler(baseConfig(fetchImpl))(req, res);
-        expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
+        expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
         expect(res.chunks.join("")).toContain('"stream_error":{"code":"upstream_failed"}');
       } finally { restore(); }
     });

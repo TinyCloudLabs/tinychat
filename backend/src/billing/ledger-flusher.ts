@@ -16,7 +16,8 @@ export interface LedgerUsageRecord {
   signed_token_count: string | null;
 }
 
-export type LedgerUsageRecordInput = Omit<LedgerUsageRecord, "record_id">;
+/** `record_id` is optional: pass the reply's execution id so a replayed enqueue is the same record at the ledger. */
+export type LedgerUsageRecordInput = Omit<LedgerUsageRecord, "record_id"> & { record_id?: string };
 
 const OUTBOX_CAP = 5000;
 const FLUSH_INTERVAL_MS = 5000;
@@ -41,7 +42,7 @@ export class LedgerFlusher {
       );
       this.outbox.shift();
     }
-    this.outbox.push({ ...record, record_id: crypto.randomUUID() });
+    this.outbox.push({ ...record, record_id: record.record_id ?? crypto.randomUUID() });
     if (this.outbox.length >= FLUSH_SIZE_TRIGGER) {
       this.flush().catch((err) => {
         console.error("[ledger-flusher] size-trigger flush error:", err);
