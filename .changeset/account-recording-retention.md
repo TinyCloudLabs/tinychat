@@ -2,4 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-Keep device-only recordings available to their account on web and desktop, add explicit account selection for signed-out recordings, and complete account-local sign-out cleanup. Details: TC-2785.
+On web and desktop, voice notes that aren't saved yet stay on the device for your account when you sign out, or you can delete them. Notes recorded while signed out wait until you save each one to an account.
+
+Details: TC-2785
