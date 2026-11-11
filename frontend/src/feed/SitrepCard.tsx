@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
+import { AnswerSteps, answerHandling } from "./AnswerSteps";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
@@ -32,14 +33,11 @@ function TypedAnswerStatus({ entry, owner, answer }: { entry: HomeFeedEntry; own
   const original = owner.answers.find((row) => row.value === answer);
   const responseIds = original ? Object.entries(entry.owner?.responseOrigins ?? owner.responseOrigins ?? {}).flatMap(([responseId, origin]) => origin.sourceKey === original.sourceKey ? [responseId] : []) : [];
   const header = responseIds.length === 1 ? entry.responses?.find((response) => response.kind !== "message" && response.responseId === responseIds[0]) : undefined;
-  const receipt = header ? entry.responseHandling?.[header.responseId] : undefined;
-  const acknowledgement = receipt?.acknowledgement ?? (header && entry.state.acknowledgement?.responseId === header.responseId ? entry.state.acknowledgement : null);
-  const outcome = receipt?.outcome ?? (header && entry.state.outcome?.responseId === header.responseId ? entry.state.outcome : null);
-  return <div role="status" className="rounded-xl border border-border bg-muted/40 p-3 text-sm">
-    <p className="font-medium">{header ? "Answer saved" : "Historical owner answer"}{acknowledgement && " · Agent received"}{outcome && (outcome.phase === "succeeded" ? " · Completed" : " · Failed")}</p>
-    {!header && <p className="text-xs text-muted-foreground">Publisher receipt not reported for this exact historical answer.</p>}
-    {answer.action === "code" ? <p>Approval code stored privately for the intended agent. Its value is not shown in history or receipts.</p> : <>{answer.choice && <p>Choice: {answer.choice}</p>}{answer.text && <p className="whitespace-pre-wrap">{answer.text}</p>}{typeof outcome?.detail?.message === "string" && <p>{outcome.detail.message}</p>}</>}
-    <time className="text-xs text-muted-foreground" dateTime={answer.at}>{stamp(answer.at)}</time>
+  const steps = header ? { sent: header.createdAt, ...answerHandling(entry, header.responseId) } : null;
+  return <div role="status" className="space-y-2 rounded-xl border border-border bg-muted/40 p-3 text-sm">
+    {steps ? <AnswerSteps {...steps} /> : <><p className="font-medium">Historical owner answer</p><p className="text-xs text-muted-foreground">Publisher receipt not reported for this exact historical answer.</p></>}
+    {answer.action === "code" ? <p>Approval code stored privately for the intended agent. Its value is not shown in history or receipts.</p> : <>{answer.choice && <p>Choice: {answer.choice}</p>}{answer.text && <p className="whitespace-pre-wrap">{answer.text}</p>}{typeof steps?.outcome?.detail?.message === "string" && <p>{steps.outcome.detail.message}</p>}</>}
+    {!steps && <time className="text-xs text-muted-foreground" dateTime={answer.at}>{stamp(answer.at)}</time>}
   </div>;
 }
 

@@ -117,6 +117,11 @@ async function chooseView(host: HTMLElement, value: FeedSelector) {
 function handling(response: FeedResponse, phase: FeedHandling["phase"]): FeedHandling {
   return { cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId, handlingId: `handling-${phase}`, phase, createdAt, detail: { message: phase === "failed" ? "Action failed safely" : "Reversible action completed" } };
 }
+/** Each step of the answer on show and its state, e.g. "received:done"; null when no answer shows. */
+function steps(scope: ParentNode | null | undefined) {
+  const list = scope?.querySelector('[aria-label="Answer steps"]');
+  return list ? [...list.querySelectorAll<HTMLElement>("li")].map((step) => `${step.dataset.step}:${step.dataset.state}`) : null;
+}
 
 test("saving an answer waits for durability, then distinguishes saved, received, and completed", async () => {
   const write = Promise.withResolvers<void>();
@@ -126,25 +131,23 @@ test("saving an answer waits for durability, then distinguishes saved, received,
   await act(async () => button(view.host, "Save answer").click());
   expect(answer(view.host).value).toBe("Proceed with the isolated action");
   expect(store.responses).toEqual([]);
-  expect(view.host.textContent).not.toContain("Answer saved");
+  expect(steps(view.host)).toBeNull();
   await act(async () => write.resolve());
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", text: "Proceed with the isolated action" });
-  expect(view.host.textContent).toContain("Answer saved");
-  expect(view.host.textContent).not.toContain("Agent received");
-  expect(view.host.textContent).not.toContain("Completed");
+  expect(steps(view.host)).toEqual(["sent:done", "received:upcoming", "outcome:upcoming"]);
   store.durable.entries[0]!.state.acknowledgement = handling(store.responses[0]!, "acknowledged");
   await act(async () => store.notify());
-  expect(view.host.textContent).toContain("Agent received");
-  expect(view.host.textContent).not.toContain("Completed");
+  expect(steps(view.host)).toEqual(["sent:done", "received:done", "outcome:upcoming"]);
   store.durable.entries[0]!.state.outcome = handling(store.responses[0]!, "succeeded");
   await act(async () => store.notify());
+  expect(steps(view.host)).toEqual(["sent:done", "received:done", "outcome:done"]);
   expect(view.host.textContent).toContain("Completed");
   expect(view.host.textContent).toContain("Reversible action completed");
   await view.unmount();
   const reopened = await mount(store.source());
   await chooseView(reopened.host, "both");
   expect(reopened.host.textContent).toContain("Proceed with the isolated action");
-  expect(reopened.host.textContent).toContain("Completed");
+  expect(steps(reopened.host)).toEqual(["sent:done", "received:done", "outcome:done"]);
 });
 
 test("a rejected write keeps the draft actionable and does not imply receipt", async () => {
@@ -157,8 +160,7 @@ test("a rejected write keeps the draft actionable and does not imply receipt", a
   expect(answer(view.host).value).toBe("Keep this unsaved answer");
   expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
   expect(button(view.host, "Save answer").disabled).toBe(false);
-  expect(view.host.textContent).not.toContain("Answer saved");
-  expect(view.host.textContent).not.toContain("Agent received");
+  expect(steps(view.host)).toBeNull();
   expect(store.responses).toEqual([]);
   await view.unmount();
   const reopened = await mount(store.source());
@@ -217,15 +219,15 @@ test("an in-flight answer retains its exact issuance and loads its outcome after
   store.archive[0]!.state.acknowledgement = handling(store.responses[0]!, "acknowledged");
   store.archive[0]!.state.outcome = handling(store.responses[0]!, "succeeded");
   await act(async () => store.notify());
-  expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Completed");
+  expect(steps(view.host.querySelector('[aria-label="Focused card"]'))).toEqual(["sent:done", "received:done", "outcome:done"]);
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Answer for revision one only");
   await act(async () => button(view.host, "Next card").click());
   expect(answer(view.host).value).toBe("");
-  expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).not.toContain("Answer saved");
+  expect(steps(view.host.querySelector('[aria-label="Focused card"]'))).toBeNull();
   await view.unmount();
   const reopened = await mount(store.source());
   expect(answer(reopened.host).value).toBe("");
-  expect(reopened.host.textContent).not.toContain("Answer saved");
+  expect(steps(reopened.host)).toBeNull();
 });
 
 test("snoozing removes attention without writing an answer and expiry restores it", async () => {
@@ -239,7 +241,7 @@ test("snoozing removes attention without writing an answer and expiry restores i
   await act(async () => store.notify());
   expect(view.host.textContent).toContain("Question decision-one");
   expect(answer(view.host).value).toBe("");
-  expect(view.host.textContent).not.toContain("Answer saved");
+  expect(steps(view.host)).toBeNull();
 });
 
 test("the explicit saved default reaches another session without every view change becoming the default", async () => {
@@ -262,9 +264,9 @@ test("a failed outcome stays distinct from an unsaved answer and keeps source/re
   entry.state.outcome = handling(entry.state.response, "failed");
   const store = persistence([entry], { defaultSelector: "both" });
   const view = await mount(store.source());
-  expect(view.host.textContent).toContain("Answer saved");
-  expect(view.host.textContent).toContain("Agent received");
+  expect(steps(view.host)).toEqual(["sent:done", "received:done", "outcome:failed"]);
   expect(view.host.textContent).toContain("Failed");
+  expect(view.host.textContent).not.toContain("Completed");
   expect(view.host.textContent).toContain("Action failed safely");
   expect(view.host.querySelector("a[href='https://example.org/source']")).not.toBeNull();
   expect(view.host.querySelector("a[href='https://example.org/report']")).not.toBeNull();
@@ -305,4 +307,22 @@ test("Next card advances through all three cards before wrapping", async () => {
   expect(title()).toBe("Question c");
   await act(async () => button(view.host, "Next card").click());
   expect(title()).toBe("Question a");
+});
+
+test("each step that has arrived shows its own time, a waiting one says so, and an outcome with no separate receipt still counts as received", async () => {
+  const entry = decision();
+  entry.state.response = { cardId: "decision-one", revision: 1, issuanceId: "issuance-1", responseId: "saved-response", sequence: 1, kind: "answer", choiceId: "proceed", createdAt: "2026-10-28T12:01:00Z" };
+  const store = persistence([entry], { defaultSelector: "both" });
+  const view = await mount(store.source());
+  const times = () => [...view.host.querySelectorAll('[aria-label="Answer steps"] li')].map((step) => step.querySelector("time")?.getAttribute("datetime") ?? null);
+  expect(steps(view.host)).toEqual(["sent:done", "received:upcoming", "outcome:upcoming"]);
+  expect(times()).toEqual(["2026-10-28T12:01:00Z", null, null]);
+  expect(view.host.querySelector('[data-step="received"]')?.textContent).toBe("Agent received, not yet");
+  store.durable.entries[0]!.state.outcome = { ...handling(entry.state.response, "succeeded"), createdAt: "2026-10-28T12:03:00Z" };
+  await act(async () => store.notify());
+  expect(steps(view.host)).toEqual(["sent:done", "received:done", "outcome:done"]);
+  expect(times()).toEqual(["2026-10-28T12:01:00Z", null, "2026-10-28T12:03:00Z"]);
+  store.durable.entries[0]!.state.acknowledgement = { ...handling(entry.state.response, "acknowledged"), createdAt: "2026-10-28T12:02:00Z" };
+  await act(async () => store.notify());
+  expect(times()).toEqual(["2026-10-28T12:01:00Z", "2026-10-28T12:02:00Z", "2026-10-28T12:03:00Z"]);
 });

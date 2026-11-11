@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
+import { AnswerSteps, answerHandling } from "./AnswerSteps";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
@@ -73,13 +74,12 @@ function CardHistory({ entry }: { entry: HomeFeedEntry }) {
   </details>;
 }
 function ResponseStatus({ entry }: { entry: HomeFeedEntry }) {
-  const { response, acknowledgement, outcome } = entry.state;
+  const response = entry.state.response;
   if (!response) return null;
-  const received = acknowledgement?.responseId === response.responseId;
-  const result = outcome?.responseId === response.responseId ? outcome : null;
-  const detail = result?.detail?.message;
+  const { acknowledgement, outcome } = answerHandling(entry, response.responseId);
+  const detail = outcome?.detail?.message;
   return <div className="space-y-2 rounded-xl border border-border bg-muted/40 p-4 text-sm" role="status" aria-label="Answer status">
-    <p className="font-medium">Answer saved{received && " · Agent received"}{result && (result.phase === "succeeded" ? " · Completed" : " · Failed")}</p>
+    <AnswerSteps sent={response.createdAt} acknowledgement={acknowledgement} outcome={outcome} />
     {response.choiceId && <p>{entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? response.choiceId}</p>}
     {response.text && <p className="whitespace-pre-wrap break-words">{response.text}</p>}
     {typeof detail === "string" && <p className="whitespace-pre-wrap break-words">{detail}</p>}

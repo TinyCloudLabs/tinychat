@@ -142,7 +142,8 @@ test("a reasked question remains actionable when the last imported response belo
   const view = await mount(fixture.source);
   await viewSelector(view.host, "needs-action");
   expect(view.host.querySelector('textarea[aria-label="Your answer"]') !== null).toBe(true);
-  expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).not.toContain("Answer saved");
+  expect(view.host.querySelector('[aria-label="Focused card"] [aria-label="Answer steps"]')).toBeNull();
+  expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).not.toContain("Historical owner answer");
 });
 
 test("typed code entry never trims invalid whitespace or copies a valid code into the safe response header", async () => {
@@ -174,7 +175,7 @@ test("a task tick persists as owner state and an incomplete task stays in Needs 
   const reopened = await mount(fixture.source);
   await viewSelector(reopened.host, "needs-action");
   expect(reopened.host.textContent).toContain("Confirm the action is reversible");
-  expect(reopened.host.querySelector('[aria-label="Focused card"]')?.textContent).not.toContain("Answer saved");
+  expect(reopened.host.querySelector('[aria-label="Focused card"] [aria-label="Answer steps"]')).toBeNull();
 });
 
 test("a claim decision keeps keep/remove/ignore distinct from an ask answer", async () => {
@@ -461,4 +462,26 @@ test("an unresolved original thread destination is held instead of silently rese
   expect(view.host.textContent).toContain("UnmappedOwner");
   await act(async () => button(view.host, "Resend message").click());
   expect(fixture.saved).toEqual([]);
+});
+
+test("a typed answer shows its steps from its own receipt; one with no transport record stays a historical answer", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const card = fixture.entry.state.card;
+  const identity = { cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId };
+  fixture.owner.answers.push({ sourceKey: "owner-response/typed-answer", card: { kind: "ask", id: "ask-synthetic" }, value: { askId: "ask-synthetic", action: "answer", choice: "careful", text: "", at: SITREP_NOW } });
+  const view = await mount(fixture.source);
+  const status = () => view.host.querySelector('[aria-label="Focused card"] [role="status"]');
+  const steps = () => [...status()!.querySelectorAll<HTMLElement>('[aria-label="Answer steps"] li')].map((step) => `${step.dataset.step}:${step.dataset.state}`);
+  expect(status()?.textContent).toContain("Historical owner answer");
+  expect(steps()).toEqual([]);
+  Object.assign(fixture.owner, { responseOrigins: { "typed-answer": { sourceKey: "owner-response/typed-answer", eventKey: "owner-response/typed-answer" } } });
+  fixture.entry.responses = [{ ...identity, responseId: "typed-answer", sequence: 1, kind: "answer", choiceId: "careful", createdAt: SITREP_NOW, text: "Selected careful" }];
+  await act(async () => fixture.notify());
+  expect(status()?.textContent).not.toContain("Historical owner answer");
+  expect(steps()).toEqual(["sent:done", "received:upcoming", "outcome:upcoming"]);
+  fixture.entry.responseHandling = { "typed-answer": { acknowledgement: { ...identity, responseId: "typed-answer", handlingId: "typed-ack", phase: "acknowledged", createdAt: SITREP_NOW }, outcome: { ...identity, responseId: "typed-answer", handlingId: "typed-outcome", phase: "failed", createdAt: SITREP_NOW, detail: { message: "The synthetic step could not run" } } } };
+  await act(async () => fixture.notify());
+  expect(steps()).toEqual(["sent:done", "received:done", "outcome:failed"]);
+  expect(status()?.textContent).toContain("Failed");
+  expect(status()?.textContent).toContain("The synthetic step could not run");
 });
