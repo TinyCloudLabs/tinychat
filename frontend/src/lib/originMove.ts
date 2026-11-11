@@ -154,6 +154,8 @@ async function openExisting(factory: IDBFactory, name: string): Promise<IDBDatab
     open.onsuccess = () => {
       // Unreachable after an aborted upgrade; kept so a non-conforming factory never leaks a created database.
       if (created) { open.result.close(); resolve(null); return; }
+      // Never hold up the owning module's upgrade of this database (e.g. #638's v2 schemas).
+      open.result.onversionchange = () => open.result.close();
       resolve(open.result);
     };
     open.onerror = (event) => {
@@ -310,8 +312,13 @@ export async function countLocalOnlyRecordingWork(env: OriginMoveEnv = {}): Prom
     for (const row of held.get(HELD_RESULTS_STORE) ?? []) {
       if (row && typeof row === "object" && "sourceId" in row && typeof row.sourceId === "string") saving.add(row.sourceId);
     }
-    const storedNotes = (notes.get(RECORDING_NOTES_STORE) ?? []).map((value) => ({ value,
-      key: value && typeof value === "object" && "storageId" in value && typeof value.storageId === "string" ? value.storageId : "" }));
+    // A v1 database (before account binding) keys notes on `recordingId` and has no `storageId`; its upgrade assigns
+    // the recording id as the storage id, so that is the key here too.
+    const storedNotes = (notes.get(RECORDING_NOTES_STORE) ?? []).map((value) => {
+      const row = value && typeof value === "object" ? value as { storageId?: unknown; recordingId?: unknown } : {};
+      const key = typeof row.storageId === "string" ? row.storageId : typeof row.recordingId === "string" ? row.recordingId : "";
+      return { value, key };
+    });
     for (const { value, key } of [...storedNotes, ...local.notes]) {
       const note = unsyncedStoredNote(value, key);
       // An id-only record is re-keyed to its account and acknowledged by the reconcile pass of its recording, so it

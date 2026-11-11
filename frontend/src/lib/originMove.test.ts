@@ -572,6 +572,18 @@ describe("origin move", () => {
       expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual({ saving: 1, localAudio: 0 });
       store.close();
     });
+
+    test("a note in the v1 layout (keyed on recordingId, no storageId) still counts while its recording is here", async () => {
+      const at = "2026-11-01T00:00:00.000Z";
+      const v1Note = (recordingId: string) => ({ recordingId, md: "old", createdAt: at, editedAt: at, savedEditAt: null, revision: 1 });
+      const { env, open } = seededStore();
+      const store = await open();
+      await savedInSpace(store, "local-1");
+      await seedDatabase(env.factory, RECORDING_NOTES_DB, RECORDING_NOTES_STORE, "recordingId",
+        [v1Note("local-1"), v1Note("elsewhere-1")]);
+      expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual({ saving: 1, localAudio: 0 });
+      store.close();
+    });
   });
 
   test("recordings that are unclaimed or bound to an account not signed in here keep the visitor, not as saving", async () => {
