@@ -109,9 +109,9 @@ OMP also probes `GET /models` and `GET /props` without a token at startup; the g
 ### Saved state
 
 The supervisor saves each bot's tmpfs to `/data/bots/<bot id>/state`: when a turn settles, with the sandbox paused
-(`runsc pause` … `runsc resume`) for the copy, and on every stop, after the sandbox has exited and before the tmpfs
-is unmounted. A start restores that copy into the fresh tmpfs before the sandbox starts. Every copy runs in its own
-process and:
+(`runsc pause` … `runsc resume`) for the copy, and on every stop, once the sandbox is confirmed gone and before the
+tmpfs is unmounted. A start restores that copy into the fresh tmpfs before the sandbox starts. Every copy runs in its
+own process, is killed past `BOTS_STATE_COPY_TIMEOUT_MS` (cause `timeout`; a paused sandbox is resumed), and:
 
 - looks up every name through an open directory and follows no symlink, at any level;
 - copies only directories, regular files and symlinks, each created fresh by the supervisor: directories 0700, files
@@ -121,12 +121,22 @@ process and:
 - stops at a device, FIFO or socket (`special_file`), past `BOTS_STATE_MB` of file data (`too_large`), past the
   tmpfs's file count (`too_many_files`) or past 64 directory levels (`too_deep`).
 
-A save writes `state.new`, fsyncs it, renames `state` to `state.old` and `state.new` to `state`, removes `state.old`
-and fsyncs the bot's directory; a start first finishes or undoes a swap a crash interrupted. Each bot takes at most
-about 2 × `BOTS_STATE_MB` on the volume. A save that fails or stops keeps the previous copy and logs
-`snapshot_failed` with its cause (`snapshot_skipped` if the sandbox could not be paused); a stop still unmounts the
-tmpfs. A restore that fails or stops fails the start with `state restore failed: <cause>` and leaves the saved copy
-as it is. The supervisor remounts the `bot-data` volume nosuid,nodev at startup.
+A save writes `state.new` and fsyncs it, renames `state` to `state.old` and `state.new` to `state`, fsyncing the
+bot's directory after each rename, then removes `state.old` and fsyncs again; a start first finishes or undoes a swap
+a crash interrupted, the same way. Each bot takes at most about 2 × `BOTS_STATE_MB` on the volume. A save that fails
+or stops keeps the previous copy and logs `snapshot_failed` with its cause (`snapshot_skipped` if the sandbox could
+not be paused). A restore that fails or stops fails the start with `state restore failed: <cause>` and leaves the
+saved copy as it is.
+
+Teardown gives `runsc run` a few seconds to finish on its own, then ends the sandbox. A stop is confirmed when a
+sandbox runsc listed as running was killed, `runsc delete` succeeded, `runsc list` no longer shows it and its cgroup
+holds no process. Only then is the state saved and the tmpfs unmounted. Otherwise the supervisor logs
+`teardown_unconfirmed` and `snapshot_skipped` (cause `teardown_unconfirmed`), copies nothing and leaves the tmpfs
+mounted; the bot's next start tries to confirm the end again and gets `bot_unavailable` until it is confirmed.
+
+The supervisor reads the mount flags back from `/proc/self/mountinfo`: a state tmpfs without nosuid,nodev,noexec
+fails the start, and a `bot-data` volume without nosuid,nodev (it is remounted that way at startup) stops the
+supervisor from starting.
 
 ### Budget file recovery
 
@@ -161,6 +171,7 @@ Supervisor (`bots-supervisor`):
 | `BOTS_STATE_MB` | `256` | state tmpfs size (inside the memory limit, 64 files and directories per MiB) and the cap on its saved copy |
 | `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes and their restored state together |
 | `BOTS_MAX_RUNNING` | `BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)` (3) | sandboxes running at once; at most that quotient |
+| `BOTS_STATE_COPY_TIMEOUT_MS` | `60000` | a state restore or save still running by then is killed and fails |
 | `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
 | `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |
 | `PORT` | `8080` | |

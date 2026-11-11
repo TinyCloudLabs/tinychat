@@ -206,17 +206,22 @@ export function hasSnapshot(state: string): boolean {
 
 /**
  * Finishes or undoes a swap a crash interrupted. A swap renames state to state.old, then state.new to state, then
- * removes state.old; state.new only takes part once it is complete and synced, and `state` exists from a bot's first
- * start (`openSnapshot`). So with `state` present any leftover is stale; without it, state.new is complete if
- * state.old is there too, and otherwise state.old is the last good copy.
+ * removes state.old, syncing the directory after each step; state.new only takes part once it is complete and
+ * synced, and `state` exists from a bot's first start (`openSnapshot`). So with `state` present any leftover is
+ * stale; without it, state.new is complete if state.old is there too, and otherwise state.old is the last good copy.
+ * A rename here is synced before anything is removed.
  */
 export function recoverSnapshot(state: string): void {
+  const parent = dirname(state);
   const fresh = `${state}.new`;
   const old = `${state}.old`;
-  if (!exists(state) && exists(old)) renameSync(exists(fresh) ? fresh : old, state);
+  if (!exists(state) && exists(old)) {
+    renameSync(exists(fresh) ? fresh : old, state);
+    fsyncDirectory(parent);
+  }
   rmSync(fresh, { recursive: true, force: true });
   rmSync(old, { recursive: true, force: true });
-  fsyncDirectory(dirname(state));
+  fsyncDirectory(parent);
 }
 
 /** Gets `state` ready to restore from: recovers an interrupted swap, or creates the empty first snapshot. */
@@ -227,8 +232,12 @@ export function openSnapshot(state: string): void {
   fsyncDirectory(dirname(state));
 }
 
-/** Copies a bot's tmpfs into a fresh state.new, synced, then swaps it in. On any failure the previous one stays. */
+/**
+ * Copies a bot's tmpfs into a fresh state.new, synced, then swaps it in, syncing the directory after each rename and
+ * before state.old is removed. On any failure the previous copy stays.
+ */
 export function saveSnapshot(mount: string, state: string, limits: CopyLimits): void {
+  const parent = dirname(state);
   const fresh = `${state}.new`;
   const old = `${state}.old`;
   recoverSnapshot(state);
@@ -239,8 +248,13 @@ export function saveSnapshot(mount: string, state: string, limits: CopyLimits): 
     rmSync(fresh, { recursive: true, force: true });
     throw error;
   }
-  if (exists(state)) renameSync(state, old);
+  fsyncDirectory(parent);
+  if (exists(state)) {
+    renameSync(state, old);
+    fsyncDirectory(parent);
+  }
   renameSync(fresh, state);
+  fsyncDirectory(parent);
   rmSync(old, { recursive: true, force: true });
-  fsyncDirectory(dirname(state));
+  fsyncDirectory(parent);
 }

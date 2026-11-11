@@ -29,8 +29,9 @@ services:
     # Everything in this container, sandboxes included, so many bots cannot starve the gateway or the ingress.
     # Keep it above BOTS_TOTAL_MEMORY_MB (the cap on the sandboxes and their state) plus about 1 GiB.
     mem_limit: 7g
-    # Lets running bots close their sessions before the container goes.
-    stop_grace_period: 60s
+    # Lets running bots close their sessions and save their state (up to BOTS_STATE_COPY_TIMEOUT_MS) before the
+    # container goes.
+    stop_grace_period: 90s
     networks: [bots-internal]
     environment:
       PORT: "8080"
@@ -51,6 +52,7 @@ services:
       BOTS_TOTAL_PIDS: ${BOTS_TOTAL_PIDS:-2048}
       # Sandboxes running at once; empty: BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB), 3 by default.
       BOTS_MAX_RUNNING: ${BOTS_MAX_RUNNING:-}
+      BOTS_STATE_COPY_TIMEOUT_MS: ${BOTS_STATE_COPY_TIMEOUT_MS:-60000}
       BOTS_TURN_TIMEOUT_MS: ${BOTS_TURN_TIMEOUT_MS:-300000}
       BOTS_MAX_TURN_BYTES: ${BOTS_MAX_TURN_BYTES:-262144}
     volumes:

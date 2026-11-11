@@ -260,6 +260,7 @@ check "the save refused the FIFO (snapshot_failed, special_file)" bash -c "$DOCK
 reply=$(post "$A" "Reply with exactly: pong")
 check "A replies after the restart" grep -q 'event: done' <<<"$reply"
 check "the previous copy came back: the note is there; no FIFO, no later note" bash -c "[[ \$(sandbox $A cat /root/bot/note) == kept ]] && ! sandbox $A test -e /root/bot/fifo && ! sandbox $A test -e /root/bot/host-fifo && ! sandbox $A test -e /root/bot/note2"
+check "every stop was confirmed (three stops logged, no teardown_unconfirmed)" bash -c "logs=\$($DOCKER logs $NAME-supervisor 2>&1) && [[ \$(grep -c '\"bots\":\"stopped\"' <<<\"\$logs\") -ge 3 ]] && ! grep -q teardown_unconfirmed <<<\"\$logs\""
 
 step "what the MOCK model received (shape only)"
 $DOCKER logs "$NAME-gateway" 2>&1 | grep '"mock":"request"' | tail -2
