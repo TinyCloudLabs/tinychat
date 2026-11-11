@@ -196,9 +196,8 @@ export interface ContentStoreStats {
 }
 
 /**
- * The D3 substrate seam. Six methods, all keyed by `(source, address)` — deliberately NO
- * global list: an enumeration method that does not name a tenant is how a tenant-scoped store
- * stops being one.
+ * The D3 substrate seam. Every content operation is keyed by `(source, address)`; the retention
+ * directory may enumerate sealed index keys, but it never reads or returns content globally.
  */
 export interface ContentBlobStore {
   readIndex(source: string, address: string): Promise<SealedBlob | null>;
@@ -258,13 +257,14 @@ export const PURGE_TOMBSTONED = "purge_tombstoned";
 const validatedContentMasters = new Set<string>();
 
 /**
- * Boot-time gate, gated on the dark ingest flag by `index.ts` exactly like W2's credential
- * master. Returns a Result rather than throwing so the boot path can print and exit(1). The
- * error text NEVER contains a key value.
+ * Boot-time gate for the content master. `index.ts` validates it when backend ingestion is enabled
+ * and whenever stored indexes remain while ingestion is off, because the independent retention
+ * sweep must still decrypt and delete expired rows. Returns a Result rather than throwing so the
+ * boot path can print and exit(1). The error text NEVER contains a key value.
  *
- * The master must also SURVIVE redeploys (DECISIONS D3 substrate note): a deploy that strips it
+ * The master must SURVIVE redeploys (DECISIONS D3 substrate note): a deploy that strips it
  * orphans every stored meeting, which is why it rides the four-place `allowed_envs` dance in
- * `webhook-deploy-env.test.ts` before anyone can turn the feature on.
+ * `webhook-deploy-env.test.ts`.
  */
 export function validateContentCustodyConfig(
   env: NodeJS.ProcessEnv,
@@ -1442,6 +1442,54 @@ function extractKeys(response: unknown): string[] {
   };
   visit(response, 0);
   return seen;
+}
+
+export interface ContentIndexLocation {
+  source: string;
+  address: string;
+}
+
+/**
+ * Enumerate every existing sealed content index for retention, including users no longer in the
+ * active ingest cohort. A failed list is an error, never an empty directory.
+ */
+export function createContentIndexDirectory(
+  node: TinyCloudNode,
+): () => Promise<ContentIndexLocation[]> {
+  return async () => {
+    const kv = (
+      node as unknown as {
+        kv?: { list?: (options: unknown) => Promise<unknown> };
+      }
+    ).kv;
+    if (!kv || typeof kv.list !== "function") {
+      throw new Error("Content index listing is unavailable");
+    }
+
+    const response = await withSessionRefresh(node, async () =>
+      assertKvResult(await kv.list!({ prefix: `${CONTENT_INDEX_KEY_PREFIX}/` })),
+    );
+    const entries = new Map<string, ContentIndexLocation>();
+    const marker = `${CONTENT_INDEX_KEY_PREFIX}/`;
+    for (const key of extractKeys(response)) {
+      const markerIndex = key.lastIndexOf(marker);
+      if (markerIndex < 0) continue;
+      const parts = key.slice(markerIndex + marker.length).split("/");
+      if (parts.length !== 2) continue;
+      const [source, rawAddress] = parts;
+      if (source === undefined || rawAddress === undefined || !isValidSource(source)) {
+        continue;
+      }
+      let address: string;
+      try {
+        address = normalizeWebhookAddress(rawAddress);
+      } catch {
+        continue;
+      }
+      entries.set(`${source}/${address}`, { source, address });
+    }
+    return [...entries.values()];
+  };
 }
 
 function contentKey(
