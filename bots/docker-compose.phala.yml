@@ -62,6 +62,8 @@ services:
       BOTS_TOTAL_PIDS: ${BOTS_TOTAL_PIDS:-2048}
       BOTS_TURN_TIMEOUT_MS: ${BOTS_TURN_TIMEOUT_MS:-300000}
       BOTS_MAX_TURN_BYTES: ${BOTS_MAX_TURN_BYTES:-262144}
+      # A bot's working state (its state image) is deleted after this many days without use.
+      BOTS_RETENTION_DAYS: ${BOTS_RETENTION_DAYS:-30}
     volumes:
       - bot-data:/data
       - bot-egress:/egress

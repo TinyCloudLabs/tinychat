@@ -2,9 +2,11 @@
 // session has settled and stayed idle. Everything the sandbox says is treated as untrusted input; only checked
 // fields are turned into events, which the server encodes itself.
 
+import { readdirSync } from "node:fs";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
-import { botIdFor } from "./owner";
+import { BOT_ID, botIdFor } from "./owner";
+import { lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type Frame, RpcError } from "./rpc";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "invalid";
@@ -141,6 +143,7 @@ export class Bot {
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<void> | undefined;
+  #deleting: Promise<void> | undefined;
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -167,6 +170,7 @@ export class Bot {
       let sandbox: Sandbox;
       try {
         sandbox = await this.#ensure();
+        this.#markUsed();
         await sandbox.refreshEgress();
       } catch (error) {
         log("start_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
@@ -187,15 +191,24 @@ export class Bot {
 
   /** The newest messages of Main's session; empty for a bot that has never run (without starting one). */
   async list(): Promise<ListedMessage[]> {
-    if (!this.#sandbox && !this.#launcher.hasState(this.layout)) return [];
     this.#listing++;
     this.#clearIdle();
     try {
-      return listedMessages(await readMessages(await this.#ensure()));
+      // A bot whose working state is being deleted lists nothing once that is done.
+      await this.#deleting;
+      if (!this.#sandbox && !this.#launcher.hasState(this.layout)) return [];
+      const sandbox = await this.#ensure();
+      this.#markUsed();
+      return listedMessages(await readMessages(sandbox));
     } finally {
       this.#listing--;
       this.#armIdle();
     }
+  }
+
+  /** A message or history request is in flight, including one still starting the sandbox. */
+  get inUse(): boolean {
+    return this.#busy || this.#listing > 0;
   }
 
   async stop(): Promise<void> {
@@ -203,6 +216,30 @@ export class Bot {
     const sandbox = this.#sandbox ?? (await this.#starting?.catch(() => undefined));
     if (sandbox) await this.#stop(sandbox);
     await this.#stopping;
+  }
+
+  /**
+   * The one way a bot's working state is deleted: stops its sandbox (which unmounts and detaches the state image),
+   * then removes its data directory (state image and last-use marker) and its run directory. A request that arrives
+   * meanwhile waits for this, then starts a fresh bot.
+   */
+  deleteWorkingState(reason: string): Promise<void> {
+    this.#deleting ??= (async () => {
+      await this.stop();
+      removeWorkingState(this.layout);
+      log("state_deleted", this.layout.botId, { reason });
+    })().finally(() => {
+      this.#deleting = undefined;
+    });
+    return this.#deleting;
+  }
+
+  #markUsed(): void {
+    try {
+      markUsed(this.layout);
+    } catch (error) {
+      log("mark_used_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
+    }
   }
 
   #turn(sandbox: Sandbox, text: string, sink: TurnSink): Promise<void> {
@@ -274,7 +311,9 @@ export class Bot {
   #ensure(): Promise<Sandbox> {
     if (this.#sandbox) return Promise.resolve(this.#sandbox);
     this.#starting ??= (async () => {
-      // Never launch over a sandbox still being torn down: both would mount the same state filesystem.
+      // Never launch over a sandbox still being torn down (both would mount the same state filesystem), nor
+      // before a deletion of the bot's working state has finished.
+      await this.#deleting;
       await this.#stopping;
       const started = Date.now();
       const sandbox = await this.#launcher.launch(this.layout);
@@ -339,7 +378,38 @@ export class BotManager {
   }
 
   forOwner(ownerDid: string): Bot {
-    const botId = botIdFor(ownerDid);
+    return this.#bot(botIdFor(ownerDid));
+  }
+
+  /** Deletes one bot's working state; see Bot.deleteWorkingState. */
+  deleteWorkingState(botId: string, reason: string): Promise<void> {
+    return this.#bot(botId).deleteWorkingState(reason);
+  }
+
+  /**
+   * Deletes the working state of every bot in the data root last used more than `retentionMs` before `now` and
+   * with no request in flight. Entries that are not bot ids are left alone. Failures are logged per bot.
+   */
+  async sweepUnused(retentionMs: number, now = Date.now()): Promise<void> {
+    let entries: string[];
+    try {
+      entries = readdirSync(this.#roots.dataRoot);
+    } catch (error) {
+      console.log(JSON.stringify({ bots: "sweep_failed", error: error instanceof Error ? error.message.slice(0, 300) : "unknown" }));
+      return;
+    }
+    for (const botId of entries.filter(entry => BOT_ID.test(entry))) {
+      try {
+        const used = lastUsed(botLayout(botId, this.#roots));
+        if (used === undefined || now - used <= retentionMs || this.#bots.get(botId)?.inUse) continue;
+        await this.deleteWorkingState(botId, "unused");
+      } catch (error) {
+        log("sweep_failed", botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
+      }
+    }
+  }
+
+  #bot(botId: string): Bot {
     let bot = this.#bots.get(botId);
     if (!bot) {
       bot = new Bot(botLayout(botId, this.#roots), this.#launcher, this.#options);

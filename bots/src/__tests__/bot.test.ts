@@ -1,7 +1,20 @@
-import { describe, expect, jest, test } from "bun:test";
-import { Bot, type ErrorCode, type Sandbox, type SandboxLauncher, type TurnSink } from "../bot";
-import { botLayout } from "../layout";
+import { afterAll, describe, expect, jest, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Bot, BotManager, type ErrorCode, type Sandbox, type SandboxLauncher, type TurnSink } from "../bot";
+import { type BotLayout, botLayout, type LayoutRoots } from "../layout";
+import { botIdFor } from "../owner";
 import type { Frame } from "../rpc";
+
+const tmp = mkdtempSync(join(tmpdir(), "bots-test-"));
+afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+/** Empty data, run and egress roots of their own under the test's temp directory. */
+function roots(): LayoutRoots {
+  const dir = mkdtempSync(join(tmp, "roots-"));
+  return { dataRoot: join(dir, "data"), runRoot: join(dir, "run"), egressRoot: join(dir, "egress") };
+}
 
 /** Stands in for OMP behind the RPC channel: records commands and lets the test emit frames. */
 class FakeSandbox implements Sandbox {
@@ -47,8 +60,14 @@ const OPTIONS = { idleMs: 60_000, turnTimeoutMs: 300_000, maxTurnBytes: 16 };
 
 function setup() {
   const sandbox = new FakeSandbox();
-  const launcher: SandboxLauncher = { hasState: () => true, launch: async () => sandbox };
-  const bot = new Bot(botLayout("c".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS);
+  const launcher: SandboxLauncher = {
+    hasState: () => true,
+    launch: async layout => {
+      mkdirSync(layout.dataDir, { recursive: true });
+      return sandbox;
+    },
+  };
+  const bot = new Bot(botLayout("c".repeat(64), roots()), launcher, OPTIONS);
   return { bot, sandbox };
 }
 
@@ -193,5 +212,133 @@ describe("history", () => {
     const bot = new Bot(botLayout("d".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS);
     expect(await bot.list()).toEqual([]);
     expect(launched).toBe(false);
+  });
+});
+
+describe("working state retention", () => {
+  const DAY = 24 * 60 * 60_000;
+  const RETENTION = 30 * DAY;
+  const OWNER = "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa";
+  const OTHER = "did:pkh:eip155:1:0x00000000000000000000000000000000000000bb";
+
+  /** A manager over temp roots whose launches act on disk like RunscHost: the first creates the state image. */
+  function host() {
+    const dirs = roots();
+    const fake = { launches: 0, next: new FakeSandbox(), hold: Promise.resolve() };
+    const launcher: SandboxLauncher = {
+      hasState: layout => existsSync(layout.stateImage),
+      launch: async layout => {
+        await fake.hold;
+        fake.launches++;
+        mkdirSync(layout.stateMount, { recursive: true });
+        mkdirSync(layout.dataDir, { recursive: true });
+        if (!existsSync(layout.stateImage)) writeFileSync(layout.stateImage, "fresh");
+        const sandbox = fake.next;
+        fake.next = new FakeSandbox();
+        return sandbox;
+      },
+    };
+    const manager = new BotManager(launcher, dirs, OPTIONS);
+    return { fake, dirs, manager, layout: (owner: string) => botLayout(botIdFor(owner), dirs) };
+  }
+
+  /** A stopped bot that has run before: old notes in its state image, and a marker unless `usedAt` is null. */
+  function existing(layout: BotLayout, usedAt: number | null, imageAt = usedAt ?? Date.now()) {
+    mkdirSync(layout.dataDir, { recursive: true });
+    writeFileSync(layout.stateImage, "old notes");
+    utimesSync(layout.stateImage, imageAt / 1000, imageAt / 1000);
+    if (usedAt !== null) writeFileSync(layout.lastUsedFile, new Date(usedAt).toISOString());
+  }
+
+  /** Sends one message and completes its turn. */
+  async function converse(bot: Bot, sandbox: FakeSandbox) {
+    const { events, sink } = recorder();
+    const running = bot.send("hi", sink);
+    const id = await sandbox.prompted.promise;
+    sandbox.emit({ type: "prompt_result", id, status: "completed", agentInvoked: true, sessionSettled: true });
+    await running;
+    return events;
+  }
+
+  test("a sweep deletes a bot unused for longer than the retention and keeps a recently used one", async () => {
+    const { fake, manager, layout } = host();
+    const sandbox = fake.next;
+    await converse(manager.forOwner(OWNER), sandbox);
+    expect(existsSync(layout(OWNER).lastUsedFile)).toBe(true);
+    const later = Date.now() + RETENTION + DAY;
+    existing(layout(OTHER), later - DAY);
+    await manager.sweepUnused(RETENTION, later);
+    expect(Bun.peek.status(sandbox.exited)).toBe("fulfilled");
+    expect(existsSync(layout(OWNER).dataDir)).toBe(false);
+    expect(existsSync(layout(OWNER).bundleDir)).toBe(false);
+    expect(readFileSync(layout(OTHER).stateImage, "utf8")).toBe("old notes");
+  });
+
+  test("a bot with a turn in flight is not deleted", async () => {
+    const { fake, manager, layout } = host();
+    const sandbox = fake.next;
+    const { events, sink } = recorder();
+    const running = manager.forOwner(OWNER).send("hi", sink);
+    const id = await sandbox.prompted.promise;
+    await manager.sweepUnused(RETENTION, Date.now() + RETENTION + DAY);
+    expect(existsSync(layout(OWNER).stateImage)).toBe(true);
+    sandbox.emit({ type: "prompt_result", id, status: "completed", agentInvoked: true, sessionSettled: true });
+    await running;
+    expect(events.at(-1)?.[0]).toBe("done");
+  });
+
+  test("a bot whose sandbox is still starting for a request is not deleted", async () => {
+    const { fake, manager, layout } = host();
+    existing(layout(OWNER), Date.now() - RETENTION - DAY);
+    const launched = Promise.withResolvers<void>();
+    fake.hold = launched.promise;
+    const replying = converse(manager.forOwner(OWNER), fake.next);
+    await manager.sweepUnused(RETENTION);
+    expect(readFileSync(layout(OWNER).stateImage, "utf8")).toBe("old notes");
+    launched.resolve();
+    expect((await replying).at(-1)?.[0]).toBe("done");
+  });
+
+  test("a message that arrives during deletion waits for it, then starts a fresh bot", async () => {
+    const { fake, manager, layout } = host();
+    const bot = manager.forOwner(OWNER);
+    await converse(bot, fake.next);
+    writeFileSync(layout(OWNER).stateImage, "old notes");
+    const sweeping = manager.sweepUnused(RETENTION, Date.now() + RETENTION + DAY);
+    const replying = converse(bot, fake.next);
+    await sweeping;
+    expect(await replying).toEqual([
+      ["status", "starting"],
+      ["status", "working"],
+      ["done", expect.stringMatching(/^b-\d+$/)],
+    ]);
+    // Launched only once the old state was gone: a launch before the removal would have kept the old notes or
+    // had its own state image removed.
+    expect(fake.launches).toBe(2);
+    expect(readFileSync(layout(OWNER).stateImage, "utf8")).toBe("fresh");
+    expect(existsSync(layout(OWNER).lastUsedFile)).toBe(true);
+  });
+
+  test("a bot without a marker counts from its state image's mtime", async () => {
+    const { manager, layout } = host();
+    const now = Date.now();
+    existing(layout(OWNER), null, now - RETENTION - DAY);
+    existing(layout(OTHER), null, now - DAY);
+    await manager.sweepUnused(RETENTION, now);
+    expect(existsSync(layout(OWNER).dataDir)).toBe(false);
+    expect(readFileSync(layout(OTHER).stateImage, "utf8")).toBe("old notes");
+  });
+
+  test("entries in the data root that are not bot ids are left alone", async () => {
+    const { dirs, manager } = host();
+    const old = (Date.now() - RETENTION - DAY) / 1000;
+    const names = ["lost+found", "A".repeat(64), "a".repeat(63), `${"a".repeat(64)}.old`];
+    for (const name of names) {
+      mkdirSync(join(dirs.dataRoot, name), { recursive: true });
+      writeFileSync(join(dirs.dataRoot, name, "state.img"), "x");
+      utimesSync(join(dirs.dataRoot, name, "state.img"), old, old);
+    }
+    await manager.sweepUnused(RETENTION);
+    for (const name of names) expect(existsSync(join(dirs.dataRoot, name, "state.img"))).toBe(true);
   });
 });

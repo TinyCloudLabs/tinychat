@@ -6,6 +6,9 @@ import { supervisorConfig } from "./config";
 import { RunscHost } from "./sandbox";
 import { createApp } from "./server";
 
+const DAY_MS = 24 * 60 * 60_000;
+const SWEEP_MS = 6 * 60 * 60_000;
+
 const cfg = supervisorConfig(process.env);
 const host = new RunscHost(cfg);
 await host.init();
@@ -18,13 +21,22 @@ Bun.serve({
   maxRequestBodySize: 64 * 1024,
   fetch: createApp({ secret: cfg.serviceSecret, accounts: cfg.accounts, bots }),
 });
-console.log(JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, limits: cfg.limits }));
+console.log(
+  JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, retentionDays: cfg.retentionDays, limits: cfg.limits }),
+);
+
+// Working state unused for BOTS_RETENTION_DAYS is deleted: checked at startup, then every 6 hours.
+const sweep = () => void bots.sweepUnused(cfg.retentionDays * DAY_MS);
+sweep();
+const sweeps = setInterval(sweep, SWEEP_MS);
+sweeps.unref();
 
 let stopping = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
     if (stopping) return;
     stopping = true;
+    clearInterval(sweeps);
     void bots.stopAll().finally(() => process.exit(0));
   });
 }

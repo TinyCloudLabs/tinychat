@@ -48,6 +48,16 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 4. After `session_settled` the bot stops once it has been idle for `BOTS_IDLE_MS`. The next message starts it again
    on the same session.
 
+## Working state
+
+Each bot's working state, its state image, stays on the bots server and is deleted after `BOTS_RETENTION_DAYS` days
+(default 30) without use. Every message and history request records the bot's last use in
+`/data/bots/<bot id>/last-used`, next to the state image and outside anything the sandbox mounts; a bot without that
+file counts from the image's modification time. The supervisor checks at startup and every 6 hours, and skips a bot
+with a request in flight. Deleting goes through one path: it stops the bot's sandbox first (unmounting its state
+image), then removes the bot's directories under `/data/bots` and `/run/bots` and logs `state_deleted`. A message
+that arrives meanwhile waits for it, then starts a fresh bot.
+
 ## Containment
 
 Each sandbox:
@@ -136,6 +146,7 @@ Supervisor (`bots-supervisor`):
 | `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes together |
 | `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
 | `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |
+| `BOTS_RETENTION_DAYS` | `30` | a bot's working state is deleted after this many days without use |
 | `PORT` | `8080` | |
 
 Gateway (`bots-gateway`):

@@ -59,6 +59,8 @@ export interface SupervisorConfig {
   turnTimeoutMs: number;
   /** Assistant text bytes streamed per turn before it is cut off. */
   maxTurnBytes: number;
+  /** A bot's working state is deleted once it has gone unused for this many days. */
+  retentionDays: number;
 }
 
 export function supervisorConfig(env: Env): SupervisorConfig {
@@ -97,6 +99,7 @@ export function supervisorConfig(env: Env): SupervisorConfig {
     totalPids: int(env, "BOTS_TOTAL_PIDS", 2048, 16),
     turnTimeoutMs: int(env, "BOTS_TURN_TIMEOUT_MS", 5 * 60_000, 1000),
     maxTurnBytes: int(env, "BOTS_MAX_TURN_BYTES", 256 * 1024, 1024),
+    retentionDays: int(env, "BOTS_RETENTION_DAYS", 30),
   };
 }
 

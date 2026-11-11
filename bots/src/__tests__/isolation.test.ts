@@ -39,6 +39,7 @@ function specFor(owner: string, token: string) {
 const pathsOf = (layout: BotLayout) => [
   layout.dataDir,
   layout.stateImage,
+  layout.lastUsedFile,
   layout.bundleDir,
   layout.stateMount,
   layout.egressDir,

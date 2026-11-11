@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { BOT_ID } from "./owner";
 
 export interface LayoutRoots {
-  /** Persistent volume: one directory per bot holding its state filesystem image. */
+  /** Persistent volume: one directory per bot holding its state filesystem image and its last-use marker. */
   dataRoot: string;
   /** Supervisor-local scratch: OCI bundle and the mounted state filesystem. */
   runRoot: string;
@@ -16,6 +16,8 @@ export interface BotLayout {
   containerId: string;
   dataDir: string;
   stateImage: string;
+  /** When the bot last served a request: an ISO timestamp next to the image, outside anything the sandbox mounts. */
+  lastUsedFile: string;
   bundleDir: string;
   stateMount: string;
   egressDir: string;
@@ -39,6 +41,7 @@ export function botLayout(botId: string, roots: LayoutRoots): BotLayout {
     containerId: `bot-${botId.slice(0, 32)}`,
     dataDir,
     stateImage: join(dataDir, "state.img"),
+    lastUsedFile: join(dataDir, "last-used"),
     bundleDir,
     stateMount: join(bundleDir, "state"),
     ...egress,
