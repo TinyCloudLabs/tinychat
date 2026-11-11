@@ -120,6 +120,13 @@ export const REPLICATION_FILL_START_GAP_MS = 200;
  */
 export const REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS = 45_000;
 
+const stoppedReplicationFills = new WeakSet<TinyCloudWeb>();
+
+/** Prevent this session's queued application fill from starting after sign-out begins. */
+export function stopReplicationFill(tcw: TinyCloudWeb): void {
+  stoppedReplicationFills.add(tcw);
+}
+
 /** Test seam. Production uses the app's first-load signal and the real prefix list. */
 export interface ReplicationFillDeps {
   firstLoadSettled?: () => Promise<void>;
@@ -149,7 +156,7 @@ export function startReplicationFill(
   isEnabled: () => boolean = () => isReplicationEnabled({ principal: tcw.did }),
   deps: ReplicationFillDeps = {},
 ): void {
-  const canStart = (): boolean => clientHasReplication(tcw) && isEnabled();
+  const canStart = (): boolean => !stoppedReplicationFills.has(tcw) && clientHasReplication(tcw) && isEnabled();
   if (!canStart()) return;
   if (!deps.firstLoadSettled) resetAppFirstLoad(); // a new sign-in/restore waits for ITS first load
   const firstLoadSettled = deps.firstLoadSettled ?? appFirstLoadSettled;

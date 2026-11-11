@@ -45,7 +45,22 @@ export function isNativeOpenKeySignIn(platform: AppPlatform = appPlatform()): bo
  * gated on this inside the app.
  */
 const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
+const NATIVE_SIGN_OUT_PENDING_KEY = "xyz.tinycloud.tinychat:native-signout-pending";
 let nativeSessionActive = false;
+
+export function setNativeSignOutPending(pending: boolean): boolean {
+  try {
+    if (pending) localStorage.setItem(NATIVE_SIGN_OUT_PENDING_KEY, "1");
+    else localStorage.removeItem(NATIVE_SIGN_OUT_PENDING_KEY);
+    return (localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1") === pending;
+  } catch { return false; }
+}
+
+export function nativeSignOutPending(): boolean | null {
+  if (typeof localStorage === "undefined") return false;
+  try { return localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1"; }
+  catch { return null; }
+}
 
 /** A native JWT is marked separately from a legacy widget session. No key material is stored here. */
 export function nativeSessionWasActive(): boolean {
@@ -358,6 +373,8 @@ export interface NativeSignInDeps {
     siwe: string,
     signature: string,
   ) => Promise<{ token: string; expiresIn: number; address: string }>;
+  /** Optional test seam; production reads the durable local sign-out fence. */
+  readSignOutFence?: () => boolean | null;
 }
 
 /** The client's registered redirect; the Exo app's own reverse-DNS scheme. */
@@ -523,6 +540,7 @@ export type NativeBootOutcome =
   | { kind: "failed" }
   | { kind: "storage" }
   | { kind: "configuration" }
+  | { kind: "signOutPending" }
   | { kind: "terminal" | "upgrade"; revoke: () => Promise<void> };
 
 /** Restore before the backend JWT gate: a live native grant can mint a new JWT. */
@@ -535,6 +553,17 @@ export async function restoreNativeAtBoot(
   try {
     const d = deps ?? await defaultDeps();
     openkey = nativeClient(nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost), d.createOpenKeyNative);
+    const signOutPending = d.readSignOutFence ? d.readSignOutFence() : nativeSignOutPending();
+    if (signOutPending === null) return { kind: "signOutPending" };
+    if (signOutPending) {
+      try {
+        await withNativeDeadline(openkey.signOut());
+        if (!setNativeSignOutPending(false)) return { kind: "signOutPending" };
+        return { kind: "none" };
+      } catch {
+        return { kind: "signOutPending" };
+      }
+    }
     let session = await openkey.current();
     if (!session) return { kind: "none" };
     if (!nativeGrantCoversCurrentManifest(session)) {

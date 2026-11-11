@@ -869,6 +869,29 @@ describe("persisted widget session on a native cold boot", () => {
       restoreSdkGlobals();
     }
   });
+
+  test("a persisted sign-out fence retries secure-store deletion before reading the session", async () => {
+    const flow = makeFlow();
+    flow.openkey.signOut = async () => { flow.order.push("signOut"); throw new Error("secure store unavailable"); };
+    flow.openkey.current = async () => { flow.order.push("current"); return null; };
+    const boot = await restoreNativeAtBoot(config, false, {
+      ...flow.deps,
+      readSignOutFence: () => true,
+    } as NativeSignInDeps);
+    expect(boot.kind).toBe("signOutPending");
+    expect(flow.order).toEqual(["signOut"]);
+  });
+
+  test("an unreadable native sign-out fence fails closed before reading the session", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => { flow.order.push("current"); return null; };
+    const boot = await restoreNativeAtBoot(config, false, {
+      ...flow.deps,
+      readSignOutFence: () => null,
+    } as NativeSignInDeps);
+    expect(boot.kind).toBe("signOutPending");
+    expect(flow.order).toEqual([]);
+  });
 });
 
 describe("describeAuthFailure redaction", () => {

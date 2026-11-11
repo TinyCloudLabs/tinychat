@@ -18,6 +18,7 @@ import xyz.tinycloud.exo.capture.CaptureService;
 import xyz.tinycloud.exo.capture.LaunchCommandStore;
 import xyz.tinycloud.exo.capture.MicShortcutRecovery;
 import xyz.tinycloud.exo.capture.VoiceNotesPlugin;
+import xyz.tinycloud.exo.capture.core.LaunchSource;
 import xyz.tinycloud.exo.health.HealthPlugin;
 import xyz.tinycloud.exo.location.LocationPlugin;
 import xyz.tinycloud.exo.stt.OnDeviceSttPlugin;
@@ -74,7 +75,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         String action = intent.getAction();
         if (CaptureService.RECORD.equals(action)) {
             MicShortcutRecovery.newShortcut(this);
-            commands.put("RECORD", "app_shortcut");
+            commands.put("RECORD", LaunchSource.record(intent.getStringExtra(LaunchSource.EXTRA)));
         }
         else if (CaptureService.SHOW_RECORDER.equals(action)) commands.put("SHOW_RECORDER", "notification");
         setIntent(new Intent(intent).setAction(null));

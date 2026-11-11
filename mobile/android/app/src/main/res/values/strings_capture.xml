@@ -8,6 +8,7 @@
     <string name="capture_pause">Pause</string>
     <string name="capture_resume">Resume</string>
     <string name="capture_stop">Stop</string>
-    <string name="capture_shortcut_label">Record voice note</string>
-    <string name="capture_shortcut_long">Start a new voice note</string>
+    <string name="capture_shortcut_label">Record</string>
+    <string name="capture_shortcut_long">Record a voice note</string>
+    <string name="capture_tile_label">Record</string>
 </resources>

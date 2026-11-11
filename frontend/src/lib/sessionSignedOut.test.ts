@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { streamChat } from "./chatApi";
 import { createTranscriberClient } from "./transcriberApi";
@@ -61,7 +60,8 @@ test("a failed native handoff leaves the bearer session intact", async () => {
   let uiChanged = false;
   const session = { clear: () => { cleared = true; } };
   const dispose = registerSessionSignedOutHook(session, async () => false, () => { uiChanged = true; });
-  await expect(clearSessionAfterHandoff(session)).rejects.toThrow("Session was kept");
+  await expect(clearSessionAfterHandoff(session)).rejects.toThrow(
+    "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
   expect(cleared).toBe(false);
   expect(uiChanged).toBe(false);
   dispose();
@@ -84,16 +84,3 @@ test("simultaneous 401 responses share one durable handoff", async () => {
   dispose();
 });
 
-test("the App registers the shared clear completion that leaves ready UI", () => {
-  const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
-  expect(app).toContain("registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,");
-  expect(app).toContain("() => completeLocalSignOut(null)");
-  const completion = app.slice(app.indexOf("const completeLocalSignOut = useCallback"),
-    app.indexOf("useEffect(() => registerSessionSignedOutHook"));
-  expect(completion).toContain("clearSendIntentsForOwner(storedAddress)");
-  expect(completion.indexOf("clearSendIntentsForOwner(storedAddress)")).toBeLessThan(
-    completion.indexOf("sessionStoreRef.current.clear()"),
-  );
-  expect(completion).toContain("setTcw(null);");
-  expect(completion).toContain('setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");');
-});

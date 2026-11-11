@@ -9,7 +9,7 @@ export const WEBVIEW_UPDATE_MESSAGE =
   "TinyCloud Home needs a newer Android System WebView to sign in. Update it in Google Play, then try again.";
 export const BROWSER_UPDATE_MESSAGE =
   "Your browser is too old to sign in to TinyCloud Home. Update it, then try again.";
-export const SIGN_IN_FAILED_MESSAGE = "Couldn't sign in. Please try again.";
+export const SIGN_IN_FAILED_MESSAGE = "Couldn't sign in. Try again.";
 
 export const WEBVIEW_UPDATE_LINK = {
   href: "https://play.google.com/store/apps/details?id=com.google.android.webview",

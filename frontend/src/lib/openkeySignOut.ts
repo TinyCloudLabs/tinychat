@@ -11,6 +11,8 @@ export type OpenKeySignOutOutcome =
   | { status: "remote-unavailable" }
   | { status: "unverified" };
 
+export const OPENKEY_SIGN_OUT_TIMEOUT_MS = 5_000;
+
 /**
  * `revoked: false` means the widget could not prove a revocation: it also answers that when it
  * found no token to revoke, and the SDK cannot tell that from a failed revoke or an unreachable
@@ -23,9 +25,17 @@ export type OpenKeySignOutOutcome =
 export async function signOutOpenKeySession(
   current: OpenKeySignOutClient | null,
   createFallback: () => OpenKeySignOutClient,
+  timeoutMs = OPENKEY_SIGN_OUT_TIMEOUT_MS,
 ): Promise<OpenKeySignOutOutcome> {
+  let timeout!: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error("OpenKey sign-out timed out")), timeoutMs);
+  });
   try {
-    const acknowledgement = await (current ?? createFallback()).signOut();
+    const acknowledgement = await Promise.race([
+      Promise.resolve().then(() => (current ?? createFallback()).signOut()),
+      deadline,
+    ]);
     return acknowledgement.revoked
       ? { status: "revoked" }
       : { status: "unverified" };
@@ -39,6 +49,8 @@ export async function signOutOpenKeySession(
     }
     logNativeOpenKeyError("OpenKey sign-out", error);
     return { status: "unverified" };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
