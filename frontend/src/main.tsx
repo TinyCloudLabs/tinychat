@@ -9,12 +9,10 @@ import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootErrorBoundary } from "./shell/RootErrorBoundary";
+import { OriginMoveHold } from "./shell/OriginMoveNotice";
+import { decideOriginMove, isLegacyOrigin, type OriginMoveDecision } from "./lib/originMove";
 import { LandingRoute, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
-import { SessionStore } from "@tinyboilerplate/client";
-import { HOME_SITE } from "./lib/homeSite";
-import { readHomeFeatures } from "./lib/homeFeatures";
-import { browserRevisionStore } from "./lib/manifestRevision";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
@@ -68,10 +66,13 @@ setupPwa({
   devEnabled: import.meta.env.VITE_PWA_DEV === "true",
 });
 
-// The Home site starts the recorder at boot only on a device that has used Recording for the saved owner; otherwise
-// it starts once Recording is covered (App.tsx).
-const savedOwner = new SessionStore("xyz.tinycloud.tinychat:session").getAddress();
-registerWebCaptureEngine(!HOME_SITE || (savedOwner !== null && readHomeFeatures(browserRevisionStore(), savedOwner).includes("recording")));
+registerWebCaptureEngine();
+
+// tinycloud.chat serves this same build; its visitors move to home.tinycloud.xyz (path, query and #hash kept) unless
+// recordings saved only in this origin's IndexedDB would be left behind. Only that host reads anything here.
+const originMove: Promise<OriginMoveDecision> = isLegacyOrigin(window.location)
+  ? decideOriginMove({ location: window.location })
+  : Promise.resolve({ kind: "stay" });
 
 // Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs. If the probe itself
 // fails, WebCrypto is left exactly as the engine provides it and the app still starts.
@@ -79,6 +80,11 @@ void installEd25519Polyfill().catch((error: unknown) => {
   console.error(`[webcrypto] Ed25519 probe failed; WebCrypto left unchanged: ${error instanceof Error ? error.name : "unknown error"}`);
 }).then(async () => {
   await installDebugLog();
+  const move = await originMove;
+  if (move.kind === "move") {
+    window.location.replace(move.url);
+    return;
+  }
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <RootErrorBoundary>
@@ -91,6 +97,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
           </Routes>
         </BrowserRouter>
         <PwaPrompts />
+        {move.kind === "hold" && <OriginMoveHold initialWork={move.work} />}
       </RootErrorBoundary>
     </StrictMode>,
   );

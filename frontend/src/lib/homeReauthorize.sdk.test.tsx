@@ -1,6 +1,6 @@
 // The in-place re-authorise against the real web SDK (its WASM, SIWE ReCap and session storage), with a local key
 // standing in for OpenKey and a stub node answering /info. What each test checks is what the session's own signed
-// approval covers after the swap and after a reload, which is what decides whether Home shows a prompt.
+// approval covers after the swap and after a reload, which is what decides whether Connectors shows a prompt.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -9,15 +9,15 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTinyCloudWeb, restoreTinyCloudWebSession, type EIP1193Provider } from "@tinyboilerplate/client";
 import { installDom } from "@/test/dom";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState } from "@/shell/homeFeatureAccess";
-import { homeFeaturesToRequest, sessionCoversHomeFeature, type HomeFeature } from "./homeFeatures";
+import { homeFeaturesToRequest, sessionCoversHomeFeature, webSignInManifest, type HomeFeature } from "./homeFeatures";
 import { reauthorizeHome } from "./homeReauthorize";
-import { webAppManifestFor } from "./webSignInPrefetch";
+import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 
 // Anvil's second default key: a well-known test key, never a real account.
 const account = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
 const ADDRESS = account.address;
 const HOST = "http://127.0.0.1:9";
-const base = webAppManifestFor(true);
+const base = WEB_APP_MANIFEST;
 const config = { autoCreateSpace: false, includeAccountRegistryPermissions: false as const, tinycloudHosts: [HOST] };
 
 let restoreDom: () => void;
@@ -63,7 +63,7 @@ function wallet(answer: "approve" | "decline"): EIP1193Provider {
 }
 
 async function signInBase(): Promise<TinyCloudWeb> {
-  const tcw = createTinyCloudWeb(wallet("approve"), { ...config, manifest: base });
+  const tcw = createTinyCloudWeb(wallet("approve"), { ...config, manifest: webSignInManifest(base, [], ADDRESS) });
   await tcw.signIn();
   return tcw;
 }
@@ -77,30 +77,29 @@ function reauthorize(features: readonly HomeFeature[], answer: "approve" | "decl
   }, { address: ADDRESS, features, config, canCommit: () => null });
 }
 
-/** A page reload: a new instance restores the saved session under the Home base grant, as App's restore does. */
+/** A page reload: a new instance restores the saved session under the fresh web sign-in grant, as App's restore does. */
 async function reload(): Promise<TinyCloudWeb> {
-  const restored = await restoreTinyCloudWebSession(ADDRESS, { ...config, manifest: base });
+  const restored = await restoreTinyCloudWebSession(ADDRESS, { ...config, manifest: webSignInManifest(base, [], ADDRESS) });
   expect(restored.status).toBe("restored");
   return restored.tcw!;
 }
 
-test("a reload after granting Recording restores a session whose own approval covers it, and Recording opens without a prompt", async () => {
+test("a reload after granting Connectors restores a session whose own approval covers it, and Connectors opens without a prompt", async () => {
   await signInBase();
-  expect(sessionCoversHomeFeature(await reload(), "recording", ADDRESS)).toBe(false);
+  expect(sessionCoversHomeFeature(await reload(), "connectors", ADDRESS)).toBe(false);
 
-  const result = await reauthorize(["recording"]);
+  const result = await reauthorize(["connectors"]);
   expect(result.outcome).toBe("granted");
   const restored = await reload();
-  expect(sessionCoversHomeFeature(restored, "recording", ADDRESS)).toBe(true);
-  expect(sessionCoversHomeFeature(restored, "connectors", ADDRESS)).toBe(false);
+  expect(sessionCoversHomeFeature(restored, "connectors", ADDRESS)).toBe(true);
 
   function Page() {
     const access = useHomeFeatureAccessState({
-      homeSite: true, tcw: restored, address: ADDRESS, store: localStorage, requestFeatureAccess: async () => "failed", inFlight: null,
+      enabled: true, tcw: restored, address: ADDRESS, store: localStorage, requestFeatureAccess: async () => "failed", inFlight: null,
     });
     return (
       <HomeFeatureAccessContext.Provider value={access}>
-        <HomeFeatureGate feature="recording"><div data-testid="recording-screen" /></HomeFeatureGate>
+        <HomeFeatureGate feature="connectors"><div data-testid="connectors-screen" /></HomeFeatureGate>
       </HomeFeatureAccessContext.Provider>
     );
   }
@@ -108,30 +107,28 @@ test("a reload after granting Recording restores a session whose own approval co
   document.body.append(host);
   const root = createRoot(host);
   await act(async () => root.render(<Page />));
-  expect(host.querySelector('[data-testid="recording-screen"]')).toBeTruthy();
-  expect(host.querySelector('[data-testid="feature-access-recording"]')).toBeNull();
+  expect(host.querySelector('[data-testid="connectors-screen"]')).toBeTruthy();
+  expect(host.querySelector('[data-testid="feature-access-connectors"]')).toBeNull();
   await act(async () => root.unmount());
 }, 30_000);
 
-test("with Recording covered but not yet flagged, allowing Connectors keeps Recording: the new session covers both", async () => {
+test("asking again on a session that already covers Connectors keeps it covered", async () => {
   await signInBase();
-  const first = await reauthorize(["recording"]);
+  const first = await reauthorize(["connectors"]);
   if (first.outcome !== "granted") throw new Error(first.outcome);
-  // Nothing has used Recording yet, so the device flag is empty; the session still covers it.
   const features = homeFeaturesToRequest(localStorage, first.tcw, ADDRESS, "connectors");
-  expect(features).toEqual(["recording", "connectors"]);
+  expect(features).toEqual(["connectors"]);
   const second = await reauthorize(features);
   if (second.outcome !== "granted") throw new Error(second.outcome);
   for (const tcw of [second.tcw, await reload()]) {
-    expect(sessionCoversHomeFeature(tcw, "recording", ADDRESS)).toBe(true);
     expect(sessionCoversHomeFeature(tcw, "connectors", ADDRESS)).toBe(true);
   }
 }, 30_000);
 
 test("declining in OpenKey keeps the saved session: a reload restores it, with the base grant only", async () => {
   await signInBase();
-  expect((await reauthorize(["recording"], "decline")).outcome).toBe("declined");
+  expect((await reauthorize(["connectors"], "decline")).outcome).toBe("declined");
   const restored = await reload();
-  expect(sessionCoversHomeFeature(restored, "recording", ADDRESS)).toBe(false);
+  expect(sessionCoversHomeFeature(restored, "connectors", ADDRESS)).toBe(false);
   expect(restored.hasPermissions([{ service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.tinychat/threads", actions: ["read"], skipPrefix: true }])).toBe(true);
 }, 30_000);

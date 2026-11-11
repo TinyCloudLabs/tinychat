@@ -51,8 +51,6 @@ export default defineConfig(({ command, mode }) => {
     if (!valid)
       throw new Error("VITE_EXO_PTX_UPLOAD_ORIGIN must be a bare HTTPS origin for production builds");
   }
-  // The home.tinycloud.xyz build (TC-2387) keeps its own installed-app id, so existing installs stay one app.
-  const homeSite = loadEnv(mode, rootDir, "VITE_").VITE_HOME_SITE === "true";
   return ({
   define: {
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
@@ -83,7 +81,8 @@ export default defineConfig(({ command, mode }) => {
       // `vite dev` serves no worker unless VITE_PWA_DEV=true (src/lib/pwa.ts checks the same flag).
       devOptions: { enabled: process.env.VITE_PWA_DEV === "true" },
       manifest: {
-        id: homeSite ? "/chat/feed" : "/chat",
+        // home.tinycloud.xyz's installed-app id since TC-2387, so existing Home installs stay one app.
+        id: "/chat/feed",
         name: "TinyCloud Home",
         short_name: "Home",
         description: "Your feed, chat, recordings and apps, in your TinyCloud space.",

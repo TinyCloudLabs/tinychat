@@ -64,7 +64,6 @@ import { useSoftTheme } from "../softTheme";
 import { useIssueController } from "../useIssueController";
 import { desktopHomeCapabilities } from "./captureHomeKind";
 import { ConnectMeetingsLink } from "./ConnectMeetingsLink";
-import { useHomeFeatureAccess } from "@/shell/homeFeatureAccess";
 import { SystemAudioStart } from "./SystemAudioStart";
 import {
   DESKTOP_HOME_COPY as COPY,
@@ -680,8 +679,6 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
   const softTheme = useSoftTheme();
   const theme = softTheme === "soft-night" ? "night" : "day";
   const caps = desktopHomeCapabilities(platform, props.layout);
-  // Meeting sources are Connectors': on the Home site they show here once Connectors is permitted.
-  const meetingSources = useHomeFeatureAccess().permitted("connectors");
   const place = homePlace(platform);
   const [filter, setFilter] = useState<RecentFilter>("all");
   // The same issue state and sheet as the phone home, over the recorder's issues and what native parked.
@@ -740,7 +737,7 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
               />
             )}
           </div>
-          {caps.connectMeetings && meetingSources && (
+          {caps.connectMeetings && (
             <ConnectMeetingsLink
               tcw={props.tcw}
               backendUrl={props.backendUrl}

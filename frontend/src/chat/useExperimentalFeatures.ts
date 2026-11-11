@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getCanvasEnabled, setCanvasEnabled } from "../lib/conversationCanvasStore";
-import { HOME_SITE } from "../lib/homeSite";
 import type { BillingStatus } from "../lib/billingApi";
 
 const CACHE_KEY = "tinychat:experimental:conversation-canvas";
 const CONVERSATION_CANVAS_AVAILABLE = true;
 
-/** Product switch for Conversation Canvas. Canvas is off for each user until they opt in under Settings > Experimental; the Home site never offers it. */
-export function isConversationCanvasEligible(_billingStatus: BillingStatus | null, homeSite: boolean = HOME_SITE): boolean {
-  return CONVERSATION_CANVAS_AVAILABLE && !homeSite;
+/** Product switch for Conversation Canvas. Canvas is off for each user until they opt in under Settings > Experimental. */
+export function isConversationCanvasEligible(_billingStatus: BillingStatus | null): boolean {
+  return CONVERSATION_CANVAS_AVAILABLE;
 }
 
 export function useConversationCanvasFeature(tcw: TinyCloudWeb, billingStatus: BillingStatus | null) {

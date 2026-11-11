@@ -713,51 +713,14 @@ test('pushes to main no longer deploy production; only the gated Deploy producti
     'the Release job dispatches only after the tags are pushed');
 });
 
-// The Home site: the same frontend built with VITE_HOME_SITE and uploaded to its own Pages project after the web job.
-test('web-home deploys the Home build after web, only when requested and configured, from the gated SHA', () => {
+// One web build: the Pages project behind tinycloud.chat also serves home.tinycloud.xyz, so there is no second job or build flag.
+test('production deploys one web build, with no Home variant job', () => {
   const production = read(repo, '.github/workflows/deploy-production.yml');
-  const job = /^ {2}web-home:\n([\s\S]*?)(?=^ {2}\S)/m.exec(production)?.[1];
-  assert.ok(job, 'deploy-production.yml has a web-home job');
-  assert.match(job, /^ {4}needs: \[target, web\]$/m);
-  const condition = /^ {4}if: >-\n((?: {6}.*\n)+)/m.exec(job)?.[1].replace(/\s+/g, ' ');
-  assert.match(condition, /inputs\.web/);
-  assert.match(condition, /needs\.web\.result == 'success'/);
-  assert.match(condition, /vars\.TINYCHAT_HOME_PAGES_PROJECT != ''/);
-  assert.match(job, /^ {4}environment: release-push$/m);
-  assert.match(job, /actions\/checkout@\S+.*\n\s+with:\n\s+ref: \$\{\{ needs\.target\.outputs\.sha \}\}/);
-  // The Home flag is set on the frontend build step only.
-  const build = /- name: Build the Home site\n((?: {8,}.*\n)+)/.exec(job)?.[1];
-  assert.match(build, /VITE_HOME_SITE: "true"/);
-  assert.match(build, /bun run build:frontend/);
-  // Direct upload to the production branch of the configured project, with the Pages token and an exact wrangler version.
-  assert.match(job, /wrangler@\d+\.\d+\.\d+ pages deploy frontend\/dist --project-name "\$TINYCHAT_HOME_PAGES_PROJECT" --branch production/);
-  assert.match(job, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_PAGES_API_TOKEN \}\}/);
-  assert.match(job, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
-  // A rollback to a tag without the Home build must not publish the plain site to the Home project.
-  const stepAt = name => job.indexOf(`- name: ${name}`);
-  const guard = /- name: Refuse a build that is not the Home site\n((?: {8,}.*\n)+)/.exec(job)?.[1];
-  assert.ok(guard, 'web-home has a guard step for the Home build');
-  assert.match(guard, /frontend\/dist\/manifest\.webmanifest/);
-  // Both builds are named TinyCloud Home; only the Home build's manifest id is /chat/feed.
-  assert.match(guard, /if \[ "\$id" != "\/chat\/feed" \]; then/);
-  assert.match(guard, /::error::/);
-  assert.ok(stepAt('Build the Home site') < stepAt('Refuse a build that is not the Home site'), 'the guard comes after the build');
-  assert.ok(stepAt('Refuse a build that is not the Home site') < stepAt('Upload to the Home Pages project'), 'the guard comes before the upload');
-  // The upload must have landed in production, and the verify step fetches the deployment inside its retry loop.
-  assert.match(job, /\.environment/);
-  assert.match(job, /::error::.*production/);
-  const verify = /- name: Verify home\.tinycloud\.xyz serves the deployment\n([\s\S]*)$/.exec(job)?.[1];
-  const loop = /for attempt in[\s\S]*?\n {10}done/.exec(verify)?.[0];
-  assert.ok(loop, 'verify step has a retry loop');
-  assert.match(loop, /\$DEPLOYMENT_URL/);
-  assert.doesNotMatch(verify.slice(0, verify.indexOf('for attempt in')), /DEPLOYMENT_URL"/);
-  // Nothing hard-requires web-home, but the production report says what it did.
-  assert.equal(production.match(/needs: .*\bweb-home\b/g).length, 1, 'only report needs web-home');
+  assert.doesNotMatch(production, /^ {2}web-home:/m);
+  assert.doesNotMatch(production, /VITE_HOME_SITE|TINYCHAT_HOME_PAGES_PROJECT/);
   const report = /^ {2}report:\n([\s\S]*?)(?=^ {2}\S|(?![\s\S]))/m.exec(production)?.[1];
-  assert.match(report, /^ {4}needs: \[.*\bweb-home\b.*\]$/m);
+  assert.match(report, /^ {4}needs: \[target, backend, web\]$/m);
   assert.match(report, /^ {4}if: always\(\)$/m);
-  assert.match(report, /WEB_HOME_RESULT: \$\{\{ needs\.web-home\.result \}\}/);
-  assert.match(report, /Web Home/);
 });
 
 // Manual deploys: a stable release tag per selected unit on a main commit, or an explicitly confirmed hotfix.

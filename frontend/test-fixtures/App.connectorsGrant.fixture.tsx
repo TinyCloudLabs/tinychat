@@ -1,6 +1,7 @@
+// Mounted-App proof of the web's least-privilege sign-in: no connector secrets or decrypt grant until Connectors is
+// used, asked for in place when it is opened, and nothing else (Recording, chat, the feed) ever asks. Run by
+// src/App.connectorsGrant.test.ts in its own process (mock.module is process-wide).
 import { newIdbEnv } from "@/lib/voiceNotes/web/testing/idb";
-// Mounted-App proof of the Home site's least-privilege sign-in. Run by src/App.homeGrant.test.ts in its own
-// process, once with VITE_HOME_SITE=true and once without; the assertions say what each build must do.
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { act } from "react";
@@ -12,7 +13,6 @@ import { installDom } from "@/test/dom";
 import { PlatformContext } from "@/lib/platform";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 
-const HOME = process.env.VITE_HOME_SITE === "true";
 const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
@@ -32,14 +32,12 @@ const delegationApi = await import("@/lib/transcriptDelegation");
 const captureApi = await import("@/lib/voiceNotes/captureEngine");
 const audioCacheApi = await import("@/lib/voiceNotes/audioReceiptUpgrade");
 // Taken before the mocks are installed: a module namespace is live, so reading it later returns the mock.
-const realInstallCaptureEngine = captureApi.installCaptureEngine;
 const realUseAudioCacheBoot = audioCacheApi.useAudioCacheBoot;
 const agentEnablementApi = await import("@/chat/useAgentEnablement");
 const drainApi = await import("@/chat/useBackgroundDrain");
 const transcriberSyncApi = await import("@/chat/useTranscriberLibrarySync");
 const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
 const appShellApi = await import("@/shell/AppShell");
-const { homeSignInManifest } = await import("@/lib/homeFeatures");
 const laneApi = await import("@/lib/spaceWriteLane");
 const feedApi = await import("@/feed/FeedView");
 const webSdkApi = await import("@tinycloud/web-sdk");
@@ -49,7 +47,6 @@ let restoreThroughSdk = false;
 let lastSignInConfig: { manifest: unknown; includeAccountRegistryPermissions?: unknown } | null = null;
 let decryptGrantCalls = 0;
 let delegationCalls = 0;
-let installEngineCalls = 0;
 const audioCacheBootArgs: Array<TinyCloudWeb | null> = [];
 let transcriberSyncEnabled: boolean | null = null;
 const mounted: string[] = [];
@@ -72,7 +69,6 @@ let saveGate: { reached(): void; release: Promise<void> } | null = null;
 let engineAvailable = false;
 let restoreResult: unknown = { kind: "signedOut" };
 const recorderEnabled: Array<boolean | undefined> = [];
-let agentAccessEnabled: boolean | undefined | null = null;
 const feedTcws: Array<TinyCloudWeb | null> = [];
 const fetchedUrls: string[] = [];
 
@@ -171,12 +167,11 @@ mock.module("@/lib/transcriptDelegation", () => ({
   ensureTranscriptWriterDelegation: async () => { delegationCalls += 1; return "disabled"; },
 }));
 mock.module("@/lib/voiceNotes/voiceNotePipeline", () => ({ ...pipelineApi, createVoiceNotePipeline: () => null }));
-// No recorder unless a test gives one: the Home site registers no capture engine before Recording.
+// No recorder unless a test gives one.
 mock.module("@/lib/voiceNotes/captureEngine", () => ({
   ...captureApi,
   captureCapabilities: () => ({ offlineRecorder: false, micDeniedPresentation: false }),
   captureEngineAvailable: () => engineAvailable,
-  installCaptureEngine: (...args: Parameters<typeof realInstallCaptureEngine>) => { installEngineCalls += 1; return realInstallCaptureEngine(...args); },
 }));
 mock.module("@/lib/voiceNotes/audioReceiptUpgrade", () => ({
   ...audioCacheApi,
@@ -190,10 +185,7 @@ mock.module("../src/chat/SettingsPage", () => ({
 }));
 mock.module("../src/chat/useAgentEnablement", () => ({
   ...agentEnablementApi,
-  AgentAccessProvider: ({ enabled, children }: { enabled?: boolean; children: React.ReactNode }) => {
-    agentAccessEnabled = enabled;
-    return <>{children}</>;
-  },
+  AgentAccessProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 mock.module("../src/chat/useBackgroundDrain", () => ({ ...drainApi, BackgroundDrainer: spy("BackgroundDrainer") }));
 mock.module("../src/chat/useGmeetSessionSync", () => ({ GmeetSessionSync: spy("GmeetSessionSync") }));
@@ -280,7 +272,6 @@ beforeEach(() => {
   lastSignInConfig = null;
   decryptGrantCalls = 0;
   delegationCalls = 0;
-  installEngineCalls = 0;
   audioCacheBootArgs.length = 0;
   transcriberSyncEnabled = null;
   mounted.length = 0;
@@ -299,7 +290,6 @@ beforeEach(() => {
   engineAvailable = false;
   restoreResult = { kind: "signedOut" };
   recorderEnabled.length = 0;
-  agentAccessEnabled = null;
   feedTcws.length = 0;
   fetchedUrls.length = 0;
   Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryLocalStorage() });
@@ -319,37 +309,25 @@ afterEach(async () => {
 });
 afterAll(() => { mock.restore(); restoreImportDom(); globalThis.fetch = realFetch; Reflect.deleteProperty(globalThis, "localStorage"); });
 
-test("sign-in asks for the manifest this build ships, without a decrypt grant before Connectors use", async () => {
+test("a fresh web sign-in asks for manifest.json with no connector secrets and no decrypt grant", async () => {
   await mount();
   await signIn();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   const config = lastSignInConfig!;
   expect(config.includeAccountRegistryPermissions).toBe(false);
-  if (HOME) {
-    // No replica: it would sync transcripts, which the Home grant does not cover.
-    expect("replication" in config).toBe(false);
-    expect(config.manifest).toEqual(readManifest("manifest.home.json"));
-    expect(decryptGrantCalls).toBe(0);
-    expect(JSON.stringify(config.manifest)).not.toContain("decryptGrant");
-    expect(delegationCalls).toBe(0);
-  } else {
-    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
-    expect(decryptGrantCalls).toBe(0);
-    expect(delegationCalls).toBeGreaterThan(0);
-  }
+  expect(config.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
+  expect(JSON.stringify(config.manifest)).not.toContain("tinycloud.encryption");
+  expect(decryptGrantCalls).toBe(0);
+  // Recording's transcript delegation runs at sign-in, as before.
+  expect(delegationCalls).toBeGreaterThan(0);
 });
 
-test("a feature this device has used is asked for in the same sign-in on the Home site", async () => {
+test("a Recording flag left by the old Home site asks for nothing more at sign-in", async () => {
   localStorage.setItem(FEATURES_KEY, JSON.stringify(["recording"]));
   await mount();
   await signIn();
-  const config = lastSignInConfig!;
-  if (HOME) {
-    expect(config.manifest).toEqual(homeSignInManifest(readManifest("manifest.home.json"), ["recording"], ADDRESS));
-    expect(localStorage.getItem(REVISION_KEY)).toBe("home-1");
-  } else {
-    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
-  }
+  expect(lastSignInConfig!.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
+  expect(decryptGrantCalls).toBe(0);
 });
 
 const CONNECTORS_LANES = ["BackgroundDrainer", "GmeetSessionSync", "BackendReconciler"];
@@ -363,135 +341,109 @@ async function clickInPrompt(feature: string, label: string) {
   await settle();
 }
 
-test("without the feature flag the Home site starts no recording, connector or transcript lane, and asks the meetings route nothing", async () => {
+test("before Connectors is used, Recording's lanes run and no connector lane starts or asks the meetings route", async () => {
   await mount();
   await signIn();
-  const lanes = [...CONNECTORS_LANES, ...RECORDING_LANES];
-  if (HOME) {
-    expect(mounted.filter((name) => lanes.includes(name))).toEqual([]);
-    expect(transcriberSyncEnabled).toBe(false);
-  } else {
-    for (const lane of RECORDING_LANES) expect(mounted).toContain(lane);
-    for (const lane of CONNECTORS_LANES) expect(mounted).not.toContain(lane);
-    expect(transcriberSyncEnabled).toBe(true);
-  }
+  for (const lane of RECORDING_LANES) expect(mounted).toContain(lane);
+  for (const lane of CONNECTORS_LANES) expect(mounted).not.toContain(lane);
+  expect(transcriberSyncEnabled).toBe(true);
+  expect(audioCacheBootArgs.some((tcw) => tcw !== null)).toBe(true);
   expect(meetingsRequests()).toEqual([]);
 });
 
-test("with the flag set and a session covering the flagged sets, the Home site starts their lanes", async () => {
-  if (!HOME) return;
-  localStorage.setItem(FEATURES_KEY, JSON.stringify(["recording", "connectors"]));
-  signInCovers = true;
+test("Recording needs no re-authorise: it opens on the sign-in session with no prompt", async () => {
+  engineAvailable = true;
   await mount();
   await signIn();
-  for (const lane of [...CONNECTORS_LANES, ...RECORDING_LANES]) expect(mounted).toContain(lane);
-  expect(transcriberSyncEnabled).toBe(true);
-  expect(audioCacheBootArgs.some((tcw) => tcw !== null)).toBe(true);
-});
-
-test("a flag the session does not cover starts nothing on the Home site", async () => {
-  if (!HOME) return;
-  localStorage.setItem(FEATURES_KEY, JSON.stringify(["recording", "connectors"]));
-  signInCovers = false;
-  await mount();
-  await signIn();
-  expect(mounted.filter((name) => [...CONNECTORS_LANES, ...RECORDING_LANES].includes(name))).toEqual([]);
-  expect(transcriberSyncEnabled).toBe(false);
-  expect(audioCacheBootArgs.filter((tcw) => tcw !== null)).toEqual([]);
-});
-
-test("the audio cache boot and the recorder wait for Recording on the Home site", async () => {
-  await mount();
-  await signIn();
-  const signedIn = audioCacheBootArgs.filter((tcw) => tcw !== null);
-  if (HOME) {
-    expect(signedIn).toEqual([]);
-    expect(installEngineCalls).toBe(0);
-  } else {
-    expect(signedIn.length).toBeGreaterThan(0);
+  for (const path of ["/chat/capture", "/chat/capture/library"]) {
+    await navigate(path);
+    expect(prompt("recording")).toBeNull();
+    expect(prompt("connectors")).toBeNull();
+    expect(mounted).toContain("CaptureSurface");
   }
+  expect(recorderEnabled.at(-1)).toBe(true);
+  expect(reauthConfig).toBeNull();
+  expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
 });
 
-test("navigation, and Recording and Connectors asking in place on the Home site", async () => {
+test("navigation, and Connectors asking in place", async () => {
   await mount("/chat");
   await signIn();
-  if (HOME) {
-    expect(navLabels()).toEqual(["Home", "Chat", "Apps", "Recording", "Connectors"]);
-    for (const [path, feature, heading] of [
-      ["/chat/capture", "recording", "Allow Recording"],
-      ["/chat/capture/library", "recording", "Allow Recording"],
-      ["/chat/connectors", "connectors", "Allow Connectors"],
-    ] as const) {
-      await navigate(path);
-      expect(prompt(feature)?.querySelector("h2")?.textContent).toBe(heading);
-      expect(host!.querySelectorAll("main").length).toBe(1);
-    }
-    expect(mounted).not.toContain("ConnectorsPage");
-    expect(mounted).not.toContain("CaptureSurface");
-    expect(mounted).not.toContain("MeetingsSection");
-    expect(meetingsRequests()).toEqual([]);
-    expect(reauthConfig).toBeNull();
-  } else {
-    expect(navLabels()).toEqual(["Recording", "Chat", "Apps", "Feed", "Connectors"]);
-    await navigate("/chat/connectors");
-    expect(mounted).not.toContain("ConnectorsPage");
-    expect(prompt("connectors")?.textContent).toContain("Allow Connectors");
-  }
+  expect(navLabels()).toEqual(["Home", "Chat", "Apps", "Recording", "Connectors"]);
+  await navigate("/chat/connectors");
+  expect(prompt("connectors")?.querySelector("h2")?.textContent).toBe("Allow Connectors");
+  expect(host!.querySelectorAll("main").length).toBe(1);
+  expect(mounted).not.toContain("ConnectorsPage");
+  expect(reauthConfig).toBeNull();
 });
 
-test("declining the in-place ask keeps the session and the feed, sets no flag, and leaves a plain retry", async () => {
-  if (!HOME) return;
-  reauthAnswer = "decline";
-  await mount();
+test("web sign-in remembers Connectors in the shared device/account feature record", async () => {
+  localStorage.setItem(FEATURES_KEY, JSON.stringify(["connectors"]));
+  signInCovers = true;
+  await mount("/chat/connectors");
   await signIn();
-  await navigate("/chat/capture");
-  await clickInPrompt("recording", "Continue");
-  expect(reauthConfig).not.toBeNull();
-  expect(prompt("recording")?.textContent).toContain("Permission wasn't given. Nothing changed.");
-  expect([...prompt("recording")!.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Continue", "Not now"]);
+  await navigate("/chat/connectors");
+  expect(lastSignInConfig!.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
+  expect(decryptGrantCalls).toBe(1);
+  expect(prompt("connectors")).toBeNull();
+  expect(mounted).toContain("ConnectorsPage");
+  for (const lane of CONNECTORS_LANES) expect(mounted).toContain(lane);
+});
+
+test("opening Connectors asks once: Continue signs the full manifest with decrypt, swaps the session, and it then works", async () => {
+  await mount("/chat/connectors");
+  await signIn();
+  await navigate("/chat/connectors");
+  expect(prompt("connectors")?.textContent).toContain("Allow Connectors");
+  expect(mounted).not.toContain("ConnectorsPage");
+  await clickInPrompt("connectors", "Continue");
+  expect(reauthInstances).toBe(1);
+  expect(reauthConfig!.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
+  expect(persistedSessions).toEqual([{ tag: "re-authorised session" }]);
+  expect(window.location.pathname).toBe("/chat/connectors");
+  expect(prompt("connectors")).toBeNull();
+  expect(mounted).toContain("ConnectorsPage");
+  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["connectors"]);
+  for (const lane of CONNECTORS_LANES) expect(mounted).toContain(lane);
+  await navigate("/chat/feed");
+  expect(tagOf(feedTcws.at(-1))).toBe("re-authorised");
+  // Back to Connectors: no second ask.
+  await navigate("/chat/connectors");
+  expect(prompt("connectors")).toBeNull();
+  expect(reauthInstances).toBe(1);
+});
+
+test("declining Connectors access leaves the session and feed working, sets no flag, and leaves a plain retry", async () => {
+  reauthAnswer = "decline";
+  await mount("/chat/connectors");
+  await signIn();
+  await navigate("/chat/connectors");
+  await clickInPrompt("connectors", "Continue");
+  expect(prompt("connectors")?.textContent).toContain("Permission wasn't given. Nothing changed.");
+  expect([...prompt("connectors")!.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Continue", "Not now"]);
   expect(persistedSessions).toEqual([]);
   expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
-  expect(mounted).not.toContain("CaptureSurface");
-  // The feed opens on the same session.
+  expect(mounted).not.toContain("ConnectorsPage");
+  for (const lane of CONNECTORS_LANES) expect(mounted).not.toContain(lane);
   await navigate("/chat/feed");
   expect(host!.querySelector('[data-testid="feed-view"]')).toBeTruthy();
   expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
 });
 
-test("approving swaps in the re-authorised session in place; Recording opens, and its first successful call flags it", async () => {
-  if (!HOME) return;
-  await mount();
-  await signIn();
-  await navigate("/chat/capture");
-  await clickInPrompt("recording", "Continue");
-  expect(reauthConfig!.manifest).toEqual(homeSignInManifest(readManifest("manifest.home.json"), ["recording"], ADDRESS));
-  expect(window.location.pathname).toBe("/chat/capture");
-  expect(mounted).toContain("CaptureSurface");
-  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["recording"]);
-  expect(persistedSessions).toEqual([{ tag: "re-authorised session" }]);
-  expect(mounted).toContain("UploadResumer");
-  // Connectors was not asked for, so its lanes stay off.
-  expect(mounted.filter((name) => CONNECTORS_LANES.includes(name))).toEqual([]);
-  // The feed opens on the re-authorised session.
-  await navigate("/chat/feed");
-  expect(tagOf(feedTcws.at(-1))).toBe("re-authorised");
-});
-
 test("Continue waits while an upload or a save is writing, and comes back when it ends", async () => {
-  if (!HOME) return;
   await mount();
   await signIn();
-  await navigate("/chat/capture");
+  await navigate("/chat/connectors");
   const write = Promise.withResolvers<void>();
   let running!: Promise<void>;
   await act(async () => { running = laneApi.runOnSpaceLane(() => write.promise); await tick(); });
-  const continueButton = () => [...prompt("recording")!.querySelectorAll("button")].find((entry) => entry.textContent === "Continue")!;
+  const continueButton = () => [...prompt("connectors")!.querySelectorAll("button")].find((entry) => entry.textContent === "Continue")!;
   expect(continueButton().disabled).toBe(true);
-  expect(prompt("recording")?.textContent).toContain("Finish the current recording or upload first.");
+  expect(prompt("connectors")?.textContent).toContain("Finish the current recording or upload first.");
   await act(async () => { write.resolve(); await running; });
   await settle();
   expect(continueButton().disabled).toBe(false);
-  expect(prompt("recording")?.textContent).not.toContain("Finish the current recording or upload first.");
+  expect(prompt("connectors")?.textContent).not.toContain("Finish the current recording or upload first.");
 });
 
 const signedOutNow = () => [...host!.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Sign in");
@@ -504,13 +456,12 @@ async function signOutFromSettings() {
 }
 
 test("an approval that lands after the owner signed out keeps nothing: no saved session, no swap, still signed out", async () => {
-  if (!HOME) return;
   const verification = Promise.withResolvers<void>();
   verifyGate = verification.promise;
   await mount();
   await signIn();
-  await navigate("/chat/capture");
-  await clickInPrompt("recording", "Continue");
+  await navigate("/chat/connectors");
+  await clickInPrompt("connectors", "Continue");
   expect(verifyCalls).toBe(1);
   await signOutFromSettings();
   expect(signedOutNow()).toBe(true);
@@ -520,25 +471,24 @@ test("an approval that lands after the owner signed out keeps nothing: no saved 
   expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
   expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
   expect(signedOutNow()).toBe(true);
-  expect(mounted).not.toContain("CaptureSurface");
+  expect(mounted).not.toContain("ConnectorsPage");
 });
 
 test("work that starts while OpenKey is open stops the swap: nothing saved, the session and feed stay, and the prompt says why", async () => {
-  if (!HOME) return;
   const approval = Promise.withResolvers<void>();
   reauthSignInGate = approval.promise;
   await mount();
   await signIn();
-  await navigate("/chat/capture");
-  await clickInPrompt("recording", "Continue");
+  await navigate("/chat/connectors");
+  await clickInPrompt("connectors", "Continue");
   const write = Promise.withResolvers<void>();
   let running!: Promise<void>;
   await act(async () => { running = laneApi.runOnSpaceLane(() => write.promise); await tick(); });
   await act(async () => { approval.resolve(); await tick(); });
   await settle();
   expect(persistedSessions).toEqual([]);
-  expect(mounted).not.toContain("CaptureSurface");
-  expect(prompt("recording")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
+  expect(mounted).not.toContain("ConnectorsPage");
+  expect(prompt("connectors")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
   await act(async () => { write.resolve(); await running; });
   await navigate("/chat/feed");
   expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
@@ -557,13 +507,12 @@ async function pressInPrompt(feature: string, label: string) {
 }
 
 test("work that starts while the saved session is being read stops the swap before anything is written; Feed stays", async () => {
-  if (!HOME) return;
   const snapshot = gate();
   snapshotGate = snapshot.held;
   await mount();
   await signIn();
-  await navigate("/chat/capture");
-  await pressInPrompt("recording", "Continue");
+  await navigate("/chat/connectors");
+  await pressInPrompt("connectors", "Continue");
   await snapshot.reached;
   const write = Promise.withResolvers<void>();
   let running!: Promise<void>;
@@ -571,21 +520,20 @@ test("work that starts while the saved session is being read stops the swap befo
   await act(async () => { snapshot.open(); await tick(); });
   await settle();
   expect(persistedSessions).toEqual([]);
-  expect(mounted).not.toContain("CaptureSurface");
-  expect(prompt("recording")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
+  expect(mounted).not.toContain("ConnectorsPage");
+  expect(prompt("connectors")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
   await act(async () => { write.resolve(); await running; });
   await navigate("/chat/feed");
   expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
 });
 
 test("work that starts while the new session is being saved stops the swap at the app: the saved session is put back", async () => {
-  if (!HOME) return;
   const save = gate();
   saveGate = save.held;
   await mount();
   await signIn();
-  await navigate("/chat/capture");
-  await pressInPrompt("recording", "Continue");
+  await navigate("/chat/connectors");
+  await pressInPrompt("connectors", "Continue");
   await save.reached;
   const write = Promise.withResolvers<void>();
   let running!: Promise<void>;
@@ -594,8 +542,8 @@ test("work that starts while the new session is being saved stops the swap at th
   await settle();
   // Saved, then put back: what is persisted is the session from before the ask.
   expect(persistedSessions).toEqual([{ tag: "re-authorised session" }, OLD_SESSION]);
-  expect(mounted).not.toContain("CaptureSurface");
-  expect(prompt("recording")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
+  expect(mounted).not.toContain("ConnectorsPage");
+  expect(prompt("connectors")?.querySelector('[role="alert"]')?.textContent).toBe("Finish the current recording or upload first.");
   expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
   await act(async () => { write.resolve(); await running; });
   await navigate("/chat/feed");
@@ -603,13 +551,14 @@ test("work that starts while the new session is being saved stops the swap at th
 });
 
 test("a second ask while OpenKey is open joins the first: one sign-in, not two", async () => {
-  if (!HOME) return;
   const approval = Promise.withResolvers<void>();
   reauthSignInGate = approval.promise;
   await mount();
   await signIn();
-  await navigate("/chat/capture");
-  await clickInPrompt("recording", "Continue");
+  await navigate("/chat/connectors");
+  await clickInPrompt("connectors", "Continue");
+  // Leaving and coming back shows a fresh prompt whose Continue is usable again.
+  await navigate("/chat/feed");
   await navigate("/chat/connectors");
   await clickInPrompt("connectors", "Continue");
   expect(reauthInstances).toBe(1);
@@ -619,116 +568,15 @@ test("a second ask while OpenKey is open joins the first: one sign-in, not two",
   expect(persistedSessions).toHaveLength(1);
 });
 
-test("after a reload, a session that covers Recording and a device that used it open Recording without a prompt", async () => {
-  if (!HOME) return;
-  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 3_600_000, address: ADDRESS }));
-  localStorage.setItem(REVISION_KEY, "home-1");
-  localStorage.setItem(FEATURES_KEY, JSON.stringify(["recording"]));
-  restoreResult = { kind: "restored", tcw: fakeTcw(true, "restored"), address: ADDRESS };
-  await mount("/chat/capture");
-  expect(prompt("recording")).toBeNull();
-  expect(mounted).toContain("CaptureSurface");
-  expect(reauthConfig).toBeNull();
-});
-
-test("the recorder's own checks and resumes wait for Recording to be permitted, not just covered", async () => {
-  if (!HOME) return;
-  engineAvailable = true;
-  // Covered, but this device has not used Recording yet.
-  signInCovers = true;
-  await mount();
-  await signIn();
-  expect(recorderEnabled.at(-1)).toBe(false);
-  expect(mounted).not.toContain("UploadResumer");
-  // Opening Recording is the first use: the flag is written, and the recorder may start its own work.
-  await navigate("/chat/capture");
-  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["recording"]);
-  expect(recorderEnabled.at(-1)).toBe(true);
-});
-
-test("agent access is switched off on the Home site, so its chat has no agent tools; the plain build keeps it on", async () => {
-  await mount();
-  await signIn();
-  expect(agentAccessEnabled).toBe(!HOME);
-});
-
-test("a session saved under the broad grant is cleared once on the Home site; the plain build keeps it", async () => {
+test("a session saved under the current revision restores with no re-sign notice", async () => {
   localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 3_600_000, address: ADDRESS }));
   localStorage.setItem(REVISION_KEY, "4");
   await mount();
-  if (HOME) {
-    expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
-    expect(host!.textContent).toContain(NOTICE);
-    await signIn();
-    expect(localStorage.getItem(REVISION_KEY)).toBe("home-1");
-    expect(host!.textContent).not.toContain(NOTICE);
-  } else {
-    expect(host!.textContent).not.toContain(NOTICE);
-    expect(localStorage.getItem(REVISION_KEY)).toBe("4");
-  }
-});
-
-test("a session already recorded under the Home revision is not asked again", async () => {
-  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 3_600_000, address: ADDRESS }));
-  localStorage.setItem(REVISION_KEY, HOME ? "home-1" : "4");
-  await mount();
   expect(host!.textContent).not.toContain(NOTICE);
+  expect(localStorage.getItem(REVISION_KEY)).toBe("4");
 });
-
-
-test("web sign-in remembers Connectors in the shared device/account feature record", async () => {
-  if (HOME) return;
-  localStorage.setItem(FEATURES_KEY, JSON.stringify(["connectors"]));
-  signInCovers = true;
-  await mount("/chat/connectors");
-  await signIn();
-  await navigate("/chat/connectors");
-  expect(lastSignInConfig!.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
-  expect(decryptGrantCalls).toBe(1);
-  expect(prompt("connectors")).toBeNull();
-  expect(mounted).toContain("ConnectorsPage");
-  for (const lane of CONNECTORS_LANES) expect(mounted).toContain(lane);
-});
-
-test("web first-use Continue signs the full manifest with decrypt, swaps the session, and remembers Connectors", async () => {
-  if (HOME) return;
-  await mount("/chat/connectors");
-  await signIn();
-  await navigate("/chat/connectors");
-  expect(prompt("connectors")?.textContent).toContain("Allow Connectors");
-  expect(mounted).not.toContain("ConnectorsPage");
-  await clickInPrompt("connectors", "Continue");
-  expect(reauthInstances).toBe(1);
-  expect(reauthConfig!.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
-  expect(persistedSessions).toEqual([{ tag: "re-authorised session" }]);
-  expect(prompt("connectors")).toBeNull();
-  expect(mounted).toContain("ConnectorsPage");
-  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["connectors"]);
-  for (const lane of CONNECTORS_LANES) expect(mounted).toContain(lane);
-  await navigate("/chat/feed");
-  expect(tagOf(feedTcws.at(-1))).toBe("re-authorised");
-});
-
-test("declining web Connectors access leaves the session and feed working with a retry", async () => {
-  if (HOME) return;
-  reauthAnswer = "decline";
-  await mount("/chat/connectors");
-  await signIn();
-  await navigate("/chat/connectors");
-  await clickInPrompt("connectors", "Continue");
-  expect(prompt("connectors")?.textContent).toContain("Permission wasn't given. Nothing changed.");
-  expect(persistedSessions).toEqual([]);
-  expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
-  expect(mounted).not.toContain("ConnectorsPage");
-  for (const lane of CONNECTORS_LANES) expect(mounted).not.toContain(lane);
-  await navigate("/chat/feed");
-  expect(host!.querySelector('[data-testid="feed-view"]')).toBeTruthy();
-  expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
-});
-
 
 test("web restore checks the reduced base so a non-Connectors session can reload", async () => {
-  if (HOME) return;
   restoreThroughSdk = true;
   localStorage.setItem(REVISION_KEY, "4");
   localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
@@ -737,9 +585,7 @@ test("web restore checks the reduced base so a non-Connectors session can reload
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });
 
-
 test("an old full web session remembers a connected source and keeps its background lanes", async () => {
-  if (HOME) return;
   const restored = fakeTcw(true, "restored");
   const queries: string[] = [];
   restored.sql = { db: () => ({ query: async (sql: string) => {
@@ -758,7 +604,6 @@ test("an old full web session remembers a connected source and keeps its backgro
 });
 
 test("an old full web session without a connected source leaves the feature record unset", async () => {
-  if (HOME) return;
   const restored = fakeTcw(true, "restored");
   restored.sql = { db: () => ({ query: async () => ({ ok: true, data: { rows: [] } }) }) } as unknown as TinyCloudWeb["sql"];
   localStorage.setItem(REVISION_KEY, "4");
@@ -766,4 +611,21 @@ test("an old full web session without a connected source leaves the feature reco
   restoreResult = { kind: "restored", tcw: restored, address: ADDRESS };
   await mount();
   expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
+});
+
+test("the desktop app keeps its sign-in: the full manifest with decrypt, and Connectors opens with no ask", async () => {
+  await mount("/chat/connectors");
+  Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+  try {
+    signInCovers = true;
+    await signIn();
+    expect(lastSignInConfig!.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
+    expect(decryptGrantCalls).toBe(1);
+    await navigate("/chat/connectors");
+    expect(prompt("connectors")).toBeNull();
+    expect(mounted).toContain("ConnectorsPage");
+    expect(reauthConfig).toBeNull();
+  } finally {
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  }
 });

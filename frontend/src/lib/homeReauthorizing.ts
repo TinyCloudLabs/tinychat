@@ -1,4 +1,4 @@
-// The one boundary between a Home re-authorise and the work a session swap must not cut off (a recording, an upload).
+// The one boundary between a Connectors re-authorise and the work a session swap must not cut off (a recording, an upload).
 // Work is admitted only while no re-authorise is in progress, and holds its place until it ends; a re-authorise keeps
 // its new session only while no admitted work is running.
 type HomeWork = "recording" | "upload";

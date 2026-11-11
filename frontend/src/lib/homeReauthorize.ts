@@ -1,8 +1,8 @@
-// The Home site asks for a feature's set by signing in again in the page, on a SEPARATE TinyCloudWeb: the base grant
-// plus every set the session has or this device used, plus the one asked for, in one OpenKey approval. The live session
-// is not touched until the new one is approved, covers everything asked, and is verified, because the SDK's sign-in
-// clears its own instance (services, vault, runtime grants) before it asks for the signature, and clears a persisted
-// session it would not reuse.
+// Connectors asks for its set by signing in again in the page, on a SEPARATE TinyCloudWeb: the web sign-in grant plus
+// every set the session has or this device used, plus the one asked for, in one OpenKey approval. The live session is
+// not touched until the new one is approved, covers everything asked, and is verified, because the SDK's sign-in clears
+// its own instance (services, vault, runtime grants) before it asks for the signature, and clears a persisted session
+// it would not reuse.
 import {
   BrowserSessionStorage,
   composeManifestRequest,
@@ -14,7 +14,7 @@ import {
 } from "@tinycloud/web-sdk";
 import type { ConnectWalletResult, EIP1193Provider, TinyCloudWebConfig } from "@tinyboilerplate/client";
 import { isSignInCancelled } from "./authErrors";
-import { homeSignInManifest, webSignInManifest, type HomeFeature } from "./homeFeatures";
+import { webSignInManifest, type HomeFeature } from "./homeFeatures";
 import { setHomeReauthorizing } from "./homeReauthorizing";
 import type { WebSignInPrefetch } from "./webSignInPrefetch";
 
@@ -97,8 +97,8 @@ function stagedSessionStorage(saved: ISessionStorage): {
 }
 
 /**
- * Sign `address` in again with the base grant and `features`' sets. Only "granted" has changed anything: the new
- * session is kept only when it covers everything asked for, the backend accepts it, and `canCommit` still allows it
+ * Sign `address` in again with the web sign-in grant and `features`' sets. Only "granted" has changed anything: the
+ * new session is kept only when it covers everything asked for, the backend accepts it, and `canCommit` still allows it
  * (the owner is still signed in, and nothing has started that a swap would cut off).
  */
 export async function reauthorizeHome(
@@ -106,7 +106,6 @@ export async function reauthorizeHome(
   input: {
     address: string;
     features: readonly HomeFeature[];
-    homeSite?: boolean;
     config: Omit<TinyCloudWebConfig, "manifest" | "sessionStorage" | "siweConfig" | "nonce">;
     canCommit(): CommitBlocked | null;
   },
@@ -118,8 +117,7 @@ export async function reauthorizeHome(
     const { address, openkey, web3Provider } = await deps.connect();
     // Another account in OpenKey would sign in as someone else: refuse before anything is signed.
     if (address.toLowerCase() !== input.address.toLowerCase()) return { outcome: "wrong-account" };
-    const compose = input.homeSite === false ? webSignInManifest : homeSignInManifest;
-    const manifest = compose(await prefetch.manifest(), input.features, address);
+    const manifest = webSignInManifest(await prefetch.manifest(), input.features, address);
     const nonce = await prefetch.nonceForSigning(address);
     const staged = stagedSessionStorage(deps.sessionStorage ?? new BrowserSessionStorage());
     const created = deps.createTcw(prefetch.guardSigning(web3Provider), {

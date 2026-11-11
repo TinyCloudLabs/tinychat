@@ -1,11 +1,11 @@
-import { HOME_SITE } from "../homeSite";
+import { CANONICAL_ORIGIN } from "../originMove";
 
 const KEY_PREFIX = "exo-google-oauth-tab:";
 
-/** `tab.<path>.<nonce>`; `hometab.…` on the Home site, so the backend returns to that origin. */
-export function sameTabState(path: string, nonce: string, homeSite: boolean = HOME_SITE): string {
+/** `tab.<path>.<nonce>`; `hometab.…` on home.tinycloud.xyz, so the backend returns to that origin. */
+export function sameTabState(path: string, nonce: string, homeOrigin: boolean = globalThis.location?.origin === CANONICAL_ORIGIN): string {
   const encoded = btoa(path).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  return `${homeSite ? "hometab" : "tab"}.${encoded}.${nonce}`;
+  return `${homeOrigin ? "hometab" : "tab"}.${encoded}.${nonce}`;
 }
 
 export function saveSameTabVerifier(state: string, verifier: string, purpose: "connect" | "autojoin"): void {

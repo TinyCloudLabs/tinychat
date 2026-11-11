@@ -151,77 +151,50 @@ rulesets stop direct pushes, hand-made release tags, branch or tag-controlled
 workflows, accidents and out-of-band deploys; they do not stop a malicious
 writer. Treat write access to this repo as production access.
 
-### Home site (home.tinycloud.xyz)
+### One web build: home.tinycloud.xyz (canonical) and tinycloud.chat
 
-The same frontend, built with `VITE_HOME_SITE=true`, is also served as the
-TinyCloud Home site at `https://home.tinycloud.xyz`.
+There is one frontend build. The web, the desktop app and the mobile apps all
+run it, sign in with the root `manifest.json`, and open on Feed (named Home)
+with the tabs Home, Chat, Apps, Recording, Connectors. There is no build flag
+or host check that changes the product.
 
-- **Sign-in grant:** the Home build signs in with `manifest.home.json`, not the
-  root `manifest.json`: only what Feed, Chat and Apps use. It has the same
-  `app_id` (`xyz.tinycloud.tinychat`), so the data is shared with
-  tinycloud.chat. It grants: KV `threads/` (chat share links); SQL `threads`
-  (chats and settings), `home_feed` and `feed/` (the feed); the hooks that
-  refresh the feed and chats; and space info (storage panel). It has no
-  secrets, no decrypt grant, and none of the canvas, connectors, details,
-  summaries or transcripts databases. tinycloud.chat keeps the full
-  `manifest.json` and signs in exactly as before. The backend keeps reading
-  `manifest.json` (`/api/server-info` and the delegation routes depend on its
-  connectors coverage), so do not narrow it. A Home session signed in under the
-  broad grant is cleared once (revision `home-1`, in
-  `frontend/src/lib/manifestRevision.ts`) and the user signs in once more.
-- **Recording and Connectors on Home:** each has its own set
-  (`HOME_RECORDING_ENTRIES`, `HOME_CONNECTORS_ENTRIES` in
-  `packages/core/src/manifest-bundle.ts`). Only Connectors keeps secrets (its
-  connector keys), so only it adds the decrypt grant, composed at request time
-  (the SDK adds `network.create` on the owner's default network to it).
-  Recording keeps none: no secret, no decrypt grant, no encryption ability at
-  all. When one is opened and the session does not cover its set, it
-  asks in place: Home signs in again in the page on a separate instance with
-  the base grant plus every set the session has or the device used, plus this
-  one (one OpenKey approval). It replaces the session only when the approval
-  covers everything asked, the backend verifies it, the owner is still signed
-  in, and no recording, upload or save is running; otherwise nothing is saved.
-  New recordings and uploads wait while OpenKey is open. Once a feature
-  has been used on a device, `xyz.tinycloud.tinychat:home-features:<address>`
-  in localStorage (feature names only; kept on sign-out) makes the next
-  sign-in include its set. Background work for a feature, including the
-  recorder's own checks, runs only when it is flagged on the device and the
-  session covers its set. Agent access is off on Home. The flag never changes
-  the revision: any grant carrying the Home bundle records `home-1`.
-- **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
-  name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
-  `production`.
-- **Deploy job:** `web-home` in `deploy-production.yml`. It runs after the `web`
-  job succeeds, when the `web` input is true and `TINYCHAT_HOME_PAGES_PROJECT`
-  is set; otherwise it is skipped, which does not fail the workflow. It checks
-  out the SHA the run deployed, runs `bun run build:packages`, builds the
-  frontend with `VITE_HOME_SITE=true` (other `VITE_*` values come from
-  `frontend/.env.production`), uploads `frontend/dist` with
-  `wrangler pages deploy --branch production`, and checks that the Home URL
-  serves the same `index.html` as the deployment URL wrangler reported (read
-  from `WRANGLER_OUTPUT_FILE_PATH`).
-- **Configuration:** `TINYCHAT_HOME_PAGES_PROJECT` must be a **repository**
-  variable, not one on the `release-push` environment: it gates the job with a
-  job-level `if`, which cannot read environment-scoped variables, so an
-  environment-level value would skip `web-home` silently on every release.
-  `TINYCHAT_HOME_URL` (optional, defaults to `https://home.tinycloud.xyz`) can
-  be either. The secrets `CLOUDFLARE_PAGES_API_TOKEN` (Pages edit permission)
-  and `CLOUDFLARE_ACCOUNT_ID` stay on the `release-push` environment.
-- **Rollbacks:** before the upload, the job fails unless the built
-  `manifest.webmanifest` is named "TinyCloud Home". Redeploying a tag older
-  than the Home build therefore stops there instead of putting the plain site
-  on the Home project. After the upload it also fails unless wrangler reports
-  the `production` environment.
-- **Custom domain:** `home.tinycloud.xyz`, a `CNAME` to the project's
-  `<project>.pages.dev` host.
-- **Not Git-integrated on purpose:** `scripts/release/lib.mjs`
-  (`classifyPagesCheckRuns`) takes the newest check run named "Cloudflare Pages"
-  from the Pages app on the production commit and reads its deployment URL.
-  A second Git-connected Pages project would add another check run with that
-  name, and the release verifier could pick it up instead of the one for
-  `tinycloud.chat`.
-- **Backend:** the `HOME_WEB_ORIGIN` constant in `backend/src/cors-origins.ts`
-  must ship before or together with the Home site so the API accepts its origin.
+- **Pages project:** the Git-integrated `tinychat` project above serves both
+  custom domains, `home.tinycloud.xyz` (canonical; `CNAME` to
+  `tinychat-4jq.pages.dev`) and `tinycloud.chat`. The `web` job in
+  `deploy-production.yml` verifies the URL in the `TINYCHAT_FRONTEND_URL`
+  variable (default `https://tinycloud.chat`); the same deployment serves both
+  domains.
+- **Moving visitors off tinycloud.chat:** origins do not share IndexedDB or
+  localStorage, so a redirect would strand recordings kept only in the browser.
+  `frontend/src/lib/originMove.ts` runs only on `tinycloud.chat`: before the app
+  renders it counts, across every account, recordings still **saving** (capture
+  sessions, quarantined recoveries, notes not saved or with local work left,
+  outbox entries, and unsaved Upload-sheet jobs in localStorage) and notes whose
+  **audio is only local** (saved, but with no `verifiedInSpace` receipt: web
+  audio upload is off by default and webStore keeps that audio). None:
+  `location.replace` to `https://home.tinycloud.xyz` with the same path, query
+  and `#hash`. Otherwise (or if the check fails) the app runs as usual with a
+  notice (`shell/OriginMoveNotice.tsx`) and re-checks every 30 s, on focus and
+  when back online, also waiting for an upload running in the tab. Saving work
+  moves the visitor once it is saved; local-only audio keeps them on
+  tinycloud.chat, and the notice says so. A visitor who moves signs in once on
+  home.tinycloud.xyz. The edge 301 for tinycloud.chat waits on TC-2763 (upload
+  local-only audio from the notice, then move).
+- **Google OAuth:** a page on `https://home.tinycloud.xyz` tags its `state`
+  `home.`/`hometab.` so the backend returns to that origin
+  (`HOME_WEB_ORIGIN`); anywhere else the state is untagged and returns to
+  `FRONTEND_URL`.
+- **Backend:** `HOME_WEB_ORIGIN` in `backend/src/cors-origins.ts` keeps
+  home.tinycloud.xyz in CORS, the SIWE domain check and the OAuth returns while
+  `FRONTEND_URL` is still `https://tinycloud.chat`.
+- **Cutover order (once):** this build drops the separate `tinycloud-home`
+  Pages project, and tinycloud.chat starts moving visitors as soon as it is
+  live. Right after the first production web deploy of it, move the custom
+  domain `home.tinycloud.xyz` from `tinycloud-home` to `tinychat` (remove it
+  from `tinycloud-home`, add it to `tinychat`, point the `CNAME` at
+  `tinychat-4jq.pages.dev`), then set `TINYCHAT_FRONTEND_URL` to
+  `https://home.tinycloud.xyz`. Until then home.tinycloud.xyz keeps serving the
+  previous Home build. Keep `tinycloud-home` 7 days as a rollback target.
 
 ---
 
