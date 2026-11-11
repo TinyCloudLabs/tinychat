@@ -346,7 +346,7 @@ describe("shared-key interim headroom", () => {
   });
 
   it("paid chat has its own 600 bucket and denies at 601 before the upstream call", async () => {
-    expect(PAID_CHAT_PATHS).toEqual(["/api/chat", "/api/agent/chat"]);
+    expect(PAID_CHAT_PATHS).toEqual(["/api/chat", "/api/agent/chat", "/api/bots/main/messages"]);
     const app = express();
     applyRateLimiters(app, { sessionKey: SESSION_KEY });
     let upstreamCalls = 0;

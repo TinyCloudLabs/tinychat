@@ -1,0 +1,17 @@
+{
+  "name": "@tinychat/bots",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "supervisor": "bun src/supervisor.ts",
+    "gateway": "bun src/gateway-main.ts",
+    "build": "tsc --noEmit",
+    "test": "bun test src",
+    "smoke": "bash test/smoke.sh"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "typescript": "5.9.3"
+  }
+}

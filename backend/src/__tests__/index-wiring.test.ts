@@ -867,6 +867,8 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./exo/wake-intake.js": { WakeQueue: class WakeQueue { async drain() {} } },
     "./exo/retention-sweep.js": { startExoRetentionSweepTimer: () => ({ stop: async () => {} }) },
     "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
+    // TC-2808: the bots routes are off unless BOTS_* are set; this test doesn't arm them.
+    "./routes/bots.js": { botsFromEnv: () => undefined, createBotsRouter: router },
     // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
     "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },

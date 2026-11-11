@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { FeedCardView } from "./FeedView";
@@ -146,7 +146,8 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
   };
 }
 
-export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: HomeFeedSource; homeSite?: boolean }) {
+/** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
+export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source: HomeFeedSource; homeSite?: boolean; ask?: ReactNode }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
   const [selector, setSelector] = useState<FeedSelector>("needs-action");
   const [active, setActive] = useState<HomeFeedEntry | null>(null);
@@ -360,6 +361,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
   return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={homeSite ? NAV_LABEL_HOME : "Feed"}>
     <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-6 sm:px-5">
       <header className="mb-6"><h1 className="font-display text-3xl font-semibold tracking-tight">{homeSite ? NAV_LABEL_HOME : "Feed"}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
+      {ask}
       {!bare && <><div className="mb-4 flex flex-wrap items-center gap-2">
         <label className="sr-only" htmlFor="home-feed-view">Feed view</label>
         <select id="home-feed-view" aria-label="Feed view" value={selector} className={selectClass} onChange={(event) => changeSelector(event.target.value as FeedSelector)}>
