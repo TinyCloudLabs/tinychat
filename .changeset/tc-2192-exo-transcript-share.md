@@ -6,7 +6,7 @@
 
 Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
 
-Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream. Restored or disconnected sessions show "Sign in again to share" and cannot start sharing.
+Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
 
 Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
 
