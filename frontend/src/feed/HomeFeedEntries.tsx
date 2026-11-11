@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { CheckIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
-import { ANSWER_UNDO_HINT, AnswerOptions, sendingLabel, useUndoWindow } from "./AnswerOptions";
+import { ANSWER_UNDO_HINT, AnswerOptions, answerSummary, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
@@ -9,7 +10,7 @@ import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStor
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
-import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
+import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, partPending, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { PATHS } from "@/shell/routes";
@@ -87,7 +88,28 @@ function ResponseStatus({ entry }: { entry: HomeFeedEntry }) {
   </div>;
 }
 
-function AnswerForm({ entry, source, onSaved }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void }) {
+interface SentAnswer { key: string; response: FeedResponse; summary: string; open: boolean }
+/**
+ * What stays of a card once its answer is sent: what was chosen and, while the card is folded away, the
+ * answer's steps. It takes focus when it appears, so the result is announced where the card was.
+ */
+function AnswerFold({ entry, sent, onToggle }: { entry: HomeFeedEntry; sent: SentAnswer; onToggle: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  const handling = answerHandling(entry, sent.response.responseId);
+  const detail = handling.outcome?.detail?.message;
+  return <div ref={ref} role="status" tabIndex={-1} aria-label="Answer sent" className="mb-3 space-y-3 rounded-2xl border border-border bg-card p-4 text-sm text-card-foreground shadow-sm motion-safe:animate-rise-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    <div className="flex items-start gap-2">
+      <CheckIcon aria-hidden className="mt-0.5 size-4 shrink-0" />
+      <p className="min-w-0 flex-1 break-words"><span className="font-medium">{sent.summary}</span><span className="block text-xs text-muted-foreground">{entry.state.card.title}</span></p>
+      <button type="button" aria-expanded={sent.open} onClick={onToggle} className="min-h-10 shrink-0 rounded-lg border border-border px-3 text-sm">{sent.open ? "Hide card" : "Show card"}</button>
+    </div>
+    {!sent.open && <AnswerSteps sent={sent.response.createdAt} {...handling} />}
+    {!sent.open && typeof detail === "string" && <p className="whitespace-pre-wrap break-words">{detail}</p>}
+  </div>;
+}
+
+function AnswerForm({ entry, source, onSaved, onAnswered }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; onAnswered: (response: FeedResponse, summary: string) => void }) {
   const [text, setText] = useState("");
   const [choice, setChoice] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
@@ -113,6 +135,7 @@ function AnswerForm({ entry, source, onSaved }: { entry: HomeFeedEntry; source: 
     try {
       const result = await source.saveResponse(entry, response);
       onSaved(entry, result);
+      onAnswered(result, answerSummary(response.choiceId && (card.choices?.find((option) => option.id === response.choiceId)?.label ?? response.choiceId), response.text));
       pendingResponse.current = null;
       setText(""); setChoice(undefined); setFollowup(false);
     } catch (cause) {
@@ -170,6 +193,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
   const [viewBusy, setViewBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const [sent, setSent] = useState<SentAnswer | null>(null);
   const chosenSelector = useRef(false);
   const hasDefault = useRef(false);
   const refreshRef = useRef<() => void>(() => {});
@@ -187,7 +211,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
     committed.current.clear();
     activeRef.current = null;
     setSnapshot(null); setActive(null); setError(null);
-    setExpandedGroups(new Set());
+    setExpandedGroups(new Set()); setSent(null);
     const refresh = async () => {
       if (running) { dirty = true; return; }
       running = true;
@@ -303,6 +327,11 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
   const focusedContext = focused ? contextFor(focused) : undefined;
   const focusedUnsupported = !!focused && (focused.state.card.payload?.sitrep !== undefined || focused.state.card.payload?.sitrepThread !== undefined) && !focusedContext;
   activeRef.current = focused ?? null;
+  // The card whose answer was just sent folds to a line with its steps, unless it still needs the owner. Until
+  // a load confirms the answer the card cannot say so itself, and only an ask's approval steps can still be open.
+  const settling = !!sent && committed.current.has(sent.key);
+  const fold = sent && focused && sent.key === focusedKey && !(settling ? focusedContext?.projection.parts.some(partPending) : needsAttention(focused, clock, focusedContext?.projection)) ? sent : null;
+  const onAnswered = (response: FeedResponse, summary: string) => setSent({ key: focusedKey!, response, summary, open: false });
   const focusedIndex = filtered.findIndex((entry) => keyOf(entry) === focusedKey);
   const nextEntry = filtered.length ? filtered[(focusedIndex + 1) % filtered.length] : undefined;
   useEffect(() => { if (focused && activeKey !== focusedKey) setActive(focused); }, [focusedKey, activeKey]);
@@ -398,10 +427,13 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
         </section>
         : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
       {focused && <section aria-label="Focused card" className="mb-5 min-w-0">
-        <FeedCardView card={cardView(focused)} sample={false} readBody={source.readBody} />
-        <ReportLink entry={focused} />
-        <p className="mt-3 text-xs text-muted-foreground" aria-label="Card reference"><code className="select-all break-all" title={homeFeedKey(focused)}>{humanFeedReference(focused, entries)}</code></p>
-        {focusedContext ? <SitrepCard key={focusedKey!} entry={focused} record={focusedContext.record} records={focusedContext.records} entries={focusedContext.entries} owner={focusedContext.owner} projection={focusedContext.projection} source={source} now={clock} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onNavigate={setActive} /> : focusedUnsupported ? <p role="status" className="mt-4 rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p> : <><AnswerForm key={focusedKey!} entry={focused} source={source} onSaved={onSaved} /><CardHistory entry={focused} /></>}
+        {fold && <AnswerFold key={fold.response.responseId} entry={focused} sent={fold} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
+        <div hidden={!!fold && !fold.open}>
+          <FeedCardView card={cardView(focused)} sample={false} readBody={source.readBody} />
+          <ReportLink entry={focused} />
+          <p className="mt-3 text-xs text-muted-foreground" aria-label="Card reference"><code className="select-all break-all" title={homeFeedKey(focused)}>{humanFeedReference(focused, entries)}</code></p>
+          {focusedContext ? <SitrepCard key={focusedKey!} entry={focused} record={focusedContext.record} records={focusedContext.records} entries={focusedContext.entries} owner={focusedContext.owner} projection={focusedContext.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={setActive} /> : focusedUnsupported ? <p role="status" className="mt-4 rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p> : <><AnswerForm key={focusedKey!} entry={focused} source={source} onSaved={onSaved} onAnswered={onAnswered} /><CardHistory entry={focused} /></>}
+        </div>
         <div className="mt-4 flex flex-wrap gap-2">
           {!focusedContext && !focusedUnsupported && needsAttention(focused, clock) && <button type="button" disabled={viewBusy} onClick={() => void snooze()} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">Snooze for 1 hour</button>}
           {nextEntry && keyOf(nextEntry) !== focusedKey && <button type="button" onClick={() => { if (nextEntry) setActive(nextEntry); }} className="min-h-10 rounded-lg border border-border px-3 text-sm">Next card</button>}

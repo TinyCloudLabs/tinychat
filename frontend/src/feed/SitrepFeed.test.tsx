@@ -276,8 +276,10 @@ test("a folded approval step follows skipOn but becomes needed again after the p
   await wait();
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: ask.id, action: "answer", choice: "quick" } });
   expect(view.host.querySelector('[aria-label="Folded approval step"] button')).toBeNull();
+  expect(view.host.querySelector('[aria-label="Focused card"] [aria-label="Answer sent"]')?.textContent).toContain("You chose Quick option");
   ask.lastAskedAt = "2099-01-01T00:00:00.000Z";
   await act(async () => fixture.notify());
+  expect(view.host.querySelector('[aria-label="Focused card"] [aria-label="Answer sent"]')).toBeNull();
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Synthetic key requirement");
   expect(view.host.querySelector('[aria-label="Folded approval step"] button') !== null).toBe(true);
   expect(view.host.querySelector('textarea[aria-label="Your answer"]') !== null).toBe(true);
@@ -583,4 +585,60 @@ test("an approval stays deliberate: no option to tap, no countdown, and its own 
   expect([...view.host.querySelectorAll("button")].some((node) => node.textContent === "Undo")).toBe(false);
   expect(fixture.saved).toHaveLength(1);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: record.id, action: "done", issuedAt: record.issuedAt } });
+});
+
+const fold = (host: HTMLElement) => host.querySelector<HTMLElement>('[aria-label="Focused card"] [aria-label="Answer sent"]');
+const folded = (host: HTMLElement) => host.querySelector<HTMLElement>('[aria-label="Focused card"] article')!.parentElement!.hidden;
+/** Holds every later load until `release`, as a slow network would: the saved answer is not yet in the feed. */
+function holdLoads(source: HomeFeedSource) {
+  const load = source.load;
+  const gate = Promise.withResolvers<void>();
+  source.load = async (focused) => { await gate.promise; return load(focused); };
+  return { release: () => act(async () => gate.resolve()) };
+}
+
+test("a typed ask folds to the chosen option's label once sent, and a dropped one says so", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const loads = holdLoads(fixture.source);
+  await act(async () => option(view.host, "Careful option").click());
+  expect(fold(view.host)).toBeNull();
+  await wait();
+  expect(fixture.saved).toHaveLength(1);
+  expect(fold(view.host)!.textContent).toContain("You chose Careful option");
+  expect(folded(view.host)).toBe(true);
+  await loads.release();
+  expect(fold(view.host)!.textContent).toContain("You chose Careful option");
+  expect(fold(view.host)!.textContent).toContain(String(syntheticRecord("ask").title));
+  expect(fold(view.host)!.querySelectorAll('[aria-label="Answer steps"] li[data-state="done"]')).toHaveLength(1);
+  expect(folded(view.host)).toBe(true);
+  await act(async () => button(view.host, "Show card").click());
+  expect(folded(view.host)).toBe(false);
+  await act(async () => button(view.host, "Add follow-up").click());
+  await act(async () => button(view.host, "Drop question").click());
+  await wait();
+  expect(fixture.saved[1]?.payload).toMatchObject({ type: "sitrep.answer", data: { action: "drop" } });
+  expect(fold(view.host)!.textContent).toContain("You dropped this question");
+  expect(folded(view.host)).toBe(true);
+});
+
+test("an answered ask stays open while one of its approval steps still needs the owner", async () => {
+  jest.useFakeTimers();
+  const ask = syntheticRecord("ask");
+  const fixture = typedFixture(ask);
+  const view = await mount(fixture.source);
+  const part = { ...syntheticRecord("approval"), id: "folded-secret", title: "Synthetic key requirement", approvalType: "secret", approvalKind: undefined, name: "SYNTHETIC_KEY", url: "https://secrets.tinycloud.xyz/request?fixture=synthetic", forAsk: { id: ask.id, skipOn: ["quick"] } };
+  delete part.approvalKind;
+  fixture.snapshot.entries.push(typedFixture(part).entry);
+  await act(async () => fixture.notify());
+  const loads = holdLoads(fixture.source);
+  await act(async () => option(view.host, "Careful option").click());
+  await wait();
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { action: "answer", choice: "careful" } });
+  expect(fold(view.host)).toBeNull();
+  await loads.release();
+  expect(fold(view.host)).toBeNull();
+  expect(folded(view.host)).toBe(false);
+  expect(view.host.querySelector('[aria-label="Folded approval step"] button') !== null).toBe(true);
 });

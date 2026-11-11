@@ -10,6 +10,9 @@ export const ANSWER_UNDO_HINT = `Your answer is sent ${ANSWER_UNDO_SECONDS} seco
 /** What a send control reads while its answer waits (`seconds` left) or is being sent (null). */
 export const sendingLabel = (seconds: number | null, verb = "Sending") => seconds === null ? "Sending…" : `${verb} in ${seconds}s`;
 
+/** The line a card keeps once its answer is sent: what was chosen, or else what was written. */
+export const answerSummary = (label?: string, text?: string) => label ? `You chose ${label}` : `You answered “${text}”`;
+
 /**
  * The undo window. `start` counts ANSWER_UNDO_SECONDS down and then calls `send`;
  * `undo` stops the count, so nothing is saved. A card that goes away while it

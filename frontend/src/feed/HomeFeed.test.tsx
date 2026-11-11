@@ -454,3 +454,73 @@ test("leaving the card during the undo window sends the answer at once, to the c
   await wait(ANSWER_UNDO_SECONDS * 3);
   expect(store.responses).toHaveLength(1);
 });
+
+const fold = (host: HTMLElement) => host.querySelector<HTMLElement>('[aria-label="Focused card"] [aria-label="Answer sent"]');
+/** Whether the focused card is folded away, leaving only the line that says what was chosen. */
+const folded = (host: HTMLElement) => host.querySelector<HTMLElement>('[aria-label="Focused card"] article')!.parentElement!.hidden;
+
+test("once sent, the card folds to what was chosen with its steps, and Show card opens it again", async () => {
+  jest.useFakeTimers();
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await act(async () => button(view.host, "Proceed").click());
+  expect(fold(view.host)).toBeNull();
+  expect(folded(view.host)).toBe(false);
+  await wait();
+  const line = fold(view.host)!;
+  expect(line.textContent).toContain("You chose Proceed");
+  expect(line.textContent).toContain("Question decision-one");
+  expect(steps(line)).toEqual(["sent:done", "received:upcoming", "outcome:upcoming"]);
+  expect(folded(view.host)).toBe(true);
+  expect(document.activeElement === line).toBe(true);
+  store.durable.entries[0]!.state.acknowledgement = handling(store.responses[0]!, "acknowledged");
+  await act(async () => store.notify());
+  expect(steps(fold(view.host))).toEqual(["sent:done", "received:done", "outcome:upcoming"]);
+  store.durable.entries[0]!.state.outcome = handling(store.responses[0]!, "succeeded");
+  await act(async () => store.notify());
+  expect(steps(fold(view.host))).toEqual(["sent:done", "received:done", "outcome:done"]);
+  expect(fold(view.host)!.textContent).toContain("Reversible action completed");
+  expect(fold(view.host) === line).toBe(true);
+  await act(async () => button(view.host, "Show card").click());
+  expect(folded(view.host)).toBe(false);
+  expect(button(view.host, "Hide card").getAttribute("aria-expanded")).toBe("true");
+  expect(steps(fold(view.host))).toBeNull();
+  expect(steps(view.host.querySelector('[aria-label="Answer status"]'))).toEqual(["sent:done", "received:done", "outcome:done"]);
+  await act(async () => button(view.host, "Hide card").click());
+  expect(folded(view.host)).toBe(true);
+  expect(button(view.host, "Show card").getAttribute("aria-expanded")).toBe("false");
+});
+
+test("a typed answer folds to its own words, and a follow-up from the opened card folds again", async () => {
+  jest.useFakeTimers();
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await typeAnswer(view.host, "Hold until the report is in");
+  await act(async () => button(view.host, "Send answer").click());
+  await wait();
+  expect(fold(view.host)!.textContent).toContain("You answered “Hold until the report is in”");
+  expect(folded(view.host)).toBe(true);
+  await act(async () => button(view.host, "Show card").click());
+  await act(async () => button(view.host, "Add follow-up").click());
+  expect(view.host.textContent).toContain("A follow-up does not cancel an action already received by the agent.");
+  await act(async () => button(view.host, "Hold").click());
+  await wait();
+  expect(store.responses).toHaveLength(2);
+  expect(store.responses[1]).toMatchObject({ kind: "followup", choiceId: "hold", supersedesResponseId: store.responses[0]!.responseId });
+  expect(fold(view.host)!.textContent).toContain("You chose Hold");
+  expect(folded(view.host)).toBe(true);
+});
+
+test("the fold belongs to the answered card: the next card opens whole", async () => {
+  jest.useFakeTimers();
+  const store = persistence([decision("a", 1, 2), decision("b", 1, 1)]);
+  const view = await mount(store.source());
+  await act(async () => button(view.host, "Proceed").click());
+  await wait();
+  expect(fold(view.host)!.textContent).toContain("Question a");
+  await act(async () => button(view.host, "Next card").click());
+  expect(view.host.querySelector('[aria-label="Focused card"] h2')?.textContent).toBe("Question b");
+  expect(fold(view.host)).toBeNull();
+  expect(folded(view.host)).toBe(false);
+  expect(button(view.host, "Proceed").getAttribute("aria-pressed")).toBe("false");
+});

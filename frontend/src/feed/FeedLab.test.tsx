@@ -11,6 +11,7 @@ import type { NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
 import { FEED_LAB, FEED_LAB_PATH, FeedLabRoutes as lazyRoutes } from "@/lib/feedLab";
 import { installDom } from "@/test/dom";
+import { ANSWER_UNDO_SECONDS } from "./AnswerOptions";
 import FeedLabRoutes from "./FeedLab";
 import { createFeedLabSource, LAB_COMPLETED_MS, LAB_OUTCOME, LAB_RECEIVED_MS, LAB_SAVE_MS } from "./feedLabSource";
 import type { HomeFeedEntry } from "./feedStoreTypes";
@@ -115,6 +116,28 @@ test("the lab shows the real feed at its own address, Reset restores the cards, 
   expect(focusedTitle(host)).toBe("Which train should I hold for Friday?");
   expect(calls).toEqual([]);
   expect(stored()).toBe(before);
+});
+
+test("in the lab an answer runs its whole course: one tap, the undo window, the fold, then the simulated agent ticks the steps", async () => {
+  jest.useFakeTimers();
+  const { host, calls } = await mount(FEED_LAB_PATH);
+  const pass = (ms: number) => act(async () => { jest.advanceTimersByTime(ms); });
+  const steps = () => [...host.querySelectorAll<HTMLElement>('[aria-label="Answer sent"] [aria-label="Answer steps"] li')].map((step) => `${step.dataset.step}:${step.dataset.state}`);
+  await act(async () => button(host, "08:15 direct").click());
+  expect(host.textContent).toContain(`Sending in ${ANSWER_UNDO_SECONDS}s`);
+  await pass(ANSWER_UNDO_SECONDS * 1_000);
+  expect(host.textContent).toContain("Sending…");
+  expect(host.querySelector('[aria-label="Answer sent"]')).toBeNull();
+  await pass(LAB_SAVE_MS);
+  expect(host.querySelector('[aria-label="Answer sent"]')?.textContent).toContain("You chose 08:15 direct");
+  expect(steps()).toEqual(["sent:done", "received:upcoming", "outcome:upcoming"]);
+  await pass(LAB_RECEIVED_MS);
+  expect(steps()).toEqual(["sent:done", "received:done", "outcome:upcoming"]);
+  await pass(LAB_COMPLETED_MS - LAB_RECEIVED_MS);
+  expect(steps()).toEqual(["sent:done", "received:done", "outcome:done"]);
+  expect(host.querySelector('[aria-label="Answer sent"]')?.textContent).toContain(LAB_OUTCOME);
+  expect(host.querySelector('[aria-label="Cards in this view"]')?.textContent).not.toContain("Which train");
+  expect(calls).toEqual([]);
 });
 
 test("in a lab build any other unknown address still goes home", async () => {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { ANSWER_UNDO_HINT, AnswerOptions, sendingLabel, useUndoWindow } from "./AnswerOptions";
+import { ANSWER_UNDO_HINT, AnswerOptions, answerSummary, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
@@ -25,6 +25,8 @@ interface Props {
   source: HomeFeedSource;
   now: number;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
+  /** An ask was answered: the card folds to this line. */
+  onAnswered: (response: FeedResponse, summary: string) => void;
   onOwnerSaved: () => void;
   onNavigate: (entry: HomeFeedEntry) => void;
 }
@@ -99,6 +101,7 @@ export function SitrepCard(props: Props) {
     pending.current = undefined;
     onSaved(entry, result);
     onOwnerSaved();
+    return result;
   }
   async function savePrivate(patch: Partial<SamState>, operationKey: string) {
     if (!source.saveOwnerState) throw new Error("This feed source does not provide private owner storage");
@@ -118,8 +121,9 @@ export function SitrepCard(props: Props) {
   }
   async function askAnswer({ action, choice }: AskAnswer) {
     if (record.kind !== "ask") return;
-    await send("sitrep.answer", { askId: record.id, action, ...(choice ? { choice } : {}), text, at: new Date().toISOString() }, `ask:${action}:${choice ?? ""}:${text}`);
+    const result = await send("sitrep.answer", { askId: record.id, action, ...(choice ? { choice } : {}), text, at: new Date().toISOString() }, `ask:${action}:${choice ?? ""}:${text}`);
     setText(""); setChosen(undefined); setFollowup(false); setEngaged(false);
+    props.onAnswered(result, action === "drop" ? "You dropped this question" : answerSummary(record.options.find((option) => option.id === choice)?.label, text.trim()));
   }
   // One tap chooses: the answer waits out the undo window, then is saved with any typed answer.
   function holdAnswer(answer: AskAnswer) {
