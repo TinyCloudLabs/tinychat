@@ -12,6 +12,7 @@ import { RootErrorBoundary } from "./shell/RootErrorBoundary";
 import { LandingRoute, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { SessionStore } from "@tinyboilerplate/client";
+import { BASE_PATH } from "./lib/basePath";
 import { HOME_SITE } from "./lib/homeSite";
 import { readHomeFeatures } from "./lib/homeFeatures";
 import { browserRevisionStore } from "./lib/manifestRevision";
@@ -82,7 +83,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <RootErrorBoundary>
-        <BrowserRouter>
+        <BrowserRouter basename={BASE_PATH}>
           <Routes>
             <Route path="/" element={<RootRoute />} />
             <Route path="/about" element={<LandingRoute />} />

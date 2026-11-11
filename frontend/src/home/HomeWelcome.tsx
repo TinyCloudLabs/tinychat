@@ -3,6 +3,7 @@
 import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { Button } from "@/components/ui/button";
 import type { AppState } from "@/lib/appState";
+import { publicUrl } from "@/lib/basePath";
 import { errorLinkFor } from "@/lib/authErrors";
 import { WELCOME_DEMO_NOTE, WELCOME_LEAD, WELCOME_LEARN_MORE, WELCOME_LEARN_MORE_LEAD, WELCOME_TITLE } from "@/lib/homeStrings";
 import { bootMessage } from "@/shell/BootSurface";
@@ -15,7 +16,7 @@ export function HomeWelcome({ state, error, onSignIn }: { state: AppState; error
   return (
     <div className="flex min-h-full flex-col">
       <header className="flex items-center gap-3 border-b border-border px-4 py-3">
-        <img src="/icons/pwa-192.png" alt="" className="size-8 rounded-xl" />
+        <img src={publicUrl("icons/pwa-192.png")} alt="" className="size-8 rounded-xl" />
         <span className="font-display text-headline">{WELCOME_TITLE}</span>
         <Button variant="outline" className="ml-auto h-9 px-4" disabled={busy} onClick={onSignIn}>Sign in</Button>
       </header>

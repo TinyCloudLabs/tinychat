@@ -75,6 +75,6 @@ test("a real render error in any child of the root shows the recovery screen, no
 test("main.tsx mounts the router and the PWA prompts inside the boundary", () => {
   const main = readFileSync(join(import.meta.dir, "../main.tsx"), "utf8");
   const boundary = main.slice(main.indexOf("<RootErrorBoundary>"), main.indexOf("</RootErrorBoundary>"));
-  expect(boundary).toContain("<BrowserRouter>");
+  expect(boundary).toContain("<BrowserRouter basename={BASE_PATH}>");
   expect(boundary).toContain("<PwaPrompts />");
 });

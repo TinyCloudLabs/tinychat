@@ -2,6 +2,7 @@ import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
 import type { AppState } from "../lib/appState";
+import { publicUrl } from "../lib/basePath";
 import { errorLinkFor } from "../lib/authErrors";
 import { LANDING_LINK_LABEL } from "../lib/homeStrings";
 import { APP_NAME } from "../lib/homeSite";
@@ -44,7 +45,7 @@ export function BootSurface(props: {
     <div className="grid h-full grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)] overflow-y-auto p-6">
       <div aria-hidden />
       <div className="mx-auto flex w-full min-w-0 max-w-sm flex-col items-center gap-5 text-center">
-        <img src="/icons/pwa-192.png" alt="" className="size-12 rounded-2xl" />
+        <img src={publicUrl("icons/pwa-192.png")} alt="" className="size-12 rounded-2xl" />
         <div className="flex flex-col gap-1.5">
           <h1 className="font-display text-title-2">{APP_NAME}</h1>
           <p className="flex items-center justify-center text-callout text-muted-foreground">
