@@ -108,7 +108,12 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
         setState((current) => current.phase === "loading" ? { phase: "idle" } : current);
       }
     });
-    return () => { mounted = false; unregister(); };
+    return () => {
+      mounted = false;
+      unregister();
+      audio.removeAttribute("src");
+      audio.load();
+    };
   }, []);
 
   useEffect(

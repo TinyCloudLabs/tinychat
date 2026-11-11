@@ -1,3 +1,4 @@
+import { newIdbEnv } from "@/lib/voiceNotes/web/testing/idb";
 // Mounted-App proof, desktop (Tauri) offline recorder: a session saved under an older sign-in manifest is
 // cleared by the revision gate, and the signed-out recorder screen shows the re-sign notice with a Sign in
 // action (not "Couldn't sign in"), keeps the recorder in place, and the user can sign in from it. Run by
@@ -162,7 +163,8 @@ function qualifyBrowser() {
     maxTouchPoints: { configurable: true, value: 0 },
     locks: { configurable: true, value: { request: () => undefined } },
   });
-  Object.defineProperty(globalThis, "indexedDB", { configurable: true, writable: true, value: {} });
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, writable: true, value: newIdbEnv().factory });
+  Object.defineProperty(globalThis, "IDBKeyRange", { configurable: true, value: newIdbEnv().keyRange });
   Object.defineProperty(globalThis, "Worker", { configurable: true, writable: true, value: class {} });
 }
 

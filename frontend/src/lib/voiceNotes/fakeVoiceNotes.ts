@@ -1,3 +1,4 @@
+import { claimRecordingNote, deleteSyncedNote, deleteNote } from "./recordingNotes";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type {
   AccountStatus, AudioInput, CaptureDefaults, CaptureOptions, CaptureSource, CaptureStatus, ClaimOptions, LocalTranscript, MicState,
@@ -85,7 +86,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   const receipts = new Map<string, RemoteOpReceipt>();
   const receiptResults = new Map<string, { destination: "ledger" | "outbox"; handle: string | null;
     handleExpiresAt: number | null; outcome: "created" | "failed" | "unknown" }>();
-  const quarantine = new Map<string, { id: string; reason: string; sizeBytes: number }>();
+  const quarantine = new Map<string, { id: string; reason: string; sizeBytes: number; owner?: string | null }>();
   const inputs: AudioInput[] = [{ id: "built-in", name: "Built-in microphone", kind: "built_in" }];
   let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false, uploadAudio: true };
   let accountStatus: AccountStatus = "signed_out";
@@ -113,10 +114,12 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       retained.set(name, queue);
     } else for (const listener of set) listener(structuredClone(value));
   };
+  const visible = (owner: string | null | undefined) => !owner || (accountStatus === "signed_in" && defaults.accountDid === owner);
   const checked = (id: string) => {
     if (tombstones.has(id)) throw failure("tombstoned");
     const note = notes.get(id);
     if (!note) throw failure("not_found");
+    if (!visible(note.owner)) throw failure("owner_mismatch");
     return note;
   };
   const mic = (s: Session): { state: MicState; reason: MicStateReason } => {
@@ -233,7 +236,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     if (evidence === "space_row" && (typeof options.rowId !== "string" || !options.rowId.trim())) throw failure("row_id_required");
     const legacy = note.version !== 2 || note.ownerUnknown === true || note.legacyImport === true;
     if (legacy && evidence === "signed_out_v2") throw failure("claim_evidence_required");
-    if (!legacy && evidence !== "signed_out_v2") throw failure("claim_evidence_invalid");
+    if (!legacy && evidence !== "user_choice") throw failure("claim_evidence_invalid");
+    if (accountStatus !== "signed_in" || defaults.accountDid !== did) throw failure("owner_mismatch");
     if (note.owner === did) {
       if (evidence === "space_row" && (note.ledger?.audio.rowId !== options.rowId || note.ledger.audio.state !== "saved")) {
         note.ledger ??= ledger();
@@ -296,7 +300,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers,
         uploadAudio: options?.uploadAudio ?? defaults.uploadAudio ?? false };
       session = { id, startedAt: now(), audioMs: 0, pausedMs: 0, pauseStarted: null, intent: "recording", availability: "available",
-        reason: null, gen: ++generation, source: "in_app", owner: signedIn ? defaults.accountDid : null, transitionGen: defaults.transitionGen,
+        reason: null, gen: ++generation, source: "in_app", owner: accountStatus !== "signed_out" ? defaults.accountDid : null, transitionGen: defaults.transitionGen,
         options: opts, spans: [], openSpan: null, maxDurationMs: clampLimitMs(options?.maxDurationMs),
         backoffAttempt: 0, nextRetryMs: null, osSilenced: false, pendingCapturedMs: 0 };
       stateChanged();
@@ -332,6 +336,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     async deleteAudio({ id }) {
       if (session?.id === id) throw failure("recording_in_progress");
       const note = notes.get(id);
+      if (note && !visible(note.owner)) throw failure("owner_mismatch");
+      await deleteNote(id, note?.owner ?? null);
       tombstones.add(id);
       if (note?.owner) for (const remote of note.ledger?.remote ?? []) {
         if (remote.cleanup === "done") continue;
@@ -369,7 +375,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       if (note.ledger?.audio.state !== "saved") throw failure("audio_not_space_backed");
       note.sizeBytes = 0;
     },
-    async listPending() { return { recordings: [...notes.values()].map((note) => structuredClone(note)) }; },
+    async listPending() { return { recordings: [...notes.values()].filter((note) => visible(note.owner)).map((note) => structuredClone(note)) }; },
     async pause() {
       const s = session;
       if (!s) throw failure("not_recording");
@@ -404,7 +410,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       stateChanged();
     },
     async getCaptureDefaults() { return { ...defaults,
-      accountDid: accountStatus === "signed_in" ? defaults.accountDid : null,
+      accountDid: accountStatus !== "signed_out" ? defaults.accountDid : null,
       transcriber: accountStatus === "signed_in" ? defaults.transcriber : "on-device",
       status: accountStatus }; },
     async setCaptureDefaults(next) {
@@ -416,31 +422,48 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       defaults = { ...next, accountDid: sameGeneration ? defaults.accountDid : next.accountDid,
         transcriber: accountStatus === "signed_in" ? next.transcriber : "on-device",
         uploadAudio: next.uploadAudio ?? defaults.uploadAudio };
-      const claimed: string[] = [];
-      if (accountStatus === "signed_in" && next.accountDid) {
-        if (session && !session.owner) { session.owner = next.accountDid; claimed.push(session.id); }
-        for (const note of notes.values()) {
-          if (note.version === 2 && !note.owner && !note.ownerUnknown) {
-            claim({ id: note.id, did: next.accountDid, evidence: "signed_out_v2" }); claimed.push(note.id);
-          }
-        }
-      }
-      return { claimed };
+      return { claimed: [] };
     },
     async setAccountState(next) {
+      const leavingDid = defaults.accountDid;
       if (accountStateFailure) { accountStateFailure = false; throw failure("account_state_write_failed"); }
       if (next.transitionGen < defaults.transitionGen) throw failure("stale_transition");
+      if (next.status === "signed_out") {
+        if (session) stop("user");
+        retained.clear();
+      }
       defaults = { ...defaults, accountDid: next.accountDid, transitionGen: next.transitionGen,
         transcriber: next.status === "signed_in" ? defaults.transcriber : "on-device" };
       accountStatus = next.status;
+      if (next.status === "signed_out") {
+        for (const note of notes.values()) {
+          const receipt = note.ledger?.audio.verifiedInSpace;
+          const transcript = transcripts.get(note.id);
+          const syncedTranscript = note.ledger?.transcriptSync?.state === "saved" &&
+            (!transcript || note.ledger.transcriptSync.rev === transcript.rev);
+          const activeLocalWork = note.stt?.state === "queued" || note.stt?.state === "running" ||
+            note.ledger?.localAudio?.state === "preparing";
+          if (note.owner && note.owner === leavingDid && note.ledger?.audio.state === "saved" && note.ledger.audio.rowId && receipt &&
+              /^[0-9a-f]{64}$/.test(receipt.sha256) && Number.isSafeInteger(receipt.size) && receipt.size > 0 &&
+              receipt.size === note.sizeBytes && syncedTranscript && !activeLocalWork) {
+            await deleteSyncedNote(note.id, note.owner ?? null);
+            notes.delete(note.id);
+            transcripts.delete(note.id);
+            tombstones.add(note.id);
+            for (const [key, entry] of receipts) if (entry.id === note.id) { receipts.delete(key); receiptResults.delete(key); }
+          }
+        }
+      }
     },
     async retryRecovery({ id }) {
       if (session?.id === id) throw failure("recording_in_progress");
       if (!quarantine.has(id)) throw failure("not_found");
+      if (!visible(quarantine.get(id)?.owner)) throw failure("owner_mismatch");
       quarantine.delete(id);
     },
     async discardFailedRecording({ id }) {
       if (session?.id === id) throw failure("recording_in_progress");
+      if (!visible(quarantine.get(id)?.owner)) throw failure("owner_mismatch");
       if (!quarantine.delete(id)) throw failure(notes.has(id) ? "not_failed_recording" : "not_found");
       notes.delete(id); tombstones.add(id);
     },
@@ -498,7 +521,11 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome });
       return { destination: "ledger" };
     },
-    async claim(options) { return claim(options); },
+    async claim(options) {
+      const result = claim(options);
+      if (options.evidence === "user_choice") await claimRecordingNote(options.id, options.did);
+      return result;
+    },
     async updateLedger({ id, did, rev, patch }) {
       const note = checked(id);
       if (note.owner !== did) throw failure("owner_mismatch");
@@ -522,12 +549,13 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       if (session?.intent === "recording") { openSpan(session, "omitted", "route_change"); restart(session, true); }
       emit("inputs", { inputs, selectedId, activeId: session ? inputs[0].id : null });
     },
-    async listQuarantine() { return { items: [...quarantine.values()].map((item) => structuredClone(item)) }; },
-    async deleteQuarantined({ id }) { quarantine.delete(id); },
-    async listOutbox({ did }) { return { entries: [...outbox.values()].filter((entry) => entry.did === did).map((entry) => structuredClone(entry)) }; },
+    async listQuarantine() { return { items: [...quarantine.values()].filter((item) => visible(item.owner)).map((item) => structuredClone(item)) }; },
+    async deleteQuarantined({ id }) { if (!visible(quarantine.get(id)?.owner)) throw failure("owner_mismatch"); quarantine.delete(id); },
+    async listOutbox({ did }) { return { entries: [...outbox.values()].filter((entry) => entry.did === did && accountStatus === "signed_in" && defaults.accountDid === did).map((entry) => structuredClone(entry)) }; },
     async completeOutbox({ entryId, result }) {
       const entry = outbox.get(entryId);
       if (!entry) throw failure("not_found");
+      if (!visible(entry.did)) throw failure("owner_mismatch");
       if (result === "done") outbox.delete(entryId);
       else { entry.state = result === "retry" ? "pending" : result; entry.attempts++; }
     },
@@ -589,7 +617,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     },
     commitLegacy(recording) { if (tombstones.has(recording.id)) throw failure("tombstoned");
       notes.set(recording.id, { ...structuredClone(recording), ownerUnknown: true, owner: null }); },
-    quarantine(id, reason, sizeBytes) { quarantine.set(id, { id, reason, sizeBytes }); },
+    quarantine(id, reason, sizeBytes) { quarantine.set(id, { id, reason, sizeBytes, ...(notes.get(id)?.owner ? { owner: notes.get(id)!.owner } : {}) }); },
     addRemote(id, resource) { const note = checked(id); note.ledger ??= ledger(); note.ledger.remote.push(structuredClone(resource)); },
     tombstoned: (id) => tombstones.has(id),
     failNextAccountState() { accountStateFailure = true; },

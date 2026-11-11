@@ -556,4 +556,15 @@ describe("the player in a DOM", () => {
     expect(player.host.textContent).not.toContain("Key not found");
     expect(player.host.querySelector("audio")).toBe(player.audio);
   });
+  test("TC-2785 unmount releases the media source as well as pausing playback", async () => {
+    const player = await mount({ url: "blob:account-a", durationSecs: 42 });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.audio.getAttribute("src")).toBe("blob:account-a");
+    await act(async () => root!.unmount());
+    root = null;
+    expect(player.fake.paused).toBe(true);
+    expect(player.audio.getAttribute("src")).toBeNull();
+    expect(player.fake.loads).toBeGreaterThan(0);
+  });
+
 });

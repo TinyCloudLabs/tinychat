@@ -147,8 +147,11 @@ import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable, subscribeCaptureCapabilities } from "./lib/voiceNotes/captureEngine";
 import { deletePendingRecordings, savePendingRecordings } from "./lib/voiceNotes/recorderSaves";
+import { clearHeldResultsForSignOut } from "./lib/voiceNotes/heldResults";
+import { clearPlaybackCacheForSignOut, hasVerifiedSpaceCopy } from "./lib/voiceNotes/audioPlaybackCache";
 import { PendingVoiceNoteSignOutDialog } from "./chat/PendingVoiceNoteSignOutDialog";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
+import { AppLockGate } from "./components/AppLockGate";
 import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
@@ -207,6 +210,8 @@ const TINYCLOUD_HOSTS = import.meta.env.VITE_TINYCLOUD_HOST
   : undefined;
 
 export function App() {
+  const platform = useContext(PlatformContext);
+  const mobileRetentionUnsupported = platform === "ios" || platform === "android";
   // Track the visible viewport so the shell shrinks above the soft keyboard
   // instead of letting it cover the composer (iOS Safari `100dvh` does not).
   useVisualViewportFit();
@@ -330,14 +335,35 @@ export function App() {
   }, [recordingCovered]);
   const captureHandoffInFlight = useRef<Promise<boolean> | null>(null);
   const performCaptureHandoff = useCallback(async () => {
-    if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;
+    if (LOCAL_VALIDATION) return true;
     try {
-      const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
-      if (native.status === "signed_out") {
-        if (voiceNotePipeline?.isAccepting()) { advanceAccountGeneration(); voiceNotePipeline.cancelAll(); }
+      const storedAddress = sessionStoreRef.current.getAddress();
+      const signingOutDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
+      const clearLocalResults = async () => {
+        await Promise.all([signingOutDid ? clearHeldResultsForSignOut(signingOutDid) : Promise.resolve(), clearPlaybackCacheForSignOut()]);
+      };
+      if (!captureEngineAvailable()) {
+        if (signingOutDid) {
+          const { openWebStore, memoryLocks } = await import("./lib/voiceNotes/web/webStore");
+          const local = await openWebStore({ locks: memoryLocks(), decodeCheck: null });
+          try {
+            const defaults = await local.getCaptureDefaults();
+            if (signingOutDid && defaults.accountDid === signingOutDid) {
+              await local.setAccountState({ status: "signed_out", accountDid: null,
+                transitionGen: nextTransitionGen(defaults.transitionGen) });
+            } else await local.sweepTombstones();
+          } finally { local.close(); }
+        }
+        await clearLocalResults();
         return true;
       }
-      const storedAddress = sessionStoreRef.current.getAddress();
+      const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+      if (native.status === "signed_out") {
+        await withCaptureDeadline(VoiceNotes.setAccountState({ status: "signed_out", accountDid: null, transitionGen: native.transitionGen }));
+        if (voiceNotePipeline?.isAccepting()) { advanceAccountGeneration(); voiceNotePipeline.cancelAll(); }
+        await clearLocalResults();
+        return true;
+      }
       const accountDid = did ?? native.accountDid ?? (native.status === "transitioning" && storedAddress
         ? `did:pkh:eip155:1:${storedAddress}` : null);
       if (!accountDid && native.status === "transitioning") {
@@ -359,6 +385,7 @@ export function App() {
         }
         return false;
       }
+      await clearLocalResults();
       setCaptureFailClosed(false);
       return true;
     } catch {
@@ -1164,7 +1191,7 @@ export function App() {
     }
   }, []);
 
-  const signOut = useCallback(async (options: { terminal?: string; pendingChoice?: "save" | "delete" } = {}) => {
+  const signOut = useCallback(async (options: { terminal?: string; pendingChoice?: "keep" | "save" | "delete" } = {}) => {
     if (signOutInFlightRef.current) return;
     signOutInFlightRef.current = true;
     setSigningOut(true);
@@ -1208,7 +1235,8 @@ export function App() {
           return;
         }
         const unsaved = pending.filter((note) =>
-          (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
+          (note.owner === tcw.did || (mobileRetentionUnsupported && !note.owner)) &&
+            (mobileRetentionUnsupported ? note.ledger?.audio.state !== "saved" : !hasVerifiedSpaceCopy(note)));
         if (unsaved.length > 0 && !options.pendingChoice) {
           setPendingVoiceNoteSignOut({ count: unsaved.length, error: null });
           return;
@@ -1217,7 +1245,7 @@ export function App() {
           stopForFenceFailure();
           return;
         }
-        if (unsaved.length > 0 && options.pendingChoice === "save") {
+        if (mobileRetentionUnsupported && unsaved.length > 0 && options.pendingChoice === "save") {
           try {
             await savePendingRecordings(tcw);
             const remaining = (await VoiceNotes.listPending()).recordings.filter((note) =>
@@ -1251,7 +1279,8 @@ export function App() {
           } catch {
             const listing = await VoiceNotes.listPending().catch(() => ({ recordings: unsaved }));
             const remaining = listing.recordings.filter((note) =>
-              (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
+              (note.owner === tcw.did || (mobileRetentionUnsupported && !note.owner)) &&
+            (mobileRetentionUnsupported ? note.ledger?.audio.state !== "saved" : !hasVerifiedSpaceCopy(note)));
             setPendingVoiceNoteSignOut({
               count: remaining.length || unsaved.length,
               error: "Couldn't delete all your voice notes, so you're still signed in. Try again.",
@@ -1303,7 +1332,7 @@ export function App() {
       signOutInFlightRef.current = false;
       setSigningOut(false);
     }
-  }, [captureHandoff, completeLocalSignOut, tcw]);
+  }, [captureHandoff, completeLocalSignOut, tcw, mobileRetentionUnsupported]);
 
   useEffect(() => { signOutRef.current = signOut; }, [signOut]);
 
@@ -1324,7 +1353,6 @@ export function App() {
   const location = useLocation();
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
-  const platform = useContext(PlatformContext);
   const loadFirstScreen = useCallback(() => readFirstScreen(tcw!, did), [tcw, did]);
   const cachedFirstScreen = useCallback(() => readCachedFirstScreen(did), [did]);
   const { size } = useSizeClass();
@@ -1600,6 +1628,8 @@ export function App() {
       </div>
       {shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,
         nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
+      {/* Face ID / passcode over everything in the phone app (TC-2738); the app keeps loading underneath. */}
+      <AppLockGate />
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
         Recordings are being kept unassigned until TinyCloud Home can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
@@ -1635,7 +1665,8 @@ export function App() {
         count={pendingVoiceNoteSignOut?.count ?? 0}
         error={pendingVoiceNoteSignOut?.error ?? null}
         busy={signingOut}
-        onSave={() => { void signOut({ pendingChoice: "save" }); }}
+        allowKeep={!mobileRetentionUnsupported}
+        onKeep={() => { void signOut({ pendingChoice: mobileRetentionUnsupported ? "save" : "keep" }); }}
         onDelete={() => { void signOut({ pendingChoice: "delete" }); }}
         onCancel={() => setPendingVoiceNoteSignOut(null)}
       />

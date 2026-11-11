@@ -53,7 +53,7 @@ async function run(options: { elizaUrl?: string; replies: Array<() => Response>;
   }) as typeof fetch;
   const config: AgentChatConfig = {
     agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: options.elizaUrl ?? "", elizaServiceSecret: options.elizaUrl ? "eliza-secret" : "", redpillApiKey: "test", redpillBaseUrl: "https://model.test",
-    defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: trace => { traces.push(trace); },
+    defaultModel: () => "test-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: trace => { traces.push(trace); },
     streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 }, maxRounds: 3,
     mcpMeetings: mcpTools(options.body, toolCalls), mcpOwner: OWNER,
     ...(options.rollout ? { meetingContentRetrievalEnabled: true, meetingContentModelAllowed: () => options.modelAllowed ?? true } : {}),
@@ -61,7 +61,7 @@ async function run(options: { elizaUrl?: string; replies: Array<() => Response>;
   };
   const result = await orchestrateToolCalling({ config, model: "test-model", messages: [{ role: "user", content: options.question ?? "What did we decide about the rollout?" }], entityId: "entity", roomId: "room", write: frame => { frames.push(frame); } });
   const answer = frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content ?? ""; } catch { return ""; } }).join("");
-  return { answer, modelRequests, otherHosts, toolCalls, traces, result };
+  return { answer, modelRequests, otherHosts, toolCalls, traces, result, frames };
 }
 
 const plan = () => toolCall("prepare_meeting_turn", { kind: "meeting_content", scope: "selected", purpose: "summary", evidenceRequirement: "overview" });
@@ -152,7 +152,11 @@ describe("MCP chat turn through the validated meeting pipeline (meeting rollout 
     expect(r.otherHosts).toEqual([]);
     expect(r.modelRequests).toHaveLength(1);
     expect(r.answer).toContain("temporarily unavailable");
-    expect(r.result.errorCode).toBe("meeting_feature_unavailable");
+    const message = "Meeting retrieval is temporarily unavailable because the reader service has not passed its compatibility check.";
+    expect(r.answer.split(message)).toHaveLength(2);
+    expect(r.traces[0]).toMatchObject({ terminal: "meeting_feature_unavailable" });
+    expect(r.result.errorCode).toBeUndefined();
+    expect(r.frames.join("")).not.toContain('"stream_error"');
   });
 });
 
@@ -182,7 +186,7 @@ describe("validated pipeline over the real MCP wrapper (SQLite stand-in for the 
     const frames: string[] = [];
     const config: AgentChatConfig = {
       agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "", elizaServiceSecret: "", redpillApiKey: "test", redpillBaseUrl: "https://model.test",
-      defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true, meetingContentModelAllowed: () => true, backendRevision: "rev-1",
+      defaultModel: () => "test-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true, meetingContentModelAllowed: () => true, backendRevision: "rev-1",
       streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 }, mcpMeetings: createMcpMeetingTools(() => port), mcpOwner: OWNER,
     };
     await orchestrateToolCalling({ config, model: "test-model", messages: [{ role: "user", content: "Summarize my planning meeting." }], entityId: "entity", roomId: "room", write: frame => { frames.push(frame); } });

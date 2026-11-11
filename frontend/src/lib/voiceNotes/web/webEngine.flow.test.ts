@@ -327,16 +327,18 @@ describe("boot recovery", () => {
 
     // B signs in on this browser.
     await signIn(B, 2);
+    const asA = space(A);
     const asB = space(B);
+    expect(asB.tcw.spaceId).toBe(B);
     await createVoiceNotePipeline(asB.tcw).reconcileAll(ctxOf(asB.tcw));
-    // Only A's notes are pending, so B's pass never touches B's space (not even its schema).
-    expect(asB.sqlite.query("SELECT name FROM sqlite_master WHERE name = 'connector_meeting'").all()).toEqual([]);
-    expect((await VoiceNotes.listPending()).recordings.find((r) => r.id === id)).toMatchObject({ owner: A });
-    expect((await VoiceNotes.listPending()).recordings.find((r) => r.id === id)?.ledger?.audio.state).not.toBe("saved");
+    // A is absent from B’s API view; an empty pass may set up B’s schema.
+    expect(asB.sqlite.query("SELECT source_id FROM connector_meeting").all()).toEqual([]);
+    expect((await VoiceNotes.listPending()).recordings).toEqual([]);
+    expect(asA.sqlite.query("SELECT name FROM sqlite_master").all()).toEqual([]);
+    expect(asA.values.size).toBe(0);
 
     // A signs back in: now it uploads.
     await signIn(A, 3);
-    const asA = space(A);
     await createVoiceNotePipeline(asA.tcw).reconcileAll(ctxOf(asA.tcw));
     expect((await VoiceNotes.listPending()).recordings.find((r) => r.id === id)?.ledger?.audio.state).toBe("saved");
     expect(asA.sqlite.query("SELECT source_id FROM connector_meeting").all()).toEqual([{ source_id: id }]);
@@ -355,12 +357,19 @@ describe("boot recovery", () => {
     __setVoiceNotesForTests(await recovering, { available: true });
 
     const note = (await VoiceNotes.listPending()).recordings.find((r) => r.id === id);
-    expect(note).toBeDefined();
-    expect(note!.owner).toBe(A);
+    expect(note).toBeUndefined();
+    const asA = space(A);
     const asB = space(B);
+    expect(asB.tcw.spaceId).toBe(B);
     await createVoiceNotePipeline(asB.tcw).reconcileAll(ctxOf(asB.tcw));
-    // Only A's notes are pending, so B's pass never touches B's space (not even its schema).
-    expect(asB.sqlite.query("SELECT name FROM sqlite_master WHERE name = 'connector_meeting'").all()).toEqual([]);
+    // A is absent from B’s API view; an empty pass may set up B’s schema.
+    expect(asB.sqlite.query("SELECT source_id FROM connector_meeting").all()).toEqual([]);
+    expect(asA.sqlite.query("SELECT name FROM sqlite_master").all()).toEqual([]);
+    expect(asA.values.size).toBe(0);
+    await signIn(A, 3);
+    expect((await VoiceNotes.listPending()).recordings.find((r) => r.id === id)?.owner).toBe(A);
+    await createVoiceNotePipeline(asA.tcw).reconcileAll(ctxOf(asA.tcw));
+    expect(asA.sqlite.query("SELECT source_id FROM connector_meeting").all()).toEqual([{ source_id: id }]);
   });
 
   test("a recording already in quarantine from an earlier run reaches the controller's recoveryFailed once", async () => {
@@ -468,7 +477,7 @@ describe("the controller receives boot recovery", () => {
     backAsA.detach();
   });
 
-  test("a recording made signed out is shown to anyone until the first sign-in claims it, then only to that account", async () => {
+  test("TC-2785 a quarantined recording made signed out stays unowned through sign-in", async () => {
     const id = await bootWithParked(null);
     const signedOut = await attach(null);
     await until(() => signedOut.recorder.getState().captureIssues[id] !== undefined, "the signed-out issue");
@@ -477,8 +486,8 @@ describe("the controller receives boot recovery", () => {
     await signIn(A, 1);
     const asB = await attach(space(B).tcw);
     await rig.settle();
-    expect(asB.recorder.getState().captureIssues[id]).toBeUndefined();
-    expect(Object.keys(await homeFor({}, B))).toEqual([]);
+    await until(() => asB.recorder.getState().captureIssues[id] !== undefined, "unowned issue remains unowned");
+    expect((await homeFor({}, B))[id]).toEqual({ kind: "quarantined" });
     asB.detach();
     const asA = await attach(space(A).tcw);
     await until(() => asA.recorder.getState().captureIssues[id] !== undefined, "A's claimed issue");

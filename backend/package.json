@@ -1,6 +1,6 @@
 {
   "name": "@tinychat/backend",
-  "version": "0.8.0-beta.4",
+  "version": "0.8.0-beta.5",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,12 +10,13 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@tinycloud/sdk-core": "3.11.2",
+    "@phala/aci-verifier": "0.11.0",
     "@scalar/express-api-reference": "^0.4.0",
     "@tinyboilerplate/core": "workspace:*",
     "@tinyboilerplate/server": "workspace:*",
     "@tinycloud/node-sdk": "3.11.2",
     "@tinycloud/node-sdk-wasm": "1.7.8",
+    "@tinycloud/sdk-core": "3.11.2",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "express-rate-limit": "^8.3.1",

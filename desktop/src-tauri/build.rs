@@ -61,6 +61,7 @@ fn main() {
             "recorder_discard_durable",
             "recorder_finish",
             "recorder_quit_anyway",
+            "recorder_take_start_request",
             "recorder_status",
             "recorder_list_inputs",
             "recorder_select_input",
