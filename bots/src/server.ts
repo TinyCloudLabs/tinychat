@@ -19,38 +19,48 @@ export interface AppOptions {
 }
 
 const encoder = new TextEncoder();
+/** Bytes an SSE stream may queue for a caller that is not reading; past it the stream is dropped, not buffered. */
+const MAX_QUEUED_BYTES = 1024 * 1024;
 
 function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
   let open = true;
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const send = (event: string, data: Record<string, string>) => {
-        if (!open) return;
-        try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        } catch {
-          open = false;
-        }
-      };
-      const sink: TurnSink = {
-        status: state => send("status", { state }),
-        delta: text => send("delta", { text }),
-        done: messageId => send("done", { messageId }),
-        error: (code: ErrorCode) => send("error", { code, message: ERROR_MESSAGES[code] }),
-      };
-      // The turn keeps running if the caller goes away; its reply still lands in the session.
-      void run(sink)
-        .catch(() => sink.error("bot_unavailable"))
-        .finally(() => {
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        const send = (event: string, data: Record<string, string>) => {
           if (!open) return;
-          open = false;
-          controller.close();
-        });
+          try {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+            // desiredSize goes negative by the bytes waiting beyond the high-water mark.
+            if ((controller.desiredSize ?? 0) < -MAX_QUEUED_BYTES) {
+              open = false;
+              controller.error(new Error("caller is not reading"));
+            }
+          } catch {
+            open = false;
+          }
+        };
+        const sink: TurnSink = {
+          status: state => send("status", { state }),
+          delta: text => send("delta", { text }),
+          done: messageId => send("done", { messageId }),
+          error: (code: ErrorCode) => send("error", { code, message: ERROR_MESSAGES[code] }),
+        };
+        // The turn keeps running if the caller goes away; its reply still lands in the session.
+        void run(sink)
+          .catch(() => sink.error("bot_unavailable"))
+          .finally(() => {
+            if (!open) return;
+            open = false;
+            controller.close();
+          });
+      },
+      cancel() {
+        open = false;
+      },
     },
-    cancel() {
-      open = false;
-    },
-  });
+    new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 }),
+  );
   return new Response(stream, {
     headers: { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no" },
   });

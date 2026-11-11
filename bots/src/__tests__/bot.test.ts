@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { Bot, type ErrorCode, type Sandbox, type SandboxLauncher, type TurnSink } from "../bot";
 import { botLayout } from "../layout";
 import type { Frame } from "../rpc";
@@ -43,11 +43,12 @@ function recorder() {
   };
   return { events, sink };
 }
+const OPTIONS = { idleMs: 60_000, turnTimeoutMs: 300_000, maxTurnBytes: 16 };
 
 function setup() {
   const sandbox = new FakeSandbox();
   const launcher: SandboxLauncher = { hasState: () => true, launch: async () => sandbox };
-  const bot = new Bot(botLayout("c".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, 60_000);
+  const bot = new Bot(botLayout("c".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS);
   return { bot, sandbox };
 }
 
@@ -124,6 +125,38 @@ describe("turn events", () => {
     await running;
     expect(events.at(-1)).toEqual(["error", "bot_unavailable"]);
   });
+
+  test("a reply past the per-turn byte cap aborts the agent's turn and ends with an error", async () => {
+    const { bot, sandbox } = setup();
+    const { events, sink } = recorder();
+    const running = bot.send("hi", sink);
+    await sandbox.prompted.promise;
+    sandbox.emit(delta("0123456789"));
+    sandbox.emit(delta("0123456789"));
+    sandbox.emit(delta("never sent"));
+    await running;
+    expect(events.slice(2)).toEqual([
+      ["delta", "0123456789"],
+      ["error", "bot_unavailable"],
+    ]);
+    expect(sandbox.commands.at(-1)).toEqual({ type: "abort" });
+  });
+
+  test("a turn with no prompt_result by the deadline ends with an error and its sandbox is stopped", async () => {
+    jest.useFakeTimers();
+    try {
+      const { bot, sandbox } = setup();
+      const { events, sink } = recorder();
+      const running = bot.send("hi", sink);
+      await sandbox.prompted.promise;
+      jest.advanceTimersByTime(OPTIONS.turnTimeoutMs + 1);
+      await running;
+      await sandbox.exited;
+      expect(events.at(-1)).toEqual(["error", "bot_unavailable"]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe("history", () => {
@@ -157,7 +190,7 @@ describe("history", () => {
         return new FakeSandbox();
       },
     };
-    const bot = new Bot(botLayout("d".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, 60_000);
+    const bot = new Bot(botLayout("d".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS);
     expect(await bot.list()).toEqual([]);
     expect(launched).toBe(false);
   });

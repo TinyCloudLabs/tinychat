@@ -31,19 +31,24 @@ async function attempt(argv: string[]): Promise<boolean> {
   return (await proc.exited) === 0;
 }
 
-/** Loop device nodes to create when the container's /dev lacks them (it does unless privileged). */
+/** Loop device nodes to create when the container's /dev lacks them and the container may create them (MKNOD). */
 const LOOP_NODES = 128;
 
 /**
  * Gets the container ready to run sandboxes without --privileged (see the compose file for the capability set):
- * - loop device nodes for the per-bot state filesystems (the compose grants block major 7 only);
+ * - a private cgroup namespace (`cgroup: private`): /proc/self/cgroup must read "0::/", so the cgroup tree the
+ *   supervisor writes is the container's own and never the CVM's;
+ * - loop device nodes for the per-bot state filesystems: the compose passes them in; with MKNOD they are created;
  * - a writable cgroup2 mount, which Docker mounts read-only outside privileged mode;
  * - cgroup delegation: cgroup v2 only allows controllers below a cgroup with no member processes, so the
- *   supervisor moves itself into a leaf, then enables cpu, memory and pids for the sandboxes' parent.
+ *   supervisor moves itself into a leaf, enables cpu, memory and pids for the sandboxes' parent `/bots`, and caps
+ *   that parent (all sandboxes together) at `totalMemoryMb` and `totalPids`.
  * Fails closed: without limits, no sandboxes.
  */
-async function prepareHost(): Promise<void> {
-  await run(["sh", "-c", `i=0; while [ $i -lt ${LOOP_NODES} ]; do [ -e /dev/loop$i ] || mknod -m 0660 /dev/loop$i b 7 $i; i=$((i+1)); done`]);
+async function prepareHost(totalMemoryMb: number, totalPids: number): Promise<void> {
+  const own = readFileSync("/proc/self/cgroup", "utf8").trim();
+  if (own !== "0::/") throw new Error(`supervisor needs a private cgroup2 namespace (cgroup: private); /proc/self/cgroup is ${JSON.stringify(own)}`);
+  await run(["sh", "-c", `i=0; while [ $i -lt ${LOOP_NODES} ]; do [ -e /dev/loop$i ] || mknod -m 0660 /dev/loop$i b 7 $i 2>/dev/null || true; i=$((i+1)); done`]);
   try {
     accessSync(CGROUP_ROOT, constants.W_OK);
   } catch {
@@ -63,8 +68,12 @@ async function prepareHost(): Promise<void> {
   }
   const enable = CGROUP_CONTROLLERS.map(controller => `+${controller}`).join(" ");
   writeFileSync(join(CGROUP_ROOT, "cgroup.subtree_control"), enable);
-  mkdirSync(join(CGROUP_ROOT, "bots"), { recursive: true });
-  writeFileSync(join(CGROUP_ROOT, "bots", "cgroup.subtree_control"), enable);
+  const bots = join(CGROUP_ROOT, "bots");
+  mkdirSync(bots, { recursive: true });
+  writeFileSync(join(bots, "cgroup.subtree_control"), enable);
+  writeFileSync(join(bots, "memory.max"), String(totalMemoryMb * 1024 * 1024));
+  if (existsSync(join(bots, "memory.swap.max"))) writeFileSync(join(bots, "memory.swap.max"), "0");
+  writeFileSync(join(bots, "pids.max"), String(totalPids));
 }
 
 /** OMP's provider config inside every sandbox: the model behind the bot's own egress socket. */
@@ -98,7 +107,7 @@ export class RunscHost implements SandboxLauncher {
   }
 
   async init(): Promise<void> {
-    await prepareHost();
+    await prepareHost(this.#cfg.totalMemoryMb, this.#cfg.totalPids);
     const agentDir = join(this.#cfg.rootfs, "root", ".omp", "agent");
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(join(agentDir, "models.yml"), modelsYml(this.#cfg.model));

@@ -115,7 +115,16 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
         const { done, value } = await reader.read();
         if (controller.signal.aborted) throw new Error("aborted");
         if (done) break;
-        res.write(value);
+        if (!res.write(value)) {
+          // Backpressure: read the next upstream chunk only once the client has taken this one (or the turn ended).
+          let resolve!: () => void;
+          const drained = new Promise<void>(done => { resolve = done; }); // backend lib predates Promise.withResolvers
+          res.once("drain", resolve);
+          controller.signal.addEventListener("abort", resolve);
+          await drained;
+          res.off("drain", resolve);
+          controller.signal.removeEventListener("abort", resolve);
+        }
       }
     } catch {
       if ((timedOut || !controller.signal.aborted) && !res.writableEnded) {

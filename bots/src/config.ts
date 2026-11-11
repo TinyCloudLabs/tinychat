@@ -1,5 +1,6 @@
-// Environment for the two bots processes: the supervisor (privileged, runs the sandboxes, answers the backend)
-// and the egress gateway (unprivileged, the only holder of the model key). Neither reads the other's secrets.
+// Environment for the two bots processes: the supervisor (not privileged, but holds what runsc needs; runs the
+// sandboxes, answers the backend) and the egress gateway (unprivileged, the only holder of the model key).
+// Neither reads the other's secrets.
 
 type Env = Record<string, string | undefined>;
 
@@ -51,6 +52,13 @@ export interface SupervisorConfig {
   rootfs: string;
   runscRoot: string;
   limits: SandboxLimits;
+  /** All running sandboxes together: the parent cgroup's memory.max and pids.max. */
+  totalMemoryMb: number;
+  totalPids: number;
+  /** A turn with no prompt_result by then is ended and its sandbox killed. */
+  turnTimeoutMs: number;
+  /** Assistant text bytes streamed per turn before it is cut off. */
+  maxTurnBytes: number;
 }
 
 export function supervisorConfig(env: Env): SupervisorConfig {
@@ -71,6 +79,8 @@ export function supervisorConfig(env: Env): SupervisorConfig {
   if (limits.overlayMb + limits.tmpMb + 512 > limits.memoryMb) {
     throw new Error("BOTS_SANDBOX_MEMORY_MB must exceed BOTS_SANDBOX_OVERLAY_MB + BOTS_SANDBOX_TMP_MB by at least 512");
   }
+  const totalMemoryMb = int(env, "BOTS_TOTAL_MEMORY_MB", 6144, 256);
+  if (totalMemoryMb < limits.memoryMb) throw new Error("BOTS_TOTAL_MEMORY_MB must be at least BOTS_SANDBOX_MEMORY_MB");
   return {
     port: int(env, "PORT", 8080),
     serviceSecret,
@@ -83,6 +93,10 @@ export function supervisorConfig(env: Env): SupervisorConfig {
     rootfs: env.BOTS_ROOTFS ?? "/bot-rootfs",
     runscRoot: env.BOTS_RUNSC_ROOT ?? "/run/runsc",
     limits,
+    totalMemoryMb,
+    totalPids: int(env, "BOTS_TOTAL_PIDS", 2048, 16),
+    turnTimeoutMs: int(env, "BOTS_TURN_TIMEOUT_MS", 5 * 60_000, 1000),
+    maxTurnBytes: int(env, "BOTS_MAX_TURN_BYTES", 256 * 1024, 1024),
   };
 }
 
@@ -98,6 +112,10 @@ export interface GatewayConfig {
   maxResponseBytes: number;
   connectTimeoutMs: number;
   totalTimeoutMs: number;
+  /** Deadline for a request body to arrive once the bot holds its slot. */
+  bodyTimeoutMs: number;
+  /** Where the daily budget counters persist across restarts. */
+  budgetFile: string;
 }
 
 /**
@@ -130,5 +148,7 @@ export function gatewayConfig(env: Env): GatewayConfig {
     maxResponseBytes: int(env, "BOTS_MAX_RESPONSE_BYTES", 8 * 1024 * 1024, 1024),
     connectTimeoutMs: int(env, "BOTS_UPSTREAM_CONNECT_TIMEOUT_MS", 30_000, 100),
     totalTimeoutMs: int(env, "BOTS_UPSTREAM_TOTAL_TIMEOUT_MS", 10 * 60_000, 100),
+    bodyTimeoutMs: int(env, "BOTS_BODY_TIMEOUT_MS", 30_000, 100),
+    budgetFile: env.BOTS_BUDGET_FILE ?? "/var/lib/bots-gateway/budget.json",
   };
 }

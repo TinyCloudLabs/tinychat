@@ -15,6 +15,10 @@ except the ingress:
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
 
+**The supervisor is effectively root of the CVM.** It is not `privileged`, but it holds `SYS_ADMIN` with seccomp and
+AppArmor unconfined, which is enough to take over the CVM. gVisor is therefore the only boundary between a bot
+and the CVM (including the gateway's key and the ingress's certificate): a gVisor escape is a CVM compromise.
+
 ## Internal API
 
 All requests except `/healthz` need `Authorization: Bearer <BOTS_SERVICE_SECRET>` (constant-time compare) and
@@ -24,7 +28,10 @@ All requests except `/healthz` need `Authorization: Bearer <BOTS_SERVICE_SECRET>
 - `POST /v1/bots/main/messages` `{ "text": "..." }` (1 to 8000 characters) streams `text/event-stream`:
   `status` (`starting` on a cold start, then `working`, repeated every 15 s while waiting), `delta` (assistant
   text), then exactly one `done` `{ messageId }` or `error` `{ code, message }`. One message at a time per bot; a
-  second send gets `busy`. If the caller disconnects, the turn still finishes and lands in the history.
+  second send gets `busy`. If the caller disconnects, the turn still finishes and lands in the history. A reply
+  longer than `BOTS_MAX_TURN_BYTES` is cut off (the agent's turn is aborted, the stream ends with
+  `bot_unavailable`); a turn with no result within `BOTS_TURN_TIMEOUT_MS` ends the same way and its sandbox is
+  killed. A caller that stops reading gets its stream dropped once 1 MiB is queued, instead of buffering more.
 - `GET /v1/bots/main/messages` returns `{ messages: [{ id, role, text, at }] }`, newest last, at most 50. A bot
   that has never run answers `[]` without starting a sandbox; otherwise this starts the sandbox if it is stopped.
   A reply's `id` equals the `messageId` of its `done` event.
@@ -60,19 +67,37 @@ Each sandbox:
 RAM budget per running bot is `BOTS_SANDBOX_MEMORY_MB` (default 1536 MiB). It covers the processes and both in-memory
 layers: the root layer and `/tmp` are held in sandbox memory and charged to its cgroup, so the supervisor refuses to
 start unless memory exceeds overlay + tmp by at least 512 MiB. A bot that goes over is killed alone and reports
-`bot_unavailable`. Size the CVM as (running bots) × `BOTS_SANDBOX_MEMORY_MB` plus about 1 GiB for the containers.
+`bot_unavailable`.
+
+All sandboxes together sit under one parent cgroup (`/bots`) capped at `BOTS_TOTAL_MEMORY_MB` (default 6144) and
+`BOTS_TOTAL_PIDS` (default 2048), and the whole supervisor container at `mem_limit: 7g` in the compose, so many bots
+cannot starve the gateway or the ingress. Each running bot also holds one of the 8 loop devices the compose passes
+in, so at most 8 bots run at once. Size the CVM as the supervisor's `mem_limit` plus about 1 GiB.
+
+The supervisor runs in its own cgroup namespace (`cgroup: private`) and refuses to start unless `/proc/self/cgroup`
+reads `0::/`, so the cgroup tree it writes is the container's own.
 
 The gateway, per bot socket:
 
 - accepts only that bot's current token (constant-time), and only `POST /v1/chat/completions` and `GET /v1/models`;
-- rebuilds the chat body from an allowlist (`model`, `messages`, `stream`, `tools`, `tool_choice`, `temperature`,
-  `stop`, `max_tokens` capped by `BOTS_MAX_TOKENS`); the model must be in `BOTS_MODELS`; it sets RedPill's ACI
-  provider flag, turns provider fallbacks off and always asks for usage;
+- holds one request slot per bot, taken before the body is read: a second request while one runs, or a bot over
+  budget, is refused without reading its body, so a bot cannot pile up bodies to exhaust the gateway's memory;
+- reads the body against `BOTS_BODY_TIMEOUT_MS` (default 30 s) and a 4 MiB cap; before a request is accepted,
+  Bun's idle timeout (10 s without a byte) also cuts slow headers and bodies;
+- rebuilds the chat body from an allowlist: `model` (must be in `BOTS_MODELS`), `messages` (each rebuilt to `role`
+  plus string or text-part `content`, `tool_calls` and `tool_call_id`; images, cache hints and everything else are
+  dropped), `stream`, `tools` (rebuilt to `type: "function"` with `name`, `description`, `parameters`),
+  `tool_choice`, `temperature`, `stop`, and `max_tokens`; it sets RedPill's ACI provider flag, turns provider
+  fallbacks off and always asks for usage;
 - sends to the fixed origin `https://tee.redpill.ai` with the model key, refuses redirects, and forwards only
   `content-type` back;
-- enforces a 4 MiB request body, connect and total timeouts, an 8 MiB response cap, one request at a time per bot,
-  a daily token budget per bot and a global daily cap, counted from reported usage (a stream cut short without
-  usage is charged a conservative estimate);
+- enforces connect and total timeouts, an 8 MiB response cap, a daily token budget per bot and a global daily cap,
+  counted from reported usage (a stream cut short without usage is charged a conservative estimate). A request
+  cannot overshoot: a prompt whose estimate (bytes / 3) does not fit what is left is refused, and `max_tokens` is
+  capped by `BOTS_MAX_TOKENS` and by what is left;
+- keeps the budget counters on its own volume (`bot-budget`, `/var/lib/bots-gateway/budget.json`), so a restart,
+  including one a bot provokes, does not reset them. A budget file that exists but cannot be read stops the gateway
+  from starting: it fails closed rather than starting from zero;
 - filters `/v1/models` to the allowlist.
 
 OMP also probes `GET /models` and `GET /props` without a token at startup; the gateway refuses them and logs it.
@@ -90,6 +115,9 @@ Supervisor (`bots-supervisor`):
 | `BOTS_SANDBOX_MEMORY_MB` / `_CPUS` / `_PIDS` | `1536` / `1` / `256` | per-sandbox cgroup limits |
 | `BOTS_SANDBOX_OVERLAY_MB` / `_TMP_MB` | `512` / `256` | root layer and `/tmp` caps (inside the memory limit) |
 | `BOTS_STATE_MB` | `256` | state image size, fixed when a bot first runs |
+| `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes together |
+| `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
+| `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |
 | `PORT` | `8080` | |
 
 Gateway (`bots-gateway`):
@@ -102,6 +130,8 @@ Gateway (`bots-gateway`):
 | `BOTS_BOT_DAILY_TOKENS` / `BOTS_GLOBAL_DAILY_TOKENS` | `2000000` / `20000000` | UTC day |
 | `BOTS_MAX_BODY_BYTES` / `BOTS_MAX_RESPONSE_BYTES` | 4 MiB / 8 MiB | |
 | `BOTS_UPSTREAM_CONNECT_TIMEOUT_MS` / `BOTS_UPSTREAM_TOTAL_TIMEOUT_MS` | `30000` / `600000` | |
+| `BOTS_BODY_TIMEOUT_MS` | `30000` | request body deadline |
+| `BOTS_BUDGET_FILE` | `/var/lib/bots-gateway/budget.json` | on the `bot-budget` volume |
 
 `BOTS_TEST_UPSTREAM_URL` exists only for the local mock smoke: it must be a loopback `http://` URL, and the compose
 file never passes it.
@@ -116,13 +146,16 @@ file never passes it.
 
 ## Why the supervisor has these capabilities
 
-`runsc` needs `SYS_ADMIN`, `SYS_CHROOT`, `SETUID`, `SETGID`, `SETFCAP`, `DAC_OVERRIDE`, `DAC_READ_SEARCH`, `FOWNER`,
-`FSETID`, `CHOWN`, `KILL`, `MKNOD`, with seccomp and AppArmor unconfined, to create a sandbox; this is the smallest
-set that passed the local smoke (without `SETFCAP` the gofer fails with `fork/exec /proc/self/exe: operation not
-permitted`). `/dev/loop-control` and block major 7 are for the state images. The supervisor remounts its cgroup2
-namespace read-write (Docker mounts it read-only outside privileged mode) and moves itself into a leaf cgroup so
-each sandbox can have its own limits; it refuses to start if that fails. If a CVM's Docker refuses these settings,
-`privileged: true` in place of them also works, at the cost of the container getting every device and capability.
+`runsc` needs `SYS_ADMIN`, `SYS_CHROOT`, `SETUID`, `SETGID`, `SETFCAP`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `CHOWN`,
+`KILL`, with seccomp and AppArmor unconfined, to create a sandbox; this is the smallest set that passed the local
+smoke (without `SETFCAP` the gofer fails with `fork/exec /proc/self/exe: operation not permitted`;
+`DAC_READ_SEARCH` and `MKNOD` are not needed). The loop devices for the state images are passed in as devices
+(`/dev/loop-control`, `/dev/loop0`–`7`), so the container needs no `MKNOD`; to run more than 8 bots at once, add
+`MKNOD` and `device_cgroup_rules: ["b 7:* rmw"]` and the supervisor creates further nodes itself. The supervisor
+remounts its cgroup2 namespace read-write (Docker mounts it read-only outside privileged mode) and moves itself
+into a leaf cgroup so each sandbox can have its own limits; it refuses to start if that fails. If a CVM's Docker
+refuses these settings, `privileged: true` in place of them also works; that changes little in practice, since the
+supervisor is already effectively CVM root (see above).
 
 ## Develop
 
@@ -136,9 +169,11 @@ DOCKER="sudo docker" PORT=28808 bun run smoke   # MOCK-model smoke, see below
 
 `test/smoke.sh` builds the image and runs the real supervisor and gateway with gVisor, but with
 `test/mock-upstream.ts` as the model (it always answers "pong"); the image never contains the mock. It shows the
-SSE events for two owners, the busy rule, history, the idle stop and restart, and a containment checklist (two
-sandboxes, egress and state isolation, caps, no network, no model key in a sandbox or the supervisor). Report its
-result as a mock run. It removes everything it creates.
+SSE events for two owners, the busy rule, history, a gateway restart (budgets kept, the bot registered again), the
+idle stop and restart, and a containment checklist (two sandboxes, aggregate caps, egress and state isolation,
+caps, no network, no model key in a sandbox or the supervisor). It exits 1 if any check fails. Report its result as
+a mock run. It removes everything it creates. CI (`.github/workflows/bots.yml`) runs the unit tests and the
+typecheck on every PR touching `bots/`; the smoke needs a Docker host and runs by hand.
 
 ## Deploying (no workflow yet)
 
@@ -158,8 +193,7 @@ A deploy workflow, modelled on `.github/workflows/deploy-backend-phala.yml`, nee
 
 ## Limits of this slice
 
-- Gateway budgets live in memory and reset when the gateway restarts; the provider-side budget on the dedicated key
-  is the backstop.
+- Gateway budgets persist across restarts, but the provider-side budget on the dedicated key stays the backstop.
 - One upstream request at a time per bot: parallel model calls from one bot (for example subagents) get 429 and
   OMP retries them.
 - The owner header is trusted from the backend (service secret only). Signed owner assertions and attestation checks

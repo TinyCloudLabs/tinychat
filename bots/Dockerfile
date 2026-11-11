@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # TinyCloud bots service (TC-2808). One image, two containers (see docker-compose.phala.yml):
-#   supervisor  privileged; internal API + gVisor sandboxes   CMD below
-#   gateway     unprivileged; egress + the model key          bun src/gateway-main.ts
+#   supervisor  not privileged, but holds the capabilities runsc needs (see the compose); internal API + sandboxes
+#   gateway     unprivileged user, no capabilities; egress + the model key            bun src/gateway-main.ts
 # Build from this directory: docker build -t tinychat-bots bots/
 # The image holds no keys.
 ARG BUN_IMAGE=oven/bun:1.4.4-debian@sha256:93d5032fe06d163427822dc1598f420363759bb18155c9cc90eb1be05a64a19e
@@ -31,6 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && ln -s /opt/gvisor/runsc /usr/local/bin/runsc && runsc --version \
  && apt-get purge -y curl bzip2 && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 COPY --from=bot / /bot-rootfs
+# The gateway's budget volume is created from this directory, so it starts owned by the gateway's user.
+RUN mkdir -p /var/lib/bots-gateway && chown 65532:65532 /var/lib/bots-gateway
 WORKDIR /bots
 COPY package.json tsconfig.json ./
 COPY src ./src

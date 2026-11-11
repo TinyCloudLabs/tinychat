@@ -7,13 +7,14 @@ import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { gatewayConfig } from "./config";
-import { Gateway } from "./gateway";
+import { fileBudgetStore, Gateway } from "./gateway";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
 
 const cfg = gatewayConfig(process.env);
-const gateway = new Gateway(cfg);
+// Budgets persist on the gateway's own volume; an unreadable budget file stops the start (fails closed).
+const gateway = new Gateway(cfg, { store: fileBudgetStore(cfg.budgetFile) });
 const listeners = new Map<string, Server<undefined>>();
 
 // Registrations do not survive a restart; the supervisor registers again before every message. Stale sockets go,
@@ -32,9 +33,10 @@ function listen(botId: string): void {
     unix: socketPath,
     maxRequestBodySize: cfg.maxBodyBytes,
     fetch(req, server) {
-      // Streams can sit quiet while the model thinks; the upstream total deadline bounds them instead.
-      server.timeout(req, 0);
-      return gateway.handle(botId, req);
+      // Until the request is accepted and its body read, Bun's default idle timeout (10 s without a byte) cuts slow
+      // headers and bodies, and the gateway's own body deadline bounds the total. Only then can the response sit
+      // quiet while the model thinks; the upstream total deadline bounds it instead.
+      return gateway.handle(botId, req, () => server.timeout(req, 0));
     },
   });
   // The sandbox's file proxy connects as root; the directory, not the socket mode, keeps other bots out.

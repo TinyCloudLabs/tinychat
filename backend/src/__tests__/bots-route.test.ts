@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { request } from "node:http";
 import express from "express";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 import { createAuthMiddleware } from "../middleware/auth.js";
@@ -111,6 +112,36 @@ describe("bots routes", () => {
       expect(body).toContain('"code":"bot_unavailable"');
     } finally { await run.close(); }
   });
+
+  it("reads upstream no faster than a slow client takes the stream", async () => {
+    const chunk = new TextEncoder().encode(`event: delta\ndata: ${JSON.stringify({ text: "x".repeat(1 << 16) })}\n\n`);
+    // Finite flood (64 MB): without backpressure the proxy drains all of it while the client is paused.
+    const maxChunks = 1024;
+    let pulls = 0;
+    const run = await setup(() => new Response(new ReadableStream({
+      // Each pull yields a macrotask, so a proxy that ignores backpressure cannot starve the test's timers.
+      async pull(c) { await new Promise(resolve => setImmediate(resolve)); pulls += 1; if (pulls > maxChunks) c.close(); else c.enqueue(chunk); },
+    }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } }));
+    const client = { current: undefined as ReturnType<typeof request> | undefined };
+    try {
+      const headers = await run.headersFor(enabled);
+      const body = JSON.stringify({ text: "ping" });
+      const { promise: opened, resolve: open } = Promise.withResolvers<import("node:http").IncomingMessage>();
+      client.current = request(`${run.base}/main/messages`, { method: "POST", headers: { ...headers, "content-length": Buffer.byteLength(body) } }, open);
+      client.current.end(body);
+      const response = await opened;
+      response.pause();
+      await Bun.sleep(300);
+      const stalledAt = pulls;
+      await Bun.sleep(200);
+      // A paused client stops the proxy: it neither keeps pulling nor buffers the flood.
+      expect(pulls).toBe(stalledAt);
+      expect(pulls).toBeLessThan(256);
+      response.resume();
+      await Bun.sleep(200);
+      expect(pulls).toBeGreaterThan(stalledAt);
+    } finally { client.current?.destroy(); await run.close(); }
+  }, 10_000);
 
   it("aborts the upstream fetch when the client disconnects", async () => {
     const { promise: upstreamAborted, resolve: aborted } = Promise.withResolvers<void>();

@@ -9,7 +9,7 @@ import { createApp } from "./server";
 const cfg = supervisorConfig(process.env);
 const host = new RunscHost(cfg);
 await host.init();
-const bots = new BotManager(host, cfg, cfg.idleMs);
+const bots = new BotManager(host, cfg, { idleMs: cfg.idleMs, turnTimeoutMs: cfg.turnTimeoutMs, maxTurnBytes: cfg.maxTurnBytes });
 
 Bun.serve({
   port: cfg.port,

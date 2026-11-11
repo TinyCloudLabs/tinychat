@@ -53,6 +53,15 @@ export interface SandboxLauncher {
 
 /** Repeated while waiting, so idle proxies keep the stream open through slow starts and long turns. */
 export const HEARTBEAT_MS = 15_000;
+
+export interface BotOptions {
+  /** Idle time after session_settled before the sandbox stops. */
+  idleMs: number;
+  /** A turn with no prompt_result by then ends with bot_unavailable and its sandbox is killed. */
+  turnTimeoutMs: number;
+  /** Assistant text bytes per turn; past it the agent's turn is aborted and the stream ends with an error. */
+  maxTurnBytes: number;
+}
 const LIST_LIMIT = 50;
 const PAGE_LIMIT = 256;
 const MAX_PAGES = 64;
@@ -128,7 +137,7 @@ async function readMessages(sandbox: Sandbox): Promise<unknown[]> {
 export class Bot {
   readonly layout: BotLayout;
   readonly #launcher: SandboxLauncher;
-  readonly #idleMs: number;
+  readonly #options: BotOptions;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<void> | undefined;
@@ -137,10 +146,10 @@ export class Bot {
   #settled = true;
   #idle: Timer | undefined;
 
-  constructor(layout: BotLayout, launcher: SandboxLauncher, idleMs: number) {
+  constructor(layout: BotLayout, launcher: SandboxLauncher, options: BotOptions) {
     this.layout = layout;
     this.#launcher = launcher;
-    this.#idleMs = idleMs;
+    this.#options = options;
   }
 
   /** Runs one message through Main. Reports through `sink` and always ends with exactly one done or error. */
@@ -203,19 +212,36 @@ export class Bot {
     let wroteText = false;
     let separate = false;
     let finished = false;
+    let bytes = 0;
     const finish = (outcome: { messageId: string } | { code: ErrorCode }) => {
       if (finished) return;
       finished = true;
+      clearTimeout(deadline);
       off();
       if ("messageId" in outcome) sink.done(outcome.messageId);
       else sink.error(outcome.code);
       resolve();
     };
+    // A turn that never reports back (a wedged agent, or one that ignores its tools' limits) loses its sandbox.
+    const deadline = setTimeout(() => {
+      if (finished) return;
+      log("turn_timeout", this.layout.botId);
+      finish({ code: "bot_unavailable" });
+      void this.#stop(sandbox);
+    }, this.#options.turnTimeoutMs);
     const off = sandbox.onFrame(frame => {
       if (frame.type === "message_update") {
         const event = frame.assistantMessageEvent;
         if (!isRecord(frame.message) || frame.message.role !== "assistant") return;
         if (!isRecord(event) || event.type !== "text_delta" || typeof event.delta !== "string" || !event.delta) return;
+        bytes += Buffer.byteLength(event.delta);
+        if (bytes > this.#options.maxTurnBytes) {
+          // Too much text for one reply: stop the agent's turn and end the stream.
+          log("turn_too_long", this.layout.botId);
+          void sandbox.request({ type: "abort" }).catch(() => {});
+          finish({ code: "bot_unavailable" });
+          return;
+        }
         if (separate) sink.delta("\n\n");
         separate = false;
         wroteText = true;
@@ -296,7 +322,7 @@ export class Bot {
     if (!sandbox || this.#busy || this.#listing > 0 || !this.#settled) return;
     this.#idle = setTimeout(() => {
       if (this.#sandbox === sandbox && !this.#busy && this.#listing === 0) void this.#stop(sandbox);
-    }, this.#idleMs);
+    }, this.#options.idleMs);
   }
 }
 
@@ -304,19 +330,19 @@ export class BotManager {
   readonly #bots = new Map<string, Bot>();
   readonly #launcher: SandboxLauncher;
   readonly #roots: LayoutRoots;
-  readonly #idleMs: number;
+  readonly #options: BotOptions;
 
-  constructor(launcher: SandboxLauncher, roots: LayoutRoots, idleMs: number) {
+  constructor(launcher: SandboxLauncher, roots: LayoutRoots, options: BotOptions) {
     this.#launcher = launcher;
     this.#roots = roots;
-    this.#idleMs = idleMs;
+    this.#options = options;
   }
 
   forOwner(ownerDid: string): Bot {
     const botId = botIdFor(ownerDid);
     let bot = this.#bots.get(botId);
     if (!bot) {
-      bot = new Bot(botLayout(botId, this.#roots), this.#launcher, this.#idleMs);
+      bot = new Bot(botLayout(botId, this.#roots), this.#launcher, this.#options);
       this.#bots.set(botId, bot);
     }
     return bot;
