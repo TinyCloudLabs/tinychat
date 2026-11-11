@@ -124,6 +124,8 @@ export interface AdapterDeps {
   selection: ModelSelectionCoordinator;
   agentEnabledRef: React.MutableRefObject<boolean>;
   privateAccessRef: React.MutableRefObject<PrivateAgentAccess>;
+  /** Wait until the account's initial private-agent access probe has settled. */
+  waitForInitialProbe?: (signal: AbortSignal) => Promise<void>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
   /**
@@ -244,6 +246,8 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // lands at the least-context-rotted position) from the conversation
       // messages (which compaction may fold into a summary checkpoint).
       // Rebound only when this turn's own delegation error downgrades access.
+      if (deps.waitForInitialProbe) await deps.waitForInitialProbe(abortSignal);
+      if (abortSignal.aborted) throw new Error("Send cancelled.");
       let privateAccess = deps.privateAccessRef.current;
       const systemContent = privateAccess.active ? context?.system : undefined;
       const memoryBlock: ChatMessage | null =
