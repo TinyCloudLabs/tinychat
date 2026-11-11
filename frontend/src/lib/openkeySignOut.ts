@@ -1,8 +1,8 @@
-import type { SignOutAcknowledgement } from "@openkey/sdk";
+import type { OpenKey, SignOutAcknowledgement } from "@openkey/sdk";
 import { logNativeOpenKeyError } from "./openkeyNative";
 
 export interface OpenKeySignOutClient {
-  signOut(): Promise<SignOutAcknowledgement>;
+  signOut(options?: Parameters<OpenKey["signOut"]>[0] & { onProgress?: (progress: "ready" | "confirmed") => void }): Promise<SignOutAcknowledgement>;
 }
 
 export type OpenKeySignOutOutcome =
@@ -28,12 +28,31 @@ export async function signOutOpenKeySession(
   timeoutMs = OPENKEY_SIGN_OUT_TIMEOUT_MS,
 ): Promise<OpenKeySignOutOutcome> {
   let timeout!: ReturnType<typeof setTimeout>;
+  let finished = false;
+  let confirmed = false;
+  let ready = false;
+  let onProgress!: (progress: "ready" | "confirmed") => void;
   const deadline = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error("OpenKey sign-out timed out")), timeoutMs);
+    const startDeadline = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => reject(new Error("OpenKey sign-out timed out")), timeoutMs);
+    };
+    // Bound opening and revocation, while the SDK owns the dialog deadline.
+    onProgress = (progress) => {
+      if (finished) return;
+      if (progress === "ready" && !ready && !confirmed) {
+        ready = true;
+        clearTimeout(timeout);
+      } else if (progress === "confirmed" && ready && !confirmed) {
+        confirmed = true;
+        startDeadline();
+      }
+    };
+    startDeadline();
   });
   try {
     const acknowledgement = await Promise.race([
-      Promise.resolve().then(() => (current ?? createFallback()).signOut()),
+      Promise.resolve().then(() => (current ?? createFallback()).signOut({ onProgress })),
       deadline,
     ]);
     return acknowledgement.revoked
@@ -50,6 +69,7 @@ export async function signOutOpenKeySession(
     logNativeOpenKeyError("OpenKey sign-out", error);
     return { status: "unverified" };
   } finally {
+    finished = true;
     clearTimeout(timeout);
   }
 }
