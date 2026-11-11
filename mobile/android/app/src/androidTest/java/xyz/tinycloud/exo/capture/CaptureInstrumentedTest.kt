@@ -21,6 +21,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.Assume.assumeTrue
 import org.junit.runner.RunWith
+import xyz.tinycloud.exo.capture.core.LaunchSource
 import xyz.tinycloud.exo.capture.core.MAX_DURATION_MS
 import xyz.tinycloud.exo.capture.core.RecordingLibrary
 import xyz.tinycloud.exo.capture.core.defaultOptions
@@ -640,5 +641,13 @@ class CaptureInstrumentedTest {
             }
             activity.finish()
         }
+    }
+
+    @Test fun recordTileLaunchesRecordWithTileSource() {
+        val intent = RecordTileService.launchIntent(context)
+        assertEquals(CaptureService.RECORD, intent.action)
+        assertEquals(MainActivity::class.java.name, intent.component?.className)
+        assertEquals("tile", intent.getStringExtra(LaunchSource.EXTRA))
+        assertEquals("tile", LaunchSource.record(intent.getStringExtra(LaunchSource.EXTRA)))
     }
 }

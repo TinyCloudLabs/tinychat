@@ -57,28 +57,13 @@ describe("TinyChat manifest and backend policy", () => {
   it("declares each connector secret with delete, so disconnect needs no escalation", () => {
     const manifest = runtimeManifest();
 
-    expect(manifest.secrets).toEqual({
-      FIREFLIES_API_KEY: {
-        actions: ["read", "write", "delete"],
-        description:
-          "Store your Fireflies API key, encrypted, in your secrets space.",
-      },
-      GRANOLA_API_KEY: {
-        actions: ["read", "write", "delete"],
-        description:
-          "Store your Granola API key, encrypted, in your secrets space.",
-      },
-      ASSEMBLYAI_API_KEY: {
-        actions: ["read", "write", "delete"],
-        description:
-          "Store your AssemblyAI API key, encrypted, in your secrets space.",
-      },
-      REFRESH_TOKEN: {
-        scope: "google-meet",
-        actions: ["read", "write", "delete"],
-        description:
-          "Store your Google sign-in for Google Meet, encrypted, in your secrets space.",
-      },
+    const grants = Object.fromEntries(
+      Object.entries(manifest.secrets ?? {}).map(([name, { actions, scope }]) => [name, { actions, scope }]),
+    );
+    expect(grants).toEqual({
+      FIREFLIES_API_KEY: { actions: ["read", "write", "delete"], scope: undefined },
+      GRANOLA_API_KEY: { actions: ["read", "write", "delete"], scope: undefined },
+      REFRESH_TOKEN: { scope: "google-meet", actions: ["read", "write", "delete"] },
     });
   });
 
@@ -87,7 +72,7 @@ describe("TinyChat manifest and backend policy", () => {
 
     expect(secrets.FIREFLIES_API_KEY?.scope).toBeUndefined();
     expect(secrets.GRANOLA_API_KEY?.scope).toBeUndefined();
-    expect(secrets.ASSEMBLYAI_API_KEY?.scope).toBeUndefined();
+    expect(secrets.ASSEMBLYAI_API_KEY).toBeUndefined();
     expect(secrets.REFRESH_TOKEN?.scope).toBe("google-meet");
   });
 

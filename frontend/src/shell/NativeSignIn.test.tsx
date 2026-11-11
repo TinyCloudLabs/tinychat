@@ -44,16 +44,16 @@ async function mount(props: Partial<Parameters<typeof NativeSignIn>[0]> = {}) {
 }
 
 describe("NativeSignIn content", () => {
-  test("Exo's icon, the heading, the subcopy, an email field, Continue, Google, a passkey and the fine print", () => {
+  test("TinyCloud Home's icon, the heading, the subcopy, an email field, Continue, Google, a passkey and the fine print", () => {
     const html = markup();
     expect(html).toContain('src="/icons/pwa-192.png"');
-    expect(html).toMatch(/<h1[^>]*>Sign in to Exo<\/h1>/);
+    expect(html).toMatch(/<h1[^>]*>Sign in to TinyCloud Home<\/h1>/);
     expect(html).toContain(NATIVE_SIGN_IN_SUBCOPY);
     expect(html).toContain("Continue</button>");
     expect(html).toContain("Continue with Google");
     expect(html).toContain("Use a passkey");
-    expect(NATIVE_SIGN_IN_FINE_PRINT).toBe("You'll finish on openkey.so. Exo never sees your code or passkey.");
-    expect(html).toContain("You&#x27;ll finish on openkey.so. Exo never sees your code or passkey.");
+    expect(NATIVE_SIGN_IN_FINE_PRINT).toBe("You'll finish on openkey.so. TinyCloud Home never sees your code or passkey.");
+    expect(html).toContain("You&#x27;ll finish on openkey.so. TinyCloud Home never sees your code or passkey.");
   });
 
   test("the field is an email field for a phone keyboard", () => {
@@ -146,8 +146,8 @@ describe("NativeSignIn busy and error states", () => {
   });
 
   test("a failed sign-in shows its message as an alert and offers the buttons again", async () => {
-    const view = await mount({ state: "recoverableError", error: "Couldn't sign in. Please try again." });
-    expect(view.host.querySelector('[role="alert"]')?.textContent).toBe("Couldn't sign in. Please try again.");
+    const view = await mount({ state: "recoverableError", error: "Couldn't sign in. Try again." });
+    expect(view.host.querySelector('[role="alert"]')?.textContent).toBe("Couldn't sign in. Try again.");
     expect(view.button("Continue with Google").disabled).toBe(false);
     await view.click(view.button("Use a passkey"));
     expect(view.calls).toEqual([{ loginMethod: "passkey" }]);
@@ -170,7 +170,7 @@ describe("NativeSignIn busy and error states", () => {
   });
 
   test("an ordinary error shows no link", () => {
-    expect(markup({ state: "recoverableError", error: "Couldn't sign in. Please try again." })).not.toContain("<a ");
+    expect(markup({ state: "recoverableError", error: "Couldn't sign in. Try again." })).not.toContain("<a ");
   });
 });
 

@@ -933,7 +933,7 @@ describe("upload runner: a reload while the file is sent on to AssemblyAI", () =
       upload: async () => "aau_1",
       createTranscript: async () => {
         creates++;
-        if (creates === 1) throw new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
+        if (creates === 1) throw new AssemblyAiError("failed", "TinyCloud Home's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
         return { id: "h2", status: "queued" };
       },
       getTranscript: async () => ({ id: "h2", status: "completed", utterances: [{ speaker: "A", text: "Hi.", start: 0, end: 900 }] }),

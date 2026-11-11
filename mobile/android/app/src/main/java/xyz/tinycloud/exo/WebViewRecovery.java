@@ -104,8 +104,8 @@ final class WebViewRecovery extends WebViewListener {
         if (prompt != null && prompt.isShowing()) return;
         Log.w(TAG, "WebView renderer keeps dying; waiting for the user to reload");
         prompt = new AlertDialog.Builder(activity)
-            .setTitle("Exo needs to reload")
-            .setMessage("Something interrupted Exo while it was in the background. Reload to pick up where you left off.")
+            .setTitle("TinyCloud Home needs to reload")
+            .setMessage("Something interrupted TinyCloud Home while it was in the background. Reload to pick up where you left off.")
             .setCancelable(false)
             .setPositiveButton("Reload", (dialog, which) -> {
                 BUDGET.reset();

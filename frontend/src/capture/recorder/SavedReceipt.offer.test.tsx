@@ -134,8 +134,8 @@ describe("the receipt's wording", () => {
     const held = (holdReason?: "signed-out" | "other-account" | "legacy" | "unowned") => render({ outcome: "local", localUpload: "held", holdReason });
     expect(held("other-account")).toContain("Recorded on another account");
     expect(held("signed-out")).toContain("Sign in to sync to your TinyCloud space");
-    expect(held("legacy")).toContain("Exo can&#x27;t tell which account this note belongs to");
-    expect(held("unowned")).toContain("Exo can&#x27;t tell which account this note belongs to");
+    expect(held("legacy")).toContain("TinyCloud Home can&#x27;t tell which account this note belongs to");
+    expect(held("unowned")).toContain("TinyCloud Home can&#x27;t tell which account this note belongs to");
     expect(held()).not.toContain("Recorded on another account");
   });
 

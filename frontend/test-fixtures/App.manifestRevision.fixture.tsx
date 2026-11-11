@@ -105,7 +105,7 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
 }));
 mock.module("@/lib/voiceNotes/nativeVoiceNotes", () => ({
   ...nativeVoiceNotesApi,
-  VoiceNotes: { ...nativeVoiceNotesApi.VoiceNotes, getCaptureDefaults: async () => ({ status: "signed_in", accountDid: PRINCIPAL, transitionGen: 0 }) },
+  VoiceNotes: { ...nativeVoiceNotesApi.VoiceNotes, status: async () => ({ intent: "stopped" }), getCaptureDefaults: async () => ({ status: "signed_in", accountDid: PRINCIPAL, transitionGen: 0 }) },
 }));
 mock.module("@/lib/voiceNotes/accountHandoff", () => ({
   ...handoffApi,
@@ -159,7 +159,7 @@ function qualifyBrowser() {
 }
 
 async function mount(platform: AppPlatform = "web") {
-  restoreDom = installDom();
+  restoreDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
   qualifyBrowser();
   host = document.createElement("div");
   document.body.append(host);
@@ -229,10 +229,11 @@ test("a session recorded under the withdrawn revision \"1\" is forced the same w
 });
 
 test("a failed handoff keeps the session: it is not cleared, nothing restores, and the notice is not shown", async () => {
-  handoffResult = { ok: false, failClosed: false, message: "Couldn't update this phone's recording settings. Try again." };
+  handoffResult = { ok: false, failClosed: false, message: "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again." };
   seedSession();
   await mount();
   expect(events).toEqual(["handoff"]);
+  expect(host!.textContent).toContain("Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
   expect(localStorage.getItem(APP_SESSION_KEY)).not.toBeNull();
   expect(host!.textContent).not.toContain(NOTICE);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();

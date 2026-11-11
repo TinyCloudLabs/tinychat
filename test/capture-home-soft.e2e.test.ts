@@ -176,7 +176,7 @@ describe("Soft Capture home interactions (phone)", () => {
     expect(await sheet.getAttribute("aria-modal")).not.toBe("false");
     expect(await sheet.getAttribute("aria-labelledby")).toBeTruthy();
     expect(await sheet.innerText()).toContain(
-      "Exo couldn't finish saving this recording. It will try again when it next opens.",
+      "TinyCloud Home couldn't finish saving this recording. It will try again when it next opens.",
     );
     expect(await page.locator('[data-testid="capture-issue-retry"]').innerText()).toBe("Try again");
     expect(await page.locator('[data-testid="capture-issue-delete"]').innerText()).toBe("Delete");

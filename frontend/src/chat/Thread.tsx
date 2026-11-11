@@ -507,7 +507,7 @@ const ThreadWelcome: FC = () => {
       <div className="relative -top-20 flex w-full flex-1 flex-col items-center justify-center gap-6 px-4 py-16 pb-24 text-center sm:top-0">
         <div className="flex flex-col items-center gap-2">
           {/* The chat header's title is the screen's h1. */}
-          <h2 className="font-display text-title-2">TinyCloud Chat</h2>
+          <h2 className="font-display text-title-2">TinyCloud Home</h2>
           <p className="max-w-sm text-callout text-muted-foreground">
             Your conversations are private and stored in your TinyCloud space.
           </p>
@@ -568,7 +568,7 @@ const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boo
         <ComposerPrimitive.Input
           autoFocus
           rows={1}
-          placeholder="Message TinyCloud Chat…"
+          placeholder="Message TinyCloud Home…"
           disabled={!selection.canSend}
           // Always 16px: smaller text makes iOS zoom the page when the field
           // gains focus, and the composer reads the same on every device.
@@ -621,7 +621,7 @@ const AssistantMessage: FC = () => (
       <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
         T
       </span>
-      <span>TinyCloud Chat</span>
+      <span>TinyCloud Home</span>
     </div>
     <div className="pl-7 text-sm leading-relaxed text-foreground">
       <MessagePrimitive.Parts components={{ Text: MarkdownText }} />

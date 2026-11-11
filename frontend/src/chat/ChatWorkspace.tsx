@@ -20,6 +20,8 @@ import {
 import { useSizeClass } from "@/lib/sizeClass";
 import { createConnectorMeetingsClient } from "../lib/connectors/meetingsApi";
 import { createBrowserMeetingTurnRetriever } from "../lib/meetingChat/retriever";
+import { HOME_SITE } from "../lib/homeSite";
+import { useHomeFeatureAccess } from "../shell/homeFeatureAccess";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
 import type { ModelSelectionController, SelectionView } from "./modelSelection";
 import { ChatHeader } from "./ChatHeader";
@@ -50,18 +52,21 @@ export function ChatWorkspace(props: {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
+  // Off the Home site, always; on it, once Connectors is permitted (before that its session has no meeting storage,
+  // and the meetings route must not be asked), so Chat answers there without meeting context until then.
+  const meetingContext = useHomeFeatureAccess().permitted("connectors");
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
   // workspace reload. It receives only browser-local handles and the existing
   // session-backed metadata/content client.
   const meetingRetriever = useMemo(
-    () => createBrowserMeetingTurnRetriever({
+    () => meetingContext ? createBrowserMeetingTurnRetriever({
       tcw: props.tcw,
       meetings: createConnectorMeetingsClient(props.backendUrl, {
         sessionStore: props.sessionStore,
       }),
-    }),
-    [props.tcw, props.sessionStore, props.backendUrl, privateAccessRef.current],
+    }) : undefined,
+    [meetingContext, props.tcw, props.sessionStore, props.backendUrl, privateAccessRef.current],
   );
 
   const deps = useMemo(
@@ -179,7 +184,8 @@ export function ChatWorkspace(props: {
               composerToolbar={props.composerToolbar}
             />
           </div>
-          <ChatViewAgentEnablementBanner />
+          {/* The banner offers meeting access, which the Home site's sign-in does not cover. */}
+          {!HOME_SITE && <ChatViewAgentEnablementBanner />}
         </section>
       </div>
       <ChatsSheet open={chatsOpen} onOpenChange={setChatsOpen} settings={props.settings} />

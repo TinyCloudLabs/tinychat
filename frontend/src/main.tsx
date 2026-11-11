@@ -9,9 +9,12 @@ import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootErrorBoundary } from "./shell/RootErrorBoundary";
-import { ExperimentalRoute } from "./shell/ExperimentalRoute";
 import { LandingRoute, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
+import { SessionStore } from "@tinyboilerplate/client";
+import { HOME_SITE } from "./lib/homeSite";
+import { readHomeFeatures } from "./lib/homeFeatures";
+import { browserRevisionStore } from "./lib/manifestRevision";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
@@ -20,7 +23,7 @@ import { initTheme } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 import { installDebugLog } from "./lib/debugLog";
 
-// False on the web and in the desktop (Tauri) app; true only inside Exo mobile.
+// False on the web and in the desktop (Tauri) app; true only inside the TinyCloud Home mobile app.
 const nativeShell = Capacitor.isNativePlatform();
 registerDesktopVoiceNotes();
 
@@ -65,7 +68,10 @@ setupPwa({
   devEnabled: import.meta.env.VITE_PWA_DEV === "true",
 });
 
-registerWebCaptureEngine();
+// The Home site starts the recorder at boot only on a device that has used Recording for the saved owner; otherwise
+// it starts once Recording is covered (App.tsx).
+const savedOwner = new SessionStore("xyz.tinycloud.tinychat:session").getAddress();
+registerWebCaptureEngine(!HOME_SITE || (savedOwner !== null && readHomeFeatures(browserRevisionStore(), savedOwner).includes("recording")));
 
 // Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs. If the probe itself
 // fails, WebCrypto is left exactly as the engine provides it and the app still starts.
@@ -78,9 +84,9 @@ void installEd25519Polyfill().catch((error: unknown) => {
       <RootErrorBoundary>
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={<RootRoute nativeShell={nativeShell} homeShell={platform === "web"} />} />
+            <Route path="/" element={<RootRoute />} />
             <Route path="/about" element={<LandingRoute />} />
-            <Route path="/chat/*" element={<ExperimentalRoute><CaptureEngineGate><App /></CaptureEngineGate></ExperimentalRoute>} />
+            <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

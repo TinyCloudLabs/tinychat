@@ -30,8 +30,6 @@ export function BootSurface(props: {
   voiceNotes?: React.ReactNode;
   /** TinyCloud Home on the web (TC-2040): a plain link to the landing page at /about. */
   home?: boolean;
-  /** The title; the build's own name by default (Exo, or TinyCloud Home on the Home site). */
-  appName?: string;
 }) {
   const message = bootMessage(props.state, props.error);
 
@@ -48,7 +46,7 @@ export function BootSurface(props: {
       <div className="mx-auto flex w-full min-w-0 max-w-sm flex-col items-center gap-5 text-center">
         <img src="/icons/pwa-192.png" alt="" className="size-12 rounded-2xl" />
         <div className="flex flex-col gap-1.5">
-          <h1 className="font-display text-title-2">{props.appName ?? APP_NAME}</h1>
+          <h1 className="font-display text-title-2">{APP_NAME}</h1>
           <p className="flex items-center justify-center text-callout text-muted-foreground">
             {message}
             {/* Where conversations live, as a hint: before sign-in there is no How it works page to link to. */}

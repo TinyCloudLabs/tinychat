@@ -143,6 +143,33 @@ describe("clearPersistedSession", () => {
     clearPersistedSession(TEST_ADDRESS);
     expect(mockStorage.getItem(STORAGE_KEY)).toBeNull();
   });
+  test("clears the runtime grant and active pointer only for the matching account", () => {
+    const normalized = TEST_ADDRESS.toLowerCase();
+    const runtimeKey = `tinycloud:session:runtime-grants:${normalized}`;
+    const otherAddress = "0x00000000000000000000000000000000000000b2";
+    mockStorage.setItem(STORAGE_KEY, JSON.stringify(makePersistedSession()));
+    mockStorage.setItem(runtimeKey, "runtime-grant");
+    mockStorage.setItem(`tinycloud:session:${otherAddress}`, "other-session");
+    mockStorage.setItem(`tinycloud:session:runtime-grants:${otherAddress}`, "other-grant");
+    mockStorage.setItem("tinycloud:session:active-address", TEST_ADDRESS);
+
+    clearPersistedSession(TEST_ADDRESS);
+
+    expect(mockStorage.getItem(STORAGE_KEY)).toBeNull();
+    expect(mockStorage.getItem(runtimeKey)).toBeNull();
+    expect(mockStorage.getItem("tinycloud:session:active-address")).toBeNull();
+    expect(mockStorage.getItem(`tinycloud:session:${otherAddress}`)).toBe("other-session");
+    expect(mockStorage.getItem(`tinycloud:session:runtime-grants:${otherAddress}`)).toBe("other-grant");
+  });
+
+  test("keeps the active address when it belongs to another account", () => {
+    const otherAddress = "0x00000000000000000000000000000000000000b2";
+    mockStorage.setItem("tinycloud:session:active-address", otherAddress);
+
+    clearPersistedSession(TEST_ADDRESS);
+
+    expect(mockStorage.getItem("tinycloud:session:active-address")).toBe(otherAddress);
+  });
 
   test("is case-insensitive", () => {
     mockStorage.setItem(STORAGE_KEY, JSON.stringify(makePersistedSession()));

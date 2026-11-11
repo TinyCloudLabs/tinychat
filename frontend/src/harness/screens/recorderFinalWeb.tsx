@@ -52,7 +52,7 @@ function TabStrip({ value }: { value: Partial<RecorderValue> }) {
       value.phase ?? "idle",
       value.mic?.state ?? "idle",
       value.elapsedMs ?? 0,
-    ) ?? "Exo";
+    ) ?? "TinyCloud Home";
   return (
     <div
       data-testid="tab-strip"

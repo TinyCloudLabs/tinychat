@@ -17,7 +17,7 @@ waits for that scan if it is in flight, then reads committed sidecars without
 rescanning. `retryRecovery` explicitly runs another scan. This matches iOS's
 launch recovery and `awaitRecovery` behavior and keeps receipt reads prompt
 as the recording library grows.
-The microphone stays off until the user opens Exo and resumes. An expired
+The microphone stays off until the user opens TinyCloud Home and resumes. An expired
 paused session is committed with `pause_timeout`. The still-running process
 checks the same limit every second. An attempt marker is synced before journal
 parsing or muxing, so a process crash counts toward the limit. Three failed

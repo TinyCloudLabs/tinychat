@@ -6,44 +6,98 @@ import WidgetKit
 @main
 struct ExoWidgets: WidgetBundle {
     var body: some Widget {
-        ExoProbeActivityWidget()
-        ExoProbeControl()
+        RecordingActivityWidget()
+        RecordControl()
     }
 }
 
-struct ExoProbeControl: ControlWidget {
+/// Control Center, the Lock Screen and the Action button's control list: one tap starts a voice note.
+struct RecordControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
-        StaticControlConfiguration(kind: "xyz.tinycloud.exo.probe") {
-            ControlWidgetButton(action: ProbeIntent()) {
-                Label("Exo probe", systemImage: "waveform")
+        StaticControlConfiguration(kind: "xyz.tinycloud.exo.record") {
+            ControlWidgetButton(action: RecordControlIntent()) {
+                Label("Record", systemImage: "mic.fill")
             }
         }
-        .displayName("Exo probe")
-        .description("Start a signing and intent-routing probe.")
+        .displayName("Record a Voice Note")
+        .description("Starts recording a voice note in TinyCloud Home.")
     }
 }
 
-struct ExoProbeActivityWidget: Widget {
+private let recordingRed = Color(red: 1, green: 0.27, blue: 0.23)
+
+private struct RecordingTime: View {
+    let state: RecordingActivityAttributes.ContentState
+
+    var body: some View {
+        if state.phase == .recording {
+            Text(state.recordingSince, style: .timer).monospacedDigit()
+        } else {
+            Text(Duration.seconds(state.elapsedSeconds), format: .time(pattern: .minuteSecond)).monospacedDigit()
+        }
+    }
+}
+
+private struct RecordingTitle: View {
+    let phase: RecordingActivityAttributes.ContentState.Phase
+
+    var body: some View {
+        switch phase {
+        case .recording: Text("Recording")
+        case .paused: Text("Paused")
+        case .interrupted: Text("Interrupted")
+        }
+    }
+}
+
+private struct StopButton: View {
+    var body: some View {
+        Button(intent: StopRecordingIntent()) {
+            Label("Stop", systemImage: "stop.fill").labelStyle(.iconOnly)
+        }
+        .tint(recordingRed)
+        .accessibilityLabel("Stop and save")
+    }
+}
+
+struct RecordingActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: RecordingActivityAttributes.self) { context in
-            HStack {
-                Text("Exo \(context.state.phase) \(context.state.count)")
-                Button(intent: ProbeIntent(phase: .update)) { Image(systemName: "arrow.clockwise") }
-                Button(intent: ProbeIntent(phase: .end)) { Image(systemName: "stop.fill") }
+            HStack(spacing: 12) {
+                Image(systemName: context.state.phase == .recording ? "mic.fill" : "pause.fill")
+                    .foregroundStyle(recordingRed)
+                    .font(.title2)
+                VStack(alignment: .leading, spacing: 2) {
+                    RecordingTitle(phase: context.state.phase).font(.headline)
+                    Text("TinyCloud Home").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                RecordingTime(state: context.state).font(.title2.weight(.semibold))
+                StopButton()
             }
             .padding()
         } dynamicIsland: { context in
             DynamicIsland {
-                DynamicIslandExpandedRegion(.center) { Text("Exo \(context.state.phase) \(context.state.count)") }
+                DynamicIslandExpandedRegion(.leading) {
+                    Label { RecordingTitle(phase: context.state.phase) } icon: { Image(systemName: "mic.fill") }
+                        .foregroundStyle(recordingRed)
+                }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Button(intent: ProbeIntent(phase: .end)) { Image(systemName: "stop.fill") }
+                    RecordingTime(state: context.state).font(.title3.weight(.semibold))
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    HStack {
+                        Text("TinyCloud Home").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        StopButton()
+                    }
                 }
             } compactLeading: {
-                Image(systemName: "waveform")
+                Image(systemName: "mic.fill").foregroundStyle(recordingRed)
             } compactTrailing: {
-                Text("\(context.state.count)")
+                RecordingTime(state: context.state).frame(maxWidth: 52)
             } minimal: {
-                Image(systemName: "waveform")
+                Image(systemName: "mic.fill").foregroundStyle(recordingRed)
             }
         }
     }

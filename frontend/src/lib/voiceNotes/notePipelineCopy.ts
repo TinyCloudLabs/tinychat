@@ -48,7 +48,7 @@ export const privatePartsDone = (completed: number | null, total: number | null)
 
 export const PHONE_COPY = {
   finishing: "Finishing the recording…",
-  timedOut: "Exo will finish it next launch",
+  timedOut: "TinyCloud Home will finish it next launch",
   recoveryFailed: "Couldn't recover · audio kept",
   writeFailed: (detail: string | null | undefined) => withDetail("Couldn't write the recording", detail),
   partialAudio: "Saved · part of this recording couldn't be written",
@@ -66,7 +66,7 @@ export const SPACE_COPY = {
   signedOut: (device: PipelineDevice) => `You're signed out. This note is safe on ${deviceName(device)}.`,
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",
-  accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
+  accountUnknown: (device: PipelineDevice) => `TinyCloud Home can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
   quota: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_RECORDING_LINE}`,
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
   server: (_detail: string | null | undefined, device: PipelineDevice) =>

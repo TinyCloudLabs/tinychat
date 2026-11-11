@@ -1,0 +1,126 @@
+// The REAL SettingsPage, mounted with its effects running, by build. On the Home site Recording's sections ask for
+// Recording's permission in place until the session covers it, and then show; agent access and Local copy stay off
+// there, and nothing reaches for a capture engine before Recording is covered.
+// Run by src/chat/SettingsPage.homeGrant.test.ts in its own process.
+import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
+import { act, createRef } from "react";
+import { createRoot } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
+import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
+import { PlatformContext } from "@/lib/platform";
+import { installDom } from "@/test/dom";
+import { HomeFeatureAccessContext, type HomeFeatureAccess } from "@/shell/homeFeatureAccess";
+
+const HOME = process.env.VITE_HOME_SITE === "true";
+
+// Every card Settings shows, in order. A lost or added card fails the test. The Home build never shows agent access
+// (or Local copy, which sits inside the Data area on the plain build), nor Experimental Features (its only row,
+// Conversation Canvas, is off there). Both builds show the "Home" card; Recording's cards wait for Recording's permission.
+const PLAIN_CARDS = [
+  "Account", "Home", "Agent access", "Use with your agent", "Memory", "Transcription", "Word fixes", "Meeting summaries",
+  "Voice notes", "Infrastructure", "Audio storage", "Data", "TinyCloud", "Appearance", "Experimental Features",
+];
+const HOME_ASKING_CARDS = ["Account", "Home", "Memory", "Word fixes", "Infrastructure", "Data", "TinyCloud", "Appearance"];
+const HOME_RECORDING_CARDS = [
+  "Account", "Home", "Memory", "Transcription", "Word fixes", "Meeting summaries", "Voice notes", "Infrastructure",
+  "Audio storage", "Data", "TinyCloud", "Appearance",
+];
+
+let cleanDom: (() => void) | undefined;
+let installCalls = 0;
+beforeAll(async () => {
+  cleanDom = installDom();
+  Object.defineProperty(globalThis, "customElements", { configurable: true, value: window.customElements });
+  const captureApi = await import("@/lib/voiceNotes/captureEngine");
+  // Taken before the mock is installed: a module namespace is live, so reading it later returns the mock.
+  const realInstall = captureApi.installCaptureEngine;
+  mock.module("@/lib/voiceNotes/captureEngine", () => ({
+    ...captureApi,
+    installCaptureEngine: (...args: Parameters<typeof realInstall>) => { installCalls += 1; return realInstall(...args); },
+  }));
+});
+afterEach(() => { installCalls = 0; });
+afterAll(() => { mock.restore(); cleanDom?.(); });
+
+const RECORDING_COVERED: HomeFeatureAccess = {
+  covered: (feature) => feature === "recording",
+  permitted: () => false,
+  request: async () => "failed",
+  confirmUse: () => {},
+  inFlight: null,
+};
+
+/** Mounts Settings; `access` stands for the signed-in session's feature access (none: the context's default). */
+async function mountSettings(access?: HomeFeatureAccess) {
+  const { SettingsPage } = await import("@/chat/SettingsPage");
+  const { AgentAccessProvider } = await import("@/chat/useAgentEnablement");
+  // An empty space: every read answers with no rows, so no card fails for a reason unrelated to the build.
+  const emptyDb = { query: async () => ({ ok: true, data: { columns: [], rows: [] } }), execute: async () => ({ ok: true, data: {} }), batch: async () => ({ ok: true, data: {} }) };
+  const tcw = { did: "did:example:account", spaceId: "space-1", address: () => "0x00000000000000000000000000000000000000a1", sql: { db: () => emptyDb } } as unknown as TinyCloudWeb;
+  const sessionStore = { getToken: () => "signed-in-token" } as unknown as SessionStore;
+  const noop = () => {};
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const page = (
+    <SettingsPage
+      address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
+      onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}
+      tcw={tcw} memoryRef={createRef<string | null>()} onMemoryUpdated={noop} onImported={noop}
+      billingStatus={null} billingTierName={null} onManagePlan={noop} onOpenRates={noop}
+      backendUrl="http://localhost" sessionStore={sessionStore}
+    />
+  );
+  await act(async () => {
+    root.render(
+      <MemoryRouter>
+        <PlatformContext.Provider value="web">
+          <StaticRecorderProvider value={{ signedIn: true, available: false }}>
+            <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="Exo" openkeyHost="http://localhost">
+              {access ? <HomeFeatureAccessContext.Provider value={access}>{page}</HomeFeatureAccessContext.Provider> : page}
+            </AgentAccessProvider>
+          </StaticRecorderProvider>
+        </PlatformContext.Provider>
+      </MemoryRouter>,
+    );
+  });
+  // Let the cards' effects (the audio cache check, the memory load) run to their end.
+  for (let turn = 0; turn < 5; turn += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+  return {
+    host,
+    cards: () => [...host.querySelectorAll("section > div > h2")].map((heading) => heading.textContent),
+    unmount: () => act(async () => root.unmount()),
+  };
+}
+
+test("Settings cards by build; on the Home site Recording's sections ask in place and nothing needs a capture engine", async () => {
+  const { host, cards, unmount } = await mountSettings();
+  try {
+    expect(cards()).toEqual(HOME ? HOME_ASKING_CARDS : PLAIN_CARDS);
+    expect(host.querySelector('[data-testid="canvas-setting-row"]') === null).toBe(HOME);
+    expect(host.querySelector('[data-testid="feature-access-recording"]') !== null).toBe(HOME);
+    if (HOME) {
+      expect(host.querySelector('[data-testid="feature-access-recording"] h2')?.textContent).toBe("Allow Recording");
+      // Nothing that needs a capture engine runs before Recording is covered, and no failure shows.
+      expect(installCalls).toBe(0);
+      expect([...host.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent)).toEqual([]);
+      expect(host.textContent).not.toContain("not implemented");
+    }
+  } finally {
+    await unmount();
+  }
+});
+
+test("once the session covers Recording, the Home site shows Recording's sections, still without agent access, Local copy or Canvas", async () => {
+  if (!HOME) return;
+  const { host, cards, unmount } = await mountSettings(RECORDING_COVERED);
+  try {
+    expect(cards()).toEqual(HOME_RECORDING_CARDS);
+    expect(host.querySelector('[data-testid="feature-access-recording"]')).toBeNull();
+    expect(host.querySelector('[data-testid="canvas-setting-row"]')).toBeNull();
+  } finally {
+    await unmount();
+  }
+});

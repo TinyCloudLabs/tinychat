@@ -384,9 +384,7 @@ function FirefliesManagePanel({
         state={state}
         consentVariant={sync.consentVariant}
         transcriptConsent={sync.transcriptConsent}
-        ingestConsentChecked={sync.ingestConsentChecked}
         consentOpen={consentOpen}
-        onIngestConsentChange={sync.setIngestConsentChecked}
         onToggleInstant={() => {
           if (state.phase === "enabled") void disableBackgroundSync(deps, emit);
           else setConsentOpen((was) => !was);
@@ -412,7 +410,7 @@ function FirefliesManagePanel({
       <ConfirmDialog
         open={rotateOpen}
         title="Rotate the webhook secret?"
-        message="Exo issues a new address and secret. The old ones stop working right away, so paste the new ones into your Fireflies webhook."
+        message="TinyCloud Home issues a new address and secret. The old ones stop working right away, so paste the new ones into your Fireflies webhook."
         keepLabel="Keep the current one"
         dropLabel="Rotate"
         busy={rotating}

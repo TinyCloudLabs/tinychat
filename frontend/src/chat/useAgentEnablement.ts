@@ -293,9 +293,35 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
 export type AgentAccessController = ReturnType<typeof createAgentAccessController>;
 export type UseAgentEnablementResult = AgentAccessState & Pick<AgentAccessController, "onEnable" | "onDisconnect" | "onDelegationError">;
 const AgentAccessContext = createContext<AgentAccessController | null>(null);
-export function AgentAccessProvider(props: UseAgentEnablementOptions & { children: React.ReactNode }) {
+
+const AGENT_ACCESS_OFF: AgentAccessState = {
+  capability: "unavailable", status: null, revision: null, probeFailed: false, enableError: null,
+  enabling: false, disconnecting: false, reconnectReason: null, silentlyEnabled: false,
+};
+
+/** Agent access switched off: it never asks the backend, never connects, and chat gets no agent tools. */
+function agentAccessOff(opts: UseAgentEnablementOptions): AgentAccessController {
+  const off = createAgentAccessController(opts);
+  return {
+    ...off,
+    refresh: async () => {},
+    onEnable: async () => {},
+    onDisconnect: async () => {},
+    onDelegationError: () => {},
+    getSnapshot: () => AGENT_ACCESS_OFF,
+    subscribe: () => () => {},
+    listen: () => () => {},
+  };
+}
+
+/** `enabled: false` (the Home site, which shows no agent-access control) switches agent access off. */
+export function AgentAccessProvider(props: UseAgentEnablementOptions & { enabled?: boolean; children: React.ReactNode }) {
   const account = props.tcw.address()?.toLowerCase();
-  const controller = useMemo(() => createAgentAccessController(props), [props.tcw, props.backendUrl, props.sessionStore, account]);
+  const enabled = props.enabled !== false;
+  const controller = useMemo(
+    () => (enabled ? createAgentAccessController(props) : agentAccessOff(props)),
+    [enabled, props.tcw, props.backendUrl, props.sessionStore, account],
+  );
   useEffect(() => {
     const unlisten = controller.listen();
     void controller.refresh();

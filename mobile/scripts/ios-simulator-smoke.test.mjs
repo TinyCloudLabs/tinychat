@@ -56,8 +56,8 @@ if (op === 'launch') {
   if (process.env.FAKE_SIMCTL_PID !== 'absent') {
     const delay = Number(process.env.FAKE_SIMCTL_PID_DELAY_MS || 0);
     const reported = process.pid + (process.env.FAKE_SIMCTL_DIFFERENT_PID === '1' ? 1 : 0);
-    if (delay) setTimeout(() => console.log('xyz.tinycloud.exo: ' + reported), delay);
-    else console.log('xyz.tinycloud.exo: ' + reported);
+    if (delay) setTimeout(() => console.log('xyz.tinycloud.home: ' + reported), delay);
+    else console.log('xyz.tinycloud.home: ' + reported);
   }
   const mode = process.env.FAKE_PROBE_MODE;
   if (mode === 'early-then-mounted') console.log('EXO_SMOKE ' + process.env.FAKE_EARLY_PROBE);
@@ -86,8 +86,8 @@ if (op === 'launch') {
   if (fs.existsSync(pidFile) && (!fs.existsSync(path.join(state, 'exited')) ||
       process.env.FAKE_PRESERVE_LAUNCHCTL_PID === '1') && process.env.FAKE_HIDE_LAUNCHCTL !== '1') {
     const pid = Number(fs.readFileSync(pidFile, 'utf8'));
-    if (process.env.FAKE_PRESERVE_LAUNCHCTL_PID === '1') console.log(pid + ' 0 UIKitApplication:xyz.tinycloud.exo[0]');
-    else try { process.kill(pid, 0); console.log(pid + ' 0 UIKitApplication:xyz.tinycloud.exo[0]'); } catch {}
+    if (process.env.FAKE_PRESERVE_LAUNCHCTL_PID === '1') console.log(pid + ' 0 UIKitApplication:xyz.tinycloud.home[0]');
+    else try { process.kill(pid, 0); console.log(pid + ' 0 UIKitApplication:xyz.tinycloud.home[0]'); } catch {}
   }
 } else if (op === 'spawn' && args[3] === 'log' && args[4] === 'stream') {
   event('stream-start');
@@ -209,7 +209,7 @@ case "$*" in
 esac
 PATH=\${PATH#*:} exec ps "$@"
 `);
-  install("awk", "#!/bin/sh\ncase \"$*\" in\n  *app=xyz.tinycloud.exo:*)\n    if [ -n \"$FAKE_AWK_STALL_CALL\" ]; then\n      n=0\n      if [ -f \"$FAKE_SIM_STATE/awk-count\" ]; then read -r n < \"$FAKE_SIM_STATE/awk-count\"; fi\n      n=$((n + 1))\n      printf '%s\\n' \"$n\" > \"$FAKE_SIM_STATE/awk-count\"\n      if [ \"$n\" -eq \"$FAKE_AWK_STALL_CALL\" ]; then sleep \"$FAKE_AWK_STALL_SECONDS\"; fi\n    fi ;;\nesac\nPATH=${PATH#*:} exec awk \"$@\"\n");
+  install("awk", "#!/bin/sh\ncase \"$*\" in\n  *app=xyz.tinycloud.home:*)\n    if [ -n \"$FAKE_AWK_STALL_CALL\" ]; then\n      n=0\n      if [ -f \"$FAKE_SIM_STATE/awk-count\" ]; then read -r n < \"$FAKE_SIM_STATE/awk-count\"; fi\n      n=$((n + 1))\n      printf '%s\\n' \"$n\" > \"$FAKE_SIM_STATE/awk-count\"\n      if [ \"$n\" -eq \"$FAKE_AWK_STALL_CALL\" ]; then sleep \"$FAKE_AWK_STALL_SECONDS\"; fi\n    fi ;;\nesac\nPATH=${PATH#*:} exec awk \"$@\"\n");
   // mv: optionally stall the .pid rename, and record what each .ready rename looks like at the moment it happens.
   install("mv", `#!/bin/sh
 case "$2" in
@@ -262,7 +262,7 @@ PATH=\${PATH#*:} exec mv "$@"
     FAKE_PS_STALL_SECONDS: String(psStallSeconds),
     FAKE_AWK_STALL_CALL: String(awkStallCall || ""),
     FAKE_AWK_STALL_SECONDS: String(awkStallSeconds),
-    EXO_CAPTURE_SMOKE: "0", EXO_LOCATION_SMOKE: "0",
+    EXO_CAPTURE_SMOKE: "0", EXO_LOCATION_SMOKE: "0", EXO_SHORTCUT_SMOKE: "0",
     SMOKE_TIMEOUT: String(timeout), SMOKE_SETTLE: String(settle),
     ...(gapFailSeconds ? { SMOKE_GAP_FAIL_S: String(gapFailSeconds) } : {}),
   };

@@ -156,6 +156,38 @@ writer. Treat write access to this repo as production access.
 The same frontend, built with `VITE_HOME_SITE=true`, is also served as the
 TinyCloud Home site at `https://home.tinycloud.xyz`.
 
+- **Sign-in grant:** the Home build signs in with `manifest.home.json`, not the
+  root `manifest.json`: only what Feed, Chat and Apps use. It has the same
+  `app_id` (`xyz.tinycloud.tinychat`), so the data is shared with
+  tinycloud.chat. It grants: KV `threads/` (chat share links); SQL `threads`
+  (chats and settings), `home_feed` and `feed/` (the feed); the hooks that
+  refresh the feed and chats; and space info (storage panel). It has no
+  secrets, no decrypt grant, and none of the canvas, connectors, details,
+  summaries or transcripts databases. tinycloud.chat keeps the full
+  `manifest.json` and signs in exactly as before. The backend keeps reading
+  `manifest.json` (`/api/server-info` and the delegation routes depend on its
+  connectors coverage), so do not narrow it. A Home session signed in under the
+  broad grant is cleared once (revision `home-1`, in
+  `frontend/src/lib/manifestRevision.ts`) and the user signs in once more.
+- **Recording and Connectors on Home:** each has its own set
+  (`HOME_RECORDING_ENTRIES`, `HOME_CONNECTORS_ENTRIES` in
+  `packages/core/src/manifest-bundle.ts`). Only Connectors keeps secrets (its
+  connector keys), so only it adds the decrypt grant, composed at request time
+  (the SDK adds `network.create` on the owner's default network to it).
+  Recording keeps none: no secret, no decrypt grant, no encryption ability at
+  all. When one is opened and the session does not cover its set, it
+  asks in place: Home signs in again in the page on a separate instance with
+  the base grant plus every set the session has or the device used, plus this
+  one (one OpenKey approval). It replaces the session only when the approval
+  covers everything asked, the backend verifies it, the owner is still signed
+  in, and no recording, upload or save is running; otherwise nothing is saved.
+  New recordings and uploads wait while OpenKey is open. Once a feature
+  has been used on a device, `xyz.tinycloud.tinychat:home-features:<address>`
+  in localStorage (feature names only; kept on sign-out) makes the next
+  sign-in include its set. Background work for a feature, including the
+  recorder's own checks, runs only when it is flagged on the device and the
+  session covers its set. Agent access is off on Home. The flag never changes
+  the revision: any grant carrying the Home bundle records `home-1`.
 - **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
   name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
   `production`.
@@ -606,7 +638,7 @@ nothing below may be reported as done on its behalf.
   no HTTP response) and fails on any HTTP status.
 - **CORS:** the backend allows `FRONTEND_URL`, the TinyCloud Home site
   (`https://home.tinycloud.xyz`, the constant `HOME_WEB_ORIGIN` in
-  `backend/src/cors-origins.ts`), Exo's fixed Tauri origins, the
+  `backend/src/cors-origins.ts`), TinyCloud Home's fixed Tauri origins, the
   TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
@@ -641,10 +673,11 @@ nothing below may be reported as done on its behalf.
   app-path grant, which is the proof that the sign-in is for TinyChat. The root
   KV grant and the two named runnable catalog databases are tolerated next to
   it but never count as that proof on their own; other grants are rejected.
-  Native sign-in cannot request the broad entries until OpenKey's native
-  client policy and ceiling are changed (TC-1990), and the served revision-3
-  manifest lists them, so native sign-in is expected to fail until then. The
-  web sign-in does not use that client ceiling. Set
+  Native sign-in requests every applications-space KV, SQL and hook entry of
+  the served manifest except `tinycloud.space`; OpenKey's TinyCloud Home native
+  client ceiling matches it (TC-2720), and the `Native ceiling` CI job PARs that
+  exact request against production OpenKey. Widen the ceiling before adding a
+  manifest entry. The web sign-in does not use that client ceiling. Set
   `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
   never use the API host as the signed audience.
   Nonces remain single-use for five minutes, with at most 2048 pending per

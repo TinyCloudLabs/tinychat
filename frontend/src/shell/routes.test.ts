@@ -9,8 +9,8 @@ import {
   LEGACY_REDIRECTS,
   PATHS,
   destinationOf,
-  homeDestination,
-  homePath,
+  HOME_DESTINATION,
+  HOME_PATH,
   isPushed,
   legacyRedirectFor,
   notePath,
@@ -114,13 +114,9 @@ describe("pushed screens and their parents", () => {
 });
 
 describe("home", () => {
-  test("the phone app opens on Capture; the desktop app, the web and the PWA on Chat", () => {
-    expect(homeDestination("ios")).toBe("capture");
-    expect(homeDestination("android")).toBe("capture");
-    expect(homePath("ios")).toBe("/chat/capture");
-    expect(homeDestination("tauri")).toBe("chat");
-    expect(homeDestination("web")).toBe("chat");
-    expect(homePath("web")).toBe("/chat");
+  test("the phone app, the desktop app, the web and the PWA are all at home on Feed", () => {
+    expect(HOME_DESTINATION).toBe("feed");
+    expect(HOME_PATH).toBe("/chat/feed");
   });
 });
 
@@ -170,7 +166,7 @@ describe("App routes through shell/routes.ts", () => {
     const forward = app.slice(app.indexOf("if (!legacy) return;"));
     const body = forward.slice(0, forward.indexOf("}, ["));
     expect(body).toContain("if (!isReady && !authSettledSignedOut) return;");
-    expect(body).toContain("navigate(isReady ? legacy.to : homePath(platform)");
+    expect(body).toContain("navigate(isReady ? legacy.to : HOME_PATH");
     expect(body).toContain("replace: true");
     const routes = readFileSync(join(import.meta.dir, "routes.ts"), "utf8");
     expect(routes).toContain("LEGACY_REDIRECTS.find(");

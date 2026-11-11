@@ -5,7 +5,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { RootRoute } from "../landing/RootRoute";
-import { appsFeedEnabled } from "../lib/appsFeedFeature";
 import { installDom } from "../test/dom";
 import { HomeEntryGate } from "./HomeEntryGate";
 import type { FirstScreen } from "./firstScreenStore";
@@ -31,14 +30,14 @@ function Screen({ load }: { load: () => Promise<FirstScreen> }) {
 async function mount(entry: string, load: () => Promise<FirstScreen>) {
   expect(process.env.HOME).toBe(testHome);
   restore = installDom();
-  expect(appsFeedEnabled()).toBe(false);
+  expect(window.localStorage.length).toBe(0);
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
   await act(async () => root!.render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
-        <Route path="/" element={<RootRoute nativeShell={false} homeShell />} />
+        <Route path="/" element={<RootRoute />} />
         <Route path="/chat/*" element={<Screen load={load} />} />
       </Routes>
     </MemoryRouter>,
@@ -46,9 +45,18 @@ async function mount(entry: string, load: () => Promise<FirstScreen>) {
   return host;
 }
 
-test("with the Experimental flag off, an unset choice opens Chat and never reads it", async () => {
+// A fresh install: nothing stored on the device and no choice saved. `/` opens Feed on every platform (TC-2050).
+test("on a fresh install, / reads the unset choice and opens Feed", async () => {
   const load = jest.fn(async (): Promise<FirstScreen> => "feed");
   const host = await mount("/", load);
-  expect(host.querySelector('[data-testid="screen"]')?.textContent).toBe("/chat");
-  expect(load).not.toHaveBeenCalled();
+  await act(async () => {});
+  expect(host.querySelector('[data-testid="screen"]')?.textContent).toBe("/chat/feed");
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
+test("on a fresh install, a saved Apps choice from another device still wins", async () => {
+  const load = jest.fn(async (): Promise<FirstScreen> => "apps");
+  const host = await mount("/", load);
+  await act(async () => {});
+  expect(host.querySelector('[data-testid="screen"]')?.textContent).toBe("/chat/apps");
 });
