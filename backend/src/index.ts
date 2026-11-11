@@ -412,6 +412,15 @@ async function main() {
     }
   }
 
+  // W4 — retained indexes still need their content-envelope master after ingest is disabled,
+  // so maintenance can decrypt and remove every server-held meeting at its retention boundary.
+  const contentCustody = validateContentCustodyConfig(process.env);
+  if (!contentCustody.ok) {
+    console.error(contentCustody.error);
+    process.exit(1);
+    return;
+  }
+
   // W2 — the credential-custody master (backend-ingest plan §6.2). Gated on the DARK ingest flag,
   // so a deployment that never enables backend ingestion needs none of this; armed, it gets the
   // same refuse-boot-on-weak-master posture WEBHOOK_HMAC_MASTER has, because from that moment the
@@ -420,15 +429,6 @@ async function main() {
     const custody = validateCredentialCustodyConfig(process.env);
     if (!custody.ok) {
       console.error(custody.error);
-      process.exit(1);
-      return;
-    }
-    // W4 — the content-envelope master (backend-ingest plan §8.1 W4 / DECISIONS D3). It is
-    // required while intake is enabled and remains required while old indexes await expiry, so a
-    // later flag-off deployment can still delete its retained rows.
-    const contentCustody = validateContentCustodyConfig(process.env);
-    if (!contentCustody.ok) {
-      console.error(contentCustody.error);
       process.exit(1);
       return;
     }

@@ -984,6 +984,27 @@ describe("W4 content store — retention", () => {
 
     expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-bad-date")).toBeNull();
     expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-missing-date")).toBeNull();
+    expect(await store.list(SOURCE, ADDRESS_A)).toEqual([]);
+  });
+
+  test("a recently merged blob is removed at the original 14-day expiry", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-merged-blob" }));
+
+    clock.now = T0 + 10 * DAY_MS;
+    await store.upsert(
+      upsertInput({
+        sourceId: "mtg-merged-blob",
+        kind: "summary",
+        content: { overview: SUMMARY_TEXT },
+      }),
+    );
+
+    clock.now = T0 + 14 * DAY_MS;
+    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(await store.list(SOURCE, ADDRESS_A)).toEqual([]);
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-merged-blob")).toBeNull();
   });
 
   test("[delta-05] a retention pass deletes orphan blobs even without an index row", async () => {

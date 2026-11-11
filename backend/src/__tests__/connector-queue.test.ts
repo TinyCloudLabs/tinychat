@@ -782,13 +782,13 @@ describe("awaiting_transcript", () => {
     expect(await queue.sweep(SOURCE, ADDRESS)).toEqual({ pending: 0, dead: 0 });
     expect(stored(node, DEAD_KEY)).toEqual([]);
   });
-  test("a dead letter retains its original receipt expiry after a delayed failure", async () => {
+  test("a dead letter expires at 14 days from receipt even when failure occurs on day 13", async () => {
     const { node, queue, clock } = createQueue();
     await queue.enqueue(SOURCE, ADDRESS, {
       meetingId: "M-DELAYED-DEAD",
       kind: "transcript",
     });
-    clock.now = T0 + 5 * 24 * 60 * 60 * 1000;
+    clock.now = T0 + 13 * 24 * 60 * 60 * 1000;
     await queue.fail(
       SOURCE,
       ADDRESS,
