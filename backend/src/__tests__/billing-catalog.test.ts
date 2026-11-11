@@ -42,6 +42,22 @@ afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
   _resetCatalogCache();
 });
+test("defaults catalog requests to the attested gateway", async () => {
+  const configuredBaseUrl = process.env.REDPILL_BASE_URL;
+  delete process.env.REDPILL_BASE_URL;
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
+    return Response.json({ data: [] });
+  }) as typeof fetch;
+  try {
+    await getCatalog();
+    expect(urls).toEqual(["https://tee.redpill.ai/v1/models"]);
+  } finally {
+    if (configuredBaseUrl === undefined) delete process.env.REDPILL_BASE_URL;
+    else process.env.REDPILL_BASE_URL = configuredBaseUrl;
+  }
+});
 
 describe("getCatalog pricing parsing", () => {
   test("parses string-encoded USD per token to numbers", async () => {

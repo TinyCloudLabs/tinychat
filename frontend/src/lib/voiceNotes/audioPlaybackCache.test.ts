@@ -368,3 +368,35 @@ for (const operation of ["trim", "clear"] as const) {
     });
   }
 }
+test("sign-out clears all playback bytes and identities and refuses a late download", async () => {
+  const { clearPlaybackCacheForSignOut } = await import("./audioPlaybackCache");
+  await cachedSpaceAudio("space", "did:A", "exo-voice-note", "ready", "r1", async () => new Blob(["ready"]));
+  const started = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<Blob>();
+  const late = cachedSpaceAudio("space", "did:A", "exo-voice-note", "late", "r1", async () => {
+    started.resolve(); return finish.promise;
+  });
+  await started.promise;
+  await clearPlaybackCacheForSignOut();
+  finish.resolve(new Blob(["late"]));
+  expect(await late).toBeNull();
+  expect(await cachedSpaceAudioOffline("space", "did:A", "exo-voice-note", "ready")).toBeNull();
+  expect(await latestSpaceAudioIdentity("space", "did:A", "exo-voice-note", "ready")).toBeUndefined();
+  expect((await cachedAudioSize()).bytes).toBe(0);
+});
+
+test("TC-2785 another tab atomically clears a pending playback download", async () => {
+  // A distinct module instance models another tab: it shares IndexedDB, not module memory.
+  const otherTab = await import("./audioPlaybackCache.ts" + "?atomic-other-tab");
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<Blob>();
+  const downloading = cachedSpaceAudio("space", "did:A", "exo-voice-note", "cross-tab", "r1", async () => {
+    started.resolve(); return release.promise;
+  });
+  await started.promise;
+  await otherTab.clearPlaybackCacheForSignOut();
+  release.resolve(new Blob(["account A"]));
+  expect(await downloading).toBeNull();
+  expect(await otherTab.cachedSpaceAudioOffline("space", "did:A", "exo-voice-note", "cross-tab")).toBeNull();
+  expect((await cachedAudioSize()).bytes).toBe(0);
+});

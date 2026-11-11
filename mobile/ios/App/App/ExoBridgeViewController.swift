@@ -19,6 +19,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
         }
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())
+        bridge?.registerPluginInstance(AppLockPlugin())
         #if EXO_HEALTH
         // Health spike (TC-525): Debug builds only (see HealthPlugin.swift).
         bridge?.registerPluginInstance(HealthPlugin())
@@ -91,6 +92,16 @@ class ExoBridgeViewController: CAPBridgeViewController {
             probe.locationStatus = { platform: s.platform, permission: s.permission, declared: s.declared };
           } catch (error) {
             probe.locationStatus = { error: String((error && error.message) || error) };
+          }
+        }
+        // App lock (TC-2738): the smoke launches with EXO_APP_LOCK=off, so the plugin answers with no device security.
+        if (probe.mounted && cap.nativePromise) {
+          try {
+            const s = await Promise.race([cap.nativePromise("AppLock", "status", {}),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000))]);
+            probe.appLock = { deviceSecure: s.deviceSecure };
+          } catch (error) {
+            probe.appLock = { error: String((error && error.message) || error) };
           }
         }
         return JSON.stringify(probe);

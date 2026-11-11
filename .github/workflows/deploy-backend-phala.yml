@@ -42,7 +42,7 @@ env:
   PHALA_INGRESS_DOMAIN: ${{ vars.PHALA_INGRESS_DOMAIN || 'api.tinycloud.chat' }}
   PRODUCTION_API_URL: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
   PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.chat' }}
-  REDPILL_BASE_URL: ${{ vars.REDPILL_BASE_URL || 'https://api.redpill.ai/v1' }}
+  REDPILL_BASE_URL: ${{ vars.REDPILL_BASE_URL || 'https://tee.redpill.ai/v1' }}
   REDPILL_DEFAULT_MODEL: ${{ vars.REDPILL_DEFAULT_MODEL || 'z-ai/glm-5.2' }}
   # Reviewed application stream policy; unset values must fail validation, never default.
   AGENT_STREAM_HEARTBEAT_MS: ${{ vars.AGENT_STREAM_HEARTBEAT_MS }}

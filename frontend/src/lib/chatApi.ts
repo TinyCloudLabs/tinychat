@@ -88,7 +88,7 @@ export class ContextOverflowError extends Error {
  */
 export async function classifyContextOverflow(
   res: Response,
-): Promise<{ overflow: ContextOverflowError | null; detail: string }> {
+): Promise<{ overflow: ContextOverflowError | null; detail: string; code?: string }> {
   let bodyText = "";
   try {
     bodyText = await res.text();
@@ -113,10 +113,15 @@ export async function classifyContextOverflow(
   } catch {
     // non-JSON body (Wall-A PayloadTooLargeError) — status drives the decision.
   }
+  const errorCode = typeof code === "string" ? code : undefined;
   if (res.status === 413 || code === "context_overflow") {
-    return { overflow: new ContextOverflowError(detail || undefined), detail };
+    return {
+      overflow: new ContextOverflowError(detail || undefined),
+      detail,
+      ...(errorCode ? { code: errorCode } : {}),
+    };
   }
-  return { overflow: null, detail };
+  return { overflow: null, detail, ...(errorCode ? { code: errorCode } : {}) };
 }
 
 // ── Billing-event emitter (paywall + receipt) ───────────────────────
@@ -204,14 +209,10 @@ export interface StreamChatOptions {
    * text deltas via the generator.
    */
   onUsage?: (usage: UsageInfo) => void;
-  /**
-   * Called once with the streamed completion's `id` (the OpenAI
-   * `chat.completion.chunk` `id`, surfaced verbatim by the backend proxy) as
-   * soon as the first frame carrying it is seen. Used to wire RedPill
-   * verification to the rendered turn. Non-blocking: fired off the delta path
-   * and a throwing listener never breaks the stream.
-   */
+  /** Called with the completion id emitted by the backend stream. */
   onCompletionId?: (id: string) => void;
+  /** Called only after the backend verifies this reply's receipt. */
+  onReceiptVerification?: (status: "verified") => void;
 }
 
 /**
@@ -225,7 +226,7 @@ export interface StreamChatOptions {
  * surfaced via the `onUsage` option, not the yield stream.
  */
 export async function* streamChat(options: StreamChatOptions): AsyncGenerator<string, void, unknown> {
-  const { backendUrl, sessionStore, model, messages, maxTokens, maxOutputTokens, abortSignal, onUsage, onCompletionId } = options;
+  const { backendUrl, sessionStore, model, messages, maxTokens, maxOutputTokens, abortSignal, onUsage, onCompletionId, onReceiptVerification } = options;
 
   const token = sessionStore.getToken();
   if (!token) {
@@ -297,8 +298,11 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
     // adapter can compact-and-retry. Kept ahead of the generic throw below and
     // distinct from the 401/402/403 branches handled earlier (§F.8). This
     // consumes the body, so the generic branch reads statusText only.
-    const { overflow, detail } = await classifyContextOverflow(res);
+    const { overflow, detail, code } = await classifyContextOverflow(res);
     if (overflow) throw overflow;
+    if (code === "private_response_unverified") {
+      throw new Error("The model service could not complete this request. Try again later.");
+    }
     throw new Error(`Chat request failed (${res.status}): ${detail}`);
   }
 
@@ -319,6 +323,24 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
       while ((separatorIndex = buffer.indexOf("\n\n")) !== -1) {
         const frame = buffer.slice(0, separatorIndex);
         buffer = buffer.slice(separatorIndex + 2);
+        const eventType = frame.split(/\r?\n/)
+          .map((line) => line.trimStart())
+          .find((line) => line.startsWith("event:"))
+          ?.slice(6).trim();
+        if (eventType === "tinycloud.receipt-verification") {
+          const data = frame.split(/\r?\n/)
+            .filter((line) => line.trimStart().startsWith("data:"))
+            .map((line) => line.trimStart().slice(5).trimStart())
+            .join("\n");
+          try {
+            if (JSON.parse(data)?.status === "verified") {
+              try { onReceiptVerification?.("verified"); } catch { /* Listener failures never break the stream. */ }
+            }
+          } catch {
+            // A malformed verification event cannot mark a reply verified.
+          }
+          continue;
+        }
 
         for (const rawLine of frame.split("\n")) {
           const line = rawLine.trimStart();
@@ -328,7 +350,6 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
           if (!data) continue;
           try {
             const json = JSON.parse(data);
-            // Surface the completion id from the first frame that carries one.
             // Fired before the delta yield so the badge can wire up early; kept
             // strictly off the reply path (a throwing listener is swallowed).
             const completionId = json?.id;

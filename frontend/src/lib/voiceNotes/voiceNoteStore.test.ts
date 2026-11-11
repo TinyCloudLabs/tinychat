@@ -46,8 +46,9 @@ import {
 import { loadNote, noteMarkdown, saveNote } from "./recordingNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
-import { __resetStorageStatusForTests, isStorageReadOnly } from "@/lib/storageStatus";
+import { beginStorageAccountSession, endStorageAccountSession, __resetStorageStatusForTests, isStorageReadOnly } from "@/lib/storageStatus";
 afterEach(async () => {
+  endStorageAccountSession();
   await __resetStorageStatusForTests();
 });
 
@@ -75,6 +76,7 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
   const inserted: string[] = [];
   const tcw = {
     did: `did:pkh:eip155:1:0xabc${++fakeSpaceNumber}`,
+    spaceId: `voice-note-test-${fakeSpaceNumber}`,
     sql: {
       db(name: string) {
         return {
@@ -127,6 +129,7 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
       },
     },
   };
+  beginStorageAccountSession(tcw, tcw.did, tcw.spaceId);
   return {
     tcw: tcw as unknown as TinyCloudWeb,
     calls,
@@ -202,7 +205,7 @@ describe("note sync state", () => {
   test("syncing is true only while a sync runs, and subscribers hear both edges", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-syncing-${++fakeSpaceNumber}` };
-    await saveNote(withNote.id, "# Draft");
+    await saveNote(withNote.id, "# Draft", { owner: space.tcw.did });
     await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
     const seen: boolean[] = [];
@@ -222,18 +225,18 @@ describe("note sync state", () => {
   test("a sync that worked records the note revision it wrote; a later edit is not covered by it (the pipeline's evidence for \"synced\")", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-synced-${++fakeSpaceNumber}` };
-    await saveNote(withNote.id, "# Draft");
+    await saveNote(withNote.id, "# Draft", { owner: space.tcw.did });
     expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBeNull();
     await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
-    const first = (await loadNote(withNote.id))!;
+    const first = (await loadNote(withNote.id, space.tcw.did))!;
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(first.editedAt);
     expect(recordingNoteSyncedAt({ ...space.tcw, did: "did:other" } as TinyCloudWeb, withNote.id)).toBeNull();
 
     await new Promise((resolve) => setTimeout(resolve, 5));
-    await saveNote(withNote.id, "# Draft, edited");
-    const second = (await loadNote(withNote.id))!;
+    await saveNote(withNote.id, "# Draft, edited", { owner: space.tcw.did });
+    const second = (await loadNote(withNote.id, space.tcw.did))!;
     expect(second.editedAt).not.toBe(first.editedAt);
     expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(first.editedAt);
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
@@ -243,7 +246,7 @@ describe("note sync state", () => {
   test("syncing clears when a sync fails", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-syncing-fail-${++fakeSpaceNumber}` };
-    await saveNote(withNote.id, "# Draft");
+    await saveNote(withNote.id, "# Draft", { owner: space.tcw.did });
     space.failPut((key) => key === voiceNoteMarkdownKvKey(withNote.id) ? { code: "KV_ERROR", message: "notes offline" } : null);
     await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
@@ -263,7 +266,7 @@ describe("note sync state", () => {
     expect(recordingNoteSyncSkip(space.tcw, id)).toBe("no-note");
     expect(recordingNoteSyncing(space.tcw, id)).toBe(false);
 
-    await saveNote(id, "# Draft");
+    await saveNote(id, "# Draft", { owner: space.tcw.did });
     expect(await syncRecordingNote(space.tcw, id)).toBe(false);
     expect(recordingNoteSyncSkip(space.tcw, id)).toBe("no-row");
 
@@ -295,7 +298,7 @@ describe("saveVoiceNote", () => {
     const space = fakeSpace();
     const note = { ...recording, id: `rec-local-${++fakeSpaceNumber}`, version: 2 as const,
       options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: false } };
-    await saveNote(note.id, "# Stays in the space");
+    await saveNote(note.id, "# Stays in the space", { owner: space.tcw.did });
     const source = voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" });
     const local = await saveVoiceNote(space.tcw, note, source, "ios");
     expect(local.ok).toBe(true);
@@ -329,7 +332,7 @@ describe("saveVoiceNote", () => {
   test("a Markdown sync failure leaves the audio save successful and retries separately", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-sync-${++fakeSpaceNumber}` };
-    await saveNote(withNote.id, "# Local draft");
+    await saveNote(withNote.id, "# Local draft", { owner: space.tcw.did });
     const noteKey = voiceNoteMarkdownKvKey(withNote.id);
     space.failPut((key) => key === noteKey ? { code: "KV_ERROR", message: "notes offline" } : null);
     const saved = await saveVoiceNote(space.tcw, withNote,
@@ -351,11 +354,11 @@ describe("saveVoiceNote", () => {
   test("a storage-full Markdown put on a direct note sync marks the shared storage state and keeps the cause", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-full-${++fakeSpaceNumber}` };
-    await saveNote(withNote.id, "# Local draft");
+    await saveNote(withNote.id, "# Local draft", { owner: space.tcw.did });
     const noteKey = voiceNoteMarkdownKvKey(withNote.id);
     expect((await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android")).ok).toBe(true);
-    await saveNote(withNote.id, "# Edited while the space is full");
+    await saveNote(withNote.id, "# Edited while the space is full", { owner: space.tcw.did });
     space.failPut((key) => key === noteKey ? { code: "STORAGE_LIMIT_REACHED", message: "Write exceeds remaining storage" } : null);
     await expect(syncRecordingNote(space.tcw, withNote.id)).rejects.toMatchObject({ cause: { code: "STORAGE_LIMIT_REACHED" } });
     expect(isStorageReadOnly()).toBe(true);
@@ -365,7 +368,7 @@ describe("saveVoiceNote", () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-late-edit-${++fakeSpaceNumber}` };
     const noteKey = voiceNoteMarkdownKvKey(withNote.id);
-    await saveNote(withNote.id, "# Original");
+    await saveNote(withNote.id, "# Original", { owner: space.tcw.did });
     await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
     const originalPut = space.tcw.kv.put.bind(space.tcw.kv);
@@ -387,11 +390,11 @@ describe("saveVoiceNote", () => {
     }) as typeof space.tcw.kv.put;
     setVoiceNoteSaveDeadlineForTests(20);
     try {
-      await saveNote(withNote.id, "# Edit E1");
+      await saveNote(withNote.id, "# Edit E1", { owner: space.tcw.did });
       const e1 = syncRecordingNote(space.tcw, withNote.id);
       await started;
       await expect(e1).rejects.toThrow("Saving to your TinyCloud space is slow");
-      await saveNote(withNote.id, "# Edit E2");
+      await saveNote(withNote.id, "# Edit E2", { owner: space.tcw.did });
       const e2 = syncRecordingNote(space.tcw, withNote.id);
       await new Promise((resolve) => setTimeout(resolve, 5));
       expect(e2Puts).toBe(0);
@@ -407,18 +410,18 @@ describe("saveVoiceNote", () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-saved-edit-${++fakeSpaceNumber}` };
     const noteKey = voiceNoteMarkdownKvKey(withNote.id);
-    await saveNote(withNote.id, "# Recorded");
+    await saveNote(withNote.id, "# Recorded", { owner: space.tcw.did });
     await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
     expect(space.kv.get(noteKey)).not.toContain("edited:");
     expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBeNull();
 
-    const edited = await saveNote(withNote.id, "# Edited after saving", { savedEdit: true });
+    const edited = await saveNote(withNote.id, "# Edited after saving", { savedEdit: true, owner: space.tcw.did });
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(edited.savedEditAt);
     expect(edited.savedEditAt).toBe(edited.editedAt);
 
-    await saveNote(withNote.id, "# Edited after saving, then a recorder write");
+    await saveNote(withNote.id, "# Edited after saving, then a recorder write", { owner: space.tcw.did });
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(edited.savedEditAt);
   });
@@ -427,10 +430,10 @@ describe("saveVoiceNote", () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-remote-edit-${++fakeSpaceNumber}` };
     const noteKey = voiceNoteMarkdownKvKey(withNote.id);
-    await saveNote(withNote.id, "# Recorded on A");
+    await saveNote(withNote.id, "# Recorded on A", { owner: space.tcw.did });
     await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
-    const first = (await loadNote(withNote.id))!;
+    const first = (await loadNote(withNote.id, space.tcw.did))!;
     expect(first.savedEditAt).toBeNull();
 
     // Device B saves an edit and syncs its `edited:` line to the space.
@@ -438,23 +441,23 @@ describe("saveVoiceNote", () => {
     space.kv.set(noteKey, noteMarkdown({ ...first, md: "# Edited on B", savedEditAt: bEditedAt, editedAt: bEditedAt }));
 
     // Device A, still without a marker, writes again and syncs.
-    await saveNote(withNote.id, "# Recorded on A, more");
+    await saveNote(withNote.id, "# Recorded on A, more", { owner: space.tcw.did });
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect(space.kv.get(noteKey)).toContain(`edited: ${JSON.stringify(bEditedAt)}`);
     expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(bEditedAt);
-    expect((await loadNote(withNote.id))?.savedEditAt).toBe(bEditedAt);
+    expect((await loadNote(withNote.id, space.tcw.did))?.savedEditAt).toBe(bEditedAt);
   });
 
   test("when both devices hold a saved-edit time the later one is written", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-both-edit-${++fakeSpaceNumber}` };
     const noteKey = voiceNoteMarkdownKvKey(withNote.id);
-    await saveNote(withNote.id, "# Recorded");
+    await saveNote(withNote.id, "# Recorded", { owner: space.tcw.did });
     await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
-    const base = (await loadNote(withNote.id))!;
+    const base = (await loadNote(withNote.id, space.tcw.did))!;
 
-    const localEdit = await saveNote(withNote.id, "# Local edit", { savedEdit: true });
+    const localEdit = await saveNote(withNote.id, "# Local edit", { savedEdit: true, owner: space.tcw.did });
     const olderRemote = "2000-01-01T00:00:00.000Z";
     space.kv.set(noteKey, noteMarkdown({ ...base, savedEditAt: olderRemote }));
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
@@ -462,21 +465,21 @@ describe("saveVoiceNote", () => {
 
     const newerRemote = "2099-01-01T00:00:00.000Z";
     space.kv.set(noteKey, noteMarkdown({ ...base, savedEditAt: newerRemote }));
-    await saveNote(withNote.id, "# Local edit, recorder write");
+    await saveNote(withNote.id, "# Local edit, recorder write", { owner: space.tcw.did });
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(newerRemote);
-    expect((await loadNote(withNote.id))?.savedEditAt).toBe(newerRemote);
+    expect((await loadNote(withNote.id, space.tcw.did))?.savedEditAt).toBe(newerRemote);
   });
 
   test("a failed read of the space note makes no put and shows a sync error", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-read-fail-${++fakeSpaceNumber}` };
     const noteKey = voiceNoteMarkdownKvKey(withNote.id);
-    await saveNote(withNote.id, "# Recorded");
+    await saveNote(withNote.id, "# Recorded", { owner: space.tcw.did });
     await saveVoiceNote(space.tcw, withNote,
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
     const stored = space.kv.get(noteKey);
-    await saveNote(withNote.id, "# Changed while offline");
+    await saveNote(withNote.id, "# Changed while offline", { owner: space.tcw.did });
     const putsBefore = puts(space.calls).length;
 
     space.failGet((key) => key === noteKey ? { code: "KV_ERROR", message: "read offline" } : null);
@@ -882,7 +885,7 @@ describe("saveVoiceNote while TinyCloud storage is full", () => {
   test("a quota error on the audio put pauses uploads: shared state set, no audio retried, text still saved, no manifest", async () => {
     const space = fakeSpace();
     const note = { ...recording, id: `rec-full-${++fakeSpaceNumber}` };
-    await saveNote(note.id, "# Keeps its text");
+    await saveNote(note.id, "# Keeps its text", { owner: space.tcw.did });
     const source = voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" });
     space.failPut((key) => key.startsWith(voiceNoteAudioKvKey(note.id)) && !key.endsWith("note.md")
       ? { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } : null);
@@ -899,7 +902,7 @@ describe("saveVoiceNote while TinyCloud storage is full", () => {
   test("while full, a later save makes no audio put and leaves storage full set", async () => {
     const space = fakeSpace();
     const note = { ...recording, id: `rec-paused-${++fakeSpaceNumber}` };
-    await saveNote(note.id, "# First draft");
+    await saveNote(note.id, "# First draft", { owner: space.tcw.did });
     const source = voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" });
     space.failPut((key) => key.startsWith(voiceNoteAudioKvKey(note.id)) && !key.endsWith("note.md")
       ? { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } : null);
@@ -920,7 +923,7 @@ describe("saveVoiceNote while TinyCloud storage is full", () => {
   test("after a successful write clears the state, the next upload stores the audio", async () => {
     const space = fakeSpace();
     const note = { ...recording, id: `rec-resume-${++fakeSpaceNumber}` };
-    await saveNote(note.id, "# Resumes");
+    await saveNote(note.id, "# Resumes", { owner: space.tcw.did });
     const source = voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" });
     space.failPut((key) => key.startsWith(voiceNoteAudioKvKey(note.id)) && !key.endsWith("note.md")
       ? { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } : null);

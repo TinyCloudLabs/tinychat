@@ -1,4 +1,4 @@
-// Notes that reach the space through reconcileAll (relaunch, the sign-in claim, Save now) are handed
+// Notes that reach the space through reconcileAll (relaunch, an explicit account claim, Save now) are handed
 // to the transcriber once, with their committed options, exactly as a note saved on Stop is.
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -180,6 +180,8 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     const signedOut = await s.fake.plugin.stop();
     expect(signedOut.owner).toBeNull();
     const cloud = await s.recordFor(s.tcw.did);
+    // TC-2785: a completed signed-out note needs an explicit active-account claim.
+    await s.fake.plugin.claim({ id: signedOut.id, did: s.tcw.did, evidence: "user_choice" });
     await s.signInAs(s.tcw.did, "on-device");
     await s.fake.plugin.start();
     const onDevice = await s.fake.plugin.stop();
@@ -236,7 +238,10 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     const stale = s.handOver();
     await s.pipeline.reconcileAll(s.ctx(), "reconcile", stale);
     await tick();
+    expect((await s.fake.plugin.listPending()).recordings.find((entry) => entry.id === other.id)).toBeUndefined();
+    await s.signInAs("did:test:someone-else");
     expect((await s.fake.plugin.listPending()).recordings.find((entry) => entry.id === other.id)?.ledger?.audio.state).toBe("pending");
+    await s.signInAs(s.tcw.did);
     expect(s.runs).toEqual([]);
 
     const mine = await s.recordFor(s.tcw.did);

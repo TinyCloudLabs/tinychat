@@ -23,3 +23,5 @@ export type ExtraPinRegistrar = (check: (owner: string, id: string) => boolean |
 export function connectHeldConflictPins(registerExtraPins: ExtraPinRegistrar): () => void {
   return registerExtraPins(hasHeldConflictPin);
 }
+
+export function clearHeldConflictPins(): void { conflicts.clear(); }
