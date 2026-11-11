@@ -18,12 +18,14 @@ import { THREADS_SQL_DB_NAME } from "./threadKeys";
 import {
   type OwnedShareIndexEntry,
   isShareId,
-  listShareIndexKeys,
+  listKvKeys,
   parseKvValue,
   parseOwnedShareIndexEntry,
+  SHARE_INDEX_KEY_PREFIX,
   shareIndexKeyFor,
   snapshotKeyFor,
 } from "./shareRecords";
+import { addSharedWithMe, readSharedWithMe, removeSharedWithMe, type SharedWithMeRecord } from "./sharedWithMe";
 
 const SHARE_FORMAT = "tinychat.share";
 const SHARE_VERSION = 1;
@@ -34,7 +36,6 @@ const SNAPSHOT_MAX_BYTES = 256 * 1024;
 // Node-side cap on the viewer read: the snapshot cap plus headroom for the response envelope.
 const SNAPSHOT_RESPONSE_MAX_BYTES = SNAPSHOT_MAX_BYTES + 64 * 1024;
 const SHARE_TOKEN_PREFIX = "tcchat1:";
-const STORAGE_KEY = "tinychat:shared-with-me:v1";
 const DEFAULT_SHARE_DURATION_DAYS = 7;
 
 // Version 1: SQL share created before snapshots. Still accepted so existing links open.
@@ -174,41 +175,26 @@ function shareLinkForToken(token: string): string {
   return url.toString();
 }
 
-function storage(): Storage | null {
-  try {
-    return typeof window !== "undefined" ? window.localStorage : null;
-  } catch {
-    return null;
-  }
-}
+let decodedFrom: SharedWithMeRecord[] | null = null;
+let decodedShares: StoredTinychatShare[] = [];
 
+// The signed-in account's shares (sharedWithMe.ts), newest first; empty while signed out.
+// A record whose token no longer decodes, or decodes to another share, is skipped.
 export function listStoredTinychatShares(): StoredTinychatShare[] {
-  const store = storage();
-  if (!store) return [];
-
-  try {
-    const parsed = JSON.parse(store.getItem(STORAGE_KEY) ?? "[]") as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is StoredTinychatShare =>
-        Boolean(
-          item &&
-            typeof item === "object" &&
-            (item as StoredTinychatShare).format === SHARE_FORMAT &&
-            typeof (item as StoredTinychatShare).token === "string",
-        ),
-      )
-      .filter((item) => new Date(item.expiresAt).getTime() > Date.now())
-      .sort((a, b) => Date.parse(b.acceptedAt) - Date.parse(a.acceptedAt));
-  } catch {
-    return [];
+  const records = readSharedWithMe();
+  if (records !== decodedFrom) {
+    decodedFrom = records;
+    decodedShares = records.flatMap((record) => {
+      if (!record.token) return [];
+      try {
+        const payload = decodeTinychatShareToken(record.token);
+        return payload.id === record.id ? [{ ...payload, acceptedAt: record.addedAt, token: record.token }] : [];
+      } catch {
+        return [];
+      }
+    });
   }
-}
-
-function writeStoredTinychatShares(shares: StoredTinychatShare[]): void {
-  const store = storage();
-  if (!store) return;
-  store.setItem(STORAGE_KEY, JSON.stringify(shares));
+  return decodedShares.filter((share) => Date.parse(share.expiresAt) > Date.now());
 }
 
 function storeTinychatShare(
@@ -220,14 +206,8 @@ function storeTinychatShare(
     throw new Error("This share link has expired");
   }
 
-  const share: StoredTinychatShare = {
-    ...payload,
-    acceptedAt: storedAt,
-    token,
-  };
-  const existing = listStoredTinychatShares().filter((item) => item.id !== share.id);
-  writeStoredTinychatShares([share, ...existing]);
-  return share;
+  void addSharedWithMe({ id: payload.id, addedAt: storedAt, expiresAt: payload.expiresAt, token });
+  return { ...payload, acceptedAt: storedAt, token };
 }
 
 export function saveTinychatShareToken(token: string): StoredTinychatShare {
@@ -375,7 +355,7 @@ export async function createTinychatShareLink(
 export async function listOwnedTinychatShares(tcw: TinyCloudWeb): Promise<OwnedTinychatShare[]> {
   // While paused the owner list is empty: no index listing and no lapsed-share cleanup.
   if (CHAT_SHARING_PAUSED) return [];
-  const indexKeys = await listShareIndexKeys(tcw);
+  const indexKeys = await listKvKeys(tcw, SHARE_INDEX_KEY_PREFIX);
 
   const now = Date.now();
   const shares: OwnedTinychatShare[] = [];
@@ -438,7 +418,7 @@ export async function stopOwnedTinychatShare(
     if (!deleted.ok) return { ok: false, stage };
     const removedIndex = await tcw.kv.delete(indexKey);
     if (!removedIndex.ok) return { ok: false, stage };
-    writeStoredTinychatShares(listStoredTinychatShares().filter((share) => share.id !== shareId));
+    void removeSharedWithMe(shareId, entry.expiresAt);
     return { ok: true };
   } catch {
     return { ok: false, stage };

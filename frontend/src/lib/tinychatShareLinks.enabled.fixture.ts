@@ -1,6 +1,7 @@
 // Runs only inside a child `bun test` process (see tinychatShareLinks.test.ts),
 // so the chatSharing mock cannot reach the paused-behaviour tests.
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { bindSharedWithMe, resetSharedWithMeForTests, SHARED_WITH_ME_KEY_PREFIX } from "./sharedWithMe";
 // The paused behaviour is covered in tinychatShareLinks.paused.test.ts.
 mock.module("./chatSharing", () => ({
   CHAT_SHARING_PAUSED: false,
@@ -107,6 +108,7 @@ function fakeChatTcw(
     },
   };
   const tcw = {
+    did: "did:pkh:eip155:1:0x0000000000000000000000000000000000000a11",
     sql: { db: () => db },
     kv: {
       put: async (key: string, value: string) => {
@@ -155,6 +157,7 @@ function fakeChatTcw(
 }
 
 afterEach(() => {
+  resetSharedWithMeForTests();
   (globalThis as { window?: unknown }).window = originalWindow;
   (globalThis as { HTMLElement?: unknown }).HTMLElement = originalHTMLElement;
   (globalThis as { customElements?: unknown }).customElements = originalCustomElements;
@@ -400,7 +403,9 @@ describe("tinychat share links", () => {
       await loadShareModule();
     installStorage();
     const chat = fakeChatTcw();
+    await bindSharedWithMe(chat.tcw);
     const result = await createTinychatShareLink(chat.tcw, "thread-a");
+    expect(listStoredTinychatShares()).toMatchObject([{ id: result.payload.id, token: result.token }]);
 
     expect(await listOwnedTinychatShares(chat.tcw)).toMatchObject([
       { shareId: result.payload.id, threadId: "thread-a", title: "Thread A" },
@@ -409,7 +414,9 @@ describe("tinychat share links", () => {
     expect(await stopOwnedTinychatShare(chat.tcw, result.payload.id)).toEqual({ ok: true });
 
     expect(chat.revoked).toEqual(["cid-sdk-token-1"]);
-    expect(chat.kv.size).toBe(0);
+    // Only the shared-with-me tombstone is left, and it no longer carries the link.
+    expect([...chat.kv.keys()]).toEqual([`${SHARED_WITH_ME_KEY_PREFIX}${result.payload.id}`]);
+    expect(chat.kv.get(`${SHARED_WITH_ME_KEY_PREFIX}${result.payload.id}`)).not.toContain(result.token);
     expect(await listOwnedTinychatShares(chat.tcw)).toEqual([]);
     expect(listStoredTinychatShares()).toEqual([]);
   });
@@ -426,6 +433,7 @@ describe("tinychat share links", () => {
     const { findStoredTinychatShareForThread, listStoredTinychatShares, saveTinychatShareToken } =
       await loadShareModule();
     installStorage();
+    await bindSharedWithMe(fakeChatTcw().tcw);
 
     const first = saveTinychatShareToken(token("2999-01-01T00:00:00.000Z", "same"));
     const second = saveTinychatShareToken(token("2999-01-01T00:00:00.000Z", "same"));
@@ -451,6 +459,7 @@ describe("tinychat share links", () => {
     const { findStoredTinychatShareForThread, saveCreatedTinychatShare } =
       await loadShareModule();
     installStorage();
+    await bindSharedWithMe(fakeChatTcw().tcw);
     const expiresAt = "2999-01-01T00:00:00.000Z";
     const shareToken = token(expiresAt, "created-share");
     const payload = {
@@ -550,6 +559,7 @@ describe("tinychat share links", () => {
     } = await loadShareModule();
     installStorage();
     const chat = fakeChatTcw({ failRevoke: true });
+    await bindSharedWithMe(chat.tcw);
     const result = await createTinychatShareLink(chat.tcw, "thread-a");
     const before = new Map(chat.kv);
 
@@ -598,7 +608,9 @@ describe("tinychat share links", () => {
     installStorage();
     const flags = { failDelete: true };
     const chat = fakeChatTcw(flags);
+    await bindSharedWithMe(chat.tcw);
     const result = await createTinychatShareLink(chat.tcw, "thread-a");
+    expect(listStoredTinychatShares()).toHaveLength(1);
     expect(await stopOwnedTinychatShare(chat.tcw, result.payload.id)).toEqual({ ok: false, stage: "cleanup" });
 
     flags.failDelete = false;
