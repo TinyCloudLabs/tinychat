@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { FOREGROUND_QUIET_MS, foregroundDatabase, inBackground, inForeground, laneSnapshot, resetLanesForTests, whenForegroundIdle } from "./requestLanes";
+import { FOREGROUND_COUNT_MAX_MS, FOREGROUND_QUIET_MS, foregroundDatabase, inBackground, inForeground, laneSnapshot, resetLanesForTests, whenForegroundIdle } from "./requestLanes";
 
 function gate() {
   let open!: () => void;
@@ -96,4 +96,16 @@ test("whenForegroundIdle resolves only after foreground calls on a wrapped datab
   jest.advanceTimersByTime(FOREGROUND_QUIET_MS);
   await flush();
   expect(idle).toBe(true);
+});
+
+test("a foreground call that never answers stops holding background work after the cap", async () => {
+  const started: string[] = [];
+  void inForeground(() => new Promise<void>(() => {})); // the node never answers
+  void inBackground(async () => { started.push("copy"); });
+  jest.advanceTimersByTime(FOREGROUND_COUNT_MAX_MS - 1);
+  await flush();
+  expect(started).toEqual([]);
+  jest.advanceTimersByTime(1 + FOREGROUND_QUIET_MS);
+  await flush();
+  expect(started).toEqual(["copy"]);
 });

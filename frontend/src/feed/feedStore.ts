@@ -385,8 +385,10 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       try {
         return await loadFeed(focused);
       } catch (error) {
-        // A registry table this device created earlier is gone: create it again once.
-        if (!(error instanceof Error && /no such table/i.test(error.message)) || !hasLocalMarker(schemaMarker)) throw error;
+        // The device skipped the registry CREATE batch on its marker. Feed errors are
+        // redacted ("SQL operation failed"), so a missing table can't be told apart:
+        // on any failure, drop the marker and retry once with the (idempotent) batch.
+        if (!hasLocalMarker(schemaMarker)) throw error;
         clearLocalMarker(schemaMarker);
         schema = undefined;
         return loadFeed(focused);

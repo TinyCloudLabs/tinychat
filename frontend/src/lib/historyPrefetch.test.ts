@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 
 import { createPrefetchQueue, type ThreadFetcher } from "./historyPrefetch";
-import { resetLanesForTests } from "./localFirst/requestLanes";
+import { inForeground, resetLanesForTests } from "./localFirst/requestLanes";
 import type { ThreadDoc } from "./threadStore";
 
 // ── Test helpers ─────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ describe("createPrefetchQueue", () => {
     expect(lanes).toEqual(["c:background", "a:foreground", "b:background"]);
   });
 
-  it("a hydrated copy that matches the list is not fetched again; a changed one is re-copied and served meanwhile", async () => {
+  it("a hydrated copy that matches the list is not fetched again; a changed one is re-copied and not served until then", async () => {
     const m = manualFetcher();
     const q = createPrefetchQueue(m.fetcher);
     const fresh = makeDoc("fresh");
@@ -278,7 +278,7 @@ describe("createPrefetchQueue", () => {
     q.enqueueAll(["fresh", "changed"], new Map([["fresh", fresh.updatedAt], ["changed", "2026-06-05T00:00:00.000Z"]]));
     await tick();
     expect(m.calls).toEqual(["changed"]);
-    expect(q.get("changed")).toEqual(old); // the stale copy still opens instantly
+    expect(q.get("changed")).toBeUndefined(); // never shown once the list says it changed
 
     const updated = makeDoc("changed");
     m.resolve("changed", updated);
@@ -300,5 +300,32 @@ describe("createPrefetchQueue", () => {
 
     q.invalidate("a");
     expect(removed).toEqual(["a"]);
+  });
+
+  it("opening a thread whose copy is still waiting for its background turn fetches it now", async () => {
+    const m = manualFetcher();
+    const lanes: string[] = [];
+    const q = createPrefetchQueue((id, lane) => { lanes.push(`${id}:${lane}`); return m.fetcher(id, lane); });
+    // A foreground request holds the background lane, so "a" is queued in the lane but not sent.
+    let release!: () => void;
+    const screen = inForeground(() => new Promise<void>((resolve) => { release = resolve; }));
+    q.enqueueAll(["a"]);
+    await tick();
+    expect(lanes).toEqual([]);
+
+    const opened = q.promote("a");
+    expect(lanes).toEqual(["a:foreground"]);
+    const doc = makeDoc("a");
+    m.resolve("a", doc);
+    await expect(opened).resolves.toEqual(doc);
+    release();
+    await screen;
+  });
+
+  it("a device copy read before a write does not come back after the write", () => {
+    const q = createPrefetchQueue(manualFetcher().fetcher);
+    q.invalidate("a"); // the user sent a message while the startup read was out
+    q.hydrate([makeDoc("a")]);
+    expect(q.get("a")).toBeUndefined();
   });
 });

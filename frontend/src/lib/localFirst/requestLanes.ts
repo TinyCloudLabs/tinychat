@@ -4,8 +4,8 @@
  *
  * - foreground: reads and writes for the visible screen or a user action. They
  *   start at once, always.
- * - background: the history copy, the local-copy (replica) fill, any other
- *   catch-up work. At most one runs at a time; none starts while a foreground
+ * - background: the history copy and any other catch-up work queued here. At
+ *   most one runs at a time; none starts while a foreground
  *   request is in flight, within `FOREGROUND_QUIET_MS` of the last one, or while
  *   the tab is hidden (TC-2086: a hidden tab makes no scheduled reads).
  *
@@ -19,6 +19,8 @@ export type Lane = "foreground" | "background";
 /** Background work resumes only after the foreground has been quiet this long. */
 export const FOREGROUND_QUIET_MS = 400;
 const BACKGROUND_CONCURRENCY = 1;
+/** A foreground call stops holding background work after this long, answered or not. */
+export const FOREGROUND_COUNT_MAX_MS = 20_000;
 
 interface QueuedWork {
   work: () => Promise<unknown>;
@@ -64,12 +66,21 @@ function pump(): void {
 export async function inForeground<T>(work: () => Promise<T>): Promise<T> {
   foregroundActive++;
   clearTimeout(pumpTimer);
-  try {
-    return await work();
-  } finally {
+  let counted = true;
+  const release = () => {
+    if (!counted) return;
+    counted = false;
     foregroundActive--;
     lastForegroundEnd = Date.now();
     pump();
+  };
+  // A response that never arrives must not hold background work for the session.
+  const cap = setTimeout(release, FOREGROUND_COUNT_MAX_MS);
+  try {
+    return await work();
+  } finally {
+    clearTimeout(cap);
+    release();
   }
 }
 
