@@ -23,6 +23,8 @@ mod ipc_selftest_probes;
 #[cfg(feature = "transcription")]
 mod local;
 #[cfg(feature = "transcription")]
+mod record_launch;
+#[cfg(feature = "transcription")]
 mod local_url;
 #[cfg(feature = "transcription")]
 mod session_audio;
@@ -213,6 +215,12 @@ pub fn run() {
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
+            // Shortcut and menu-bar item start a recording. Neither is required
+            // for the app to work, so a failure is logged, not fatal.
+            if let Err(error) = record_launch::install(app) {
+                tracing::error!(target: "exo_dev::record_launch", operation = "install",
+                    error = %error);
+            }
             #[cfg(any(debug_assertions, feature = "ipc-selftest"))]
             ipc_selftest::maybe_run(app);
             // EXO_SMOKE=1 runs real plugin invokes in the webview (debug only).
