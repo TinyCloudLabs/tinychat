@@ -249,6 +249,17 @@ describe("parseSseJson", () => {
     }
     expect(out).toEqual([{ a: 1 }]);
   });
+  it("skips empty data keepalives before yielding the next payload", async () => {
+    const out: unknown[] = [];
+    for await (const value of parseSseJson(sseStream([
+      "data:\n\n",
+      dataFrame({ a: 1 }),
+      "data: [DONE]\n\n",
+    ]))) {
+      out.push(value);
+    }
+    expect(out).toEqual([{ a: 1 }]);
+  });
 });
 
 describe("orchestrateToolCalling", () => {

@@ -336,6 +336,7 @@ export async function* parseSseJson(
           const line = rawLine.trimStart();
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
+          if (!data) continue;
           if (data === "[DONE]") return;
           let value: unknown;
           try { value = JSON.parse(data); } catch { throw new StreamFailure("upstream_incomplete"); }
