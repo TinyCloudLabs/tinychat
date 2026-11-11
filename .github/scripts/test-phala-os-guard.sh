@@ -24,8 +24,7 @@ os_json() { # <is_dev> <name> <hash>
 }
 os_json_with_nul() { # <is_dev> <name-or-nul> <hash-or-nul>
   jq -nc --argjson dev "$1" --arg name "$2" --arg hash "$3" \
-    --arg nul '\u0000' \
-    '{name: "cvm", os: {is_dev: $dev, name: (if $name == "nul" then (if $dev then "dstack-dev-0.5.12" else "dstack-0.5.12" end) + $nul else $name end), os_image_hash: (if $hash == "nul" then (if $dev then "e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b" else "8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd" end) + $nul else $hash end)}}'
+    '{name: "cvm", os: {is_dev: $dev, name: (if $name == "nul" then (if $dev then "dstack-dev-0.5.12" else "dstack-0.5.12" end) + "\u0000" else $name end), os_image_hash: (if $hash == "nul" then (if $dev then "e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b" else "8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd" end) + "\u0000" else $hash end)}}'
 }
 
 
