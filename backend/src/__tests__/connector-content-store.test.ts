@@ -625,6 +625,23 @@ describe("W4 content store — fail closed", () => {
       writeIndex(source: string, address: string, blob: SealedBlob) {
         return this.delegate.writeIndex(source, address, blob);
       }
+      readKeyFailureSince(source: string, address: string) {
+        return this.delegate.readKeyFailureSince(source, address);
+      }
+      writeKeyFailureSince(
+        source: string,
+        address: string,
+        firstFailureAt: string,
+      ) {
+        return this.delegate.writeKeyFailureSince(
+          source,
+          address,
+          firstFailureAt,
+        );
+      }
+      clearKeyFailureSince(source: string, address: string) {
+        return this.delegate.clearKeyFailureSince(source, address);
+      }
       read(source: string, address: string, sourceId: string) {
         return this.delegate.read(source, address, sourceId);
       }
@@ -677,6 +694,20 @@ describe("W4 content store — fail closed", () => {
     const result = await store.upsert(upsertInput({ sourceId: "mtg-kv" }));
     expect(result.ok).toBe(false);
     expect(node.store.size).toBe(0);
+  });
+  test("the KV adapter persists and clears the content-key failure horizon", async () => {
+    const node = new FakeNode();
+    const blobs = new KvContentBlobStore(node as unknown as TinyCloudNode);
+    const failedAt = new Date(T0).toISOString();
+
+    await blobs.writeKeyFailureSince(SOURCE, ADDRESS_A, failedAt);
+    expect(
+      node.store.get(`connector-content-key-failure/${SOURCE}/${ADDRESS_A}`),
+    ).toEqual({ firstFailureAt: failedAt });
+    expect(await blobs.readKeyFailureSince(SOURCE, ADDRESS_A)).toBe(failedAt);
+
+    await blobs.clearKeyFailureSince(SOURCE, ADDRESS_A);
+    expect(await blobs.readKeyFailureSince(SOURCE, ADDRESS_A)).toBeNull();
   });
 
   test("[delta-10] a KV read that resolves {ok:false} never reads as an empty archive", async () => {
@@ -1074,15 +1105,88 @@ describe("W4 content store — retention", () => {
       });
 
       expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
-      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key")).toBeNull();
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key")).not.toBeNull();
       expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-under-wrong-key")).not.toBeNull();
-      expect(
-        (await blobs.listContentIds(SOURCE, ADDRESS_A)).map(({ sourceId }) => sourceId),
-      ).toEqual(["mtg-young-under-wrong-key"]);
-      expect(errors.some((line) => line.includes("aid="))).toBe(true);
+      expect(errors.filter((line) => line.includes("first_failure=true"))).toHaveLength(1);
       expect(errors.join(" ")).not.toContain(ADDRESS_A);
+
+      clock.now = T0 + 28 * DAY_MS;
+      const expired = await wrongKeyStore.sweepRetention({
+        source: SOURCE,
+        address: ADDRESS_A,
+      });
+      expect(expired.swept).toBe(2);
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key")).toBeNull();
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-under-wrong-key")).toBeNull();
+      expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
     } finally {
       console.error = originalError;
+    }
+  });
+  test("a missing content master alerts once, waits out the retention horizon, then sweeps aged blobs", async () => {
+    const blobs = new InMemoryContentBlobStore();
+    const clock = { now: T0 };
+    let unavailable = false;
+    const store = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => {
+        if (unavailable) throw new Error("master unavailable");
+        return CONTENT_MASTER;
+      },
+    });
+    await store.upsert(upsertInput({ sourceId: "mtg-master-old" }));
+    clock.now = T0 + 13 * DAY_MS;
+    await store.upsert(upsertInput({ sourceId: "mtg-master-at-failure" }));
+
+    const logs = captureLogs();
+    try {
+      unavailable = true;
+      expect(
+        await store.deleteReconciled(SOURCE, ADDRESS_A),
+      ).toEqual({ removed: 0 });
+      expect(
+        await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+      ).toMatchObject({ swept: 0, unreadableIndex: true });
+      expect(
+        await blobs.read(SOURCE, ADDRESS_A, "mtg-master-old"),
+      ).not.toBeNull();
+      expect(
+        await blobs.read(SOURCE, ADDRESS_A, "mtg-master-at-failure"),
+      ).not.toBeNull();
+      expect(
+        logs.lines.filter((line) => line.includes("first_failure=true")),
+      ).toHaveLength(1);
+      expect(logs.lines.join(" ")).not.toContain(ADDRESS_A);
+
+      clock.now = T0 + 27 * DAY_MS;
+      const recoveredWriter = new ContentStore(blobs, {
+        now: () => clock.now,
+        master: () => CONTENT_MASTER,
+      });
+      await recoveredWriter.upsert(
+        upsertInput({ sourceId: "mtg-master-young" }),
+      );
+
+      expect(await store.deleteReconciled(SOURCE, ADDRESS_A)).toEqual({
+        removed: 2,
+      });
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-master-old")).toBeNull();
+      expect(
+        await blobs.read(SOURCE, ADDRESS_A, "mtg-master-at-failure"),
+      ).toBeNull();
+      expect(
+        await blobs.read(SOURCE, ADDRESS_A, "mtg-master-young"),
+      ).not.toBeNull();
+
+      unavailable = false;
+      expect(
+        await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+      ).toMatchObject({ swept: 2, unreadableIndex: false });
+      expect(
+        (await store.list(SOURCE, ADDRESS_A)).map(({ sourceId }) => sourceId),
+      ).toEqual(["mtg-master-young"]);
+    } finally {
+      logs.restore();
     }
   });
   test("[delta-05] a legacy tombstone without an expiry is not kept", async () => {
