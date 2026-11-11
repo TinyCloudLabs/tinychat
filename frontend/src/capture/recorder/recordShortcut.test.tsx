@@ -148,13 +148,13 @@ describe("useRecordShortcut", () => {
   test("a second press while waiting restarts the wait", async () => {
     const native = nativeRequests();
     const off = recorder({ available: false });
-    await render(true, off.target, native.requests, 80);
+    await render(true, off.target, native.requests, 200);
     await native.press();
-    await act(async () => { await Bun.sleep(50); });
+    await act(async () => { await Bun.sleep(120); });
     await native.press();
-    // Past the first press's wait, within the second's.
-    await act(async () => { await Bun.sleep(50); });
-    await render(true, { ...off.target, available: true }, native.requests, 80);
+    // Past the first press's wait (200), within the second's (320). Timers fire in deadline order.
+    await act(async () => { await Bun.sleep(120); });
+    await render(true, { ...off.target, available: true }, native.requests, 200);
     expect(off.calls).toEqual(["record"]);
   });
 

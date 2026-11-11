@@ -382,7 +382,9 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const openSheet = useCallback(() => setSheetOpen(true), []);
   useLimitNotifications(state, openSheet);
   // The Mac app's shortcut and menu-bar Start recording: the same Record (or open recorder) as the buttons.
-  useRecordShortcut(platform === "tauri", { available: recorder.available, ready: state.ready, active: recorderActive(state), record, openSheet });
+  // A discard still finishing is not ready yet: the request waits for it instead of being refused.
+  useRecordShortcut(platform === "tauri", { available: recorder.available, ready: state.ready && state.phase !== "discarding",
+    active: recorderActive(state), record, openSheet });
   const minimiseSheet = useCallback(async () => {
     if (state.permissionDenied) await recorder.dismissShortcutRecovery();
     setMomentFieldFocused(false);
