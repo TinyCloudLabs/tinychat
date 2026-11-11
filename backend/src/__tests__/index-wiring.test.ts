@@ -51,6 +51,7 @@ async function runIsolatedStartup(
   options: {
     contentIndexes?: readonly { source: string; address: string }[];
     contentIndexDirectory?: () => Promise<readonly { source: string; address: string }[]>;
+    contentCustodyValid?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -58,6 +59,7 @@ async function runIsolatedStartup(
   let agentConfig: any;
   const stopped = new Error("synthetic-startup-stopped");
   const retentionSweeps: { source: string; address: string }[] = [];
+  const contentCustodyChecks: boolean[] = [];
   let finishRetentionSweep!: () => void;
   const retentionSweepDone = new Promise<void>((resolve) => {
     finishRetentionSweep = resolve;
@@ -81,7 +83,11 @@ async function runIsolatedStartup(
     cors: middleware,
     "./services/content-store.js": {
       createContentIndexDirectory: () => options.contentIndexDirectory ?? (async () => options.contentIndexes ?? []),
-      validateContentCustodyConfig: () => ({ ok: true }),
+      validateContentCustodyConfig: () => {
+        const valid = options.contentCustodyValid ?? true;
+        contentCustodyChecks.push(valid);
+        return valid ? { ok: true } : { ok: false, error: "content master missing" };
+      },
       KvContentBlobStore: class {},
       ContentStore: class {
         async sweepRetention(index: { source: string; address: string }) {
@@ -175,7 +181,7 @@ async function runIsolatedStartup(
   } catch (error) {
     if (error !== stopped) logs.push(error instanceof Error ? error.message : String(error));
   }
-  return { calls, logs, agentConfig, retentionSweeps, retentionSweepDone };
+  return { calls, logs, agentConfig, contentCustodyChecks, retentionSweeps, retentionSweepDone };
 }
 
 test("disabled backend ingest starts retention over every listed content index", async () => {
@@ -187,6 +193,16 @@ test("disabled backend ingest starts retention over every listed content index",
   await result.retentionSweepDone;
   expect(result.calls).toContain("ingest-supervisor-start");
   expect(result.retentionSweeps).toEqual([{ ...index, safetyMarginMs: 5 * 60_000 }]);
+});
+test("content custody remains required when backend ingest is disabled", async () => {
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV },
+    { contentCustodyValid: false },
+  );
+
+  expect(result.contentCustodyChecks).toEqual([false]);
+  expect(result.calls).toContain("exit");
+  expect(result.calls).not.toContain("agent-router");
 });
 test("a failed startup index listing does not prevent backend startup", async () => {
   const result = await runIsolatedStartup(
@@ -736,7 +752,11 @@ test("shutdown holds the exit until an in-flight retention pass stops", async ()
   expect(await exited.promise).toBe(0);
 });
 
-const envBase = { BACKEND_PRIVATE_KEY: "test-only-private-key", PORT: "0" };
+const envBase = {
+  BACKEND_PRIVATE_KEY: "test-only-private-key",
+  CONNECTOR_CONTENT_MASTER: randomBytes(32).toString("hex"),
+  PORT: "0",
+};
 const privateCloud = load("./services/private-cloud-transcription.ts");
 const hosted = load("./services/assemblyai-hosted.ts");
 const transcription = load("./services/transcription-api.ts");
@@ -1039,6 +1059,12 @@ const ptxEnv = {
 };
 
 describe("backend entry-point HTTP and lifecycle guards", () => {
+  test("requires content custody key with backend ingest disabled", async () => {
+    const boot = await bootIndex({ CONNECTOR_CONTENT_MASTER: undefined });
+
+    expect(boot.exits).toEqual([1]);
+    expect(boot.url).toBeNull();
+  });
   test("Stripe receives raw bytes without a CSRF header; unauthenticated NRAS rejects before its large parser", async () => {
     const boot = await bootIndex();
     const body = '{ "event" : "test" }';

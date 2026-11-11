@@ -850,6 +850,13 @@ export class ContentStore implements ContentSink, RetentionGuard {
         tombstones,
       });
 
+      for (const meta of swept) {
+        await this.blobs.remove(
+          target.source,
+          target.address,
+          meta.sourceId,
+        );
+      }
       const retainedIds = new Set(keep.map((meta) => meta.sourceId));
       for (const blob of await this.blobs.listContentIds(
         target.source,
