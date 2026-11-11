@@ -50,6 +50,8 @@ export interface Sandbox {
 export interface SandboxLauncher {
   /** Whether the bot has ever run, i.e. has a session to list. */
   hasState(layout: BotLayout): boolean;
+  /** Whether the bot's last sandbox ended without a confirmed teardown, so it may still be running. */
+  leftover(layout: BotLayout): boolean;
   launch(layout: BotLayout): Promise<Sandbox>;
 }
 
@@ -170,6 +172,8 @@ export class Bot {
   #listing = 0;
   #settled = true;
   #idle: Timer | undefined;
+  /** This bot holds one BOTS_MAX_RUNNING place: for its sandbox, or for a leftover whose end is unconfirmed. */
+  #hasPlace = false;
 
   constructor(layout: BotLayout, launcher: SandboxLauncher, options: BotOptions, running: RunningLimit) {
     this.layout = layout;
@@ -302,14 +306,18 @@ export class Bot {
     this.#starting ??= (async () => {
       // Never launch over a sandbox still being torn down: both would use the same state tmpfs and snapshot.
       await this.#stopping;
-      // At the cap a start is refused, never squeezed into memory the running bots may need.
-      if (!this.#running.take()) throw new Error("BOTS_MAX_RUNNING sandboxes already running");
+      // At the cap a start is refused, never squeezed into memory the running bots may need. A leftover's place
+      // passes to the next start, which first ends the leftover.
+      if (!this.#hasPlace) {
+        if (!this.#running.take()) throw new Error("BOTS_MAX_RUNNING sandboxes already running");
+        this.#hasPlace = true;
+      }
       const started = Date.now();
       let sandbox: Sandbox;
       try {
         sandbox = await this.#launcher.launch(this.layout);
       } catch (error) {
-        this.#running.release();
+        this.#releasePlace();
         throw error;
       }
       log("started", this.layout.botId, { ms: Date.now() - started });
@@ -321,9 +329,10 @@ export class Bot {
         void sandbox.snapshot();
         this.#armIdle();
       });
-      // `exited` settles after the sandbox's state is saved and unmounted, so its place frees only then.
+      // `exited` settles once the teardown is over, so the place frees only after the state is saved and unmounted,
+      // and not at all while the end is unconfirmed.
       void sandbox.exited.then(() => {
-        this.#running.release();
+        this.#releasePlace();
         if (this.#sandbox !== sandbox) return;
         this.#sandbox = undefined;
         this.#clearIdle();
@@ -334,6 +343,13 @@ export class Bot {
       this.#starting = undefined;
     });
     return this.#starting;
+  }
+
+  /** Gives the bot's place back, unless a leftover of it may still be running. */
+  #releasePlace(): void {
+    if (!this.#hasPlace || this.#launcher.leftover(this.layout)) return;
+    this.#hasPlace = false;
+    this.#running.release();
   }
 
   async #stop(sandbox: Sandbox): Promise<void> {

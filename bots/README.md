@@ -70,7 +70,8 @@ All sandboxes together sit under one parent cgroup (`/bots`) capped at `BOTS_TOT
 (`/bots/restore`), outside the bot's own cgroup, so each running bot counts there as `BOTS_SANDBOX_MEMORY_MB +
 BOTS_STATE_MB`. `BOTS_MAX_RUNNING` caps how many bots run at once (default `BOTS_TOTAL_MEMORY_MB /
 (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)`, 3); the supervisor refuses to start if that many would not fit, and a
-message or history request that would start a bot past the cap gets `bot_unavailable`. The whole supervisor
+message or history request that would start a bot past the cap gets `bot_unavailable`. A bot whose last stop was
+not confirmed (see Saved state) keeps its place until its next start confirms the end. The whole supervisor
 container sits at `mem_limit: 7g` in the compose, so many bots cannot starve the gateway or the ingress. Size the CVM
 as the supervisor's `mem_limit` plus about 1 GiB.
 

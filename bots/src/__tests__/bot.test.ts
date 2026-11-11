@@ -51,7 +51,7 @@ const OPTIONS = { idleMs: 60_000, turnTimeoutMs: 300_000, maxTurnBytes: 16 };
 
 function setup() {
   const sandbox = new FakeSandbox();
-  const launcher: SandboxLauncher = { hasState: () => true, launch: async () => sandbox };
+  const launcher: SandboxLauncher = { hasState: () => true, leftover: () => false, launch: async () => sandbox };
   const bot = new Bot(botLayout("c".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS, new RunningLimit(1));
   return { bot, sandbox };
 }
@@ -189,6 +189,7 @@ describe("history", () => {
     let launched = false;
     const launcher: SandboxLauncher = {
       hasState: () => false,
+      leftover: () => false,
       launch: async () => {
         launched = true;
         return new FakeSandbox();
@@ -218,7 +219,7 @@ describe("running cap", () => {
     const running = new RunningLimit(1);
     const sandboxes = [new FakeSandbox(), new FakeSandbox()];
     let launches = 0;
-    const launcher: SandboxLauncher = { hasState: () => true, launch: async () => sandboxes[launches++]! };
+    const launcher: SandboxLauncher = { hasState: () => true, leftover: () => false, launch: async () => sandboxes[launches++]! };
     const roots = { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" };
     const first = new Bot(botLayout("e".repeat(64), roots), launcher, OPTIONS, running);
     const second = new Bot(botLayout("f".repeat(64), roots), launcher, OPTIONS, running);
@@ -241,5 +242,49 @@ describe("running cap", () => {
     expect(launches).toBe(2);
     sandboxes[1]!.emit({ type: "prompt_result", id: secondId, status: "completed", agentInvoked: true, sessionSettled: true });
     await secondTurn;
+  });
+
+  test("an unconfirmed leftover keeps its place: with the cap at N, a leftover and N-1 running bots refuse the next start", async () => {
+    const max = 3;
+    const running = new RunningLimit(max);
+    const leftovers = new Set<string>();
+    const sandboxes = Array.from({ length: max + 1 }, () => new FakeSandbox());
+    let launches = 0;
+    const launcher: SandboxLauncher = {
+      hasState: () => true,
+      leftover: layout => leftovers.has(layout.botId),
+      launch: async () => sandboxes[launches++]!,
+    };
+    const roots = { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" };
+    const bots = ["1", "2", "3", "4"].map(c => new Bot(botLayout(c.repeat(64), roots), launcher, OPTIONS, running));
+    const converse = async (bot: Bot, sandbox: FakeSandbox) => {
+      const turn = bot.send("hi", recorder().sink);
+      sandbox.emit({ type: "prompt_result", id: await sandbox.prompted.promise, status: "completed", agentInvoked: true, sessionSettled: true });
+      await turn;
+    };
+
+    // Bot 1 runs, then its teardown ends unconfirmed: a leftover that may still run.
+    await converse(bots[0]!, sandboxes[0]!);
+    leftovers.add(bots[0]!.layout.botId);
+    await bots[0]!.stop();
+    // N-1 more bots run.
+    await converse(bots[1]!, sandboxes[1]!);
+    await converse(bots[2]!, sandboxes[2]!);
+    const refused = recorder();
+    await bots[3]!.send("hi", refused.sink);
+    expect(refused.events).toEqual([
+      ["status", "starting"],
+      ["error", "bot_unavailable"],
+    ]);
+    expect(launches).toBe(3);
+
+    // Bot 1's next start ends the leftover (the launcher confirms it) and reuses its place, so the cap still holds.
+    leftovers.delete(bots[0]!.layout.botId);
+    await converse(bots[0]!, sandboxes[3]!);
+    expect(launches).toBe(4);
+    const stillRefused = recorder();
+    await bots[3]!.send("hi", stillRefused.sink);
+    expect(stillRefused.events.at(-1)).toEqual(["error", "bot_unavailable"]);
+    expect(launches).toBe(4);
   });
 });

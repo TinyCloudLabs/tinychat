@@ -229,6 +229,10 @@ export class RunscHost implements SandboxLauncher {
     return hasSnapshot(layout.stateSnapshot);
   }
 
+  leftover(layout: BotLayout): boolean {
+    return this.#leftovers.has(layout.botId);
+  }
+
   async launch(layout: BotLayout): Promise<Sandbox> {
     if (!this.#baseSpec) throw new Error("sandbox host not initialised");
     // A sandbox whose end was not confirmed still holds its tmpfs; end it first, or refuse to start over it.
