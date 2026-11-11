@@ -35,6 +35,7 @@ import { reauthorizeHome } from "./lib/homeReauthorize";
 import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type FeatureAccessOutcome, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
 import { deferOriginMove } from "./lib/originMove";
+import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { replicationConfigPatch, startReplicationFill, stopReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -1219,6 +1220,8 @@ export function App() {
       if (!options.terminal && tcw?.did) {
         let pending: Awaited<ReturnType<typeof VoiceNotes.listPending>>["recordings"] = [];
         try {
+          // The boot install normally left an engine; if it did not, install it now so notes kept only here are found.
+          if (!captureEngineAvailable()) await enableWebCaptureEngine();
           if (captureEngineAvailable()) ({ recordings: pending } = await VoiceNotes.listPending());
         } catch {
           setError("Couldn't check whether your voice notes are saved, so you're still signed in. Try again.");

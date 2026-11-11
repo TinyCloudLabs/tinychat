@@ -98,7 +98,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
           </Routes>
         </BrowserRouter>
         <PwaPrompts />
-        {move.kind === "hold" && <OriginMoveHold initialWork={move.work} />}
+        {move.kind === "hold" && <OriginMoveHold />}
       </RootErrorBoundary>
     </StrictMode>,
   );

@@ -16,7 +16,7 @@ import {
 import { newIdbEnv } from "./voiceNotes/web/testing/idb";
 import { memoryLocks, openWebStore, recordingFromSession, type WebStore } from "./voiceNotes/web/webStore";
 import {
-  CANONICAL_ORIGIN, CANONICAL_VERSION_URL, canonicalServesThisBuild, canonicalUrlFor, countLocalOnlyRecordingWork,
+  CANONICAL_ORIGIN, CANONICAL_VERSION_URL, canonicalServesThisBuild, LEGACY_HOSTNAME, canonicalUrlFor, countLocalOnlyRecordingWork,
   decideOriginMove, deferOriginMove, isLegacyOrigin, isOriginMoveDeferred, moveWhenClear, originMoveExemption,
   type LocalRecordingWork,
 } from "./originMove";
@@ -190,45 +190,53 @@ describe("origin move", () => {
       .toEqual({ kind: "hold", work: { saving: Number.POSITIVE_INFINITY, localAudio: 0 } });
   });
 
-  /** Resolves once moveWhenClear reports a held count or replaces the location. */
+  /** Records what moveWhenClear reports (a notice's count, or the move); `reported(n)` waits for the n-th report. */
   function watcher() {
     const replaced: string[] = [];
     const seen: LocalRecordingWork[] = [];
-    let next = Promise.withResolvers<void>();
-    const report = () => { next.resolve(); next = Promise.withResolvers<void>(); };
+    let waiters: { count: number; resolve: () => void }[] = [];
+    const total = () => replaced.length + seen.length;
+    const report = () => {
+      for (const waiter of waiters) if (total() >= waiter.count) waiter.resolve();
+      waiters = waiters.filter((waiter) => total() < waiter.count);
+    };
     return {
-      replaced, seen, settled: () => next.promise,
+      replaced, seen,
+      reported: (count: number) => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        waiters.push({ count, resolve });
+        report();
+        return promise;
+      },
       location: { ...legacy, replace: (url: string) => { replaced.push(url); report(); } },
       onPending: (work: LocalRecordingWork) => { seen.push(work); report(); },
       window: new EventTarget(),
       document: Object.assign(new EventTarget(), { visibilityState: "visible" as DocumentVisibilityState }),
       opener: false,
-      canonicalReady: ready,
     };
   }
 
-  test("moveWhenClear re-checks on online and visibility, and moves to the URL of the location at move time", async () => {
+  test("moveWhenClear checks at once, re-checks on online and visibility, and moves to the URL of the location at move time", async () => {
     const w = watcher();
     let work: LocalRecordingWork = { saving: 1, localAudio: 0 };
     let checks = 0;
     const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
-      opener: w.opener, canonicalReady: w.canonicalReady,
-      upload: () => null, countWork: async () => { checks++; return work; } });
-    let settled = w.settled();
-    w.window.dispatchEvent(new Event("online"));
-    await settled;
+      opener: w.opener, canonicalReady: ready, upload: () => null, countWork: async () => { checks++; return work; } });
+    await w.reported(1);
     expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }]);
+    w.window.dispatchEvent(new Event("online"));
+    await w.reported(2);
+    expect(w.seen).toHaveLength(2);
     expect(w.replaced).toEqual([]);
 
     work = none;
     w.location.pathname = "/later";
     w.location.hash = "";
-    settled = w.settled();
     w.document.dispatchEvent(new Event("visibilitychange"));
-    await settled;
+    await w.reported(3);
     expect(w.replaced).toEqual([`${CANONICAL_ORIGIN}/later?tab=all&x=1`]);
     w.window.dispatchEvent(new Event("online"));
-    expect(checks).toBe(2);
+    expect(checks).toBe(3);
     stop();
   });
 
@@ -237,51 +245,62 @@ describe("origin move", () => {
     let live: UploadState | null = { engine: "private-cloud", fileName: "f.m4a", stage: "transcribing", uploadPct: null,
       detail: null, audio: { stage: "stored", pct: null }, error: null, savedTitle: null, cleanupPending: false };
     const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
-      opener: w.opener, canonicalReady: w.canonicalReady,
-      upload: () => live, countWork: async () => none });
-    let settled = w.settled();
-    w.window.dispatchEvent(new Event("online"));
-    await settled;
+      opener: w.opener, canonicalReady: ready, upload: () => live, countWork: async () => none });
+    await w.reported(1);
     expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }]);
 
     live = { ...live!, stage: "saved", audio: { stage: "storing", pct: 50 } };
-    settled = w.settled();
     w.window.dispatchEvent(new Event("online"));
-    await settled;
-    expect(w.seen).toHaveLength(2);
+    await w.reported(2);
+    expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }, { saving: 1, localAudio: 0 }]);
     expect(w.replaced).toEqual([]);
 
     live = { ...live, audio: { stage: "stored", pct: null } };
-    settled = w.settled();
     w.window.dispatchEvent(new Event("online"));
-    await settled;
+    await w.reported(3);
     expect(w.replaced).toEqual([canonicalUrlFor(legacy)]);
     stop();
   });
 
-  test("moveWhenClear re-checks every 30 s and stops when asked", async () => {
+  test("moveWhenClear re-checks every 30 s while something is saving, not while only audio kept here holds the visitor", async () => {
     jest.useFakeTimers();
     try {
       const w = watcher();
+      let work: LocalRecordingWork = { saving: 1, localAudio: 0 };
       let checks = 0;
       const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
-        opener: w.opener, canonicalReady: w.canonicalReady,
-        upload: () => null, countWork: async () => { checks++; return { saving: 0, localAudio: 2 }; } });
+        opener: w.opener, canonicalReady: ready, upload: () => null, countWork: async () => { checks++; return work; } });
+      await w.reported(1);
       jest.advanceTimersByTime(29_999);
-      expect(checks).toBe(0);
-      const settled = w.settled();
+      expect(checks).toBe(1);
       jest.advanceTimersByTime(1);
-      await settled;
-      expect(w.seen).toEqual([{ saving: 0, localAudio: 2 }]);
+      await w.reported(2);
+      expect(checks).toBe(2);
+
+      // Audio kept only here: the visitor stays, so the timer stops reading storage; events still re-check.
+      work = { saving: 0, localAudio: 2 };
+      jest.advanceTimersByTime(30_000);
+      await w.reported(3);
+      expect(w.seen.at(-1)).toEqual({ saving: 0, localAudio: 2 });
+      jest.advanceTimersByTime(120_000);
+      expect(checks).toBe(3);
+      work = { saving: 1, localAudio: 2 };
+      w.window.dispatchEvent(new Event("online"));
+      await w.reported(4);
+      jest.advanceTimersByTime(30_000);
+      await w.reported(5);
+      expect(checks).toBe(5);
+
       stop();
       jest.advanceTimersByTime(60_000);
       w.window.dispatchEvent(new Event("online"));
-      expect(checks).toBe(1);
+      expect(checks).toBe(5);
       expect(w.replaced).toEqual([]);
     } finally {
       jest.useRealTimers();
     }
   });
+
   test("an old-origin same-tab Google return stays, so its page can read its verifier; ordinary URLs still move", async () => {
     let reads = 0;
     const countWork = async () => { reads++; return none; };
@@ -362,63 +381,77 @@ describe("origin move", () => {
     expect(asked).toBe(0);
   });
 
-  test("a held page keeps checking, without moving, until home.tinycloud.xyz serves this build", async () => {
+  test("a held page shows no notice until home.tinycloud.xyz serves this build, and clears it while the move is blocked", async () => {
     const w = watcher();
     let servesThisBuild = false;
     let work: LocalRecordingWork = { saving: 1, localAudio: 0 };
-    let asked = Promise.withResolvers<void>();
     const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
-      opener: false, upload: () => null, countWork: async () => work,
-      canonicalReady: async () => { asked.resolve(); return servesThisBuild; } });
-    const settled = w.settled();
+      opener: false, upload: () => null, countWork: async () => work, canonicalReady: async () => servesThisBuild });
+    // Between the deploy and the domain move the notice would promise a move that cannot happen yet.
+    await w.reported(1);
     w.window.dispatchEvent(new Event("online"));
-    await settled;
-    expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }]);
+    await w.reported(2);
+    expect(w.seen).toEqual([none, none]);
 
+    servesThisBuild = true;
+    w.window.dispatchEvent(new Event("online"));
+    await w.reported(3);
+    expect(w.seen.at(-1)).toEqual({ saving: 1, localAudio: 0 });
+
+    // Saved, but the build check fails this time: no stale count is left on screen, and no move.
+    servesThisBuild = false;
     work = none;
     w.window.dispatchEvent(new Event("online"));
-    await asked.promise;
+    await w.reported(4);
+    expect(w.seen.at(-1)).toEqual(none);
     expect(w.replaced).toEqual([]);
 
-    // Asked again whether or not that check has ended (a trigger mid-check runs one more after it).
     servesThisBuild = true;
-    asked = Promise.withResolvers<void>();
-    const moved = w.settled();
     w.window.dispatchEvent(new Event("online"));
-    await moved;
+    await w.reported(5);
     expect(w.replaced).toEqual([canonicalUrlFor(legacy)]);
-    expect(w.seen).toHaveLength(1);
     stop();
   });
 
-  test("a held page never moves while something defers it, and moves once the last deferral ends", async () => {
+  test("a held page never moves while something defers it, clears its count, and moves once the last deferral ends", async () => {
     const w = watcher();
+    let work: LocalRecordingWork = { saving: 1, localAudio: 0 };
+    const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
+      opener: false, upload: () => null, countWork: async () => work, canonicalReady: ready });
+    await w.reported(1);
+    expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }]);
+
     const chatDraft = deferOriginMove();
     const noteEdit = deferOriginMove();
     expect(isOriginMoveDeferred()).toBe(true);
-    const counted = [Promise.withResolvers<void>(), Promise.withResolvers<void>(), Promise.withResolvers<void>()];
-    let checks = 0;
-    const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
-      opener: false, upload: () => null, countWork: async () => { counted[checks++]?.resolve(); return none; },
-      canonicalReady: ready });
+    work = none;
     w.window.dispatchEvent(new Event("online"));
-    await counted[0]!.promise;
-    // Checks never overlap, so the second count proves the first check ended, deferred, without moving.
-    w.window.dispatchEvent(new Event("online"));
-    await counted[1]!.promise;
+    await w.reported(2);
+    expect(w.seen.at(-1)).toEqual(none);
     expect(w.replaced).toEqual([]);
     chatDraft();
     chatDraft();
     expect(isOriginMoveDeferred()).toBe(true);
 
     // The last release is enough: nothing else is dispatched.
-    const settled = w.settled();
     noteEdit();
-    await settled;
+    await w.reported(3);
     expect(isOriginMoveDeferred()).toBe(false);
-    expect(checks).toBeGreaterThanOrEqual(2);
     expect(w.replaced).toEqual([canonicalUrlFor(legacy)]);
     stop();
+  });
+
+  test("every build publishes version.json, and home.tinycloud.xyz lets tinycloud.chat read it uncached", () => {
+    const vite = readFileSync(new URL("../../vite.config.ts", import.meta.url), "utf8");
+    const plugin = vite.slice(vite.indexOf('name: "tinychat-version-json"'));
+    expect(plugin).toContain('fileName: "version.json"');
+    expect(plugin).toContain("JSON.stringify({ commit: exoBuildInfo.commit ?? null })");
+    expect(vite).toContain("__EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo,");
+    expect(new URL(CANONICAL_VERSION_URL).pathname).toBe("/version.json");
+    const headers = readFileSync(new URL("../../public/_headers", import.meta.url), "utf8");
+    const rule = headers.slice(headers.indexOf("\n/version.json\n") + 1).split(/\n(?=\S)/)[0]!;
+    expect(rule).toContain("Cache-Control: no-store");
+    expect(rule).toContain(`Access-Control-Allow-Origin: https://${LEGACY_HOSTNAME}`);
   });
 
   test("a held transcript holds the move even when the note's audio is in the space, for every account", async () => {

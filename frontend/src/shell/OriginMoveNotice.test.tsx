@@ -1,8 +1,22 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { installReactTestEnv, mount } from "@/capture/recorder/final/shell/hookTestUtil";
 import { isOriginMoveDeferred } from "@/lib/originMove";
-import { OriginMoveNotice, originMoveNoticeText, useOriginMoveDeferral } from "./OriginMoveNotice";
+import { OriginMoveHold, OriginMoveNotice, originMoveNoticeText, useOriginMoveDeferral } from "./OriginMoveNotice";
+
+test("nothing shows before a count arrives or when nothing is left to count", () => {
+  // Before its first check reports (effects do not run here) the hold shows nothing.
+  expect(renderToStaticMarkup(<OriginMoveHold />)).toBe("");
+  expect(renderToStaticMarkup(<OriginMoveNotice work={{ saving: 0, localAudio: 0 }} />)).toBe("");
+});
+
+test("main.tsx mounts the hold for a held visitor, and moves a clear one before rendering", () => {
+  const main = readFileSync(new URL("../main.tsx", import.meta.url), "utf8");
+  expect(main).toContain('{move.kind === "hold" && <OriginMoveHold />}');
+  expect(main).toContain("decideOriginMove({ location: window.location, opener: window.opener != null })");
+  expect(main.indexOf("window.location.replace(move.url)")).toBeLessThan(main.indexOf("createRoot("));
+});
 
 test("the notice is a status naming the new home and how many recordings are still saving", () => {
   const html = renderToStaticMarkup(<OriginMoveNotice work={{ saving: 2, localAudio: 3 }} />);

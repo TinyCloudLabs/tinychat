@@ -20,8 +20,9 @@ export function originMoveNoticeText({ saving, localAudio }: LocalRecordingWork)
     : `${moved} This browser keeps the audio of ${localAudio} recordings only here on ${LEGACY_HOSTNAME}, so you'll stay here.`;
 }
 
-/** Quiet banner shown on the legacy origin while local-only recordings keep the visitor there. */
+/** Quiet banner shown on the legacy origin while local-only recordings keep the visitor there; nothing for zero work. */
 export function OriginMoveNotice({ work }: { work: LocalRecordingWork }) {
+  if (work.saving === 0 && work.localAudio === 0) return null;
   return (
     <p role="status" className="pointer-events-none fixed inset-x-0 top-0 z-50 border-b border-border bg-muted/95 px-4 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] text-center text-xs text-muted-foreground">
       {originMoveNoticeText(work)}
@@ -29,11 +30,14 @@ export function OriginMoveNotice({ work }: { work: LocalRecordingWork }) {
   );
 }
 
-/** The notice for a visitor held on tinycloud.chat, which moves them once nothing local-only is left. */
-export function OriginMoveHold({ initialWork }: { initialWork: LocalRecordingWork }) {
-  const [work, setWork] = useState(initialWork);
+/**
+ * The notice for a visitor held on tinycloud.chat, which moves them once nothing local-only is left. Shows nothing
+ * until `moveWhenClear` reports a count, which it does only once home.tinycloud.xyz serves this build.
+ */
+export function OriginMoveHold() {
+  const [work, setWork] = useState<LocalRecordingWork | null>(null);
   useEffect(() => moveWhenClear({ onPending: setWork }), []);
-  return <OriginMoveNotice work={work} />;
+  return work && <OriginMoveNotice work={work} />;
 }
 
 /** While `active`, a held page does not move (originMove.ts `deferOriginMove`): pass true while work lives only in memory. */

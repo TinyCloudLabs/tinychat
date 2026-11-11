@@ -382,7 +382,11 @@ export interface MoveWhenClearOptions {
   canonicalReady?: () => Promise<boolean>;
   /** This tab's Upload-sheet run (default `uploadRunner.snapshot`): a live one is never cut off by the move. */
   upload?: () => UploadState | null;
-  /** Called with each new count while still held, so a notice can update. */
+  /**
+   * The work a notice should show while still held, after each check. Zero (nothing to show) until
+   * home.tinycloud.xyz has served this build once, and whenever nothing local is left but the move is
+   * still blocked (a deferral, or the build check).
+   */
   onPending?: (work: LocalRecordingWork) => void;
   intervalMs?: number;
   window?: Listenable;
@@ -390,10 +394,12 @@ export interface MoveWhenClearOptions {
 }
 
 /**
- * While held, re-checks every `intervalMs`, when the page becomes visible, when the browser comes
- * back online and when the last `deferOriginMove` ends. Replaces the location with the canonical URL
- * (computed from the location at that moment) once nothing is left, this tab runs no upload, nothing
- * defers the move and home.tinycloud.xyz serves this build. Returns a function that stops checking.
+ * Checks right away, then while held re-checks every `intervalMs`, when the page becomes visible, when
+ * the browser comes back online and when the last `deferOriginMove` ends. A visitor kept only by audio
+ * that lives here (nothing saving) stays put, so once its notice is up the timed re-check pauses until
+ * something is saving again. Replaces the location with the canonical URL (computed from the location at that moment) once
+ * nothing is left, this tab runs no upload, nothing defers the move and home.tinycloud.xyz serves this
+ * build. Returns a function that stops checking.
  */
 export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
   const location = options.location ?? globalThis.location;
@@ -416,6 +422,15 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
   let running = false;
   // A trigger that arrives during a check (a deferral ending, the browser coming online) runs one more after it.
   let again = false;
+  // The notice says the visitor will move; it is shown only once home.tinycloud.xyz has served this build.
+  let servedThisBuild = false;
+  // Off while only audio kept here holds the visitor (and the notice is up): nothing changes by itself, so the timer reads nothing.
+  let polling = true;
+
+  const buildServed = async () => {
+    if (!servedThisBuild) servedThisBuild = await canonicalReady().catch(() => false);
+    return servedThisBuild;
+  };
 
   const check = async () => {
     if (stopped) return;
@@ -426,19 +441,27 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
     running = true;
     again = false;
     try {
-      // The build check runs last, and only when the move could otherwise happen.
+      // The build check runs last, and only when the move could otherwise happen or a notice would show.
       const decision = await decideOriginMove({ location, opener, countWork, canonicalReady: async () => true });
       if (stopped) return;
-      if (decision.kind === "hold") {
-        options.onPending?.(decision.work);
-        return;
-      }
       if (decision.kind === "stay") {
         stop();
         return;
       }
-      if (isOriginMoveDeferred() || !await canonicalReady().catch(() => false)) return;
-      if (stopped || isOriginMoveDeferred()) return;
+      if (decision.kind === "hold") {
+        const { work } = decision;
+        const shown = await buildServed();
+        // Until home.tinycloud.xyz serves this build, keep asking it, so the notice can appear.
+        polling = work.saving !== 0 || !shown;
+        if (!stopped) options.onPending?.(shown ? work : { saving: 0, localAudio: 0 });
+        return;
+      }
+      polling = true;
+      // Nothing local is left: whatever blocks the move now, the notice has no count to show.
+      if (isOriginMoveDeferred() || !await canonicalReady().catch(() => false) || stopped || isOriginMoveDeferred()) {
+        if (!stopped) options.onPending?.({ saving: 0, localAudio: 0 });
+        return;
+      }
       stop();
       location.replace(canonicalUrlFor(location));
     } finally {
@@ -448,7 +471,7 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
   };
   const onVisible = () => { if (doc?.visibilityState !== "hidden") void check(); };
   const onCheck = () => { void check(); };
-  const timer = setInterval(onCheck, options.intervalMs ?? ORIGIN_MOVE_RECHECK_MS);
+  const timer = setInterval(() => { if (polling) void check(); }, options.intervalMs ?? ORIGIN_MOVE_RECHECK_MS);
   doc?.addEventListener("visibilitychange", onVisible);
   win?.addEventListener("online", onCheck);
   deferralEnded.add(onCheck);
@@ -461,5 +484,6 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
     win?.removeEventListener("online", onCheck);
     deferralEnded.delete(onCheck);
   }
+  void check();
   return stop;
 }
