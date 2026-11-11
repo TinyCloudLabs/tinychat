@@ -41,7 +41,9 @@ active while a recording is live; tapping it then just shows the recorder.
 
 Build with `bun run --cwd mobile sync android` and `cd mobile/android &&
 ./gradlew :app:assembleDebug`. Before installing on the Moto G Power, check for
-another install process. Install with `adb -s ZY22KKZ2GB install -r
+another install process. A phone that still has the old `xyz.tinycloud.exo`
+build needs it uninstalled first (after its pending recordings upload): both
+builds answer the same sign-in links. Install with `adb -s ZY22KKZ2GB install -r
 mobile/android/app/build/outputs/apk/debug/app-debug.apk`. Record with the
 screen off, Stop from the notification, pull the private file with `run-as`,
 and inspect it with `ffprobe` and `ffmpeg -af volumedetect`. For recovery,

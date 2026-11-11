@@ -94,8 +94,9 @@ function firstQueryValue(value: unknown): unknown {
 //
 // The deep-link TARGET is a constant: nothing in the request chooses where the browser goes, only
 // the `code`/`state` values carried there, URL-encoded. It is a private-use scheme (RFC 8252 §7.1,
-// the reverse-DNS of the app id) rather than a claimed https link because App Links / Universal
-// Links need assetlinks.json / AASA published for the app's signing identity, which does not exist
+// the app's original reverse-DNS id; the app id is now xyz.tinycloud.home) rather than a claimed
+// https link because App Links / Universal Links need assetlinks.json / AASA published for the
+// app's signing identity, which does not exist
 // yet. Another app claiming the scheme can receive a code from a flow Exo started but not redeem
 // it (RFC 8252 §8.1): PKCE keeps the verifier inside Exo and the app re-checks the `state` it
 // minted. It does NOT stop a flow the other app STARTS itself (§8.6): that app mints its own state
