@@ -25,7 +25,7 @@ function required(env: Env, name: string): string {
 
 /**
  * Per-bot budget. memoryMb is the sandbox's cgroup limit and bounds everything it holds: processes, the writable
- * root layer and /tmp (both live in sandbox memory). A bot that exceeds it is killed alone.
+ * root layer, /tmp and the state it writes (all three live in memory). A bot that exceeds it is killed alone.
  */
 export interface SandboxLimits {
   memoryMb: number;
@@ -35,7 +35,7 @@ export interface SandboxLimits {
   overlayMb: number;
   /** Cap on /tmp (in memory, inside memoryMb). */
   tmpMb: number;
-  /** Size of the owner's persistent state filesystem (on disk). */
+  /** Size of the owner's state tmpfs (in memory, inside memoryMb), and the cap on its saved copy on disk. */
   stateMb: number;
 }
 
@@ -55,6 +55,8 @@ export interface SupervisorConfig {
   /** All running sandboxes together: the parent cgroup's memory.max and pids.max. */
   totalMemoryMb: number;
   totalPids: number;
+  /** Sandboxes running at once; a start past it is refused. */
+  maxRunning: number;
   /** A turn with no prompt_result by then is ended and its sandbox killed. */
   turnTimeoutMs: number;
   /** Assistant text bytes streamed per turn before it is cut off. */
@@ -75,12 +77,20 @@ export function supervisorConfig(env: Env): SupervisorConfig {
     tmpMb: int(env, "BOTS_SANDBOX_TMP_MB", 256, 16),
     stateMb: int(env, "BOTS_STATE_MB", 256, 16),
   };
-  // Leave room for the processes themselves, so a full root layer and /tmp still fit under the cgroup limit.
-  if (limits.overlayMb + limits.tmpMb + 512 > limits.memoryMb) {
-    throw new Error("BOTS_SANDBOX_MEMORY_MB must exceed BOTS_SANDBOX_OVERLAY_MB + BOTS_SANDBOX_TMP_MB by at least 512");
+  // Leave room for the processes themselves, so a full root layer, /tmp and state still fit under the cgroup limit.
+  if (limits.overlayMb + limits.tmpMb + limits.stateMb + 512 > limits.memoryMb) {
+    throw new Error("BOTS_SANDBOX_MEMORY_MB must exceed BOTS_SANDBOX_OVERLAY_MB + BOTS_SANDBOX_TMP_MB + BOTS_STATE_MB by at least 512");
   }
   const totalMemoryMb = int(env, "BOTS_TOTAL_MEMORY_MB", 6144, 256);
-  if (totalMemoryMb < limits.memoryMb) throw new Error("BOTS_TOTAL_MEMORY_MB must be at least BOTS_SANDBOX_MEMORY_MB");
+  // Per running bot: its sandbox's limit, plus its restored state, which the restore writes outside the sandbox's
+  // cgroup but still under the parent's. At the cap every running bot can use all of it without reaching
+  // BOTS_TOTAL_MEMORY_MB.
+  const perBotMb = limits.memoryMb + limits.stateMb;
+  if (totalMemoryMb < perBotMb) throw new Error("BOTS_TOTAL_MEMORY_MB must be at least BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB");
+  const maxRunning = int(env, "BOTS_MAX_RUNNING", Math.floor(totalMemoryMb / perBotMb));
+  if (maxRunning * perBotMb > totalMemoryMb) {
+    throw new Error("BOTS_MAX_RUNNING x (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB) must not exceed BOTS_TOTAL_MEMORY_MB");
+  }
   return {
     port: int(env, "PORT", 8080),
     serviceSecret,
@@ -95,6 +105,7 @@ export function supervisorConfig(env: Env): SupervisorConfig {
     limits,
     totalMemoryMb,
     totalPids: int(env, "BOTS_TOTAL_PIDS", 2048, 16),
+    maxRunning,
     turnTimeoutMs: int(env, "BOTS_TURN_TIMEOUT_MS", 5 * 60_000, 1000),
     maxTurnBytes: int(env, "BOTS_MAX_TURN_BYTES", 256 * 1024, 1024),
   };

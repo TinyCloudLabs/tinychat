@@ -38,15 +38,15 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 ## How a message runs
 
 1. The bot id is `sha256(owner DID)`. Every path is built from it, never from the DID.
-2. On the first message (or the first after an idle stop) the supervisor mounts the bot's state filesystem,
-   registers a fresh random token for the bot with the gateway, writes the OCI spec (from `runsc spec`) and runs
-   `runsc run` in the foreground. Inside, `bot-start.sh` bridges `127.0.0.1:8080` to the egress socket and execs
-   `omp --mode rpc --no-ui`; the sandbox's stdio is the RPC channel.
+2. On the first message (or the first after an idle stop) the supervisor mounts a fresh tmpfs for the bot's state,
+   restores the bot's saved state into it, registers a fresh random token for the bot with the gateway, writes the
+   OCI spec (from `runsc spec`) and runs `runsc run` in the foreground. Inside, `bot-start.sh` bridges
+   `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui`; the sandbox's stdio is the RPC channel.
 3. The supervisor waits for OMP's `ready`, sets the event filter (assistant deltas only), opens the session in
    `/root/bot/sessions/main`, sends the `prompt`, and maps `message_update` text deltas to `delta` and
    `prompt_result` to `done` / `error`.
-4. After `session_settled` the bot stops once it has been idle for `BOTS_IDLE_MS`. The next message starts it again
-   on the same session.
+4. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
+   `BOTS_IDLE_MS`. The next message starts it again on the same session.
 
 ## Containment
 
@@ -57,18 +57,22 @@ Each sandbox:
 - gets its own writable root layer in memory (`--overlay2=root:memory,size=BOTS_SANDBOX_OVERLAY_MB`) over one
   shared read-only bot rootfs, and a capped `/tmp` (`BOTS_SANDBOX_TMP_MB`); the host rootfs is never written;
 - has its own cgroup: `BOTS_SANDBOX_MEMORY_MB`, `BOTS_SANDBOX_CPUS`, `BOTS_SANDBOX_PIDS`;
-- keeps its state on its own fixed-size ext4 image (`BOTS_STATE_MB`, at `/data/bots/<bot id>/state.img`),
-  loop-mounted only while it runs, so one bot cannot fill the disk.
+- keeps its state (`/root/bot`) in its own tmpfs while it runs: `BOTS_STATE_MB` in size, with room for 64 files and
+  directories per MiB, mounted nosuid, nodev and noexec (it holds the bot's sessions; nothing runs from it).
 
-RAM budget per running bot is `BOTS_SANDBOX_MEMORY_MB` (default 1536 MiB). It covers the processes and both in-memory
-layers: the root layer and `/tmp` are held in sandbox memory and charged to its cgroup, so the supervisor refuses to
-start unless memory exceeds overlay + tmp by at least 512 MiB. A bot that goes over is killed alone and reports
-`bot_unavailable`.
+RAM budget per running bot is `BOTS_SANDBOX_MEMORY_MB` (default 1536 MiB). It covers the processes and the three
+in-memory layers: the root layer, `/tmp` and the state the bot writes are held in memory and charged to its cgroup,
+so the supervisor refuses to start unless memory exceeds overlay + tmp + state by at least 512 MiB. A bot that goes
+over is killed alone and reports `bot_unavailable`.
 
 All sandboxes together sit under one parent cgroup (`/bots`) capped at `BOTS_TOTAL_MEMORY_MB` (default 6144) and
-`BOTS_TOTAL_PIDS` (default 2048), and the whole supervisor container at `mem_limit: 7g` in the compose, so many bots
-cannot starve the gateway or the ingress. Each running bot also holds one of the 8 loop devices the compose passes
-in, so at most 8 bots run at once. Size the CVM as the supervisor's `mem_limit` plus about 1 GiB.
+`BOTS_TOTAL_PIDS` (default 2048). A restore writes the bot's saved state from a leaf of that parent
+(`/bots/restore`), outside the bot's own cgroup, so each running bot counts there as `BOTS_SANDBOX_MEMORY_MB +
+BOTS_STATE_MB`. `BOTS_MAX_RUNNING` caps how many bots run at once (default `BOTS_TOTAL_MEMORY_MB /
+(BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)`, 3); the supervisor refuses to start if that many would not fit, and a
+message or history request that would start a bot past the cap gets `bot_unavailable`. The whole supervisor
+container sits at `mem_limit: 7g` in the compose, so many bots cannot starve the gateway or the ingress. Size the CVM
+as the supervisor's `mem_limit` plus about 1 GiB.
 
 The supervisor runs in its own cgroup namespace (`cgroup: private`) and refuses to start unless `/proc/self/cgroup`
 reads `0::/`, so the cgroup tree it writes is the container's own.
@@ -102,6 +106,28 @@ The gateway, per bot socket:
 
 OMP also probes `GET /models` and `GET /props` without a token at startup; the gateway refuses them and logs it.
 
+### Saved state
+
+The supervisor saves each bot's tmpfs to `/data/bots/<bot id>/state`: when a turn settles, with the sandbox paused
+(`runsc pause` … `runsc resume`) for the copy, and on every stop, after the sandbox has exited and before the tmpfs
+is unmounted. A start restores that copy into the fresh tmpfs before the sandbox starts. Every copy runs in its own
+process and:
+
+- looks up every name through an open directory and follows no symlink, at any level;
+- copies only directories, regular files and symlinks, each created fresh by the supervisor: directories 0700, files
+  with their permission bits only (no setuid, setgid or sticky bit) and their times, symlinks with their target as
+  text; no owner and no xattrs;
+- checks that each directory and file it creates sits at its own path under the destination;
+- stops at a device, FIFO or socket (`special_file`), past `BOTS_STATE_MB` of file data (`too_large`), past the
+  tmpfs's file count (`too_many_files`) or past 64 directory levels (`too_deep`).
+
+A save writes `state.new`, fsyncs it, renames `state` to `state.old` and `state.new` to `state`, removes `state.old`
+and fsyncs the bot's directory; a start first finishes or undoes a swap a crash interrupted. Each bot takes at most
+about 2 × `BOTS_STATE_MB` on the volume. A save that fails or stops keeps the previous copy and logs
+`snapshot_failed` with its cause (`snapshot_skipped` if the sandbox could not be paused); a stop still unmounts the
+tmpfs. A restore that fails or stops fails the start with `state restore failed: <cause>` and leaves the saved copy
+as it is. The supervisor remounts the `bot-data` volume nosuid,nodev at startup.
+
 ### Budget file recovery
 
 If `budget.json` is unreadable or malformed, the gateway logs one line and exits with status 78:
@@ -132,8 +158,9 @@ Supervisor (`bots-supervisor`):
 | `BOTS_IDLE_MS` | `600000` | idle time after `session_settled` before a sandbox stops |
 | `BOTS_SANDBOX_MEMORY_MB` / `_CPUS` / `_PIDS` | `1536` / `1` / `256` | per-sandbox cgroup limits |
 | `BOTS_SANDBOX_OVERLAY_MB` / `_TMP_MB` | `512` / `256` | root layer and `/tmp` caps (inside the memory limit) |
-| `BOTS_STATE_MB` | `256` | state image size, fixed when a bot first runs |
-| `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes together |
+| `BOTS_STATE_MB` | `256` | state tmpfs size (inside the memory limit, 64 files and directories per MiB) and the cap on its saved copy |
+| `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes and their restored state together |
+| `BOTS_MAX_RUNNING` | `BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)` (3) | sandboxes running at once; at most that quotient |
 | `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
 | `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |
 | `PORT` | `8080` | |
@@ -167,13 +194,11 @@ file never passes it.
 `runsc` needs `SYS_ADMIN`, `SYS_CHROOT`, `SETUID`, `SETGID`, `SETFCAP`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `CHOWN`,
 `KILL`, with seccomp and AppArmor unconfined, to create a sandbox; this is the smallest set that passed the local
 smoke (without `SETFCAP` the gofer fails with `fork/exec /proc/self/exe: operation not permitted`;
-`DAC_READ_SEARCH` and `MKNOD` are not needed). The loop devices for the state images are passed in as devices
-(`/dev/loop-control`, `/dev/loop0`–`7`), so the container needs no `MKNOD`; to run more than 8 bots at once, add
-`MKNOD` and `device_cgroup_rules: ["b 7:* rmw"]` and the supervisor creates further nodes itself. The supervisor
-remounts its cgroup2 namespace read-write (Docker mounts it read-only outside privileged mode) and moves itself
-into a leaf cgroup so each sandbox can have its own limits; it refuses to start if that fails. If a CVM's Docker
-refuses these settings, `privileged: true` in place of them also works; that changes little in practice, since the
-supervisor is already effectively CVM root (see above).
+`DAC_READ_SEARCH` and `MKNOD` are not needed). Each bot's state is a tmpfs the supervisor mounts itself, so the
+container needs no devices. The supervisor remounts its cgroup2 namespace read-write (Docker mounts it read-only
+outside privileged mode) and moves itself into a leaf cgroup so each sandbox can have its own limits; it refuses to
+start if that fails. If a CVM's Docker refuses these settings, `privileged: true` in place of them also works; that
+changes little in practice, since the supervisor is already effectively CVM root (see above).
 
 ## Develop
 
@@ -187,11 +212,14 @@ DOCKER="sudo docker" PORT=28808 bun run smoke   # MOCK-model smoke, see below
 
 `test/smoke.sh` builds the image and runs the real supervisor and gateway with gVisor, but with
 `test/mock-upstream.ts` as the model (it always answers "pong"); the image never contains the mock. It shows the
-SSE events for two owners, the busy rule, history, a gateway restart (budgets kept, the bot registered again), the
-idle stop and restart, and a containment checklist (two sandboxes, aggregate caps, egress and state isolation,
-caps, no network, no model key in a sandbox or the supervisor). It exits 1 if any check fails. Report its result as
-a mock run. It removes everything it creates. CI (`.github/workflows/bots.yml`) runs the unit tests and the
-typecheck on every PR touching `bots/`; the smoke needs a Docker host and runs by hand.
+SSE events for two owners, the busy rule, history, the running cap, a gateway restart (budgets kept, the bot
+registered again), the idle stop and restart, a containment checklist (two sandboxes, aggregate caps, egress and
+state isolation, caps, no network, no model key in a sandbox or the supervisor, no devices), and the saved state:
+kept across a stop and start, with setuid bits dropped, symlinks kept as symlinks and nothing written outside; a FIFO
+the bot makes stays inside gVisor, and a FIFO on the tmpfs stops the save while the previous copy stays. It exits 1
+if any check fails. Report its result as a mock run. It removes everything it creates. CI
+(`.github/workflows/bots.yml`) runs the unit tests and the typecheck on every PR touching `bots/`; the smoke needs a
+Docker host and runs by hand.
 
 ## Deploying
 

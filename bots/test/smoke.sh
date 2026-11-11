@@ -5,8 +5,8 @@
 #
 # Needs Docker (DOCKER="sudo docker" if your user cannot reach the daemon) on a cgroup v2 host.
 # SKIP_BUILD=1 reuses $IMAGE. Removes every container, volume and network it creates, also on failure.
-# Exits 1 if any containment check fails. CAPS / DEVICES override the supervisor's capability and device set (to
-# try a smaller one); the defaults match docker-compose.phala.yml.
+# Exits 1 if any containment check fails. CAPS overrides the supervisor's capability set (to try a smaller one); the
+# default matches docker-compose.phala.yml.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -19,9 +19,11 @@ IDLE_MS=30000
 SECRET=$(openssl rand -hex 32)
 ADDR_A=0x00000000000000000000000000000000000000aa
 ADDR_B=0x00000000000000000000000000000000000000bb
+ADDR_D=0x00000000000000000000000000000000000000dd
 A=did:pkh:eip155:1:$ADDR_A
 B=did:pkh:eip155:1:$ADDR_B
 C=did:pkh:eip155:1:0x00000000000000000000000000000000000000cc
+D=did:pkh:eip155:1:$ADDR_D
 URL=http://127.0.0.1:$PORT/v1/bots/main/messages
 
 cleanup() {
@@ -33,7 +35,15 @@ cleanup
 
 step() { printf '\n=== %s\n' "$*"; }
 bot_id() { printf %s "$1" | sha256sum | cut -c1-64; }
-sandbox() { local id; id=$(bot_id "$1"); shift; $DOCKER exec "$NAME-supervisor" runsc --root=/run/runsc exec "bot-${id:0:32}" "$@"; }
+# A settled turn's save pauses the sandbox for its copy; wait that out so an exec never meets a paused sandbox.
+sandbox() {
+  local id; id=$(bot_id "$1"); shift
+  for _ in $(seq 50); do
+    $DOCKER exec "$NAME-supervisor" runsc --root=/run/runsc state "bot-${id:0:32}" 2>/dev/null | grep -q '"status": "paused"' || break
+    sleep 0.1
+  done
+  $DOCKER exec "$NAME-supervisor" runsc --root=/run/runsc exec "bot-${id:0:32}" "$@"
+}
 post() { curl -sN -X POST -H "authorization: Bearer $SECRET" -H "x-tinycloud-owner: $1" -H 'content-type: application/json' -d "{\"text\":\"$2\"}" "$URL"; }
 list() { curl -s -H "authorization: Bearer $SECRET" -H "x-tinycloud-owner: $1" "$URL"; }
 running() { $DOCKER exec "$NAME-supervisor" runsc --root=/run/runsc list -quiet | sort; }
@@ -58,19 +68,16 @@ start_gateway() {
 }
 start_gateway
 
-step "supervisor: not privileged (compose capability set), private cgroup namespace, dummy secret, accounts A and B only, idle stop after ${IDLE_MS} ms"
+step "supervisor: not privileged (compose capability set, no devices), private cgroup namespace, dummy secret, accounts A, B and D, at most two bots at once, idle stop after ${IDLE_MS} ms"
 # Same container settings as docker-compose.phala.yml's bots-supervisor.
 CAPS=${CAPS:-SYS_ADMIN SYS_CHROOT SETUID SETGID SETFCAP DAC_OVERRIDE FOWNER FSETID CHOWN KILL}
-DEVICES=${DEVICES:-/dev/loop-control /dev/loop0 /dev/loop1 /dev/loop2 /dev/loop3 /dev/loop4 /dev/loop5 /dev/loop6 /dev/loop7}
 SUPERVISOR_ARGS=(--cap-drop ALL)
 for cap in $CAPS; do SUPERVISOR_ARGS+=(--cap-add "$cap"); done
-for device in $DEVICES; do SUPERVISOR_ARGS+=(--device "$device"); done
 echo "capabilities: $CAPS"
-echo "devices: $DEVICES"
 $DOCKER run -d --name "$NAME-supervisor" "${SUPERVISOR_ARGS[@]}" --cgroupns private --memory 7g \
   --security-opt seccomp=unconfined --security-opt apparmor=unconfined -p "127.0.0.1:$PORT:8080" \
   -v "$NAME-data:/data" -v "$NAME-egress:/egress" \
-  -e BOTS_SERVICE_SECRET="$SECRET" -e BOTS_TEST_ACCOUNTS="$ADDR_A,$ADDR_B" -e BOTS_IDLE_MS=$IDLE_MS \
+  -e BOTS_SERVICE_SECRET="$SECRET" -e BOTS_TEST_ACCOUNTS="$ADDR_A,$ADDR_B,$ADDR_D" -e BOTS_MAX_RUNNING=2 -e BOTS_IDLE_MS=$IDLE_MS \
   "$IMAGE" >/dev/null
 for _ in $(seq 60); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 0.5; done
 curl -sf "http://127.0.0.1:$PORT/healthz"; echo
@@ -117,6 +124,18 @@ check "two running sandboxes" bash -c "[[ \$($DOCKER exec $NAME-supervisor runsc
 echo "all bots together (parent cgroup): memory.max=$($DOCKER exec "$NAME-supervisor" cat /sys/fs/cgroup/bots/memory.max) pids.max=$($DOCKER exec "$NAME-supervisor" cat /sys/fs/cgroup/bots/pids.max)"
 check "aggregate cgroup caps set" bash -c "[[ \$($DOCKER exec $NAME-supervisor cat /sys/fs/cgroup/bots/memory.max) == $((6144 * 1048576)) && \$($DOCKER exec $NAME-supervisor cat /sys/fs/cgroup/bots/pids.max) == 2048 ]]"
 
+step "running cap (BOTS_MAX_RUNNING=2): with A and B running, a third owner D is refused"
+running_before=$(running | wc -l)
+reply_d=$(post "$D" "Reply with exactly: pong")
+echo "$reply_d"
+check "D is refused at the cap with bot_unavailable" grep -q '"code":"bot_unavailable"' <<<"$reply_d"
+check "the cap held: still only A's and B's sandboxes" bash -c "[[ $running_before == 2 && \$($DOCKER exec $NAME-supervisor runsc --root=/run/runsc list -quiet | wc -l) == 2 ]]"
+
+step "no devices: neither the compose nor the supervisor container passes any"
+check "compose passes no devices" bash -c "grep -q 'cap_add:' docker-compose.phala.yml && ! grep -qE '^ *devices:' docker-compose.phala.yml"
+check "supervisor container has no devices" bash -c "[[ \$($DOCKER inspect -f '{{.State.Running}} {{len .HostConfig.Devices}}' $NAME-supervisor) == 'true 0' ]]"
+check "no loop devices in the supervisor" bash -c "$DOCKER exec $NAME-supervisor test -c /dev/null && ! $DOCKER exec $NAME-supervisor sh -c 'ls /dev/loop*'"
+
 step "containment of A (each line should end in PASS)"
 # Every negative check first proves the exec it relies on works, so a broken `runsc exec` cannot pass as "refused".
 check "runsc exec works in A and B" bash -c "[[ \$(sandbox $A echo ok) == ok && \$(sandbox $B echo ok) == ok ]]"
@@ -137,12 +156,23 @@ check "models filtered to the allowlist" bash -c "sandbox $A bun -e 'const r = a
 ID_A=$(bot_id "$A")
 echo "A cgroup limits: memory.max=$($DOCKER exec "$NAME-supervisor" cat /sys/fs/cgroup/bots/$ID_A/memory.max) pids.max=$($DOCKER exec "$NAME-supervisor" cat /sys/fs/cgroup/bots/$ID_A/pids.max) cpu.max=$($DOCKER exec "$NAME-supervisor" cat /sys/fs/cgroup/bots/$ID_A/cpu.max)"
 echo "A writable layers: $(sandbox "$A" df -h / /tmp /root/bot | tail -3 | tr -s ' ' | tr '\n' ';')"
+check "A's state is its own tmpfs: 256 MiB, 16384 inodes, nosuid, nodev, noexec" bash -c "o=\$($DOCKER exec $NAME-supervisor findmnt -n -o FSTYPE,OPTIONS /run/bots/$ID_A/state) && [[ \$o == tmpfs* && \$o == *nosuid* && \$o == *nodev* && \$o == *noexec* && \$o == *size=262144k* && \$o == *nr_inodes=16384* ]]"
+check "the data volume is mounted nosuid,nodev" bash -c "o=\$($DOCKER exec $NAME-supervisor findmnt -n -o OPTIONS -T /data/bots) && [[ \$o == *nosuid* && \$o == *nodev* ]]"
+check "A's state is noexec" bash -c "sandbox $A sh -c 'cp /bin/true /tmp/t && cp /bin/true /root/bot/t' && sandbox $A /tmp/t && ! sandbox $A /root/bot/t"
+sandbox "$A" rm -f /tmp/t /root/bot/t
+check "a settled turn is saved to disk while A runs" bash -c "$DOCKER exec $NAME-supervisor runsc --root=/run/runsc list -quiet | grep -q bot-${ID_A:0:32} && $DOCKER exec $NAME-supervisor sh -c 'ls -A /data/bots/$ID_A/state/sessions/main | grep -q .'"
 
 step "A: writes stop at each cap (root layer 512M, /tmp 256M, state 256M); in-memory writes are charged to A's cgroup"
 memory_current() { $DOCKER exec "$NAME-supervisor" cat "/sys/fs/cgroup/bots/$ID_A/memory.current"; }
 before=$(memory_current)
 sandbox "$A" dd if=/dev/zero of=/root/fill bs=1M count=300 2>/dev/null
-echo "A memory.current: before=$(( before / 1048576 ))MiB, after writing 300MiB to the root layer=$(( $(memory_current) / 1048576 ))MiB"
+middle=$(memory_current)
+echo "A memory.current: before=$(( before / 1048576 ))MiB, after writing 300MiB to the root layer=$(( middle / 1048576 ))MiB"
+sandbox "$A" dd if=/dev/zero of=/root/bot/charge bs=1M count=100 2>/dev/null
+after=$(memory_current)
+echo "A memory.current: after also writing 100MiB to the state tmpfs=$(( after / 1048576 ))MiB"
+check "state writes are charged to A's cgroup" bash -c "sandbox $A test -s /root/bot/charge && (( $after - $middle >= 90 * 1048576 ))"
+sandbox "$A" rm -f /root/bot/charge
 check "root layer refuses writes past its cap" bash -c "! sandbox $A dd if=/dev/zero of=/root/fill2 bs=1M count=400 && sandbox $A test -s /root/fill2"
 check "/tmp refuses writes past its cap" bash -c "! sandbox $A dd if=/dev/zero of=/tmp/fill bs=1M count=300 && sandbox $A test -s /tmp/fill"
 check "state filesystem refuses writes past its quota" bash -c "! sandbox $A dd if=/dev/zero of=/root/bot/fill bs=1M count=300 && sandbox $A test -s /root/bot/fill"
@@ -179,6 +209,18 @@ start_gateway
 sleep 2
 check "restored budget file: the gateway starts with the saved counters" test "$(budget)" == "$saved_budget"
 
+step "A: plant saved-state cases (a note, a setuid file, symlinks to /etc and .., 20 MiB of data) for the idle stop to save"
+sandbox "$A" sh -c 'echo kept > /root/bot/note && cp /bin/true /root/bot/suid && chmod 4755 /root/bot/suid && ln -s /etc /root/bot/etc-link && ln -s .. /root/bot/up-link && dd if=/dev/urandom of=/root/bot/blob bs=1M count=20 2>/dev/null'
+XATTR=0
+if sandbox "$A" sh -c 'command -v setfattr' >/dev/null 2>&1; then
+  sandbox "$A" setfattr -n user.planted -v 1 /root/bot/note && XATTR=1
+else
+  echo "no setfattr in the sandbox: the unit tests cover xattrs"
+fi
+etc_hash() { $DOCKER exec "$NAME-supervisor" sh -c "find /etc -xdev -printf '%p %s %T@\n' | sort | sha256sum"; }
+etc_before=$(etc_hash)
+check "planted: a note, a setuid file (4755), symlinks to /etc and .." bash -c "[[ \$(sandbox $A cat /root/bot/note) == kept && \$(sandbox $A stat -c %a /root/bot/suid) == 4755 && \$(sandbox $A readlink /root/bot/etc-link) == /etc && \$(sandbox $A readlink /root/bot/up-link) == .. ]]"
+
 step "idle stop: wait $(( IDLE_MS / 1000 + 6 ))s, then A and B are stopped"
 sleep $(( IDLE_MS / 1000 + 6 ))
 echo "sandboxes: [$(running | tr '\n' ' ')]"
@@ -191,6 +233,33 @@ check "A replies after a restart" grep -q 'event: done' <<<"$reply"
 history=$(list "$A")
 echo "A: $history"
 check "A's history kept across restarts (4 turns)" bash -c "[[ \$(grep -o '\"role\":\"bot\"' <<<'$history' | wc -l) == 4 ]]"
+
+step "A's state after the idle stop and restart"
+check "state persists across a stop and start" bash -c "[[ \$(sandbox $A cat /root/bot/note) == kept ]]"
+check "the setuid bit is dropped by the save and restore" bash -c "sandbox $A test -f /root/bot/suid && [[ \$(sandbox $A stat -c %a /root/bot/suid) == 755 ]]"
+check "symlinks to /etc and .. come back as the same symlinks" bash -c "[[ \$(sandbox $A readlink /root/bot/etc-link) == /etc && \$(sandbox $A readlink /root/bot/up-link) == .. ]]"
+check "the saved copy holds them as symlinks" bash -c "$DOCKER exec $NAME-supervisor test -L /data/bots/$ID_A/state/etc-link && $DOCKER exec $NAME-supervisor test -L /data/bots/$ID_A/state/up-link"
+if [[ $XATTR == 1 ]]; then
+  check "xattrs are dropped" bash -c "sandbox $A test -f /root/bot/note && [[ -z \$(sandbox $A getfattr -d /root/bot/note) ]]"
+fi
+check "supervisor /etc unchanged" test "$(etc_hash)" == "$etc_before"
+check "A's directories hold only their own entries" test "$($DOCKER exec "$NAME-supervisor" ls -A "/data/bots/$ID_A") $($DOCKER exec "$NAME-supervisor" ls -A "/run/bots/$ID_A" | tr '\n' ' ')" == "state config.json state "
+restore_memory=$($DOCKER exec "$NAME-supervisor" cat /sys/fs/cgroup/bots/restore/memory.current)
+echo "/bots/restore memory.current: $(( restore_memory / 1048576 ))MiB"
+check "the restored state is charged under /bots" bash -c "[[ \$(sandbox $A stat -c %s /root/bot/blob) == 20971520 ]] && (( $restore_memory >= 20 * 1048576 ))"
+
+step "A: special files. A FIFO the bot makes stays inside gVisor; one on the tmpfs itself stops the next save, and the previous copy stays"
+sandbox "$A" sh -c 'echo later > /root/bot/note2 && mkfifo /root/bot/fifo'
+check "A cannot create a device node in its state" bash -c "sandbox $A test -p /root/bot/fifo && ! sandbox $A mknod /root/bot/null c 1 3"
+check "A's FIFO never reaches the host tmpfs" bash -c "sandbox $A test -p /root/bot/fifo && $DOCKER exec $NAME-supervisor test -s /run/bots/$ID_A/state/note2 && ! $DOCKER exec $NAME-supervisor test -e /run/bots/$ID_A/state/fifo"
+$DOCKER exec "$NAME-supervisor" mkfifo "/run/bots/$ID_A/state/host-fifo"
+check "planted: a FIFO on A's tmpfs, from the supervisor side" $DOCKER exec "$NAME-supervisor" test -p "/run/bots/$ID_A/state/host-fifo"
+sleep $(( IDLE_MS / 1000 + 6 ))
+check "idle stop: A stopped" bash -c "[[ -z \$($DOCKER exec $NAME-supervisor runsc --root=/run/runsc list -quiet) ]]"
+check "the save refused the FIFO (snapshot_failed, special_file)" bash -c "$DOCKER logs $NAME-supervisor 2>&1 | grep '\"snapshot_failed\"' | grep -q '\"cause\":\"special_file\"'"
+reply=$(post "$A" "Reply with exactly: pong")
+check "A replies after the restart" grep -q 'event: done' <<<"$reply"
+check "the previous copy came back: the note is there; no FIFO, no later note" bash -c "[[ \$(sandbox $A cat /root/bot/note) == kept ]] && ! sandbox $A test -e /root/bot/fifo && ! sandbox $A test -e /root/bot/host-fifo && ! sandbox $A test -e /root/bot/note2"
 
 step "what the MOCK model received (shape only)"
 $DOCKER logs "$NAME-gateway" 2>&1 | grep '"mock":"request"' | tail -2

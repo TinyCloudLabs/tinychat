@@ -1,11 +1,11 @@
 // Starts and stops bot sandboxes with gVisor. Each sandbox: no network, its own in-memory root layer over the
 // shared read-only bot rootfs (size-capped; held in sandbox memory, so it counts toward the memory limit), its own
-// cgroup (memory, CPU, pids), its own state filesystem (a fixed-size image, so one bot cannot fill the disk), and
-// only its own egress socket directory, read-only. `runsc run` stays in the foreground: the sandbox's stdio is
-// OMP's RPC channel.
+// cgroup (memory, CPU, pids), its own state tmpfs (size- and inode-capped, saved to disk by state.ts), and only its
+// own egress socket directory, read-only. `runsc run` stays in the foreground: the sandbox's stdio is OMP's RPC
+// channel.
 
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import type { Sandbox, SandboxLauncher } from "./bot";
@@ -13,12 +13,20 @@ import type { SupervisorConfig } from "./config";
 import type { BotLayout } from "./layout";
 import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci";
 import { RpcChannel } from "./rpc";
+import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
 const READY_TIMEOUT_MS = 60_000;
 const STOP_GRACE_MS = 15_000;
 const STDERR_TAIL_CHARS = 2000;
+const STATE_COPY = join(import.meta.dir, "state-copy-main.ts");
+/** Restores run in this cgroup below /bots, so the memory a restored state takes counts toward the bots' total. */
+const RESTORE_CGROUP = "restore";
+
+function log(event: string, botId: string, extra: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({ bots: event, bot: botId.slice(0, 12), ...extra }));
+}
 
 async function run(argv: string[]): Promise<void> {
   const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
@@ -31,24 +39,20 @@ async function attempt(argv: string[]): Promise<boolean> {
   return (await proc.exited) === 0;
 }
 
-/** Loop device nodes to create when the container's /dev lacks them and the container may create them (MKNOD). */
-const LOOP_NODES = 128;
-
 /**
  * Gets the container ready to run sandboxes without --privileged (see the compose file for the capability set):
  * - a private cgroup namespace (`cgroup: private`): /proc/self/cgroup must read "0::/", so the cgroup tree the
  *   supervisor writes is the container's own and never the CVM's;
- * - loop device nodes for the per-bot state filesystems: the compose passes them in; with MKNOD they are created;
  * - a writable cgroup2 mount, which Docker mounts read-only outside privileged mode;
  * - cgroup delegation: cgroup v2 only allows controllers below a cgroup with no member processes, so the
  *   supervisor moves itself into a leaf, enables cpu, memory and pids for the sandboxes' parent `/bots`, and caps
- *   that parent (all sandboxes together) at `totalMemoryMb` and `totalPids`.
+ *   that parent (all sandboxes together) at `totalMemoryMb` and `totalPids`;
+ * - a leaf below that parent for state restores (`/bots/restore`), so restored state counts toward the total too.
  * Fails closed: without limits, no sandboxes.
  */
 async function prepareHost(totalMemoryMb: number, totalPids: number): Promise<void> {
   const own = readFileSync("/proc/self/cgroup", "utf8").trim();
   if (own !== "0::/") throw new Error(`supervisor needs a private cgroup2 namespace (cgroup: private); /proc/self/cgroup is ${JSON.stringify(own)}`);
-  await run(["sh", "-c", `i=0; while [ $i -lt ${LOOP_NODES} ]; do [ -e /dev/loop$i ] || mknod -m 0660 /dev/loop$i b 7 $i 2>/dev/null || true; i=$((i+1)); done`]);
   try {
     accessSync(CGROUP_ROOT, constants.W_OK);
   } catch {
@@ -74,6 +78,7 @@ async function prepareHost(totalMemoryMb: number, totalPids: number): Promise<vo
   writeFileSync(join(bots, "memory.max"), String(totalMemoryMb * 1024 * 1024));
   if (existsSync(join(bots, "memory.swap.max"))) writeFileSync(join(bots, "memory.swap.max"), "0");
   writeFileSync(join(bots, "pids.max"), String(totalPids));
+  mkdirSync(join(bots, RESTORE_CGROUP), { recursive: true });
 }
 
 /** OMP's provider config inside every sandbox: the model behind the bot's own egress socket. */
@@ -112,6 +117,8 @@ export class RunscHost implements SandboxLauncher {
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(join(agentDir, "models.yml"), modelsYml(this.#cfg.model));
     for (const dir of [this.#cfg.dataRoot, this.#cfg.runRoot]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // Saved state never holds setuid files or devices (state.ts copies neither); its volume refuses both anyway.
+    await run(["sh", "-c", 'mount -o remount,bind,nosuid,nodev "$(findmnt -n -o TARGET -T "$1")"', "sh", this.#cfg.dataRoot]);
     const specDir = join(this.#cfg.runRoot, ".spec");
     rmSync(specDir, { recursive: true, force: true });
     mkdirSync(specDir);
@@ -120,7 +127,7 @@ export class RunscHost implements SandboxLauncher {
   }
 
   hasState(layout: BotLayout): boolean {
-    return existsSync(layout.stateImage);
+    return hasSnapshot(layout.stateSnapshot);
   }
 
   async launch(layout: BotLayout): Promise<Sandbox> {
@@ -128,22 +135,49 @@ export class RunscHost implements SandboxLauncher {
     const token = randomBytes(32).toString("hex");
     let proc: Subprocess<"pipe", "pipe", "pipe"> | undefined;
     let teardown: Promise<void> | undefined;
+    // Set once the tmpfs holds the restored state; only then is it saved. A failed restore leaves the snapshot as
+    // it was.
+    let restored = false;
+    // One copy at a time: a settled-turn copy runs with the sandbox paused, the stop copy after it has exited. The
+    // chain never rejects.
+    let saving = Promise.resolve();
+    const save = (when: "settled" | "stop") =>
+      (saving = saving
+        .then(async () => {
+          if (when === "settled") {
+            if (teardown) return;
+            if (!(await attempt([...this.#runsc, "pause", layout.containerId]))) {
+              log("snapshot_skipped", layout.botId, { cause: "pause_failed" });
+              return;
+            }
+          }
+          try {
+            const failure = await this.#copy("save", layout.stateMount, layout.stateSnapshot);
+            if (failure) log("snapshot_failed", layout.botId, { when, cause: failure });
+          } finally {
+            if (when === "settled" && !teardown && !(await attempt([...this.#runsc, "resume", layout.containerId]))) {
+              log("resume_failed", layout.botId);
+              void destroy();
+            }
+          }
+        })
+        .catch(() => log("snapshot_failed", layout.botId, { when, cause: "io" })));
     const destroy = () =>
       (teardown ??= (async () => {
         await attempt([...this.#runsc, "kill", layout.containerId, "KILL"]);
         await attempt([...this.#runsc, "delete", "-force", layout.containerId]);
         proc?.kill("SIGKILL");
         await proc?.exited;
+        if (restored) await save("stop");
         if (!(await attempt(["umount", layout.stateMount]))) {
-          // A lazy unmount leaves the loop device attached until its last user goes; detach it explicitly (the
-          // kernel defers that until the device is free) so loop devices are not leaked.
-          await attempt(["umount", "-l", layout.stateMount]);
-          await attempt(["sh", "-c", 'for d in $(losetup -n -O NAME -j "$1"); do losetup -d "$d"; done', "sh", layout.stateImage]);
+          const lazy = await attempt(["umount", "-l", layout.stateMount]);
+          log("unmount_failed", layout.botId, { lazy });
         }
         await this.#control("DELETE", layout.botId).catch(() => {});
       })());
     try {
       await this.#mountState(layout);
+      restored = true;
       await this.#control("PUT", layout.botId, token);
       const spec = sandboxSpec(this.#baseSpec, {
         rootfs: this.#cfg.rootfs,
@@ -180,7 +214,7 @@ export class RunscHost implements SandboxLauncher {
           READY_TIMEOUT_MS,
         );
       } catch (error) {
-        console.log(JSON.stringify({ bots: "sandbox_stderr", bot: layout.botId.slice(0, 12), stderr }));
+        log("sandbox_stderr", layout.botId, { stderr });
         throw error;
       }
       let stopping: Promise<void> | undefined;
@@ -190,6 +224,7 @@ export class RunscHost implements SandboxLauncher {
         onFrame: listener => rpc.onFrame(listener),
         exited,
         refreshEgress: () => this.#control("PUT", layout.botId, token),
+        snapshot: () => save("settled"),
         stop: () =>
           (stopping ??= (async () => {
             // Closing stdin lets OMP drain and exit; a sandbox that ignores it is killed.
@@ -208,20 +243,33 @@ export class RunscHost implements SandboxLauncher {
     }
   }
 
+  /** A fresh tmpfs at stateMount (size- and inode-capped, nosuid, nodev, noexec) holding the restored state. */
   async #mountState(layout: BotLayout): Promise<void> {
     mkdirSync(layout.dataDir, { recursive: true, mode: 0o700 });
-    if (!existsSync(layout.stateImage)) {
-      const fresh = `${layout.stateImage}.new`;
-      rmSync(fresh, { force: true });
-      await run(["truncate", "-s", `${this.#cfg.limits.stateMb}M`, fresh]);
-      await run(["mkfs.ext4", "-q", "-F", "-m", "0", fresh]);
-      renameSync(fresh, layout.stateImage);
-    }
     mkdirSync(layout.stateMount, { recursive: true, mode: 0o700 });
-    if (!(await attempt(["mountpoint", "-q", layout.stateMount]))) {
-      await run(["mount", "-o", "loop,nosuid,nodev", layout.stateImage, layout.stateMount]);
-    }
-    mkdirSync(join(layout.stateMount, "sessions", "main"), { recursive: true, mode: 0o700 });
+    if (await attempt(["mountpoint", "-q", layout.stateMount])) throw new Error("state tmpfs still mounted");
+    const { stateMb } = this.#cfg.limits;
+    const options = `size=${stateMb}m,nr_inodes=${stateMb * STATE_INODES_PER_MB},mode=0700,uid=0,gid=0,nosuid,nodev,noexec`;
+    await run(["mount", "-t", "tmpfs", "-o", options, "tmpfs", layout.stateMount]);
+    const failure = await this.#copy("restore", layout.stateSnapshot, layout.stateMount);
+    if (failure) throw new Error(`state restore failed: ${failure}`);
+  }
+
+  /**
+   * Runs one state copy in its own process (state-copy-main.ts) and returns why it failed, if it did. A restore runs
+   * in /bots/restore, so the memory the restored state takes counts toward the bots' total.
+   */
+  async #copy(command: "save" | "restore", from: string, to: string): Promise<CopyFailure | undefined> {
+    const argv = [process.execPath, STATE_COPY, command, from, to, String(this.#cfg.limits.stateMb)];
+    const procs = join(CGROUP_ROOT, "bots", RESTORE_CGROUP, "cgroup.procs");
+    const proc = Bun.spawn(command === "restore" ? ["sh", "-c", 'echo $$ > "$0" && exec "$@"', procs, ...argv] : argv, {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const [code, reason] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
+    if (code === 0) return undefined;
+    return COPY_FAILURES.find(failure => failure === reason) ?? "io";
   }
 
   /** The gateway's control socket: register (PUT) or drop (DELETE) one bot's egress socket and token. */

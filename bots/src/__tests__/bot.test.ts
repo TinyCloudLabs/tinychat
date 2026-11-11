@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from "bun:test";
-import { Bot, type ErrorCode, type Sandbox, type SandboxLauncher, type TurnSink } from "../bot";
+import { Bot, type ErrorCode, RunningLimit, type Sandbox, type SandboxLauncher, type TurnSink } from "../bot";
 import { botLayout } from "../layout";
 import type { Frame } from "../rpc";
 
@@ -28,6 +28,10 @@ class FakeSandbox implements Sandbox {
     for (const listener of this.#listeners) listener(frame);
   }
   async refreshEgress(): Promise<void> {}
+  snapshots = 0;
+  async snapshot(): Promise<void> {
+    this.snapshots++;
+  }
   async stop(): Promise<void> {
     this.#exit.resolve();
   }
@@ -48,7 +52,7 @@ const OPTIONS = { idleMs: 60_000, turnTimeoutMs: 300_000, maxTurnBytes: 16 };
 function setup() {
   const sandbox = new FakeSandbox();
   const launcher: SandboxLauncher = { hasState: () => true, launch: async () => sandbox };
-  const bot = new Bot(botLayout("c".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS);
+  const bot = new Bot(botLayout("c".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS, new RunningLimit(1));
   return { bot, sandbox };
 }
 
@@ -190,8 +194,52 @@ describe("history", () => {
         return new FakeSandbox();
       },
     };
-    const bot = new Bot(botLayout("d".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS);
+    const bot = new Bot(botLayout("d".repeat(64), { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" }), launcher, OPTIONS, new RunningLimit(1));
     expect(await bot.list()).toEqual([]);
     expect(launched).toBe(false);
+  });
+});
+
+describe("saved state", () => {
+  test("a settled session saves a snapshot", async () => {
+    const { bot, sandbox } = setup();
+    const running = bot.send("hi", recorder().sink);
+    const id = await sandbox.prompted.promise;
+    sandbox.emit({ type: "prompt_result", id, status: "completed", agentInvoked: true, sessionSettled: true });
+    await running;
+    expect(sandbox.snapshots).toBe(0);
+    sandbox.emit({ type: "session_settled" });
+    expect(sandbox.snapshots).toBe(1);
+  });
+});
+
+describe("running cap", () => {
+  test("a start past BOTS_MAX_RUNNING gets bot_unavailable and launches nothing; the place frees when a sandbox exits", async () => {
+    const running = new RunningLimit(1);
+    const sandboxes = [new FakeSandbox(), new FakeSandbox()];
+    let launches = 0;
+    const launcher: SandboxLauncher = { hasState: () => true, launch: async () => sandboxes[launches++]! };
+    const roots = { dataRoot: "/d", runRoot: "/r", egressRoot: "/e" };
+    const first = new Bot(botLayout("e".repeat(64), roots), launcher, OPTIONS, running);
+    const second = new Bot(botLayout("f".repeat(64), roots), launcher, OPTIONS, running);
+
+    const firstTurn = first.send("hi", recorder().sink);
+    const firstId = await sandboxes[0]!.prompted.promise;
+    const refused = recorder();
+    await second.send("hi", refused.sink);
+    expect(refused.events).toEqual([
+      ["status", "starting"],
+      ["error", "bot_unavailable"],
+    ]);
+    expect(launches).toBe(1);
+
+    sandboxes[0]!.emit({ type: "prompt_result", id: firstId, status: "completed", agentInvoked: true, sessionSettled: true });
+    await firstTurn;
+    await first.stop();
+    const secondTurn = second.send("hi", recorder().sink);
+    const secondId = await sandboxes[1]!.prompted.promise;
+    expect(launches).toBe(2);
+    sandboxes[1]!.emit({ type: "prompt_result", id: secondId, status: "completed", agentInvoked: true, sessionSettled: true });
+    await secondTurn;
   });
 });
