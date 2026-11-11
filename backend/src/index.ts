@@ -1298,8 +1298,12 @@ async function main() {
   const connectorQueueMaintenance = startConnectorQueueMaintenanceTimer({
     listQueueEntries: createWebhookQueueDirectory(node),
     listLedgerAddresses: createWebhookPurgeLedgerDirectory(node),
-    sweepLedger: async ({ source, address }) => {
-      const read = await connectorControl.readLedger(source, address);
+    sweepLedger: async ({ source, address }, safetyMarginMs) => {
+      const read = await connectorControl.readLedger(
+        source,
+        address,
+        safetyMarginMs,
+      );
       if (read.status === "unparseable") {
         await connectorControl.quarantineLedger(source, address, read.raw);
         const stamp = new Date().toISOString();

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 
 import type {
@@ -797,7 +797,11 @@ describe("W4 content store — retention", () => {
     ).not.toBeNull();
     expect(
       await blobs.listContentIds(SOURCE, ADDRESS_A),
-    ).toEqual([{ sourceId: "mtg-unreconciled", updatedAt: new Date(T0).toISOString() }]);
+    ).toEqual([{
+      sourceId: "mtg-unreconciled",
+      storedAt: new Date(T0).toISOString(),
+      updatedAt: new Date(T0).toISOString(),
+    }]);
     expect(
       await store.get(SOURCE, ADDRESS_B, "mtg-other-user"),
     ).not.toBeNull();
@@ -1020,19 +1024,66 @@ describe("W4 content store — retention", () => {
 
     expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-orphan")).toBeNull();
   });
-  test("[delta-05] an unreadable index is removed with its content prefix", async () => {
-    const { store, blobs } = harness();
-    await store.upsert(upsertInput({ sourceId: "mtg-unreadable-index" }));
-    await blobs.writeIndex(SOURCE, ADDRESS_A, {
-      ciphertext: "not-an-encrypted-index",
-      wrappedDEK: "not-a-wrapped-key",
-      updatedAt: new Date(T0).toISOString(),
+  test("an unreadable index alerts, retains young blobs, and expires old blobs by original storage time", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-old-under-wrong-key" }));
+
+    clock.now = T0 + 2 * DAY_MS;
+    await store.upsert(upsertInput({ sourceId: "mtg-young-under-wrong-key" }));
+
+    clock.now = T0 + 10 * DAY_MS;
+    await store.upsert(
+      upsertInput({
+        sourceId: "mtg-old-under-wrong-key",
+        kind: "summary",
+        content: { overview: SUMMARY_TEXT },
+      }),
+    );
+    const legacyBlob = await blobs.read(
+      SOURCE,
+      ADDRESS_A,
+      "mtg-old-under-wrong-key",
+    );
+    expect(legacyBlob).not.toBeNull();
+    if (legacyBlob !== null) {
+      const { storedAt: _storedAt, ...legacy } = legacyBlob;
+      await blobs.write(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key", legacy);
+    }
+    expect(
+      await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+    ).toMatchObject({ swept: 0 });
+    expect(
+      (await blobs.read(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key"))
+        ?.storedAt,
+    ).toBe(new Date(T0).toISOString());
+
+    const wrongKeyStore = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => CREDENTIAL_MASTER,
     });
+    clock.now = T0 + 14 * DAY_MS;
+    const originalError = console.error;
+    const errors: string[] = [];
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map((arg) => String(arg)).join(" "));
+    };
+    try {
+      await wrongKeyStore.sweepRetention({
+        source: SOURCE,
+        address: ADDRESS_A,
+      });
 
-    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
-
-    expect(await blobs.readIndex(SOURCE, ADDRESS_A)).toBeNull();
-    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-unreadable-index")).toBeNull();
+      expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key")).toBeNull();
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-under-wrong-key")).not.toBeNull();
+      expect(
+        (await blobs.listContentIds(SOURCE, ADDRESS_A)).map(({ sourceId }) => sourceId),
+      ).toEqual(["mtg-young-under-wrong-key"]);
+      expect(errors.some((line) => line.includes("aid="))).toBe(true);
+      expect(errors.join(" ")).not.toContain(ADDRESS_A);
+    } finally {
+      console.error = originalError;
+    }
   });
   test("[delta-05] a legacy tombstone without an expiry is not kept", async () => {
     const { store } = harness();
@@ -1173,6 +1224,51 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
       { source: SOURCE, address: ADDRESS_B, safetyMarginMs: 5 * 60_000 },
     ]);
     expect(recorder.maxInflight()).toBe(1);
+  });
+
+  test("the first successful pass logs one deploy summary with counts and hashed tenants", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    let pass = 0;
+    const sweeper = new IngestRetentionSweeper({
+      content: {
+        async sweepRetention() {
+          pass += 1;
+          return pass === 1
+            ? {
+                swept: 0,
+                bytesFreed: 0,
+                tombstones: 0,
+                storedAtBackfilled: 0,
+                unreadableIndex: true,
+              }
+            : {
+                swept: 1,
+                bytesFreed: 10,
+                tombstones: 0,
+                storedAtBackfilled: 2,
+                unreadableIndex: false,
+              };
+        },
+      },
+      indexes: indexes(ADDRESS_A, ADDRESS_B),
+    });
+
+    try {
+      await sweeper.sweepOnce();
+      await sweeper.sweepOnce();
+      const summaries = log.mock.calls
+        .map(([line]) => String(line))
+        .filter((line) => line.includes("op=deploy-retention-summary"));
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toContain(
+        "tenants_swept=2 stored_at_backfilled=2 unreadable_indexes=1",
+      );
+      expect(summaries[0]).toContain("tenant_hashes=");
+      expect(summaries[0]).not.toContain(ADDRESS_A);
+      expect(summaries[0]).not.toContain(ADDRESS_B);
+    } finally {
+      log.mockRestore();
+    }
   });
   test("the configured sweep interval is passed as the retention safety margin", async () => {
     const recorder = sweepRecorder();

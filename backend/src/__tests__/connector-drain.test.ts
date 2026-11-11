@@ -1176,6 +1176,22 @@ describe("queue maintenance timer", () => {
     }
   });
 
+  test("ledger maintenance passes its interval as the expiry safety margin", async () => {
+    const margins: number[] = [];
+    const timer = startConnectorQueueMaintenanceTimer({
+      listLedgerAddresses: async () => [{ source: SOURCE, address: ADDRESS }],
+      sweepLedger: async (_entry, safetyMarginMs = 0) => {
+        margins.push(safetyMarginMs);
+      },
+      intervalMs: 1_234,
+    });
+    try {
+      await timer.tick();
+      expect(margins).toEqual([1_234]);
+    } finally {
+      timer.stop();
+    }
+  });
   test("a scan failure is logged, not thrown, and the timer survives it", async () => {
     const timer = startConnectorQueueMaintenanceTimer({
       sweep: async () => {},

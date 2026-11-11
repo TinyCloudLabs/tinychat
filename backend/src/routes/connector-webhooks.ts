@@ -1275,7 +1275,11 @@ export interface ConnectorControl {
   readDisabled(address: string): Promise<DisabledMarker | null>;
   markDisabled(address: string, source: string | null): Promise<void>;
   clearDisabled(address: string): Promise<void>;
-  readLedger(source: string, address: string): Promise<PurgeLedgerRead>;
+  readLedger(
+    source: string,
+    address: string,
+    safetyMarginMs?: number,
+  ): Promise<PurgeLedgerRead>;
   writeLedger(
     source: string,
     address: string,
@@ -1306,7 +1310,11 @@ function parseDisabledMarker(raw: unknown): DisabledMarker | null {
   };
 }
 
-function parsePurgeLedger(raw: unknown, now: number): PurgeLedger | null {
+function parsePurgeLedger(
+  raw: unknown,
+  now: number,
+  safetyMarginMs = 0,
+): PurgeLedger | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     return null;
   const value = raw as Record<string, unknown>;
@@ -1323,7 +1331,11 @@ function parsePurgeLedger(raw: unknown, now: number): PurgeLedger | null {
     !Array.isArray(value.recentIdsAddedAt)
       ? (value.recentIdsAddedAt as Record<string, unknown>)
       : {};
-  const cutoff = now - PURGE_RECENT_ID_TTL_MS;
+  const retentionMs = Math.max(
+    0,
+    PURGE_RECENT_ID_TTL_MS - Math.max(0, safetyMarginMs),
+  );
+  const cutoff = now - retentionMs;
   const recentIds: string[] = [];
   const recentIdsAddedAt: Record<string, string> = {};
   for (const id of value.recentIds) {
@@ -1384,11 +1396,15 @@ export class ConnectorControlStore implements ConnectorControl {
     await this.run(() => this.deleteKey(disabledMarkerKey(address)));
   }
 
-  async readLedger(source: string, address: string): Promise<PurgeLedgerRead> {
+  async readLedger(
+    source: string,
+    address: string,
+    safetyMarginMs = 0,
+  ): Promise<PurgeLedgerRead> {
     const key = purgeLedgerKey(source, address);
     const raw = await this.run(() => this.readJson(key));
     if (raw === null || raw === undefined) return { status: "absent" };
-    const ledger = parsePurgeLedger(raw, this.now());
+    const ledger = parsePurgeLedger(raw, this.now(), safetyMarginMs);
     if (ledger === null) return { status: "unparseable", raw };
 
     const value = raw as Record<string, unknown>;

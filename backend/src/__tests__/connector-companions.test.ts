@@ -1891,6 +1891,51 @@ describe("ConnectorControlStore surfaces {ok:false} loudly (§9.3 durable-Result
     if (atExpiry.status === "ok") expect(atExpiry.ledger.recentIds).toEqual([]);
     expect((stored.get(key) as PurgeLedger).recentIds).toEqual([]);
   });
+  test("purge-ledger expiry includes the maintenance interval safety margin", async () => {
+    const now = 1_800_000_000_000;
+    const key = purgeLedgerKey(SOURCE, ADDRESS);
+    const recentId = "boundary";
+    const stored = new Map<string, unknown>([
+      [
+        key,
+        {
+          purgedThrough: new Date(now - 20 * PURGE_RECENT_ID_TTL_MS).toISOString(),
+          recentIds: [recentId],
+          recentIdsAddedAt: {
+            [recentId]: new Date(
+              now - PURGE_RECENT_ID_TTL_MS + 2.5 * 60_000,
+            ).toISOString(),
+          },
+          updatedAt: new Date(now).toISOString(),
+        },
+      ],
+    ]);
+    const node = {
+      kv: {
+        async get(readKey: string) {
+          return stored.has(readKey)
+            ? { ok: true, data: { data: stored.get(readKey) } }
+            : null;
+        },
+        async put(writeKey: string, value: unknown) {
+          stored.set(writeKey, value);
+          return { ok: true, data: true };
+        },
+        async delete(deleteKey: string) {
+          stored.delete(deleteKey);
+          return { ok: true, data: true };
+        },
+      },
+      async signIn() {},
+    } as unknown as TinyCloudNode;
+    const store = new ConnectorControlStore(node, () => now);
+
+    const result = await store.readLedger(SOURCE, ADDRESS, 5 * 60_000);
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") expect(result.ledger.recentIds).toEqual([]);
+    expect((stored.get(key) as PurgeLedger).recentIds).toEqual([]);
+  });
 
   test("markDisabled throws when kv.put resolves ok:false", async () => {
     const store = new ConnectorControlStore(
