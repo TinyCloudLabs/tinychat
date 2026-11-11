@@ -576,12 +576,12 @@ export class ContentStore implements ContentSink, RetentionGuard {
       );
       errorContent(
         `op=retention result=content_index_unavailable first_failure=true ` +
-          `source=${source} aid=${hashed(address)}`,
+          `alert=true source=${source} aid=${hashed(address)}`,
       );
       return firstFailureAt;
     } catch {
       errorContent(
-        `op=retention result=failure_marker_unavailable source=${source} ` +
+        `op=retention result=failure_marker_unavailable alert=true source=${source} ` +
           `aid=${hashed(address)}`,
       );
       return null;
@@ -618,7 +618,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
       }
     } catch {
       errorContent(
-        `op=retention result=age_fallback_failed source=${source} ` +
+        `op=retention result=age_fallback_failed alert=true source=${source} ` +
           `aid=${hashed(address)}`,
       );
     }

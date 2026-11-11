@@ -228,6 +228,22 @@ tests:
             source: |
               assert_eq!(.event, "backend_alert")
               assert_eq!(.level, "info")
+  - name: "content-key retention failure reaches the Better Stack alert event"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[connector-content] op=retention result=content_index_unavailable first_failure=true alert=true source=fireflies aid=0123456789abcdef", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_alert")
+              assert_eq!(.alert, true)
+              assert_eq!(.component, "connector-content")
+              assert_eq!(.level, "error")
+              assert!(!contains(encode_json(.), "0123456789abcdef"))
   - name: "generic stderr line ships no text and no identifiers"
     inputs:
       - insert_at: redact
