@@ -63,8 +63,7 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 
 > Our server **fetches the meeting itself and keeps its own copy** — title, transcript, summary, attendees —
 > encrypted at rest under a key our server holds, for up to **14 days** from the day it arrives.
-> At that boundary the content row and its tombstone expire together; a provider replay after
-> the window may be delivered once again, subject to the browser's check against the user's space.
+> At that boundary the content row and its tombstone expire together.
 > Disconnecting, or asking us to purge, deletes the stored meetings and the credential straight
 > away.
 

@@ -554,11 +554,10 @@ above for the listed addresses. This is deliberate and operator-signed
   §12.2, W11) is a precondition for enabling the flag rather than a follow-up.
 - The backend **fetches the meeting and keeps its own copy**, encrypted under
   `CONNECTOR_CONTENT_MASTER`, for **14 days** (`RETENTION_WINDOW_DAYS` in
-  `backend/src/services/content-store.ts`). Rows and retention tombstones expire at the
-  same boundary. A provider replay after 14 days may be delivered once again, subject
-  to the browser's duplicate check against the user's own space. Disconnect/purge
-  deletes the stored meetings and the credential immediately; queue and purge-ledger
-  IDs clear at once.
+  `backend/src/services/content-store.ts`). Rows and retention tombstones expire at the same 14-day
+  boundary. Disconnect/purge deletes reconciled stored meetings and the credential immediately.
+  Unreconciled server-side copies remain until the user-space reconcile acknowledgement deletes
+  them or the 14-day expiry, whichever comes first; queue and purge-ledger IDs clear at once.
 - What does **not** change: the backend still holds **no connector delegation**.
   Custody is out of band (plan §6), so no new permission is minted inside a
   user's space and `backendDelegationPermissions()` stays `threads/`-only for
