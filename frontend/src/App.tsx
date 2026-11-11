@@ -149,6 +149,7 @@ import { captureCapabilities, captureEngineAvailable, subscribeCaptureCapabiliti
 import { deletePendingRecordings, savePendingRecordings } from "./lib/voiceNotes/recorderSaves";
 import { PendingVoiceNoteSignOutDialog } from "./chat/PendingVoiceNoteSignOutDialog";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
+import { AppLockGate } from "./components/AppLockGate";
 import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
@@ -1600,6 +1601,8 @@ export function App() {
       </div>
       {shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,
         nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
+      {/* Face ID / passcode over everything in the phone app (TC-2738); the app keeps loading underneath. */}
+      <AppLockGate />
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
         Recordings are being kept unassigned until TinyCloud Home can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
