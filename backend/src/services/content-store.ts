@@ -249,6 +249,7 @@ export interface ContentBlobStore {
     blob: SealedBlob,
   ): Promise<void>;
   remove(source: string, address: string, sourceId: string): Promise<void>;
+  removeIndex(source: string, address: string): Promise<void>;
   readKeyFailureSince(source: string, address: string): Promise<string | null>;
   writeKeyFailureSince(
     source: string,
@@ -563,28 +564,25 @@ export class ContentStore implements ContentSink, RetentionGuard {
   private async noteRetentionFailure(
     source: string,
     address: string,
-  ): Promise<number | null> {
+  ): Promise<void> {
     try {
       const existing = await this.blobs.readKeyFailureSince(source, address);
       const recorded = existing === null ? NaN : Date.parse(existing);
-      if (Number.isFinite(recorded)) return recorded;
-      const firstFailureAt = this.now();
+      if (Number.isFinite(recorded)) return;
       await this.blobs.writeKeyFailureSince(
         source,
         address,
-        new Date(firstFailureAt).toISOString(),
+        new Date(this.now()).toISOString(),
       );
       errorContent(
         `op=retention result=content_index_unavailable first_failure=true ` +
           `alert=true source=${source} aid=${hashed(address)}`,
       );
-      return firstFailureAt;
     } catch {
       errorContent(
         `op=retention result=failure_marker_unavailable alert=true source=${source} ` +
           `aid=${hashed(address)}`,
       );
-      return null;
     }
   }
 
@@ -623,6 +621,26 @@ export class ContentStore implements ContentSink, RetentionGuard {
       );
     }
     return removed;
+  }
+  private async removeUnreadableIndexIfExpired(
+    source: string,
+    address: string,
+    cutoff: number,
+  ): Promise<void> {
+    try {
+      const index = await this.blobs.readIndex(source, address);
+      if (index === null) return;
+      const updatedAt = Date.parse(index.updatedAt);
+      if (!Number.isFinite(updatedAt) || updatedAt <= cutoff) {
+        await this.blobs.removeIndex(source, address);
+        await this.clearRetentionFailure(source, address);
+      }
+    } catch {
+      errorContent(
+        `op=retention result=index_age_fallback_failed alert=true source=${source} ` +
+          `aid=${hashed(address)}`,
+      );
+    }
   }
 
 
@@ -906,22 +924,15 @@ export class ContentStore implements ContentSink, RetentionGuard {
         ) {
           throw error;
         }
-        const firstFailureAt = await this.noteRetentionFailure(
+        await this.noteRetentionFailure(target.source, target.address);
+        const cutoff = this.now() - this.retentionMs;
+        await this.removeExpiredBlobs(target.source, target.address, cutoff);
+        await this.removeUnreadableIndexIfExpired(
           target.source,
           target.address,
+          cutoff,
         );
-        let removed = 0;
-        if (
-          firstFailureAt !== null &&
-          this.now() - firstFailureAt >= this.retentionMs
-        ) {
-          removed = await this.removeExpiredBlobs(
-            target.source,
-            target.address,
-            this.now() - this.retentionMs,
-          );
-        }
-        return { removed };
+        throw error;
       }
       await this.clearRetentionFailure(target.source, target.address);
       const now = this.now();
@@ -1018,20 +1029,17 @@ export class ContentStore implements ContentSink, RetentionGuard {
         ) {
           throw error;
         }
-        const firstFailureAt = await this.noteRetentionFailure(
+        await this.noteRetentionFailure(target.source, target.address);
+        const swept = await this.removeExpiredBlobs(
           target.source,
           target.address,
+          cutoff,
         );
-        const failureHorizonElapsed =
-          firstFailureAt !== null &&
-          now - firstFailureAt >= this.retentionMs;
-        const swept = failureHorizonElapsed
-          ? await this.removeExpiredBlobs(
-              target.source,
-              target.address,
-              cutoff,
-            )
-          : 0;
+        await this.removeUnreadableIndexIfExpired(
+          target.source,
+          target.address,
+          cutoff,
+        );
         return {
           swept,
           bytesFreed: 0,
@@ -1620,6 +1628,9 @@ export class InMemoryContentBlobStore implements ContentBlobStore {
   ): Promise<void> {
     this.blobs.set(indexSlot(source, address), JSON.stringify(blob));
   }
+  async removeIndex(source: string, address: string): Promise<void> {
+    this.blobs.delete(indexSlot(source, address));
+  }
   async readKeyFailureSince(
     source: string,
     address: string,
@@ -1806,6 +1817,9 @@ export class KvContentBlobStore implements ContentBlobStore {
     blob: SealedBlob,
   ): Promise<void> {
     return this.run(() => this.writeBlob(indexKey(source, address), blob));
+  }
+  removeIndex(source: string, address: string): Promise<void> {
+    return this.run(() => this.deleteKey(indexKey(source, address)));
   }
   async readKeyFailureSince(
     source: string,

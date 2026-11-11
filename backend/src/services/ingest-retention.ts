@@ -136,7 +136,7 @@ export class IngestRetentionSweeper {
         logRetention(
           `op=deploy-retention-summary tenants_swept=${addresses} ` +
             `stored_at_backfilled=${storedAtBackfilled} ` +
-            `unreadable_indexes=${unreadableIndexes} ` +
+            `unreadable_indexes=${unreadableIndexes} errors=${errors} ` +
             `tenant_hashes=${tenantHashes || "none"}`,
         );
         this.deploySummaryLogged = true;
