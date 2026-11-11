@@ -280,6 +280,49 @@ describe("gateway budgets", () => {
     expect(gateway.usage(BOT_A).bot).toBeGreaterThanOrEqual(cfg.maxTokens);
   });
 
+  test("concurrent bots cannot overshoot the global cap: admission reserves, completion settles to usage", async () => {
+    const store = memoryStore();
+    store.saved = { day: "2026-11-11", total: 1400, perBot: {} };
+    const release = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const { gateway } = setup(async () => {
+      reached.resolve();
+      await release.promise;
+      return streamed(50);
+    }, store);
+    const first = gateway.handle(BOT_A, chat(minimal));
+    await reached.promise;
+    // A's reservation takes the last 100 global tokens, so B is refused although A has not reported usage yet.
+    expect(gateway.usage(BOT_A).total).toBe(1500);
+    expect((await gateway.handle(BOT_B, chat(minimal, TOKEN_B))).status).toBe(429);
+    release.resolve();
+    await (await first).text();
+    // The unused part of A's reservation is released.
+    expect(gateway.usage(BOT_A)).toEqual({ bot: 50, total: 1450 });
+    expect(store.saved?.total).toBe(1450);
+  });
+
+  test("a failed budget save stops model calls until a save succeeds", async () => {
+    let failing = true;
+    const inner = memoryStore();
+    const store: BudgetStore = {
+      load: inner.load,
+      save: snapshot => {
+        if (failing) throw new Error("ENOSPC: no space left on device");
+        inner.save(snapshot);
+      },
+    };
+    const { gateway, calls } = setup(undefined, store);
+    expect((await gateway.handle(BOT_A, chat(minimal))).status).toBe(503);
+    expect((await gateway.handle(BOT_B, chat(minimal, TOKEN_B))).status).toBe(503);
+    expect(calls).toHaveLength(0);
+    failing = false;
+    const res = await gateway.handle(BOT_A, chat(minimal));
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(inner.saved?.total).toBe(400);
+  });
+
   test("counters survive a gateway restart", async () => {
     const store = memoryStore();
     const before = setup(undefined, store);

@@ -44,7 +44,7 @@ function Composer({ working, onSend }: { working: boolean; onSend: (text: string
           placeholder={BOTS_STRINGS.messageMain}
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
-          className="block max-h-40 w-full resize-none bg-transparent py-1 text-body text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none"
+          className="block max-h-40 min-h-11 w-full resize-none bg-transparent py-2.5 text-body text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none"
         />
       </label>
       <SendButton label={BOTS_STRINGS.sendToMain} disabled={!ready} />

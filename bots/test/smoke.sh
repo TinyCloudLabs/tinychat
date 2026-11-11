@@ -118,17 +118,19 @@ echo "all bots together (parent cgroup): memory.max=$($DOCKER exec "$NAME-superv
 check "aggregate cgroup caps set" bash -c "[[ \$($DOCKER exec $NAME-supervisor cat /sys/fs/cgroup/bots/memory.max) == $((6144 * 1048576)) && \$($DOCKER exec $NAME-supervisor cat /sys/fs/cgroup/bots/pids.max) == 2048 ]]"
 
 step "containment of A (each line should end in PASS)"
-check "gvisor kernel" bash -c "[[ \"\$(sandbox $A uname -r 2>/dev/null)\" != \"\$(uname -r)\" ]]"
+# Every negative check first proves the exec it relies on works, so a broken `runsc exec` cannot pass as "refused".
+check "runsc exec works in A and B" bash -c "[[ \$(sandbox $A echo ok) == ok && \$(sandbox $B echo ok) == ok ]]"
+check "gvisor kernel" bash -c "k=\$(sandbox $A uname -r) && [[ -n \$k && \$k != \"\$(uname -r)\" ]]"
 check "egress dir holds only the socket" bash -c "[[ \"\$(sandbox $A ls -A /run/egress)\" == egress.sock ]]"
-check "egress dir read-only" bash -c "! sandbox $A touch /run/egress/x"
+check "egress dir read-only" bash -c "sandbox $A test -S /run/egress/egress.sock && ! sandbox $A touch /run/egress/x"
 sandbox "$A" sh -c 'echo a-note > /root/bot/a-note; echo a-root > /root/a-root; echo a-tmp > /tmp/a-tmp'
-check "B cannot see A's state" bash -c "! sandbox $B cat /root/bot/a-note"
-check "B cannot see A's root layer" bash -c "! sandbox $B cat /root/a-root"
-check "B cannot see A's /tmp" bash -c "! sandbox $B cat /tmp/a-tmp"
-check "host rootfs untouched by A" bash -c "! $DOCKER exec $NAME-supervisor test -e /bot-rootfs/root/a-root"
-check "no DNS / network" bash -c "! sandbox $A getent hosts example.com"
-check "model key not in sandbox" bash -c "! sandbox $A sh -c 'cat /proc/*/environ; grep -rs . /root/.omp' | grep -qF mock-model-key"
-check "model key not in supervisor" bash -c "! $DOCKER exec $NAME-supervisor sh -c 'cat /proc/1/environ' | grep -qF REDPILL"
+check "B cannot see A's state" bash -c "sandbox $A test -s /root/bot/a-note && sandbox $B test -d /root/bot && ! sandbox $B cat /root/bot/a-note"
+check "B cannot see A's root layer" bash -c "sandbox $A test -s /root/a-root && sandbox $B true && ! sandbox $B cat /root/a-root"
+check "B cannot see A's /tmp" bash -c "sandbox $A test -s /tmp/a-tmp && sandbox $B test -d /tmp && ! sandbox $B cat /tmp/a-tmp"
+check "host rootfs untouched by A" bash -c "sandbox $A test -s /root/a-root && $DOCKER exec $NAME-supervisor test -d /bot-rootfs/root && ! $DOCKER exec $NAME-supervisor test -e /bot-rootfs/root/a-root"
+check "no DNS / network" bash -c "sandbox $A sh -c 'command -v getent' && ! sandbox $A getent hosts example.com"
+check "model key not in sandbox" bash -c "sandbox $A sh -c 'cat /proc/*/environ' | grep -qF BOT_TOKEN && ! sandbox $A sh -c 'cat /proc/*/environ; grep -rs . /root/.omp' | grep -qF mock-model-key"
+check "model key not in supervisor" bash -c "$DOCKER exec $NAME-supervisor cat /proc/1/environ | grep -qF BOTS_SERVICE_SECRET && ! $DOCKER exec $NAME-supervisor cat /proc/1/environ | grep -qF REDPILL"
 check "gateway refuses other route" bash -c "sandbox $A bun -e 'const r = await fetch(\"http://127.0.0.1:8080/v1/files\", {headers:{authorization:\"Bearer \"+process.env.BOT_TOKEN}}); process.exit(r.status === 403 ? 0 : 1)'"
 check "gateway refuses wrong token" bash -c "sandbox $A bun -e 'const r = await fetch(\"http://127.0.0.1:8080/v1/models\", {headers:{authorization:\"Bearer nope\"}}); process.exit(r.status === 403 ? 0 : 1)'"
 check "models filtered to the allowlist" bash -c "sandbox $A bun -e 'const r = await fetch(\"http://127.0.0.1:8080/v1/models\", {headers:{authorization:\"Bearer \"+process.env.BOT_TOKEN}}); const j = await r.json(); process.exit(j.data.map(m => m.id).join() === \"z-ai/glm-5.2\" ? 0 : 1)'"
@@ -141,9 +143,9 @@ memory_current() { $DOCKER exec "$NAME-supervisor" cat "/sys/fs/cgroup/bots/$ID_
 before=$(memory_current)
 sandbox "$A" dd if=/dev/zero of=/root/fill bs=1M count=300 2>/dev/null
 echo "A memory.current: before=$(( before / 1048576 ))MiB, after writing 300MiB to the root layer=$(( $(memory_current) / 1048576 ))MiB"
-check "root layer refuses writes past its cap" bash -c "! sandbox $A dd if=/dev/zero of=/root/fill2 bs=1M count=400"
-check "/tmp refuses writes past its cap" bash -c "! sandbox $A dd if=/dev/zero of=/tmp/fill bs=1M count=300"
-check "state filesystem refuses writes past its quota" bash -c "! sandbox $A dd if=/dev/zero of=/root/bot/fill bs=1M count=300"
+check "root layer refuses writes past its cap" bash -c "! sandbox $A dd if=/dev/zero of=/root/fill2 bs=1M count=400 && sandbox $A test -s /root/fill2"
+check "/tmp refuses writes past its cap" bash -c "! sandbox $A dd if=/dev/zero of=/tmp/fill bs=1M count=300 && sandbox $A test -s /tmp/fill"
+check "state filesystem refuses writes past its quota" bash -c "! sandbox $A dd if=/dev/zero of=/root/bot/fill bs=1M count=300 && sandbox $A test -s /root/bot/fill"
 sandbox "$A" rm -f /root/fill /root/fill2 /tmp/fill /root/bot/fill
 
 step "gateway restart: budgets persist on its volume, the supervisor registers A again"
@@ -159,6 +161,23 @@ check "budget counters survive a gateway restart" test "$before_restart" == "$af
 reply=$(post "$A" "Reply with exactly: pong")
 echo "$reply" | tr '\n' ' '; echo
 check "A replies through the restarted gateway" grep -q 'event: done' <<<"$reply"
+
+step "gateway with an unreadable budget file refuses to start: one operator line, non-zero exit"
+saved_budget=$(budget)
+$DOCKER rm -f "$NAME-gateway" >/dev/null
+$DOCKER run --rm -v "$NAME-budget:/b" --user 65532:65532 --entrypoint sh "$IMAGE" -c 'echo broken > /b/budget.json'
+start_gateway
+sleep 3
+state=$($DOCKER inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$NAME-gateway")
+refusal=$($DOCKER logs "$NAME-gateway" 2>&1 | grep '"refusing_to_start"' || true)
+echo "gateway: $state"; echo "$refusal"
+check "unreadable budget file: the gateway exits 78" test "$state" == "exited 78"
+check "unreadable budget file: one line names the reason" grep -q 'budget.json is unreadable' <<<"$refusal"
+$DOCKER run --rm -v "$NAME-budget:/b" --user 65532:65532 -e SAVED="$saved_budget" --entrypoint sh "$IMAGE" -c 'printf %s "$SAVED" > /b/budget.json'
+$DOCKER rm -f "$NAME-gateway" >/dev/null
+start_gateway
+sleep 2
+check "restored budget file: the gateway starts with the saved counters" test "$(budget)" == "$saved_budget"
 
 step "idle stop: wait $(( IDLE_MS / 1000 + 6 ))s, then A and B are stopped"
 sleep $(( IDLE_MS / 1000 + 6 ))

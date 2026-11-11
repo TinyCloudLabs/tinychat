@@ -13,8 +13,23 @@ import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
 
 const cfg = gatewayConfig(process.env);
-// Budgets persist on the gateway's own volume; an unreadable budget file stops the start (fails closed).
-const gateway = new Gateway(cfg, { store: fileBudgetStore(cfg.budgetFile) });
+// Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
+// operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
+function startGateway(): Gateway {
+  try {
+    return new Gateway(cfg, { store: fileBudgetStore(cfg.budgetFile) });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        gateway: "refusing_to_start",
+        reason: error instanceof Error ? error.message : "unknown",
+        fix: "budget counters cannot be restored; see 'Budget file recovery' in bots/README.md",
+      }),
+    );
+    process.exit(78);
+  }
+}
+const gateway = startGateway();
 const listeners = new Map<string, Server<undefined>>();
 
 // Registrations do not survive a restart; the supervisor registers again before every message. Stale sockets go,

@@ -134,7 +134,12 @@ export class RunscHost implements SandboxLauncher {
         await attempt([...this.#runsc, "delete", "-force", layout.containerId]);
         proc?.kill("SIGKILL");
         await proc?.exited;
-        if (!(await attempt(["umount", layout.stateMount]))) await attempt(["umount", "-l", layout.stateMount]);
+        if (!(await attempt(["umount", layout.stateMount]))) {
+          // A lazy unmount leaves the loop device attached until its last user goes; detach it explicitly (the
+          // kernel defers that until the device is free) so loop devices are not leaked.
+          await attempt(["umount", "-l", layout.stateMount]);
+          await attempt(["sh", "-c", 'for d in $(losetup -n -O NAME -j "$1"); do losetup -d "$d"; done', "sh", layout.stateImage]);
+        }
         await this.#control("DELETE", layout.botId).catch(() => {});
       })());
     try {

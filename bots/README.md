@@ -91,16 +91,38 @@ The gateway, per bot socket:
   fallbacks off and always asks for usage;
 - sends to the fixed origin `https://tee.redpill.ai` with the model key, refuses redirects, and forwards only
   `content-type` back;
-- enforces connect and total timeouts, an 8 MiB response cap, a daily token budget per bot and a global daily cap,
-  counted from reported usage (a stream cut short without usage is charged a conservative estimate). A request
-  cannot overshoot: a prompt whose estimate (bytes / 3) does not fit what is left is refused, and `max_tokens` is
-  capped by `BOTS_MAX_TOKENS` and by what is left;
+- enforces connect and total timeouts, an 8 MiB response cap, a daily token budget per bot and a global daily cap.
+  Bots calling at once cannot overshoot either (only the bytes / 3 prompt estimate can undercount): a prompt whose estimate (bytes / 3) does not fit what is
+  left is refused, `max_tokens` is capped by `BOTS_MAX_TOKENS` and by what is left, and the whole estimate (prompt
+  plus `max_tokens`) is reserved against both budgets before the call. When the call ends the reservation is settled
+  to the reported usage and the unused part released (a stream cut short without usage keeps the whole
+  reservation; an upstream error releases it);
 - keeps the budget counters on its own volume (`bot-budget`, `/var/lib/bots-gateway/budget.json`), so a restart,
-  including one a bot provokes, does not reset them. A budget file that exists but cannot be read stops the gateway
-  from starting: it fails closed rather than starting from zero;
+  including one a bot provokes, does not reset them. Each save is a temporary file, fsynced, renamed into place,
+  then the directory fsynced. If a save fails (disk full, read-only volume, any error) the gateway stops serving
+  model calls, answering 503 to every bot, until a later save succeeds; it retries on each request. A budget file
+  that exists but cannot be read stops the gateway from starting (see below);
 - filters `/v1/models` to the allowlist.
 
 OMP also probes `GET /models` and `GET /props` without a token at startup; the gateway refuses them and logs it.
+
+### Budget file recovery
+
+If `budget.json` is unreadable or malformed, the gateway logs one line and exits with status 78:
+
+```json
+{"gateway":"refusing_to_start","reason":"budget file /var/lib/bots-gateway/budget.json is unreadable (…)","fix":"…"}
+```
+
+Under `restart: unless-stopped` Docker keeps restarting it, and every attempt logs the same line, so the loop is
+visible in the container logs; bots get no model access meanwhile (their requests to the socket fail). To recover,
+fix the file on the `bot-budget` volume as the gateway's user (65532), then restart the gateway:
+
+- restore a known copy, or
+- write a conservative file that blocks the rest of today:
+  `{"day":"<today, YYYY-MM-DD UTC>","total":<BOTS_GLOBAL_DAILY_TOKENS>,"perBot":{}}`, or
+- delete it, which starts today's counters from zero. Only do this if a reset is acceptable; the provider-side
+  budget on the dedicated key is then the only limit for the rest of the day.
 
 ## Configuration
 
