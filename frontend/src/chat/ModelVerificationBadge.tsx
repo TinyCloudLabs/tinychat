@@ -135,7 +135,7 @@ const VerificationBadge: FC<{
       return (
         <span
           className="inline-flex items-center gap-1 text-[11px] text-muted-foreground/70"
-          title="This model runs in a TEE but does not sign individual responses. Verify the enclave via the 'Enclave verified' indicator in the header."
+          title="This model's gateway runs in a verified enclave but doesn't sign individual replies. Check the enclave from the 'Enclave verified' indicator in the header."
         >
           <ShieldCheckIcon className="size-3 text-sky-500/60" />
           Enclave-attested model — verify the endpoint above ↑

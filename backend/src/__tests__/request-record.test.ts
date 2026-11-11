@@ -79,10 +79,10 @@ function stubUpstream(body: (signal?: AbortSignal) => ReadableStream<Uint8Array>
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("api.redpill.ai") && url.endsWith("/models")) {
+    if (url.includes("tee.redpill.ai") && url.endsWith("/models")) {
       return Response.json({ data: [{ id: "z-ai/glm-5.2", pricing: { prompt: "0.00000025", completion: "0.000002" } }] });
     }
-    if (url.includes("api.redpill.ai") && url.endsWith("/chat/completions")) {
+    if (url.includes("tee.redpill.ai") && url.endsWith("/chat/completions")) {
       return new Response(body(init?.signal ?? undefined), { status: 200, headers: { "content-type": "text/event-stream" } });
     }
     return originalFetch(input, init);
@@ -113,7 +113,7 @@ function createApp(sink: (event: RequestEvent) => void) {
     req.user = { address: ADDRESS };
     next();
   };
-  app.use("/api/chat", auth, createChatRouter());
+  app.use("/api/chat", auth, createChatRouter({ redpillFetch: (input, init) => globalThis.fetch(input, init) }));
   // A mount whose path carries a credential, like the connector webhook mount.
   const hooks = express.Router();
   hooks.get("/ping", (_req, res) => { res.json({ ok: true }); });

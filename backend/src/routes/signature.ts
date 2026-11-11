@@ -18,7 +18,8 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { relayUpstream } from "./relay.js";
 
-const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
+import { DEFAULT_RED_PILL_BASE_URL } from "../redpill-aci.js";
+const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL;
 
 export function createSignatureRouter() {
   const router = Router();

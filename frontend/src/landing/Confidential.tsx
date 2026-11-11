@@ -21,7 +21,7 @@ const POINTS: Point[] = [
   {
     icon: BadgeCheckIcon,
     title: "Remote attestation",
-    body: "Each response is signed inside the enclave, so you can verify the exact model ran in a genuine TEE — not a logged or swapped-out copy.",
+    body: "Confidential models are served through a gateway that runs in a verified hardware enclave. Where the gateway signs a reply, you can check that it came from that enclave; each reply shows which check it passed.",
   },
   {
     icon: EyeOffIcon,
