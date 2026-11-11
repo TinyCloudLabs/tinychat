@@ -222,10 +222,11 @@ function parsePendingItem(raw: unknown): PendingItem | null {
 }
 
 function parseDeadItem(raw: unknown): DeadItem | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
   const item = parsePendingItem(raw);
-  if (item === null) return null;
-  const deadAt = (raw as Record<string, unknown>).deadAt;
-  return { ...item, deadAt: isIsoish(deadAt) ? deadAt : item.receivedAt };
+  if (item === null || !isIsoish(value.deadAt)) return null;
+  return { ...item, deadAt: value.deadAt };
 }
 
 function itemKey(item: { meetingId: string; kind: PendingKind }): string {
@@ -938,27 +939,40 @@ export class ConnectorQueue {
       const key = itemKey(entry);
       const index = items.findIndex((item) => itemKey(item) === key);
       if (index !== -1) {
-        // §5.3: a duplicate delivery updates receivedAt and returns; it never appends.
-        // `sourceTimestamp` is deliberately NOT refreshed — the tombstone leans on it precisely
-        // because a re-delivery cannot move it.
+        // A provider replay is a duplicate, not a new receipt: the earliest receipt anchors TTL.
+        // `sourceTimestamp` also remains unchanged for purge-ledger comparison.
         const existing = items[index]!;
         items = items.map((item, i) =>
-          i === index ? { ...existing, receivedAt: entry.receivedAt } : item,
+          i === index
+            ? {
+                ...existing,
+                receivedAt:
+                  Date.parse(existing.receivedAt) <= Date.parse(entry.receivedAt)
+                    ? existing.receivedAt
+                    : entry.receivedAt,
+              }
+            : item,
         );
         statuses.push("deduped");
         continue;
       }
+      const deadDuplicate = dead.find((item) => itemKey(item) === key);
+      const receivedAt =
+        deadDuplicate !== undefined &&
+        Date.parse(deadDuplicate.receivedAt) <= Date.parse(entry.receivedAt)
+          ? deadDuplicate.receivedAt
+          : entry.receivedAt;
       items = [
         ...items,
         {
           meetingId: entry.meetingId,
           kind: entry.kind,
-          receivedAt: entry.receivedAt,
+          receivedAt,
           ...(entry.sourceTimestamp !== undefined
             ? { sourceTimestamp: entry.sourceTimestamp }
             : {}),
           attempts: 0,
-          nextAttemptAt: entry.receivedAt,
+          nextAttemptAt: receivedAt,
         },
       ];
       statuses.push("queued");
@@ -1020,8 +1034,8 @@ export class ConnectorQueue {
       return Number.isFinite(receivedAt) && receivedAt > cutoff;
     });
     const retainedDead = dead.filter((item) => {
-      const receivedAt = Date.parse(item.receivedAt);
-      return Number.isFinite(receivedAt) && receivedAt > cutoff;
+      const deadAt = Date.parse(item.deadAt);
+      return Number.isFinite(deadAt) && deadAt > cutoff;
     });
     return {
       items: retainedItems,

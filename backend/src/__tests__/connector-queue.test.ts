@@ -309,14 +309,15 @@ describe("enqueue under concurrency", () => {
 // ── Dedup (§5.3) ─────────────────────────────────────────────────────
 
 describe("dedup by (meetingId, kind)", () => {
-  test("a duplicate delivery updates receivedAt and never appends", async () => {
+  test("a redelivery keeps the first receivedAt so it cannot reset the 14-day expiry", async () => {
     const { node, queue, clock } = createQueue();
 
     await queue.enqueue(SOURCE, ADDRESS, {
       meetingId: "M1",
       kind: "transcript",
     });
-    clock.now = T0 + 5_000;
+    const receivedAt = new Date(T0).toISOString();
+    clock.now = T0 + 13 * 24 * 60 * 60 * 1000;
     const second = await queue.enqueue(SOURCE, ADDRESS, {
       meetingId: "M1",
       kind: "transcript",
@@ -326,7 +327,10 @@ describe("dedup by (meetingId, kind)", () => {
     expect(second.depth).toBe(1);
     const items = stored(node, PENDING_KEY) as Array<{ receivedAt: string }>;
     expect(items).toHaveLength(1);
-    expect(items[0]!.receivedAt).toBe(new Date(T0 + 5_000).toISOString());
+    expect(items[0]!.receivedAt).toBe(receivedAt);
+
+    clock.now = T0 + QUEUE_TTL_MS + 1;
+    expect(await queue.list(SOURCE, ADDRESS)).toEqual([]);
   });
 
   test("the same meeting's transcript and summary are distinct items", async () => {
@@ -586,6 +590,19 @@ describe("error classes", () => {
     expect((await queue.dead(SOURCE, ADDRESS))[0]!.lastError).toBe(
       "meeting_not_found",
     );
+  });
+
+  test("redelivery after dead-lettering keeps the original receipt for expiry", async () => {
+    const { node, queue, clock } = createQueue();
+    await queue.enqueue(SOURCE, ADDRESS, { meetingId: "M1", kind: "transcript" });
+    await queue.fail(SOURCE, ADDRESS, "M1", "transcript", "meeting_not_found", { terminal: true });
+    clock.now = T0 + 13 * QUEUE_TTL_MS / 14;
+
+    await queue.enqueue(SOURCE, ADDRESS, { meetingId: "M1", kind: "transcript" });
+
+    expect((stored(node, PENDING_KEY) as Array<{ receivedAt: string }>)[0]!.receivedAt).toBe(new Date(T0).toISOString());
+    clock.now = T0 + QUEUE_TTL_MS + 1;
+    expect(await queue.list(SOURCE, ADDRESS)).toEqual([]);
   });
 
   test("a second-write failure during settle preserves pending and dead, emits no success log, and retries without duplication", async () => {
@@ -900,6 +917,30 @@ describe("container-level recovery", () => {
     ).toBe(true);
   });
 
+
+  test("pending and dead items with malformed receipt dates are dropped by maintenance", async () => {
+    const { node, queue } = createQueue();
+    node.store.set(PENDING_KEY, [{
+      meetingId: "BADPENDING",
+      kind: "transcript",
+      receivedAt: "not-a-date",
+      nextAttemptAt: new Date(T0).toISOString(),
+      attempts: 0,
+    }]);
+    node.store.set(DEAD_KEY, [{
+      meetingId: "BADDEAD",
+      kind: "transcript",
+      receivedAt: new Date(T0).toISOString(),
+      deadAt: "not-a-date",
+      nextAttemptAt: new Date(T0).toISOString(),
+      attempts: 0,
+    }]);
+
+    await queue.sweep(SOURCE, ADDRESS);
+
+    expect(stored(node, PENDING_KEY)).toEqual([]);
+    expect(stored(node, DEAD_KEY)).toEqual([]);
+  });
   test("individual invalid entries are dropped with their count logged — the valid ones survive", async () => {
     const { node, queue } = createQueue();
     node.store.set(PENDING_KEY, [

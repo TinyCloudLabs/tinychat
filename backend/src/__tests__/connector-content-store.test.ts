@@ -29,7 +29,6 @@ import {
 } from "../services/ingest-instance.js";
 import {
   IngestRetentionSweeper,
-  shouldStartRetentionSweep,
   type RetentionSweepTarget,
 } from "../services/ingest-retention.js";
 import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
@@ -879,6 +878,42 @@ describe("W4 content store — retention", () => {
     expect(await store.get(SOURCE, ADDRESS_A, "mtg-future")).toBeNull();
   });
 
+  test("[delta-05] malformed and missing stored dates expire and their blobs are deleted", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-bad-date" }));
+    await store.upsert(upsertInput({ sourceId: "mtg-missing-date" }));
+    const rows = await store.list(SOURCE, ADDRESS_A);
+    const malformed = { ...rows[0]!.meta, storedAt: "not-a-date" };
+    const missing = { ...rows[1]!.meta, storedAt: undefined };
+    const seedIndex = store as unknown as {
+      writeIndex(source: string, address: string, index: unknown): Promise<void>;
+    };
+    await seedIndex.writeIndex(SOURCE, ADDRESS_A, {
+      meetings: [malformed, missing],
+      tombstones: [],
+    });
+    clock.now = T0 + 100 * DAY_MS;
+
+    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-bad-date")).toBeNull();
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-missing-date")).toBeNull();
+  });
+
+  test("[delta-05] a retention pass deletes orphan blobs even without an index row", async () => {
+    const { store, blobs, clock } = harness();
+    await blobs.write(SOURCE, ADDRESS_A, "mtg-orphan", {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      updatedAt: new Date(T0 - 15 * DAY_MS).toISOString(),
+    });
+    clock.now = T0;
+
+    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-orphan")).toBeNull();
+  });
+
   test("[delta-05] the sweep touches ONLY the address it was asked for", async () => {
     const { store, clock } = harness();
     const old = new Date(T0 - 100 * DAY_MS).toISOString();
@@ -991,21 +1026,21 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
     expect(recorder.maxInflight()).toBe(1);
   });
 
-  test("[delta-05] an unreadable index directory sweeps nothing", async () => {
+  test("[delta-05] a failed directory listing is retried on the next retention pass", async () => {
     const recorder = sweepRecorder();
+    let attempts = 0;
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
       indexes: async () => {
-        throw new Error("index listing unavailable");
+        attempts += 1;
+        if (attempts === 1) throw new Error("index listing unavailable");
+        return [{ source: SOURCE, address: ADDRESS_A }];
       },
     });
 
-    expect(await sweeper.sweepOnce()).toEqual({
-      addresses: 0,
-      swept: 0,
-      errors: 1,
-    });
-    expect(recorder.calls).toEqual([]);
+    expect(await sweeper.sweepOnce()).toEqual({ addresses: 0, swept: 0, errors: 1 });
+    expect(await sweeper.sweepOnce()).toEqual({ addresses: 1, swept: 1, errors: 0 });
+    expect(recorder.calls).toEqual([{ source: SOURCE, address: ADDRESS_A }]);
   });
 
   test("[delta-05] one index failure does not cost other indexes their sweep", async () => {
@@ -1097,11 +1132,9 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
     node.store.set(`connector-content-index/${SOURCE}/${ADDRESS_A}`, {});
     node.store.set(`connector-content-index/${SOURCE}/${ADDRESS_B}`, {});
     const directory = createContentIndexDirectory(node as unknown as TinyCloudNode);
-    const backendIngestEnabled = false;
     const activeCohort = new Set([ADDRESS_A]);
     const existingIndexes = await directory();
     expect(activeCohort.has(ADDRESS_B)).toBe(false);
-    expect(shouldStartRetentionSweep(backendIngestEnabled, existingIndexes)).toBe(true);
     const sweeper = new IngestRetentionSweeper({
       content: store,
       indexes: async () => existingIndexes,
@@ -1131,6 +1164,15 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
 
     expect(result.swept).toBe(1);
     expect(await store.get(SOURCE, ADDRESS_A, "mtg-old")).toBeNull();
+  });
+  test("[delta-05] the startup directory includes addresses with orphan blobs and no index", async () => {
+    const node = new FakeNode();
+    const orphanAddress = "0x3333330000000000000000000000000000003333";
+    node.store.set(`connector-content/${SOURCE}/${orphanAddress}/mtg-orphan`, {});
+
+    const directory = createContentIndexDirectory(node as unknown as TinyCloudNode);
+
+    expect(await directory()).toContainEqual({ source: SOURCE, address: orphanAddress });
   });
 });
 
