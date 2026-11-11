@@ -8,7 +8,7 @@ export const ANSWER_UNDO_SECONDS = 4;
 export const ANSWER_UNDO_HINT = `Your answer is sent ${ANSWER_UNDO_SECONDS} seconds after you tap an option or press Send. You can undo it until then, not after.`;
 
 /** What a send control reads while its answer waits (`seconds` left) or is being sent (null). */
-export const sendingLabel = (seconds: number | null) => seconds === null ? "Sending…" : `Sending in ${seconds}s`;
+export const sendingLabel = (seconds: number | null, verb = "Sending") => seconds === null ? "Sending…" : `${verb} in ${seconds}s`;
 
 /**
  * The undo window. `start` counts ANSWER_UNDO_SECONDS down and then calls `send`;

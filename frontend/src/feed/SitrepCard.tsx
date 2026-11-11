@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
+import { ANSWER_UNDO_HINT, AnswerOptions, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
@@ -27,6 +28,7 @@ interface Props {
   onOwnerSaved: () => void;
   onNavigate: (entry: HomeFeedEntry) => void;
 }
+type AskAnswer = { action: "answer" | "drop" | "accept-default"; choice?: string };
 
 function TypedAnswerStatus({ entry, owner, answer }: { entry: HomeFeedEntry; owner: SitrepOwnerData; answer?: Answer }) {
   if (!answer) return null;
@@ -44,10 +46,9 @@ function TypedAnswerStatus({ entry, owner, answer }: { entry: HomeFeedEntry; own
 /** Owns its draft for one complete canonical identity, not a changing list index. */
 export function SitrepCard(props: Props) {
   const { entry, record, records, entries, owner, projection, source, now, onSaved, onOwnerSaved } = props;
-  const answerGroup = useId();
   const state = projection.state;
   const [text, setText] = useState("");
-  const [choice, setChoice] = useState<string>();
+  const [chosen, setChosen] = useState<AskAnswer>();
   const [privateNote, setPrivateNote] = useState("");
   const [outboundNote, setOutboundNote] = useState("");
   const [reason, setReason] = useState("");
@@ -55,13 +56,16 @@ export function SitrepCard(props: Props) {
   const [followup, setFollowup] = useState(false);
   const [engaged, setEngaged] = useState(false);
   const [later, setLater] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const pending = useRef<{ key: string; header: NewFeedResponse | NewFeedMessage; payload: FeedResponsePayload } | undefined>(undefined);
   const privatePending = useRef<{ key: string; event: HomeFeedOwnerEvent } | undefined>(undefined);
   const heldPending = useRef<{ key: string; note: SitrepHeldNote } | undefined>(undefined);
   const busyRef = useRef(false);
+  const hold = useUndoWindow(() => { if (chosen) void perform(() => askAnswer(chosen)); });
+  // Every other action on the card waits while an answer can still be undone.
+  const busy = saving || hold.seconds !== null;
   const closed = isClosed(record);
   const answers = owner.answers.filter((answer) => answer.card.kind === record.kind && answer.card.id === record.id).map((answer) => answer.value);
   const claims = claimDecisionHistory(owner, record.id);
@@ -69,10 +73,10 @@ export function SitrepCard(props: Props) {
   async function perform(work: () => Promise<unknown>): Promise<boolean> {
     if (busyRef.current) return false;
     busyRef.current = true;
-    setBusy(true); setError(undefined); setNotice(undefined);
+    setSaving(true); setError(undefined); setNotice(undefined);
     try { await work(); return true; }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Home action could not be saved"); return false; }
-    finally { busyRef.current = false; setBusy(false); }
+    finally { busyRef.current = false; setSaving(false); }
   }
   async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string) {
     const action = validateSitrepAction(record, type, data, new Date().toISOString());
@@ -112,11 +116,18 @@ export function SitrepCard(props: Props) {
     await source.saveOwnerState(entry, draft.event); privatePending.current = undefined; onOwnerSaved();
     return draft.event;
   }
-  async function askAnswer(action: "answer" | "drop" | "accept-default" = "answer", selected = choice) {
+  async function askAnswer({ action, choice }: AskAnswer) {
     if (record.kind !== "ask") return;
-    await send("sitrep.answer", { askId: record.id, action, ...(selected ? { choice: selected } : {}), text, at: new Date().toISOString() }, `ask:${action}:${selected ?? ""}:${text}`);
-    setText(""); setChoice(undefined); setFollowup(false); setEngaged(false);
+    await send("sitrep.answer", { askId: record.id, action, ...(choice ? { choice } : {}), text, at: new Date().toISOString() }, `ask:${action}:${choice ?? ""}:${text}`);
+    setText(""); setChosen(undefined); setFollowup(false); setEngaged(false);
   }
+  // One tap chooses: the answer waits out the undo window, then is saved with any typed answer.
+  function holdAnswer(answer: AskAnswer) {
+    if (busy) return;
+    setChosen(answer); hold.start();
+  }
+  function undoAnswer() { hold.undo(); setChosen(undefined); }
+  const sendingAs = (action: AskAnswer["action"]) => busy && chosen?.action === action && !chosen.choice ? sendingLabel(hold.seconds, action === "drop" ? "Dropping" : undefined) : undefined;
   async function command(patch: Partial<SamState>, key: string) {
     const matching = owner.commands?.filter((event) => patch.doneAt ? !!event.state.doneAt : patch.lift ? !!event.state.lift : patch.clears?.some((request) => event.state.clears?.some((prior) => prior.ref === request.ref))).at(-1);
     const event = matching ?? await savePrivate(patch, key);
@@ -160,7 +171,7 @@ export function SitrepCard(props: Props) {
   const destinations = route?.recipients.flatMap((recipient) => recipient.runtimeTarget ? [{ ...recipient, runtimeTarget: recipient.runtimeTarget }] : []) ?? [];
   const unresolved = [...new Set([...(route?.unresolved ?? []), ...(route?.recipients.filter((recipient) => !recipient.runtimeTarget).map((recipient) => recipient.legacyName) ?? [])])];
   const routeReady = destinations.length > 0;
-  const visibleQuestion = entry.state.card.needsResponse && record.kind === "ask" && (!projection.answer || followup || engaged || !!text || !!choice);
+  const visibleQuestion = entry.state.card.needsResponse && record.kind === "ask" && (!projection.answer || followup || engaged || !!text || !!chosen);
 
   return <div className="mt-4 space-y-4 text-sm" aria-label={`${record.kind} details`}>
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span className="rounded-full border border-border px-2 py-1">{badge}</span><span>{record.kind} · {record.status}</span><span>Owner: {record.owner ?? record.from}</span>{pinned && <span>Priority · {pinned.reason}</span>}</div>
@@ -175,10 +186,13 @@ export function SitrepCard(props: Props) {
       {record.mode !== "proceeding" && record.recommend && <p>Recommended: {record.options.find((option) => option.id === record.recommend)?.label}</p>}
       <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} />
       {entry.state.card.needsResponse && !closed && !visibleQuestion && <button type="button" className={buttonClass} onClick={() => setFollowup(true)}>Add follow-up</button>}
-      {!closed && visibleQuestion && <form className="space-y-3" onFocusCapture={() => setEngaged(true)} onSubmit={(event) => { event.preventDefault(); void perform(() => askAnswer()); }}>
-        <fieldset disabled={busy} className="space-y-2"><legend className="font-medium">Choose an option</legend>{record.options.map((option) => <label key={option.id} className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3"><input type="radio" name={answerGroup} value={option.id} checked={choice === option.id} onChange={() => setChoice(option.id)} /><span><span className="font-medium">{option.label}</span>{option.detail && <span className="mt-1 block text-muted-foreground">{option.detail}</span>}{option.cost && <span className="mt-1 block text-xs">Cost: {option.cost}</span>}</span></label>)}</fieldset>
+      {!closed && visibleQuestion && <form className="space-y-3" onFocusCapture={() => setEngaged(true)} onSubmit={(event) => { event.preventDefault(); if (text.trim()) holdAnswer({ action: "answer" }); }}>
+        <AnswerOptions options={record.options} chosen={chosen?.choice} seconds={hold.seconds} sending={saving} onChoose={(option) => holdAnswer({ action: "answer", choice: option.id })} onUndo={undoAnswer} />
         <label className="block font-medium">Your answer<textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24`} /></label>
-        <div className="flex flex-wrap gap-2"><button className={primaryClass} disabled={busy || (!choice && !text.trim())}>Save answer</button>{record.mode === "proceeding" && record.default && <button type="button" className={buttonClass} disabled={busy} onClick={() => void perform(() => askAnswer("accept-default", record.default))}>Fine, go ahead</button>}{record.recommend && <button type="button" className={buttonClass} disabled={busy} onClick={() => void perform(() => askAnswer("accept-default", record.recommend))}>Accept recommendation</button>}<button type="button" className={buttonClass} disabled={busy} onClick={() => void perform(() => askAnswer("drop"))}>Drop question</button></div>
+        <p className="text-xs text-muted-foreground">{ANSWER_UNDO_HINT}</p>
+        {error && chosen && !busy && <div role="alert" className="text-destructive"><p>{error}</p><button type="button" className="mt-1 min-h-9 underline" onClick={() => void perform(() => askAnswer(chosen))}>Try again</button></div>}
+        <div className="flex flex-wrap gap-2"><button className={primaryClass} disabled={busy || !text.trim()}>{sendingAs("answer") ?? "Send answer"}</button>{record.mode === "proceeding" && record.default && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.default })}>Fine, go ahead</button>}{record.recommend && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.recommend })}>Accept recommendation</button>}<button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "drop" })}>{sendingAs("drop") ?? "Drop question"}</button>{hold.seconds !== null && !chosen?.choice && <button type="button" className={buttonClass} onClick={undoAnswer}>Undo</button>}</div>
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
       </form>}
       {projection.parts.map((part) => <section key={part.view.approval.id} className="space-y-3 rounded-xl border border-border p-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });
@@ -274,7 +288,7 @@ export function SitrepCard(props: Props) {
       {note.unresolvedRecipients.map((recipient) => <p key={recipient} className="text-xs">Held / unrouted · {recipient} · owner archive only; not sent</p>)}
     </div>)}</section>}
     {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className="text-xs text-muted-foreground">{response.reason}. Saved transport record preserved; no question decision inferred.</p>)}
-    {error && <p role="alert" className="text-destructive">{error}</p>}{notice && <p role="status" className="text-muted-foreground">{notice}</p>}
+    {error && !(chosen && !closed && visibleQuestion) && <p role="alert" className="text-destructive">{error}</p>}{notice && <p role="status" className="text-muted-foreground">{notice}</p>}
   </div>;
 }
 

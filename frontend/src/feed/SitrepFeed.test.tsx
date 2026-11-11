@@ -1,8 +1,9 @@
-import { afterEach, expect, setSystemTime, test } from "bun:test";
+import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { installDom } from "@/test/dom";
+import { ANSWER_UNDO_SECONDS } from "./AnswerOptions";
 import { FeedViewEntries } from "./FeedView";
 import type { HomeFeedEntry, HomeFeedMessageDraft, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SITREP_CREATED, SITREP_NOW, SITREP_REASKED, syntheticRecord } from "./sitrep.fixtures";
@@ -71,6 +72,7 @@ const roots = new Set<Root>();
 afterEach(async () => {
   for (const root of roots) await act(async () => root.unmount());
   roots.clear(); restore?.(); restore = undefined;
+  jest.useRealTimers();
   setSystemTime();
 });
 async function mount(source: HomeFeedSource) {
@@ -83,6 +85,15 @@ async function mount(source: HomeFeedSource) {
 function button(host: HTMLElement, label: string) {
   const found = [...host.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
   expect(found !== undefined).toBe(true); return found!;
+}
+/** An ask's option button: its text starts with the option's label, then its detail. */
+function option(host: HTMLElement, label: string) {
+  const found = [...host.querySelectorAll<HTMLButtonElement>("fieldset button[aria-pressed]")].find((node) => node.textContent?.startsWith(label));
+  expect(found !== undefined).toBe(true); return found!;
+}
+/** Lets `seconds` of the undo window pass; all of it by default, so a held answer is sent. Needs jest.useFakeTimers(). */
+async function wait(seconds = ANSWER_UNDO_SECONDS) {
+  await act(async () => { jest.advanceTimersByTime(seconds * 1_000); });
 }
 async function enter(host: HTMLElement, label: string, text: string) {
   const input = host.querySelector<HTMLTextAreaElement | HTMLInputElement>(`[aria-label="${label}"]`);
@@ -252,6 +263,7 @@ test("a proceeding question distinguishes the recommendation, default, and alrea
 });
 
 test("a folded approval step follows skipOn but becomes needed again after the parent reasks", async () => {
+  jest.useFakeTimers();
   const ask = syntheticRecord("ask");
   const fixture = typedFixture(ask);
   const view = await mount(fixture.source);
@@ -260,10 +272,8 @@ test("a folded approval step follows skipOn but becomes needed again after the p
   fixture.snapshot.entries.push(typedFixture(part).entry);
   await act(async () => fixture.notify());
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Synthetic key requirement");
-  const choice = view.host.querySelector<HTMLInputElement>('input[type="radio"][value="quick"]');
-  expect(choice !== null).toBe(true);
-  await act(async () => choice!.click());
-  await act(async () => button(view.host, "Save answer").click());
+  await act(async () => option(view.host, "Quick option").click());
+  await wait();
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: ask.id, action: "answer", choice: "quick" } });
   expect(view.host.querySelector('[aria-label="Folded approval step"] button')).toBeNull();
   ask.lastAskedAt = "2099-01-01T00:00:00.000Z";
@@ -317,7 +327,7 @@ test("a typed information card cannot manufacture a human question from its exte
   await viewSelector(view.host, "information");
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain(String(syntheticRecord("ask").title));
   expect(view.host.querySelector('textarea[aria-label="Your answer"]') === null).toBe(true);
-  expect([...view.host.querySelectorAll("button")].some((button) => button.textContent === "Save answer")).toBe(false);
+  expect([...view.host.querySelectorAll("button")].some((button) => button.textContent === "Send answer")).toBe(false);
   expect(fixture.saved).toEqual([]);
 });
 
@@ -376,11 +386,15 @@ test("open cards in one named group fold together without losing their separate 
 });
 
 test("a proceeding question accepts its actual default instead of silently substituting its recommendation", async () => {
+  jest.useFakeTimers();
   const fixture = typedFixture({ ...syntheticRecord("ask"), mode: "proceeding", default: "quick", recommend: "careful", decideBy: "2099-01-01T00:00:00.000Z" });
   const view = await mount(fixture.source);
   expect(view.host.textContent).toContain("Default: Quick option");
   expect(view.host.textContent).toContain("Recommended: Careful option");
   await act(async () => button(view.host, "Fine, go ahead").click());
+  expect(option(view.host, "Quick option").getAttribute("aria-pressed")).toBe("true");
+  expect(fixture.saved).toEqual([]);
+  await wait();
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { action: "accept-default", choice: "quick" } });
 });
 
@@ -484,4 +498,89 @@ test("a typed answer shows its steps from its own receipt; one with no transport
   expect(steps()).toEqual(["sent:done", "received:done", "outcome:failed"]);
   expect(status()?.textContent).toContain("Failed");
   expect(status()?.textContent).toContain("The synthetic step could not run");
+});
+
+test("a typed ask is answered with one tap once the undo window runs out, and Undo saves nothing", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  expect(view.host.querySelector('input[type="radio"]')).toBeNull();
+  await act(async () => option(view.host, "Careful option").click());
+  expect(option(view.host, "Careful option").getAttribute("aria-pressed")).toBe("true");
+  expect(option(view.host, "Quick option").disabled).toBe(true);
+  expect(button(view.host, "Save private note").disabled).toBe(true);
+  expect(view.host.textContent).toContain(`Sending in ${ANSWER_UNDO_SECONDS}s`);
+  await wait(ANSWER_UNDO_SECONDS - 1);
+  await act(async () => button(view.host, "Undo").click());
+  expect(option(view.host, "Careful option").getAttribute("aria-pressed")).toBe("false");
+  expect(option(view.host, "Quick option").disabled).toBe(false);
+  await wait(ANSWER_UNDO_SECONDS * 3);
+  expect(fixture.saved).toEqual([]);
+  await act(async () => option(view.host, "Careful option").click());
+  await wait(ANSWER_UNDO_SECONDS - 1);
+  expect(fixture.saved).toEqual([]);
+  await wait(1);
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.response).toMatchObject({ kind: "answer", cardId: fixture.entry.state.card.cardId, revision: 1, issuanceId: "synthetic-issuance" });
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", version: 1, data: { askId: "ask-synthetic", action: "answer", choice: "careful", text: "" } });
+});
+
+test("a typed answer keeps its own Send, and Accept recommendation and Drop question wait out the same undo window", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  expect(button(view.host, "Send answer").disabled).toBe(true);
+  await act(async () => button(view.host, "Accept recommendation").click());
+  expect(option(view.host, "Careful option").getAttribute("aria-pressed")).toBe("true");
+  await act(async () => button(view.host, "Undo").click());
+  await act(async () => button(view.host, "Drop question").click());
+  expect(button(view.host, `Dropping in ${ANSWER_UNDO_SECONDS}s`).disabled).toBe(true);
+  await act(async () => button(view.host, "Undo").click());
+  await wait(ANSWER_UNDO_SECONDS * 3);
+  expect(fixture.saved).toEqual([]);
+  await enter(view.host, "Your answer", "Neither yet: wait for the review.");
+  await act(async () => button(view.host, "Send answer").click());
+  expect(option(view.host, "Careful option").disabled).toBe(true);
+  await wait();
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { action: "answer", text: "Neither yet: wait for the review." } });
+  expect((fixture.saved[0]?.payload?.data as { choice?: string }).choice).toBeUndefined();
+});
+
+test("a failed typed answer shows its error by the options with Try again, and the retry keeps its response id", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const save = fixture.source.saveResponse;
+  const attempts: string[] = [];
+  fixture.source.saveResponse = async (entry, response, payload) => {
+    attempts.push(response.responseId);
+    if (attempts.length === 1) throw new Error("Isolated answer write refused");
+    return save(entry, response, payload);
+  };
+  const view = await mount(fixture.source);
+  await act(async () => option(view.host, "Quick option").click());
+  await wait();
+  const alert = view.host.querySelector('form [role="alert"]');
+  expect(alert?.textContent).toContain("Isolated answer write refused");
+  expect(view.host.querySelectorAll('[role="alert"]')).toHaveLength(1);
+  expect(option(view.host, "Quick option").getAttribute("aria-pressed")).toBe("true");
+  expect(fixture.saved).toEqual([]);
+  await act(async () => [...alert!.querySelectorAll("button")].find((node) => node.textContent === "Try again")!.click());
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toBe(attempts[0]!);
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { action: "answer", choice: "quick" } });
+});
+
+test("an approval stays deliberate: no option to tap, no countdown, and its own button gives the go at once", async () => {
+  setSystemTime(new Date(SITREP_NOW));
+  const record = syntheticRecord("approval");
+  const fixture = typedFixture(record);
+  const view = await mount(fixture.source);
+  expect(view.host.querySelector("fieldset button[aria-pressed]")).toBeNull();
+  expect(view.host.textContent).not.toContain("You can undo it until then");
+  await act(async () => button(view.host, "Give the go").click());
+  expect([...view.host.querySelectorAll("button")].some((node) => node.textContent === "Undo")).toBe(false);
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: record.id, action: "done", issuedAt: record.issuedAt } });
 });
