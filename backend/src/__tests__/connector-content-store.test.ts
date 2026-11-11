@@ -1156,6 +1156,7 @@ describe("W4 content store — retention", () => {
       expect(
         logs.lines.filter((line) => line.includes("first_failure=true")),
       ).toHaveLength(1);
+      expect(logs.lines.some((line) => line.includes("alert=true"))).toBe(true);
       expect(logs.lines.join(" ")).not.toContain(ADDRESS_A);
 
       clock.now = T0 + 27 * DAY_MS;
