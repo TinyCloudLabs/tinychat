@@ -1,4 +1,5 @@
 import {
+  createHash,
   createCipheriv,
   createDecipheriv,
   hkdfSync,
@@ -201,6 +202,17 @@ export interface ContentStoreStats {
  * global list: an enumeration method that does not name a tenant is how a tenant-scoped store
  * stops being one.
  */
+export function contentMasterFingerprint(master: string): string {
+  return createHash("sha256").update(master, "utf8").digest("hex");
+}
+
+export interface ContentContinuityStorage {
+  readCanary(): Promise<SealedBlob | null>;
+  writeCanary(blob: SealedBlob): Promise<void>;
+  findIndex(): Promise<{ source: string; address: string } | null>;
+  hasContent(): Promise<boolean>;
+}
+
 export interface ContentBlobStore {
   readIndex(source: string, address: string): Promise<SealedBlob | null>;
   writeIndex(source: string, address: string, blob: SealedBlob): Promise<void>;
@@ -429,6 +441,48 @@ export class ContentStore implements ContentSink, RetentionGuard {
     this.maxUserBytes = options.maxUserBytes ?? MAX_USER_CONTENT_BYTES;
     this.maxUserTombstones = options.maxUserTombstones ?? MAX_USER_TOMBSTONES;
     this.purgeLedger = options.purgeLedger ?? null;
+  }
+
+  /** Read-only proof: no missing index is treated as a successful decrypt. */
+  async probeIndex(target: { source: string; address: string } | null): Promise<{ ok: boolean; id: string | null }> {
+    if (!target) return { ok: false, id: null };
+    const id = createHash("sha256").update(`${target.source}:${target.address}`).digest("hex");
+    try {
+      const blob = await this.blobs.readIndex(target.source, target.address);
+      if (!blob) return { ok: false, id };
+      parseIndex(this.unseal(target.source, target.address, "index", blob));
+      return { ok: true, id };
+    } catch {
+      return { ok: false, id };
+    }
+  }
+
+  async assertContinuity(
+    storage: ContentContinuityStorage,
+    env: NodeJS.ProcessEnv,
+  ): Promise<void> {
+    try {
+      const digest = contentMasterFingerprint(this.master());
+      const pin = env.CONNECTOR_CONTENT_EXPECTED_SHA256?.trim();
+      const canary = await storage.readCanary();
+      if (canary !== null) {
+        if (pin && pin !== digest) throw new Error();
+        if (this.unseal("continuity", "backend", "canary", canary) !== "tinychat-content-canary-v1") throw new Error();
+        return;
+      }
+      const target = await storage.findIndex();
+      if (target) {
+        if (pin !== digest || !(await this.probeIndex(target)).ok) throw new Error();
+      } else {
+        if (await storage.hasContent()) throw new Error();
+        if (env.CONNECTOR_CONTENT_ENROLL_FRESH !== "true" || (pin !== undefined && pin !== digest)) throw new Error();
+      }
+      await storage.writeCanary(this.sealBlob("continuity", "backend", "canary", "tinychat-content-canary-v1"));
+      const saved = await storage.readCanary();
+      if (!saved || this.unseal("continuity", "backend", "canary", saved) !== "tinychat-content-canary-v1") throw new Error();
+    } catch {
+      throw new Error("connector content continuity failed; refusing startup and writes");
+    }
   }
 
   stats(): ContentStoreStats {
@@ -1282,6 +1336,51 @@ export class KvContentBlobStore implements ContentBlobStore {
     this.lane = storageLane ?? new BackendStorageLane();
   }
 
+  readCanary(): Promise<SealedBlob | null> {
+    return this.run(() => this.readBlob("connector-content-continuity/v1"));
+  }
+
+  writeCanary(blob: SealedBlob): Promise<void> {
+    return this.run(() => this.writeBlob("connector-content-continuity/v1", blob));
+  }
+
+  private async firstKey(prefix: string): Promise<string | null> {
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 1000; page++) {
+      const result = await this.run(() => withSessionRefresh(this.node, async () =>
+        assertKvResult(await this.node.kv.list({ prefix, ...(cursor ? { cursor } : {}) })),
+      ));
+      const data = (result as { data?: { keys?: unknown; truncated?: boolean; nextCursor?: string } })?.data;
+      if (!data || !Array.isArray(data.keys)) throw new Error("content listing unavailable");
+      const keys = extractKeys(data.keys);
+      if (keys.length !== data.keys.length || keys.some(key => !key.startsWith(prefix))) throw new Error("content listing invalid");
+      if (keys.length) return keys[0]!;
+      const next = data.nextCursor;
+      if (!next) {
+        if (data.truncated) throw new Error("content listing truncated");
+        return null;
+      }
+      if (seen.has(next)) throw new Error("content listing repeated cursor");
+      seen.add(next);
+      cursor = next;
+    }
+    throw new Error("content listing truncated");
+  }
+
+  async findIndex(): Promise<{ source: string; address: string } | null> {
+    const key = await this.firstKey(`${CONTENT_INDEX_KEY_PREFIX}/`);
+    if (!key) return null;
+    const parts = key.split("/");
+    if (parts.length !== 3 || !isValidSource(parts[1]!)) throw new Error("content index invalid");
+    const address = normalizeWebhookAddress(parts[2]!);
+    return { source: parts[1]!, address };
+  }
+
+  async hasContent(): Promise<boolean> {
+    return (await this.firstKey(`${CONTENT_KEY_PREFIX}/`)) !== null;
+  }
+
   readIndex(source: string, address: string): Promise<SealedBlob | null> {
     return this.run(() => this.readBlob(indexKey(source, address)));
   }
@@ -1367,11 +1466,11 @@ export class KvContentBlobStore implements ContentBlobStore {
             try {
               return JSON.parse(raw) as unknown;
             } catch {
-              return null;
+              throw new Error("content blob is unparseable");
             }
           })()
         : raw;
-    if (typeof value !== "object" || value === null) return null;
+    if (typeof value !== "object" || value === null) throw new Error("content blob is unparseable");
     const blob = value as Record<string, unknown>;
     if (
       typeof blob.ciphertext !== "string" ||

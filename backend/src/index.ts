@@ -1,5 +1,7 @@
 import "./types/index.js";
 
+import { mountContentContinuityRoute } from "./routes/content-continuity.js";
+
 import { existsSync, readFileSync } from "fs";
 import { createServer as createHttpsServer } from "https";
 import { dirname, resolve } from "path";
@@ -99,6 +101,7 @@ import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
 import {
   ContentStore,
+  currentContentMaster,
   KvContentBlobStore,
   validateContentCustodyConfig,
 } from "./services/content-store.js";
@@ -841,9 +844,15 @@ async function main() {
       // disconnect (or a user purge) that writes the watermark also stops a replayed delivery
       // from re-creating rows the user tore down. Same `control` the drain and `POST …/purged`
       // use: one ledger, one rule, two consumers.
-      const contentStore = new ContentStore(
-        new KvContentBlobStore(node, connectorWebhooks.backendStorageLane),
-        { purgeLedger: connectorWebhooks.control },
+      const contentBlobs = new KvContentBlobStore(node, connectorWebhooks.backendStorageLane);
+      const contentMaster = currentContentMaster();
+      const contentStore = new ContentStore(contentBlobs, {
+        purgeLedger: connectorWebhooks.control,
+        master: () => contentMaster,
+      });
+      await contentStore.assertContinuity(contentBlobs, process.env);
+      mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
+        contentStore.probeIndex(await contentBlobs.findIndex()),
       );
       const credentialStore = new CredentialStore(
         new KvCredentialRowStore(node, connectorWebhooks.backendStorageLane),
