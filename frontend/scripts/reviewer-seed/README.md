@@ -63,6 +63,10 @@ Writing (`--confirm`):
 The KV prefix is needed because the transcript body's key ends in its content hash
 (`…/transcript-rev/<note id>/<hash>`). It covers only that seed note's revisions.
 
+The node treats a path without a trailing slash as also covering paths nested under it
+(`<path>/…`), so the exact key also covers `<key>/…` and each database also covers databases
+named `<database>/…`. Home writes no key or database under those nested names.
+
 Dry run: `tinycloud.sql` read on the five databases above.
 
 No KV delete, no other app, no other space, no secrets, no encryption. SQL write and schema are per
@@ -83,8 +87,10 @@ owner is never asked to grant a run that would be refused.
   unexpired and at most 24 hours long, and no wider than the request (plus
   `tinycloud.capabilities/read`, which OpenKey adds). This is checked twice before use: on the
   grant's transport fields (listed resources, flat path and actions), and on its signed UCAN
-  payload, decoded in process (`aud`, `exp`, and every resource and ability in `att`). The
-  signature and the delegation chain back to the owner are verified by the node, not locally;
+  payload, decoded in process (`aud`, `exp`, and every resource and ability in `att`). The grant's
+  `cid` must be the CID of those signed bytes (the SDK's `computeDelegationCid`), because the node
+  enforces the delegation the CID names. The signature and the delegation chain back to the owner
+  are verified by the node, not locally;
 - the space is not fresh (`NOT_FRESH`): any row in any table of the five databases above, except
   `threads.settings`. `settings` holds preferences, such as the default Feed view, that Home may
   write at sign-in. When the space has this revision's `in-progress` marker (an interrupted run),
@@ -160,9 +166,9 @@ interrupted run of this revision was finished) or `already-seeded` (nothing writ
   key file or key environment variable, and only the session DID is printed. Errors print only messages.
 - Authority is the owner's grant alone. It is locally checked and node-verified: `args.ts`
   `assertGrant` checks its transport fields and its decoded signed payload (`signedGrant`) against
-  the request before use, failing closed on anything wider or not a compact UCAN; the node verifies the
-  signature and the chain to the owner. The handle's owner DID comes from the grant, so `seed.ts`
-  checks it against the target again.
+  the request before use, failing closed on anything wider or not a compact UCAN, and requires the
+  grant's `cid` to be the CID of the checked bytes; the node verifies the signature and the chain to
+  the owner. The handle's owner DID comes from the grant, so `seed.ts` checks it against the target again.
 - The allowlist and target come only from flags (`args.ts` `parseSeedArgs`); `seed.ts`
   `assertSeedTarget` checks the owner, the space and the confirmation before the request is written.
   The allowlist is a guard against a mistyped owner, not authority.

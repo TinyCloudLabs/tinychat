@@ -175,7 +175,8 @@ export async function inspectSpace(space: SeedSpace): Promise<SpaceInspection> {
       }
       const rows = await count(table);
       if (rows === 0) continue;
-      const own = SEED_ROWS[database]?.[table];
+      // Own properties only: a table named like an Object.prototype key is not a seed table.
+      const own = Object.hasOwn(SEED_ROWS[database] ?? {}, table) ? SEED_ROWS[database]![table] : undefined;
       const seedRows = own ? Math.min(own.max, await count(table, ` WHERE ${own.where}`, own.params)) : 0;
       occupied.push({ database, table, rows, seedRows });
     }

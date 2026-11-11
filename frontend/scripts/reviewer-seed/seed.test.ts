@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { PortableDelegation } from "@tinycloud/node-sdk";
 import { libraryRowTitle } from "../../src/capture/library/LibraryRow";
 import { listMeetingsRead } from "../../src/lib/connectors/meetingExplorer";
@@ -244,6 +244,16 @@ test("resume matches the seeded chat's messages by their ids, not by thread or c
   fake.databases.get("xyz.tinycloud.tinychat/threads")!.query("DELETE FROM messages WHERE json_extract(payload, '$.message.id') = 'reviewer-typed-message'").run();
   await expect(runReviewerSeed(fake.space, fake.target, write(fake.spaceId))).resolves.toMatchObject({ status: "resumed" });
   expect(fake.rows("xyz.tinycloud.tinychat/threads", "messages")).toBe(4);
+
+  // A table named like an Object.prototype key is someone else's rows, not the seed's.
+  const planted = fakeSpace({ failAfterWrites: 12 });
+  await expect(runReviewerSeed(planted.space, planted.target, write(planted.spaceId))).rejects.toThrow("simulated interruption");
+  planted.heal();
+  const threads = planted.databases.get("xyz.tinycloud.tinychat/threads")!;
+  threads.exec("CREATE TABLE \"constructor\" (\"undefined\" TEXT)");
+  threads.exec("INSERT INTO \"constructor\" VALUES ('x')");
+  await expect(runReviewerSeed(planted.space, planted.target, write(planted.spaceId)))
+    .rejects.toThrow("xyz.tinycloud.tinychat/threads.constructor has 1 row(s) the seed did not write");
 });
 
 test("the capability request covers exactly what the seed and its read-back touch", async () => {
@@ -270,12 +280,15 @@ test("a grant is accepted only from the target owner, for the target space, to t
   const signedAtt = (entries: { service: string; path: string; actions: string[] }[]) => Object.fromEntries(entries.map((entry) =>
     [`${fake.spaceId}/${entry.service.replace("tinycloud.", "")}/${entry.path}`, Object.fromEntries(entry.actions.map((action) => [action, [{}]]))]));
   const payload = { iss: "did:key:z6MkOwnerSession", aud: "did:key:z6MkSeed", exp: (now + 3_600_000) / 1000, prf: ["bafy-session"], att: signedAtt(requested) };
+  // Stands in for the SDK's computeDelegationCid: any function of the signed bytes.
+  const cidOf = (authorization: string) => `bafy-${createHash("sha256").update(authorization).digest("hex")}`;
+  const withHeader = (Authorization: string) => ({ cid: cidOf(Authorization), delegationHeader: { Authorization } });
   const grant: PortableDelegation = {
-    cid: "bafy-grant", delegationHeader: { Authorization: ucan(payload) }, spaceId: fake.spaceId, path: "", actions: [],
+    ...withHeader(ucan(payload)), spaceId: fake.spaceId, path: "", actions: [],
     delegateDID: "did:key:z6MkSeed", ownerAddress: address, chainId: 1, host: options.host, expiry: new Date(now + 3_600_000),
     resources: requested.map((entry) => ({ service: entry.service.replace("tinycloud.", ""), space: fake.spaceId, path: entry.path, actions: entry.actions })),
   } as unknown as PortableDelegation;
-  expect(() => assertGrant(grant, options, "did:key:z6MkSeed", now)).not.toThrow();
+  expect(() => assertGrant(grant, options, "did:key:z6MkSeed", cidOf, now)).not.toThrow();
   const refusals: [Partial<PortableDelegation>, string][] = [
     [{ delegateDID: "did:key:z6MkSomeoneElse" }, "not addressed to this run"],
     [{ spaceId: fake.spaceId.replace(":applications", ":default") }, "different space"],
@@ -288,7 +301,11 @@ test("a grant is accepted only from the target owner, for the target space, to t
     [{ resources: [] }, "does not list its resources"],
     [{ path: "", actions: ["tinycloud.kv/del"] }, "wider than the request"],
   ];
-  for (const [change, message] of refusals) expect(() => assertGrant({ ...grant, ...change }, options, "did:key:z6MkSeed", now)).toThrow(message);
+  for (const [change, message] of refusals) expect(() => assertGrant({ ...grant, ...change }, options, "did:key:z6MkSeed", cidOf, now)).toThrow(message);
+
+  // The node enforces the delegation the CID names, so a checked header with another delegation's CID is refused.
+  expect(() => assertGrant({ ...grant, cid: "bafy-a-wider-delegation" }, options, "did:key:z6MkSeed", cidOf, now))
+    .toThrow("CID does not match its signed bytes");
 
   // Transport fields that match the request do not hide a wider signed payload.
   const signedRefusals: [string, string][] = [
@@ -304,8 +321,8 @@ test("a grant is accepted only from the target owner, for the target space, to t
     [ucan({ ...payload, att: { "urn:tinycloud:encryption:did:pkh:eip155:1:0xabc:default": { "tinycloud.encryption/decrypt": [{}] } } }), "unexpected resource"],
   ];
   for (const [Authorization, message] of signedRefusals)
-    expect(() => assertGrant({ ...grant, delegationHeader: { Authorization } }, options, "did:key:z6MkSeed", now)).toThrow(message);
+    expect(() => assertGrant({ ...grant, ...withHeader(Authorization) }, options, "did:key:z6MkSeed", cidOf, now)).toThrow(message);
   // OpenKey's added capabilities/read on the space root is accepted.
   const withCapabilities = ucan({ ...payload, att: { ...payload.att, [`${fake.spaceId}/capabilities/`]: { "tinycloud.capabilities/read": [{}] } } });
-  expect(() => assertGrant({ ...grant, delegationHeader: { Authorization: withCapabilities } }, options, "did:key:z6MkSeed", now)).not.toThrow();
+  expect(() => assertGrant({ ...grant, ...withHeader(withCapabilities) }, options, "did:key:z6MkSeed", cidOf, now)).not.toThrow();
 });

@@ -80,10 +80,13 @@ export function signedGrant(authorization: string): { audience: string; expiry: 
 /**
  * The grant must be addressed to this run's key, issued by the target owner for the target
  * space on this host, live, at most 24 hours, and no wider than asked. Both its transport
- * fields and its signed payload (`signedGrant`) are checked here, before use; the node then
- * verifies the signature and the chain to the owner.
+ * fields and its signed payload (`signedGrant`) are checked here, before use, and its `cid`
+ * must be the CID of those signed bytes (`cidOf`, the SDK's `computeDelegationCid`): the node
+ * enforces the delegation the CID names. The node then verifies the signature and the chain
+ * to the owner.
  */
-export function assertGrant(delegation: PortableDelegation, options: SeedCliOptions, sessionDid: string, now = Date.now()): void {
+export function assertGrant(delegation: PortableDelegation, options: SeedCliOptions, sessionDid: string,
+  cidOf: (authorization: string) => string, now = Date.now()): void {
   const refuse = (message: string) => { throw new ReviewerSeedRefusal("TARGET_MISMATCH", message); };
   if (delegation?.delegateDID?.split("#")[0] !== sessionDid) refuse("The grant is not addressed to this run's session key");
   if (delegation.spaceId !== options.target.spaceId) refuse("The grant is for a different space");
@@ -111,8 +114,10 @@ export function assertGrant(delegation: PortableDelegation, options: SeedCliOpti
   }
   for (const action of delegation.actions ?? []) assertAsked(action.split("/")[0]!, delegation.path, [action]);
 
-  // The signed payload: what the node will actually enforce.
-  const signed = signedGrant(delegation.delegationHeader?.Authorization ?? "");
+  // The signed payload: what the node will actually enforce, under the CID that names it.
+  const authorization = delegation.delegationHeader?.Authorization ?? "";
+  const signed = signedGrant(authorization);
+  if (cidOf(authorization) !== delegation.cid) refuse("The grant's CID does not match its signed bytes");
   if (signed.audience.split("#")[0] !== sessionDid) refuse("The grant's signed audience is not this run's session key");
   assertLifetime(signed.expiry);
   for (const { resource, actions } of signed.capabilities) {

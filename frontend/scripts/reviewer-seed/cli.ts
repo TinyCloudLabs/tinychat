@@ -46,7 +46,7 @@ async function main(argv: string[]): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
   const delegation = parseGrant(Buffer.concat(chunks).toString("utf8"), request.requestId);
-  assertGrant(delegation, options, sessionDid);
+  assertGrant(delegation, options, sessionDid, (authorization) => node.computeDelegationCid(authorization));
   const access = await node.useDelegation(delegation);
   // The handle's owner is the grant's issuer, so seed.ts checks the grant against the target too.
   const did = `did:pkh:eip155:${access.delegation.chainId}:${access.delegation.ownerAddress}`;
