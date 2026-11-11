@@ -7,6 +7,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "./chatModelAdapter.js";
+import { createAgentAccessController } from "./useAgentEnablement.js";
 import { createMeetingMessageRegistry, takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
 import { DEFAULT_MODEL } from "../lib/threadStore.js";
 import { clearGatewayReceipt, getGatewayReceiptVerified } from "../lib/gatewayReceiptStore";
@@ -135,6 +136,62 @@ describe("createChatModelAdapter — C1 branch selection", () => {
     globalThis.fetch = (async (url: string) => sseResponse(url)) as typeof fetch;
     const { calledUrl } = await drainAdapter(makeDeps(true, "thread-x"));
     expect(calledUrl).toContain("/api/agent/chat");
+  });
+  it("waits when the restored-session first send precedes the access probe", async () => {
+    let resolveProbe!: (response: Response) => void;
+    const probeResponse = new Promise<Response>((resolve) => { resolveProbe = resolve; });
+    let resolveChat!: (response: Response) => void;
+    const chatResponse = new Promise<Response>((resolve) => { resolveChat = resolve; });
+    let calledUrl = "";
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/api/agent/session")) return probeResponse;
+      calledUrl = requestUrl;
+      return chatResponse;
+    }) as typeof fetch;
+
+    const controller = createAgentAccessController({
+      backendUrl: "https://api.test",
+      tcw: { address: () => "0xone" } as never,
+      sessionStore: { getToken: () => "test-token" } as never,
+      appName: "test",
+      openkeyHost: "https://openkey.test",
+    });
+    const deps = makeDeps(false);
+    deps.agentEnabledRef = controller.agentEnabledRef as never;
+    deps.privateAccessRef = controller.privateAccessRef;
+    deps.waitForInitialProbe = controller.waitForInitialProbe;
+    const adapter = createChatModelAdapter(deps);
+    let thrown: unknown;
+    const received: string[] = [];
+    const sending = (async () => {
+      try {
+        for await (const frame of adapter.run({
+          messages: [{ id: "restored-first", role: "user", content: [{ type: "text", text: "hi" }] }],
+          abortSignal: new AbortController().signal,
+          context: {},
+          unstable_assistantMessageId: "restored-first",
+        } as never)) {
+          received.push(...frame.content.map((part) => part.type === "text" ? part.text : ""));
+        }
+      } catch (error) {
+        thrown = error;
+      }
+    })();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const requestBeforeProbeSettled = calledUrl;
+    const probe = controller.refresh();
+    resolveProbe(Response.json({ status: "active", transcriptStatus: "active", revision: "restored-r1" }));
+    await probe;
+    resolveChat(sseResponse(calledUrl));
+    await sending;
+    controller.dispose();
+
+    expect(requestBeforeProbeSettled).toBe("");
+    expect(calledUrl).toBe("https://api.test/api/agent/chat");
+    expect(received.join("")).toBe("Hello");
+    expect(thrown).toBeUndefined();
   });
 
   it("routes a transcript turn through /api/agent/chat without invoking the browser retriever", async () => {
