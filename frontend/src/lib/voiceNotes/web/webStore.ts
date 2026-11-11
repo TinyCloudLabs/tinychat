@@ -1,3 +1,4 @@
+import { claimRecordingNote, deleteSyncedNote, deleteNote as deleteRecordingNote } from "../recordingNotes";
 import { readableError } from "@/lib/readableError";
 // IndexedDB persistence for the whole VoiceNotes protocol on the web: capture sessions
 // and their audio, committed recordings and their ledger, account state, remote-op
@@ -159,7 +160,7 @@ export interface RecoveryResult {
 
 type KvRow = { key: string };
 type CaptureRow = KvRow & { key: "capture"; defaults: CaptureDefaults; status: AccountStatus };
-type TombstoneRow = { id: string; at: number; audioPending: boolean };
+type TombstoneRow = { id: string; at: number; audioPending: boolean; owner?: string | null; recordingNotePending?: boolean; recordingNoteSyncedOnly?: boolean };
 type ReceiptResult = { destination: "ledger" | "outbox"; handle: string | null; handleExpiresAt: number | null;
   outcome: "created" | "failed" | "unknown" };
 /** Set when an own_create that created its job retires this own_upload; deletion then skips it. */
@@ -172,11 +173,13 @@ type PluginProtocol = Pick<VoiceNotesPlugin,
   | "listQuarantine" | "discardFailedRecording" | "deleteQuarantined" | "listOutbox" | "completeOutbox">;
 
 export interface WebStore extends PluginProtocol {
+  assertAccess(id: string): Promise<void>;
   readonly audio: AudioBlobStore;
   readonly locks: SessionLocks;
   /** Desktop Whisper job status stored with the note, including signed-out notes. */
   updateStt(id: string, stt: NoteSttState): Promise<void>;
-  beginSession(init: SessionInit): Promise<SessionRecord>;
+  putTranscriptForOwner(options: { id: string; owner: string | null; transcript: LocalTranscript }): Promise<{ transcript: LocalTranscript }>;
+  beginSession(init: SessionInit, bindCurrentAccount?: boolean): Promise<SessionRecord>;
   getSession(id: string): Promise<SessionRecord | null>;
   /**
    * Appends the chunk and journals `progress` (plus the new byte total); both are durable when this
@@ -372,10 +375,19 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const capture = async (tx: IDBTransaction): Promise<CaptureRow> =>
     (await get<CaptureRow>(tx, STORES.kv, "capture")) ?? { key: "capture", ...clone(INITIAL_CAPTURE) };
 
-  const checkedNote = async (tx: IDBTransaction, id: string): Promise<VoiceNoteRecording> => {
+  const ownerVisible = async (tx: IDBTransaction, owner: string | null | undefined): Promise<boolean> => {
+    const row = await capture(tx);
+    return !owner || (row.status === "signed_in" && row.defaults.accountDid === owner);
+  };
+  const assertOwner = async (tx: IDBTransaction, owner: string | null | undefined) => {
+    if (!await ownerVisible(tx, owner)) throw failure("owner_mismatch");
+  };
+
+  const checkedNote = async (tx: IDBTransaction, id: string, access = true): Promise<VoiceNoteRecording> => {
     if (await get(tx, STORES.tombstones, id)) throw failure("tombstoned");
     const note = await get<VoiceNoteRecording>(tx, STORES.notes, id);
     if (!note) throw failure("not_found");
+    if (access) await assertOwner(tx, note.owner);
     return note;
   };
 
@@ -386,7 +398,9 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     if (evidence === "space_row" && (typeof opts.rowId !== "string" || !opts.rowId.trim())) throw failure("row_id_required");
     const legacy = note.version !== 2 || note.ownerUnknown === true || note.legacyImport === true;
     if (legacy && evidence === "signed_out_v2") throw failure("claim_evidence_required");
-    if (!legacy && evidence !== "signed_out_v2") throw failure("claim_evidence_invalid");
+    if (!legacy && evidence !== "user_choice") throw failure("claim_evidence_invalid");
+    const account = await capture(tx);
+    if (account.status !== "signed_in" || account.defaults.accountDid !== did) throw failure("owner_mismatch");
     if (note.owner === did) {
       if (evidence === "space_row" && (note.ledger?.audio.rowId !== opts.rowId || note.ledger.audio.state !== "saved")) {
         note.ledger ??= emptyLedger();
@@ -414,9 +428,14 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const finishAudioDelete = async (id: string) => {
     await before("audio:delete", id);
     await audio.delete(id);
+    const tombstone = await transact(db, [STORES.tombstones], "readonly", (tx) => get<TombstoneRow>(tx, STORES.tombstones, id));
+    if (tombstone?.recordingNotePending) {
+      if (tombstone.recordingNoteSyncedOnly) await deleteSyncedNote(id, tombstone.owner ?? null);
+      else await deleteRecordingNote(id, tombstone.owner ?? null);
+    }
     await transact(db, [STORES.tombstones], "readwrite", async (tx) => {
       const row = await get<TombstoneRow>(tx, STORES.tombstones, id);
-      if (row) await put(tx, STORES.tombstones, { ...row, audioPending: false });
+      if (row) await put(tx, STORES.tombstones, { ...row, audioPending: false, ...(row.recordingNotePending ? { recordingNotePending: false } : {}) });
     });
   };
 
@@ -426,13 +445,21 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const store: WebStore = {
     audio,
     locks,
+    async assertAccess(id) {
+      await transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+    },
 
-    async beginSession(init) {
+    async beginSession(init, bindCurrentAccount = false) {
       await before("session:begin", init.id);
       const record: SessionRecord = { ...clone(init), intent: "recording", audioMs: 0, bytes: 0, pausedMs: 0,
         pauseStartedAt: null, spans: [], firstAudioAt: null, lastHeartbeatAt: now(), recoveryAttempts: 0 };
-      await transact(db, [STORES.sessions, STORES.tombstones], "readwrite", async (tx) => {
+      await transact(db, [STORES.kv, STORES.sessions, STORES.tombstones], "readwrite", async (tx) => {
+        const row = await capture(tx);
         if (await get(tx, STORES.tombstones, init.id)) throw failure("tombstoned");
+        if (bindCurrentAccount) {
+          if (init.transitionGen !== row.defaults.transitionGen) throw failure("stale_transition");
+          record.owner = row.status === "signed_out" ? null : row.defaults.accountDid;
+        }
         await put(tx, STORES.sessions, record);
       });
       return clone(record);
@@ -484,7 +511,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       await before("audio:finalize", id);
       const sizeBytes = await audio.finalize(id);
       await before("note:commit", id);
-      const recording = await transact(db, [STORES.sessions, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+      const recording = await transact(db, [STORES.kv, STORES.sessions, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
         const session = await get<SessionRecord>(tx, STORES.sessions, id);
         if (!session) return null;
         const tombstoned = await get(tx, STORES.tombstones, id);
@@ -499,7 +526,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
     async commitPreparingSession(id, build) {
       await before("note:commit", id);
-      const recording = await transact(db, [STORES.sessions, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+      const recording = await transact(db, [STORES.kv, STORES.sessions, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
         const session = await get<SessionRecord>(tx, STORES.sessions, id);
         if (!session) return null;
         if (await get(tx, STORES.tombstones, id)) return null;
@@ -514,8 +541,8 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
     async completePreparingAudio(id) {
       const sizeBytes = await audio.finalize(id);
-      return transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
-        const note = await checkedNote(tx, id);
+      return transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id, false);
         const ready: VoiceNoteRecording = { ...note, sizeBytes,
           ledger: { ...(note.ledger ?? emptyLedger()), localAudio: { state: "ready", error: null } } };
         await put(tx, STORES.notes, ready);
@@ -524,16 +551,16 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async failPreparingAudio(id, error) {
-      await transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
-        const note = await checkedNote(tx, id);
+      await transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id, false);
         await put(tx, STORES.notes, { ...note,
           ledger: { ...(note.ledger ?? emptyLedger()), localAudio: { state: "failed", error } } });
       });
     },
 
     async retryPreparingAudio(id) {
-      await transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
-        const note = await checkedNote(tx, id);
+      await transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id, false);
         if (note.ledger?.localAudio?.state !== "failed") throw failure("not_failed_recording");
         await put(tx, STORES.notes, { ...note,
           ledger: { ...note.ledger, localAudio: { state: "preparing", error: null } } });
@@ -541,13 +568,15 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async readNoteAudio(id) {
-      const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      const note = await transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
       if (note.ledger?.localAudio?.state !== undefined && note.ledger.localAudio.state !== "ready") {
         throw failure(note.ledger.localAudio.state === "failed" ? "audio_preparation_failed" : "audio_preparing");
       }
       const size = await audio.size(id);
       if (size === 0) throw failure("not_found");
-      return { bytes: await audio.read(id, 0, size), mimeType: note.mimeType };
+      const bytes = await audio.read(id, 0, size);
+      await store.assertAccess(id);
+      return { bytes, mimeType: note.mimeType };
     },
 
     async dropEmptySession(id) {
@@ -591,8 +620,8 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         if (!release) continue;
         try {
           const outcome = await recoverOne(listed.id);
-          if (outcome.recovered) result.recovered.push(outcome.recovered);
-          if (outcome.failed) result.failed.push(outcome.failed);
+          if (outcome.recovered && await transact(db, [STORES.kv], "readonly", (tx) => ownerVisible(tx, outcome.recovered!.owner))) result.recovered.push(outcome.recovered);
+          if (outcome.failed && await store.recoveryOwner(listed.id) !== undefined) result.failed.push(outcome.failed);
         } finally {
           release();
         }
@@ -601,9 +630,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async rearmQuarantined(id) {
-      await transact(db, [STORES.quarantine, STORES.sessions], "readwrite", async (tx) => {
+      await transact(db, [STORES.kv, STORES.quarantine, STORES.sessions], "readwrite", async (tx) => {
         const row = await get<QuarantineRow>(tx, STORES.quarantine, id);
         if (row) {
+          await assertOwner(tx, row.session.owner);
           await put(tx, STORES.sessions, { ...row.session, recoveryAttempts: 0 });
           await del(tx, STORES.quarantine, id);
           return;
@@ -611,38 +641,44 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         // A recording whose recovery could not run (decoder_unavailable) is still a session; retry resets its budget.
         const session = await get<SessionRecord>(tx, STORES.sessions, id);
         if (!session) throw failure("not_found");
+        await assertOwner(tx, session.owner);
         await put(tx, STORES.sessions, { ...session, recoveryAttempts: 0 });
       });
     },
 
-    recoveryOwner: (id) => transact(db, [STORES.sessions, STORES.quarantine], "readonly", async (tx) => {
+    recoveryOwner: (id) => transact(db, [STORES.kv, STORES.sessions, STORES.quarantine], "readonly", async (tx) => {
       const session = await get<SessionRecord>(tx, STORES.sessions, id) ?? (await get<QuarantineRow>(tx, STORES.quarantine, id))?.session;
-      return session ? session.owner : undefined;
+      return session && await ownerVisible(tx, session.owner) ? session.owner : undefined;
     }),
 
     close() { db.close(); },
 
     async readAudioChunk({ id, offset, length }): Promise<VoiceNoteAudioChunk> {
       if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length <= 0) throw failure("invalid_argument");
-      const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      const note = await transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
       if (note.ledger?.localAudio?.state !== undefined && note.ledger.localAudio.state !== "ready") {
         throw failure(note.ledger.localAudio.state === "failed" ? "audio_preparation_failed" : "audio_preparing");
       }
       const size = await audio.size(id);
       const bytes = await audio.read(id, offset, Math.min(length, MAX_READ_CHUNK_BYTES));
+      await store.assertAccess(id);
       return { id, offset, base64: bytesToBase64(bytes), bytesRead: bytes.byteLength, size, eof: offset + bytes.byteLength >= size };
     },
 
     async deleteAudio({ id }) {
       await before("tombstone", id);
-      await transact(db, [STORES.sessions, STORES.notes, STORES.tombstones, STORES.transcripts, STORES.receipts, STORES.outbox],
+      await transact(db, [STORES.kv, STORES.sessions, STORES.notes, STORES.tombstones, STORES.transcripts, STORES.receipts, STORES.outbox],
         "readwrite", async (tx) => {
+          const existingNote = await get<VoiceNoteRecording>(tx, STORES.notes, id);
+          if (existingNote) await checkedNote(tx, id);
+          const existingSession = await get<SessionRecord>(tx, STORES.sessions, id);
+          if (existingSession) await assertOwner(tx, existingSession.owner);
           // A tombstone means an earlier delete already queued its remote cleanup, and completed
           // outbox entries are gone: walking the ledger and receipts again would resurrect them.
           const existing = await get<TombstoneRow>(tx, STORES.tombstones, id);
           if (existing) return;
           const note = await get<VoiceNoteRecording>(tx, STORES.notes, id);
-          await put(tx, STORES.tombstones, { id, at: now(), audioPending: true } satisfies TombstoneRow);
+          await put(tx, STORES.tombstones, { id, at: now(), audioPending: true, owner: note?.owner ?? existingSession?.owner ?? null, recordingNotePending: true } satisfies TombstoneRow);
           const outbox = await all<OutboxEntry>(tx, STORES.outbox);
           const receipts = await all<ReceiptRow>(tx, STORES.receipts);
           if (note?.owner) for (const remote of note.ledger?.remote ?? []) {
@@ -685,19 +721,23 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async evictCachedAudio({ id }) {
-      await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      await transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
       throw failure("audio_in_use");
     },
 
     async listPending() {
-      const notes = await transact(db, [STORES.notes], "readonly", (tx) => all<VoiceNoteRecording>(tx, STORES.notes));
-      return { recordings: clone(notes) };
+      return transact(db, [STORES.kv, STORES.notes], "readonly", async (tx) => {
+        const row = await capture(tx);
+        const notes = await all<VoiceNoteRecording>(tx, STORES.notes);
+        return { recordings: clone(notes.filter((note) => !note.owner ||
+          (row.status === "signed_in" && note.owner === row.defaults.accountDid))) };
+      });
     },
 
     async getCaptureDefaults() {
       const row = await transact(db, [STORES.kv], "readonly", capture);
       return { ...clone(row.defaults),
-        accountDid: row.status === "signed_in" ? row.defaults.accountDid : null,
+        accountDid: row.status !== "signed_out" ? row.defaults.accountDid : null,
         transcriber: row.status === "signed_in" ? row.defaults.transcriber : "on-device",
         status: row.status };
     },
@@ -713,35 +753,45 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         row.defaults = { ...next, accountDid: sameGeneration ? row.defaults.accountDid : next.accountDid,
           transcriber: row.status === "signed_in" ? next.transcriber : "on-device" };
         await put(tx, STORES.kv, row);
-        const claimed: string[] = [];
-        if (row.status === "signed_in" && next.accountDid) {
-          for (const session of await all<SessionRecord>(tx, STORES.sessions)) {
-            if (!session.owner) { await put(tx, STORES.sessions, { ...session, owner: next.accountDid }); claimed.push(session.id); }
-          }
-          for (const parked of await all<QuarantineRow>(tx, STORES.quarantine)) {
-            if (!parked.session.owner) await put(tx, STORES.quarantine, { ...parked, session: { ...parked.session, owner: next.accountDid } });
-          }
-          for (const note of await all<VoiceNoteRecording>(tx, STORES.notes)) {
-            if (note.version === 2 && !note.owner && !note.ownerUnknown) {
-              await claimInTx(tx, { id: note.id, did: next.accountDid, evidence: "signed_out_v2" });
-              claimed.push(note.id);
-            }
-          }
-        }
-        return { claimed };
+        return { claimed: [] };
       });
     },
 
     async setAccountState(next) {
       try {
-        await transact(db, [STORES.kv], "readwrite", async (tx) => {
+        const removed = await transact(db, [STORES.kv, STORES.notes, STORES.transcripts, STORES.tombstones, STORES.receipts], "readwrite", async (tx) => {
           const row = await capture(tx);
+          const removed: string[] = [];
+          if (next.status === "signed_out") {
+            for (const note of await all<VoiceNoteRecording>(tx, STORES.notes)) {
+              const receipt = note.ledger?.audio.verifiedInSpace;
+              const local = await get<{ id: string; transcript: LocalTranscript }>(tx, STORES.transcripts, note.id);
+              const syncedTranscript = note.ledger?.transcriptSync?.state === "saved" &&
+                (!local || note.ledger.transcriptSync.rev === local.transcript.rev);
+              const activeLocalWork = note.stt?.state === "queued" || note.stt?.state === "running" ||
+                note.ledger?.localAudio?.state === "preparing";
+              if (note.owner && note.owner === row.defaults.accountDid && note.ledger?.audio.state === "saved" && note.ledger.audio.rowId && receipt &&
+                  /^[0-9a-f]{64}$/.test(receipt.sha256) && Number.isSafeInteger(receipt.size) && receipt.size > 0 &&
+                  receipt.size === note.sizeBytes && syncedTranscript && !activeLocalWork) {
+                await del(tx, STORES.notes, note.id);
+                await del(tx, STORES.transcripts, note.id);
+                await put(tx, STORES.tombstones, { id: note.id, at: now(), audioPending: true, owner: note.owner ?? null, recordingNotePending: true, recordingNoteSyncedOnly: true } satisfies TombstoneRow);
+                for (const entry of await all<ReceiptRow>(tx, STORES.receipts)) {
+                  if (entry.receipt.id === note.id) await del(tx, STORES.receipts, entry.key);
+                }
+                removed.push(note.id);
+              }
+            }
+          }
           if (next.transitionGen < row.defaults.transitionGen) throw failure("stale_transition");
           row.defaults = { ...row.defaults, accountDid: next.accountDid, transitionGen: next.transitionGen,
             transcriber: next.status === "signed_in" ? row.defaults.transcriber : "on-device" };
           row.status = next.status;
           await put(tx, STORES.kv, row);
+          return removed;
         });
+        for (const id of removed) await finishAudioDelete(id);
+        if (next.status === "signed_out") await store.sweepTombstones();
       } catch (error) {
         if ((error as { code?: string }).code === "stale_transition") throw error;
         throw Object.assign(failure("account_state_write_failed"), { cause: error });
@@ -779,7 +829,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async recordRemoteResult({ id, did, opId, result }) {
-      return transact(db, [STORES.notes, STORES.tombstones, STORES.receipts, STORES.outbox], "readwrite", async (tx) => {
+      return transact(db, [STORES.kv, STORES.notes, STORES.tombstones, STORES.receipts, STORES.outbox], "readwrite", async (tx) => {
         const key = `${id}:${opId}`;
         const row = await get<ReceiptRow>(tx, STORES.receipts, key);
         if (!row || row.receipt.did !== did) throw failure("receipt_not_found");
@@ -836,10 +886,14 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       });
     },
 
-    claim: (opts) => transact(db, [STORES.notes, STORES.tombstones], "readwrite", (tx) => claimInTx(tx, opts)),
+    async claim(opts) {
+      const result = await transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readwrite", (tx) => claimInTx(tx, opts));
+      if (opts.evidence === "user_choice") await claimRecordingNote(opts.id, opts.did);
+      return result;
+    },
 
     updateLedger: ({ id, did, rev, patch }) =>
-      withNoteWork(id, () => transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+      withNoteWork(id, () => transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
         const note = await checkedNote(tx, id);
         if (note.owner !== did) throw failure("owner_mismatch");
         if (note.rev !== rev) throw failure("rev_conflict");
@@ -850,30 +904,42 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       })),
 
     putTranscript: ({ id, transcript }) =>
-      transact(db, [STORES.notes, STORES.tombstones, STORES.transcripts], "readwrite", async (tx) => {
+      transact(db, [STORES.kv, STORES.notes, STORES.tombstones, STORES.transcripts], "readwrite", async (tx) => {
         await checkedNote(tx, id);
         if (transcript.noteId !== id) throw failure("transcript_note_mismatch");
         await put(tx, STORES.transcripts, { id, transcript: clone(transcript) });
       }),
 
+    putTranscriptForOwner: ({ id, owner, transcript }) =>
+      transact(db, [STORES.notes, STORES.tombstones, STORES.transcripts], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id, false);
+        if ((note.owner ?? null) !== owner) throw failure("owner_mismatch");
+        if (transcript.noteId !== id) throw failure("transcript_note_mismatch");
+        await put(tx, STORES.transcripts, { id, transcript: clone(transcript) });
+        return { transcript: clone(transcript) };
+      }),
+
     getTranscript: ({ id }) =>
-      transact(db, [STORES.notes, STORES.tombstones, STORES.transcripts], "readonly", async (tx) => {
+      transact(db, [STORES.kv, STORES.notes, STORES.tombstones, STORES.transcripts], "readonly", async (tx) => {
         await checkedNote(tx, id);
         const row = await get<{ id: string; transcript: LocalTranscript }>(tx, STORES.transcripts, id);
         return { transcript: row ? clone(row.transcript) : null };
       }),
 
     updateStt: (id, stt) =>
-      withNoteWork(id, () => transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
-        const note = await checkedNote(tx, id);
+      withNoteWork(id, () => transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id, false);
         note.stt = clone(stt);
         await put(tx, STORES.notes, note);
       })),
 
     listQuarantine: () =>
-      transact(db, [STORES.quarantine], "readonly", async (tx) => ({
-        items: (await all<QuarantineRow>(tx, STORES.quarantine)).map(({ id, reason, sizeBytes, session }) => ({ id, reason, sizeBytes, owner: session.owner })),
-      })),
+      transact(db, [STORES.kv, STORES.quarantine], "readonly", async (tx) => {
+        const account = await capture(tx);
+        return { items: (await all<QuarantineRow>(tx, STORES.quarantine))
+          .filter((row) => !row.session.owner || (account.status === "signed_in" && row.session.owner === account.defaults.accountDid))
+          .map(({ id, reason, sizeBytes, session }) => ({ id, reason, sizeBytes, owner: session.owner })) };
+      }),
 
     async discardFailedRecording({ id }) {
       const { found, healthy } = await transact(db, [STORES.quarantine, STORES.notes], "readonly", async (tx) => ({
@@ -885,14 +951,17 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     async deleteQuarantined({ id }) { await removeQuarantined(id); },
 
     listOutbox: ({ did }) =>
-      transact(db, [STORES.outbox], "readonly", async (tx) => ({
-        entries: clone((await all<OutboxEntry>(tx, STORES.outbox)).filter((entry) => entry.did === did)),
-      })),
+      transact(db, [STORES.kv, STORES.outbox], "readonly", async (tx) => {
+        const row = await capture(tx);
+        return { entries: row.status === "signed_in" && row.defaults.accountDid === did
+          ? clone((await all<OutboxEntry>(tx, STORES.outbox)).filter((entry) => entry.did === did)) : [] };
+      }),
 
     completeOutbox: ({ entryId, result }) =>
-      transact(db, [STORES.outbox], "readwrite", async (tx) => {
+      transact(db, [STORES.kv, STORES.outbox], "readwrite", async (tx) => {
         const entry = await get<OutboxEntry>(tx, STORES.outbox, entryId);
         if (!entry) throw failure("not_found");
+        await assertOwner(tx, entry.did);
         if (result === "done") await del(tx, STORES.outbox, entryId);
         else await put(tx, STORES.outbox, { ...entry, state: result === "retry" ? "pending" : result, attempts: entry.attempts + 1 });
       }),
@@ -900,12 +969,21 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
   async function removeQuarantined(id: string) {
     await before("tombstone", id);
-    await transact(db, [STORES.quarantine, STORES.sessions, STORES.tombstones], "readwrite", async (tx) => {
+    const removed = await transact(db, [STORES.kv, STORES.notes, STORES.quarantine, STORES.sessions, STORES.tombstones], "readwrite", async (tx) => {
+      const parked = await get<QuarantineRow>(tx, STORES.quarantine, id);
+      const session = await get<SessionRecord>(tx, STORES.sessions, id);
+      if (!parked && !session) {
+        const note = await get<VoiceNoteRecording>(tx, STORES.notes, id);
+        if (note) { await assertOwner(tx, note.owner); throw failure("not_failed_recording"); }
+        return false;
+      }
+      await assertOwner(tx, (parked?.session ?? session)!.owner);
       await put(tx, STORES.tombstones, { id, at: now(), audioPending: true } satisfies TombstoneRow);
       await del(tx, STORES.quarantine, id);
       await del(tx, STORES.sessions, id);
+      return true;
     });
-    await finishAudioDelete(id);
+    if (removed) await finishAudioDelete(id);
   }
 
   async function recoverOne(id: string): Promise<{ recovered?: VoiceNoteRecording; failed?: RecoveryResult["failed"][number] }> {
@@ -984,7 +1062,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   async function quarantine(id: string, reason: string, error: string) {
     await before("quarantine:write", id);
     const sizeBytes = await audio.size(id);
-    await transact(db, [STORES.quarantine, STORES.sessions], "readwrite", async (tx) => {
+    await transact(db, [STORES.kv, STORES.quarantine, STORES.sessions], "readwrite", async (tx) => {
       const session = await get<SessionRecord>(tx, STORES.sessions, id);
       if (!session) return;
       await put(tx, STORES.quarantine, { id, reason, error, sizeBytes, session } satisfies QuarantineRow);

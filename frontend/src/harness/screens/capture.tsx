@@ -1,3 +1,4 @@
+import { beginStorageAccountSession } from "@/lib/storageStatus";
 // Capture's home (TC-761, PR6) in the real shell (harness/ShellApp.tsx): first
 // use in an empty space, with items (In progress, Recent; the Library beside
 // it from medium up), an upload waiting in In progress, a recording minimised
@@ -33,6 +34,10 @@ export function CaptureShell(props: {
     () => (props.library ? libraryTcw({ rows: props.rows, hang: props.hang }) : undefined),
     [props.library, props.rows, props.hang],
   );
+  // As App: establish the authenticated storage account before Library children read local notes.
+  useMemo(() => {
+    if (tcw) beginStorageAccountSession(tcw, tcw.did ?? null, tcw.spaceId ?? null);
+  }, [tcw]);
   return (
     <>
       <ShellApp platform={platform} shim={shim} state="ready" captureTcw={tcw} recorder={props.recorder} />

@@ -150,7 +150,8 @@ test("one save publishes note text while an audio part is stalled", async () => 
   const { tcw, values } = space();
   await ensureVoiceNoteIdentity(tcw);
   const id = `short-sync-${++count}`;
-  await saveNote(id, "Text must arrive before audio");
+  beginStorageAccountSession(tcw, tcw.did, tcw.spaceId ?? null);
+  await saveNote(id, "Text must arrive before audio", { owner: tcw.did });
   let calls = 0;
   const db = tcw.sql.db.bind(tcw.sql);
   tcw.sql.db = ((name: string) => {
@@ -199,7 +200,8 @@ test("one save overlaps short text and audio requests at fixed fixture latency",
   const { tcw } = space();
   await ensureVoiceNoteIdentity(tcw);
   const id = `timed-sync-${++count}`;
-  await saveNote(id, "Timed fixture");
+  beginStorageAccountSession(tcw, tcw.did, tcw.spaceId ?? null);
+  await saveNote(id, "Timed fixture", { owner: tcw.did });
   let serialLatency = 0;
   const delay = async () => {
     const start = performance.now();
@@ -371,6 +373,8 @@ test("a signed-out native note migrates its Markdown once with the T18 audio row
     }) as typeof tcw.kv.put;
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });
+    // TC-2785: sign-in alone never assigns a signed-out recording.
+    await fake.plugin.claim({ id, did: tcw.did, evidence: "user_choice" });
     const pipeline = createVoiceNotePipeline(tcw);
     const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
     await pipeline.reconcileAll(ctx);
@@ -1072,16 +1076,18 @@ test("Stop during the OpenKey wait after handoff cannot upload to the old accoun
     const live = await fake.plugin.start();
     const pipeline = createVoiceNotePipeline(tcw);
     expect((await handoffBeforeCredentialClear(tcw.did, pipeline)).ok).toBe(true);
-    const stopped = await fake.plugin.stop();
-    expect(stopped.id).toBe(live.id);
-    expect(stopped.owner).toBe(tcw.did);
+    // TC-2785: the handoff finalizes the owned recording before credentials clear.
+    await expect(fake.plugin.stop()).rejects.toMatchObject({ code: "not_recording" });
+    expect((await fake.plugin.listPending()).recordings).toEqual([]);
     expect(pipeline.isAccepting()).toBe(false);
     await expect(pipeline.process({ did: tcw.did, spaceId: tcw.spaceId,
-      generation: currentAccountGeneration() }, stopped.id)).rejects.toThrow("suspended");
+      generation: currentAccountGeneration() }, live.id)).rejects.toThrow("suspended");
     expect(values.size).toBe(0);
     const current = await fake.plugin.getCaptureDefaults();
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: current.transitionGen + 1,
       transcriber: "on-device", identifySpeakers: false });
+    const stopped = (await fake.plugin.listPending()).recordings.find((note) => note.id === live.id)!;
+    expect(stopped.owner).toBe(tcw.did);
     pipeline.resume();
     await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId,
       generation: advanceAccountGeneration() });
@@ -1114,8 +1120,7 @@ test("sign-in and manual reconciliation emit only for notes first landed by reco
     expect(events).toEqual([]); // The recorder callback owns the initial Stop event.
     await pipeline.reconcileAll(ctx);
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recovered.id }]);
-    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === other.id)?.ledger?.audio.state)
-      .toBe("pending");
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === other.id)).toBeUndefined();
     await pipeline.reconcileAll(ctx, "manual");
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recovered.id }]);
     await fake.plugin.start();
@@ -1125,6 +1130,8 @@ test("sign-in and manual reconciliation emit only for notes first landed by reco
       { source: VOICE_NOTE_SOURCE, sourceId: manual.id }]);
     await pipeline.reconcileAll(ctx);
     expect(events).toHaveLength(2);
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:test:other", transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === other.id)?.ledger?.audio.state).toBe("pending");
   } finally { off(); __setVoiceNotesForTests(original, { available: null }); }
 });
 
@@ -1467,11 +1474,17 @@ test("on-device no_speech transcript sync never sets PTX missing-stats metadata"
 test("another account's retained notes do not delay a fresh Stop with a space preflight", async () => {
   const previous = VoiceNotes;
   const { tcw, sqlite } = space();
+  const previousSpace = space();
+  const sqlAccounts: string[] = [];
+  for (const account of [tcw, previousSpace.tcw]) {
+    const db = account.sql.db.bind(account.sql);
+    account.sql.db = ((name: string) => { sqlAccounts.push(account.did!); return db(name); }) as typeof account.sql.db;
+  }
   const fake = createFakeVoiceNotes();
   __setVoiceNotesForTests(fake.plugin, { available: true });
   try {
-    await fake.plugin.setCaptureDefaults({ accountDid: "did:test:previous", transitionGen: 1,
-      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.setCaptureDefaults({ accountDid: previousSpace.tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     const old = await fake.plugin.stop();
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 2,
@@ -1479,7 +1492,13 @@ test("another account's retained notes do not delay a fresh Stop with a space pr
     const pipeline = createVoiceNotePipeline(tcw);
     const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
     await pipeline.reconcileAll(ctx);
-    expect(sqlite.query("SELECT name FROM sqlite_schema WHERE name = 'voice_note_transcript'").all()).toEqual([]);
+    // TC-2785 test ruling (Naomi): setup may touch only B’s space; A’s notes remain private.
+    expect((await fake.plugin.listPending()).recordings).toEqual([]);
+    expect(sqlite.query("SELECT id FROM connector_meeting").all()).toEqual([]);
+    expect(sqlAccounts.length).toBeGreaterThan(0);
+    expect(sqlAccounts.every((did) => did === tcw.did)).toBe(true);
+    expect(previousSpace.sqlite.query("SELECT name FROM sqlite_schema WHERE name = 'connector_meeting'").all()).toEqual([]);
+    expect(previousSpace.values.size).toBe(0);
     await fake.plugin.start();
     const fresh = await fake.plugin.stop();
     await pipeline.process(ctx, fresh.id);
@@ -1487,8 +1506,16 @@ test("another account's retained notes do not delay a fresh Stop with a space pr
     await pipeline.reconcileAll(ctx);
     await pipeline.reconcileAll(ctx, "manual");
     const notes = (await fake.plugin.listPending()).recordings;
-    expect(notes.find((note) => note.id === old.id)?.ledger?.audio.state).toBe("pending");
+    expect(notes.find((note) => note.id === old.id)).toBeUndefined();
     expect(notes.find((note) => note.id === fresh.id)?.ledger?.audio.state).toBe("saved");
+    await fake.plugin.setCaptureDefaults({ accountDid: previousSpace.tcw.did, transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === old.id)?.ledger?.audio.state).toBe("pending");
+    const previousPipeline = createVoiceNotePipeline(previousSpace.tcw);
+    await previousPipeline.reconcileAll({ did: previousSpace.tcw.did!, spaceId: previousSpace.tcw.spaceId!, generation: currentAccountGeneration() });
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === old.id)?.ledger?.audio.state).toBe("saved");
+    expect(previousSpace.sqlite.query("SELECT source_id FROM connector_meeting").all()).toEqual([{ source_id: old.id }]);
+    expect(previousSpace.values.size).toBeGreaterThan(0);
+    expect(sqlite.query("SELECT source_id FROM connector_meeting").all()).toEqual([{ source_id: fresh.id }]);
   } finally { __setVoiceNotesForTests(previous, { available: null }); }
 });
 
@@ -1811,6 +1838,7 @@ test("a user-choice claimed legacy note uploads once and keeps its owner", async
       silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 1 as const, legacyImport: true,
       options: { transcriber: "on-device" as const, identifySpeakers: false, uploadAudio: true } };
     fake.controls.commitLegacy(legacy);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
     await fake.plugin.claim({ id: legacy.id, did: tcw.did, evidence: "user_choice" });
     const owned = (await fake.plugin.listPending()).recordings[0]!;
     expect(markLegacyOwnerUnknown([owned])[0]?.owner).toBe(tcw.did);
@@ -1834,16 +1862,18 @@ test("a legacy owner mismatch is reported per note and another owned note still 
       silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 1 as const, legacyImport: true };
     fake.controls.commitLegacy(legacy);
     const stale = (await fake.plugin.listPending()).recordings[0]!;
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:other", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
     await fake.plugin.claim({ id: legacy.id, did: "did:other", evidence: "user_choice" });
     await ensureSchema(tcw);
     insert(sqlite, "other-row", legacy.id);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 2, transcriber: "on-device", identifySpeakers: false });
     const warnings: unknown[][] = [];
     const warn = console.warn;
     console.warn = (...args) => { warnings.push(args); };
     try { expect(await associateLegacyNotes(tcw, tcw.did, [stale])).toEqual([]); }
     finally { console.warn = warn; }
     expect(warnings.some(([message]) => String(message).includes("another account"))).toBe(true);
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 3,
       transcriber: "on-device", identifySpeakers: false });
     const { id } = await fake.plugin.start();
     await fake.plugin.stop();
@@ -1853,11 +1883,13 @@ test("a legacy owner mismatch is reported per note and another owned note still 
       const result = await realList();
       if (!staleOnce) return result;
       staleOnce = false;
-      return { recordings: result.recordings.map((note) => note.id === legacy.id ? stale : note) };
+      return { recordings: [...result.recordings, stale] };
     };
     const pipeline = createVoiceNotePipeline(tcw);
     await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(id)).toEqual([{ id: `vn-${id}` }]);
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === legacy.id)).toBeUndefined();
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:other", transitionGen: 4, transcriber: "on-device", identifySpeakers: false });
     expect((await fake.plugin.listPending()).recordings.find((note) => note.id === legacy.id)?.owner).toBe("did:other");
   } finally { __setVoiceNotesForTests(original, { available: null }); }
 });

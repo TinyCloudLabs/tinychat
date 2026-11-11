@@ -441,7 +441,7 @@ export function useLibrary(
       const found: [string, string | null][] = [];
       for (const id of todo) {
         try {
-          const note = await loadNote(id);
+          const note = await loadNote(id, tcw.did ?? null);
           found.push([id, noteSnippet(note?.moments.find((moment) => noteSnippet(moment.label) !== null)?.label)]);
         } catch (caught) {
           momentsLoaded.current.delete(id);
@@ -458,7 +458,7 @@ export function useLibrary(
         return next;
       });
     })();
-  }, [openRecordingId, voiceSourceIds]);
+  }, [openRecordingId, voiceSourceIds, tcw.did]);
 
   const readNote = useCallback(
     (note: LibraryItem) => {

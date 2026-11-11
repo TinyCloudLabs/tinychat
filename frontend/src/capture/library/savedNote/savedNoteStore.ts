@@ -1,6 +1,8 @@
+import { currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   adoptNote,
+  assertRecordingNoteAccount,
   loadNote,
   saveNote,
 } from "@/lib/voiceNotes/recordingNotes";
@@ -32,18 +34,28 @@ export interface SavedNoteStore {
  * note is loaded; false keeps the load off the network.
  */
 export function spaceSavedNoteStore(tcw: TinyCloudWeb, hasSpaceRow: () => boolean = () => true): SavedNoteStore {
+  const generation = currentAccountGeneration();
+  const check = async () => {
+    if (generation !== currentAccountGeneration()) throw new Error("Recording note account changed");
+    await assertRecordingNoteAccount(tcw.did ?? null);
+  };
   return {
     async load(id) {
-      let note = await loadNote(id);
+      await check();
+      let note = await loadNote(id, tcw.did ?? null);
       // A recording with no row in the space has no note there either: its note is the device's, read or not.
       if (!note && hasSpaceRow()) {
         const remote = await readRecordingNoteFromSpace(tcw, id);
-        if (remote) note = await adoptNote(remote);
+        await check();
+        if (remote) note = await adoptNote(remote, tcw.did ?? null);
       }
+      await check();
       return note ? { md: note.md, savedEditAt: note.savedEditAt } : null;
     },
     async save(id, md) {
-      const note = await saveNote(id, md, { savedEdit: true });
+      await check();
+      const note = await saveNote(id, md, { savedEdit: true, owner: tcw.did ?? null });
+      await check();
       return {
         record: { md: note.md, savedEditAt: note.savedEditAt },
         synced: syncRecordingNote(tcw, id).then(() => undefined),

@@ -28,7 +28,7 @@ import { readDefaultTranscriber, refreshEffectiveTranscriber, setDefaultIdentify
 import { createVoiceNoteTranscriber, HELD_NOTE_MESSAGE, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { createVoiceNotePipeline, VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
-import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
+import { CONNECTORS_SQL_DB_NAME, _resetConnectorSchemaMemoForTests } from "@/lib/connectors/connectorStore";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
@@ -69,6 +69,7 @@ let serial = 0;
 let currentId: string | null = null;
 let paused = false;
 let plugin: VoiceNotesPlugin;
+let nativeIds = new Map<string, string>();
 
 async function stopNatively(): Promise<VoiceNoteRecording> {
   const stopped = await fake.plugin.stop();
@@ -76,6 +77,7 @@ async function stopNatively(): Promise<VoiceNoteRecording> {
     options: { ...stopped.options, transcriber: stopped.options?.transcriber ?? "on-device",
       identifySpeakers: stopped.options?.identifySpeakers ?? false,
       uploadAudio: stopped.options?.uploadAudio ?? true }, rev: 1 };
+  nativeIds.set(recording.id, stopped.id);
   currentId = null;
   paused = false;
   onPhone.push(recording);
@@ -144,6 +146,7 @@ const fails = async (_tcw: unknown, recording: VoiceNoteRecording) => {
 
 beforeEach(() => {
   fake = createFakeVoiceNotes();
+  nativeIds = new Map();
   onPhone = [];
   saves = [];
   noted = [];
@@ -169,7 +172,7 @@ beforeEach(() => {
     stop: stopNatively,
     async status() {
       const status = await fake.plugin.status();
-      return { ...status, state: paused ? "paused" as const : status.state, reason: paused ? "user" as const : status.reason, id: status.id === null ? null : currentId,
+      return { ...status, owner: status.id ? (await fake.plugin.getCaptureDefaults()).accountDid : undefined, state: paused ? "paused" as const : status.state, reason: paused ? "user" as const : status.reason, id: status.id === null ? null : currentId,
         audioMs: 42_000, micDeniedPresentation: micDenied, shortcutRecordPending: shortcutPending,
         microphonePermissionGranted: microphoneGranted };
     },
@@ -183,6 +186,10 @@ beforeEach(() => {
       currentId = null;
       onPhone = onPhone.filter((recording) => recording.id !== id);
       return { id };
+    },
+    async readAudioChunk(args) {
+      const chunk = await fake.plugin.readAudioChunk({ ...args, id: nativeIds.get(args.id) ?? args.id });
+      return { ...chunk, id: args.id };
     },
     async listPending() {
       return { recordings: [...onPhone] };
@@ -371,6 +378,8 @@ describe("voice-note recorder controller", () => {
     await recorder.setNoteText("Signed-out draft");
     await recorder.stop();
     await tick();
+    // The stand-in native fixture must keep a signed-out note unowned after Stop.
+    onPhone.find((recording) => recording.id === id)!.owner = null;
     expect((await loadNote(id))?.md).toBe("Signed-out draft");
     expect(saves).toEqual([]);
     expect(recorder.getNoteSyncError()).toBeNull();
@@ -385,7 +394,7 @@ describe("voice-note recorder controller", () => {
     const id = currentId!;
     await tick();
     await first.setNoteText("# Draft\n- **0:07** hallway");
-    expect((await loadNote(id))?.md).toBe("# Draft\n- **0:07** hallway");
+    expect((await loadNote(id, (await plugin.status()).owner ?? null, true))?.md).toBe("# Draft\n- **0:07** hallway");
     detach();
 
     const reopened = controller();
@@ -410,12 +419,12 @@ describe("voice-note recorder controller", () => {
 
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const reopened = controller({ noteLoader: async (noteId) => { await gate; return loadNote(noteId); } });
+    const reopened = controller({ noteLoader: async (noteId, owner, live) => { await gate; return loadNote(noteId, owner, live); } });
     const remove = reopened.attach();
     await tick();
     expect(reopened.getNoteStatus()).toBe("loading");
     await expect(reopened.setNoteText("x")).rejects.toMatchObject({ code: "note_not_loaded" });
-    expect((await loadNote(id))?.md).toBe("# Ten lines of work\nKeep this draft");
+    expect((await loadNote(id, (await plugin.status()).owner ?? null, true))?.md).toBe("# Ten lines of work\nKeep this draft");
     release();
     await tick();
     expect(reopened.getNoteStatus()).toBe("ready");
@@ -438,7 +447,7 @@ describe("voice-note recorder controller", () => {
     const timers: { ms: number; run: () => void; cancelled: boolean }[] = [];
     const readFailure = new Error("IndexedDB open failed");
     const reopened = controller({
-      noteLoader: (noteId) => { reads++; return available ? loadNote(noteId) : Promise.reject(readFailure); },
+      noteLoader: (noteId, owner, live) => { reads++; return available ? loadNote(noteId, owner, live) : Promise.reject(readFailure); },
       noteRetryScheduler: (ms, run) => {
         const timer = { ms, run, cancelled: false };
         timers.push(timer);
@@ -449,7 +458,7 @@ describe("voice-note recorder controller", () => {
     await tick();
     expect(reopened.getNoteStatus()).toBe("error");
     await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
-    expect((await loadNote(id))?.md).toBe("Do not overwrite");
+    expect((await loadNote(id, (await plugin.status()).owner ?? null, true))?.md).toBe("Do not overwrite");
     expect(timers.map((timer) => timer.ms)).toEqual([1_000]);
     fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 2_000, at: Date.now() });
     await tick();
@@ -466,7 +475,7 @@ describe("voice-note recorder controller", () => {
     await tick();
     expect(reopened.getNoteStatus()).toBe("ready");
     expect(reopened.getNote()?.md).toBe("Do not overwrite");
-    expect((await loadNote(id))?.md).toBe("Do not overwrite");
+    expect((await loadNote(id, (await plugin.status()).owner ?? null, true))?.md).toBe("Do not overwrite");
     remove();
   });
 
@@ -1161,19 +1170,17 @@ describe("voice-note recorder controller", () => {
     expect(onPhone.map((recording) => recording.id)).toEqual([failed.failedRecording!.id]);
   });
 
-  test("Save now reclaims a fresh sign-in note and resumes its account pipeline", async () => {
+  test("Save now resumes an owned note’s account pipeline", async () => {
     const account = { did: tcw.did, spaceId: "tinycloud:space" } as TinyCloudWeb;
-    const note = { ...earlier(), owner: null };
+    const note = earlier();
     onPhone = [note];
-    let claimed = 0;
     let accepting = false;
     const base = plugin;
     __setVoiceNotesForTests({ ...base,
       getCaptureDefaults: async () => ({ status: "signed_in", accountDid: account.did, transitionGen: 1,
         transcriber: "on-device", identifySpeakers: false }),
       async setCaptureDefaults() {
-        for (const pending of onPhone) if (!pending.owner) { pending.owner = account.did; claimed++; }
-        return { claimed: onPhone.map((pending) => pending.id) };
+        return { claimed: [] };
       } }, { available: true });
     const pipeline: VoiceNotePipeline = {
       process: async () => {}, cancelAll: () => { accepting = false; },
@@ -1190,7 +1197,7 @@ describe("voice-note recorder controller", () => {
     const detach = recorder.attach();
     await tick();
     await recorder.retryPending();
-    expect(claimed).toBe(1);
+    expect(note.owner).toBe(account.did);
     expect(saves).toEqual([note.id]);
     expect(recorder.getState().ready).toBe(true);
     expect(accepting).toBe(true);
@@ -1541,6 +1548,8 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
     Reflect.set(globalThis, "window", hostWindow());
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    // This fresh database shares the account DID with earlier scripted fixtures.
+    _resetConnectorSchemaMemoForTests();
     const sqlite = new Database(":memory:");
     const values = new Map<string, string>();
     const account = { did: tcw.did, spaceId: tcw.spaceId,

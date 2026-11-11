@@ -1,3 +1,4 @@
+import { newIdbEnv } from "@/lib/voiceNotes/web/testing/idb";
 // Mounted-App proof of the Home site's least-privilege sign-in. Run by src/App.homeGrant.test.ts in its own
 // process, once with VITE_HOME_SITE=true and once without; the assertions say what each build must do.
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
@@ -252,12 +253,15 @@ async function mount(path = "/chat") {
   root = createRoot(host);
   await act(async () => root!.render(<BrowserRouter><PlatformContext.Provider value="web"><App /></PlatformContext.Provider></BrowserRouter>));
   await settle();
+  const deadline = Date.now() + 1000;
+  while (host!.textContent?.includes("Restoring your session") && Date.now() < deadline) await settle();
 }
 async function signIn() {
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Sign in");
   expect(button, `missing Sign in; DOM=${host!.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
-  await settle();
+  const deadline = Date.now() + 1000;
+  while (!host!.querySelector("[data-testid=feed-view], [data-testid=authenticated-workspace]") && Date.now() < deadline) await settle();
 }
 async function navigate(path: string) {
   await act(async () => {
@@ -290,6 +294,8 @@ beforeEach(() => {
   persistedSessions.length = 0;
   snapshotGate = null;
   saveGate = null;
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: newIdbEnv().factory });
+  Object.defineProperty(globalThis, "IDBKeyRange", { configurable: true, value: newIdbEnv().keyRange });
   engineAvailable = false;
   restoreResult = { kind: "signedOut" };
   recorderEnabled.length = 0;
@@ -493,7 +499,8 @@ async function signOutFromSettings() {
   await navigate("/chat/settings");
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent === "Sign out")!;
   await act(async () => { button.click(); await tick(); });
-  await settle();
+  const deadline = Date.now() + 1000;
+  while (!signedOutNow() && Date.now() < deadline) await settle();
 }
 
 test("an approval that lands after the owner signed out keeps nothing: no saved session, no swap, still signed out", async () => {

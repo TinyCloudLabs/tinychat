@@ -1,6 +1,7 @@
+import { beginStorageAccountSession, __resetStorageStatusForTests } from "@/lib/storageStatus";
 // The saved note's store: a recording with no row in the space reads only the device's note, so opening and
 // editing it never waits on the network (a note just recorded, offline).
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { saveNote } from "@/lib/voiceNotes/recordingNotes";
@@ -9,8 +10,12 @@ import { spaceSavedNoteStore } from "./savedNoteStore";
 let gets: string[] = [];
 beforeEach(() => {
   gets = [];
+  beginStorageAccountSession(offline, "did:test:saved-notes", "did:test:saved-notes");
 });
+afterEach(() => __resetStorageStatusForTests());
 const offline = {
+  did: "did:test:saved-notes",
+  spaceId: "did:test:saved-notes",
   kv: {
     get: async (key: string) => {
       gets.push(key);
@@ -46,4 +51,15 @@ describe("spaceSavedNoteStore", () => {
     hasRow = true;
     await expect(store.load("rec-lands")).rejects.toThrow("offline");
   });
+});
+
+test("a store kept from A cannot read or rewrite A's note after B becomes active", async () => {
+  const accountA = { ...offline, did: "did:A", spaceId: "space:A" } as unknown as TinyCloudWeb;
+  beginStorageAccountSession(accountA, "did:A", "space:A");
+  await saveNote("old-account-note", "A private text", { owner: "did:A" });
+  const store = spaceSavedNoteStore(accountA);
+  beginStorageAccountSession({}, "did:B", "space:B");
+  await expect(store.load("old-account-note")).rejects.toThrow("account changed");
+  await expect(store.save("old-account-note", "B text")).rejects.toThrow("account changed");
+  expect(gets).toEqual([]);
 });
