@@ -188,7 +188,7 @@ export const COMMENT_COPY = {
  * recipients aren't connected, keep it privately, and are never counted as seeing it.
  */
 export function commentCopy({ approved, held = [] }: { approved: readonly string[]; held?: readonly string[] }): { button: string; input: string; helper: string } {
-  const heldLine = held.length ? ` ${names(held)} ${held.length === 1 ? "isn't" : "aren't"} connected yet, so ${held.length === 1 ? "it doesn't" : "they don't"} get it.` : "";
+  const heldLine = held.length ? ` ${names(held)} ${held.length === 1 ? "isn't" : "aren't"} connected, so ${held.length === 1 ? "it doesn't" : "they don't"} get it.` : "";
   const who = approved.length >= 3 ? "the agents on this card" : names(approved);
   const sees = !approved.length ? "Only you see this."
     : approved.length >= 3 ? `Only the ${approved.length} agents on this card see this.`
