@@ -53,24 +53,25 @@ export function parseOwnedShareIndexEntry(raw: unknown): OwnedShareIndexEntry | 
   return valid ? (entry as unknown as OwnedShareIndexEntry) : null;
 }
 
-export async function listShareIndexKeys(tcw: TinyCloudWeb): Promise<string[]> {
-  const indexKeys: string[] = [];
+/** Every key under `prefix`, following the node's pagination cursor. */
+export async function listKvKeys(tcw: Pick<TinyCloudWeb, "kv">, prefix: string): Promise<string[]> {
+  const keys: string[] = [];
   let cursor: string | undefined;
   do {
     const page = await tcw.kv.list({
-      path: SHARE_INDEX_KEY_PREFIX,
+      path: prefix,
       source: "network",
       ...(cursor ? { cursor } : {}),
     });
     if (!page.ok) throw new Error(page.error.message);
     for (const key of page.data.keys) {
-      if (typeof key === "string" && key.startsWith(SHARE_INDEX_KEY_PREFIX)) indexKeys.push(key);
+      if (typeof key === "string" && key.startsWith(prefix)) keys.push(key);
     }
     const metadata = page.data as typeof page.data & { cursor?: unknown; nextCursor?: unknown };
     const next = metadata.nextCursor ?? metadata.cursor;
     cursor = typeof next === "string" && next ? next : undefined;
   } while (cursor);
-  return indexKeys;
+  return keys;
 }
 
 // Called when a chat is deleted. Removes that chat's share snapshots and owner records.
@@ -80,7 +81,7 @@ export async function listShareIndexKeys(tcw: TinyCloudWeb): Promise<string[]> {
 export async function deleteShareRecordsForThread(tcw: TinyCloudWeb, threadId: string): Promise<void> {
   let indexKeys: string[];
   try {
-    indexKeys = await listShareIndexKeys(tcw);
+    indexKeys = await listKvKeys(tcw, SHARE_INDEX_KEY_PREFIX);
   } catch {
     return;
   }

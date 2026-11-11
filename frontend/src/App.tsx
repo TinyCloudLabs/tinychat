@@ -79,6 +79,7 @@ import {
 import { resolveLocalValidation, prepareLocalSignIn } from "./lib/localValidation";
 import { DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
+import { bindSharedWithMe } from "./lib/sharedWithMe";
 import { historyPrefetch } from "./lib/historyPrefetch";
 import {
   createBillingClient,
@@ -1338,6 +1339,7 @@ export function App() {
 
   const isReady = state === "ready" && tcw !== null;
   useEffect(() => { setSignedIn(isReady); }, [isReady]);
+  useEffect(() => { void bindSharedWithMe(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
   // The offline state still HOLDS a session, so its "Try again" re-runs the
   // restore. Only a settled signed-out state (no restorable session) starts the
   // full OpenKey sign-in.
