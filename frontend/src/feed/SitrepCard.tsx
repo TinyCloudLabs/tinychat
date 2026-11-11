@@ -47,6 +47,28 @@ interface Props {
   onNavigate: (entry: HomeFeedEntry) => void;
 }
 
+function OpenFoldedApproval({ approval, source, sourceId, onNavigate }: { approval: Approval; source: HomeFeedSource; sourceId: string; onNavigate: Props["onNavigate"] }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function open() {
+    setBusy(true); setError(undefined);
+    try {
+      const snapshot = await source.load();
+      const matches = snapshot.entries.filter((candidate) => {
+        const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep);
+        return candidate.source.sourceId === sourceId && typed?.record.kind === "approval" && typed.record.id === approval.id;
+      });
+      if (matches.length !== 1 || matches[0]!.currentIssuance === false) throw new Error("Current approval is not available");
+      onNavigate(matches[0]!);
+    } catch { setError("The new request couldn't be opened. Try again."); }
+    finally { setBusy(false); }
+  }
+  return <div className="space-y-1">
+    <button type="button" disabled={busy} onClick={() => void open()} className="text-sm underline underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Open this step's own card.</button>
+    {error && <ErrorLine>{error}</ErrorLine>}
+  </div>;
+}
+
 /** Whether this answer has its saved transport record here, or is history restored from the owner archive. */
 function answerReceipt(entry: HomeFeedEntry, owner: SitrepOwnerData, answer: Answer) {
   const original = owner.answers.find((row) => row.value === answer);
@@ -256,7 +278,7 @@ export function SitrepCard(props: Props) {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });
         const target = matches.length === 1 ? matches[0] : undefined;
         return <div key={step.approval.id} className="space-y-1"><p className="font-semibold">{step.approval.title}</p><p className={fineClass}>{STEP_WORDS[stepState(part, step)]}{part.notNeeded && ` · ${part.notNeeded}`}</p>
-          {target ? <ApprovalActions entry={target} approval={step.approval} source={source} owner={owner} now={now} expanded={expanded} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} showStatus inactive={stepState(part, step) !== "pending"} /> : stepState(part, step) === "pending" && <p role="alert" className="text-sm">This step can't be shown here. Open its own card.</p>}
+          {target ? <ApprovalActions entry={target} approval={step.approval} source={source} owner={owner} now={now} expanded={expanded} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} showStatus inactive={stepState(part, step) !== "pending"} /> : stepState(part, step) === "pending" && <OpenFoldedApproval approval={step.approval} source={source} sourceId={entry.source.sourceId} onNavigate={props.onNavigate} />}
         </div>;
       })}</section>)}
     </>}
@@ -335,7 +357,7 @@ export function SitrepCard(props: Props) {
         {note.recipientKeys.map((recipientKey) => { const receipts = owner.deliveries.filter((receipt) => receipt.responseId === note.responseId && receipt.recipientKey === recipientKey); return <p key={recipientKey} className={fineClass}>{entry.recipientRoute?.recipients.find((recipient) => recipient.recipientKey === recipientKey)?.legacyName ?? "A recipient"}: {receipts.length ? receipts.map((receipt) => receipt.state).join(", ") : "not reported"}</p>; })}
         {note.unresolvedRecipients.map((recipient) => <p key={recipient} className={fineClass}>{recipient} · kept private, not sent</p>)}
       </div>)}</section>}
-      {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className={fineClass}>An earlier reply here can't be shown. It is kept, and isn't counted as an answer.</p>)}
+      {!!owner.unsupportedResponses?.length && <p className={fineClass}>An earlier reply here is kept and isn't counted as an answer.</p>}
     </div>}
 
     {thread}

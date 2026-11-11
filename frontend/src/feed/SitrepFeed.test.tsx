@@ -342,6 +342,28 @@ test("a folded approval step follows skipOn but becomes needed again after the p
   expect(answers(article) !== null).toBe(true);
 });
 
+test("a folded approval step opens its own card after an ambiguous snapshot is refreshed", async () => {
+  const ask = syntheticRecord("ask");
+  const fixture = typedFixture(ask);
+  const view = await mount(fixture.source);
+  const approval = { ...syntheticRecord("approval"), id: "folded-open", title: "Open this synthetic approval", approvalType: "secret", approvalKind: undefined, name: "SYNTHETIC_KEY", url: "https://secrets.tinycloud.xyz/request?fixture=synthetic", forAsk: { id: ask.id, skipOn: ["quick"] } };
+  delete approval.approvalKind;
+  const first = typedFixture(approval).entry;
+  const duplicate = structuredClone(first);
+  duplicate.source.sourceId = "another-synthetic-agent";
+  fixture.snapshot.entries.push(first, duplicate);
+  await act(async () => fixture.notify());
+
+  const folded = view.host.querySelector<HTMLElement>('[aria-label="Folded approval step"]');
+  if (!folded) throw new Error("Folded approval step is missing");
+  const open = folded.querySelector<HTMLButtonElement>("button");
+  if (!open) throw new Error("Folded approval navigation is missing");
+  fixture.snapshot.entries.pop();
+  await act(async () => open.click());
+
+  expect([...view.host.querySelectorAll("article")].some((article) => article.getAttribute("aria-label") === approval.title)).toBe(true);
+});
+
 test("typed snooze presets append owner history without creating an answer", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);

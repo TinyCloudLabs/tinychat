@@ -190,7 +190,7 @@ export const COMMENT_COPY = {
 export function commentCopy({ approved, held = [] }: { approved: readonly string[]; held?: readonly string[] }): { button: string; input: string; helper: string } {
   const heldLine = held.length ? ` ${names(held)} ${held.length === 1 ? "isn't" : "aren't"} connected yet, so ${held.length === 1 ? "it doesn't" : "they don't"} get it.` : "";
   const who = approved.length >= 3 ? "the agents on this card" : names(approved);
-  const sees = !approved.length ? "Only you see this for now."
+  const sees = !approved.length ? "Only you see this."
     : approved.length >= 3 ? `Only the ${approved.length} agents on this card see this.`
       : `Only ${names(approved)} ${approved.length === 1 ? "sees" : "see"} this.`;
   return { button: COMMENT_COPY.button, input: approved.length ? COMMENT_COPY.input(who) : COMMENT_COPY.inputNoRecipient, helper: `${COMMENT_COPY.notAnAnswer} ${sees}${heldLine}` };

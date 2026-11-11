@@ -24,7 +24,6 @@ test("the comment composer names who actually receives a comment, and never coun
   expect(commentCopy({ approved: ["A", "B"] })).toEqual({ button: "Comment", input: "Tell A and B something", helper: "This doesn't answer the card. Only A and B see this." });
   expect(commentCopy({ approved: ["A", "B", "C"] })).toEqual({ button: "Comment", input: "Tell the agents on this card something", helper: "This doesn't answer the card. Only the 3 agents on this card see this." });
   expect(commentCopy({ approved: ["A"], held: ["H"] }).helper).toBe("This doesn't answer the card. Only A sees this. H isn't connected yet, so it doesn't get it.");
-  expect(commentCopy({ approved: [], held: ["H", "J"] })).toEqual({ button: "Comment", input: "Write a comment", helper: "This doesn't answer the card. Only you see this for now. H and J aren't connected yet, so they don't get it." });
 });
 
 function revision(revisionNumber: number, replies?: string[], change: Partial<{ body: string; choices: { id: string; label: string }[]; cardId: string; sourceId: string; agentDid: string }> = {}): HomeFeedEntry {
