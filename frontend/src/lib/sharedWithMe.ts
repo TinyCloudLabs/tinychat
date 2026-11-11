@@ -154,7 +154,9 @@ async function readRemote(space: SharedWithMeSpace): Promise<Map<string, SharedW
   const keys = await listKvKeys(space, SHARED_WITH_ME_KEY_PREFIX);
   const records = await Promise.all(keys.map(async (key) => {
     const res = await space.kv.get(key, { source: "network" });
-    if (!res.ok) return null;
+    // A listed key that cannot be read is not known to be absent: abort the
+    // sync rather than overwrite what the space holds (e.g. a tombstone).
+    if (!res.ok) throw new Error("shared-with-me: read failed");
     const record = parseRecord(parseKvValue(res.data.data));
     // A record is only trusted at its own key.
     return record && remoteKey(record.id) === key ? record : null;
@@ -286,8 +288,9 @@ export function addSharedWithMe(
  * share's own expiry, after which no device can still hold a live copy to re-add.
  */
 export function removeSharedWithMe(id: string, expiresAt: string, account: string): Promise<void> {
-  const removedAt = new Date().toISOString();
   const existing = readSharedWithMe().find((r) => r.id === id);
+  // Later than the record it replaces, even if that was stamped by a device whose clock runs ahead.
+  const removedAt = new Date(Math.max(Date.now(), (Date.parse(existing?.addedAt ?? "") || 0) + 1)).toISOString();
   return record({ version: 1, id, addedAt: existing?.addedAt ?? removedAt, expiresAt, removedAt }, account);
 }
 

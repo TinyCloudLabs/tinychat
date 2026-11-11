@@ -153,6 +153,41 @@ describe("shared-with-me list in the account's space", () => {
     expect(ids()).toEqual(["s1"]);
   });
 
+  it("a record the space fails to return is not overwritten (a tombstone stays)", async () => {
+    const aliceKv = new Map<string, string>();
+    const phone = device();
+    const laptop = device();
+    phone.use();
+    await bindSharedWithMe(space(ALICE, aliceKv).tcw);
+    await addSharedWithMe(share("s1"));
+    laptop.use();
+    await bindSharedWithMe(space(ALICE, aliceKv).tcw);
+    phone.use();
+    await removeSharedWithMe("s1", FUTURE, ALICE);
+    const tombstone = aliceKv.get(`${SHARED_WITH_ME_KEY_PREFIX}s1`);
+
+    // The laptop still holds the live copy, and its read of s1 fails once.
+    laptop.use();
+    const flaky = space(ALICE, aliceKv);
+    const get = flaky.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+    get.kv.get = async () => ({ ok: false, error: { code: "NETWORK_ERROR", message: "offline" } });
+    await bindSharedWithMe(flaky.tcw);
+
+    expect(aliceKv.get(`${SHARED_WITH_ME_KEY_PREFIX}s1`)).toBe(tombstone);
+    expect(flaky.calls.filter((c) => c.op === "put")).toEqual([]);
+  });
+
+  it("stopping a share stamped by a device whose clock runs ahead still removes it", async () => {
+    const aliceKv = new Map<string, string>();
+    device().use();
+    await bindSharedWithMe(space(ALICE, aliceKv).tcw);
+    await addSharedWithMe(share("s1", new Date(Date.now() + 60_000).toISOString()));
+    await removeSharedWithMe("s1", FUTURE, ALICE);
+
+    expect(ids()).toEqual([]);
+    expect(aliceKv.get(`${SHARED_WITH_ME_KEY_PREFIX}s1`)).not.toContain(SECRET);
+  });
+
   it("migrates the device's legacy list once, to the first account that signs in", async () => {
     const shared = device();
     shared.values.set(LEGACY_SHARED_WITH_ME_KEY, JSON.stringify([
