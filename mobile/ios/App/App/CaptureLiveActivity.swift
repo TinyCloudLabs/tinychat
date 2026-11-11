@@ -8,6 +8,9 @@ import os
 /// `AudioRecordingIntent` in the background must show one, or iOS stops the microphone.
 enum CaptureLiveActivity {
     private static let log = Logger(subsystem: "xyz.tinycloud.exo", category: "live-activity")
+    private static let lock = NSLock()
+    /// Updates and ends run one after another, in the order the engine published them.
+    private static var tail: Task<Void, Never>?
 
     static func install() {
         CaptureEngine.shared.micStateChanged = { update($0) }
@@ -28,16 +31,19 @@ enum CaptureLiveActivity {
                      elapsedSeconds: Int(elapsedMs / 1000))
     }
 
+    /// Synchronous for a new recording: the request happens inside the engine's `start`, as AudioRecordingIntent needs.
     static func update(_ status: [String: Any]) {
+        lock.lock(); defer { lock.unlock() }
         let activities = Activity<RecordingActivityAttributes>.activities
         guard let id = status["id"] as? String, let state = content(for: status) else {
-            for activity in activities { end(activity) }
+            enqueue { for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) } }
             return
         }
-        for activity in activities where activity.attributes.recordingId != id { end(activity) }
+        let stale = activities.filter { $0.attributes.recordingId != id }
+        if !stale.isEmpty { enqueue { for activity in stale { await activity.end(nil, dismissalPolicy: .immediate) } } }
         let content = ActivityContent(state: state, staleDate: nil)
         if let current = activities.first(where: { $0.attributes.recordingId == id }) {
-            Task { await current.update(content) }
+            enqueue { await current.update(content) }
             return
         }
         do {
@@ -48,7 +54,12 @@ enum CaptureLiveActivity {
         }
     }
 
-    private static func end(_ activity: Activity<RecordingActivityAttributes>) {
-        Task { await activity.end(nil, dismissalPolicy: .immediate) }
+    /// Caller holds `lock`.
+    private static func enqueue(_ work: @escaping @Sendable () async -> Void) {
+        let previous = tail
+        tail = Task {
+            await previous?.value
+            await work()
+        }
     }
 }

@@ -1,5 +1,4 @@
 import AVFoundation
-import CaptureCore
 import ExoCapture
 import ExoStt
 import UIKit

@@ -130,7 +130,9 @@ class ExoBridgeViewController: CAPBridgeViewController {
                     _ = AppLifecycleHooks.performShortcut(UIApplicationShortcutItem(
                         type: "xyz.tinycloud.exo.record", localizedTitle: "Record"))
                 }
-                if ProcessInfo.processInfo.environment["EXO_SHORTCUT_SMOKE"] == "1" { self.runShortcutProbe() }
+                // The quick-action smoke owns the recording in that run.
+                if ProcessInfo.processInfo.environment["EXO_SHORTCUT_SMOKE"] == "1",
+                   ProcessInfo.processInfo.environment["EXO_QUICK_ACTION_SMOKE"] == nil { self.runShortcutProbe() }
             }
             if ProcessInfo.processInfo.environment["EXO_CAPTURE_SMOKE"] == "1" {
                 DispatchQueue.global(qos: .userInitiated).async {

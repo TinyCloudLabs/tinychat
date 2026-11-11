@@ -20,8 +20,9 @@ public enum ShortcutStartOutcome: Equatable, Sendable {
 }
 
 extension CaptureEngine {
-    /// The one native start every shortcut uses. It needs no scene or WebView: `start` emits a retained
-    /// `presentRecorder`, so the web recorder opens on this recording whenever its listener attaches.
+    /// The one native start every shortcut uses. It needs no scene or WebView: a WebView already listening gets
+    /// `presentRecorder`, and one that attaches later reads `status()` and presents any live recording whose
+    /// source is not `in_app` (frontend voiceNoteRecorderController).
     @discardableResult
     public func startFromShortcut(_ source: ShortcutSource) throws -> ShortcutStartOutcome {
         do {

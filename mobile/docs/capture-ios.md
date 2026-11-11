@@ -14,14 +14,14 @@ Pause stops the engine, removes the tap, and drains callbacks that have entered 
 
 ## Recording shortcuts
 
-Every shortcut ships with the app and needs no setup. Each calls `RecordingShortcut.start` (`App/Shared/RecordingIntents.swift`), which checks the microphone permission and then `CaptureEngine.startFromShortcut`: a new recording with the shortcut's `source`, or, when one is already live, the recorder for that one. The engine needs no scene or WebView, so a cold launch records first; its retained `presentRecorder` opens the web recorder when the WebView attaches, behind the biometric lock if one is up.
+Every shortcut ships with the app and needs no setup. Each calls `RecordingShortcut.start` (`App/Shared/RecordingIntents.swift`), which checks the microphone permission and then `CaptureEngine.startFromShortcut`: a new recording with the shortcut's `source`, or, when one is already live, the recorder for that one. The engine needs no scene or WebView, so a cold launch records first. A WebView already listening gets `presentRecorder`; one that attaches later reads `status()` and presents the live recording because its source is not `in_app`. The recorder is what shows once the biometric lock opens.
 
 | Surface | Name / phrase | Source | Opens the app |
 | --- | --- | --- | --- |
 | Siri, Spotlight, Shortcuts app, Action button (App Shortcut `StartRecordingIntent`) | **Record**: "Start recording in TinyCloud Home", "Record a note in TinyCloud Home", "Record a voice note in TinyCloud Home", "New voice note in TinyCloud Home", "Record in TinyCloud Home" | `intent` | When the phone allows it; on the Lock Screen it records in the background |
 | Siri, Shortcuts (`StopRecordingIntent`) | **Stop Recording**: "Stop recording in TinyCloud Home" | — | No |
 | Home-screen quick action (long-press the icon, `xyz.tinycloud.exo.record`) | **Record** | `quick_action` | Yes |
-| Control Center / Lock Screen / Action button control (`RecordControlIntent`, kind `xyz.tinycloud.exo.record`) | **Record a Voice Note** | `control` | No, only to ask for the microphone the first time |
+| Control Center / Lock Screen / Action button control (`RecordControlIntent`, kind `xyz.tinycloud.exo.record`) | **Record a Voice Note** | `control` | No; only to ask for the microphone the first time, or when iOS refuses a background start |
 
 The intents are `AudioRecordingIntent` and `LiveActivityIntent`, so they perform in the app process and may start the microphone in the background. iOS stops such a recording unless a Live Activity shows it: `CaptureLiveActivity` requests one synchronously from the engine's `micStateChanged` hook whenever a recording starts (from any source), updates it on pause or interruption and ends it when the recording stops. Its Stop button runs `StopRecordingIntent`. A background start the system refuses is retried after bringing the app forward when it can come forward. A first run without microphone permission brings the app forward to ask; on the Lock Screen it fails with "Open TinyCloud Home once to allow the microphone". Recording sources other than `in_app` are held for transcription consent.
 

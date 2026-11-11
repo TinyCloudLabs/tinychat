@@ -13,33 +13,9 @@ import ExoCapture
 
 private let intentLog = Logger(subsystem: "xyz.tinycloud.exo", category: "shortcuts")
 
-/// "Start recording in TinyCloud Home": Siri, Spotlight, the Shortcuts app and the Action button.
-/// Recording starts in the background (so it works from the Lock Screen, with the Live Activity), then the app
-/// comes forward on the recorder when the phone allows it.
-struct StartRecordingIntent: AudioRecordingIntent, LiveActivityIntent {
-    static let title: LocalizedStringResource = "Record a Voice Note"
-    static let description = IntentDescription("Starts recording a voice note in TinyCloud Home.")
-    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
-
-    func perform() async throws -> some IntentResult {
-        #if EXO_WIDGET_EXTENSION
-        intentLog.error("EXO_SHORTCUT StartRecordingIntent reached the widget extension")
-        return .result()
-        #else
-        let context = systemContext.currentMode
-        let foreground: RecordingShortcut.Foreground = context == .foreground ? .already
-            : context.canContinueInForeground ? .available { try await continueInForeground(alwaysConfirm: false) }
-            : .unavailable
-        let landed = try await RecordingShortcut.start(.intent, foreground: foreground)
-        // Land on the recorder. `start` already came forward if it had to ask for the microphone.
-        if !landed, case .available(let bringForward) = foreground { try? await bringForward() }
-        return .result()
-        #endif
-    }
-}
-
-/// The Control Center / Lock Screen control. Never brings the app forward: the recording runs with its
-/// Live Activity, and tapping that opens the recorder.
+/// The Control Center / Lock Screen control. Records in the background with the Live Activity (tapping that opens
+/// the recorder); it comes forward only to ask for the microphone the first time, or when iOS refuses to start
+/// the microphone in the background.
 struct RecordControlIntent: AudioRecordingIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "Record"
     static let description = IntentDescription("Starts recording a voice note in TinyCloud Home.")
@@ -80,6 +56,26 @@ struct StopRecordingIntent: AudioRecordingIntent, LiveActivityIntent {
 }
 
 #if !EXO_WIDGET_EXTENSION
+/// "Start recording in TinyCloud Home": Siri, Spotlight, the Shortcuts app and the Action button.
+/// Recording starts in the background (so it works from the Lock Screen, with the Live Activity), then the app
+/// comes forward on the recorder when the phone allows it.
+struct StartRecordingIntent: AudioRecordingIntent, LiveActivityIntent {
+    static let title: LocalizedStringResource = "Record a Voice Note"
+    static let description = IntentDescription("Starts recording a voice note in TinyCloud Home.")
+    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+
+    func perform() async throws -> some IntentResult {
+        let context = systemContext.currentMode
+        let foreground: RecordingShortcut.Foreground = context == .foreground ? .already
+            : context.canContinueInForeground ? .available { try await continueInForeground(alwaysConfirm: false) }
+            : .unavailable
+        let landed = try await RecordingShortcut.start(.intent, foreground: foreground)
+        // Land on the recorder. `start` already came forward if it had to.
+        if !landed, case .available(let bringForward) = foreground { try? await bringForward() }
+        return .result()
+    }
+}
+
 struct TinyCloudHomeShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: StartRecordingIntent(), phrases: [
@@ -135,10 +131,10 @@ enum RecordingShortcutError: Error, CustomLocalizedStringResourceConvertible {
         }
         let outcome: ShortcutStartOutcome
         do { outcome = try CaptureEngine.shared.startFromShortcut(source) }
-        catch {
-            // A background start the system refused (the audio session would not activate): retry on screen.
+        catch where isBackgroundRefusal(error) {
+            // iOS would not activate the audio session in the background: retry on screen, if the app can come forward.
             guard !cameForward, case .available(let bringForward) = foreground else { throw error }
-            intentLog.error("EXO_SHORTCUT background start failed, continuing in foreground: \(String(describing: error), privacy: .public)")
+            intentLog.error("EXO_SHORTCUT background start refused, continuing in foreground: \(String(describing: error), privacy: .public)")
             try await bringForward()
             cameForward = true
             outcome = try CaptureEngine.shared.startFromShortcut(source)
@@ -150,16 +146,24 @@ enum RecordingShortcutError: Error, CustomLocalizedStringResourceConvertible {
         return cameForward
     }
 
-    static func stop() async throws {
-        try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
-            CaptureEngine.shared.stop { result in
-                switch result {
-                case .success: done.resume()
-                case .failure(CaptureError.notRecording): done.resume()
-                case .failure(let error): done.resume(throwing: error)
-                }
-            }
+    private static func isBackgroundRefusal(_ error: Error) -> Bool {
+        let refusals: [AVAudioSession.ErrorCode] = [.cannotStartRecording, .insufficientPriority, .cannotInterruptOthers]
+        let code = (error as NSError).code
+        return refusals.contains { $0.rawValue == code }
+    }
+
+    /// Stops the live recording. Returns once the microphone is off; saving continues natively (with a background
+    /// task and launch recovery), so a slow or failed save is not reported as a failed Stop.
+    static func stop() throws {
+        var stopping = true
+        var inputError: Error?
+        CaptureEngine.shared.stop { result in
+            guard case .failure(let error) = result, (error as? CaptureError) != .notRecording else { return }
+            if stopping { inputError = error }  // the input would not stop: the recording is still live
+            else { intentLog.error("EXO_SHORTCUT stop did not save: \(String(describing: error), privacy: .public)") }
         }
+        stopping = false
+        if let inputError { throw inputError }
     }
 }
 #endif

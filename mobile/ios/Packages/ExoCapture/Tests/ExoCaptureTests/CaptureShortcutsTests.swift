@@ -41,23 +41,27 @@ import XCTest
         }
     }
 
-    /// Cold launch: the shortcut starts before any bridge observer exists. The retained presentRecorder (and the
-    /// recording's micState) must still reach the WebView's observer, even with the Live Activity hook installed.
-    func testColdStartRetainsPresentRecorderForTheWebView() throws {
+    /// Cold launch as the app has it: ExoStt observes the engine from launch, the Live Activity hook is installed,
+    /// and the shortcut starts before any WebView. The WebView that attaches later must find the live recording
+    /// and its non-in_app source in `status()` (that is what makes the web recorder present it), and a listener
+    /// attached at start time gets `presentRecorder`.
+    func testColdStartLeavesTheRecordingForTheWebViewToPresent() throws {
+        var launchObserverPresented: [String] = []
+        let launchObserver = engine.observe { name, data, _ in
+            if name == "presentRecorder", let value = data["id"] as? String { launchObserverPresented.append(value) }
+        }
+        defer { engine.removeObserver(launchObserver) }
         var hookStates: [String] = []
         engine.micStateChanged = { hookStates.append($0["state"] as? String ?? "?") }
-        guard case .started(let id) = try engine.startFromShortcut(.intent) else { return XCTFail("not started") }
-        XCTAssertEqual(hookStates, ["recording"])
 
-        var presented: [String] = []
-        var retainedMicState = false
-        let token = engine.observe { name, data, _ in
-            if name == "presentRecorder", let value = data["id"] as? String { presented.append(value) }
-            if name == "micState", data["id"] as? String == id { retainedMicState = true }
-        }
-        defer { engine.removeObserver(token) }
-        XCTAssertEqual(presented, [id])
-        XCTAssertTrue(retainedMicState)
+        guard case .started(let id) = try engine.startFromShortcut(.intent) else { return XCTFail("not started") }
+
+        XCTAssertEqual(launchObserverPresented, [id])
+        XCTAssertEqual(hookStates, ["recording"])
+        let status = engine.status()
+        XCTAssertEqual(status["id"] as? String, id)
+        XCTAssertEqual(status["state"] as? String, "recording")
+        XCTAssertEqual(status["source"] as? String, "intent")
     }
 
     func testSecondShortcutPresentsTheLiveRecordingInsteadOfStartingAnother() throws {
