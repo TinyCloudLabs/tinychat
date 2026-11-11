@@ -502,7 +502,7 @@ paths:
         plus the per-address allowlist) the same 202 additionally nudges the backend
         fetch worker: the server holds a per-user Fireflies OAuth credential for that
         address, fetches the meeting itself, and keeps an encrypted server-side copy
-        for 90 days, which the user reads back over GET /api/connectors/meetings. The
+        for 14 days, which the user reads back over GET /api/connectors/meetings. The
         browser's /drain surfaces nothing for it and /ack is an idempotent no-op. What
         does NOT change either way is the delegation: this server holds no connector
         delegation for any address — cohort custody is out of band, so nothing is

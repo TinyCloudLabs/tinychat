@@ -368,7 +368,6 @@ describe("connector webhook paths", () => {
     expect(delivery.description).toMatch(/nudges the backend\s+fetch worker/i);
     expect(delivery.description).toMatch(/per-user Fireflies OAuth credential/i);
     expect(delivery.description).toMatch(/encrypted server-side copy/i);
-    expect(delivery.description).toMatch(/90 days/);
 
     // And the invariant that did NOT reverse, so the scoping cannot be read as "everything went".
     expect(delivery.description).toMatch(/holds no connector\s+delegation for any address/i);

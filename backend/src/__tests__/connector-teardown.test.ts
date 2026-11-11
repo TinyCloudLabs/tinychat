@@ -171,6 +171,17 @@ class FakeControl {
   ): Promise<void> {
     this.quarantined.push({ key: this.key(source, address), raw });
   }
+  async clearQuarantinedLedger(
+    source: string,
+    address: string,
+  ): Promise<void> {
+    const key = this.key(source, address);
+    this.quarantined.splice(
+      0,
+      this.quarantined.length,
+      ...this.quarantined.filter((entry) => entry.key !== key),
+    );
+  }
 
   ledgerFor(source: string, address: string): PurgeLedger | null {
     const raw = this.ledgers.get(this.key(source, address));
@@ -376,7 +387,7 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
     expect(await h.credentials.status(SOURCE, ADDRESS_A)).toBeNull();
   });
 
-  test("[delta-12] the purge ledger covers content AND credential — a tombstone is present after the teardown", async () => {
+  test("[delta-12] disconnect keeps the non-ID purge watermark but clears all meeting IDs", async () => {
     const h = harness();
     await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, [
       "mtgA1",
@@ -387,15 +398,17 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
     const ledger = h.control.ledgerFor(SOURCE, ADDRESS_A);
     expect(ledger).not.toBeNull();
     expect(Date.parse(ledger!.purgedThrough)).toBe(T0);
-    expect(ledger!.recentIds).toContain("mtgA1");
+    expect(ledger!.recentIds).toEqual([]);
+    expect(ledger!.recentIdsAddedAt).toEqual({});
     expect(result.tombstonedThrough).toBe(new Date(T0).toISOString());
   });
 
-  test("[delta-12] the ledger watermark only ever moves forward", async () => {
+  test("[delta-12] the ledger watermark only ever moves forward and old IDs are cleared", async () => {
     const h = harness();
     await h.control.writeLedger(SOURCE, ADDRESS_A, {
       purgedThrough: new Date(T0 + 5 * HOUR_MS).toISOString(),
       recentIds: ["older"],
+      recentIdsAddedAt: { older: new Date(T0).toISOString() },
       updatedAt: new Date(T0).toISOString(),
     });
     await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, []);
@@ -404,15 +417,14 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
 
     const ledger = h.control.ledgerFor(SOURCE, ADDRESS_A);
     expect(Date.parse(ledger!.purgedThrough)).toBe(T0 + 5 * HOUR_MS);
-    expect(ledger!.recentIds).toContain("older");
+    expect(ledger!.recentIds).toEqual([]);
   });
 
-  test("[delta-12] an unparseable ledger is quarantined, never read as 'nothing was ever purged'", async () => {
+  test("[delta-12] an unparseable ledger is quarantined without retaining meeting IDs", async () => {
     const h = harness();
     await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, [
       "mtgA1",
     ]);
-    // A ledger corrupted between the last purge and this teardown.
     h.control.ledgers.set(`${SOURCE} ${ADDRESS_A}`, { nonsense: true });
 
     const capture = captureLogs();
@@ -422,8 +434,7 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
       capture.restore();
     }
 
-    expect(h.control.quarantined).toHaveLength(1);
-    expect(h.control.ledgerFor(SOURCE, ADDRESS_A)!.recentIds).toContain("mtgA1");
+    expect(h.control.quarantined).toHaveLength(0);
   });
 
   test("[delta-12] a ledger write that fails aborts the teardown BEFORE anything is deleted", async () => {

@@ -33,6 +33,7 @@ import {
   type RetentionSweepTarget,
 } from "../services/ingest-retention.js";
 import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
+// test-ruling: TC-2778 (Naomi: 14-day meeting-ID retention)
 
 /**
  * W4 — the SERVER CONTENT STORE (backend-ingest plan §8.1 W4; §8.2 delta items 6, 8, 10;
@@ -51,8 +52,8 @@ import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
  *    with a hashed id and no content.
  *  - `[delta-10]` — *write-result checking / fail-closed.* A rejected Result, a throw, or a shape
  *    that is not the success shape are the same thing: NOT stored, and never reported stored.
- *  - `[delta-05]` (the retention half W3's guard consumes) — the sweep records swept ids as
- *    retention tombstones, so a provider replay cannot silently re-store aged-out content.
+ *  - `[delta-05]` — rows and their retention markers expire at 14 days. A provider replay after
+ *    the boundary may create one new row; the browser deduplicates against the user's own space.
  */
 
 const ORIGINAL_ENV = { ...process.env };
@@ -383,12 +384,9 @@ describe("W4 content store — caps and overflow policy", () => {
   });
 
   test("[delta-08] overflow eviction is deliberately NON-permanent: an evicted id carries no tombstone", async () => {
-    // On the record rather than emergent (docs/connector-webhooks-purge-tombstone.md §4). The two
-    // PERMANENT markers are the D2a retention sweep and the §6.2 purge ledger — both say "the user
-    // no longer has this". A cap eviction says only "this did not fit today", so a later delivery
-    // for the same meeting is allowed to re-store it, and it may in turn evict the current oldest.
-    // The cost is a churn loop under indefinite replay; the alternative (tombstone the evicted id)
-    // would permanently deny a heavy user a meeting they could otherwise re-sync after pruning.
+    // Retention markers expire with their rows at 14 days; the purge ledger has its own bounded
+    // clock. A cap eviction says only "this did not fit today", so a later delivery for the same
+    // meeting may re-store it and evict the current oldest.
     const { store, clock } = harness({ maxUserMeetings: 2 });
     for (let i = 0; i < 3; i += 1) {
       clock.now = T0 + i * 1_000;
@@ -715,31 +713,50 @@ describe("W4 content store — fail closed", () => {
 // ── delta 5 (W4's half): retention sweep + retention tombstones ──────
 
 describe("W4 content store — retention", () => {
-  test("the retention window is the recorded D2a value", () => {
-    expect(RETENTION_WINDOW_DAYS).toBe(90);
+  test("the retention window is 14 days", () => {
+    expect(RETENTION_WINDOW_DAYS).toBe(14);
   });
 
-  test("[delta-05] the sweep drops aged-out content and records a retention tombstone", async () => {
+  test("a row and its tombstone expire together 14 days after first storage", async () => {
+    const { store, clock, blobs } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-retention" }));
+
+    clock.now = T0 + 14 * DAY_MS - 1;
+    expect((await store.sweepRetention({ source: SOURCE, address: ADDRESS_A })).swept).toBe(0);
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-retention")).not.toBeNull();
+
+    clock.now += 1;
+    expect((await store.sweepRetention({ source: SOURCE, address: ADDRESS_A })).swept).toBe(1);
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-retention")).toBeNull();
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-retention",
+      }),
+    ).toBe(false);
+    expect(blobs.dump()).not.toContain(TRANSCRIPT_TEXT);
+
+    const replay = await store.upsert(upsertInput({ sourceId: "mtg-retention" }));
+    expect(replay).toEqual({ ok: true, stored: "created" });
+  });
+
+  test("[delta-05] storedAt expires content even when provider time is future", async () => {
     const { store, clock } = harness();
 
-    // Store the row 100 days ago (storedAt in the past), then advance the clock to now.
-    // Age reference is `storedAt`-clamped, so an item's own storage stamp is what carries it
-    // past the window — the provider ts is a hint, never the sole input (audit W4/D2a).
-    clock.now = T0 - 100 * DAY_MS;
+    clock.now = T0 - 15 * DAY_MS;
     await store.upsert(
       upsertInput({
         sourceId: "mtg-old",
-        ts: new Date(T0 - 100 * DAY_MS).toISOString(),
+        ts: new Date(T0 + 100 * DAY_MS).toISOString(),
       }),
     );
     clock.now = T0 + 1_000;
     const swept = await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
 
     expect(swept.swept).toBe(1);
-    // The content is gone…
     expect(await store.get(SOURCE, ADDRESS_A, "mtg-old")).toBeNull();
     expect((await store.list(SOURCE, ADDRESS_A)).length).toBe(0);
-    // …and the id is remembered as a tombstone, so a replay cannot silently resurrect it.
     expect(
       await store.tombstoned({
         source: SOURCE,
@@ -747,13 +764,13 @@ describe("W4 content store — retention", () => {
         meetingId: "mtg-old",
         kind: "transcript",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  test("[delta-05] a replayed delivery for a swept meeting is REFUSED by the store", async () => {
+  test("[delta-05] a replay after retention may create one new row", async () => {
     const { store, clock } = harness();
 
-    clock.now = T0 - 100 * DAY_MS;
+    clock.now = T0 - 15 * DAY_MS;
     await store.upsert(
       upsertInput({
         sourceId: "mtg-old",
@@ -770,9 +787,9 @@ describe("W4 content store — retention", () => {
       }),
     );
 
-    expect(replay).toEqual({ ok: false, code: "retention_tombstoned" });
-    expect(await store.get(SOURCE, ADDRESS_A, "mtg-old")).toBeNull();
-    expect(store.stats().tombstoneRefusals).toBe(1);
+    expect(replay).toEqual({ ok: true, stored: "created" });
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-old")).not.toBeNull();
+    expect(store.stats().tombstoneRefusals).toBe(0);
   });
 
   test("[delta-05] content INSIDE the window survives the sweep, reconciled or not", async () => {
@@ -896,40 +913,6 @@ describe("W4 content store — retention", () => {
     expect(dump).not.toContain(TRANSCRIPT_TEXT.slice(0, 24));
   });
 
-  test("[delta-05] tombstones are themselves bounded, and the eviction is logged", async () => {
-    const { store, clock } = harness({ maxUserTombstones: 2 });
-    const old = T0 - 100 * DAY_MS;
-
-    for (let i = 0; i < 3; i += 1) {
-      clock.now = old + i;
-      await store.upsert(
-        upsertInput({
-          sourceId: `mtg-t${i}`,
-          ts: new Date(old + i * 1_000).toISOString(),
-        }),
-      );
-    }
-    clock.now = T0 + 10_000;
-    const capture = captureLogs();
-    try {
-      await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
-    } finally {
-      capture.restore();
-    }
-
-    // No silent caps: the oldest tombstone falls off, and the operator is told.
-    expect(
-      await store.tombstoned({
-        source: SOURCE,
-        address: ADDRESS_A,
-        meetingId: "mtg-t2",
-        kind: "transcript",
-      }),
-    ).toBe(true);
-    expect(
-      capture.lines.some((line) => line.includes("reason=tombstone_cap")),
-    ).toBe(true);
-  });
 
   test("[delta-05] purge removes every row, index and tombstone for one address only", async () => {
     const { store } = harness();

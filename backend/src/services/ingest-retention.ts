@@ -2,12 +2,11 @@ import { keyedLogHash } from "./webhook-tokens.js";
 
 /**
  * W4/D2a — the thing that makes the **retention window a fact** rather than a method (backend-ingest
- * plan §5.1 W4, §7, §11 requirement 2; DECISIONS `D2a-retention-days: 90`).
+ * plan §5.1 W4, §7, §11 requirement 2; DECISIONS `D2a-retention-days: 14`).
  *
  * `ContentStore.sweepRetention` is the per-tenant primitive; this is the periodic caller. Without a
  * caller the only bound on a cohort address's server-side archive is W4's overflow cap — a churn
- * policy, not a time bound — and the retention tombstones delta 5 depends on ("a replay never
- * re-stores aged-out content") are never produced in a live deployment.
+ * policy, not a time bound — and expired rows would persist indefinitely.
  *
  * Three properties, and they are the whole design:
  *
@@ -21,8 +20,8 @@ import { keyedLogHash } from "./webhook-tokens.js";
  *    an address appears hashed or not at all (§6.3).
  */
 
-/** Slow on purpose: the window is 90 days, so four passes a day is ample and costs ~nothing. */
-export const RETENTION_SWEEP_INTERVAL_MS = 6 * 3_600_000;
+/** Frequent sweeps keep physical deletion close to the 14-day boundary. */
+export const RETENTION_SWEEP_INTERVAL_MS = 5 * 60_000;
 
 /** The slice of `ContentStore` this needs. Narrowed so it cannot reach a read or a purge. */
 export interface RetentionSweepTarget {

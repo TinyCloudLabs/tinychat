@@ -1,12 +1,9 @@
-# Backend-ingest consent copy — the Gate 6 approval text
+# Backend-ingest consent — historical Gate 6 approval record
 
-**Traceability marker:** `INGEST-CUTOVER(plan §11)`. This file is the operator-facing mirror of
-`BACKEND_INGEST_CONSENT_COPY` (`frontend/src/lib/connectors/consentCopy.ts`). It exists because the
-cutover audit found the approval artifact and the shipped constant had drifted apart — different
-variant, different bullet count, an attestation checkbox that existed only on paper. So the words
-now live in exactly two places and `backend/src/__tests__/consent-scope.test.ts` compares them
-sentence for sentence: **editing one without the other fails the build.** The operator therefore
-approves the text the product would actually render, not a draft of it.
+**Traceability marker:** `INGEST-CUTOVER(plan §11)`. This document preserves the former long-form
+operator review text. The current rendered consent is maintained in
+`BACKEND_INGEST_CONSENT_COPY` (`frontend/src/lib/connectors/consentCopy.ts`); this document is not
+a word-for-word mirror or wording test.
 
 **Status: APPROVED — 2026-08-11, operator-authorized ("go with the recommended option"), recorded
 by roman-delegated-claude; includes the "attendees" disclosure amendment in bullet 2 (the fetch
@@ -16,20 +13,16 @@ was written from, and the sentences deliberately *not* written — stays in
 `docs/specs/tinychat-webhooks-backend-ingest-consent-copy.md` in the specs repo; this file carries
 only the words.
 
-**It is not rendered yet.** The single consent renderer
-(`frontend/src/chat/BackgroundSyncSection.tsx`) is on the frozen drain-UX increment and shows
-Option C unconditionally, so a cohort address would today read Option C's retired custody
-sentences. That is residual **F011** (`docs/connector-webhooks-p1-residuals.md`) and operator
-pre-rollout gate **4** (`docs/deployment.md`), and it blocks enabling
-`CONNECTOR_BACKEND_INGEST_ENABLED` for any address.
+**Rendered for the cohort.** `BackgroundSyncSection.tsx` probes the cohort-gated meetings API and
+shows the cohort consent only after an affirmative response. All other outcomes fail closed to
+the browser-sync consent. Current copy is shorter than this historical approval record.
 
-**Scope.** Cohort addresses only. The shipped Option C text (`variant: "C"`) stays byte-identical
-for everyone else (plan §5.3), and its key-custody / content-custody sentences remain factually
-true *for them*.
+**Scope.** Cohort addresses only. This document describes the server-side ingest cohort, not the
+browser-sync path.
 
 **Inputs (read, not invented):** credential kind = unscoped OAuth token, branch `b1`
 (DECISIONS `V-a-branch`); blast radius = read **and** delete / re-share / re-role, until revoked or
-expired (`Blast-radius-acceptance: signed`); retention = **90 days** (`D2a-retention-days`);
+expired (`Blast-radius-acceptance: signed`); retention = **14 days** (`D2a-retention-days`);
 reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 
 ---
@@ -69,8 +62,9 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 ## bullet 2
 
 > Our server **fetches the meeting itself and keeps its own copy** — title, transcript, summary, attendees —
-> encrypted at rest under a key our server holds, for up to **90 days** from the day it arrives.
-> After that the copy is swept, and a later re-delivery of the same meeting does not bring it back.
+> encrypted at rest under a key our server holds, for up to **14 days** from the day it arrives.
+> At that boundary the content row and its tombstone expire together; a provider replay after
+> the window may be delivered once again, subject to the browser's check against the user's space.
 > Disconnecting, or asking us to purge, deletes the stored meetings and the credential straight
 > away.
 
@@ -85,7 +79,7 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 > grant nothing, and nothing is granted — the credential above is held by our server, outside your
 > space, and our server writes no meeting into your space. Your browser still does that, when you
 > are signed in with your vault unlocked, so your own copy lands where it always did — and it stays
-> yours: it is not deleted when our 90-day window closes. What changed is not what our server is
+> yours: it is not deleted when our 14-day window closes. What changed is not what our server is
 > *permitted* to do — it is what our server now *has*: your Fireflies token, and a copy of your
 > meetings.
 
@@ -113,10 +107,9 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 > server was holding for you, and asks Fireflies to revoke the credential — see below for what
 > happens if Fireflies cannot be reached.
 
-## consentCheckbox
+## Consent action
 
-> I understand that TinyChat's server will hold a full-account Fireflies token for me and a copy of
-> my meetings for up to 90 days.
+> The enable button records consent; no attestation checkbox is rendered.
 
 ## disconnectNote
 
@@ -147,7 +140,7 @@ than approved.
 > Turning this on adds **no new permission on your space** of its own. Background sync asks you to
 > grant nothing — the credential above is held by our server, outside your space. Your browser still
 > saves Fireflies meetings into your space when you are signed in with your vault unlocked, so your
-> own copy lands where it always did, and it is not deleted when our 90-day window closes.
+> own copy lands where it always did, and it is not deleted when our 14-day window closes.
 > Separately, because the TinyCloud Private Notetaker is on, our server holds a permission on your
 > space over the **meeting records in your connectors library**: the titles, participants, summaries
 > and other details stored for every connector's meetings, Fireflies and Google included, and for

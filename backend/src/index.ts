@@ -139,7 +139,8 @@ import { IngestRetentionSweeper } from "./services/ingest-retention.js";
 import { IngestObservabilityReporter } from "./services/ingest-observability.js";
 import {
   ConnectorDrainWorker,
-  createWebhookConfigDirectory,
+  createWebhookQueueDirectory,
+  createWebhookPurgeLedgerDirectory,
   drainIntervalFromEnv,
   startConnectorQueueMaintenanceTimer,
 } from "./services/connector-drain.js";
@@ -950,7 +951,7 @@ async function main() {
           retention: contentStore,
         }),
         // W4/D2a — the retention window is enforced by the instance that HOLDS the seat, so the
-        // 90-day bound is a running sweep rather than a documented intention.
+        // 14-day bound is a running sweep rather than a documented intention.
         retention: new IngestRetentionSweeper({
           content: contentStore,
           cohort: () => connectorWebhooks.modes.cohort(),
@@ -1250,20 +1251,40 @@ async function main() {
   // §5.4 trigger 2, RE-SCOPED under Option C — bounded queue maintenance, never a background
   // drain. Started ONLY when the flag is on, `unref()`'d inside so it never hangs a test or a
   // shutdown. A timed drain would have surfaced ids to nobody; the TTL / dead-letter sweep is
-  // the part that still earns its cost, because an abandoned connector's queue is otherwise
-  // swept only when a delivery or a user visit happens to touch it — and the 14-day TTL is a
-  // retention promise. `sweep` reports counts only, so nothing is surfaced here.
+  // the part that still earns its cost, because queues are otherwise swept only when touched.
+  // The key scan includes disconnected and corrupt legacy queues; the 14-day TTL is a retention
+  // promise. `sweep` reports counts only, so nothing is surfaced here.
   const connectorQueueMaintenance = connectorWebhooks
     ? startConnectorQueueMaintenanceTimer({
-        listAddresses: createWebhookConfigDirectory(node),
-        intervalMs: drainIntervalFromEnv(process.env),
-        sweep: async (address) => {
-          // Sequential, one address at a time (§9.3). The config read supplies the source the
-          // queue key needs; a config that is gone took its queue with it (§4.8 teardown).
-          const config = await connectorWebhooks.tokens.config(address);
-          if (config === null) return;
-          await connectorWebhooks.queue.sweep(config.source, address);
+        listQueueEntries: createWebhookQueueDirectory(node),
+        listLedgerAddresses: createWebhookPurgeLedgerDirectory(node),
+        sweepLedger: async ({ source, address }) => {
+          const read = await connectorWebhooks.control.readLedger(
+            source,
+            address,
+          );
+          if (read.status === "unparseable") {
+            await connectorWebhooks.control.quarantineLedger(
+              source,
+              address,
+              read.raw,
+            );
+            const stamp = new Date().toISOString();
+            await connectorWebhooks.control.writeLedger(source, address, {
+              purgedThrough: stamp,
+              recentIds: [],
+              recentIdsAddedAt: {},
+              updatedAt: stamp,
+            });
+          }
+          await connectorWebhooks.control.clearQuarantinedLedger?.(
+            source,
+            address,
+          );
         },
+        sweepQueue: ({ source, address }) =>
+          connectorWebhooks.queue.sweep(source, address),
+        intervalMs: drainIntervalFromEnv(process.env),
       })
     : null;
 

@@ -514,8 +514,8 @@ routine deploy.
 
 Operator decision 2026-08-04, recorded with its grounds in
 `docs/connector-webhooks-delegation-gate.md`. This is the shipped path for every
-address **outside the backend-ingest cohort**, and the backend-ingest plan §5.3
-requires it to stay byte-identical while that feature is dark:
+address **outside the backend-ingest cohort**. The browser-sync behavior remains
+separate from the cohort's server-side fetch and storage path:
 
 - Fireflies signs a delivery to `/api/connectors/webhooks/{source}/{token}`; the
   backend HMAC-verifies the raw body, resolves the tenant from the URL token, and
@@ -553,11 +553,11 @@ above for the listed addresses. This is deliberate and operator-signed
   expiry are the only bounds, which is why the breach-response runbook (plan
   §12.2, W11) is a precondition for enabling the flag rather than a follow-up.
 - The backend **fetches the meeting and keeps its own copy**, encrypted under
-  `CONNECTOR_CONTENT_MASTER`, for **90 days** (`D2a-retention-days`;
-  `RETENTION_WINDOW_DAYS` in `backend/src/services/content-store.ts`). The
-  retention sweep then deletes it and records a tombstone, so a provider replay
-  cannot silently re-store aged-out content. Disconnect/purge deletes the stored
-  meetings and the credential immediately.
+  `CONNECTOR_CONTENT_MASTER`, for **14 days** (`RETENTION_WINDOW_DAYS` in
+  `backend/src/services/content-store.ts`). Rows and retention tombstones expire at the
+  same boundary. A provider replay after 14 days may be delivered once again, subject
+  to the browser's duplicate check against the user's own space. Disconnect/purge deletes
+  the stored meetings and the credential immediately; queue and purge-ledger IDs clear at once.
 - What does **not** change: the backend still holds **no connector delegation**.
   Custody is out of band (plan §6), so no new permission is minted inside a
   user's space and `backendDelegationPermissions()` stays `threads/`-only for
@@ -566,23 +566,12 @@ above for the listed addresses. This is deliberate and operator-signed
   signed-in device; the browser's `POST /api/connectors/webhooks/drain` surfaces
   nothing and `POST /api/connectors/webhooks/ack` is an idempotent no-op for
   them, because the fetch worker is the sole consumer of that address's queue.
-- The consent text a cohort user must be shown is `BACKEND_INGEST_CONSENT_COPY`
-  (`frontend/src/lib/connectors/consentCopy.ts`, mirrored for approval in
-  `docs/connector-webhooks-backend-ingest-consent-copy.md`): it states the
-  credential and what it could do if breached, the 90-day server-side retention,
-  the attestation the user acknowledges, and what disconnect does — including a
-  failed upstream revoke. **It is written, pinned and wired** (residual F011,
-  closed 2026-08-11 as an operator-approved unfreeze): the consent renderer
-  (`frontend/src/chat/BackgroundSyncSection.tsx`) probes the cohort-gated
-  `GET /api/connectors/meetings` once at mount and selects the cohort text only
-  on an affirmative answer; every other outcome — the 404 (`feature-dark`),
-  auth, offline, retryable, rejected, a thrown probe, or no client at all —
-  fails closed to Option C, so a non-cohort address can never be shown the
-  cohort reversal. Under the cohort text the enable action stays inert until
-  the attestation checkbox is checked, and the disconnect note renders with it.
-  The Option-C surface for everyone else is byte-identical to the frozen
-  drain-UX increment; gate 4 below records what remains to verify at enable
-  time. The closure record is `docs/connector-webhooks-p1-residuals.md` §F011.
+- The cohort consent is `BACKEND_INGEST_CONSENT_COPY`
+  (`frontend/src/lib/connectors/consentCopy.ts`): it states the credential's reach, the
+  14-day server-side retention and what disconnect does, including a failed upstream
+  revoke. `BackgroundSyncSection.tsx` selects it only after an affirmative cohort probe;
+  other outcomes fail closed to the browser-sync copy. The enable button records consent;
+  there is no attestation checkbox.
 - Webhooks fire only for meetings the user **owns**; capture across a whole
   Fireflies account needs an Enterprise plan. Nothing may be described as
   capturing meetings owned by other people.
@@ -627,22 +616,13 @@ nothing below may be reported as done on its behalf.
    acceptance lane (`docs/connector-webhooks-fresh-device-acceptance.md`), which
    is skipped by default and has never been run.
    **This has not been performed either**, and the build never performs it.
-4. **The cohort consent copy is actually rendered (residual F011 — CLOSED
-   2026-08-11).** `BACKEND_INGEST_CONSENT_COPY` is written, mirrored as the
-   approval artifact, pinned to it by
-   `backend/src/__tests__/consent-scope.test.ts` — and selected by the renderer.
-   The unfreeze was operator-approved: `frontend/src/chat/BackgroundSyncSection.tsx`
-   now probes the cohort-gated meetings API and renders the cohort text, the
-   attestation checkbox (which holds the enable action inert until checked) and
-   the disconnect note on an affirmative cohort answer only, failing closed to
-   Option C on every other outcome; `frontend/src/chat/ConnectorsCard.test.ts`
-   pins both constants and the single live checkbox, and
-   `BackgroundSyncSection.test.tsx` asserts a cohort render carries neither
-   retired custody sentence while the non-cohort surface stays byte-identical.
-   What remains is the enable-time eyes-on check in the cohort-enable
-   checklist's smoke sequence: the enrolled address actually sees the rendered
-   B-ingest consent — heading, attestation checkbox, disconnect note, none of
-   the retired sentences — before any real credential is seeded.
+4. **The cohort consent copy is rendered (residual F011 — CLOSED 2026-08-11).**
+   `BackgroundSyncSection.tsx` probes the cohort-gated meetings API and shows
+   `BACKEND_INGEST_CONSENT_COPY` only after an affirmative response; other outcomes
+   fail closed to the browser-sync consent. The enable button is the consent action;
+   there is no attestation checkbox. The pre-rollout eyes-on check remains in the
+   cohort-enable checklist: verify the enrolled address sees the current consent
+   before any real credential is seeded.
 
 ---
 
