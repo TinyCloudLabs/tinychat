@@ -97,6 +97,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   let operation = 0;
   let probeSequence = 0;
   let disposed = false;
+  let initialProbeSettled = false;
   let ceremony: Promise<void> | null = null;
   let stopping: Promise<void> | null = null;
   let replacementPending = false;
@@ -118,6 +119,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   const markOffline = () => {
     probeSequence++;
     clearPollTimer();
+    initialProbeSettled = true;
     update({ capability: "unavailable", status: null, revision: null, probeFailed: false, reconnectReason: null });
   };
   const scheduleProbe = (probeFailed?: boolean) => {
@@ -141,6 +143,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   const apply = (result: AgentSessionProbe) => {
     access(result.capability === "enabled", result.revision);
     agentEnabledRef.current = result.capability === "enabled" || result.capability === "available";
+    initialProbeSettled = true;
     update({ ...result, reconnectReason: result.status === "expired" ? "delegation_expired"
       : result.status === "stale" ? "delegation_stale" : null });
   };
@@ -158,7 +161,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     }
   };
   const waitForInitialProbe = (signal: AbortSignal): Promise<void> => {
-    if (state.capability !== "probing" || signal.aborted) return Promise.resolve();
+    if (initialProbeSettled || signal.aborted) return Promise.resolve();
     return new Promise((resolve) => {
       const finish = () => {
         listeners.delete(onChange);
@@ -306,7 +309,10 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     dispose: () => {
       listening = false;
       clearPollTimer();
-      if (state.capability === "probing") update({ capability: "unavailable" });
+      if (!initialProbeSettled) {
+        initialProbeSettled = true;
+        update({ capability: "unavailable" });
+      }
       invalidate();
       disposed = true;
       agentEnabledRef.current = false;
