@@ -62,7 +62,7 @@ permission flags before **each** test:
 adb -s emulator-5574 install -r mobile/android/app/build/outputs/apk/debug/app-debug.apk
 adb -s emulator-5574 install -r -t mobile/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
-for test in shortcutFirstUsePermissionGrantStartsRecording shortcutDeniedPermissionClearsCommandWithoutReprompting; do
+for test in shortcutFirstUsePermissionGrantStartsRecording shortcutDeniedTwiceHoldsCommandAndOffersRecordOnGrant; do
   adb -s emulator-5574 shell pm revoke xyz.tinycloud.home android.permission.RECORD_AUDIO
   adb -s emulator-5574 shell pm clear-permission-flags xyz.tinycloud.home android.permission.RECORD_AUDIO user-set user-fixed
   adb -s emulator-5574 shell am instrument -w -r \
