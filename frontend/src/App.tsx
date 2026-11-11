@@ -29,6 +29,7 @@ import {
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, homeSignInManifest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
+import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
 import { reauthorizeHome } from "./lib/homeReauthorize";
 import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
@@ -316,6 +317,11 @@ export function App() {
     requestFeatureAccess,
     inFlight: featureInFlight,
   });
+  useEffect(() => {
+    if (!HOME_SITE && !LOCAL_VALIDATION && appPlatform() === "web" && state === "ready" && tcw && address) {
+      void rememberExistingWebConnectors(homeFeatureStore, tcw, address);
+    }
+  }, [state, tcw, address, homeFeatureStore]);
   useAudioCacheBoot(LOCAL_VALIDATION || !featureAccess.permitted("recording") ? null : tcw);
   // A device that has not recorded on the Home site registers no recorder at boot; it starts once Recording is covered.
   const recordingCovered = featureAccess.covered("recording");

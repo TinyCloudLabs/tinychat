@@ -207,7 +207,9 @@ test("web sign-in mirrors Home's secret KV and default-network abilities for unu
   for (const used of [false, true]) {
     const manifest = webSignInManifest(base, used ? ["connectors"] : [], ADDRESS);
     const resources = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources;
-    const secrets = resources.filter((entry) => entry.space === "secrets" && entry.service === "tinycloud.kv");
+    const secretsSpace = resources.filter((entry) => entry.space === "secrets");
+    if (!used) expect(secretsSpace).toEqual([]);
+    const secrets = secretsSpace.filter((entry) => entry.service === "tinycloud.kv");
     expect(secrets.map((entry) => entry.path).sort()).toEqual(used ? [
       "vault/secrets/FIREFLIES_API_KEY", "vault/secrets/GRANOLA_API_KEY", "vault/secrets/scoped/google-meet/REFRESH_TOKEN",
     ] : []);
@@ -217,7 +219,9 @@ test("web sign-in mirrors Home's secret KV and default-network abilities for unu
     } as unknown as ConstructorParameters<typeof NodeUserAuthorization>[0]);
     const capabilities = (authorization as unknown as { resolveSignInCapabilities(address: string, chainId: number): {
       rawAbilities?: Record<string, string[]>;
+      spaceAbilities: Record<string, Record<string, string[]>>;
     } }).resolveSignInCapabilities(ADDRESS, 1);
+    if (!used) expect(Object.keys(capabilities.spaceAbilities).filter((space) => space.endsWith(":secrets"))).toEqual([]);
     expect(capabilities.rawAbilities ?? {}).toEqual(used ? {
       [encryptionDecryptGrant(ADDRESS).path]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.create"],
     } : {});

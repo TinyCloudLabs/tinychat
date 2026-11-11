@@ -729,3 +729,34 @@ test("web restore checks the reduced base so a non-Connectors session can reload
   expect(lastRestoreConfig!.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });
+
+
+test("an old full web session remembers a connected source and keeps its background lanes", async () => {
+  if (HOME) return;
+  const restored = fakeTcw(true, "restored");
+  const queries: string[] = [];
+  restored.sql = { db: () => ({ query: async (sql: string) => {
+    queries.push(sql);
+    return { ok: true, data: { rows: [["fireflies", "connected", null, null, null, 0]] } };
+  } }) } as unknown as TinyCloudWeb["sql"];
+  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
+  restoreResult = { kind: "restored", tcw: restored, address: ADDRESS };
+  await mount();
+  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["connectors"]);
+  const connectionReads = queries.filter((sql) => sql.includes("FROM connector_state"));
+  expect(connectionReads).toHaveLength(1);
+  expect(connectionReads[0]).toStartWith("SELECT connector_id");
+  for (const lane of CONNECTORS_LANES) expect(mounted).toContain(lane);
+});
+
+test("an old full web session without a connected source leaves the feature record unset", async () => {
+  if (HOME) return;
+  const restored = fakeTcw(true, "restored");
+  restored.sql = { db: () => ({ query: async () => ({ ok: true, data: { rows: [] } }) }) } as unknown as TinyCloudWeb["sql"];
+  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
+  restoreResult = { kind: "restored", tcw: restored, address: ADDRESS };
+  await mount();
+  expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
+});
