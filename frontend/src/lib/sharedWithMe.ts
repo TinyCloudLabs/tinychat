@@ -49,8 +49,9 @@ interface Binding {
 let binding: Binding | null = null;
 // Bumped on every bind; a sync that finishes after a sign-out or account switch is dropped.
 let generation = 0;
-// Opened while no account was bound (signed out, or the session still restoring).
-// Never stored or sent; the next account bound in this page keeps them.
+// Links a viewer opened while no account was bound (signed out, or the session
+// still restoring). Kept in memory only; the next account bound in this page
+// keeps them, and sign-out forgets them.
 let pending = new Map<string, SharedWithMeRecord>();
 let version = 0;
 const listeners = new Set<() => void>();
@@ -213,9 +214,10 @@ async function sync(bound: Binding, gen: number): Promise<void> {
 }
 
 /**
- * Binds the list to the signed-in account (`space`), or unbinds it on
- * sign-out (`null`). Binding renders from the local copy at once, folds in the
- * legacy list and links opened before binding, then syncs with the space.
+ * Binds the list to the signed-in account (`space`), or unbinds it (`null`)
+ * while the account is not ready (restoring, offline). Binding renders from
+ * the local copy at once, folds in the legacy list and links opened while
+ * unbound, then syncs with the space. Sign-out uses `signOutSharedWithMe`.
  */
 export function bindSharedWithMe(space: SharedWithMeSpace | null): Promise<void> {
   if (binding?.space === space || (!binding && !space)) return Promise.resolve();
@@ -233,6 +235,18 @@ export function bindSharedWithMe(space: SharedWithMeSpace | null): Promise<void>
   return sync(bound, generation);
 }
 
+/**
+ * Sign-out: unbinds, so a sync still in flight cannot write the local copy
+ * back, and forgets links opened while unbound, so the next account never
+ * receives them.
+ */
+export function signOutSharedWithMe(): void {
+  generation += 1;
+  binding = null;
+  pending = new Map();
+  notify();
+}
+
 /** The bound account's records, newest first, tombstones included; empty while signed out. */
 export function readSharedWithMe(): SharedWithMeRecord[] {
   if (!binding) return [];
@@ -244,32 +258,37 @@ export function readSharedWithMe(): SharedWithMeRecord[] {
   return parsedRecords;
 }
 
-function record(next: SharedWithMeRecord): Promise<void> {
-  if (!binding) {
-    if (next.removedAt) pending.delete(next.id);
-    else pending.set(next.id, next);
+// `account` marks an owner action (create, stop) by that account: it lands only
+// in that account's list and is dropped if another account, or none, is bound.
+// A viewer opening a link (no `account`) while unbound is held for the next bind.
+function record(next: SharedWithMeRecord, account?: string): Promise<void> {
+  const bound = binding;
+  if (!bound || (account !== undefined && bound.localKey !== sharedWithMeLocalKey(account))) {
+    if (!bound && account === undefined) pending.set(next.id, next);
     return Promise.resolve();
   }
-  const bound = binding;
   const merged = mergeSharedWithMe(readLocal(bound.localKey), new Map([[next.id, next]]));
   writeLocal(bound.localKey, merged);
   return putRemote(bound.space, merged.get(next.id) ?? next);
 }
 
 /** Adds or refreshes a share: local copy now, space copy write-through. */
-export function addSharedWithMe(entry: { id: string; addedAt: string; expiresAt: string; token: string }): Promise<void> {
-  return record({ version: 1, ...entry });
+export function addSharedWithMe(
+  entry: { id: string; addedAt: string; expiresAt: string; token: string },
+  account?: string,
+): Promise<void> {
+  return record({ version: 1, ...entry }, account);
 }
 
 /**
- * Replaces a share with a tombstone, locally and in the space; the token is
- * dropped. The tombstone lives until the share's own expiry, after which no
- * device can still hold a live copy to re-add.
+ * The owner `account` stopped a share: replaces it with a tombstone, locally
+ * and in the space; the token is dropped. The tombstone lives until the
+ * share's own expiry, after which no device can still hold a live copy to re-add.
  */
-export function removeSharedWithMe(id: string, expiresAt: string): Promise<void> {
+export function removeSharedWithMe(id: string, expiresAt: string, account: string): Promise<void> {
   const removedAt = new Date().toISOString();
   const existing = readSharedWithMe().find((r) => r.id === id);
-  return record({ version: 1, id, addedAt: existing?.addedAt ?? removedAt, expiresAt, removedAt });
+  return record({ version: 1, id, addedAt: existing?.addedAt ?? removedAt, expiresAt, removedAt }, account);
 }
 
 export function subscribeSharedWithMe(listener: () => void): () => void {

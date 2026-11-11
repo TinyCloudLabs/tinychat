@@ -127,7 +127,7 @@ describe("shared-with-me list in the account's space", () => {
     expect(ids()).toEqual(["s1"]);
 
     phone.use();
-    await removeSharedWithMe("s1", FUTURE);
+    await removeSharedWithMe("s1", FUTURE, ALICE);
     const tombstone = JSON.parse(aliceKv.get(`${SHARED_WITH_ME_KEY_PREFIX}s1`)!);
     expect(tombstone).toMatchObject({ id: "s1", removedAt: expect.any(String) });
     expect(tombstone.token).toBeUndefined();
@@ -145,7 +145,7 @@ describe("shared-with-me list in the account's space", () => {
     device().use();
     await bindSharedWithMe(space(ALICE, aliceKv).tcw);
     await addSharedWithMe(share("s1"));
-    await removeSharedWithMe("s1", FUTURE);
+    await removeSharedWithMe("s1", FUTURE, ALICE);
     await addSharedWithMe(share("s1", new Date(Date.now() + 1000).toISOString()));
 
     device().use();
@@ -241,6 +241,40 @@ describe("shared-with-me list in the account's space", () => {
     expect(shared.values.has(sharedWithMeLocalKey(ALICE))).toBe(false);
   });
 
+  it("a share an owner created lands only in that owner's list, even if it finishes after sign-out", async () => {
+    const shared = device();
+    shared.use();
+    const alice = space(ALICE);
+    const bob = space(BOB);
+    await bindSharedWithMe(alice.tcw);
+
+    // Alice's create resolves after she signed out, then Bob signs in on the same page.
+    clearAccountSignOutStorage(ALICE, ALICE.split(":").pop()!, shared.localStorage);
+    await addSharedWithMe(share("alice-created"), ALICE);
+    await bindSharedWithMe(bob.tcw);
+    // And one that resolves while Bob is bound.
+    await addSharedWithMe(share("alice-late"), ALICE);
+    await removeSharedWithMe("bob-unknown", FUTURE, ALICE);
+
+    expect(ids()).toEqual([]);
+    expect(bob.kv.size).toBe(0);
+    expect(alice.calls.filter((c) => c.op === "put")).toEqual([]);
+  });
+
+  it("sign-out forgets links opened while unbound, so the next account never gets them", async () => {
+    const shared = device();
+    shared.use();
+    const bob = space(BOB);
+
+    // Opened while Alice's session was offline (unbound), then Alice signs out.
+    await addSharedWithMe(share("opened-offline"));
+    clearAccountSignOutStorage(ALICE, ALICE.split(":").pop()!, shared.localStorage);
+    await bindSharedWithMe(bob.tcw);
+
+    expect(ids()).toEqual([]);
+    expect(bob.kv.size).toBe(0);
+  });
+
   it("drops expired shares locally and from the space", async () => {
     const aliceKv = new Map<string, string>([
       [`${SHARED_WITH_ME_KEY_PREFIX}old`, JSON.stringify({ version: 1, ...share("old"), expiresAt: "2001-01-01T00:00:00.000Z" })],
@@ -272,7 +306,7 @@ describe("shared-with-me list in the account's space", () => {
       const alice = space(ALICE, aliceKv);
       await bindSharedWithMe(alice.tcw);
       await addSharedWithMe(share("s1"));
-      await removeSharedWithMe("s1", FUTURE);
+      await removeSharedWithMe("s1", FUTURE, ALICE);
       await addSharedWithMe(share("s2"));
       device().use();
       const laptop = space(ALICE, aliceKv);

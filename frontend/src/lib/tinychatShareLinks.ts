@@ -197,16 +197,18 @@ export function listStoredTinychatShares(): StoredTinychatShare[] {
   return decodedShares.filter((share) => Date.parse(share.expiresAt) > Date.now());
 }
 
+// `account` is set for a share the signed-in owner created; see addSharedWithMe.
 function storeTinychatShare(
   token: string,
   payload: AnyTinychatSharePayload,
   storedAt: string,
+  account?: string,
 ): StoredTinychatShare {
   if (new Date(payload.expiresAt).getTime() <= Date.now()) {
     throw new Error("This share link has expired");
   }
 
-  void addSharedWithMe({ id: payload.id, addedAt: storedAt, expiresAt: payload.expiresAt, token });
+  void addSharedWithMe({ id: payload.id, addedAt: storedAt, expiresAt: payload.expiresAt, token }, account);
   return { ...payload, acceptedAt: storedAt, token };
 }
 
@@ -218,8 +220,9 @@ export function saveTinychatShareToken(token: string): StoredTinychatShare {
 export function saveCreatedTinychatShare(
   token: string,
   payload: AnyTinychatSharePayload,
+  account: string,
 ): StoredTinychatShare {
-  return storeTinychatShare(token, payload, payload.createdAt);
+  return storeTinychatShare(token, payload, payload.createdAt, account);
 }
 
 export function findStoredTinychatShareForThread(threadId: string): StoredTinychatShare | null {
@@ -343,7 +346,7 @@ export async function createTinychatShareLink(
     kv,
   };
   const token = encodePayload(payload);
-  saveCreatedTinychatShare(token, payload);
+  saveCreatedTinychatShare(token, payload, tcw.did);
 
   return {
     link: shareLinkForToken(token),
@@ -418,7 +421,7 @@ export async function stopOwnedTinychatShare(
     if (!deleted.ok) return { ok: false, stage };
     const removedIndex = await tcw.kv.delete(indexKey);
     if (!removedIndex.ok) return { ok: false, stage };
-    void removeSharedWithMe(shareId, entry.expiresAt);
+    void removeSharedWithMe(shareId, entry.expiresAt, tcw.did);
     return { ok: true };
   } catch {
     return { ok: false, stage };

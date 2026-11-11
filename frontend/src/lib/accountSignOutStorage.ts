@@ -1,4 +1,4 @@
-import { bindSharedWithMe, sharedWithMeLocalKey } from "./sharedWithMe";
+import { sharedWithMeLocalKey, signOutSharedWithMe } from "./sharedWithMe";
 
 export type AccountSignOutStorage = Pick<Storage, "length" | "key" | "removeItem">;
 
@@ -8,8 +8,8 @@ export function clearAccountSignOutStorage(
   address: string,
   storage: AccountSignOutStorage | undefined = browserStorage(),
 ): void {
-  // Unbind first so a shared-list sync still in flight cannot write the copy back.
-  void bindSharedWithMe(null);
+  // First, so a shared-list sync still in flight cannot write the copy back.
+  signOutSharedWithMe();
   if (!storage || !did || !address) return;
   const normalizedDid = did.toLowerCase();
   const encodedDid = encodeURIComponent(did).toLowerCase();

@@ -467,7 +467,7 @@ describe("tinychat share links", () => {
       expiresAt,
     };
 
-    const stored = saveCreatedTinychatShare(shareToken, payload);
+    const stored = saveCreatedTinychatShare(shareToken, payload, "did:pkh:eip155:1:0x0000000000000000000000000000000000000a11");
 
     expect(stored.acceptedAt).toBe("2026-01-01T00:00:00.000Z");
     expect(findStoredTinychatShareForThread("thread-1")?.id).toBe("created-share");
