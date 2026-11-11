@@ -292,7 +292,7 @@ final class HealthConnectReader {
                             end,
                             offset(zone, end),
                             Metadata.manualEntry("exo-sample-sleep-" + day, 1L),
-                            "Exo sample",
+                            "TinyCloud Home sample",
                             null,
                             Collections.<SleepSessionRecord.Stage>emptyList()
                         )

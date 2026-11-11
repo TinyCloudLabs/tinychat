@@ -235,7 +235,7 @@ function memoryLocalStorage(): Storage {
   };
 }
 async function mount(path = "/chat") {
-  restoreDom = installDom();
+  restoreDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
   window.history.pushState({}, "", path);
   host = document.createElement("div");
   document.body.append(host);
@@ -413,7 +413,7 @@ test("navigation, and Recording and Connectors asking in place on the Home site"
     expect(meetingsRequests()).toEqual([]);
     expect(reauthConfig).toBeNull();
   } else {
-    expect(navLabels()).toEqual(["Recording", "Chat", "Connectors"]);
+    expect(navLabels()).toEqual(["Recording", "Chat", "Apps", "Feed", "Connectors"]);
     await navigate("/chat/connectors");
     expect(mounted).toContain("ConnectorsPage");
     expect(prompt("connectors")).toBeNull();

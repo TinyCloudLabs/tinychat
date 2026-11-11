@@ -638,7 +638,7 @@ nothing below may be reported as done on its behalf.
   no HTTP response) and fails on any HTTP status.
 - **CORS:** the backend allows `FRONTEND_URL`, the TinyCloud Home site
   (`https://home.tinycloud.xyz`, the constant `HOME_WEB_ORIGIN` in
-  `backend/src/cors-origins.ts`), Exo's fixed Tauri origins, the
+  `backend/src/cors-origins.ts`), TinyCloud Home's fixed Tauri origins, the
   TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
@@ -673,10 +673,11 @@ nothing below may be reported as done on its behalf.
   app-path grant, which is the proof that the sign-in is for TinyChat. The root
   KV grant and the two named runnable catalog databases are tolerated next to
   it but never count as that proof on their own; other grants are rejected.
-  Native sign-in cannot request the broad entries until OpenKey's native
-  client policy and ceiling are changed (TC-1990), and the served revision-3
-  manifest lists them, so native sign-in is expected to fail until then. The
-  web sign-in does not use that client ceiling. Set
+  Native sign-in requests every applications-space KV, SQL and hook entry of
+  the served manifest except `tinycloud.space`; OpenKey's TinyCloud Home native
+  client ceiling matches it (TC-2720), and the `Native ceiling` CI job PARs that
+  exact request against production OpenKey. Widen the ceiling before adding a
+  manifest entry. The web sign-in does not use that client ceiling. Set
   `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
   never use the API host as the signed audience.
   Nonces remain single-use for five minutes, with at most 2048 pending per

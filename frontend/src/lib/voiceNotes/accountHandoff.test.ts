@@ -45,7 +45,11 @@ test("successful handoff is durable before credentials may clear; next recording
 test("step 1 failure leaves credentials authorized and never cancels a save", async () => {
   const { fake, order, pipeline } = await setup();
   fake.controls.failNextAccountState();
-  expect((await handoffBeforeCredentialClear(did, pipeline)).ok).toBe(false);
+  expect(await handoffBeforeCredentialClear(did, pipeline)).toMatchObject({
+    ok: false,
+    failClosed: false,
+    message: "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.",
+  });
   expect(order).toEqual([]);
   expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_in");
 });

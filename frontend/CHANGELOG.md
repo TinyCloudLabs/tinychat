@@ -15,6 +15,34 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.7
+
+### Minor Changes
+
+- f8823ef: Exo is now TinyCloud Home everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud Home.app`), the Android and iOS app names, notifications, permission prompts and error messages. Home opens on Feed on the web, on desktop and on iOS and Android, on a fresh install and after signing in, unless you chose Apps as your first screen in Settings. Feed and Apps are no longer experimental: they are in the navigation for everyone, and Settings › Home holds the first-screen choice. App id, bundle ids, URL schemes and every data path are unchanged. Details: TC-2050, TC-2040
+
+## 0.14.0-beta.6
+
+No changes in this release.
+
+## 0.14.0-beta.5
+
+### Patch Changes
+
+- 451ae7e: Native sign-in on iOS and Android asks for every applications-space KV, SQL and hook entry of the manifest, the same grant as the web sign-in, so the Home feed works on the phone apps (TC-2720). Space info stays web-only until the backend accepts it. A CI job checks the native request against production OpenKey's ceiling.
+
+## 0.14.0-beta.4
+
+### Minor Changes
+
+- 657b2ef: Settings → Account has "Delete OpenKey account" (TC-2721, App Store 5.1.1(v)). It opens OpenKey's deletion page, `https://openkey.so/dashboard/settings/delete-account` on the configured `VITE_OPENKEY_HOST`, in the system browser sheet on the phone or a new tab on the web. The row isn't shown on desktop, which has no fixed-URL opener for it yet.
+
+## 0.14.0-beta.3
+
+### Minor Changes
+
+- ab71584: Native sign-in offers "Continue with Apple" once OpenKey lists Apple in `GET /api/auth/providers`; it opens Sign in with Apple in the existing OpenKey sheet (TC-1233). Updates `@openkey/sdk-capacitor` to the release that accepts `loginMethod: "apple"`.
+
 ## 0.14.0-beta.2
 
 ### Patch Changes

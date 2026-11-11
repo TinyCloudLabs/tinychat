@@ -105,7 +105,7 @@ export function FailureNotificationHost(props: {
   return createPortal(<div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-[60] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2" data-testid="failure-notifications">
     {askPermission && <section className="rounded-lg bg-background p-4 text-callout text-foreground shadow-lg" aria-label="Mac notifications">
       <p className="font-medium">Get notified when a note needs attention?</p>
-      <p className="mt-1 text-muted-foreground">Exo can show a Mac notification for a recording, transcription, or sync failure when the app is in the background.</p>
+      <p className="mt-1 text-muted-foreground">TinyCloud Home can show a Mac notification for a recording, transcription, or sync failure when the app is in the background.</p>
       {permissionError && <p role="alert" className="mt-2">Couldn't request permission. You can try again.</p>}
       <div className="mt-3 flex gap-4"><button type="button" className="min-h-11 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" disabled={requesting} onClick={() => void requestPermission()}>Notify me</button><button type="button" className="min-h-11 text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={dismissPermission}>Not now</button></div>
     </section>}

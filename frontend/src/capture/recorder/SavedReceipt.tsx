@@ -312,7 +312,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
           {props.outcome === "local" && !pipelineView && !pipelineWaiting && <p className="text-meta text-muted-foreground">{props.localUpload === "held"
             ? holdReason === "other-account" ? "Recorded on another account"
                 : holdReason === "signed-out" ? "Sign in to sync to your TinyCloud space"
-                  : holdReason === "legacy" || holdReason === "unowned" ? `Exo can't tell which account this note belongs to. It stays on ${localDevice}.`
+                  : holdReason === "legacy" || holdReason === "unowned" ? `TinyCloud Home can't tell which account this note belongs to. It stays on ${localDevice}.`
                     : "Waiting to sync to your TinyCloud space"
             : props.localUpload === "in-flight" ? "Another save is finishing in your TinyCloud space…"
               : "Waiting to sync to your TinyCloud space"}</p>}

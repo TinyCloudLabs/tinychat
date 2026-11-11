@@ -4,7 +4,7 @@ import { deviceName } from "@/lib/platform";
 import type { VoiceNotePipeline } from "./voiceNotePipeline";
 
 const TRANSITION_KEY = "exo.capture.transitionGen";
-const FAILURE = `Couldn't update ${deviceName()}'s recording settings. Try again.`;
+const FAILURE = "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.";
 export class AccountStateTimeout extends Error {}
 
 export function nextTransitionGen(nativeGen: number): number {
@@ -43,7 +43,7 @@ export async function handoffBeforeCredentialClear(did: string | null, pipeline:
         await withCaptureDeadline(VoiceNotes.setAccountState({ status: "signed_in", accountDid: did, transitionGen: gen! + 1 }), timeoutMs);
         remember(gen! + 1);
       } catch {
-        return { ok: false, failClosed: true, message: `Recordings are being kept unassigned until Exo can update ${deviceName()}. Try again.` };
+        return { ok: false, failClosed: true, message: `Recordings are being kept unassigned until TinyCloud Home can update ${deviceName()}. Try again.` };
       }
     }
     return { ok: false, failClosed: false, message: FAILURE };
@@ -63,7 +63,7 @@ export async function handoffBeforeCredentialClear(did: string | null, pipeline:
       return { ok: false, failClosed: false, message: FAILURE };
     } catch {
       return { ok: false, failClosed: true,
-        message: `Recordings are being kept unassigned until Exo can update ${deviceName()}. Try again.` };
+        message: `Recordings are being kept unassigned until TinyCloud Home can update ${deviceName()}. Try again.` };
     }
   }
 }

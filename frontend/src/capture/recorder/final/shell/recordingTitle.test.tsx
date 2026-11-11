@@ -16,9 +16,9 @@ import {
 
 describe("recordingTitle", () => {
   test("recording, paused, and nothing else", () => {
-    expect(recordingTitle("recording", "recording", 42_000)).toBe("● 0:42 · Exo");
-    expect(recordingTitle("recording", "paused", 42_900)).toBe("❚❚ 0:42 · Exo");
-    expect(recordingTitle("recording", "recording", 3_725_000)).toBe("● 1:02:05 · Exo");
+    expect(recordingTitle("recording", "recording", 42_000)).toBe("● 0:42 · TinyCloud Home");
+    expect(recordingTitle("recording", "paused", 42_900)).toBe("❚❚ 0:42 · TinyCloud Home");
+    expect(recordingTitle("recording", "recording", 3_725_000)).toBe("● 1:02:05 · TinyCloud Home");
     for (const phase of ["idle", "starting", "stopping", "saving", "discarding"] as const)
       expect(recordingTitle(phase, "recording", 42_000)).toBeNull();
   });
@@ -73,12 +73,12 @@ describe("createTitleController", () => {
   test("restores exactly the title it replaced, and only once", async () => {
     const { target, log } = memoryTarget("TinyCloud Chat");
     const controller = createTitleController(target);
-    controller.apply("● 0:01 · Exo");
-    controller.apply("● 0:02 · Exo");
+    controller.apply("● 0:01 · TinyCloud Home");
+    controller.apply("● 0:02 · TinyCloud Home");
     controller.apply(null);
     controller.apply(null);
     await controller.settled();
-    expect(log).toEqual(["● 0:01 · Exo", "● 0:02 · Exo", "TinyCloud Chat"]);
+    expect(log).toEqual(["● 0:01 · TinyCloud Home", "● 0:02 · TinyCloud Home", "TinyCloud Chat"]);
     expect(target.title).toBe("TinyCloud Chat");
   });
 
@@ -93,10 +93,10 @@ describe("createTitleController", () => {
   test("a slow call cannot overtake a later one", async () => {
     const { target, log } = memoryTarget("Before", { delayMs: 5 });
     const controller = createTitleController(target);
-    for (const second of [1, 2, 3]) controller.apply(`● 0:0${second} · Exo`);
+    for (const second of [1, 2, 3]) controller.apply(`● 0:0${second} · TinyCloud Home`);
     controller.apply(null);
     await controller.settled();
-    expect(log).toEqual(["● 0:01 · Exo", "● 0:02 · Exo", "● 0:03 · Exo", "Before"]);
+    expect(log).toEqual(["● 0:01 · TinyCloud Home", "● 0:02 · TinyCloud Home", "● 0:03 · TinyCloud Home", "Before"]);
   });
 
   test("a failed read or write is reported, not swallowed, and later calls still run", async () => {
@@ -112,20 +112,20 @@ describe("createTitleController", () => {
       },
     };
     const controller = createTitleController(target, (caught) => errors.push(caught));
-    controller.apply("● 0:01 · Exo");
+    controller.apply("● 0:01 · TinyCloud Home");
     await controller.settled();
     expect(errors).toEqual([boom]);
     failing = false;
-    controller.apply("● 0:02 · Exo");
+    controller.apply("● 0:02 · TinyCloud Home");
     controller.apply(null);
     await controller.settled();
-    expect(written).toEqual(["● 0:02 · Exo", "Before"]);
+    expect(written).toEqual(["● 0:02 · TinyCloud Home", "Before"]);
 
     const readFails = createTitleController(
       { read: () => Promise.reject(boom), write: () => { throw new Error("must not write"); } },
       (caught) => errors.push(caught),
     );
-    readFails.apply("● 0:01 · Exo");
+    readFails.apply("● 0:01 · TinyCloud Home");
     await readFails.settled();
     expect(errors).toEqual([boom, boom]);
   });
@@ -136,7 +136,7 @@ describe("createTitleController", () => {
     console.error = error;
     try {
       const controller = createTitleController({ read: () => "x", write: () => Promise.reject(new Error("no")) });
-      controller.apply("● 0:01 · Exo");
+      controller.apply("● 0:01 · TinyCloud Home");
       await controller.settled();
     } finally {
       console.error = original;
@@ -147,26 +147,26 @@ describe("createTitleController", () => {
   test("a title another feature sets mid-recording is kept, and put back instead of the older one", async () => {
     const { target, log } = memoryTarget("TinyCloud Chat");
     const controller = createTitleController(target);
-    controller.apply("● 0:01 · Exo");
+    controller.apply("● 0:01 · TinyCloud Home");
     await controller.settled();
     target.title = "Inbox (3)";
-    controller.apply("● 0:02 · Exo");
+    controller.apply("● 0:02 · TinyCloud Home");
     await controller.settled();
-    expect(target.title).toBe("● 0:02 · Exo");
+    expect(target.title).toBe("● 0:02 · TinyCloud Home");
     target.title = "Note: Standup";
-    controller.apply("❚❚ 0:02 · Exo");
-    controller.apply("❚❚ 0:02 · Exo");
+    controller.apply("❚❚ 0:02 · TinyCloud Home");
+    controller.apply("❚❚ 0:02 · TinyCloud Home");
     await controller.settled();
     controller.apply(null);
     await controller.settled();
-    expect(log).toEqual(["● 0:01 · Exo", "● 0:02 · Exo", "❚❚ 0:02 · Exo", "❚❚ 0:02 · Exo", "Note: Standup"]);
+    expect(log).toEqual(["● 0:01 · TinyCloud Home", "● 0:02 · TinyCloud Home", "❚❚ 0:02 · TinyCloud Home", "❚❚ 0:02 · TinyCloud Home", "Note: Standup"]);
     expect(target.title).toBe("Note: Standup");
   });
 
   test("a title set between the last tick and the stop is put back too", async () => {
     const { target } = memoryTarget("TinyCloud Chat");
     const controller = createTitleController(target);
-    controller.apply("● 0:01 · Exo");
+    controller.apply("● 0:01 · TinyCloud Home");
     await controller.settled();
     target.title = "Settings";
     controller.apply(null);
@@ -177,11 +177,11 @@ describe("createTitleController", () => {
   test("after a restore the next recording starts from the then-current title", async () => {
     const { target } = memoryTarget("A");
     const controller = createTitleController(target);
-    controller.apply("● 0:01 · Exo");
+    controller.apply("● 0:01 · TinyCloud Home");
     controller.apply(null);
     await controller.settled();
     target.title = "B";
-    controller.apply("● 0:01 · Exo");
+    controller.apply("● 0:01 · TinyCloud Home");
     controller.apply(null);
     await controller.settled();
     expect(target.title).toBe("B");
@@ -198,20 +198,20 @@ describe("tauriWindowTitleTarget", () => {
         metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
         invoke: async (command: string, args: unknown) => {
           calls.push([command, args]);
-          return command === "plugin:window|title" ? "Exo" : null;
+          return command === "plugin:window|title" ? "TinyCloud Home" : null;
         },
         transformCallback: () => 1,
       },
     };
     try {
-      expect(await tauriWindowTitleTarget.read()).toBe("Exo");
-      await tauriWindowTitleTarget.write("● 0:42 · Exo");
+      expect(await tauriWindowTitleTarget.read()).toBe("TinyCloud Home");
+      await tauriWindowTitleTarget.write("● 0:42 · TinyCloud Home");
     } finally {
       g.window = saved;
     }
     expect(calls).toEqual([
       ["plugin:window|title", { label: "main" }],
-      ["plugin:window|set_title", { label: "main", value: "● 0:42 · Exo" }],
+      ["plugin:window|set_title", { label: "main", value: "● 0:42 · TinyCloud Home" }],
     ]);
   });
 });
@@ -255,19 +255,19 @@ describe("useRecordingTitle", () => {
     expect(target.title).toBe("TinyCloud Chat");
 
     await view.render(tree(live(), target));
-    await until(() => target.title === "● 0:42 · Exo", "● 0:42 · Exo");
-    expect(target.title).toBe("● 0:42 · Exo");
+    await until(() => target.title === "● 0:42 · TinyCloud Home", "● 0:42 · TinyCloud Home");
+    expect(target.title).toBe("● 0:42 · TinyCloud Home");
 
     await clock.advance(1_000);
-    await until(() => target.title === "● 0:43 · Exo", "● 0:43 · Exo");
-    expect(target.title).toBe("● 0:43 · Exo");
+    await until(() => target.title === "● 0:43 · TinyCloud Home", "● 0:43 · TinyCloud Home");
+    expect(target.title).toBe("● 0:43 · TinyCloud Home");
 
     await view.render(tree(live({ mic: { state: "paused", reason: "user" }, elapsedMs: 43_000, elapsedAt: clock.now }), target));
-    await until(() => target.title === "❚❚ 0:43 · Exo", "❚❚ 0:43 · Exo");
-    expect(target.title).toBe("❚❚ 0:43 · Exo");
+    await until(() => target.title === "❚❚ 0:43 · TinyCloud Home", "❚❚ 0:43 · TinyCloud Home");
+    expect(target.title).toBe("❚❚ 0:43 · TinyCloud Home");
     await clock.advance(5_000);
-    await until(() => target.title === "❚❚ 0:43 · Exo", "❚❚ 0:43 · Exo");
-    expect(target.title).toBe("❚❚ 0:43 · Exo");
+    await until(() => target.title === "❚❚ 0:43 · TinyCloud Home", "❚❚ 0:43 · TinyCloud Home");
+    expect(target.title).toBe("❚❚ 0:43 · TinyCloud Home");
 
     await view.render(tree({ phase: "idle" }, target));
     await until(() => target.title === "TinyCloud Chat", "TinyCloud Chat");
@@ -280,8 +280,8 @@ describe("useRecordingTitle", () => {
     const view = mount();
     await view.render(tree(live(), target));
     await clock.advance(60_000);
-    await until(() => target.title === "● 1:42 · Exo", "● 1:42 · Exo");
-    expect(target.title).toBe("● 1:42 · Exo");
+    await until(() => target.title === "● 1:42 · TinyCloud Home", "● 1:42 · TinyCloud Home");
+    expect(target.title).toBe("● 1:42 · TinyCloud Home");
     await view.unmount();
   });
 
@@ -289,8 +289,8 @@ describe("useRecordingTitle", () => {
     const { target } = memoryTarget("TinyCloud Chat");
     const view = mount();
     await view.render(tree(live(), target));
-    await until(() => target.title === "● 0:42 · Exo", "● 0:42 · Exo");
-    expect(target.title).toBe("● 0:42 · Exo");
+    await until(() => target.title === "● 0:42 · TinyCloud Home", "● 0:42 · TinyCloud Home");
+    expect(target.title).toBe("● 0:42 · TinyCloud Home");
     await view.unmount();
     await until(() => target.title === "TinyCloud Chat", "TinyCloud Chat");
     expect(target.title).toBe("TinyCloud Chat");

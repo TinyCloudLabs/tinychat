@@ -83,12 +83,12 @@ describe("InProgressVoiceCard", () => {
     expect(html([row("failed", failed)])).toContain(">Try again<");
     const offline = pipeline({ steps: [
       { key: "phone", label: "On this browser", state: "done" },
-      { key: "space", label: "In your space", state: "waiting", caption: "Waiting for a connection · Exo continues automatically" },
+      { key: "space", label: "In your space", state: "waiting", caption: "Waiting for a connection · TinyCloud Home continues automatically" },
       { key: "transcript", label: "Transcript", state: "upcoming" },
       { key: "notes", label: "Notes", state: "skipped" },
     ] });
     const offlineHtml = html([row("offline", offline)]);
-    expect(offlineHtml).toContain("Waiting for a connection. Exo continues automatically.");
+    expect(offlineHtml).toContain("Waiting for a connection. TinyCloud Home continues automatically.");
     expect(offlineHtml).not.toContain("soft-pill");
   });
 

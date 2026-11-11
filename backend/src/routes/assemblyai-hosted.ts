@@ -86,7 +86,7 @@ export const ASSEMBLYAI_HOSTED_ERRORS = {
   assemblyai_unavailable: { status: 502, message: "AssemblyAI could not be reached." },
   assemblyai_hosted_unavailable: { status: 503, message: "TinyCloud's AssemblyAI account is not available." },
   assemblyai_job_uncertain: { status: 409, message: "The previous submission could not be reconciled safely. Contact support before retrying this note." },
-  assemblyai_needs_reconciliation: { status: 409, message: "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI." },
+  assemblyai_needs_reconciliation: { status: 409, message: "Powerful couldn't confirm an earlier attempt. TinyCloud Home is checking with AssemblyAI." },
 } as const;
 
 export type AssemblyAiHostedErrorCode = keyof typeof ASSEMBLYAI_HOSTED_ERRORS;

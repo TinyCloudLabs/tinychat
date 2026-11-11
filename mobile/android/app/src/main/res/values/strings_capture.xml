@@ -3,7 +3,7 @@
     <string name="capture_channel">Voice notes</string>
     <string name="capture_recording">Recording a voice note</string>
     <string name="capture_paused">Voice note paused</string>
-    <string name="capture_running_hint">Exo is using the microphone</string>
+    <string name="capture_running_hint">TinyCloud Home is using the microphone</string>
     <string name="capture_resume_hint">The microphone is off</string>
     <string name="capture_pause">Pause</string>
     <string name="capture_resume">Resume</string>

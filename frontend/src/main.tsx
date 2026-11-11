@@ -9,7 +9,6 @@ import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootErrorBoundary } from "./shell/RootErrorBoundary";
-import { ExperimentalRoute } from "./shell/ExperimentalRoute";
 import { LandingRoute, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { SessionStore } from "@tinyboilerplate/client";
@@ -24,7 +23,7 @@ import { initTheme } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 import { installDebugLog } from "./lib/debugLog";
 
-// False on the web and in the desktop (Tauri) app; true only inside Exo mobile.
+// False on the web and in the desktop (Tauri) app; true only inside the TinyCloud Home mobile app.
 const nativeShell = Capacitor.isNativePlatform();
 registerDesktopVoiceNotes();
 
@@ -85,9 +84,9 @@ void installEd25519Polyfill().catch((error: unknown) => {
       <RootErrorBoundary>
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={<RootRoute nativeShell={nativeShell} homeShell={platform === "web"} />} />
+            <Route path="/" element={<RootRoute />} />
             <Route path="/about" element={<LandingRoute />} />
-            <Route path="/chat/*" element={<ExperimentalRoute><CaptureEngineGate><App /></CaptureEngineGate></ExperimentalRoute>} />
+            <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

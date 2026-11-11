@@ -8,7 +8,7 @@ do not create missing-audio spans or count toward the three-hour recorded-time
 limit. Interruption gaps do count toward that limit.
 
 While recording, an interruption closes the segment and opens an omitted-audio
-span. Exo schedules a notification for 45 seconds later with the recording ID
+span. TinyCloud Home schedules a notification for 45 seconds later with the recording ID
 and a notification epoch. An ended interruption tries an immediate restart and
 then retries at 0.5, 1, 2, 5, 10, and 30-second intervals for up to ten minutes.
 The final retry is clipped to the ten-minute deadline. A refused background

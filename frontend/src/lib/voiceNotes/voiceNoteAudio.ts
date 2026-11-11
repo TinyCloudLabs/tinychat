@@ -68,7 +68,7 @@ export const webAudioDecoder: AudioDecoder = async (bytes, sampleRate) => {
   try {
     buffer = await new Ctor(1, 1, sampleRate).decodeAudioData(bytes);
   } catch {
-    throw new VoiceNoteAudioError("decode_failed", `Exo could not read the recording on ${deviceName()} to transcribe it.`);
+    throw new VoiceNoteAudioError("decode_failed", `TinyCloud Home could not read the recording on ${deviceName()} to transcribe it.`);
   }
   const channels: Float32Array[] = [];
   for (let i = 0; i < buffer.numberOfChannels; i++) channels.push(buffer.getChannelData(i));

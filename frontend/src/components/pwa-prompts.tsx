@@ -38,7 +38,7 @@ export function PwaPrompts() {
   if (updateReady && !updateDismissed) {
     return (
       <PwaToast>
-        <span className="min-w-0 flex-1">New version of Exo available.</span>
+        <span className="min-w-0 flex-1">New version of {APP_NAME} available.</span>
         <Button size="sm" onClick={applyUpdate}>
           <RefreshCwIcon />
           Reload

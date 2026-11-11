@@ -29,7 +29,7 @@ export function Hero() {
         </h1>
 
         <p className="max-w-2xl text-balance text-base text-muted-foreground sm:text-lg">
-          TinyCloud Chat is a fast, multi-model assistant where every
+          TinyCloud Home is a fast, multi-model assistant where every
           conversation is saved to{" "}
           <span className="text-foreground">your own TinyCloud space</span> —
           yours to keep, synced across your devices, and{" "}
