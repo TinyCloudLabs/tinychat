@@ -306,7 +306,7 @@ export function appLock(): AppLock {
 }
 
 export function useAppLock(lock: AppLock = appLock()): AppLockSnapshot {
-  return useSyncExternalStore(lock.subscribe, lock.getSnapshot);
+  return useSyncExternalStore(lock.subscribe, lock.getSnapshot, lock.getSnapshot);
 }
 
 /** False while the lock screen is up. Always true on the web and desktop. */
