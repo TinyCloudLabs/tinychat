@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
@@ -13,6 +13,7 @@ import { LandingRoute, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { SessionStore } from "@tinyboilerplate/client";
 import { BASE_PATH } from "./lib/basePath";
+import { FeedLabRoutes } from "./lib/feedLab";
 import { HOME_SITE } from "./lib/homeSite";
 import { readHomeFeatures } from "./lib/homeFeatures";
 import { browserRevisionStore } from "./lib/manifestRevision";
@@ -88,7 +89,8 @@ void installEd25519Polyfill().catch((error: unknown) => {
             <Route path="/" element={<RootRoute />} />
             <Route path="/about" element={<LandingRoute />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            {/* An unknown address goes home. A lab build (lib/feedLab.ts) first tries the feed lab's own route. */}
+            <Route path="*" element={FeedLabRoutes ? <Suspense fallback={null}><FeedLabRoutes /></Suspense> : <Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
         <PwaPrompts />
