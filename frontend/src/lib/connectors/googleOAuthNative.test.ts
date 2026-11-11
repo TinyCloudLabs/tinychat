@@ -358,9 +358,11 @@ describe("the native return is spelled the same everywhere", () => {
     expect(plist).toContain("<string>xyz.tinycloud.exo</string>");
   });
 
-  test("the deep link's scheme is the app id", () => {
+  test("the deep link keeps the original scheme, not the app id", () => {
+    // Android and iOS ship as xyz.tinycloud.home; the private-use scheme registered with the backend and OpenKey
+    // stays xyz.tinycloud.exo (an intent filter or CFBundleURLSchemes entry is independent of the app id).
     const config = readRepo("mobile/capacitor.config.ts");
-    expect(config).toContain('appId: "xyz.tinycloud.exo"');
+    expect(config).toContain('appId: "xyz.tinycloud.home"');
     expect(NATIVE_OAUTH_RETURN_URL.startsWith("xyz.tinycloud.exo://")).toBe(true);
   });
 });
