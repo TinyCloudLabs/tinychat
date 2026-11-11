@@ -195,10 +195,14 @@ file never passes it.
 `KILL`, with seccomp and AppArmor unconfined, to create a sandbox; this is the smallest set that passed the local
 smoke (without `SETFCAP` the gofer fails with `fork/exec /proc/self/exe: operation not permitted`;
 `DAC_READ_SEARCH` and `MKNOD` are not needed). Each bot's state is a tmpfs the supervisor mounts itself, so the
-container needs no devices. The supervisor remounts its cgroup2 namespace read-write (Docker mounts it read-only
-outside privileged mode) and moves itself into a leaf cgroup so each sandbox can have its own limits; it refuses to
-start if that fails. If a CVM's Docker refuses these settings, `privileged: true` in place of them also works; that
-changes little in practice, since the supervisor is already effectively CVM root (see above).
+container needs no devices. At startup the supervisor remounts its cgroup2 namespace read-write (Docker mounts it
+read-only), moves itself into a leaf cgroup so each sandbox can have its own limits, and remounts the `bot-data`
+volume nosuid,nodev. If the host lacks any of this (a private cgroup namespace, the cpu, memory and pids
+controllers, or one of those mounts), the supervisor exits before serving, and the container log shows the error
+naming what is missing, for example
+`supervisor needs a private cgroup2 namespace (cgroup: private); /proc/self/cgroup is "…"`,
+`cgroup controllers unavailable: memory`, or the `mount` command that failed with its exit code and output. Under
+`restart: unless-stopped` each restart logs the same error.
 
 ## Develop
 
