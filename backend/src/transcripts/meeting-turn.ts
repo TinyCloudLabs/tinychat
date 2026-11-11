@@ -234,6 +234,7 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
     abortCheck(params.signal);
     if (errorCode) trace.terminal = errorCode;
     await params.write(params.contentFrame(text));
+    if (errorCode) params.onTerminalError?.(errorCode);
     // The text is already the terminal user-facing error; returning errorCode
     // would make the outer stream owner append a second generic error line.
     return { ...total };

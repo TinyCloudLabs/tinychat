@@ -30,7 +30,7 @@ async function run(replies: Array<Response | (() => Promise<Response>)>, options
   const config: AgentChatConfig = { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: trace => { traces.push(trace); }, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
   const result = await orchestrateToolCalling({ config, model: "test-model", messages: options.messages ?? [{ role: "user", content: "Summarize that meeting's decisions and action items." }], entityId: "entity", roomId: "room", signal: options.signal, remainingMs: options.remainingMs, write: frame => { frames.push(frame); } });
   const answer = frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content ?? ""; } catch { return ""; } }).join("");
-  return { result, requests, tools, answer, traces };
+  return { result, requests, tools, answer, traces, frames };
 }
 
 test.each([
@@ -52,7 +52,12 @@ test.each([
 test("one invalid correction fails as model output without retrieval or raw plan leakage", async () => {
   const r = await run([response({ kind: "meeting_content", privateSentinel: "PRIVATE PLAN VALUE" }), response({})]);
   expect(r.requests).toHaveLength(2); expect(r.tools).toHaveLength(0); expect(r.result.promptTokens).toBe(10);
-  expect(r.result.errorCode).toBe("interpretation_failed"); expect(r.answer).toContain("model"); expect(r.answer).not.toMatch(/specify|rephrase/i);
+  const message = "The model could not prepare a valid meeting request. Please try again.";
+  expect(r.result.errorCode).toBeUndefined();
+  expect(r.traces[0]).toMatchObject({ terminal: "interpretation_failed" });
+  expect(r.answer.split(message)).toHaveLength(2);
+  expect(r.frames.join("")).not.toContain('"stream_error"');
+  expect(r.answer).not.toMatch(/specify|rephrase/i);
   expect(JSON.stringify([r.traces, r.requests[1].messages, r.answer])).not.toContain("PRIVATE PLAN VALUE");
 });
 
@@ -69,7 +74,12 @@ test("a genuine clarification is successful content with no correction", async (
 
 test.each([false, true])("HTTP 429 remains terminal without transport retry (after correction: %s)", async correction => {
   const r = await run([...(correction ? [response({})] : []), new Response("rate limited", { status: 429 })]);
-  expect(r.requests).toHaveLength(correction ? 2 : 1); expect(r.tools).toHaveLength(0); expect(r.result.errorCode).toBe("upstream_failed"); expect(r.result.promptTokens).toBe(correction ? 5 : 0);
+  const message = "The model service could not complete this request. Please try again later.";
+  expect(r.requests).toHaveLength(correction ? 2 : 1); expect(r.tools).toHaveLength(0);
+  expect(r.result.errorCode).toBeUndefined(); expect(r.result.promptTokens).toBe(correction ? 5 : 0);
+  expect(r.traces[0]).toMatchObject({ terminal: "upstream_failed" });
+  expect(r.answer.split(message)).toHaveLength(2);
+  expect(r.frames.join("")).not.toContain('"stream_error"');
 });
 
 test("correction shares the original interpretation deadline and cancels its response", async () => {
@@ -77,7 +87,11 @@ test("correction shares the original interpretation deadline and cancels its res
   const pending = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(": waiting\n\n")); }, cancel() { cancelled++; } });
   const start = Date.now();
   const r = await run([async () => { await Bun.sleep(90); return response({}); }, new Response(pending)], { remainingMs: () => 1000 });
-  expect(r.requests).toHaveLength(2); expect(r.result.errorCode).toBe("interpretation_timeout"); expect(r.result.promptTokens).toBe(5); expect(cancelled).toBe(1);
+  const message = "Understanding this request took too long. Please try again.";
+  expect(r.requests).toHaveLength(2); expect(r.result.errorCode).toBeUndefined(); expect(r.result.promptTokens).toBe(5); expect(cancelled).toBe(1);
+  expect(r.traces[0]).toMatchObject({ terminal: "interpretation_timeout" });
+  expect(r.answer.split(message)).toHaveLength(2);
+  expect(r.frames.join("")).not.toContain('"stream_error"');
   expect(Date.now() - start).toBeLessThan(270); expect(r.tools).toHaveLength(0);
 });
 
@@ -99,7 +113,11 @@ test("an exhausted turn budget prevents sending the correction at all", async ()
   let budgetReads = 0;
   const r = await run([response({}), response(plan)], { remainingMs: () => ++budgetReads <= 2 ? 1000 : 0 });
   expect(r.requests).toHaveLength(1); expect(r.tools).toHaveLength(0);
-  expect(r.result.errorCode).toBe("interpretation_timeout"); expect(r.result.promptTokens).toBe(5);
+  const message = "Understanding this request took too long. Please try again.";
+  expect(r.result.errorCode).toBeUndefined(); expect(r.result.promptTokens).toBe(5);
+  expect(r.traces[0]).toMatchObject({ terminal: "interpretation_timeout" });
+  expect(r.answer.split(message)).toHaveLength(2);
+  expect(r.frames.join("")).not.toContain('"stream_error"');
 });
 
 test("failed correction records both interpretation requests in the trace", async () => {

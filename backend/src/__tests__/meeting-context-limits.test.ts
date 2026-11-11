@@ -62,6 +62,7 @@ async function scenario(options: {
   const serviceSizes: number[] = [];
   const answers: string[] = [];
   const traces: Record<string, unknown>[] = [];
+  const emitted: string[] = [];
   let capabilityCalls = 0;
   const config: AgentChatConfig = {
     agentId: "synthetic-agent", entityIdFor: () => "synthetic-entity",
@@ -80,7 +81,7 @@ async function scenario(options: {
     messages: options.messages ?? [{ role: "user", content: "Summarize the meetings from September 1 to September 6." }],
     capability: async () => { capabilityCalls++; return { meetingRetrieval: { contractVersion: 2 }, buildRevision: "synthetic-fixture-v2" }; },
     runGeneral: async () => { throw new Error("A meeting request must not enter general chat"); },
-    write: () => {},
+    write: frame => { emitted.push(frame); },
     contentFrame: text => { answers.push(text); return text; },
     toolActivityFrame: () => "",
     delegationErrorFrame: () => { throw new Error("No fixture changes access"); },
@@ -122,7 +123,7 @@ async function scenario(options: {
     },
   });
   expect(JSON.stringify(outcomes)).toBe(snapshot);
-  return { requests, tools, serviceSizes, answer: answers.join(""), trace: traces[0], result, capabilityCalls };
+  return { requests, tools, serviceSizes, answer: answers.join(""), trace: traces[0], result, capabilityCalls, emitted };
 }
 
 describe("meeting controller near estimated context limits", () => {
@@ -222,7 +223,11 @@ describe("meeting controller near estimated context limits", () => {
     expect(run.requests).toHaveLength(0);
     expect(run.tools).toHaveLength(0);
     expect(run.capabilityCalls).toBe(0);
-    expect(run.result.errorCode).toBe("interpretation_failed");
-    expect(run.answer).toContain("shorten the conversation");
+    const message = "Please shorten the conversation or specify a narrower meeting request.";
+    expect(run.result.errorCode).toBeUndefined();
+    expect(run.trace).toMatchObject({ terminal: "interpretation_failed" });
+    expect(run.answer.split(message)).toHaveLength(2);
+    expect(run.emitted.join("")).not.toContain('"stream_error"');
   });
+
 });

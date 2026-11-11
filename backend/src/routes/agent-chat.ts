@@ -582,6 +582,8 @@ export interface OrchestrateParams {
   /** Remaining time on the existing SSE owner's deadline. */
   remainingMs?: () => number;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
+  /** A meeting failure whose user-visible terminal text has already been written. */
+  onTerminalError?: (code: StreamErrorCode) => void;
 }
 
 export interface OrchestrateResult {
@@ -1209,9 +1211,9 @@ class AgentStreamOwner {
     }
   }
 
-  complete(result: OrchestrateResult): Promise<void> {
+  complete(result: OrchestrateResult, terminalErrorCode?: StreamErrorCode): Promise<void> {
     if (result.errorCode) return this.fail(new StreamFailure(result.errorCode));
-    if (this.claim("success")) void this.deliver(result);
+    if (this.claim(terminalErrorCode ?? "success")) void this.deliver(result, undefined, !terminalErrorCode);
     return this.closed;
   }
 
@@ -1237,7 +1239,7 @@ class AgentStreamOwner {
     return true;
   }
 
-  private async deliver(result?: OrchestrateResult, code?: StreamErrorCode): Promise<void> {
+  private async deliver(result?: OrchestrateResult, code?: StreamErrorCode, includeMetadata = true): Promise<void> {
     try {
       if (this.busy) await this.busy;
       if (this.drain) await this.drain;
@@ -1245,7 +1247,7 @@ class AgentStreamOwner {
       if (this.partialFrame) await this.writeBytes("\n\n", true);
       if (code) {
         await this.writeBytes(`data: ${JSON.stringify({ stream_error: { code }, choices: [{ delta: { content: "\n\nThis reply was interrupted before it finished. Please try again." } }] })}\n\n`, true);
-      } else if (result) {
+      } else if (result && includeMetadata) {
         if (result.completionId) await this.writeBytes(idFrame(result.completionId), true);
         await this.writeBytes(usageFrame(result.promptTokens, result.completionTokens), true);
       }
@@ -1615,6 +1617,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       return;
     }
     let orchestrateResult: OrchestrateResult | null = null;
+    let meetingTerminalErrorCode: StreamErrorCode | undefined;
     let observedUsage = { promptTokens: 0, completionTokens: 0 };
     if (await streamOwner.open()) {
       try {
@@ -1623,6 +1626,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
+          onTerminalError: code => { meetingTerminalErrorCode = code; },
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
         });
       } catch (error) {
@@ -1704,7 +1708,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       }
     }
     // Also await an already claimed timeout/cancellation terminal's drain.
-    await streamOwner.complete(orchestrateResult);
+    await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode);
     } finally { releaseAccess?.(); }
   });
 }

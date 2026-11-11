@@ -377,7 +377,13 @@ describe("private access lifecycle", () => {
 });
 
 it("retains interpretation usage when the legacy controller returns a handled failure", async () => {
-  const cfg = { ...config((async () => provider(frame({ usage: { prompt_tokens: 7, completion_tokens: 3 } }) + frame({ choices: "invalid" }) + done)) as typeof fetch), meetingContentRetrievalEnabled: true, meetingTrace: () => {} };
-  const result = await orchestrateToolCalling({ config: cfg, model: "phala/test", messages: [{ role: "user", content: "Summarize the meeting." }], entityId: "e", write: () => {} });
-  expect(result).toMatchObject({ promptTokens: 7, completionTokens: 3, errorCode: "upstream_incomplete" });
+  const traces: unknown[] = [], frames: string[] = [];
+  const cfg = { ...config((async () => provider(frame({ usage: { prompt_tokens: 7, completion_tokens: 3 } }) + frame({ choices: "invalid" }) + done)) as typeof fetch), meetingContentRetrievalEnabled: true, meetingTrace: (trace: unknown) => { traces.push(trace); } };
+  const result = await orchestrateToolCalling({ config: cfg, model: "phala/test", messages: [{ role: "user", content: "Summarize the meeting." }], entityId: "e", write: frame => { frames.push(frame); } });
+  const message = "The model service returned an incomplete reply. Please try again.";
+  expect(result).toMatchObject({ promptTokens: 7, completionTokens: 3, completionId: "" });
+  expect(result.errorCode).toBeUndefined();
+  expect(traces[0]).toMatchObject({ terminal: "upstream_incomplete" });
+  expect(frames.join("").split(message)).toHaveLength(2);
+  expect(frames.join("")).not.toContain('"stream_error"');
 });

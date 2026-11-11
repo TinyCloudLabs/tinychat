@@ -280,7 +280,7 @@ describe("orchestrateToolCalling", () => {
       return { ok: true, body: sseStream([dataFrame({ choices: [{ delta: { content: "unverified" }, finish_reason: "stop" }] })]) };
     }) as typeof fetch;
 
-    const frames: string[] = [];
+    const frames: string[] = [], traces: unknown[] = [];
     const result = await orchestrateToolCalling({
       config: {
         ...baseConfig(genericFetch),
@@ -289,6 +289,7 @@ describe("orchestrateToolCalling", () => {
         meetingContentRetrievalEnabled: true,
         meetingContentModelAllowed: () => true,
         mcpOwner: "synthetic-owner",
+        meetingTrace: trace => traces.push(trace),
       },
       model: "phala/gpt-oss-120b",
       messages: [{ role: "user", content: "What happened in my last meeting?" }],
@@ -296,7 +297,11 @@ describe("orchestrateToolCalling", () => {
       write: frame => frames.push(frame),
     });
 
-    expect(result.errorCode).toBe("agent_failed");
+    const message = "This request could not be completed. Please try again.";
+    expect(result.errorCode).toBeUndefined();
+    expect(traces[0]).toMatchObject({ terminal: "agent_failed" });
+    expect(forwardedContent(frames).split(message)).toHaveLength(2);
+    expect(frames.join("")).not.toContain('"stream_error"');
     expect(genericCalls).toBe(0);
     expect(forwardedContent(frames)).not.toContain("unverified");
   });
@@ -1516,6 +1521,38 @@ describe("orchestrateToolCalling", () => {
 });
 
 describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
+  it("keeps failed meeting usage server-side without sending usage metadata", async () => {
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    _setStripeClient(mockStripe(null));
+    const restore = stubCatalogFetch();
+    const entries: unknown[] = [], traces: unknown[] = [];
+    const fetchImpl = (async () => new Response(
+      dataFrame({ id: "private-completion-id", choices: [{ delta: { tool_calls: [{ index: 0, id: "call", function: { name: "prepare_meeting_turn", arguments: "{}" } }] }, finish_reason: "length" }] })
+        + dataFrame({ usage: { prompt_tokens: 17, completion_tokens: 5 } }) + "data: [DONE]\\n\\n",
+    )) as typeof fetch;
+    try {
+      const { req, res } = makeReqRes();
+      await createAgentChatHandler({
+        ...baseConfig(fetchImpl),
+        meetingContentRetrievalEnabled: true,
+        meetingTrace: trace => traces.push(trace),
+        streamRuntime: { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), log: () => {} },
+        flusher: { enqueue: entry => entries.push(entry) } as AgentChatConfig["flusher"],
+      })(req, res);
+
+      const text = res.chunks.join("");
+      const message = "The model service returned an incomplete reply. Please try again.";
+      expect(text.split(message)).toHaveLength(2);
+      expect(text).not.toContain('"stream_error"');
+      expect(text).not.toMatch(/"usage"|"id"|private-completion-id/);
+      expect(traces).toEqual([expect.objectContaining({ terminal: "upstream_incomplete" })]);
+      expect(getUsage(ADDR, TIERS.free, null).used).toBe(1);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ prompt_tokens: 17, completion_tokens: 5, credits: 1 });
+    } finally { restore(); }
+  });
+
   for (const [failure, code, completed] of [
     ["invalid-plan", "interpretation_failed", true],
     ["incomplete-finish", "upstream_incomplete", true],
@@ -1555,9 +1592,17 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         const rounds = failure === "invalid-plan" ? 2 : 1;
         expect(models).toBe(rounds);
         expect(dispatches).toBe(failure === "tool-overflow" ? 1 : 0);
-        expect(text.match(/"stream_error":/g)).toHaveLength(1);
-        expect(text).toContain(`"stream_error":{"code":"${code}"}`);
-        expect(text.match(/data: \[DONE\]/g)).toHaveLength(1);
+        if (failure === "tool-overflow") {
+          expect(text.match(/"stream_error":/g)).toHaveLength(1);
+          expect(text).toContain(`"stream_error":{"code":"${code}"}`);
+        } else {
+          const message = failure === "invalid-plan" ? "The model could not prepare a valid meeting request. Please try again."
+            : failure === "provider-error" ? "The model service could not complete this request. Please try again later."
+            : "The model service returned an incomplete reply. Please try again.";
+          expect(text.split(message)).toHaveLength(2);
+          expect(text.match(/"stream_error":/g)).toBeNull();
+          expect(text).not.toContain('"errorCode"');
+        }
         expect(endCount).toBe(1);
         expect(text).not.toMatch(/"usage"|"id"|private-completion-id|PRIVATE PROVIDER|OVERSIZED PRIVATE/);
         expect(logs).toHaveLength(1);

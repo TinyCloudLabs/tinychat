@@ -110,18 +110,25 @@ test("an admitted content turn still refuses an incompatible reader before priva
     if (url === "https://model.test/chat/completions") return response(contentPlan, true);
     throw new Error("Unexpected private retrieval");
   }) as typeof fetch);
+  const traces: unknown[] = [];
+  cfg.meetingTrace = trace => { traces.push(trace); };
   const result = await orchestrateToolCalling({ config: cfg, model: glm,
     messages: [{ role: "user", content: "Summarize this meeting" }], entityId: "entity", write: frame => { frames.push(frame); } });
-  expect(result.errorCode).toBe("meeting_feature_unavailable");
-  expect(urls).toEqual(["https://model.test/chat/completions", "https://eliza.test/capabilities"]);
-  expect(output(frames)).toContain("compatibility check");
+  const message = "Meeting retrieval is temporarily unavailable because the reader service has not passed its compatibility check.";
+  expect(result.errorCode).toBeUndefined();
+  expect(traces[0]).toMatchObject({ terminal: "meeting_feature_unavailable" });
+  expect(output(frames).split(message)).toHaveLength(2);
+  expect(frames.join("")).not.toContain('"stream_error"');
 });
 
+
 test("the content controller retains its own model guard before capability and retrieval", async () => {
-  const frames: string[] = [];
+  const frames: string[] = [], traces: unknown[] = [];
   const unexpected = async () => { throw new Error("Unadmitted content must not reach a reader or answer model"); };
+  const cfg = config(unexpected as typeof fetch);
+  cfg.meetingTrace = trace => { traces.push(trace); };
   const result = await runMeetingTurn({
-    config: config(unexpected as typeof fetch), model: kimi, contextWindowTokens: 32000,
+    config: cfg, model: kimi, contextWindowTokens: 32000,
     messages: [{ role: "user", content: "Summarize this meeting" }], entityId: "entity",
     streamErrorCode: () => undefined,
     modelCall: async () => ({ content: "", calls: [{ id: "plan", name: "prepare_meeting_turn", args: JSON.stringify(contentPlan) }],
@@ -130,8 +137,11 @@ test("the content controller retains its own model guard before capability and r
     contentFrame: text => text, toolActivityFrame: () => "", delegationErrorFrame: () => "",
     write: frame => { frames.push(frame); },
   });
-  expect(result.errorCode).toBe("meeting_feature_unavailable");
-  expect(frames.join("")).toBe("Meeting content answers are not available for this model yet.");
+  const message = "Meeting content answers are not available for this model yet.";
+  expect(result.errorCode).toBeUndefined();
+  expect(traces[0]).toMatchObject({ terminal: "meeting_feature_unavailable" });
+  expect(frames.join("").split(message)).toHaveLength(2);
+  expect(frames.join("")).not.toContain('"stream_error"');
 });
 
 test.each([
