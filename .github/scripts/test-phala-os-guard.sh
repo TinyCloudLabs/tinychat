@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests phala-os-guard.sh with stubbed `phala` and `curl`: no network, no Phala account.
+# Tests phala-os-guard.sh with CVM metadata: no network, no Phala account.
 # Usage: test-phala-os-guard.sh   (from anywhere)
 set -euo pipefail
 
@@ -7,63 +7,16 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 guard="${here}/phala-os-guard.sh"
 root="$(mktemp -d -p "${TMPDIR:-/var/tmp}")"
 trap 'rm -rf "${root}"' EXIT
-mkdir "${root}/bin" "${root}/tmp" "${root}/fixtures"
+mkdir "${root}/bin"
+# Refuse network access, including when checking the pre-change guard.
+printf '#!/usr/bin/env bash\nexit 1\n' >"${root}/bin/curl"
+chmod +x "${root}/bin/curl"
 
 PROD_NAME=dstack-0.5.12
 PROD_HASH=8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
-REAL_DEV_HASH=e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b
-
-# The stubs print what the real tools would, driven by STUB_* variables.
-cat >"${root}/bin/phala" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "${STUB_CVM_JSON}"
-STUB
-cat >"${root}/bin/curl" <<'STUB'
-#!/usr/bin/env bash
-echo "curl $*" >>"${STUB_LOG}"
-out=""; head=0; timeout=0; prev=""
-for arg in "$@"; do
-  [ "${prev}" = "-o" ] && out="${arg}"
-  [ "${prev}" = "--max-time" ] && timeout="${arg}"
-  case "${arg}" in -*I*) head=1 ;; esac
-  prev="${arg}"
-done
-[ "${timeout}" -gt 0 ] && [ "${timeout}" -le 120 ] || { echo "curl without a bounded --max-time" >&2; exit 2; }
-if [ "${head}" = 1 ]; then
-  [ "${STUB_HEAD}" != fail ] || exit 6
-  printf '%s' "${STUB_HEAD}"
-  exit 0
-fi
-[ "${STUB_GET}" != fail ] || exit 28
-cp "${STUB_TARBALL}" "${out}"
-STUB
-chmod +x "${root}/bin/phala" "${root}/bin/curl"
-
-# A fake image: bzImage and ovmf.fd plus a sha256sum.txt that lists them (or <manifest-extra>), packed with <omit> left out.
-make_image() { # <name> [<manifest-extra-line>] [<omit-file>] [<tamper-file>]
-  local dir="${root}/fixtures/$1"
-  mkdir "${dir}"
-  echo kernel >"${dir}/bzImage"; echo firmware >"${dir}/ovmf.fd"
-  (cd "${dir}" && sha256sum bzImage ovmf.fd >sha256sum.txt)
-  [ -z "${2:-}" ] || printf '%s\n' "$2" >>"${dir}/sha256sum.txt"
-  [ -z "${4:-}" ] || echo changed >"${dir}/$4"
-  [ -z "${3:-}" ] || rm "${dir}/$3"
-  (cd "${dir}" && tar -czf "../$1.tar.gz" *)
-  sha256sum "${dir}/sha256sum.txt" | cut -d' ' -f1
-}
-ZERO="$(printf '0%.0s' {1..64})"
-GOOD_HASH="$(make_image good)"
-# Same manifest as good, but a listed file was altered or is absent from the archive.
-make_image tampered "" "" bzImage >/dev/null
-make_image missing "" ovmf.fd >/dev/null
-# A manifest of its own (so its own hash), whose extra entry is the thing under test.
-ABSOLUTE_HASH="$(make_image absolute "${ZERO}  /etc/hostname")"
-DOTDOT_HASH="$(make_image dotdot "${ZERO}  ../escape")"
-MALFORMED_HASH="$(make_image malformed "not a manifest line")"
-make_image other "${ZERO}  ovmf.fd" >/dev/null
-printf '# test allowlist\n%s  # the fake dev image\n' "${GOOD_HASH}" >"${root}/allowlist.txt"
-printf '%s\n' "${ABSOLUTE_HASH}" "${DOTDOT_HASH}" "${MALFORMED_HASH}" >>"${root}/allowlist.txt"
-echo "not a tarball" >"${root}/fixtures/garbage.tar.gz"
+DEV_NAME=dstack-dev-0.5.12
+DEV_HASH=e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b
+OTHER_HASH="$(printf 'a%.0s' {1..64})"
 
 os_json() { # <is_dev> <name> <hash>
   jq -nc --argjson dev "$1" --arg name "$2" --arg hash "$3" \
@@ -71,101 +24,71 @@ os_json() { # <is_dev> <name> <hash>
 }
 
 failures=0
-# run <cvm-json> [VAR=value ...]: sets $out and $code from the guard fed like the workflow feeds it.
+# run <cvm-json> [VAR=value ...]: feed metadata exactly as the workflow does.
 run() {
   local cvm="$1"; shift
-  : >"${root}/curl.log"
   set +e
-  out="$(env -i PATH="${root}/bin:/usr/bin:/bin" TMPDIR="${root}/tmp" \
-    PHALA_OS_IMAGE="${PROD_NAME}" PHALA_OS_IMAGE_HASH="${PROD_HASH}" DEV_OS_ALLOWLIST="${root}/allowlist.txt" \
-    STUB_CVM_JSON="${cvm}" STUB_LOG="${root}/curl.log" STUB_HEAD=200 STUB_GET=ok STUB_TARBALL="${root}/fixtures/good.tar.gz" \
-    "$@" bash -c 'phala cvms get cvm --json | bash "$0"' "${guard}" 2>&1)"
+  out="$(env -i PATH="${root}/bin:/usr/bin:/bin" \
+    PHALA_OS_IMAGE="${PROD_NAME}" PHALA_OS_IMAGE_HASH="${PROD_HASH}" \
+    GITHUB_EVENT_NAME=workflow_dispatch GITHUB_STEP_SUMMARY="${root}/summary" \
+    "$@" bash "${guard}" <<<"${cvm}" 2>&1)"
   code=$?
   set -e
 }
 expect() { # <name> <exit code> <output regex>
   if [ "${code}" != "$2" ] || ! grep -Eq -- "$3" <<<"${out}"; then
-    echo "FAIL: $1 (exit ${code}, wanted $2 matching /$3/)"; echo "${out}" | sed 's/^/    /'
+    echo "FAIL: $1 (exit ${code}, wanted $2 matching /$3/)"
+    printf '    %s\n' "${out}"
     failures=$((failures + 1))
   else
     echo "ok: $1"
   fi
 }
-no_curl() { [ ! -s "${root}/curl.log" ] || { echo "FAIL: $1 called curl"; failures=$((failures + 1)); }; }
-no_leftovers() { [ -z "$(ls -A "${root}/tmp")" ] || { echo "FAIL: $1 left a temp dir"; failures=$((failures + 1)); }; }
 
 run "$(os_json false "${PROD_NAME}" "${PROD_HASH}")"
-expect "production image passes" 0 "runs the production OS image"; no_curl "production image"
+expect "production image passes" 0 "runs the production OS image"
+run "$(os_json false "${PROD_NAME}" "${OTHER_HASH}")"
+expect "a non-pinned production hash is refused" 1 "not on the production OS image"
+run "$(os_json false other-production-image "${PROD_HASH}")"
+expect "a non-pinned production name is refused" 1 "not on the production OS image"
 
-run "$(os_json false "${PROD_NAME}" "$(printf 'a%.0s' {1..64})")"
-expect "a non-pinned production image is refused" 1 "not on the production OS image"
+run "$(os_json true "${DEV_NAME}" "${DEV_HASH}")"
+expect "the recorded dev image is refused by default" 1 "dev OS.*refused"
+run "$(os_json true "${DEV_NAME}" "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=false
+expect "an explicit false refuses the recorded dev image" 1 "dev OS.*refused"
+run "$(os_json true "${DEV_NAME}" "${OTHER_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "the transition input cannot permit another dev hash" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true other-dev-image "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "the transition input cannot permit another dev name" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV_NAME}" "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "the exact recorded dev image passes only with a loud transition warning" 0 "::warning::TC-2843.*${DEV_NAME}.*${DEV_HASH}.*allow_current_dev_os_until_tc2843=true"
+grep -Eq "TC-2843.*${DEV_NAME}.*${DEV_HASH}" "${root}/summary" 2>/dev/null || {
+  echo "FAIL: transition warning missing from run summary"
+  failures=$((failures + 1))
+}
+for event in push schedule workflow_call; do
+  run "$(os_json true "${DEV_NAME}" "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true GITHUB_EVENT_NAME="${event}"
+  expect "${event} cannot enable the transition override" 1 "override requires workflow_dispatch"
+done
+run "$(os_json false "${PROD_NAME}" "${PROD_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true GITHUB_EVENT_NAME=push
+expect "a non-manual override is refused even on production" 1 "override requires workflow_dispatch"
+run "$(os_json true "${DEV_NAME}" "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=TRUE
+expect "a non-boolean override cannot permit dev" 1 "dev OS.*refused"
+run "$(os_json false "${PROD_NAME}" "${OTHER_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "the transition input cannot bypass the production pin" 1 "not on the production OS image"
+run "$(os_json true "${DEV_NAME}" UPPERCASE-OR-SHORT)" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "a malformed dev hash is refused even with the transition input" 1 "not the recorded TC-2843 dev OS image"
 
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")"
-expect "pinned dev image with a good pre-check passes" 0 "integrity check passed"
-grep -q "mr_${GOOD_HASH}.tar.gz" "${root}/curl.log" || { echo "FAIL: pre-check URL"; failures=$((failures + 1)); }
-no_leftovers "good pre-check"
-
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" STUB_TARBALL="${root}/fixtures/other.tar.gz"
-expect "pinned dev image with a bad sha is refused" 1 "hashes to [0-9a-f]{64}, not ${GOOD_HASH}"; no_leftovers "bad sha"
-
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" STUB_TARBALL="${root}/fixtures/tampered.tar.gz"
-expect "a tampered file listed in the manifest is refused" 1 "bzImage: FAILED"; no_leftovers "tampered file"
-
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" STUB_TARBALL="${root}/fixtures/missing.tar.gz"
-expect "a manifest entry with a missing file is refused" 1 "ovmf.fd: FAILED open or read"; no_leftovers "missing file"
-
-run "$(os_json true "dstack-dev-0.5.12" "${ABSOLUTE_HASH}")" STUB_TARBALL="${root}/fixtures/absolute.tar.gz"
-expect "a manifest entry with an absolute path is refused" 1 "lists a path outside the image: /etc/hostname"; no_leftovers "absolute path"
-
-run "$(os_json true "dstack-dev-0.5.12" "${DOTDOT_HASH}")" STUB_TARBALL="${root}/fixtures/dotdot.tar.gz"
-expect "a manifest entry with .. is refused" 1 "lists a path outside the image: ../escape"; no_leftovers "dotdot path"
-
-run "$(os_json true "dstack-dev-0.5.12" "${MALFORMED_HASH}")" STUB_TARBALL="${root}/fixtures/malformed.tar.gz"
-expect "a malformed manifest line is refused" 1 "has a malformed line"; no_leftovers "malformed manifest"
-
-run "$(os_json true "dstack-dev-0.5.12" "$(printf 'b%.0s' {1..64})")"
-expect "an unknown dev hash is refused" 1 "not in the pinned allowlist"; no_curl "unknown dev hash"
-
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" STUB_HEAD=fail
-expect "a failed HEAD request is refused" 1 "Cannot reach"; no_leftovers "failed HEAD"
-
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" STUB_HEAD=302
-expect "a non-200 answer is refused" 1 "answered HTTP 302"
-
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" STUB_GET=fail
-expect "a failed download is refused" 1 "Cannot download"; no_leftovers "failed download"
-
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" STUB_TARBALL="${root}/fixtures/garbage.tar.gz"
-expect "an archive that does not extract is refused" 1 "Cannot extract"; no_leftovers "bad archive"
-
-run "$(os_json true "dstack-dev-0.5.12" "${REAL_DEV_HASH}")" DEV_OS_ALLOWLIST="${here}/phala-dev-os-allowlist.txt"
-expect "the repo allowlist pins the dev image, then the pre-check refuses a mismatch" 1 "hashes to [0-9a-f]{64}, not ${REAL_DEV_HASH}"
-
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" DEV_OS_ALLOWLIST="${root}/missing.txt"
-expect "a missing allowlist is refused" 1 "allowlist .* is missing"; no_curl "missing allowlist"
-
-echo "not-a-hash" >"${root}/bad-allowlist.txt"
-run "$(os_json true "dstack-dev-0.5.12" "${GOOD_HASH}")" DEV_OS_ALLOWLIST="${root}/bad-allowlist.txt"
-expect "a malformed allowlist is refused" 1 "malformed entry"; no_curl "malformed allowlist"
-
-run "$(os_json true "dstack-dev-0.5.12" "UPPERCASE-OR-SHORT")"
-expect "a malformed dev hash is refused" 1 "not 64 lowercase hex"; no_curl "malformed dev hash"
-
-run '{"name":"cvm","os":{"name":"dstack-dev-0.5.12","os_image_hash":"'"${GOOD_HASH}"'"}}'
-expect "a missing is_dev is refused" 1 "missing is_dev"; no_curl "missing is_dev"
-
-run '{"name":"cvm","os":{"is_dev":true,"name":"dstack-dev-0.5.12"}}'
-expect "a missing os_image_hash is refused" 1 "missing is_dev, name or os_image_hash"; no_curl "missing hash"
-
+run '{"name":"cvm","os":{"name":"dstack-dev-0.5.12","os_image_hash":"'"${DEV_HASH}"'"}}'
+expect "a missing is_dev is refused" 1 "missing is_dev"
+run '{"name":"cvm","os":{"is_dev":true,"name":"dstack-dev-0.5.12"}}' ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "a missing hash is refused even with the transition input" 1 "missing is_dev, name or os_image_hash"
 run '{"name":"cvm"}'
 expect "a missing os object is refused" 1 "missing is_dev"
-
 run '{"name":"cvm","os":{"is_dev":"false","name":"'"${PROD_NAME}"'","os_image_hash":"'"${PROD_HASH}"'"}}'
 expect "a string is_dev is refused" 1 "missing is_dev"
-
 run 'not json'
 expect "unparsable Phala output is refused" 1 "Cannot read the OS"
-
 run ''
 expect "empty Phala output is refused" 1 "missing is_dev"
 

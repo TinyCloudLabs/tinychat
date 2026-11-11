@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Phala deploy guard: refuse unless the CVM runs the pinned production OS image, or
-# one dev OS image that is pinned in phala-dev-os-allowlist.txt and passes a fresh
-# integrity check in this job.
+# Phala deploy guard: require the pinned production OS image by default.
+# TC-2843 transition only: an explicit manual dispatch may permit the exact recorded dev image.
 #
-# Usage:  phala-os-guard.sh < "$(phala cvms get <cvm> --json)"   (the CVM JSON on stdin)
-# Env:    PHALA_OS_IMAGE, PHALA_OS_IMAGE_HASH   the production image name and hash (required)
-#         DEV_OS_ALLOWLIST                      allowlist file (default: next to this script)
+# Usage:  phala cvms get <cvm> --json | bash phala-os-guard.sh
+# Env:    PHALA_OS_IMAGE, PHALA_OS_IMAGE_HASH   required production image name and hash
+#         ALLOW_CURRENT_DEV_OS_UNTIL_TC2843     default false; only literal true enables the exception
+#         GITHUB_EVENT_NAME                   must be workflow_dispatch for the exception
+#         GITHUB_STEP_SUMMARY                 run summary path (set by Actions)
 #
-# Fails closed (exit 1) on an unknown dev hash, a missing or malformed field, a failed
-# fetch, a hash mismatch, or any curl, tar or network error. It never changes the OS.
+# Fails closed on missing/malformed fields or any unpinned OS tuple. Never changes the OS.
 set -euo pipefail
 
 fail() {
@@ -18,8 +18,10 @@ fail() {
 
 : "${PHALA_OS_IMAGE:?PHALA_OS_IMAGE is not set}"
 : "${PHALA_OS_IMAGE_HASH:?PHALA_OS_IMAGE_HASH is not set}"
-allowlist="${DEV_OS_ALLOWLIST:-$(dirname "${BASH_SOURCE[0]}")/phala-dev-os-allowlist.txt}"
-hash_re='^[0-9a-f]{64}$'
+allow_dev="${ALLOW_CURRENT_DEV_OS_UNTIL_TC2843:-false}"
+if [ "${allow_dev}" = true ] && [ "${GITHUB_EVENT_NAME:-}" != workflow_dispatch ]; then
+  fail "TC-2843 override requires workflow_dispatch"
+fi
 
 cvm="$(cat)"
 os="$(jq -c '.os' <<<"${cvm}" 2>/dev/null)" || fail "Cannot read the OS of the CVM from the Phala output"
@@ -42,39 +44,12 @@ if [ "${is_dev}" = "false" ]; then
   exit 0
 fi
 
-# A dev image: pinned hash, then a fresh integrity check.
-[[ "${hash}" =~ ${hash_re} ]] || fail "The dev OS hash is not 64 lowercase hex characters. Found: ${os}"
-[ -f "${allowlist}" ] || fail "The dev OS allowlist ${allowlist} is missing"
-pinned=0
-while IFS= read -r line || [ -n "${line}" ]; do
-  line="${line%%#*}"
-  line="${line//[[:space:]]/}"
-  [ -n "${line}" ] || continue
-  [[ "${line}" =~ ${hash_re} ]] || fail "The dev OS allowlist ${allowlist} has a malformed entry"
-  [ "${line}" != "${hash}" ] || pinned=1
-done <"${allowlist}"
-[ "${pinned}" = 1 ] || fail "The CVM runs the dev OS image ${name} (${hash}), which is not in the pinned allowlist. Found: ${os}"
-
-url="https://download.dstack.org/os-images/mr_${hash}.tar.gz"
-work="$(mktemp -d)" || fail "Cannot create a temporary directory"
-trap 'rm -rf "${work}"' EXIT
-status="$(curl -fsSI --max-time 120 -o /dev/null -w '%{http_code}' "${url}")" || fail "Cannot reach ${url}"
-[ "${status}" = 200 ] || fail "${url} answered HTTP ${status}, not 200"
-curl -fsS --max-time 120 --max-filesize 1073741824 -o "${work}/image.tar.gz" "${url}" || fail "Cannot download ${url}"
-mkdir "${work}/image"
-tar -xzf "${work}/image.tar.gz" -C "${work}/image" || fail "Cannot extract the image from ${url}"
-[ -f "${work}/image/sha256sum.txt" ] || fail "The image from ${url} has no sha256sum.txt"
-got="$(cd "${work}/image" && sha256sum sha256sum.txt)" || fail "Cannot hash sha256sum.txt"
-got="${got%% *}"
-[ "${got}" = "${hash}" ] || fail "sha256sum.txt of the image from ${url} hashes to ${got}, not ${hash}"
-# The manifest hash is pinned, so its entries are trusted: now check every listed file against them. Entries
-# that are malformed, absolute or contain ".." are refused so no path leaves the extracted directory.
-manifest_re='^[0-9a-f]{64} [ *](.+)$'
-while IFS= read -r line || [ -n "${line}" ]; do
-  [[ "${line}" =~ ${manifest_re} ]] || fail "sha256sum.txt of the image from ${url} has a malformed line"
-  entry="${BASH_REMATCH[1]}"
-  [[ "${entry}" != /* && "${entry}" != *..* ]] || fail "sha256sum.txt of the image from ${url} lists a path outside the image: ${entry}"
-done <"${work}/image/sha256sum.txt"
-chk="$(cd "${work}/image" && sha256sum -c --strict sha256sum.txt 2>&1)" ||
-  fail "A file of the image from ${url} does not match its sha256sum.txt: ${chk//$'\n'/; }"
-echo "The CVM runs the pinned dev OS image ${name} (${hash}); its integrity check passed"
+[ "${allow_dev}" = true ] || fail "The dev OS image ${name} (${hash}) is refused; production OS is required by default (TC-2843)"
+if [ "${name}" != dstack-dev-0.5.12 ] || [ "${hash}" != e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b ]; then
+  fail "The CVM is not the recorded TC-2843 dev OS image. Found: ${os}"
+fi
+warning="TC-2843: permitting DEV OS ${name} (${hash}) ONLY because allow_current_dev_os_until_tc2843=true was explicitly selected for this manual dispatch. This is NOT a production OS; remove this input with the OS move or first post-move deploy."
+echo "::warning::${warning}"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  printf '\n> **WARNING: %s**\n' "${warning}" >>"${GITHUB_STEP_SUMMARY}"
+fi
