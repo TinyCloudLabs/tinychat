@@ -564,10 +564,11 @@ export class ConnectorQueue {
   async sweep(
     source: string,
     address: string,
+    safetyMarginMs = 0,
   ): Promise<{ pending: number; dead: number }> {
     return this.withLock(pendingQueueKey(source, address), async () => {
       const state = await this.readState(source, address);
-      const swept = this.sweepExpired(state.items, state.dead);
+      const swept = this.sweepExpired(state.items, state.dead, safetyMarginMs);
       await this.persist(
         source,
         address,
@@ -1027,15 +1028,20 @@ export class ConnectorQueue {
    * Pending and dead-letter entries are both server-held meeting IDs. Drop each at the
    * original receipt time plus the TTL; never promote an expired pending ID into the DLQ.
    */
-  private sweepExpired(items: PendingItem[], dead: DeadItem[]): DeadSweep {
-    const cutoff = this.now() - this.ttlMs;
+  private sweepExpired(
+    items: PendingItem[],
+    dead: DeadItem[],
+    safetyMarginMs = 0,
+  ): DeadSweep {
+    const retentionMs = Math.max(0, this.ttlMs - Math.max(0, safetyMarginMs));
+    const cutoff = this.now() - retentionMs;
     const retainedItems = items.filter((item) => {
       const receivedAt = Date.parse(item.receivedAt);
       return Number.isFinite(receivedAt) && receivedAt > cutoff;
     });
     const retainedDead = dead.filter((item) => {
-      const deadAt = Date.parse(item.deadAt);
-      return Number.isFinite(deadAt) && deadAt > cutoff;
+      const receivedAt = Date.parse(item.receivedAt);
+      return Number.isFinite(receivedAt) && receivedAt > cutoff;
     });
     return {
       items: retainedItems,

@@ -739,6 +739,22 @@ describe("W4 content store — retention", () => {
     const replay = await store.upsert(upsertInput({ sourceId: "mtg-retention" }));
     expect(replay).toEqual({ ok: true, stored: "created" });
   });
+  test("the periodic sweep margin removes rows before the 14-day deadline", async () => {
+    const { store, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-sweep-margin" }));
+
+    clock.now = T0 + 14 * DAY_MS - 5 * 60_000;
+    expect(
+      (
+        await store.sweepRetention({
+          source: SOURCE,
+          address: ADDRESS_A,
+          safetyMarginMs: 5 * 60_000,
+        })
+      ).swept,
+    ).toBe(1);
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-sweep-margin")).toBeNull();
+  });
   test("sync-off deletes reconciled rows and tombstones, but retains unreconciled-only data", async () => {
     const { store, blobs } = harness();
     await store.upsert(upsertInput({ sourceId: "mtg-reconciled" }));
@@ -983,6 +999,41 @@ describe("W4 content store — retention", () => {
 
     expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-orphan")).toBeNull();
   });
+  test("[delta-05] an unreadable index is removed with its content prefix", async () => {
+    const { store, blobs } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-unreadable-index" }));
+    await blobs.writeIndex(SOURCE, ADDRESS_A, {
+      ciphertext: "not-an-encrypted-index",
+      wrappedDEK: "not-a-wrapped-key",
+      updatedAt: new Date(T0).toISOString(),
+    });
+
+    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(await blobs.readIndex(SOURCE, ADDRESS_A)).toBeNull();
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-unreadable-index")).toBeNull();
+  });
+  test("[delta-05] a legacy tombstone without an expiry is not kept", async () => {
+    const { store } = harness();
+    const seedIndex = store as unknown as {
+      writeIndex(source: string, address: string, index: unknown): Promise<void>;
+    };
+    await seedIndex.writeIndex(SOURCE, ADDRESS_A, {
+      meetings: [],
+      tombstones: [{
+        sourceId: "mtg-legacy-tombstone",
+        sweptAt: new Date(T0).toISOString(),
+      }],
+    });
+
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-legacy-tombstone",
+      }),
+    ).toBe(false);
+  });
 
   test("[delta-05] the sweep touches ONLY the address it was asked for", async () => {
     const { store, clock } = harness();
@@ -1043,6 +1094,7 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
   interface SweepCall {
     source: string;
     address: string;
+    safetyMarginMs?: number;
   }
 
   function sweepRecorder(options: { throwOn?: string } = {}): {
@@ -1058,7 +1110,13 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
       maxInflight: () => peak,
       target: {
         async sweepRetention(input) {
-          calls.push({ source: input.source, address: input.address });
+          calls.push({
+            source: input.source,
+            address: input.address,
+            ...(input.safetyMarginMs === undefined
+              ? {}
+              : { safetyMarginMs: input.safetyMarginMs }),
+          });
           inflight += 1;
           peak = Math.max(peak, inflight);
           try {
@@ -1090,10 +1148,24 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
 
     expect(result).toEqual({ addresses: 2, swept: 2, errors: 0 });
     expect(recorder.calls).toEqual([
-      { source: SOURCE, address: ADDRESS_A },
-      { source: SOURCE, address: ADDRESS_B },
+      { source: SOURCE, address: ADDRESS_A, safetyMarginMs: 5 * 60_000 },
+      { source: SOURCE, address: ADDRESS_B, safetyMarginMs: 5 * 60_000 },
     ]);
     expect(recorder.maxInflight()).toBe(1);
+  });
+  test("the configured sweep interval is passed as the retention safety margin", async () => {
+    const recorder = sweepRecorder();
+    const sweeper = new IngestRetentionSweeper({
+      content: recorder.target,
+      indexes: indexes(ADDRESS_A),
+      intervalMs: 1_234,
+    });
+
+    await sweeper.sweepOnce();
+
+    expect(recorder.calls).toEqual([
+      { source: SOURCE, address: ADDRESS_A, safetyMarginMs: 1_234 },
+    ]);
   });
 
   test("[delta-05] a failed directory listing is retried on the next retention pass", async () => {
@@ -1110,7 +1182,9 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
 
     expect(await sweeper.sweepOnce()).toEqual({ addresses: 0, swept: 0, errors: 1 });
     expect(await sweeper.sweepOnce()).toEqual({ addresses: 1, swept: 1, errors: 0 });
-    expect(recorder.calls).toEqual([{ source: SOURCE, address: ADDRESS_A }]);
+    expect(recorder.calls).toEqual([
+      { source: SOURCE, address: ADDRESS_A, safetyMarginMs: 5 * 60_000 },
+    ]);
   });
 
   test("[delta-05] one index failure does not cost other indexes their sweep", async () => {
