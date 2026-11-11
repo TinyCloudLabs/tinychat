@@ -191,9 +191,9 @@ import { useNativeSignIn } from "./shell/useNativeSignIn";
 export { stateLabel, type AppState } from "./lib/appState";
 
 const OPENKEY_SIGN_OUT_UNPROVEN_NOTE =
-  "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.";
+  "You're signed out of TinyCloud Home. OpenKey may still be signed in on this device. To use another account, sign out at openkey.so first.";
 const WEB_SIGN_OUT_RECOVERY_WARNING =
-  "You're signed out of TinyChat, but this device didn't finish clearing your session. Sign in again, then sign out.";
+  "You're signed out of TinyCloud Home, but this device didn't finish clearing your session. Sign in again, then sign out.";
 const WEB_SIGN_OUT_ABORT_WARNING =
   "You're still signed in on this tab. If you reload or close it, you'll need to sign in again.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";

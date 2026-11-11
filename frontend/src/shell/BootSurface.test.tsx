@@ -14,7 +14,7 @@ test("ordinary signed-out screen keeps its default message", () => {
 test("a failed sign-in or a local sign-out offers Sign in, never Try again", () => {
   for (const error of [
     "Couldn't sign in. Try again.",
-    "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.",
+    "You're signed out of TinyCloud Home. OpenKey may still be signed in on this device. To use another account, sign out at openkey.so first.",
     "Couldn't sign in. Please try again.",
     "OpenKey stayed signed in on this device. TinyCloud Home is signed out locally.",
     "Signed out of TinyCloud Home. To use a different account, also sign out at openkey.so.",

@@ -53,7 +53,7 @@ describe("sign-out with replication", () => {
     const result = await signOutReplicaAware(tcw);
     expect(result).toEqual({
       ok: false,
-      message: "You're signed out of TinyChat, but this browser may still have a saved copy of your meetings. Reload and sign in again to remove it.",
+      message: "You're signed out of TinyCloud Home, but this browser may still have a saved copy of your meetings. Reload and sign in again to remove it.",
       code: "REPLICA_GATED",
     });
     expect(getReplicationStatus()).toMatchObject({ purgeFailed: true, errorCode: "REPLICA_GATED" });
