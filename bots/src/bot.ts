@@ -6,7 +6,7 @@ import { readdirSync } from "node:fs";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { BOT_ID, botIdFor } from "./owner";
-import { lastUsed, markUsed, removeWorkingState } from "./retention";
+import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type Frame, RpcError } from "./rpc";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "invalid";
@@ -44,6 +44,7 @@ export interface Sandbox {
   readonly exited: Promise<void>;
   /** Registers the bot's egress socket and token with the gateway again (idempotent; the gateway may have restarted). */
   refreshEgress(): Promise<void>;
+  /** Rejects if unmounting the state filesystem (or, after a lazy unmount, detaching its loop device) failed. */
   stop(): Promise<void>;
 }
 
@@ -51,6 +52,10 @@ export interface SandboxLauncher {
   /** Whether the bot has ever run, i.e. has a session to list. */
   hasState(layout: BotLayout): boolean;
   launch(layout: BotLayout): Promise<Sandbox>;
+  /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
+  mountPoints(): string[];
+  /** Whether a loop device still backs the bot's state image, or that could not be ruled out. */
+  loopAttached(layout: BotLayout): Promise<boolean>;
 }
 
 /** Repeated while waiting, so idle proxies keep the stream open through slow starts and long turns. */
@@ -211,23 +216,31 @@ export class Bot {
     return this.#busy || this.#listing > 0;
   }
 
-  async stop(): Promise<void> {
+  /** Stops the sandbox if one is running or starting. False if its teardown failed (logged as stop_failed). */
+  async stop(): Promise<boolean> {
     this.#clearIdle();
     const sandbox = this.#sandbox ?? (await this.#starting?.catch(() => undefined));
-    if (sandbox) await this.#stop(sandbox);
+    const stopped = sandbox ? await this.#stop(sandbox) : true;
     await this.#stopping;
+    return stopped;
   }
 
   /**
-   * The one way a bot's working state is deleted: stops its sandbox (which unmounts and detaches the state image),
-   * then removes its data directory (state image and last-use marker) and its run directory. A request that arrives
-   * meanwhile waits for this, then starts a fresh bot.
+   * The one way a bot's working state is deleted: stops its sandbox, then removes its data directory (state image
+   * and last-use marker) and its run directory. A failed teardown, a path that is not the bot's own directory, a
+   * mount at or under either directory, or a loop device on the state image keeps everything and logs
+   * state_delete_skipped instead. A request that arrives meanwhile waits for this, then starts a fresh bot.
    */
   deleteWorkingState(reason: string): Promise<void> {
     this.#deleting ??= (async () => {
-      await this.stop();
-      removeWorkingState(this.layout);
-      log("state_deleted", this.layout.botId, { reason });
+      let cause: DeleteSkip | undefined;
+      try {
+        cause = (await this.stop()) ? await removeWorkingState(this.layout, this.#launcher) : "teardown_failed";
+      } catch {
+        cause = "error";
+      }
+      if (cause) log("state_delete_skipped", this.layout.botId, { reason, cause });
+      else log("state_deleted", this.layout.botId, { reason });
     })().finally(() => {
       this.#deleting = undefined;
     });
@@ -338,16 +351,21 @@ export class Bot {
     return this.#starting;
   }
 
-  async #stop(sandbox: Sandbox): Promise<void> {
+  async #stop(sandbox: Sandbox): Promise<boolean> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
+    let stopped = true;
     this.#stopping = sandbox
       .stop()
-      .catch(error => log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" }))
+      .catch(error => {
+        stopped = false;
+        log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
+      })
       .finally(() => {
         this.#stopping = undefined;
       });
     await this.#stopping;
     log("stopped", this.layout.botId);
+    return stopped;
   }
 
   #clearIdle(): void {
@@ -370,6 +388,8 @@ export class BotManager {
   readonly #launcher: SandboxLauncher;
   readonly #roots: LayoutRoots;
   readonly #options: BotOptions;
+  readonly #deletions = new Set<Promise<void>>();
+  #closing = false;
 
   constructor(launcher: SandboxLauncher, roots: LayoutRoots, options: BotOptions) {
     this.#launcher = launcher;
@@ -381,24 +401,32 @@ export class BotManager {
     return this.#bot(botIdFor(ownerDid));
   }
 
-  /** Deletes one bot's working state; see Bot.deleteWorkingState. */
+  /** Deletes one bot's working state; see Bot.deleteWorkingState. stopAll waits for it to finish. */
   deleteWorkingState(botId: string, reason: string): Promise<void> {
-    return this.#bot(botId).deleteWorkingState(reason);
+    const deletion = this.#bot(botId).deleteWorkingState(reason);
+    this.#deletions.add(deletion);
+    void deletion.finally(() => this.#deletions.delete(deletion));
+    return deletion;
   }
 
   /**
-   * Deletes the working state of every bot in the data root last used more than `retentionMs` before `now` and
-   * with no request in flight. Entries that are not bot ids are left alone. Failures are logged per bot.
+   * Deletes the working state of every bot directory in the data root last used more than `retentionMs` before
+   * `now` and with no request in flight. Entries that are not directories named by a bot id, symlinks included,
+   * are left alone; so is everything once stopAll has begun. Failures are logged per bot.
    */
   async sweepUnused(retentionMs: number, now = Date.now()): Promise<void> {
-    let entries: string[];
+    let botIds: string[];
     try {
-      entries = readdirSync(this.#roots.dataRoot);
+      // Entry types come from lstat: a symlink is never a directory here.
+      botIds = readdirSync(this.#roots.dataRoot, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() && BOT_ID.test(entry.name))
+        .map(entry => entry.name);
     } catch (error) {
       console.log(JSON.stringify({ bots: "sweep_failed", error: error instanceof Error ? error.message.slice(0, 300) : "unknown" }));
       return;
     }
-    for (const botId of entries.filter(entry => BOT_ID.test(entry))) {
+    for (const botId of botIds) {
+      if (this.#closing) return;
       try {
         const used = lastUsed(botLayout(botId, this.#roots));
         if (used === undefined || now - used <= retentionMs || this.#bots.get(botId)?.inUse) continue;
@@ -418,7 +446,10 @@ export class BotManager {
     return bot;
   }
 
+  /** Lets deletions in progress finish (and starts no more), then stops every sandbox. */
   async stopAll(): Promise<void> {
+    this.#closing = true;
+    await Promise.all(this.#deletions);
     await Promise.all([...this.#bots.values()].map(bot => bot.stop()));
   }
 }

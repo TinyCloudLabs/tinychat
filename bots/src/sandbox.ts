@@ -94,6 +94,14 @@ export function modelsYml(model: string): string {
   ].join("\n");
 }
 
+/** Mount points from /proc/self/mountinfo (field 5), with the kernel's octal escapes (`\040` for a space) decoded. */
+export function parseMountinfo(mountinfo: string): string[] {
+  return mountinfo.split("\n").flatMap(line => {
+    const point = line.split(" ")[4];
+    return point ? [point.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)))] : [];
+  });
+}
+
 export class RunscHost implements SandboxLauncher {
   readonly #cfg: SupervisorConfig;
   #baseSpec: OciSpec | undefined;
@@ -123,24 +131,45 @@ export class RunscHost implements SandboxLauncher {
     return existsSync(layout.stateImage);
   }
 
+  mountPoints(): string[] {
+    return parseMountinfo(readFileSync("/proc/self/mountinfo", "utf8"));
+  }
+
+  async loopAttached(layout: BotLayout): Promise<boolean> {
+    if (!existsSync(layout.stateImage)) return false;
+    const proc = Bun.spawn(["losetup", "-n", "-O", "NAME", "-j", layout.stateImage], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const [code, devices] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
+    return code !== 0 || devices.trim() !== "";
+  }
+
   async launch(layout: BotLayout): Promise<Sandbox> {
     if (!this.#baseSpec) throw new Error("sandbox host not initialised");
     const token = randomBytes(32).toString("hex");
     let proc: Subprocess<"pipe", "pipe", "pipe"> | undefined;
     let teardown: Promise<void> | undefined;
+    // Rejects if unmounting the state filesystem (or, after a lazy unmount, detaching its loop device) failed.
     const destroy = () =>
       (teardown ??= (async () => {
         await attempt([...this.#runsc, "kill", layout.containerId, "KILL"]);
         await attempt([...this.#runsc, "delete", "-force", layout.containerId]);
         proc?.kill("SIGKILL");
         await proc?.exited;
-        if (!(await attempt(["umount", layout.stateMount]))) {
+        let released = await attempt(["umount", layout.stateMount]);
+        if (!released) {
           // A lazy unmount leaves the loop device attached until its last user goes; detach it explicitly (the
           // kernel defers that until the device is free) so loop devices are not leaked.
-          await attempt(["umount", "-l", layout.stateMount]);
-          await attempt(["sh", "-c", 'for d in $(losetup -n -O NAME -j "$1"); do losetup -d "$d"; done', "sh", layout.stateImage]);
+          const lazy = await attempt(["umount", "-l", layout.stateMount]);
+          const detached = await attempt([
+            "sh",
+            "-ec",
+            'devices=$(losetup -n -O NAME -j "$1"); for d in $devices; do losetup -d "$d"; done',
+            "sh",
+            layout.stateImage,
+          ]);
+          released = lazy && detached;
         }
         await this.#control("DELETE", layout.botId).catch(() => {});
+        if (!released) throw new Error("state filesystem not released");
       })());
     try {
       await this.#mountState(layout);
@@ -169,9 +198,10 @@ export class RunscHost implements SandboxLauncher {
         child.stdin.write(line);
         void child.stdin.flush();
       }, child.stdout);
-      // A broken protocol (or closed output) ends the sandbox.
-      void rpc.closed.then(() => destroy());
-      const exited = child.exited.then(() => destroy());
+      // A broken protocol (or closed output) ends the sandbox. Both settle even if the teardown fails; stop()
+      // reports that.
+      void rpc.closed.then(() => destroy()).catch(() => {});
+      const exited = child.exited.then(() => destroy()).catch(() => {});
       try {
         await rpc.ready(READY_TIMEOUT_MS);
         await rpc.request({ type: "set_event_filter", events: ["message_update", "message_end"], messageUpdates: "delta" });
@@ -203,7 +233,7 @@ export class RunscHost implements SandboxLauncher {
           })()),
       };
     } catch (error) {
-      await destroy();
+      await destroy().catch(() => {});
       throw error;
     }
   }

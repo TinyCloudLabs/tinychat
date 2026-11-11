@@ -53,10 +53,16 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 Each bot's working state, its state image, stays on the bots server and is deleted after `BOTS_RETENTION_DAYS` days
 (default 30) without use. Every message and history request records the bot's last use in
 `/data/bots/<bot id>/last-used`, next to the state image and outside anything the sandbox mounts; a bot without that
-file counts from the image's modification time. The supervisor checks at startup and every 6 hours, and skips a bot
-with a request in flight. Deleting goes through one path: it stops the bot's sandbox first (unmounting its state
-image), then removes the bot's directories under `/data/bots` and `/run/bots` and logs `state_deleted`. A message
-that arrives meanwhile waits for it, then starts a fresh bot.
+file counts from the image's modification time. The supervisor checks every bot directory in `/data/bots` (symlinks
+are skipped) at startup and every 6 hours, and skips a bot with a request in flight.
+
+Deleting goes through one path. It stops the bot's sandbox (unmounting its state image) and then checks that the
+teardown succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories (not symlinks) directly
+under their roots, that nothing is mounted at or under either (`/proc/self/mountinfo`), and that no loop device backs
+the image (`losetup -j`). If all hold, it removes both directories and logs `state_deleted`. Otherwise it removes
+nothing and logs `state_delete_skipped` with a `cause` (`teardown_failed`, `unsafe_path`, `mounted`, `loop_attached`
+or `error`), and the next sweep tries again. A message that arrives meanwhile waits for the deletion, then starts a
+fresh bot. On shutdown the supervisor lets a deletion in progress finish before stopping the sandboxes.
 
 ## Containment
 

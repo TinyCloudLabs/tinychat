@@ -1,11 +1,23 @@
-import { afterAll, describe, expect, jest, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, jest, spyOn, test } from "bun:test";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bot, BotManager, type ErrorCode, type Sandbox, type SandboxLauncher, type TurnSink } from "../bot";
 import { type BotLayout, botLayout, type LayoutRoots } from "../layout";
 import { botIdFor } from "../owner";
 import type { Frame } from "../rpc";
+import { parseMountinfo } from "../sandbox";
 
 const tmp = mkdtempSync(join(tmpdir(), "bots-test-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -57,10 +69,12 @@ function recorder() {
   return { events, sink };
 }
 const OPTIONS = { idleMs: 60_000, turnTimeoutMs: 300_000, maxTurnBytes: 16 };
+const NOTHING_ATTACHED = { mountPoints: () => [], loopAttached: async () => false };
 
 function setup() {
   const sandbox = new FakeSandbox();
   const launcher: SandboxLauncher = {
+    ...NOTHING_ATTACHED,
     hasState: () => true,
     launch: async layout => {
       mkdirSync(layout.dataDir, { recursive: true });
@@ -203,6 +217,7 @@ describe("history", () => {
   test("a bot that never ran lists nothing and starts no sandbox", async () => {
     let launched = false;
     const launcher: SandboxLauncher = {
+      ...NOTHING_ATTACHED,
       hasState: () => false,
       launch: async () => {
         launched = true;
@@ -224,7 +239,7 @@ describe("working state retention", () => {
   /** A manager over temp roots whose launches act on disk like RunscHost: the first creates the state image. */
   function host() {
     const dirs = roots();
-    const fake = { launches: 0, next: new FakeSandbox(), hold: Promise.resolve() };
+    const fake = { launches: 0, next: new FakeSandbox(), hold: Promise.resolve(), mounts: [] as string[] };
     const launcher: SandboxLauncher = {
       hasState: layout => existsSync(layout.stateImage),
       launch: async layout => {
@@ -237,10 +252,26 @@ describe("working state retention", () => {
         fake.next = new FakeSandbox();
         return sandbox;
       },
+      mountPoints: () => fake.mounts,
+      loopAttached: async () => false,
     };
     const manager = new BotManager(launcher, dirs, OPTIONS);
     return { fake, dirs, manager, layout: (owner: string) => botLayout(botIdFor(owner), dirs) };
   }
+
+  /** The state_deleted and state_delete_skipped events `run` logs. */
+  async function stateEvents(run: () => Promise<unknown>): Promise<unknown[]> {
+    const spy = spyOn(console, "log");
+    try {
+      await run();
+      return spy.mock.calls
+        .map(([line]) => JSON.parse(String(line)) as { bots: string })
+        .filter(event => event.bots === "state_deleted" || event.bots === "state_delete_skipped");
+    } finally {
+      spy.mockRestore();
+    }
+  }
+  const skipped = (cause: string) => ({ bots: "state_delete_skipped", bot: botIdFor(OWNER).slice(0, 12), reason: "unused", cause });
 
   /** A stopped bot that has run before: old notes in its state image, and a marker unless `usedAt` is null. */
   function existing(layout: BotLayout, usedAt: number | null, imageAt = usedAt ?? Date.now()) {
@@ -340,5 +371,69 @@ describe("working state retention", () => {
     }
     await manager.sweepUnused(RETENTION);
     for (const name of names) expect(existsSync(join(dirs.dataRoot, name, "state.img"))).toBe(true);
+  });
+
+  test("a failed teardown keeps both directories and logs the deletion as skipped; the next sweep retries", async () => {
+    const { fake, manager, layout } = host();
+    const sandbox = fake.next;
+    await converse(manager.forOwner(OWNER), sandbox);
+    sandbox.stop = async () => {
+      throw new Error("umount failed");
+    };
+    const later = Date.now() + RETENTION + DAY;
+    expect(await stateEvents(() => manager.sweepUnused(RETENTION, later))).toEqual([skipped("teardown_failed")]);
+    expect(readFileSync(layout(OWNER).stateImage, "utf8")).toBe("fresh");
+    expect(existsSync(layout(OWNER).stateMount)).toBe(true);
+    await manager.sweepUnused(RETENTION, later);
+    expect(existsSync(layout(OWNER).dataDir)).toBe(false);
+  });
+
+  test("a mount left under the bot's run directory blocks deletion", async () => {
+    const { fake, manager, layout } = host();
+    existing(layout(OWNER), Date.now() - RETENTION - DAY);
+    mkdirSync(layout(OWNER).stateMount, { recursive: true });
+    fake.mounts = ["/", "/proc", realpathSync(layout(OWNER).stateMount)];
+    expect(await stateEvents(() => manager.sweepUnused(RETENTION))).toEqual([skipped("mounted")]);
+    expect(readFileSync(layout(OWNER).stateImage, "utf8")).toBe("old notes");
+    expect(existsSync(layout(OWNER).stateMount)).toBe(true);
+  });
+
+  test("a symlink named by a bot id is never followed: the sweep ignores it and a deletion refuses it", async () => {
+    const { dirs, manager, layout } = host();
+    const target = mkdtempSync(join(tmp, "elsewhere-"));
+    const old = (Date.now() - RETENTION - DAY) / 1000;
+    writeFileSync(join(target, "state.img"), "not a bot");
+    utimesSync(join(target, "state.img"), old, old);
+    mkdirSync(dirs.dataRoot, { recursive: true });
+    symlinkSync(target, layout(OWNER).dataDir);
+    const events = await stateEvents(async () => {
+      await manager.sweepUnused(RETENTION);
+      await manager.deleteWorkingState(botIdFor(OWNER), "unused");
+    });
+    expect(events).toEqual([skipped("unsafe_path")]);
+    expect(lstatSync(layout(OWNER).dataDir).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(target, "state.img"), "utf8")).toBe("not a bot");
+  });
+
+  test("stopAll waits for a deletion in progress", async () => {
+    const { fake, manager, layout } = host();
+    const sandbox = fake.next;
+    await converse(manager.forOwner(OWNER), sandbox);
+    const stopped = Promise.withResolvers<void>();
+    sandbox.stop = () => stopped.promise;
+    const sweeping = manager.sweepUnused(RETENTION, Date.now() + RETENTION + DAY);
+    const deletedBeforeStopAllReturned = manager.stopAll().then(() => !existsSync(layout(OWNER).dataDir));
+    stopped.resolve();
+    expect(await deletedBeforeStopAllReturned).toBe(true);
+    await sweeping;
+  });
+
+  test("mount points come from mountinfo field 5 with octal escapes decoded", () => {
+    const mountinfo = [
+      "36 35 98:0 / /data rw,noatime master:1 - ext4 /dev/vda1 rw",
+      "52 36 7:0 / /run/bots/a\\040b/state rw,nosuid,nodev - ext4 /dev/loop0 rw",
+      "",
+    ].join("\n");
+    expect(parseMountinfo(mountinfo)).toEqual(["/data", "/run/bots/a b/state"]);
   });
 });
