@@ -202,6 +202,7 @@ export interface ContentStoreStats {
 export interface ContentBlobStore {
   readIndex(source: string, address: string): Promise<SealedBlob | null>;
   writeIndex(source: string, address: string, blob: SealedBlob): Promise<void>;
+  listContentIds(source: string, address: string): Promise<Array<{ sourceId: string; updatedAt: string }>>;
   read(
     source: string,
     address: string,
@@ -695,13 +696,10 @@ export class ContentStore implements ContentSink, RetentionGuard {
       const swept: ContentMeta[] = [];
       for (const meta of index.meetings) {
         const storedAt = Date.parse(meta.storedAt);
-        (Number.isFinite(storedAt) && storedAt <= cutoff ? swept : keep).push(meta);
+        (Number.isFinite(storedAt) && storedAt > cutoff ? keep : swept).push(meta);
       }
       let bytesFreed = 0;
-      for (const meta of swept) {
-        await this.blobs.remove(target.source, target.address, meta.sourceId);
-        bytesFreed += meta.sizeBytes;
-      }
+      for (const meta of swept) bytesFreed += meta.sizeBytes;
 
       const retainedTombstones = index.tombstones.filter(
         (tombstone) => Date.parse(tombstone.expiresAt) > now,
@@ -709,6 +707,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
       const newTombstones = swept
         .map((meta) => {
           const storedAt = Date.parse(meta.storedAt);
+          if (!Number.isFinite(storedAt)) return null;
           const expiresAt = storedAt + this.retentionMs;
           return expiresAt > now
             ? {
@@ -728,6 +727,20 @@ export class ContentStore implements ContentSink, RetentionGuard {
         meetings: keep,
         tombstones,
       });
+
+      const retainedIds = new Set(keep.map((meta) => meta.sourceId));
+      for (const blob of await this.blobs.listContentIds(
+        target.source,
+        target.address,
+      )) {
+        const updatedAt = Date.parse(blob.updatedAt);
+        if (
+          !retainedIds.has(blob.sourceId) &&
+          (!Number.isFinite(updatedAt) || updatedAt <= cutoff)
+        ) {
+          await this.blobs.remove(target.source, target.address, blob.sourceId);
+        }
+      }
 
       this.counters.swept += swept.length;
       if (swept.length > 0 || retainedTombstones.length !== index.tombstones.length) {
@@ -1226,6 +1239,17 @@ export class InMemoryContentBlobStore implements ContentBlobStore {
   ): Promise<void> {
     this.blobs.delete(contentSlot(source, address, sourceId));
   }
+  async listContentIds(source: string, address: string): Promise<Array<{ sourceId: string; updatedAt: string }>> {
+    const prefix = contentSlot(source, address, "");
+    return [...this.blobs.keys()]
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length))
+      .filter(isValidMeetingId)
+      .map((sourceId) => ({
+        sourceId,
+        updatedAt: this.get(contentSlot(source, address, sourceId))?.updatedAt ?? "",
+      }));
+  }
 
   async removeAll(source: string, address: string): Promise<void> {
     const prefix = `${contentSlot(source, address, "")}`;
@@ -1320,6 +1344,34 @@ export class KvContentBlobStore implements ContentBlobStore {
       this.deleteKey(contentKey(source, address, sourceId)),
     );
   }
+  async listContentIds(source: string, address: string): Promise<Array<{ sourceId: string; updatedAt: string }>> {
+    const prefix =
+      `${CONTENT_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}/`;
+    const kv = (
+      this.node as unknown as {
+        kv?: { list?: (options: unknown) => Promise<unknown> };
+      }
+    ).kv;
+    if (!kv || typeof kv.list !== "function") {
+      throw new Error("Content blob listing is unavailable");
+    }
+    const response = await this.run(() =>
+      withSessionRefresh(this.node, async () =>
+        assertKvResult(await kv.list!({ prefix })),
+      ),
+    );
+    const ids = extractKeys(response)
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length))
+      .filter((sourceId) => !sourceId.includes("/") && isValidMeetingId(sourceId));
+    const blobs: Array<{ sourceId: string; updatedAt: string }> = [];
+    for (const sourceId of ids) {
+      const blob = await this.read(source, address, sourceId);
+      blobs.push({ sourceId, updatedAt: blob?.updatedAt ?? "" });
+    }
+    return blobs;
+  }
+
 
   /**
    * Teardown's last sweep. `ContentStore.purge` has already deleted every blob the index named;
@@ -1466,27 +1518,33 @@ export function createContentIndexDirectory(
       throw new Error("Content index listing is unavailable");
     }
 
-    const response = await withSessionRefresh(node, async () =>
-      assertKvResult(await kv.list!({ prefix: `${CONTENT_INDEX_KEY_PREFIX}/` })),
-    );
     const entries = new Map<string, ContentIndexLocation>();
-    const marker = `${CONTENT_INDEX_KEY_PREFIX}/`;
-    for (const key of extractKeys(response)) {
-      const markerIndex = key.lastIndexOf(marker);
-      if (markerIndex < 0) continue;
-      const parts = key.slice(markerIndex + marker.length).split("/");
-      if (parts.length !== 2) continue;
-      const [source, rawAddress] = parts;
-      if (source === undefined || rawAddress === undefined || !isValidSource(source)) {
-        continue;
+    for (const prefix of [CONTENT_INDEX_KEY_PREFIX, CONTENT_KEY_PREFIX]) {
+      const marker = `${prefix}/`;
+      const response = await withSessionRefresh(node, async () =>
+        assertKvResult(await kv.list!({ prefix: marker })),
+      );
+      for (const key of extractKeys(response)) {
+        const markerIndex = key.lastIndexOf(marker);
+        if (markerIndex < 0) continue;
+        const parts = key.slice(markerIndex + marker.length).split("/");
+        const isIndex = prefix === CONTENT_INDEX_KEY_PREFIX;
+        if (parts.length !== (isIndex ? 2 : 3)) continue;
+        const [source, rawAddress, sourceId] = parts;
+        if (
+          source === undefined ||
+          rawAddress === undefined ||
+          !isValidSource(source) ||
+          (!isIndex && (sourceId === undefined || !isValidMeetingId(sourceId)))
+        ) continue;
+        let address: string;
+        try {
+          address = normalizeWebhookAddress(rawAddress);
+        } catch {
+          continue;
+        }
+        entries.set(`${source}/${address}`, { source, address });
       }
-      let address: string;
-      try {
-        address = normalizeWebhookAddress(rawAddress);
-      } catch {
-        continue;
-      }
-      entries.set(`${source}/${address}`, { source, address });
     }
     return [...entries.values()];
   };
