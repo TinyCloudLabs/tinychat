@@ -1,45 +1,60 @@
 import type { ThreadDoc } from "./threadStore";
+import { inBackground, type Lane } from "./localFirst/requestLanes";
 
-// ── Background history prefetch queue ────────────────────────────────
+// ── History copy: background prefetch queue + the device's copy ──────
 //
-// After boot converges the thread list, we want opening a thread to be
-// instant — so we prefetch each thread's full message doc in the background
-// and keep it in an in-memory session cache. Clicking a thread then renders
-// from cache instead of paying a ~2s SQL round-trip.
+// After boot converges the thread list, opening a thread should be instant,
+// so each thread's full message doc is copied in the background into an
+// in-memory cache, and (when a device copy is attached) into IndexedDB so the
+// next open starts with every thread already local. Clicking a thread renders
+// from the copy and refreshes it.
 //
 // HARD CONSTRAINTS (verified live June 5 2026 — violating these reintroduces
 // fixed bugs):
 //   - The node degrades badly under concurrent `/invoke` (5–20s at 7-way
-//     concurrency vs ~1.5–3s serial). So this queue is STRICTLY SEQUENTIAL:
-//     exactly one fetch is ever in flight. Never parallelize "to make it
-//     faster" — that is the regression this guards against.
-//   - The cache is IN-MEMORY ONLY (message payloads can be large and
-//     localStorage is ~5MB). Nothing here touches localStorage.
+//     concurrency vs ~1.5–3s serial). So the background copy is STRICTLY
+//     SEQUENTIAL: at most one background fetch is ever in flight, and it runs
+//     in the background request lane (behind every foreground request, never
+//     while the tab is hidden). Never parallelize "to make it faster".
+//   - The user's own request is never queued behind the copy: `promote` of a
+//     thread that is not local fetches it at once (foreground), and the copy
+//     waits until that fetch is done.
+//   - Nothing here touches localStorage (payloads can be large; ~5MB limit).
 //
 // The fetcher is injected so this module is pure and unit-testable under
 // `bun test` (no vite-only imports). The app wires the real `getThread`
 // fetcher via `setPrefetchFetcher`.
 
-/** Fetches a thread's full doc by id. Resolves null when the thread is empty. */
-export type ThreadFetcher = (id: string) => Promise<ThreadDoc | null>;
+/** Fetches a thread's full doc by id in the given lane. Resolves null when the thread is empty. */
+export type ThreadFetcher = (id: string, lane: Lane) => Promise<ThreadDoc | null>;
+
+/** The device's copy of thread docs, written as fetches land and dropped on invalidation. */
+export interface ThreadCopyStore {
+  save(doc: ThreadDoc): void;
+  remove(id: string): void;
+}
 
 export interface PrefetchQueue {
   /**
    * Enqueue ids for background prefetch, in the given order (the caller passes
-   * them newest-first). Ids already cached, already in flight, or already
-   * queued are skipped — never double-fetched. Starts draining if idle.
+   * them newest-first). Ids already in flight or already queued are skipped,
+   * and so are cached ids, unless `updatedAt` says the cached doc is older than
+   * the thread list (then it is re-copied, and served meanwhile). Starts
+   * draining if idle.
    */
-  enqueueAll(ids: string[]): void;
+  enqueueAll(ids: string[], updatedAt?: ReadonlyMap<string, string>): void;
   /**
-   * The user clicked a thread: move it to the FRONT of the queue and fetch it
-   * next. If a fetch for this id is already in flight, returns that same
-   * promise (in-flight dedupe — never double-fetches). Resolves with the doc
-   * (or null) once fetched. Reorders the queue but never cancels the fetch
-   * already running.
+   * The user opened a thread. Cached: resolves with the cached doc at once and
+   * refreshes it. Not cached: fetches it now in the foreground lane (not
+   * behind the queue) and resolves with the doc (or null). If a fetch for this
+   * id is already in flight, returns that same promise (never double-fetches).
+   * Never cancels a background fetch already running.
    */
   promote(id: string): Promise<ThreadDoc | null>;
-  /** The cached doc for this id if it was prefetched this session, else undefined. */
+  /** The cached doc for this id, if copied this session or loaded from the device copy, else undefined. */
   get(id: string): ThreadDoc | undefined;
+  /** Seed the cache from the device copy (does not replace newer docs already fetched). */
+  hydrate(docs: Iterable<ThreadDoc>): void;
   /**
    * Evict this id from the cache and drop it from the pending queue. If a fetch
    * for it is in flight, its result will not be cached. Called when a thread's
@@ -50,34 +65,21 @@ export interface PrefetchQueue {
   clear(): void;
 }
 
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
 /**
- * Create a sequential (concurrency-1) prefetch queue over the given fetcher.
- * Exported for unit tests; the app uses the `historyPrefetch` singleton below.
+ * Create a prefetch queue over the given fetcher: one background fetch at a
+ * time, foreground fetches for opened threads at once. Exported for unit
+ * tests; the app uses the `historyPrefetch` singleton below.
  */
-export function createPrefetchQueue(fetcher: ThreadFetcher): PrefetchQueue {
+export function createPrefetchQueue(fetcher: ThreadFetcher, copy?: () => ThreadCopyStore | null): PrefetchQueue {
   const cache = new Map<string, ThreadDoc>();
   const inFlight = new Map<string, Promise<ThreadDoc | null>>();
-  // Waiters registered by `promote` for an id that is queued but not yet
-  // fetching — resolved when its fetch completes.
-  const waiters = new Map<string, Array<(doc: ThreadDoc | null) => void>>();
+  // Foreground fetches (opened threads) in flight; the background drain waits for them.
+  const foreground = new Set<Promise<ThreadDoc | null>>();
   // Ids invalidated WHILE their fetch was in flight: their result must not be
   // written to the cache when it lands.
   const staleInFlight = new Set<string>();
-  // Ids that must be re-fetched even though a cached copy exists — a `promote`
-  // on an open thread that wants fresh data (B.2). Cleared once refetched.
+  // Ids that must be re-fetched even though a cached copy exists (the thread
+  // list says it changed). Cleared once refetched.
   const forceRefresh = new Set<string>();
   let queue: string[] = [];
   let active = false;
@@ -85,58 +87,46 @@ export function createPrefetchQueue(fetcher: ThreadFetcher): PrefetchQueue {
   // its result into the post-clear cache.
   let generation = 0;
 
-  function resolveWaiters(id: string, doc: ThreadDoc | null): void {
-    const list = waiters.get(id);
-    if (!list) return;
-    waiters.delete(id);
-    for (const resolve of list) resolve(doc);
-  }
-
-  function addWaiter(id: string, resolve: (doc: ThreadDoc | null) => void): void {
-    const list = waiters.get(id);
-    if (list) list.push(resolve);
-    else waiters.set(id, [resolve]);
-  }
-
-  function runFetch(id: string): Promise<ThreadDoc | null> {
+  function runFetch(id: string, lane: Lane): Promise<ThreadDoc | null> {
     const myGen = generation;
     staleInFlight.delete(id);
     forceRefresh.delete(id);
     const p = (async () => {
       try {
-        const doc = await fetcher(id);
+        const doc = await (lane === "foreground" ? fetcher(id, lane) : inBackground(() => fetcher(id, lane)));
         if (generation === myGen && doc && !staleInFlight.has(id)) {
           cache.set(id, doc);
+          copy?.()?.save(doc);
         }
         return doc;
       } finally {
-        // Concurrency is 1, so this id's entry is the only one — safe to drop
-        // unconditionally once the fetch settles.
+        // At most one fetch per id is in flight, so this id's entry is the
+        // only one — safe to drop unconditionally once the fetch settles.
         inFlight.delete(id);
         staleInFlight.delete(id);
       }
     })();
     inFlight.set(id, p);
+    if (lane === "foreground") {
+      foreground.add(p);
+      void p.catch(() => undefined).finally(() => foreground.delete(p));
+    }
     return p;
   }
 
   async function drain(): Promise<void> {
     while (queue.length > 0) {
-      const id = queue.shift() as string;
-      // Already satisfied — unless a promote asked for a forced refresh of an
-      // open thread (B.2), in which case fall through and re-fetch.
-      if (cache.has(id) && !forceRefresh.has(id)) {
-        resolveWaiters(id, cache.get(id) as ThreadDoc);
-        continue;
-      }
-      const existing = inFlight.get(id);
+      // The user's own fetch goes first: wait until it has landed.
+      while (foreground.size > 0) await Promise.allSettled([...foreground]);
+      const id = queue.shift();
+      if (id === undefined) break;
+      // Already satisfied — unless the thread list says it changed.
+      if (cache.has(id) && !forceRefresh.has(id)) continue;
       try {
-        const doc = await (existing ?? runFetch(id));
-        resolveWaiters(id, doc);
+        await (inFlight.get(id) ?? runFetch(id, "background"));
       } catch {
-        // A fetcher rejection must not wedge the queue: swallow, resolve any
-        // waiters with null, and keep draining. The id can be re-promoted.
-        resolveWaiters(id, null);
+        // A fetcher rejection must not wedge the queue: swallow and keep
+        // draining. The id can be re-promoted.
       }
     }
     active = false;
@@ -150,45 +140,48 @@ export function createPrefetchQueue(fetcher: ThreadFetcher): PrefetchQueue {
   }
 
   return {
-    enqueueAll(ids: string[]): void {
+    enqueueAll(ids: string[], updatedAt?: ReadonlyMap<string, string>): void {
       for (const id of ids) {
-        if (cache.has(id) || inFlight.has(id) || queue.includes(id)) continue;
+        if (inFlight.has(id) || queue.includes(id)) continue;
+        const cached = cache.get(id);
+        if (cached) {
+          const listed = updatedAt?.get(id);
+          if (listed === undefined || listed === cached.updatedAt) continue;
+          forceRefresh.add(id);
+        }
         queue.push(id);
       }
       ensureDraining();
     },
 
     promote(id: string): Promise<ThreadDoc | null> {
-      // Already fetched this session.
+      queue = queue.filter((q) => q !== id);
+      const existing = inFlight.get(id);
       const cached = cache.get(id);
       if (cached) {
-        // Re-fetch in the background so an open thread converges to fresh data,
-        // but only if one isn't already running (dedupe). Return the cached
-        // doc immediately either way.
-        if (!inFlight.has(id)) {
-          forceRefresh.add(id);
-          queue = [id, ...queue.filter((q) => q !== id)];
-          ensureDraining();
-        }
+        // Return the copy now; refresh it so an open thread converges to fresh data.
+        if (!existing) void runFetch(id, "foreground").catch(() => undefined);
         return Promise.resolve(cached);
       }
       // A fetch is already in flight — hand back the same promise.
-      const existing = inFlight.get(id);
       if (existing) return existing;
-      // Move to the front and fetch next; resolve when it lands.
-      queue = [id, ...queue.filter((q) => q !== id)];
-      const d = deferred<ThreadDoc | null>();
-      addWaiter(id, d.resolve);
-      ensureDraining();
-      return d.promise;
+      return runFetch(id, "foreground").catch(() => null);
     },
 
     get(id: string): ThreadDoc | undefined {
       return cache.get(id);
     },
 
+    hydrate(docs: Iterable<ThreadDoc>): void {
+      for (const doc of docs) {
+        const current = cache.get(doc.id);
+        if (!current && !inFlight.has(doc.id)) cache.set(doc.id, doc);
+      }
+    },
+
     invalidate(id: string): void {
       cache.delete(id);
+      copy?.()?.remove(id);
       queue = queue.filter((q) => q !== id);
       forceRefresh.delete(id);
       if (inFlight.has(id)) staleInFlight.add(id);
@@ -199,12 +192,9 @@ export function createPrefetchQueue(fetcher: ThreadFetcher): PrefetchQueue {
       queue = [];
       cache.clear();
       inFlight.clear();
+      foreground.clear();
       staleInFlight.clear();
       forceRefresh.clear();
-      for (const list of waiters.values()) {
-        for (const resolve of list) resolve(null);
-      }
-      waiters.clear();
       // Any in-flight fetch still settles, but its generation no longer matches
       // so it won't repopulate the cache. The drain loop sees an empty queue
       // and exits; a later enqueue/promote restarts it.
@@ -212,19 +202,22 @@ export function createPrefetchQueue(fetcher: ThreadFetcher): PrefetchQueue {
   };
 }
 
-// ── App singleton (late-bound fetcher) ───────────────────────────────
+// ── App singleton (late-bound fetcher and device copy) ───────────────
 //
 // The real fetcher closes over the active `tcw`, which isn't known at module
 // load. The runtime sets it via `setPrefetchFetcher` once the session exists;
 // threadStore mutators reach the same queue to invalidate stale entries.
 
 let boundFetcher: ThreadFetcher = async () => null;
+let boundCopy: ThreadCopyStore | null = null;
 
-/** Point the singleton queue at the real `getThread` fetcher for this session. */
-export function setPrefetchFetcher(fetcher: ThreadFetcher): void {
+/** Point the singleton queue at the real `getThread` fetcher (and this account's device copy) for this session. */
+export function setPrefetchFetcher(fetcher: ThreadFetcher, copy: ThreadCopyStore | null = null): void {
   boundFetcher = fetcher;
+  boundCopy = copy;
 }
 
-export const historyPrefetch: PrefetchQueue = createPrefetchQueue((id) =>
-  boundFetcher(id),
+export const historyPrefetch: PrefetchQueue = createPrefetchQueue(
+  (id, lane) => boundFetcher(id, lane),
+  () => boundCopy,
 );

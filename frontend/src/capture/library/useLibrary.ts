@@ -50,6 +50,7 @@ import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "
 import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isMissingLocalAudio, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
+import { accountCacheKey, readLocal, writeLocal } from "@/lib/localFirst/localCache";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
@@ -163,6 +164,12 @@ function handoffAfter(previous: Handoff, space: unknown, notes: readonly Pending
   return { space, notes, lingering, departures };
 }
 
+/** What the device keeps of the Library list between opens. */
+interface LocalLibrary {
+  items: LibraryItem[];
+  previews: ReadonlyMap<string, string>;
+}
+
 const settled = (read: { status: string } | undefined) => read !== undefined && read.status !== "failed";
 const noop = () => undefined;
 
@@ -179,6 +186,8 @@ export function useLibrary(
   },
 ): Library {
   const space = useMemo(() => scheduledSpace(tcw), [tcw]);
+  const localKey = typeof tcw.did === "string" && tcw.did ? accountCacheKey(tcw.did, "library") : null;
+  const loadedFromNetwork = useRef(false);
   const [list, setList] = useState<{ status: LibraryStatus; items: LibraryItem[]; previews: ReadonlyMap<string, string> }>({
     status: "loading",
     items: [],
@@ -254,6 +263,7 @@ export function useLibrary(
         }
       }
       if (!mounted.current) return;
+      if (read.status === "ok") loadedFromNetwork.current = true;
       setList((current) =>
         read.status === "ok"
           ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
@@ -275,6 +285,21 @@ export function useLibrary(
     };
     void enqueue(readList);
   }, [enqueue, space]);
+
+  // The device's last copy of the list shows at once; the read below replaces it.
+  useEffect(() => {
+    if (!localKey) return;
+    let alive = true;
+    void readLocal<LocalLibrary>(localKey).then((local) => {
+      if (!alive || !local || loadedFromNetwork.current) return;
+      setList((current) => (current.status === "loading" ? { status: "ready", items: local.value.items, previews: local.value.previews } : current));
+    });
+    return () => { alive = false; };
+  }, [localKey]);
+  // Every list the network answered becomes the device's copy for the next open.
+  useEffect(() => {
+    if (localKey && loadedFromNetwork.current && list.status === "ready") void writeLocal<LocalLibrary>(localKey, { items: list.items, previews: list.previews });
+  }, [list, localKey]);
 
   // The first mount (Capture's first visit).
   useEffect(() => {

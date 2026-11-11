@@ -11,6 +11,7 @@ import { associateStorageAccountClient, storageScopeFor } from "./storageStatus"
 // own lane (useBackgroundDrain's), and voice-note saves are not queued.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { inForeground } from "./localFirst/requestLanes";
 
 const tails = new Map<string, Promise<void>>();
 const settle = () => undefined;
@@ -46,7 +47,9 @@ function queueCalls<T extends object>(service: T, spaceKey: string, returns: Par
       const wrap = returns[key as keyof typeof returns];
       if (wrap) return (...args: unknown[]) => wrap(method.apply(object, args));
       if (SYNCHRONOUS.has(key)) return method.bind(object);
-      return (...args: unknown[]) => runOnSpace(spaceKey, async () => method.apply(object, args));
+      // Library reads and uploads are the visible screen's work: they count in the
+      // foreground lane, so background copying waits for them.
+      return (...args: unknown[]) => runOnSpace(spaceKey, () => inForeground(async () => method.apply(object, args)));
     },
   });
 }
