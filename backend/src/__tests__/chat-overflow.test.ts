@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { AciConnection } from "@phala/aci-verifier/runtime";
+import type { Server } from "node:http";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { _resetCatalogCache } from "../billing/catalog.js";
@@ -7,7 +9,7 @@ import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { _resetUsage } from "../billing/usage.js";
 import { createChatRouter } from "../routes/chat.js";
 import { createApiBodyParser } from "../body-parsing.js";
-import { RedPillAciError, RedPillAttestationError, RedPillResponseLimitError } from "../redpill-aci.js";
+import { createRedPillAciFetch, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError } from "../redpill-aci.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const OFFERED_MODEL = "z-ai/glm-5.2";
@@ -26,7 +28,7 @@ function createApp(jsonLimit?: string, redpillFetch?: typeof fetch) {
 }
 
 async function request(app: express.Express, path: string, init?: RequestInit) {
-  const server = await new Promise<import("http").Server>((resolve) => {
+  const server = await new Promise<Server>((resolve) => {
     const instance = app.listen(0, () => resolve(instance));
   });
   const { port } = server.address() as { port: number };
@@ -267,6 +269,47 @@ describe("POST /api/chat attestation gate", () => {
     expect(body).not.toContain('"stream_error"');
     expect(body.match(/data: \[DONE\]/g)).toHaveLength(1);
   });
+  test("ends a plain chat reply with the approved warning when receipt audit times out", async () => {
+    const baseURL = "https://tee.redpill.ai/v1";
+    const connection = {
+      baseURL,
+      identity: { transcript: { verdict: { verified: true } } },
+      fetch: async () => new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "visible streamed text" } }] })}\n\ndata: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream", "x-receipt-id": "fixture-timeout-receipt" } },
+      ),
+      verifyReceipt: () => new Promise<never>(() => {}),
+    } as unknown as AciConnection;
+    const redpillFetch = createRedPillAciFetch(baseURL, async () => connection, 10);
+    const app = createApp(undefined, redpillFetch);
+    const server = await new Promise<Server>((resolve) => {
+      const instance = app.listen(0, () => resolve(instance));
+    });
+    const { port } = server.address() as { port: number };
+    try {
+      const res = await fetch(`http://localhost:${port}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: OFFERED_MODEL,
+          messages: [{ role: "user", content: "synthetic question" }],
+        }),
+      });
+      const body = await res.text();
+      const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+      expect(res.status).toBe(200);
+      expect(body).toContain("visible streamed text");
+      expect(body.split(warning).length - 1).toBe(1);
+      expect(body).not.toContain("tinycloud.receipt-verification");
+      expect(body).not.toContain("receipt_verification");
+      expect(body.match(/data: \[DONE\]/g)).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   test.each([
     [new RedPillAciError(), "upstream_failed", "The model service could not complete this request. Try again later."],
     [new RedPillResponseLimitError(), "result_size_limit", "The response was too large to process safely. Try a smaller request."],

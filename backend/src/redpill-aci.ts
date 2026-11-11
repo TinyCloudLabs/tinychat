@@ -1,5 +1,5 @@
 import { connectAci } from "@phala/aci-verifier/runtime";
-import type { AciConnection, ConnectAciOptions } from "@phala/aci-verifier/runtime";
+import type { AciConnection, AciReceiptAudit, ConnectAciOptions } from "@phala/aci-verifier/runtime";
 
 export const PRIVATE_RESPONSE_UNVERIFIED_MESSAGE =
   "The model service could not complete this request. Try again later.";
@@ -55,6 +55,7 @@ export class RedPillResponseLimitError extends Error {
 type AciConnector = (options: ConnectAciOptions) => Promise<AciConnection>;
 
 const MAX_VERIFIED_RESPONSE_BYTES = 8 * 1024 * 1024;
+export const RECEIPT_AUDIT_TIMEOUT_MS = 5_000;
 const RECEIPT_HISTORY_SIZE = 1000;
 const clients = new Map<string, typeof fetch>();
 
@@ -91,8 +92,47 @@ function isDoneFrame(frame: string): boolean {
     return trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]";
   });
 }
+function isReceiptVerificationFrame(frame: string): boolean {
+  const lines = frame.split(/\r?\n/);
+  if (lines.some((line) => {
+    const trimmed = line.trimStart();
+    return trimmed.startsWith("event:") && trimmed.slice(6).trim() === "tinycloud.receipt-verification";
+  })) return true;
+  const data = lines
+    .filter((line) => line.trimStart().startsWith("data:"))
+    .map((line) => line.trimStart().slice(5).trimStart())
+    .join("\n");
+  if (!data) return false;
+  try {
+    const value: unknown = JSON.parse(data);
+    return !!value && typeof value === "object" && !Array.isArray(value)
+      && Object.prototype.hasOwnProperty.call(value, "receipt_verification");
+  } catch {
+    return false;
+  }
+}
 
-function verifiedResponse(response: Response, aci: AciConnection, receiptId: string, signal?: AbortSignal | null): Response {
+async function verifyReceiptWithTimeout(
+  aci: AciConnection,
+  receiptId: string,
+  timeoutMs?: number,
+): Promise<AciReceiptAudit> {
+  if (timeoutMs === undefined) return aci.verifyReceipt(receiptId);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      aci.verifyReceipt(receiptId),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new RedPillAttestationError()), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+
+function verifiedResponse(response: Response, aci: AciConnection, receiptId: string, signal?: AbortSignal | null, receiptAuditTimeoutMs?: number): Response {
   const reader = response.body?.getReader();
   if (!reader) throw new RedPillAttestationError();
   let size = 0;
@@ -122,7 +162,7 @@ function verifiedResponse(response: Response, aci: AciConnection, receiptId: str
             buffer = buffer.slice(separator + 2);
             separator = buffer.indexOf("\n\n");
             if (isDoneFrame(frame)) sawDone = true;
-            else if (!sawDone) {
+            else if (!sawDone && !isReceiptVerificationFrame(frame)) {
               controller.enqueue(encoder.encode(frame));
               return;
             }
@@ -140,11 +180,11 @@ function verifiedResponse(response: Response, aci: AciConnection, receiptId: str
           }
           buffer += decoder.decode();
           if (!sawDone || buffer.trim()) throw new RedPillAttestationError();
-          const audit = await aci.verifyReceipt(receiptId);
+          const audit = await verifyReceiptWithTimeout(aci, receiptId, receiptAuditTimeoutMs);
           if (signal?.aborted) throw signalReason(signal);
           if (audit.transcript.verdict.verified !== true) throw new RedPillAttestationError();
           controller.enqueue(encoder.encode(
-            `data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\ndata: [DONE]\n\n`,
+            `event: tinycloud.receipt-verification\ndata: {"status":"verified"}\n\ndata: [DONE]\n\n`,
           ));
           cleanup();
           controller.close();
@@ -174,6 +214,7 @@ function verifiedResponse(response: Response, aci: AciConnection, receiptId: str
 export function createRedPillAciFetch(
   baseURL: string,
   connect: AciConnector = connectAci,
+  receiptAuditTimeoutMs?: number,
 ): typeof fetch {
   validateRedPillBaseUrl(baseURL);
   let connectionPromise: Promise<AciConnection> | undefined;
@@ -232,16 +273,17 @@ export function createRedPillAciFetch(
     }
 
     if (signal?.aborted) throw signalReason(signal);
-    return verifiedResponse(response, aci, receiptId, signal);
+    return verifiedResponse(response, aci, receiptId, signal, receiptAuditTimeoutMs);
   };
 }
 
 /** Production default fetches share one verifier connection per gateway URL. */
-export function redPillAciFetch(baseURL: string): typeof fetch {
-  let client = clients.get(baseURL);
+export function redPillAciFetch(baseURL: string, receiptAuditTimeoutMs?: number): typeof fetch {
+  const cacheKey = receiptAuditTimeoutMs === undefined ? baseURL : `${baseURL}\u0000${receiptAuditTimeoutMs}`;
+  let client = clients.get(cacheKey);
   if (!client) {
-    client = createRedPillAciFetch(baseURL);
-    clients.set(baseURL, client);
+    client = createRedPillAciFetch(baseURL, connectAci, receiptAuditTimeoutMs);
+    clients.set(cacheKey, client);
   }
   return client;
 }

@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, vi } from "bun:test";
 import type { AciConnection, AciReceiptAudit, ConnectAciOptions } from "@phala/aci-verifier/runtime";
-import { createRedPillAciFetch, RedPillAttestationError, validateRedPillBaseUrl } from "../redpill-aci.js";
+import { createRedPillAciFetch, RECEIPT_AUDIT_TIMEOUT_MS, RedPillAttestationError, validateRedPillBaseUrl } from "../redpill-aci.js";
 
 const BASE_URL = "https://tee.redpill.ai/v1";
 const RECEIPT_ID = "fixture-receipt-001";
@@ -49,7 +49,7 @@ describe("RedPill ACI fetch", () => {
     const verdict = deferred<AciReceiptAudit>();
     const verificationStarted = deferred<void>();
     const fixture = connectionFixture({
-      responseBody: `data: ${JSON.stringify({ choices: [{ delta: { content: "available before audit" } }] })}\n\ndata: [DONE]\n\n`,
+      responseBody: `data: ${JSON.stringify({ choices: [{ delta: { content: "available before audit" } }] })}\n\ndata: {"receipt_verification":{"status":"verified"}}\n\nevent: tinycloud.receipt-verification\ndata: {"status":"verified"}\n\ndata: [DONE]\n\n`,
       verifyReceipt: async () => {
         verificationStarted.resolve();
         return verdict.promise;
@@ -69,8 +69,10 @@ describe("RedPill ACI fetch", () => {
       const reader = first.response.body!.getReader();
       try {
         const chunk = await reader.read();
-        expect(new TextDecoder().decode(chunk.value)).toContain("available before audit");
-
+        const firstText = new TextDecoder().decode(chunk.value);
+        expect(firstText).toContain("available before audit");
+        expect(firstText).not.toContain("receipt_verification");
+        let streamedText = firstText;
         const end = reader.read();
         await verificationStarted.promise;
         let ended = false;
@@ -81,8 +83,11 @@ describe("RedPill ACI fetch", () => {
         const terminal = await end;
         expect(terminal.done).toBe(false);
         const terminalText = new TextDecoder().decode(terminal.value);
-        expect(terminalText).toContain('"receipt_verification":{"status":"verified"}');
+        expect(terminalText).toContain('event: tinycloud.receipt-verification\ndata: {"status":"verified"}');
         expect(terminalText).toContain("data: [DONE]");
+        streamedText += terminalText;
+        expect(streamedText.match(/event: tinycloud\.receipt-verification/g)).toHaveLength(1);
+        expect(streamedText).not.toContain('"receipt_verification"');
         expect(await reader.read()).toEqual({ done: true, value: undefined });
       } finally {
         reader.releaseLock();
@@ -92,6 +97,35 @@ describe("RedPill ACI fetch", () => {
     }
     await responsePromise;
   });
+  test("ends a streamed reply with a failed audit after the receipt timeout", async () => {
+    vi.useFakeTimers();
+    const verificationStarted = deferred<void>();
+    const fixture = connectionFixture({
+      responseBody: `data: ${JSON.stringify({ choices: [{ delta: { content: "already streamed" } }] })}\n\ndata: [DONE]\n\n`,
+      verifyReceipt: () => {
+        verificationStarted.resolve();
+        return new Promise<AciReceiptAudit>(() => {});
+      },
+    });
+    const fetch = createRedPillAciFetch(BASE_URL, async () => fixture.connection, RECEIPT_AUDIT_TIMEOUT_MS);
+    const response = await fetch(`${BASE_URL}/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "z-ai/glm-5.3", messages: [] }),
+    });
+    const reader = response.body!.getReader();
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("already streamed");
+      const terminal = reader.read();
+      await verificationStarted.promise;
+      vi.advanceTimersByTime(RECEIPT_AUDIT_TIMEOUT_MS);
+      await expect(terminal).rejects.toBeInstanceOf(RedPillAttestationError);
+      expect(fixture.verified).toEqual([RECEIPT_ID]);
+    } finally {
+      vi.useRealTimers();
+      // The reader is already errored by the timeout; no lock cleanup is needed.
+    }
+  });
+
  
   test("streams bytes, then errors the body when the receipt verdict fails", async () => {
     const fixture = connectionFixture({
@@ -139,7 +173,7 @@ describe("RedPill ACI fetch", () => {
 
     expect(optionsSeen).toMatchObject({ baseURL: BASE_URL, serving: { requireVerified: true, requireReceipt: true } });
     expect(JSON.parse(fixture.calls[0].body).provider).toEqual({ aci_verified: true });
-    expect(await response.text()).toBe(`data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\ndata: [DONE]\n\n`);
+    expect(await response.text()).toBe(`event: tinycloud.receipt-verification\ndata: {"status":"verified"}\n\ndata: [DONE]\n\n`);
     expect(fixture.verified).toEqual([RECEIPT_ID]);
   });
 

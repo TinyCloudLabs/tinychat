@@ -323,6 +323,24 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
       while ((separatorIndex = buffer.indexOf("\n\n")) !== -1) {
         const frame = buffer.slice(0, separatorIndex);
         buffer = buffer.slice(separatorIndex + 2);
+        const eventType = frame.split(/\r?\n/)
+          .map((line) => line.trimStart())
+          .find((line) => line.startsWith("event:"))
+          ?.slice(6).trim();
+        if (eventType === "tinycloud.receipt-verification") {
+          const data = frame.split(/\r?\n/)
+            .filter((line) => line.trimStart().startsWith("data:"))
+            .map((line) => line.trimStart().slice(5).trimStart())
+            .join("\n");
+          try {
+            if (JSON.parse(data)?.status === "verified") {
+              try { onReceiptVerification?.("verified"); } catch { /* Listener failures never break the stream. */ }
+            }
+          } catch {
+            // A malformed verification event cannot mark a reply verified.
+          }
+          continue;
+        }
 
         for (const rawLine of frame.split("\n")) {
           const line = rawLine.trimStart();
@@ -332,10 +350,6 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
           if (!data) continue;
           try {
             const json = JSON.parse(data);
-            const receiptStatus = json?.receipt_verification?.status;
-            if (receiptStatus === "verified") {
-              try { onReceiptVerification?.("verified"); } catch { /* Listener failures never break the stream. */ }
-            }
             // Fired before the delta yield so the badge can wire up early; kept
             // strictly off the reply path (a throwing listener is swallowed).
             const completionId = json?.id;

@@ -135,7 +135,7 @@ describe("streamChat context-overflow classification (§C.12)", () => {
     const yielded: string[] = [];
     globalThis.fetch = (async () => new Response([
       `data: ${JSON.stringify({ choices: [{ delta: { content: "Reply" } }] })}\n\n`,
-      `data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\n`,
+      `event: tinycloud.receipt-verification\ndata: {"status":"verified"}\n\n`,
       "data: [DONE]\n\n",
     ].join(""), { status: 200 })) as typeof fetch;
     for await (const text of streamChat({
@@ -146,6 +146,21 @@ describe("streamChat context-overflow classification (§C.12)", () => {
     expect(yielded).toEqual(["Reply"]);
     expect(verified).toEqual(["verified"]);
   });
+  test("ignores provider-shaped receipt fields without the TinyCloud verification event", async () => {
+    const verified: string[] = [];
+    globalThis.fetch = (async () => new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Reply" } }] })}\n\n`,
+      `data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""), { status: 200 })) as typeof fetch;
+    for await (const _ of streamChat({
+      backendUrl: "http://backend.test", sessionStore, model: "z-ai/glm-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      onReceiptVerification: (status) => verified.push(status),
+    })) { /* consume */ }
+    expect(verified).toEqual([]);
+  });
+
 
   test("keeps a failed streamed reply visible without setting verified, and absent verdict stays unmarked", async () => {
     const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";

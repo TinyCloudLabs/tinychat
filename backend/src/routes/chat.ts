@@ -42,7 +42,7 @@ import {
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import { selectChatModel } from "../modelSelection.js";
 import { noteRequestRecord, recordAfterHandler } from "../request-context.js";
-import { DEFAULT_RED_PILL_BASE_URL, PRIVATE_RESPONSE_UNVERIFIED_MESSAGE, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, redPillAciFetch } from "../redpill-aci.js";
+import { DEFAULT_RED_PILL_BASE_URL, PRIVATE_RESPONSE_UNVERIFIED_MESSAGE, RECEIPT_AUDIT_TIMEOUT_MS, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, redPillAciFetch } from "../redpill-aci.js";
 
 // ── RedPill config ───────────────────────────────────────────────────────────
 // REDPILL_API_KEY is required at call time. Missing key returns 500 per-request
@@ -207,7 +207,7 @@ export interface ChatRouterOptions {
 export function createChatRouter(options?: ChatRouterOptions) {
   const flusher = options?.flusher;
   const rehydrator = options?.rehydrator;
-  const redpillFetch = options?.redpillFetch ?? redPillAciFetch(REDPILL_BASE_URL);
+  const redpillFetch = options?.redpillFetch ?? redPillAciFetch(REDPILL_BASE_URL, RECEIPT_AUDIT_TIMEOUT_MS);
   const router = Router();
   const paidLimiter: RequestHandler = options?.paidLimiter ?? ((_req, _res, next) => next());
 

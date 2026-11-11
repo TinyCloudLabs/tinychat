@@ -28,7 +28,7 @@ import { createAgentRouter } from "./routes/agent.js";
 import { meetingRolloutFromEnv } from "./transcripts/meeting-rollout.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter, defaultModel } from "./routes/chat.js";
-import { DEFAULT_RED_PILL_BASE_URL, redPillAciFetch, validateRedPillBaseUrl } from "./redpill-aci.js";
+import { DEFAULT_RED_PILL_BASE_URL, RECEIPT_AUDIT_TIMEOUT_MS, redPillAciFetch, validateRedPillBaseUrl } from "./redpill-aci.js";
 import { LedgerFlusher } from "./billing/ledger-flusher.js";
 import { LedgerRehydrator } from "./billing/ledger-rehydrate.js";
 import { isOfferedModel } from "./billing/catalog.js";
@@ -1097,7 +1097,7 @@ async function main() {
     createChatRouter({
       flusher: ledgerFlusher,
       rehydrator: ledgerRehydrator,
-      redpillFetch: redPillAciFetch(redpillBaseUrl),
+      redpillFetch: redPillAciFetch(redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS),
       paidLimiter: paidChatLimiter,
     }),
   );
