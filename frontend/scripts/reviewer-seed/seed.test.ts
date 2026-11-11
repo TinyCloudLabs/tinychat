@@ -221,16 +221,29 @@ test("an interrupted run resumes to the same content, and another revision is re
   await expect(runReviewerSeed(interrupted.space, interrupted.target, write(interrupted.spaceId)))
     .rejects.toThrow("xyz.tinycloud.tinychat/threads.threads has 1 row(s) the seed did not write");
   expect(interrupted.writes()).toBe(writesBefore);
-  // So is one whose seeded chat gained a message.
-  const extended = fakeSpace({ failAfterWrites: 16 });
-  await expect(runReviewerSeed(extended.space, extended.target, write(extended.spaceId))).rejects.toThrow("simulated interruption");
-  extended.heal();
-  extended.databases.get("xyz.tinycloud.tinychat/threads")!.query("INSERT INTO messages VALUES (?, 99, '{}', '2026-01-01')").run(CHAT_THREAD_ID);
-  await expect(runReviewerSeed(extended.space, extended.target, write(extended.spaceId)))
-    .rejects.toThrow("xyz.tinycloud.tinychat/threads.messages has 1 row(s) the seed did not write");
 
   fake.databases.get("xyz.tinycloud.tinychat/threads")!.query("UPDATE settings SET value = json_set(value, '$.revision', 99) WHERE key = ?").run(SEED_MARKER_KEY);
   await expect(runReviewerSeed(fake.space, fake.target, write(fake.spaceId))).rejects.toMatchObject({ code: "OTHER_REVISION" });
+});
+
+test("resume matches the seeded chat's messages by their ids, not by thread or count", async () => {
+  // Stopped after the first two of the chat's four messages.
+  const fake = fakeSpace({ failAfterWrites: 12 });
+  await expect(runReviewerSeed(fake.space, fake.target, write(fake.spaceId))).rejects.toThrow("simulated interruption");
+  fake.heal();
+  expect(fake.rows("xyz.tinycloud.tinychat/threads", "messages")).toBe(2);
+  // The reviewer adds one message to the seeded chat: three rows, under the old cap of four, but not a seed id.
+  const added = { message: { id: "reviewer-typed-message", role: "user", content: [{ type: "text", text: "Hello" }] }, parentId: `${CHAT_THREAD_ID}-m1` };
+  fake.databases.get("xyz.tinycloud.tinychat/threads")!.query("INSERT INTO messages VALUES (?, 2, ?, '2026-11-11')").run(CHAT_THREAD_ID, JSON.stringify(added));
+  const writesBefore = fake.writes();
+  await expect(runReviewerSeed(fake.space, fake.target, write(fake.spaceId)))
+    .rejects.toThrow("xyz.tinycloud.tinychat/threads.messages has 1 row(s) the seed did not write");
+  expect(fake.writes()).toBe(writesBefore);
+
+  // Without it, the same interrupted space resumes.
+  fake.databases.get("xyz.tinycloud.tinychat/threads")!.query("DELETE FROM messages WHERE json_extract(payload, '$.message.id') = 'reviewer-typed-message'").run();
+  await expect(runReviewerSeed(fake.space, fake.target, write(fake.spaceId))).resolves.toMatchObject({ status: "resumed" });
+  expect(fake.rows("xyz.tinycloud.tinychat/threads", "messages")).toBe(4);
 });
 
 test("the capability request covers exactly what the seed and its read-back touch", async () => {
@@ -250,10 +263,17 @@ test("a grant is accepted only from the target owner, for the target space, to t
   const options = parseSeedArgs(["--space", fake.spaceId, "--owner", fake.ownerDid, "--allow-owner", fake.ownerDid, "--request-out", "r.json", "--dry-run"]);
   const address = fake.ownerDid.split(":").at(-1)!;
   const now = Date.parse("2026-11-11T12:00:00Z");
+  const requested = seedPermissions(options.mode);
+  // A compact UCAN laid out as the node SDK signs one; the signature is not checked locally (the node verifies it).
+  const ucan = (payload: Record<string, unknown>) => ["{\"alg\":\"EdDSA\",\"typ\":\"JWT\"}", JSON.stringify(payload), "signature"]
+    .map((part) => Buffer.from(part).toString("base64url")).join(".");
+  const signedAtt = (entries: { service: string; path: string; actions: string[] }[]) => Object.fromEntries(entries.map((entry) =>
+    [`${fake.spaceId}/${entry.service.replace("tinycloud.", "")}/${entry.path}`, Object.fromEntries(entry.actions.map((action) => [action, [{}]]))]));
+  const payload = { iss: "did:key:z6MkOwnerSession", aud: "did:key:z6MkSeed", exp: (now + 3_600_000) / 1000, prf: ["bafy-session"], att: signedAtt(requested) };
   const grant: PortableDelegation = {
-    cid: "bafy-grant", delegationHeader: { Authorization: "Bearer redacted" }, spaceId: fake.spaceId, path: "", actions: [],
+    cid: "bafy-grant", delegationHeader: { Authorization: ucan(payload) }, spaceId: fake.spaceId, path: "", actions: [],
     delegateDID: "did:key:z6MkSeed", ownerAddress: address, chainId: 1, host: options.host, expiry: new Date(now + 3_600_000),
-    resources: seedPermissions(options.mode).map((entry) => ({ service: entry.service.replace("tinycloud.", ""), space: fake.spaceId, path: entry.path, actions: entry.actions })),
+    resources: requested.map((entry) => ({ service: entry.service.replace("tinycloud.", ""), space: fake.spaceId, path: entry.path, actions: entry.actions })),
   } as unknown as PortableDelegation;
   expect(() => assertGrant(grant, options, "did:key:z6MkSeed", now)).not.toThrow();
   const refusals: [Partial<PortableDelegation>, string][] = [
@@ -269,4 +289,23 @@ test("a grant is accepted only from the target owner, for the target space, to t
     [{ path: "", actions: ["tinycloud.kv/del"] }, "wider than the request"],
   ];
   for (const [change, message] of refusals) expect(() => assertGrant({ ...grant, ...change }, options, "did:key:z6MkSeed", now)).toThrow(message);
+
+  // Transport fields that match the request do not hide a wider signed payload.
+  const signedRefusals: [string, string][] = [
+    ["Bearer redacted", "not a compact UCAN"],
+    [`${ucan(payload).split(".").slice(0, 2).join(".")}`, "not a compact UCAN"],
+    [ucan({ ...payload, aud: "did:key:z6MkSomeoneElse" }), "signed audience is not this run's session key"],
+    [ucan({ ...payload, exp: (now + 48 * 3_600_000) / 1000 }), "longer than 24 hours"],
+    [ucan({ ...payload, exp: undefined }), "no audience or expiry"],
+    [ucan({ ...payload, att: {} }), "signs no capabilities"],
+    [ucan({ ...payload, att: { ...payload.att, [`${fake.spaceId}/kv/`]: { "tinycloud.kv/del": [{}] } } }), "wider than the request"],
+    [ucan({ ...payload, att: signedAtt([{ ...requested[0]!, actions: ["tinycloud.sql/read", "tinycloud.sql/write"] }]) }), "wider than the request"],
+    [ucan({ ...payload, att: { [`${fake.spaceId.replace(":applications", ":default")}/sql/xyz.tinycloud.tinychat/threads`]: { "tinycloud.sql/read": [{}] } } }), "signs another space"],
+    [ucan({ ...payload, att: { "urn:tinycloud:encryption:did:pkh:eip155:1:0xabc:default": { "tinycloud.encryption/decrypt": [{}] } } }), "unexpected resource"],
+  ];
+  for (const [Authorization, message] of signedRefusals)
+    expect(() => assertGrant({ ...grant, delegationHeader: { Authorization } }, options, "did:key:z6MkSeed", now)).toThrow(message);
+  // OpenKey's added capabilities/read on the space root is accepted.
+  const withCapabilities = ucan({ ...payload, att: { ...payload.att, [`${fake.spaceId}/capabilities/`]: { "tinycloud.capabilities/read": [{}] } } });
+  expect(() => assertGrant({ ...grant, delegationHeader: { Authorization: withCapabilities } }, options, "did:key:z6MkSeed", now)).not.toThrow();
 });

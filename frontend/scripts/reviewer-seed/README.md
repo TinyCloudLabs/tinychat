@@ -26,6 +26,7 @@ bun frontend/scripts/reviewer-seed/cli.ts \
    The owner's session must already cover the requested capabilities.
 3. Paste the grant JSON into the waiting CLI and end with Ctrl-D, or pipe it in. The CLI accepts the
    `tinycloud.auth.delegation` artifact that `tinycloud auth grant` prints, or a bare portable delegation.
+   Its authorization must be a compact UCAN (what a session-signed grant is); anything else is refused.
 
 ## Inputs
 
@@ -49,15 +50,18 @@ All entries are in the owner's `applications` space. `requestedExpiry` is `1h`.
 
 Writing (`--confirm`):
 
-| Service | Path | Actions |
-| --- | --- | --- |
-| `tinycloud.sql` | `xyz.tinycloud.tinychat/threads` | read, write, schema |
-| `tinycloud.sql` | `xyz.tinycloud.tinychat/home_feed` | read, write, schema |
-| `tinycloud.sql` | `xyz.tinycloud.tinychat/feed/feed_output_home_tour` | read, write, schema |
-| `tinycloud.sql` | `xyz.tinycloud.tinychat/feed/feed_responses_home_tour` | read, write, schema |
-| `tinycloud.sql` | `xyz.tinycloud.tinychat/connectors` | read, write, schema |
-| `tinycloud.kv` | `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript/tinychat-reviewer-seed-r1-voice-note` (one key) | get, put |
-| `tinycloud.kv` | `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/tinychat-reviewer-seed-r1-voice-note/` | get, put |
+| Service | Path | Scope | Actions |
+| --- | --- | --- | --- |
+| `tinycloud.sql` | `xyz.tinycloud.tinychat/threads` | whole database | read, write, schema |
+| `tinycloud.sql` | `xyz.tinycloud.tinychat/home_feed` | whole database | read, write, schema |
+| `tinycloud.sql` | `xyz.tinycloud.tinychat/feed/feed_output_home_tour` | whole database | read, write, schema |
+| `tinycloud.sql` | `xyz.tinycloud.tinychat/feed/feed_responses_home_tour` | whole database | read, write, schema |
+| `tinycloud.sql` | `xyz.tinycloud.tinychat/connectors` | whole database | read, write, schema |
+| `tinycloud.kv` | `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript/tinychat-reviewer-seed-r1-voice-note` | one exact key | get, put |
+| `tinycloud.kv` | `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/tinychat-reviewer-seed-r1-voice-note/` | one prefix, scoped to the seed's voice note | get, put |
+
+The KV prefix is needed because the transcript body's key ends in its content hash
+(`…/transcript-rev/<note id>/<hash>`). It covers only that seed note's revisions.
 
 Dry run: `tinycloud.sql` read on the five databases above.
 
@@ -76,13 +80,16 @@ owner is never asked to grant a run that would be refused.
 - `--owner` is not on `--allow-owner` (`OWNER_NOT_ALLOWLISTED`);
 - `--space` is not `--owner`'s applications space, or the grant does not match the target (`TARGET_MISMATCH`):
   it must be addressed to this run's session key, issued by `--owner` for `--space` on `--host`,
-  unexpired and at most 24 hours long, list its resources, and be no wider than the request in
-  those resources or its flat path and actions (plus `tinycloud.capabilities/read`, which OpenKey
-  adds). These are the grant's transport fields; the node enforces the signed delegation itself;
+  unexpired and at most 24 hours long, and no wider than the request (plus
+  `tinycloud.capabilities/read`, which OpenKey adds). This is checked twice before use: on the
+  grant's transport fields (listed resources, flat path and actions), and on its signed UCAN
+  payload, decoded in process (`aud`, `exp`, and every resource and ability in `att`). The
+  signature and the delegation chain back to the owner are verified by the node, not locally;
 - the space is not fresh (`NOT_FRESH`): any row in any table of the five databases above, except
   `threads.settings`. `settings` holds preferences, such as the default Feed view, that Home may
   write at sign-in. When the space has this revision's `in-progress` marker (an interrupted run),
-  only rows with the seed's own ids are allowed. The check only reads `sqlite_master` and
+  only rows with the seed's own ids are allowed (the thread, its four message ids, the agent, the
+  four card issuances, the voice-note row and its transcript commit). The check only reads `sqlite_master` and
   `COUNT(*)`; it creates nothing;
 - the space has a seed marker from another revision, or one it cannot read (`OTHER_REVISION`);
 - the freshness check cannot read a database or count a table (`INSPECTION_FAILED`).
@@ -151,14 +158,18 @@ interrupted run of this revision was finished) or `already-seeded` (nothing writ
 
 - No key input or output: `cli.ts` creates a session-only `TinyCloudNode`; there is no `privateKey`,
   key file or key environment variable, and only the session DID is printed. Errors print only messages.
-- Authority is the owner's grant alone. `args.ts` `assertGrant` checks its transport fields before it
-  is used, and the handle's owner DID comes from the grant, so `seed.ts` checks it against the target again.
+- Authority is the owner's grant alone. It is locally checked and node-verified: `args.ts`
+  `assertGrant` checks its transport fields and its decoded signed payload (`signedGrant`) against
+  the request before use, failing closed on anything wider or not a compact UCAN; the node verifies the
+  signature and the chain to the owner. The handle's owner DID comes from the grant, so `seed.ts`
+  checks it against the target again.
 - The allowlist and target come only from flags (`args.ts` `parseSeedArgs`); `seed.ts`
   `assertSeedTarget` checks the owner, the space and the confirmation before the request is written.
   The allowlist is a guard against a mistyped owner, not authority.
 - The freshness check (`inspectSpace`) is read-only and fails closed on any read error or odd count.
-- The request (`seedPermissions`) is exact paths, no KV delete, one hour. A test checks that the seed and
-  its read-back touch exactly the requested SQL databases and KV keys.
+- The request (`seedPermissions`) is five whole SQL databases, one exact KV key and one KV prefix scoped
+  to the seed's voice note, no KV delete, one hour. A test checks that the seed and its read-back touch
+  exactly the requested SQL databases and KV keys.
 - KV calls are made with an empty prefix (`cli.ts` `rootKv`), so keys are the full in-space keys Home
   uses and are not re-rooted under the grant's first path.
 - The only app change is `pastedTranscriptCommit`, extracted from `savePastedTranscript` without a
@@ -166,7 +177,8 @@ interrupted run of this revision was finished) or `already-seeded` (nothing writ
 
 ## Tests
 
-`bun test scripts/reviewer-seed` from `frontend/` runs the seed against in-memory SQLite and KV:
-refusal of a non-empty space, of a missing or wrong confirmation, of an owner off the allowlist and of
-a mismatched grant; a dry run that writes nothing; a no-op rerun; resuming an interrupted run; and
-the seeded items as Home's thread list, Feed and Library read them.
+`bun test scripts/reviewer-seed` from `frontend/` runs the seed's 11 tests against in-memory SQLite
+and KV: refusal of a non-empty space, of a missing or wrong confirmation, of an owner off the
+allowlist and of a mismatched grant (transport fields and signed payload); a dry run that writes
+nothing; a no-op rerun; resuming an interrupted run, and refusing one whose space gained rows the
+seed did not write; and the seeded items as Home's thread list, Feed and Library read them.
