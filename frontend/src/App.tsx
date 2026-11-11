@@ -725,7 +725,8 @@ export function App() {
             includeAccountRegistryPermissions: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
             uiPlatform: sdkUiPlatform(),
-            manifest,
+            // Restore the base request. Any previously signed connector grants remain in the saved session.
+            manifest: !HOME_SITE && appPlatform() === "web" ? webSignInManifest(manifest, [], storedAddress) : manifest,
             // ON: the replication option plus a read-only account provider (so the restore has a signer
             // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
             ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),

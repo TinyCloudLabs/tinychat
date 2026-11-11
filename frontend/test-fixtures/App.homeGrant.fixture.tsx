@@ -43,6 +43,8 @@ const laneApi = await import("@/lib/spaceWriteLane");
 const feedApi = await import("@/feed/FeedView");
 const webSdkApi = await import("@tinycloud/web-sdk");
 
+let lastRestoreConfig: { manifest?: unknown } | null = null;
+let restoreThroughSdk = false;
 let lastSignInConfig: { manifest: unknown; includeAccountRegistryPermissions?: unknown } | null = null;
 let decryptGrantCalls = 0;
 let delegationCalls = 0;
@@ -92,6 +94,10 @@ mock.module("@tinyboilerplate/client", () => ({
   createAndSignIn: async (_provider: unknown, config: typeof lastSignInConfig) => {
     lastSignInConfig = config;
     return { tcw: fakeTcw(signInCovers, "signed-in"), session: { siwe: "message", signature: "signature" } };
+  },
+  restoreTinyCloudWebSession: async (_address: string, config: { manifest?: unknown }) => {
+    lastRestoreConfig = config;
+    return { status: "restored", tcw: fakeTcw(signInCovers, "restored") };
   },
   // The in-place re-authorise's separate instance.
   createTinyCloudWeb: (_provider: unknown, config: { manifest: unknown; sessionStorage: { save(address: string, data: unknown): Promise<void> } }) => {
@@ -148,7 +154,11 @@ mock.module("@/lib/openkeyNativeRenewal", () => ({
 mock.module("@/lib/sessionRestore", () => ({
   ...restoreApi,
   browserIsOffline: () => false,
-  restorePersistedSession: async () => restoreResult,
+  restorePersistedSession: async (_store: unknown, deps: { loadManifest(): Promise<unknown>; restore(address: string, manifest: unknown): Promise<{ tcw: unknown }> }) => {
+    if (!restoreThroughSdk) return restoreResult;
+    const result = await deps.restore(ADDRESS, await deps.loadManifest());
+    return { kind: "restored", address: ADDRESS, tcw: result.tcw };
+  },
 }));
 mock.module("@/lib/openkeySignOut", () => ({ ...signOutApi, signOutOpenKeySession: async () => ({ status: "cancelled" }) }));
 mock.module("@/lib/connectors/encryptionGrant", () => ({
@@ -261,6 +271,8 @@ const navLabels = () => [...host!.querySelectorAll("nav a")].map((link) => link.
 
 const realFetch = globalThis.fetch;
 beforeEach(() => {
+  lastRestoreConfig = null;
+  restoreThroughSdk = false;
   lastSignInConfig = null;
   decryptGrantCalls = 0;
   delegationCalls = 0;
@@ -315,7 +327,7 @@ test("sign-in asks for the manifest this build ships, without a decrypt grant be
     expect(JSON.stringify(config.manifest)).not.toContain("decryptGrant");
     expect(delegationCalls).toBe(0);
   } else {
-    expect(config.manifest).toEqual(readManifest("manifest.json"));
+    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
     expect(decryptGrantCalls).toBe(0);
     expect(delegationCalls).toBeGreaterThan(0);
   }
@@ -330,7 +342,7 @@ test("a feature this device has used is asked for in the same sign-in on the Hom
     expect(config.manifest).toEqual(homeSignInManifest(readManifest("manifest.home.json"), ["recording"], ADDRESS));
     expect(localStorage.getItem(REVISION_KEY)).toBe("home-1");
   } else {
-    expect(config.manifest).toEqual(readManifest("manifest.json"));
+    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
   }
 });
 
@@ -705,4 +717,15 @@ test("declining web Connectors access leaves the session and feed working with a
   await navigate("/chat/feed");
   expect(host!.querySelector('[data-testid="feed-view"]')).toBeTruthy();
   expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
+});
+
+
+test("web restore checks the reduced base so a non-Connectors session can reload", async () => {
+  if (HOME) return;
+  restoreThroughSdk = true;
+  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
+  await mount();
+  expect(lastRestoreConfig!.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });

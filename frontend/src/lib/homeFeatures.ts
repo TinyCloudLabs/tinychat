@@ -67,9 +67,9 @@ export function homeSignInManifest(base: Manifest, flags: readonly HomeFeature[]
   return { ...base, permissions: [...(base.permissions ?? []), ...entries, ...withDecrypt(flags, address)] } as Manifest;
 }
 
-/** The full web build already grants feature storage. Only remembered Connectors use adds decrypt. */
+/** Full web keeps feature storage and asks for connector secrets and decrypt only after Connectors use. */
 export function webSignInManifest(base: Manifest, flags: readonly HomeFeature[], address: string): Manifest {
-  return flags.includes("connectors") ? withEncryptionDecryptGrant(base, address) : base;
+  return flags.includes("connectors") ? withEncryptionDecryptGrant(base, address) : { ...base, secrets: {} };
 }
 
 /**
