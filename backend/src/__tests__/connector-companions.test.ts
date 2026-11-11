@@ -668,7 +668,6 @@ describe("DELETE /config teardown", () => {
     });
   });
 
-
   test("DELETE /config clears recorded IDs immediately while retaining the purge watermark", async () => {
     const h = createHarness();
     h.tokens.configs.set(ADDRESS, {
