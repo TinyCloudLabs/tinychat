@@ -43,6 +43,8 @@ const laneApi = await import("@/lib/spaceWriteLane");
 const feedApi = await import("@/feed/FeedView");
 const webSdkApi = await import("@tinycloud/web-sdk");
 
+let lastRestoreConfig: { manifest?: unknown } | null = null;
+let restoreThroughSdk = false;
 let lastSignInConfig: { manifest: unknown; includeAccountRegistryPermissions?: unknown } | null = null;
 let decryptGrantCalls = 0;
 let delegationCalls = 0;
@@ -92,6 +94,10 @@ mock.module("@tinyboilerplate/client", () => ({
   createAndSignIn: async (_provider: unknown, config: typeof lastSignInConfig) => {
     lastSignInConfig = config;
     return { tcw: fakeTcw(signInCovers, "signed-in"), session: { siwe: "message", signature: "signature" } };
+  },
+  restoreTinyCloudWebSession: async (_address: string, config: { manifest?: unknown }) => {
+    lastRestoreConfig = config;
+    return { status: "restored", tcw: fakeTcw(signInCovers, "restored") };
   },
   // The in-place re-authorise's separate instance.
   createTinyCloudWeb: (_provider: unknown, config: { manifest: unknown; sessionStorage: { save(address: string, data: unknown): Promise<void> } }) => {
@@ -148,7 +154,11 @@ mock.module("@/lib/openkeyNativeRenewal", () => ({
 mock.module("@/lib/sessionRestore", () => ({
   ...restoreApi,
   browserIsOffline: () => false,
-  restorePersistedSession: async () => restoreResult,
+  restorePersistedSession: async (_store: unknown, deps: { loadManifest(): Promise<unknown>; restore(address: string, manifest: unknown): Promise<{ tcw: unknown }> }) => {
+    if (!restoreThroughSdk) return restoreResult;
+    const result = await deps.restore(ADDRESS, await deps.loadManifest());
+    return { kind: "restored", address: ADDRESS, tcw: result.tcw };
+  },
 }));
 mock.module("@/lib/openkeySignOut", () => ({ ...signOutApi, signOutOpenKeySession: async () => ({ status: "cancelled" }) }));
 mock.module("@/lib/connectors/encryptionGrant", () => ({
@@ -261,6 +271,8 @@ const navLabels = () => [...host!.querySelectorAll("nav a")].map((link) => link.
 
 const realFetch = globalThis.fetch;
 beforeEach(() => {
+  lastRestoreConfig = null;
+  restoreThroughSdk = false;
   lastSignInConfig = null;
   decryptGrantCalls = 0;
   delegationCalls = 0;
@@ -301,7 +313,7 @@ afterEach(async () => {
 });
 afterAll(() => { mock.restore(); restoreImportDom(); globalThis.fetch = realFetch; Reflect.deleteProperty(globalThis, "localStorage"); });
 
-test("sign-in asks for the manifest this build ships, with the decrypt grant only on the plain build", async () => {
+test("sign-in asks for the manifest this build ships, without a decrypt grant before Connectors use", async () => {
   await mount();
   await signIn();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
@@ -315,8 +327,8 @@ test("sign-in asks for the manifest this build ships, with the decrypt grant onl
     expect(JSON.stringify(config.manifest)).not.toContain("decryptGrant");
     expect(delegationCalls).toBe(0);
   } else {
-    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
-    expect(decryptGrantCalls).toBe(1);
+    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
+    expect(decryptGrantCalls).toBe(0);
     expect(delegationCalls).toBeGreaterThan(0);
   }
 });
@@ -330,7 +342,7 @@ test("a feature this device has used is asked for in the same sign-in on the Hom
     expect(config.manifest).toEqual(homeSignInManifest(readManifest("manifest.home.json"), ["recording"], ADDRESS));
     expect(localStorage.getItem(REVISION_KEY)).toBe("home-1");
   } else {
-    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
+    expect(config.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
   }
 });
 
@@ -353,7 +365,8 @@ test("without the feature flag the Home site starts no recording, connector or t
     expect(mounted.filter((name) => lanes.includes(name))).toEqual([]);
     expect(transcriberSyncEnabled).toBe(false);
   } else {
-    for (const lane of lanes) expect(mounted).toContain(lane);
+    for (const lane of RECORDING_LANES) expect(mounted).toContain(lane);
+    for (const lane of CONNECTORS_LANES) expect(mounted).not.toContain(lane);
     expect(transcriberSyncEnabled).toBe(true);
   }
   expect(meetingsRequests()).toEqual([]);
@@ -415,8 +428,8 @@ test("navigation, and Recording and Connectors asking in place on the Home site"
   } else {
     expect(navLabels()).toEqual(["Recording", "Chat", "Apps", "Feed", "Connectors"]);
     await navigate("/chat/connectors");
-    expect(mounted).toContain("ConnectorsPage");
-    expect(prompt("connectors")).toBeNull();
+    expect(mounted).not.toContain("ConnectorsPage");
+    expect(prompt("connectors")?.textContent).toContain("Allow Connectors");
   }
 });
 
@@ -653,4 +666,97 @@ test("a session already recorded under the Home revision is not asked again", as
   localStorage.setItem(REVISION_KEY, HOME ? "home-1" : "4");
   await mount();
   expect(host!.textContent).not.toContain(NOTICE);
+});
+
+
+test("web sign-in remembers Connectors in the shared device/account feature record", async () => {
+  if (HOME) return;
+  localStorage.setItem(FEATURES_KEY, JSON.stringify(["connectors"]));
+  signInCovers = true;
+  await mount("/chat/connectors");
+  await signIn();
+  await navigate("/chat/connectors");
+  expect(lastSignInConfig!.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
+  expect(decryptGrantCalls).toBe(1);
+  expect(prompt("connectors")).toBeNull();
+  expect(mounted).toContain("ConnectorsPage");
+  for (const lane of CONNECTORS_LANES) expect(mounted).toContain(lane);
+});
+
+test("web first-use Continue signs the full manifest with decrypt, swaps the session, and remembers Connectors", async () => {
+  if (HOME) return;
+  await mount("/chat/connectors");
+  await signIn();
+  await navigate("/chat/connectors");
+  expect(prompt("connectors")?.textContent).toContain("Allow Connectors");
+  expect(mounted).not.toContain("ConnectorsPage");
+  await clickInPrompt("connectors", "Continue");
+  expect(reauthInstances).toBe(1);
+  expect(reauthConfig!.manifest).toEqual({ ...readManifest("manifest.json"), decryptGrant: true });
+  expect(persistedSessions).toEqual([{ tag: "re-authorised session" }]);
+  expect(prompt("connectors")).toBeNull();
+  expect(mounted).toContain("ConnectorsPage");
+  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["connectors"]);
+  for (const lane of CONNECTORS_LANES) expect(mounted).toContain(lane);
+  await navigate("/chat/feed");
+  expect(tagOf(feedTcws.at(-1))).toBe("re-authorised");
+});
+
+test("declining web Connectors access leaves the session and feed working with a retry", async () => {
+  if (HOME) return;
+  reauthAnswer = "decline";
+  await mount("/chat/connectors");
+  await signIn();
+  await navigate("/chat/connectors");
+  await clickInPrompt("connectors", "Continue");
+  expect(prompt("connectors")?.textContent).toContain("Permission wasn't given. Nothing changed.");
+  expect(persistedSessions).toEqual([]);
+  expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
+  expect(mounted).not.toContain("ConnectorsPage");
+  for (const lane of CONNECTORS_LANES) expect(mounted).not.toContain(lane);
+  await navigate("/chat/feed");
+  expect(host!.querySelector('[data-testid="feed-view"]')).toBeTruthy();
+  expect(tagOf(feedTcws.at(-1))).toBe("signed-in");
+});
+
+
+test("web restore checks the reduced base so a non-Connectors session can reload", async () => {
+  if (HOME) return;
+  restoreThroughSdk = true;
+  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
+  await mount();
+  expect(lastRestoreConfig!.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+});
+
+
+test("an old full web session remembers a connected source and keeps its background lanes", async () => {
+  if (HOME) return;
+  const restored = fakeTcw(true, "restored");
+  const queries: string[] = [];
+  restored.sql = { db: () => ({ query: async (sql: string) => {
+    queries.push(sql);
+    return { ok: true, data: { rows: [["fireflies", "connected", null, null, null, 0]] } };
+  } }) } as unknown as TinyCloudWeb["sql"];
+  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
+  restoreResult = { kind: "restored", tcw: restored, address: ADDRESS };
+  await mount();
+  expect(JSON.parse(localStorage.getItem(FEATURES_KEY)!)).toEqual(["connectors"]);
+  const connectionReads = queries.filter((sql) => sql.includes("FROM connector_state"));
+  expect(connectionReads).toHaveLength(1);
+  expect(connectionReads[0]).toStartWith("SELECT connector_id");
+  for (const lane of CONNECTORS_LANES) expect(mounted).toContain(lane);
+});
+
+test("an old full web session without a connected source leaves the feature record unset", async () => {
+  if (HOME) return;
+  const restored = fakeTcw(true, "restored");
+  restored.sql = { db: () => ({ query: async () => ({ ok: true, data: { rows: [] } }) }) } as unknown as TinyCloudWeb["sql"];
+  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
+  restoreResult = { kind: "restored", tcw: restored, address: ADDRESS };
+  await mount();
+  expect(localStorage.getItem(FEATURES_KEY)).toBeNull();
 });

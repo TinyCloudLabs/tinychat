@@ -28,7 +28,8 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
-import { homeFeaturesToRequest, homeSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
+import { homeFeaturesToRequest, homeSignInManifest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
+import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
 import { reauthorizeHome } from "./lib/homeReauthorize";
 import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
@@ -119,7 +120,7 @@ import {
   redirectsWhenSignedOut,
   screenFor,
 } from "./shell/routes";
-import { PlatformContext, sdkUiPlatform } from "./lib/platform";
+import { appPlatform, PlatformContext, sdkUiPlatform } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
@@ -248,7 +249,7 @@ export function App() {
   const featureAskRef = useRef<Promise<FeatureAccessOutcome> | null>(null);
   const askForFeature = useCallback(async (feature: HomeFeature): Promise<FeatureAccessOutcome> => {
     const current = tcw;
-    if (!HOME_SITE || state !== "ready" || !current || !address) return "failed";
+    if ((!HOME_SITE && appPlatform() !== "web") || state !== "ready" || !current || !address) return "failed";
     // Busy: work a swap would cut off, as the prompt sees it and as the work boundary counts it at this moment.
     const busy = () => featureInFlightRef.current !== null || homeWorkBusyNow();
     if (busy()) return "busy";
@@ -261,9 +262,13 @@ export function App() {
       verify: (siwe, signature) => verifySession(BACKEND_URL, siwe, signature),
     }, {
       address,
+      homeSite: HOME_SITE,
       // Everything the session has or this device used stays in the new grant, so allowing one never drops another.
       features: homeFeaturesToRequest(homeFeatureStore, current, address, feature),
-      config: { autoCreateSpace: true, includeAccountRegistryPermissions: false, tinycloudHosts: TINYCLOUD_HOSTS, uiPlatform: sdkUiPlatform() },
+      config: {
+        autoCreateSpace: true, includeAccountRegistryPermissions: false, tinycloudHosts: TINYCLOUD_HOSTS, uiPlatform: sdkUiPlatform(),
+        ...(HOME_SITE || LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(address))),
+      },
       // Checked before and after the snapshot of what is saved, immediately before the new session is written.
       canCommit: () => (signedOut() ? "signed-out" : busy() ? "busy" : null),
     });
@@ -286,7 +291,12 @@ export function App() {
     const scope = storageScopeFor(current);
     if (scope) associateStorageAccountClient(result.tcw, scope);
     openkeyRef.current = result.openkey;
+    if (!HOME_SITE) {
+      rememberReplicationPrincipal(result.tcw);
+      startReplicationFill(result.tcw);
+    }
     setTcw(result.tcw);
+    stopReplicationFill(current);
     current.cleanup();
     return "granted";
   }, [tcw, state, address, homeFeatureStore]);
@@ -296,16 +306,22 @@ export function App() {
     featureAskRef.current = ask;
     return ask;
   }, [askForFeature]);
-  const featureInFlight = useInFlightWork(HOME_SITE && state === "ready");
+  const featureInFlight = useInFlightWork((HOME_SITE || appPlatform() === "web") && state === "ready");
   useEffect(() => { featureInFlightRef.current = featureInFlight; }, [featureInFlight]);
   const featureAccess = useHomeFeatureAccessState({
     homeSite: HOME_SITE,
+    webConnectors: !LOCAL_VALIDATION && appPlatform() === "web",
     tcw: state === "ready" ? tcw : null,
     address,
     store: homeFeatureStore,
     requestFeatureAccess,
     inFlight: featureInFlight,
   });
+  useEffect(() => {
+    if (!HOME_SITE && !LOCAL_VALIDATION && appPlatform() === "web" && state === "ready" && tcw && address) {
+      void rememberExistingWebConnectors(homeFeatureStore, tcw, address);
+    }
+  }, [state, tcw, address, homeFeatureStore]);
   useAudioCacheBoot(LOCAL_VALIDATION || !featureAccess.permitted("recording") ? null : tcw);
   // A device that has not recorded on the Home site registers no recorder at boot; it starts once Recording is covered.
   const recordingCovered = featureAccess.covered("recording");
@@ -715,7 +731,8 @@ export function App() {
             includeAccountRegistryPermissions: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
             uiPlatform: sdkUiPlatform(),
-            manifest,
+            // Restore the base request. Any previously signed connector grants remain in the saved session.
+            manifest: !HOME_SITE && appPlatform() === "web" ? webSignInManifest(manifest, [], storedAddress) : manifest,
             // ON: the replication option plus a read-only account provider (so the restore has a signer
             // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
             ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
@@ -1079,14 +1096,6 @@ export function App() {
       setState("signing");
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
-      //
-      // withEncryptionDecryptGrant is a WORKAROUND that hardcodes an SDK-internal
-      // URN format — see docs/connectors-spec.md §7 "KNOWN BLOCKER" and the header
-      // of lib/connectors/encryptionGrant.ts. Secrets reads are refused without
-      // it, and the grant cannot be declared in the static manifest because its
-      // network id embeds this user's DID. Capabilities are minted from the
-      // manifest passed here, so sign-in is the only moment it can be added.
-      // Delete this call when the SDK carries the capability itself.
       const signInConfig = {
         address: connectedAddress,
         nonce,
@@ -1098,7 +1107,9 @@ export function App() {
         // keeps secrets, so only it brings the decrypt grant.
         manifest: HOME_SITE
           ? homeSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
-          : withEncryptionDecryptGrant(manifest, connectedAddress),
+          : appPlatform() === "web"
+            ? webSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
+            : withEncryptionDecryptGrant(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
         ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
@@ -1640,7 +1651,7 @@ export function App() {
           visit"). Same gate as the authenticated surfaces; renders nothing in
           every state, coordinates with Settings on a shared lane, and never
           unlocks — see useBackgroundDrain.ts. */}
-      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.covered("connectors") && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <BackgroundDrainer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1664,7 +1675,7 @@ export function App() {
           drainer above (gmeet has no webhook queue). Same ready gate; renders
           nothing, defers silently while the vault is locked, and is a no-op for
           every user while the registry row is coming-soon. */}
-      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.covered("connectors") && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <GmeetSessionSync
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1677,7 +1688,7 @@ export function App() {
           them. Renders nothing, queues on the drain's lane so the one space has
           a single writer, and is a no-op for every address outside the dark
           cohort — see BackendReconciler.tsx. */}
-      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.covered("connectors") && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <BackendReconciler
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
