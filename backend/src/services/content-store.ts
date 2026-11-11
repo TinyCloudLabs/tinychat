@@ -67,12 +67,10 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
  *    never read as "this user has no meetings" (that reading disables every cap, makes the
  *    retention sweep a no-op and lets a replay re-store swept content). `upsert` answers the
  *    worker's Result type, and the ONLY success arm is a literal `{ok:true, stored}`.
- *  - **Retention with tombstones (D2a = 90 days; delta 5's server half).** The sweep deletes
- *    aged-out content AND records the swept ids as retention tombstones — the same
- *    redelivery-proof marker the shipped purge ledger is (routes/connector-webhooks.ts's
- *    `PurgeLedger` / connector-drain's `isTombstoned`), kept here per-item and per-tenant so a
- *    provider that can replay an old delivery indefinitely (findings §2.1) cannot silently
- *    re-store content the retention window already aged out.
+ *  - **Retention (14 days).** A stored row is deleted at its backend-observed `storedAt` plus
+ *    {@link RETENTION_WINDOW_DAYS}. Retention markers expire at that same instant; they cannot
+ *    outlive the row. A provider replay after the window may be accepted again, so the browser
+ *    checks the user's own space before delivering an ID.
  *  - **Purge tombstones (W7, delta 12).** {@link ContentStoreOptions.purgeLedger} is the second
  *    tombstone input: the SHIPPED §6.2 purge ledger (`purgedThrough` + `recentIds`), applied
  *    through connector-drain's `isTombstoned` — the rule is IMPORTED, never re-implemented, so
@@ -100,8 +98,8 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
 /** The dedicated content master. Separate from the HMAC and credential masters by requirement. */
 export const CONTENT_MASTER_ENV = "CONNECTOR_CONTENT_MASTER";
 
-/** DECISIONS `D2a-retention-days`. Rolling window, independent of reconcile status. */
-export const RETENTION_WINDOW_DAYS = 90;
+/** Meeting IDs and content are retained for no longer than 14 days after first storage. */
+export const RETENTION_WINDOW_DAYS = 14;
 
 /** Plan §8.1 W4: per-meeting content cap — reject-and-log over, never truncate. */
 export const MAX_MEETING_CONTENT_BYTES = 2 * 1024 * 1024;
@@ -111,9 +109,9 @@ export const MAX_USER_MEETINGS = 500;
 export const MAX_USER_CONTENT_BYTES = 200 * 1024 * 1024;
 
 /**
- * Retention tombstones are tiny (an id + a stamp) but not free, so they are bounded too — at the
- * meeting cap, which is the most ids a user can ever have had live at once. Eviction is LOGGED:
- * past this many, the oldest tombstone stops protecting its id from a replay.
+ * Retention markers are bounded at the meeting cap and expire no later than their row's 14-day
+ * boundary. If a user exceeds the cap, the oldest remaining marker may stop suppressing replay
+ * sooner; it never extends retention of the corresponding content row.
  */
 export const MAX_USER_TOMBSTONES = MAX_USER_MEETINGS;
 
@@ -166,10 +164,11 @@ export interface StoredMeeting {
   content: MeetingContent;
 }
 
-/** A retention-swept id, remembered so a provider replay cannot silently re-store it. */
+/** A retention-swept id, remembered only until the stored meeting's 14-day expiry. */
 export interface RetentionTombstone {
   sourceId: string;
   sweptAt: string;
+  expiresAt: string;
 }
 
 export interface RetentionSweepResult {
@@ -678,13 +677,8 @@ export class ContentStore implements ContentSink, RetentionGuard {
   }
 
   /**
-   * The D2a retention sweep. Deletes content past the window and RECORDS the swept ids as
-   * retention tombstones (see the file header): the shipped purge ledger's redelivery-proof
-   * marker, kept per-tenant here. Age is the provider's timestamp when there is one, and
-   * otherwise when we stored it — an undated meeting must still age out.
-   *
-   * Reconcile status is NOT an input (D2a `retain`): a meeting one device already copied into
-   * the user's own space stays readable for the next device until the window ends.
+   * Delete stored content and its replay tombstone at the same 14-day boundary. Retention is
+   * based only on the backend-owned first-storage timestamp, never provider-supplied time.
    */
   async sweepRetention(input: {
     source: string;
@@ -700,26 +694,35 @@ export class ContentStore implements ContentSink, RetentionGuard {
       const keep: ContentMeta[] = [];
       const swept: ContentMeta[] = [];
       for (const meta of index.meetings) {
-        (retentionAgeOf(meta, now) < cutoff ? swept : keep).push(meta);
+        const storedAt = Date.parse(meta.storedAt);
+        (Number.isFinite(storedAt) && storedAt <= cutoff ? swept : keep).push(meta);
       }
-      if (swept.length === 0) {
-        return { swept: 0, bytesFreed: 0, tombstones: index.tombstones.length };
-      }
-
       let bytesFreed = 0;
       for (const meta of swept) {
-        // Sequential, one node call at a time — never Promise.all across meetings (§9.3).
         await this.blobs.remove(target.source, target.address, meta.sourceId);
         bytesFreed += meta.sizeBytes;
       }
 
+      const retainedTombstones = index.tombstones.filter(
+        (tombstone) => Date.parse(tombstone.expiresAt) > now,
+      );
+      const newTombstones = swept
+        .map((meta) => {
+          const storedAt = Date.parse(meta.storedAt);
+          const expiresAt = storedAt + this.retentionMs;
+          return expiresAt > now
+            ? {
+                sourceId: meta.sourceId,
+                sweptAt: stamp,
+                expiresAt: new Date(expiresAt).toISOString(),
+              }
+            : null;
+        })
+        .filter((item): item is RetentionTombstone => item !== null);
       const tombstones = this.capTombstones(
         target.source,
         target.address,
-        [
-          ...index.tombstones,
-          ...swept.map((meta) => ({ sourceId: meta.sourceId, sweptAt: stamp })),
-        ],
+        [...retainedTombstones, ...newTombstones],
       );
       await this.writeIndex(target.source, target.address, {
         meetings: keep,
@@ -727,11 +730,13 @@ export class ContentStore implements ContentSink, RetentionGuard {
       });
 
       this.counters.swept += swept.length;
-      logContent(
-        `op=retention-sweep result=ok source=${target.source} ` +
-          `aid=${hashed(target.address)} swept=${swept.length} ` +
-          `bytes=${bytesFreed} tombstones=${tombstones.length}`,
-      );
+      if (swept.length > 0 || retainedTombstones.length !== index.tombstones.length) {
+        logContent(
+          `op=retention-sweep result=ok source=${target.source} ` +
+            `aid=${hashed(target.address)} swept=${swept.length} ` +
+            `bytes=${bytesFreed} tombstones=${tombstones.length}`,
+        );
+      }
       return { swept: swept.length, bytesFreed, tombstones: tombstones.length };
     });
   }
@@ -909,11 +914,20 @@ export class ContentStore implements ContentSink, RetentionGuard {
     address: string,
   ): Promise<ContentIndex> {
     const blob = await this.blobs.readIndex(source, address);
-    // ABSENT is a legitimate empty archive — a user who has never had a meeting stored. Only a
-    // PRESENT-but-unreadable index fails closed, and a failing READ throws from the port.
     if (blob === null) return { meetings: [], tombstones: [] };
     const plaintext = this.unseal(source, address, "index", blob);
-    return parseIndex(plaintext);
+    const now = this.now();
+    const index = parseIndex(plaintext, now);
+    const tombstones = index.tombstones.filter(
+      (tombstone) => Date.parse(tombstone.expiresAt) > now,
+    );
+    if (tombstones.length !== index.tombstones.length) {
+      await this.writeIndex(source, address, {
+        meetings: index.meetings,
+        tombstones,
+      });
+    }
+    return { meetings: index.meetings, tombstones };
   }
 
   private async writeIndex(
@@ -1069,7 +1083,7 @@ function parseBoundedStrings(value: unknown, emails: boolean): string[] | undefi
   return result;
 }
 
-function parseIndex(plaintext: string): ContentIndex {
+function parseIndex(plaintext: string, now: number): ContentIndex {
   let raw: unknown;
   try {
     raw = JSON.parse(plaintext);
@@ -1081,8 +1095,6 @@ function parseIndex(plaintext: string): ContentIndex {
   }
   const value = raw as Record<string, unknown>;
   if (!Array.isArray(value.meetings) || !Array.isArray(value.tombstones)) {
-    // Reading a malformed index as empty would disable every cap and un-tombstone every swept
-    // id. It is a failure, not an empty archive.
     throw new Error("content index is unreadable");
   }
   const meetings: ContentMeta[] = [];
@@ -1094,8 +1106,18 @@ function parseIndex(plaintext: string): ContentIndex {
   for (const entry of value.tombstones) {
     if (typeof entry !== "object" || entry === null) continue;
     const t = entry as Record<string, unknown>;
-    if (!isValidMeetingId(t.sourceId) || typeof t.sweptAt !== "string") continue;
-    tombstones.push({ sourceId: t.sourceId, sweptAt: t.sweptAt });
+    if (
+      !isValidMeetingId(t.sourceId) ||
+      typeof t.sweptAt !== "string" ||
+      typeof t.expiresAt !== "string" ||
+      !Number.isFinite(Date.parse(t.expiresAt)) ||
+      Date.parse(t.expiresAt) <= now
+    ) continue;
+    tombstones.push({
+      sourceId: t.sourceId,
+      sweptAt: t.sweptAt,
+      expiresAt: t.expiresAt,
+    });
   }
   return { meetings, tombstones };
 }
@@ -1131,26 +1153,6 @@ function parseMeeting(plaintext: string, sourceId: string): StoredMeeting {
   };
 }
 
-/**
- * Retention-age reference. The provider ts is attacker-influenced surface (a re-uploaded old
- * recording, or a broken clock at the source), so retention MUST NOT use it verbatim: a back-dated
- * ts sweeps a freshly-stored meeting on the very next pass and tombstones its id permanently, and
- * a future-dated ts is immune to retention forever (audit finding W4/D2a/delta-5). The clamp is
- * to `storedAt` — the timestamp the backend itself owns — whenever ts is missing, in the future,
- * or older than the backend's own record of first storage.
- *
- * SORT ORDER USES A DIFFERENT REFERENCE — see {@link sortKey} — because a re-uploaded old
- * recording is legitimately older to the user and should list under recent captures.
- */
-function retentionAgeOf(meta: ContentMeta, nowMs?: number): number {
-  const stored = Date.parse(meta.storedAt);
-  const storedMs = Number.isFinite(stored) ? stored : 0;
-  const provider = meta.ts === undefined ? NaN : Date.parse(meta.ts);
-  if (!Number.isFinite(provider)) return storedMs;
-  if (provider < storedMs) return storedMs;
-  if (nowMs !== undefined && provider > nowMs) return storedMs;
-  return provider;
-}
 
 /**
  * List-order reference (W5's `list()`). The user cares about the meeting DATE, not the storage

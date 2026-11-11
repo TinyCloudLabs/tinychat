@@ -15,6 +15,7 @@ import {
   REVOCATION_RECHECK_MS,
   classifyDrainError,
   createWebhookConfigDirectory,
+  createWebhookQueueDirectory,
   drainIntervalFromEnv,
   isTombstoned,
   REVOCATION_RECHECK_ITEMS_SIDE_EFFECTING,
@@ -1252,6 +1253,32 @@ describe("queue maintenance timer", () => {
     expect(node.listCalls[0]).toEqual({ prefix: "webhooks/config/" });
   });
 
+  test("the queue directory scans live and corrupt pending/dead keys, including disconnected users", async () => {
+    const node = new FakeNode();
+    node.listResponse = {
+      data: [
+        `webhooks/pending/fireflies/${LOWER}`,
+        `webhooks/dead/fireflies/${OTHER}`,
+        `webhooks/corrupt/fireflies/${LOWER}`,
+        `webhooks/corrupt/purged/fireflies/${OTHER}`,
+        "webhooks/pending/not-a-source/not-an-address",
+      ],
+    };
+    const directory = createWebhookQueueDirectory(
+      node as unknown as TinyCloudNode,
+    );
+
+    await expect(directory()).resolves.toEqual([
+      { source: "fireflies", address: LOWER },
+      { source: "fireflies", address: OTHER },
+    ]);
+    expect(node.listCalls).toEqual([
+      { prefix: "webhooks/pending/" },
+      { prefix: "webhooks/dead/" },
+      { prefix: "webhooks/corrupt/" },
+    ]);
+  });
+
   test("the config directory parses the production Result data.keys shape", async () => {
     const node = new FakeNode();
     node.listResponse = {
@@ -1415,8 +1442,8 @@ describe("index.ts wiring", () => {
     expect(source).toMatch(
       /connectorWebhooks\s*\n?\s*\?\s*startConnectorQueueMaintenanceTimer/,
     );
-    expect(source).toContain("createWebhookConfigDirectory(node)");
-    expect(source).toContain("queue.sweep(");
+    expect(source).toContain("createWebhookQueueDirectory(node)");
+    expect(source).toContain("queue.sweep(source, address)");
   });
 
   test("trigger 3 — the authenticated user-visit drain — is THE processing trigger", () => {

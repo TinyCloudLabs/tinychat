@@ -10,6 +10,7 @@ import {
   disabledMarkerKey,
   purgeLedgerKey,
   PURGE_RECENT_ID_CAP,
+  PURGE_RECENT_ID_TTL_MS,
   type ConnectorControl,
   type DisabledMarker,
   type PurgeLedger,
@@ -274,11 +275,18 @@ class FakeControl implements ConnectorControl {
   async quarantineLedger(
     source: string,
     address: string,
-    raw: unknown,
+    _raw: unknown,
   ): Promise<void> {
     this.ops.push("quarantine-ledger");
-    this.corrupt.set(this.key(source, address), raw);
+    this.corrupt.set(this.key(source, address), { reason: "unparseable" });
     this.unparseableLedger = null;
+  }
+  async clearQuarantinedLedger(
+    source: string,
+    address: string,
+  ): Promise<void> {
+    this.ops.push(`clear-corrupt-ledger:${this.key(source, address)}`);
+    this.corrupt.delete(this.key(source, address));
   }
 }
 
@@ -631,10 +639,37 @@ describe("DELETE /config teardown", () => {
       "mark-disabled",
       "revoke",
       `clear:${SOURCE}/${ADDRESS}`,
+      `clear-corrupt-ledger:${SOURCE}/${ADDRESS}`,
     ]);
     expect(h.control.markers.has(ADDRESS)).toBe(true);
     expect(h.tokens.configs.has(ADDRESS)).toBe(false);
     expect(h.queue.items.size).toBe(0);
+  });
+
+  test("DELETE /config clears recorded IDs immediately while retaining the purge watermark", async () => {
+    const h = createHarness();
+    h.tokens.configs.set(ADDRESS, {
+      token: generateWebhookToken(),
+      source: SOURCE,
+      createdAt: new Date().toISOString(),
+    });
+    const through = new Date(1_700_000_000_000).toISOString();
+    h.control.ledgers.set(`${SOURCE}/${ADDRESS}`, {
+      purgedThrough: through,
+      recentIds: ["01OLDMEETING"],
+      recentIdsAddedAt: { "01OLDMEETING": through },
+      updatedAt: through,
+    });
+
+    await withServer(h.app, async (base) => {
+      expect((await call(base, "/config", "DELETE")).status).toBe(200);
+    });
+
+    expect(h.control.ledgers.get(`${SOURCE}/${ADDRESS}`)).toMatchObject({
+      purgedThrough: through,
+      recentIds: [],
+      recentIdsAddedAt: {},
+    });
   });
 
   test("clears the exo ledger rows of every registered source", async () => {
@@ -768,6 +803,8 @@ describe("DELETE /config teardown", () => {
       "revoke",
       `clear:${SOURCE}/${ADDRESS}`,
       `clear:${SECOND_SOURCE}/${ADDRESS}`,
+      `clear-corrupt-ledger:${SOURCE}/${ADDRESS}`,
+      `clear-corrupt-ledger:${SECOND_SOURCE}/${ADDRESS}`,
     ]);
     expect(h.queue.items.size).toBe(0);
   });
@@ -1652,11 +1689,14 @@ describe("POST /purged", () => {
         ).status,
       ).toBe(204);
     });
-    expect(h.control.corrupt.get(`${SOURCE}/${ADDRESS}`)).toBe("{not json");
+    expect(h.control.corrupt.get(`${SOURCE}/${ADDRESS}`)).toEqual({
+      reason: "unparseable",
+    });
     expect(h.control.ops).toContain("quarantine-ledger");
-    expect(h.control.ledgers.get(`${SOURCE}/${ADDRESS}`)!.recentIds).toEqual([
-      "01AAA",
-    ]);
+    const ledger = h.control.ledgers.get(`${SOURCE}/${ADDRESS}`)!;
+    expect(ledger.recentIds).toEqual(["01AAA"]);
+    expect(ledger.recentIdsAddedAt).toHaveProperty("01AAA");
+    expect(Date.parse(ledger.purgedThrough)).toBeGreaterThan(0);
   });
 
   test("a non-array ids field is a 400, not a silently-empty purge", async () => {
@@ -1769,6 +1809,60 @@ describe("ConnectorControlStore surfaces {ok:false} loudly (§9.3 durable-Result
       async signIn() {},
     } as unknown as TinyCloudNode;
   }
+
+  test("prunes purge-ledger IDs at 14 days with a controlled clock", async () => {
+    let now = 1_800_000_000_000;
+    const key = purgeLedgerKey(SOURCE, ADDRESS);
+    const stored = new Map<string, unknown>([
+      [
+        key,
+        {
+          purgedThrough: new Date(now - 20 * PURGE_RECENT_ID_TTL_MS).toISOString(),
+          recentIds: ["expired", "boundary", "legacy"],
+          recentIdsAddedAt: {
+            expired: new Date(now - 15 * 24 * 60 * 60 * 1000).toISOString(),
+            boundary: new Date(now - PURGE_RECENT_ID_TTL_MS + 1).toISOString(),
+          },
+          updatedAt: new Date(now).toISOString(),
+        },
+      ],
+    ]);
+    const node = {
+      kv: {
+        async get(readKey: string) {
+          return stored.has(readKey)
+            ? { ok: true, data: { data: stored.get(readKey) } }
+            : null;
+        },
+        async put(writeKey: string, value: unknown) {
+          stored.set(writeKey, value);
+          return { ok: true, data: true };
+        },
+        async delete(deleteKey: string) {
+          stored.delete(deleteKey);
+          return { ok: true, data: true };
+        },
+      },
+      async signIn() {},
+    } as unknown as TinyCloudNode;
+    const store = new ConnectorControlStore(node, () => now);
+
+    const first = await store.readLedger(SOURCE, ADDRESS);
+    expect(first.status).toBe("ok");
+    if (first.status === "ok") {
+      expect(first.ledger.recentIds).toEqual(["boundary"]);
+      expect(first.ledger.purgedThrough).toBe(
+        new Date(now - 20 * PURGE_RECENT_ID_TTL_MS).toISOString(),
+      );
+    }
+    expect((stored.get(key) as PurgeLedger).recentIds).toEqual(["boundary"]);
+
+    now += 1;
+    const atExpiry = await store.readLedger(SOURCE, ADDRESS);
+    expect(atExpiry.status).toBe("ok");
+    if (atExpiry.status === "ok") expect(atExpiry.ledger.recentIds).toEqual([]);
+    expect((stored.get(key) as PurgeLedger).recentIds).toEqual([]);
+  });
 
   test("markDisabled throws when kv.put resolves ok:false", async () => {
     const store = new ConnectorControlStore(
