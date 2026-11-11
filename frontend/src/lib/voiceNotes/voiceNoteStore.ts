@@ -70,7 +70,7 @@ import { runOnSpaceLane } from "../spaceWriteLane";
 import { withVoiceNoteReadDeadline, withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { currentAccountGeneration, isVoiceNoteAccountMounted, StaleAccountContext } from "./accountContext";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
-import { adoptNote, loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
+import { adoptNote, loadNote, markNoteSynced, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
 /** `connector_meeting.source` for every voice note. */
 export const VOICE_NOTE_SOURCE = "exo-voice-note";
@@ -165,19 +165,19 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
     checkpoint();
     setNoteSyncing(syncKey, true);
     for (;;) {
-      const note = await loadNote(id);
+      const note = await loadNote(id, tcw.did ?? null);
       if (!note) { skip = "no-note"; return false; }
       const row = knownRow ?? await resolveVoiceNoteRow(tcw, id, checkpoint);
       if (!row) { skip = "no-row"; return false; }
       const key = voiceNoteMarkdownKvKey(id);
-      if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) { setNoteSynced(syncKey, note.editedAt); return true; }
+      if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) { await markNoteSynced(id, tcw.did ?? null, note.revision); setNoteSynced(syncKey, note.editedAt); return true; }
       // The space may hold a saved-edit time this device has not seen; a put must never erase it.
       const remote = await readRecordingNoteFromSpace(tcw, id);
       checkpoint();
       const theirs = remote?.savedEditAt ?? null;
       const mine = note.savedEditAt;
       const adopted = theirs !== null && (mine === null || Date.parse(theirs) > Date.parse(mine))
-        ? (await adoptNote({ ...note, savedEditAt: theirs })).savedEditAt : mine;
+        ? (await adoptNote({ ...note, savedEditAt: theirs }, tcw.did ?? null)).savedEditAt : mine;
       const body = noteMarkdown({ ...note, savedEditAt: adopted });
       const put = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown", signal }); },
         { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
@@ -187,8 +187,8 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       }
       checkpoint();
       await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint, row);
-      const latest = await loadNote(id);
-      if (!latest || latest.revision === note.revision) { setNoteSynced(syncKey, note.editedAt); return true; }
+      const latest = await loadNote(id, tcw.did ?? null);
+      if (!latest || latest.revision === note.revision) { await markNoteSynced(id, tcw.did ?? null, note.revision); setNoteSynced(syncKey, note.editedAt); return true; }
     }
   })().then((result) => {
     if (result) { checkpoint(); reportRecordingNoteSyncError(tcw, id, null); }

@@ -106,6 +106,22 @@ let accountSessionManaged = false;
 let activeStorageScope: StorageAccountScope = {
   did: null, spaceId: null, epoch: storageEpoch, state: newStorageState(),
 };
+/** The active app account, including when the recorder feature is not enabled. */
+const RECORDING_ACCOUNT_KEY = "exo.recordingNotes.account";
+export function currentStorageAccountDid(): string | null {
+  if (!activeStorageScope.did) return null;
+  let shared: string | null | undefined;
+  try {
+    const stored = globalThis.localStorage?.getItem(RECORDING_ACCOUNT_KEY);
+    shared = stored === undefined || stored === null ? undefined : JSON.parse(stored) as string | null;
+  } catch { return activeStorageScope.did; }
+  if (shared !== undefined && shared !== activeStorageScope.did) throw new Error("Recording note account changed");
+  return activeStorageScope.did;
+}
+function rememberRecordingAccount(did: string | null): void {
+  try { globalThis.localStorage?.setItem(RECORDING_ACCOUNT_KEY, JSON.stringify(did)); } catch { /* Scope checks still apply in this tab. */ }
+}
+
 const clientStorageScopes = new WeakMap<object, StorageAccountScope>();
 
 function isActiveScope(scope: StorageAccountScope | null): scope is StorageAccountScope {
@@ -141,6 +157,7 @@ export function beginStorageAccountSession(
   client: object, did: string | null, spaceId: string | null,
 ): StorageAccountScope {
   accountSessionManaged = true;
+  rememberRecordingAccount(did);
   retireStorageScope(activeStorageScope);
   const scope: StorageAccountScope = { did, spaceId, epoch: ++storageEpoch, state: newStorageState() };
   activeStorageScope = scope;
@@ -153,6 +170,7 @@ export function beginStorageAccountSession(
 /** Retire the current account only after sign-out/handoff has committed. */
 export function endStorageAccountSession(): void {
   accountSessionManaged = true;
+  rememberRecordingAccount(null);
   retireStorageScope(activeStorageScope);
   activeStorageScope = { did: null, spaceId: null, epoch: ++storageEpoch, state: newStorageState() };
   for (const listener of [...listeners]) listener();

@@ -89,8 +89,8 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
       createTranscriptionApiClient: () => ({}),
     },
-    // MCP chat is off in these startups; the stub is the disabled result of the real parser.
     "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    "./redpill-aci.js": load("./redpill-aci.ts"),
     "./routes/agent.js": {
       createAgentRouter: (config: unknown) => {
         agentConfig = config;
@@ -519,15 +519,25 @@ describe("backend index middleware wiring", () => {
   });
 });
 
-test("diagnostic foreground override isolates agent sends while unset startup preserves provider defaults", async () => {
-  const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background" });
-  expect(initial.agentConfig.chat.redpillBaseUrl).toBe("https://background.invalid/background");
+test("diagnostic foreground override isolates agent sends on the approved gateway", async () => {
+  const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://tee.redpill.ai/background" });
+  expect(initial.agentConfig.chat.redpillBaseUrl).toBe("https://tee.redpill.ai/background");
   expect(initial.agentConfig.chat.redpillApiKey).toBe("synthetic-provider-key");
-  const diagnostic = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background",
-    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-foreground-key" });
-  expect(diagnostic.agentConfig.chat.redpillBaseUrl).toBe("https://gateway.invalid/foreground");
+  const diagnostic = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://tee.redpill.ai/background",
+    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://tee.redpill.ai/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-foreground-key" });
+  expect(diagnostic.agentConfig.chat.redpillBaseUrl).toBe("https://tee.redpill.ai/foreground");
   expect(diagnostic.agentConfig.chat.redpillApiKey).toBe("synthetic-foreground-key");
   expect(diagnostic.logs).toEqual([]);
+});
+
+test("refuses startup when the configured model endpoint is not the attested gateway", async () => {
+  const result = await runIsolatedStartup({
+    ...AGENT_ENV,
+    ...STREAM_ENV,
+    REDPILL_BASE_URL: "https://api.redpill.ai/v1",
+  });
+  expect(result.calls).toEqual(["exit"]);
+  expect(result.logs).toEqual(["Invalid confidential model endpoint: expected the attested gateway"]);
 });
 
 test("partial or empty diagnostic endpoint credentials fail before startup effects and never log values", async () => {
@@ -878,6 +888,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/chat.js": { createChatRouter: router, defaultModel: "test-model" },
     "./agent-stream-policy.js": load("./agent-stream-policy.ts"),
     "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    "./redpill-aci.js": load("./redpill-aci.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
     "./local-validation.js": { localValidationFromEnv: () => false, localValidationGuard: noop },
     "./cors-origins.js": { appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }) },

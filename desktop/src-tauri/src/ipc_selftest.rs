@@ -27,6 +27,8 @@ const DENIED: &[&str] = &[
     "plugin:image|from_path",
     "plugin:menu|new",
     "plugin:tray|new",
+    "plugin:global-shortcut|register",
+    "plugin:global-shortcut|unregister_all",
     "plugin:event|emit",
     "plugin:event|emit_to",
     "local_capture_start",
@@ -55,6 +57,8 @@ const SCRIPT: &str = r#"(async () => {
     ["plugin:image|from_path", {}],
     ["plugin:menu|new", {}],
     ["plugin:tray|new", {}],
+    ["plugin:global-shortcut|register", {}],
+    ["plugin:global-shortcut|unregister_all", {}],
     ["plugin:event|emit", {}],
     ["plugin:event|emit_to", {}],
     ["local_capture_start", {}],
@@ -62,6 +66,7 @@ const SCRIPT: &str = r#"(async () => {
     ["recorder_whisper_start:traversal", { id: "../x", stageId: "whisper-bad", model: "QuantizedTinyEn" }],
     ["recorder_whisper_start:missing", { id: crypto.randomUUID(), stageId: "whisper-bad", model: "QuantizedTinyEn" }],
     ["recorder_status", {}],
+    ["recorder_take_start_request", {}],
   ];
   for (let n = 0; n < 300 && !window.__TAURI_INTERNALS__?.invoke; n++) {
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -141,7 +146,7 @@ fn assert_results(value: &serde_json::Value) -> bool {
         );
         all_pass &= passed;
     }
-    for label in ["recorder_status"] {
+    for label in ["recorder_status", "recorder_take_start_request"] {
         let passed =
             value.get(label).and_then(|v| v.get("ok")) == Some(&serde_json::Value::Bool(true));
         eprintln!(

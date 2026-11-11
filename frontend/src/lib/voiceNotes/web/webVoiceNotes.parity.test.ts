@@ -1,3 +1,4 @@
+// TC-2785 test ruling (Naomi): sign-in never claims unowned recordings; completed notes require user_choice.
 // Contract parity: the same scenarios run against the repo's fake plugin (the reference the
 // controller, saves pipeline and recorder UI were built against) and against the web engine.
 // Both must pass, so the web engine cannot drift from what the app already relies on.
@@ -158,19 +159,22 @@ describe.each(makers)("VoiceNotes contract parity: %s", (_name, make) => {
     expect((await s.plugin.listPending()).recordings).toEqual([]);
   });
 
-  test("signed-out notes are claimed by the first account; stale transitions and other accounts are refused", async () => {
+  test("signed-out notes require an explicit choice; stale transitions and other accounts are refused", async () => {
     const s = await make();
     const { plugin } = s;
     const first = await note(s);
     const second = await note(s);
     expect(await plugin.getCaptureDefaults()).toMatchObject({ accountDid: null, transcriber: "on-device" });
     const { claimed } = await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 5, transcriber: "assemblyai", identifySpeakers: false });
-    expect([...claimed].sort()).toEqual([first.id, second.id].sort());
+    expect(claimed).toEqual([]);
+    expect((await plugin.listPending()).recordings.map((r) => r.owner)).toEqual([null, null]);
+    await plugin.claim({ id: first.id, did: "did:A", evidence: "user_choice" });
+    await plugin.claim({ id: second.id, did: "did:A", evidence: "user_choice" });
     const pending = (await plugin.listPending()).recordings;
     expect(pending.map((r) => r.owner)).toEqual(["did:A", "did:A"]);
     expect(await plugin.getCaptureDefaults()).toMatchObject({ accountDid: "did:A", transcriber: "assemblyai" });
     await expect(plugin.setCaptureDefaults({ accountDid: "did:B", transitionGen: 4, transcriber: "assemblyai", identifySpeakers: false })).rejects.toEqual(code("stale_transition"));
-    await expect(plugin.claim({ id: first.id, did: "did:B", evidence: "signed_out_v2" })).rejects.toEqual(code("owner_mismatch"));
+    await expect(plugin.claim({ id: first.id, did: "did:B", evidence: "user_choice" })).rejects.toEqual(code("owner_mismatch"));
     await expect(plugin.claim({ id: first.id, did: "did:A", evidence: "space_row", rowId: "r" })).rejects.toEqual(code("claim_evidence_invalid"));
     const third = await plugin.start({ transcriber: "assemblyai" });
     expect(await plugin.status()).toMatchObject({ id: third.id, owner: "did:A", options: { transcriber: "assemblyai" } });
@@ -197,7 +201,7 @@ describe.each(makers)("VoiceNotes contract parity: %s", (_name, make) => {
     await plugin.deleteAudio({ id });
     expect((await plugin.listPending()).recordings).toEqual([]);
     await expect(plugin.updateLedger({ id, did: "did:A", rev: 2, patch: {} })).rejects.toEqual(code("tombstoned"));
-    await expect(plugin.claim({ id, did: "did:A", evidence: "signed_out_v2" })).rejects.toEqual(code("tombstoned"));
+    await expect(plugin.claim({ id, did: "did:A", evidence: "user_choice" })).rejects.toEqual(code("tombstoned"));
     await expect(plugin.readAudioChunk({ id, offset: 0, length: 4 })).rejects.toEqual(code("tombstoned"));
   });
 
@@ -244,6 +248,7 @@ describe.each(makers)("VoiceNotes contract parity: %s", (_name, make) => {
     const { plugin } = s;
     const saved = await note(s);
     await signIn(plugin);
+    await plugin.claim({ id: saved.id, did: "did:A", evidence: "user_choice" });
     expect(saved).toMatchObject({ owner: null, rev: 1 });
     const listed = (await plugin.listPending()).recordings[0]!;
     listed.owner = "did:B";
@@ -257,34 +262,35 @@ describe.each(makers)("VoiceNotes contract parity: %s", (_name, make) => {
     expect(await plugin.updateLedger({ id: saved.id, did: "did:A", rev: 2, patch: {} })).toEqual({ rev: 3 });
   });
 
-  test("T19 sign-out handoff: a transitioning account records unowned, is claimed by the next sign-in, and stale writes are refused", async () => {
+  test("T19 sign-out handoff: a transitioning recording stays with the departing account and stale writes are refused", async () => {
     const s = await make();
     const { plugin } = s;
     await plugin.setAccountState({ status: "transitioning", accountDid: "did:A", transitionGen: 1 });
-    expect(await plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: null, transcriber: "on-device" });
+    expect(await plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: "did:A", transcriber: "on-device" });
     await plugin.setCaptureDefaults({ accountDid: null, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: true });
-    expect(await plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: null, transcriber: "on-device" });
+    expect(await plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: "did:A", transcriber: "on-device" });
     const { id } = await plugin.start();
-    expect((await plugin.status()).owner).toBeNull();
+    expect((await plugin.status()).owner).toBe("did:A");
     await s.capture(1000);
-    expect((await plugin.stop()).owner).toBeNull();
+    expect((await plugin.stop()).owner).toBe("did:A");
     await expect(plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "private-cloud", identifySpeakers: true }))
       .rejects.toEqual(code("stale_transition"));
     const claimed = await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 2, transcriber: "private-cloud", identifySpeakers: false });
-    expect(claimed.claimed).toEqual([id]);
+    expect(claimed.claimed).toEqual([]);
+    expect((await plugin.listPending()).recordings[0]?.id).toBe(id);
     expect((await plugin.listPending()).recordings[0]?.owner).toBe("did:A");
     await expect(plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 1 })).rejects.toEqual(code("stale_transition"));
     await plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 3 });
     expect(await plugin.getCaptureDefaults()).toMatchObject({ status: "signed_out", accountDid: null });
   });
 
-  test("a recording in progress when the account is claimed becomes owned", async () => {
+  test("a recording started during handoff keeps its departing owner", async () => {
     const s = await make();
     const { plugin } = s;
     await plugin.setAccountState({ status: "transitioning", accountDid: "did:A", transitionGen: 1 });
     const { id } = await plugin.start();
     await s.capture(1000);
-    expect((await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 2, transcriber: "on-device", identifySpeakers: false })).claimed).toEqual([id]);
+    expect((await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 2, transcriber: "on-device", identifySpeakers: false })).claimed).toEqual([]);
     expect((await plugin.status()).owner).toBe("did:A");
     expect(await plugin.stop()).toMatchObject({ id, owner: "did:A" });
   });

@@ -4,7 +4,7 @@ test("probes only the real interpreter request with disabled reasoning and retai
   const { probeInterpretation } = await import("./meeting-interpretation-probe.js");
   let calls = 0;
   const result = await probeInterpretation({
-    apiKey: "synthetic", baseUrl: "https://provider.invalid/v1", timeoutMs: 5000,
+    apiKey: "synthetic", baseUrl: "https://tee.redpill.ai/v1", timeoutMs: 5000,
     providerFetch: (async (_input, init) => {
       calls++;
       const body = JSON.parse(String(init?.body));
@@ -37,7 +37,7 @@ test("saves a rate limit without issuing another provider request or retaining r
   const { probeInterpretation } = await import("./meeting-interpretation-probe.js");
   let calls = 0;
   const result = await probeInterpretation({
-    apiKey: "synthetic", baseUrl: "https://provider.invalid/v1", timeoutMs: 5000,
+    apiKey: "synthetic", baseUrl: "https://tee.redpill.ai/v1", timeoutMs: 5000,
     providerFetch: (async () => {
       calls++;
       return new Response("DO_NOT_RETAIN_ERROR_BODY", { status: 429, headers: { "retry-after": "60" } });
@@ -54,7 +54,7 @@ test("saves a rate limit without issuing another provider request or retaining r
 test("does not call an incomplete interpreter stream compatible", async () => {
   const { probeInterpretation } = await import("./meeting-interpretation-probe.js");
   const result = await probeInterpretation({
-    apiKey: "synthetic", baseUrl: "https://provider.invalid/v1", timeoutMs: 5000,
+    apiKey: "synthetic", baseUrl: "https://tee.redpill.ai/v1", timeoutMs: 5000,
     providerFetch: (async () => new Response('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n')) as typeof fetch,
   });
   expect(result.compatible).toBe(false);
@@ -66,7 +66,7 @@ test("cancels observation when the controller rejects an oversized delta before 
   let source: ReadableStreamDefaultController<Uint8Array>;
   let cancelled = false;
   const pending = probeInterpretation({
-    apiKey: "synthetic", baseUrl: "https://provider.invalid/v1", timeoutMs: 100,
+    apiKey: "synthetic", baseUrl: "https://tee.redpill.ai/v1", timeoutMs: 100,
     providerFetch: (async () => new Response(new ReadableStream<Uint8Array>({
       start(controller) {
         source = controller;
@@ -94,7 +94,7 @@ test("an explicitly chosen offered model is probed without switching to the defa
   const { probeInterpretation } = await import("./meeting-interpretation-probe.js");
   let requestedModel: string | undefined;
   const result = await probeInterpretation({
-    model: "qwen/qwen3.6-35b-a3b", apiKey: "synthetic", baseUrl: "https://provider.invalid/v1", timeoutMs: 5000,
+    model: "qwen/qwen3.6-35b-a3b", apiKey: "synthetic", baseUrl: "https://tee.redpill.ai/v1", timeoutMs: 5000,
     providerFetch: (async (_input, init) => {
       requestedModel = JSON.parse(String(init?.body)).model;
       return new Response(null, { status: 429 });
@@ -108,7 +108,7 @@ test("an unknown probe model is rejected before making any provider request", as
   const { probeInterpretation } = await import("./meeting-interpretation-probe.js");
   let calls = 0;
   await expect(probeInterpretation({
-    model: "not-offered", apiKey: "synthetic", baseUrl: "https://provider.invalid/v1", timeoutMs: 5000,
+    model: "not-offered", apiKey: "synthetic", baseUrl: "https://tee.redpill.ai/v1", timeoutMs: 5000,
     providerFetch: (async () => { calls++; return new Response(null, { status: 429 }); }) as typeof fetch,
   })).rejects.toThrow("Choose an offered model");
   expect(calls).toBe(0);

@@ -327,7 +327,7 @@ Repository **variables** (all optional — defaults shown):
 | `TINYCHAT_BACKEND_URL` | `https://api.tinycloud.chat` |
 | `TINYCHAT_FRONTEND_URL` | `https://tinycloud.chat` |
 | `TINYCHAT_BACKEND_IMAGE` / `TINYCHAT_INGRESS_IMAGE` | `ghcr.io/tinycloudlabs/tinychat-backend` |
-| `REDPILL_BASE_URL` | `https://api.redpill.ai/v1` |
+| `REDPILL_BASE_URL` | `https://tee.redpill.ai/v1` |
 | `REDPILL_DEFAULT_MODEL` | `z-ai/glm-5.2` (must stay an offered model — a non-offered value warns and falls back at runtime; `backend/src/routes/chat.ts` ST11) |
 | `CONNECTOR_WEBHOOKS_ENABLED` | `false` (ships dark: route unmounted, maintenance timer off, section hidden) |
 | `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` | _(empty — the minted callback host falls back to the request's `Host` header, with the scheme forced to `https`)_. Set it to `https://api.tinycloud.chat` before enabling the flag: this is the origin of the URL users paste into their provider dashboard, and a wrong host mints a webhook that silently never delivers. Origin only — `https`, no path, no trailing slash — or the companion router refuses to build. |

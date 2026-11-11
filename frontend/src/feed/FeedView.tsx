@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { HomeAskBox } from "@/bots/HomeAskBox";
-import { createHomeFeedSource } from "./feedStore";
+import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
@@ -166,7 +166,7 @@ export function FeedViewEntries({ realEntries, source, ask }: { realEntries: unk
 }
 
 export function FeedView({ tcw }: { tcw: TinyCloudWeb | null }): JSX.Element {
-  const source = useMemo(() => tcw ? createHomeFeedSource(tcw) : null, [tcw]);
+  const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
   return source
     ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} ask={<HomeAskBox />} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;

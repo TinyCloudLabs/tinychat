@@ -15,6 +15,50 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.17
+
+### Patch Changes
+
+- 609603c: On web and desktop, voice notes that aren't saved yet stay on the device for your account when you sign out, or you can delete them. Notes recorded while signed out wait until you save each one to an account.
+
+  Details: TC-2785
+
+## 0.14.0-beta.16
+
+### Patch Changes
+
+- ae08fc0: Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196
+
+## 0.14.0-beta.15
+
+### Patch Changes
+
+- 47e3ecf: Reviewer seed: check the grant's signed UCAN payload against the request before use, match resumed chat messages by their ids, and state the requested KV scope exactly.
+
+## 0.14.0-beta.14
+
+### Minor Changes
+
+- 7db69c7: TinyCloud Home opens from the device: the Feed, chat histories and Library show their last copy at once and refresh in the background. What you open is fetched first; background copying waits for it and pauses while the app is hidden. The Feed loads with far fewer requests.
+
+## 0.14.0-beta.13
+
+### Minor Changes
+
+- eed0f62: TinyCloud Home on iPhone and Android now opens with Face ID, Touch ID or the phone's screen lock instead of signing in again. A signed-in app asks when it opens, and when you come back after 5 minutes away (Settings › App lock: 1, 5 or 15 minutes, or an hour). Your feed and recordings load behind the lock screen and appear the moment you unlock; on iPhone and Android 13 and later the app switcher shows a blank screen while the lock is on. Cancelling keeps the lock screen up with a button to try again, and never signs you out. The lock is on by default where Face ID, Touch ID or a fingerprint is set up, and can be turned off in Settings. Recording from a shortcut starts without waiting for the unlock. Details: TC-2738
+
+## 0.14.0-beta.12
+
+### Minor Changes
+
+- 680789e: TinyCloud Home for Mac starts a recording from anywhere: press ⌘⇧⌥R (Command-Shift-Option-R), or choose Start recording from its menu-bar icon. The app comes to the front with the recorder open and recording; if a recording is already going, it opens that recorder instead. The menu-bar icon also has Open TinyCloud Home.
+
+## 0.14.0-beta.11
+
+### Patch Changes
+
+- faad27f: Add a reviewer seed CLI (`frontend/scripts/reviewer-seed`) that fills one fresh, explicitly confirmed TinyCloud Home space with fixed demo Feed cards, a chat and a transcript-only voice note through Home's own write paths, using only a short delegation the space owner grants to the run.
+
 ## 0.14.0-beta.10
 
 ### Patch Changes

@@ -20,6 +20,7 @@ import { startupPurgeSettled } from "./replicationStartupPurge";
 import { replicationPrefixes } from "./replicationPrefixes";
 import { clientHasReplication } from "./replicationSignOut";
 import { recordReplicationEvent } from "./replicationStatus";
+import { whenForegroundIdle } from "../localFirst/requestLanes";
 
 /**
  * Origin-wide replica byte budget. Over budget, sync STOPS with STORAGE_BUDGET and nothing is
@@ -147,6 +148,8 @@ function sleep(ms: number): Promise<void> {
  * app's first data load to settle (success or error; at most REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS),
  * then syncs the prefixes one by one with at most REPLICATION_FILL_POOL_SIZE in flight and starts
  * spaced REPLICATION_FILL_START_GAP_MS apart, so a burst of kv/sync does not queue the app's reads.
+ * A prefix starts only while the tab is visible and no foreground request (the visible screen's
+ * reads, a user action) is in flight (`whenForegroundIdle`).
  * Switch-off / sign-out (controller gone) stops every prefix not yet started; one already started is
  * left to the SDK's own teardown. A failing sync (for example a gated restore) is reported through the
  * SDK's events and the status line, never thrown into sign-in, and does not stop the other prefixes.
@@ -176,7 +179,9 @@ export function startReplicationFill(
       while (queue.length > 0) {
         const prefix = queue.shift()!;
         let sync: Promise<unknown> | undefined;
-        const slot = turn.then(() => {
+        // Each start also waits for the screen's own requests (and a visible tab):
+        // a kv/sync holds a node DB connection, so it never starts beside them.
+        const slot = turn.then(whenForegroundIdle).then(() => {
           if (!canStart()) { queue.length = 0; return undefined; }
           // Caught at once (the gap below must not leave a rejection unhandled); the SDK reports it.
           try { sync = Promise.resolve(tcw.replication?.sync({ prefix })).catch(() => undefined); } catch { /* reported by the SDK events */ }

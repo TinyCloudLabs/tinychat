@@ -172,6 +172,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
     let alive = true;
     let running = false;
     let dirty = false;
+    let loaded = false;
     chosenSelector.current = false; hasDefault.current = false;
     committed.current.clear();
     activeRef.current = null;
@@ -198,6 +199,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
           if (next.focusedEntry) next.focusedEntry = reconcile(next.focusedEntry);
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
+          loaded = true;
           setSnapshot(next); setClock(Date.now()); setError(next.connectionError ?? null);
           if (!hasDefault.current && !chosenSelector.current) setSelector(next.settings.defaultSelector);
           hasDefault.current = true;
@@ -208,9 +210,19 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
       running = false;
     };
     refreshRef.current = () => { void refresh(); };
-    const unsubscribe = source.subscribe(refreshRef.current);
+    // The device's last copy of the feed shows at once; the network load below
+    // replaces it. Subscribing after the local read lets the first live-update
+    // connection already cover every agent the copy knows.
+    let unsubscribe: (() => void) | undefined;
+    void (source.cached?.() ?? Promise.resolve(null)).then((local) => {
+      if (!alive || loaded || !local) return;
+      setSnapshot(local); setClock(Date.now());
+      if (!chosenSelector.current) setSelector(local.settings.defaultSelector);
+    }).catch(() => {}).finally(() => {
+      if (alive) unsubscribe = source.subscribe(refreshRef.current);
+    });
     void refresh();
-    return () => { alive = false; unsubscribe(); refreshRef.current = () => {}; };
+    return () => { alive = false; unsubscribe?.(); refreshRef.current = () => {}; };
   }, [source]);
 
   const entries = history ? [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()] : snapshot?.entries ?? [];

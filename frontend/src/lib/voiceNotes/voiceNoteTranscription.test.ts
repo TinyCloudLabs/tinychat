@@ -6528,24 +6528,26 @@ test("discard rechecks account work permission after asynchronous sign-in verifi
   expect((await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "ios")).ok).toBe(true);
   const winner = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1);
   await saveVoiceNoteTranscript(space.tcw as never, "rec-1", winner);
-  let verifyCalls = 0;
+  let checkingDiscard = false;
   let entered!: () => void;
   let release!: () => void;
   const verifying = new Promise<void>((resolve) => { entered = resolve; });
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const did = (space.tcw as { did: string }).did;
+  const env = newIdbEnv();
+  const writer = createHeldResultStore(did, { env, isSignedIn: async () => true });
   const held = createHeldResultStore(did, {
-    env: newIdbEnv(),
+    env,
     isSignedIn: async () => {
-      verifyCalls++;
-      if (verifyCalls === 2) { entered(); await gate; }
+      if (checkingDiscard) { entered(); await gate; }
       return true;
     },
   });
-  const receipt = await held.hold({
+  const receipt = await writer.hold({
     version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
     transcript: winner, provider: null, intent: { kind: "unknown" },
   });
+  checkingDiscard = true;
   const discarding = held.discard(space.tcw as never, "rec-1", receipt.holdId, "committed_at_or_above")
     .then(() => null, (error: unknown) => error);
   await verifying;
@@ -7193,15 +7195,20 @@ test("foreground recovery commits a legacy held result when held listing is unav
   const unhandled: unknown[] = [];
   const captureUnhandled = (error: unknown) => { unhandled.push(error); };
   process.on("unhandledRejection", captureUnhandled);
+  const saved = Promise.withResolvers<void>();
+  const unsubscribe = transcriber.subscribe((event) => {
+    if (event.kind === "saved" && event.sourceId === "rec-1") saved.resolve();
+  });
   try {
     await transcriber.check();
-    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    await saved.promise;
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
     expect(h.creates).toHaveLength(0);
     expect(h.removed).toEqual([ID]);
     expect(pending.read("rec-1")?.held).toBeUndefined();
     expect(unhandled).toEqual([]);
   } finally {
+    unsubscribe();
     process.off("unhandledRejection", captureUnhandled);
     unmount();
   }
@@ -7292,14 +7299,19 @@ test("held recovery stays done when best-effort provider deletion fails", async 
     failedBackoffMs: [],
     timer: { schedule: () => 1, cancel: () => {} },
   });
+  const saved = Promise.withResolvers<void>();
+  const unsubscribe = transcriber.subscribe((event) => {
+    if (event.kind === "saved" && event.sourceId === "rec-1") saved.resolve();
+  });
   try {
     await transcriber.check();
-    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    await saved.promise;
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
     expect(await held.readHeld("rec-1")).toBeNull();
     expect(h.calls).toContain(`remove:${ID}`);
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done" });
   } finally {
+    unsubscribe();
     unmount();
   }
 });
@@ -7416,15 +7428,15 @@ async function cSetup() {
   return {space,tcw,env,store,input,unmount};
 }
 test("C:R2 verified rev1 delete retains concurrently acknowledged rev2 exact identity", async()=>{
-  const c=await cSetup(); let auth=0;
+  const c=await cSetup(); let committed=false;
   const gate=Promise.withResolvers<void>(); const reached=Promise.withResolvers<void>();
   const first=createHeldResultStore(c.tcw.did,{env:c.env,isSignedIn:async()=>{
-    if(++auth===3){ reached.resolve(); await gate.promise; } return true;
+    if(committed){ reached.resolve(); await gate.promise; } return true;
   }});
   const second=c.store(); await first.hold(c.input());
   let saves=0,callbacks=0;
   const draining=first.saveHeldFirst(c.tcw,"rec-1",{
-    save:async row=>{saves++;expect((await saveVoiceNoteTranscript(c.tcw,"rec-1",row.transcript)).ok).toBe(true);},
+    save:async row=>{saves++;expect((await saveVoiceNoteTranscript(c.tcw,"rec-1",row.transcript)).ok).toBe(true);committed=true;},
     afterCommit:async()=>{callbacks++;}
   },"automatic");
   try{
@@ -7719,7 +7731,13 @@ for(const status of ["signed_out","transitioning"] as const){
           :held.discard(c.tcw,"rec-1",receipt.holdId,operation);
         await expect(denied).rejects.toMatchObject({code:"voice_note_account_mismatch"});
         expect(currentAccountGeneration()).toBe(generation);
-        expect(await held.readHeld("rec-1")).toMatchObject({holdId:receipt.holdId,provider:{transcriptionId:ID},hash:await transcriptHash(c.input().transcript.sentences)});
+        // TC-2785 Naomi ruling: hide the public read; retain exact durable identity for A's return.
+        expect(await held.readHeld("rec-1")).toBeNull();
+        const { request, transact } = await import("./web/idb");
+        const database = await request(c.env.factory.open("exo-held-results", 2));
+        const retained = await transact(database, ["held"], "readonly", (tx) => request(tx.objectStore("held").get([c.tcw.did,"rec-1"])));
+        expect(retained).toMatchObject({holdId:receipt.holdId,provider:{transcriptionId:ID},hash:await transcriptHash(c.input().transcript.sentences)});
+        database.close();
         expect(await readTranscriptCommit(c.tcw,"rec-1")).toEqual(canonicalBefore);
         expect(h.creates).toEqual([]);expect(h.removed).toEqual([]);
         await fake.plugin.setAccountState({status:"signed_in",accountDid:c.tcw.did,transitionGen:3});

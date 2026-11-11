@@ -54,6 +54,8 @@
       </array>
     </dict>
 	</dict>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlock TinyCloud Home with Face ID</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>TinyCloud Home reads the steps, sleep and heart rate you allow and saves a daily summary to your own TinyCloud space. It never uses health data for advertising.</string>
 	<key>NSHealthUpdateUsageDescription</key>

@@ -32,7 +32,7 @@ function createApp() {
 function stubRedPillModels(models: Array<{ id: string; pricing?: unknown }>) {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("api.redpill.ai") && url.endsWith("/models")) {
+    if (url.includes("tee.redpill.ai") && url.endsWith("/models")) {
       return new Response(JSON.stringify({ data: models }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -271,7 +271,7 @@ describe("GET /api/billing/rates (public)", () => {
     process.env.REDPILL_API_KEY = "sk-rp-test";
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("api.redpill.ai")) {
+      if (url.includes("tee.redpill.ai")) {
         return new Response("rate limited", { status: 429 });
       }
       return ORIGINAL_FETCH(input, init);

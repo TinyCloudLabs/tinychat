@@ -1,7 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import { captureEvents } from "@/capture/captureEvents";
-import { commitVoiceNoteTranscript, createPastedTranscriptRow } from "@/lib/voiceNotes/voiceNoteRows";
+import { commitVoiceNoteTranscript, createPastedTranscriptRow, type TranscriptToCommit } from "@/lib/voiceNotes/voiceNoteRows";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 
 export const PASTED_TRANSCRIPT_MAX_BYTES = 1_000_000;
@@ -35,19 +35,24 @@ export function parsePastedTranscript(text: string): FirefliesSentence[] {
   return sentences.length ? sentences : [{ index: 0, speaker_name: null, text, start_time: 0, end_time: 0 }];
 }
 
+/** The transcript commit a pasted text becomes: its parsed segments, attributed to the paste. */
+export function pastedTranscriptCommit(text: string): TranscriptToCommit {
+  const sentences = parsePastedTranscript(text);
+  return {
+    rev: 1, sentences, outcome: "transcribed", text: text.replaceAll("\r\n", "\n"),
+    engine: "pasted", provider: "pasted", speakerLabels: sentences.some((sentence) => sentence.speaker_name !== null),
+    participants: [...new Set(sentences.map((sentence) => sentence.speaker_name).filter((name): name is string => name !== null))],
+  };
+}
+
 export async function savePastedTranscript(tcw: TinyCloudWeb, input: { text: string; title?: string; date?: string }): Promise<string> {
   const problem = pastedTranscriptProblem(input.text);
   if (problem) throw new Error(problem);
   const sourceId = crypto.randomUUID();
-  const sentences = parsePastedTranscript(input.text);
   const title = input.title?.trim() || "Pasted transcript";
   const startedAt = input.date ? new Date(`${input.date}T12:00:00`).toISOString() : new Date().toISOString();
   await createPastedTranscriptRow(tcw, sourceId, title, startedAt);
-  await commitVoiceNoteTranscript(tcw, sourceId, {
-    rev: 1, sentences, outcome: "transcribed", text: input.text.replaceAll("\r\n", "\n"),
-    engine: "pasted", provider: "pasted", speakerLabels: sentences.some((sentence) => sentence.speaker_name !== null),
-    participants: [...new Set(sentences.map((sentence) => sentence.speaker_name).filter((name): name is string => name !== null))],
-  });
+  await commitVoiceNoteTranscript(tcw, sourceId, pastedTranscriptCommit(input.text));
   captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
   return sourceId;
 }
