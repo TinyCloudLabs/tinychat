@@ -23,8 +23,8 @@ WORKDIR /root
 FROM ${BUN_IMAGE}
 ARG GVISOR_RELEASE=20261102.0
 ARG GVISOR_SHA512=2e6671bb2d033b871c5811ab57e16ac570988b0e0054c525f911cfaf191bab3ca4efb08e0a98daa4b9e7d248f9e5776ef2ef2f8a6b82d829646a42924c98bb05
-# e2fsprogs: per-bot fixed-size state filesystems. curl and bzip2 are only for fetching gVisor and are removed.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates e2fsprogs curl bzip2 \
+# curl and bzip2 are only for fetching gVisor and are removed.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl bzip2 \
  && curl -fsSL -o /tmp/gvisor.tar.bz2 "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64/gvisor.tar.bz2" \
  && echo "${GVISOR_SHA512}  /tmp/gvisor.tar.bz2" | sha512sum -c - \
  && mkdir -p /opt/gvisor && tar -xjf /tmp/gvisor.tar.bz2 -C /opt/gvisor && rm /tmp/gvisor.tar.bz2 \

@@ -41,6 +41,10 @@ on:
         description: Hotfix only. The full 40-character SHA of the commit to deploy
         type: string
         default: ""
+      allow_current_dev_os_until_tc2843:
+        description: "TC-2843 transition ONLY: permit the exact recorded dstack-dev-0.5.12 image; remove with the OS move or first post-move deploy"
+        type: boolean
+        default: false
 
 concurrency:
   group: tinychat-production-deploy
@@ -106,6 +110,7 @@ jobs:
     uses: ./.github/workflows/deploy-backend-phala.yml
     with:
       ref: ${{ needs.target.outputs.sha }}
+      allow_current_dev_os_until_tc2843: ${{ inputs.allow_current_dev_os_until_tc2843 }}
     secrets: inherit
     permissions:
       contents: read

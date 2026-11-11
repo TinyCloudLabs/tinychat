@@ -64,6 +64,7 @@ import {
   type OwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
+import { sharedWithMeVersion, subscribeSharedWithMe } from "@/lib/sharedWithMe";
 import { canOfferChatShare } from "@/lib/chatSharing";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
@@ -252,7 +253,9 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
 
   // `visible` gates whether the share button renders at all — only once a
   // chat exchange exists (not empty, history loaded). `canShare` additionally
-  // pauses actions while a share link is being created.
+  // pauses actions while a share link is being created. Subscribing re-renders
+  // when the account's share list syncs from its space.
+  useSyncExternalStore(subscribeSharedWithMe, sharedWithMeVersion);
   const hasExistingShare = Boolean(threadId && findStoredTinychatShareForThread(threadId));
   const visible = Boolean(
     !isLocalThreadStorage(tcw) &&

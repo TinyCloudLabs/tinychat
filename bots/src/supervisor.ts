@@ -9,7 +9,12 @@ import { createApp } from "./server";
 const cfg = supervisorConfig(process.env);
 const host = new RunscHost(cfg);
 await host.init();
-const bots = new BotManager(host, cfg, { idleMs: cfg.idleMs, turnTimeoutMs: cfg.turnTimeoutMs, maxTurnBytes: cfg.maxTurnBytes });
+const bots = new BotManager(
+  host,
+  cfg,
+  { idleMs: cfg.idleMs, turnTimeoutMs: cfg.turnTimeoutMs, maxTurnBytes: cfg.maxTurnBytes },
+  cfg.maxRunning,
+);
 
 Bun.serve({
   port: cfg.port,
@@ -18,7 +23,9 @@ Bun.serve({
   maxRequestBodySize: 64 * 1024,
   fetch: createApp({ secret: cfg.serviceSecret, accounts: cfg.accounts, bots }),
 });
-console.log(JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, limits: cfg.limits }));
+console.log(
+  JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, limits: cfg.limits, maxRunning: cfg.maxRunning }),
+);
 
 let stopping = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
