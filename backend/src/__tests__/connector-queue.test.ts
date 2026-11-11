@@ -332,6 +332,17 @@ describe("dedup by (meetingId, kind)", () => {
     clock.now = T0 + QUEUE_TTL_MS + 1;
     expect(await queue.list(SOURCE, ADDRESS)).toEqual([]);
   });
+  test("the periodic sweep margin removes pending IDs before the 14-day deadline", async () => {
+    const { node, queue, clock } = createQueue();
+    await queue.enqueue(SOURCE, ADDRESS, {
+      meetingId: "M-SWEEP-MARGIN",
+      kind: "transcript",
+    });
+
+    clock.now = T0 + QUEUE_TTL_MS - 5 * 60_000;
+    expect(await queue.sweep(SOURCE, ADDRESS, 5 * 60_000)).toEqual({ pending: 0, dead: 0 });
+    expect(stored(node, PENDING_KEY)).toEqual([]);
+  });
 
   test("the same meeting's transcript and summary are distinct items", async () => {
     const { queue } = createQueue();
@@ -771,6 +782,26 @@ describe("awaiting_transcript", () => {
     expect(await queue.sweep(SOURCE, ADDRESS)).toEqual({ pending: 0, dead: 0 });
     expect(stored(node, DEAD_KEY)).toEqual([]);
   });
+  test("a dead letter retains its original receipt expiry after a delayed failure", async () => {
+    const { node, queue, clock } = createQueue();
+    await queue.enqueue(SOURCE, ADDRESS, {
+      meetingId: "M-DELAYED-DEAD",
+      kind: "transcript",
+    });
+    clock.now = T0 + 5 * 24 * 60 * 60 * 1000;
+    await queue.fail(
+      SOURCE,
+      ADDRESS,
+      "M-DELAYED-DEAD",
+      "transcript",
+      "meeting_not_found",
+      { terminal: true },
+    );
+
+    clock.now = T0 + QUEUE_TTL_MS;
+    expect(await queue.sweep(SOURCE, ADDRESS)).toEqual({ pending: 0, dead: 0 });
+    expect(stored(node, DEAD_KEY)).toEqual([]);
+  });
 });
 
 // ── Dead-letter cap (§5.3) ───────────────────────────────────────────
@@ -915,6 +946,18 @@ describe("container-level recovery", () => {
           line.includes("reason=not-an-array"),
       ),
     ).toBe(true);
+  });
+  test("maintenance removes a legacy raw-corrupt queue copy", async () => {
+    const { node, queue } = createQueue();
+    node.store.set(CORRUPT_KEY, {
+      meetingId: "M-LEGACY-CORRUPT",
+      raw: "M-LEGACY-CORRUPT",
+    });
+
+    await queue.sweep(SOURCE, ADDRESS);
+
+    expect(node.store.has(CORRUPT_KEY)).toBe(false);
+    expect(JSON.stringify([...node.store.values()])).not.toContain("M-LEGACY-CORRUPT");
   });
 
 

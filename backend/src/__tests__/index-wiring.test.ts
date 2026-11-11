@@ -191,7 +191,7 @@ test("disabled backend ingest starts retention over every listed content index",
   );
   await result.retentionSweepDone;
   expect(result.calls).toContain("ingest-supervisor-start");
-  expect(result.retentionSweeps).toEqual([index]);
+  expect(result.retentionSweeps).toEqual([{ ...index, safetyMarginMs: 5 * 60_000 }]);
 });
 test("a failed startup index listing does not prevent backend startup", async () => {
   const result = await runIsolatedStartup(

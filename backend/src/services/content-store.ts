@@ -418,6 +418,13 @@ interface ContentIndex {
   tombstones: RetentionTombstone[];
 }
 
+class ContentIndexUnreadableError extends Error {
+  constructor() {
+    super("content index is unreadable");
+    this.name = "ContentIndexUnreadableError";
+  }
+}
+
 export class ContentStore implements ContentSink, RetentionGuard {
   private readonly now: () => number;
   private readonly master: () => string;
@@ -858,12 +865,26 @@ export class ContentStore implements ContentSink, RetentionGuard {
   async sweepRetention(input: {
     source: string;
     address: string;
+    safetyMarginMs?: number;
   }): Promise<RetentionSweepResult> {
     const target = normalizeTarget(input.source, input.address);
     return this.lane(target.source, target.address, async () => {
-      const index = await this.openIndex(target.source, target.address);
+      let index: ContentIndex;
+      try {
+        index = await this.openIndex(target.source, target.address);
+      } catch (error) {
+        if (!(error instanceof ContentIndexUnreadableError)) throw error;
+        await this.blobs.removeAll(target.source, target.address);
+        warnContent(
+          `op=retention-sweep result=unreadable_index_removed source=${target.source} ` +
+            `aid=${hashed(target.address)}`,
+        );
+        return { swept: 0, bytesFreed: 0, tombstones: 0 };
+      }
       const now = this.now();
-      const cutoff = now - this.retentionMs;
+      const safetyMarginMs = Math.max(0, input.safetyMarginMs ?? 0);
+      const cutoff = now - Math.max(0, this.retentionMs - safetyMarginMs);
+      const expirationCutoff = now + safetyMarginMs;
       const stamp = new Date(now).toISOString();
 
       const keep: ContentMeta[] = [];
@@ -876,14 +897,14 @@ export class ContentStore implements ContentSink, RetentionGuard {
       for (const meta of swept) bytesFreed += meta.sizeBytes;
 
       const retainedTombstones = index.tombstones.filter(
-        (tombstone) => Date.parse(tombstone.expiresAt) > now,
+        (tombstone) => Date.parse(tombstone.expiresAt) > expirationCutoff,
       );
       const newTombstones = swept
         .map((meta) => {
           const storedAt = Date.parse(meta.storedAt);
           if (!Number.isFinite(storedAt)) return null;
           const expiresAt = storedAt + this.retentionMs;
-          return expiresAt > now
+          return expiresAt > expirationCutoff
             ? {
                 sourceId: meta.sourceId,
                 sweptAt: stamp,
@@ -1102,9 +1123,14 @@ export class ContentStore implements ContentSink, RetentionGuard {
   ): Promise<ContentIndex> {
     const blob = await this.blobs.readIndex(source, address);
     if (blob === null) return { meetings: [], tombstones: [] };
-    const plaintext = this.unseal(source, address, "index", blob);
+    let index: ContentIndex;
+    try {
+      const plaintext = this.unseal(source, address, "index", blob);
+      index = parseIndex(plaintext, this.now());
+    } catch {
+      throw new ContentIndexUnreadableError();
+    }
     const now = this.now();
-    const index = parseIndex(plaintext, now);
     const tombstones = index.tombstones.filter(
       (tombstone) => Date.parse(tombstone.expiresAt) > now,
     );

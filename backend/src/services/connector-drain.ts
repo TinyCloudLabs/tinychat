@@ -1168,10 +1168,10 @@ export interface ConnectorQueueMaintenanceOptions {
   listAddresses?: () => Promise<string[]>;
   /** Scans all queue keys, including disconnected users and old corrupt queue keys. */
   listQueueEntries?: () => Promise<Array<{ source: string; address: string }>>;
-  sweepQueue?: (entry: {
-    source: string;
-    address: string;
-  }) => Promise<unknown> | unknown;
+  sweepQueue?: (
+    entry: { source: string; address: string },
+    safetyMarginMs: number,
+  ) => Promise<unknown> | unknown;
   /** Purge ledger keys include disconnected users and therefore require their own scan. */
   listLedgerAddresses?: () => Promise<Array<{ source: string; address: string }>>;
   sweepLedger?: (entry: {
@@ -1219,7 +1219,7 @@ export function startConnectorQueueMaintenanceTimer(
         const entries = await options.listQueueEntries();
         for (const entry of entries) {
           try {
-            await options.sweepQueue(entry);
+            await options.sweepQueue(entry, intervalMs);
           } catch (error) {
             logDrainWarn(
               `op=maintenance-sweep result=error source=${entry.source} aid=${hashed(safeAddress(entry.address))}`,
