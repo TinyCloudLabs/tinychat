@@ -1,4 +1,5 @@
 import {
+  createHash,
   createCipheriv,
   createDecipheriv,
   hkdfSync,
@@ -130,7 +131,11 @@ const CONTENT_INDEX_KEY_PREFIX = "connector-content-index";
 export interface SealedBlob {
   ciphertext: string;
   wrappedDEK: string;
-  /** ISO. Plaintext on purpose: an operator needs *when*, never *what*. */
+  /** Original storage time, kept outside encryption for index-independent expiry. */
+  storedAt?: string;
+  /** Detect a rotated content master before attempting destructive maintenance. */
+  keyFingerprint?: string;
+  /** ISO time of the most recent write. */
   updatedAt: string;
 }
 
@@ -201,8 +206,16 @@ export interface ContentStoreStats {
  */
 export interface ContentBlobStore {
   readIndex(source: string, address: string): Promise<SealedBlob | null>;
-  writeIndex(source: string, address: string, blob: SealedBlob): Promise<void>;
-  listContentIds(source: string, address: string): Promise<Array<{ sourceId: string; updatedAt: string }>>;
+  writeIndex(
+    source: string,
+    address: string,
+    blob: SealedBlob,
+  ): Promise<void>;
+  listContentIds(source: string, address: string): Promise<Array<{
+    sourceId: string;
+    storedAt?: string;
+    updatedAt: string;
+  }>>;
   read(
     source: string,
     address: string,
@@ -309,6 +322,9 @@ function sameSecret(a: string, b: string): boolean {
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
 }
+function contentMasterFingerprint(master: string): string {
+  return createHash("sha256").update(master, "utf8").digest("hex");
+}
 
 /** The current content master. Throws when unset or weak — never a fallback that hides it. */
 export function currentContentMaster(
@@ -387,6 +403,10 @@ function logContent(fields: string): void {
 
 function warnContent(fields: string): void {
   console.warn(`[connector-content] ${fields} t=${new Date().toISOString()}`);
+}
+
+function errorContent(fields: string): void {
+  console.error(`[connector-content] ${fields} t=${new Date().toISOString()}`);
 }
 
 // ── The store ────────────────────────────────────────────────────────
@@ -784,33 +804,54 @@ export class ContentStore implements ContentSink, RetentionGuard {
     });
   }
 
-
-  /**
-   * Delete stored content and its replay tombstone at the same 14-day boundary. Retention is
-   * based only on the backend-owned first-storage timestamp, never provider-supplied time.
-   */
   async sweepRetention(input: {
     source: string;
     address: string;
     safetyMarginMs?: number;
-  }): Promise<RetentionSweepResult> {
+  }): Promise<{
+    swept: number;
+    bytesFreed: number;
+    tombstones: number;
+    storedAtBackfilled: number;
+    unreadableIndex: boolean;
+  }> {
     const target = normalizeTarget(input.source, input.address);
     return this.lane(target.source, target.address, async () => {
       let index: ContentIndex;
+      const now = this.now();
+      const safetyMarginMs = Math.max(0, input.safetyMarginMs ?? 0);
+      const cutoff = now - Math.max(0, this.retentionMs - safetyMarginMs);
       try {
         index = await this.openIndex(target.source, target.address);
       } catch (error) {
         if (!(error instanceof ContentIndexUnreadableError)) throw error;
-        await this.blobs.removeAll(target.source, target.address);
-        warnContent(
-          `op=retention-sweep result=unreadable_index_removed source=${target.source} ` +
+        errorContent(
+          `op=retention-sweep result=unreadable_index source=${target.source} ` +
             `aid=${hashed(target.address)}`,
         );
-        return { swept: 0, bytesFreed: 0, tombstones: 0 };
+        let swept = 0;
+        for (const blob of await this.blobs.listContentIds(
+          target.source,
+          target.address,
+        )) {
+          const storedAt = Date.parse(blob.storedAt ?? blob.updatedAt);
+          if (!Number.isFinite(storedAt) || storedAt <= cutoff) {
+            await this.blobs.remove(
+              target.source,
+              target.address,
+              blob.sourceId,
+            );
+            swept += 1;
+          }
+        }
+        return {
+          swept,
+          bytesFreed: 0,
+          tombstones: 0,
+          storedAtBackfilled: 0,
+          unreadableIndex: true,
+        };
       }
-      const now = this.now();
-      const safetyMarginMs = Math.max(0, input.safetyMarginMs ?? 0);
-      const cutoff = now - Math.max(0, this.retentionMs - safetyMarginMs);
       const expirationCutoff = now + safetyMarginMs;
       const stamp = new Date(now).toISOString();
 
@@ -857,15 +898,35 @@ export class ContentStore implements ContentSink, RetentionGuard {
           meta.sourceId,
         );
       }
-      const retainedIds = new Set(keep.map((meta) => meta.sourceId));
+      const retainedById = new Map(
+        keep.map((meta) => [meta.sourceId, meta] as const),
+      );
+      let storedAtBackfilled = 0;
       for (const blob of await this.blobs.listContentIds(
         target.source,
         target.address,
       )) {
-        const updatedAt = Date.parse(blob.updatedAt);
+        const retainedMeta = retainedById.get(blob.sourceId);
+        if (retainedMeta !== undefined && blob.storedAt !== retainedMeta.storedAt) {
+          const sealed = await this.blobs.read(
+            target.source,
+            target.address,
+            blob.sourceId,
+          );
+          if (sealed !== null) {
+            await this.blobs.write(
+              target.source,
+              target.address,
+              blob.sourceId,
+              { ...sealed, storedAt: retainedMeta.storedAt },
+            );
+            storedAtBackfilled += 1;
+          }
+        }
+        const storedAt = Date.parse(blob.storedAt ?? blob.updatedAt);
         if (
-          !retainedIds.has(blob.sourceId) &&
-          (!Number.isFinite(updatedAt) || updatedAt <= cutoff)
+          retainedMeta === undefined &&
+          (!Number.isFinite(storedAt) || storedAt <= cutoff)
         ) {
           await this.blobs.remove(target.source, target.address, blob.sourceId);
         }
@@ -879,7 +940,14 @@ export class ContentStore implements ContentSink, RetentionGuard {
             `bytes=${bytesFreed} tombstones=${tombstones.length}`,
         );
       }
-      return { swept: swept.length, bytesFreed, tombstones: tombstones.length };
+      return {
+        swept: swept.length,
+        bytesFreed,
+        tombstones: tombstones.length,
+        storedAtBackfilled,
+        unreadableIndex: false,
+      };
+
     });
   }
 
@@ -1059,6 +1127,12 @@ export class ContentStore implements ContentSink, RetentionGuard {
     if (blob === null) return { meetings: [], tombstones: [] };
     let index: ContentIndex;
     try {
+      if (
+        blob.keyFingerprint !== undefined &&
+        blob.keyFingerprint !== contentMasterFingerprint(this.master())
+      ) {
+        throw new ContentIndexUnreadableError();
+      }
       const plaintext = this.unseal(source, address, "index", blob);
       index = parseIndex(plaintext, this.now());
     } catch {
@@ -1115,6 +1189,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         address,
         meta.sourceId,
         JSON.stringify({ meta, content }),
+        meta.storedAt,
       ),
     );
   }
@@ -1124,16 +1199,22 @@ export class ContentStore implements ContentSink, RetentionGuard {
     address: string,
     scope: string,
     plaintext: string,
+    storedAt?: string,
   ): SealedBlob {
     const aad = envelopeAad(source, address, scope);
     const dek = randomBytes(DEK_BYTES);
+    const master = this.master();
     return {
       ciphertext: seal(dek, Buffer.from(plaintext, "utf8"), aad),
-      wrappedDEK: seal(keyEncryptionKey(this.master(), source, address), dek, aad),
+      wrappedDEK: seal(keyEncryptionKey(master, source, address), dek, aad),
+      ...(storedAt === undefined ? {} : { storedAt }),
+      ...(scope === "index"
+        ? { keyFingerprint: contentMasterFingerprint(master) }
+        : {}),
       updatedAt: new Date(this.now()).toISOString(),
     };
-  }
 
+  }
   private unseal(
     source: string,
     address: string,
@@ -1373,16 +1454,26 @@ export class InMemoryContentBlobStore implements ContentBlobStore {
   ): Promise<void> {
     this.blobs.delete(contentSlot(source, address, sourceId));
   }
-  async listContentIds(source: string, address: string): Promise<Array<{ sourceId: string; updatedAt: string }>> {
+  async listContentIds(
+    source: string,
+    address: string,
+  ): Promise<Array<{ sourceId: string; storedAt?: string; updatedAt: string }>> {
     const prefix = contentSlot(source, address, "");
     return [...this.blobs.keys()]
       .filter((key) => key.startsWith(prefix))
       .map((key) => key.slice(prefix.length))
       .filter(isValidMeetingId)
-      .map((sourceId) => ({
-        sourceId,
-        updatedAt: this.get(contentSlot(source, address, sourceId))?.updatedAt ?? "",
-      }));
+      .map((sourceId) => {
+        const blob = this.get(contentSlot(source, address, sourceId));
+        const storedAt = blob?.storedAt;
+        return {
+          sourceId,
+          ...(storedAt === undefined
+            ? {}
+            : { storedAt: typeof storedAt === "string" ? storedAt : "" }),
+          updatedAt: blob?.updatedAt ?? "",
+        };
+      });
   }
 
   async removeAll(source: string, address: string): Promise<void> {
@@ -1478,7 +1569,10 @@ export class KvContentBlobStore implements ContentBlobStore {
       this.deleteKey(contentKey(source, address, sourceId)),
     );
   }
-  async listContentIds(source: string, address: string): Promise<Array<{ sourceId: string; updatedAt: string }>> {
+  async listContentIds(
+    source: string,
+    address: string,
+  ): Promise<Array<{ sourceId: string; storedAt?: string; updatedAt: string }>> {
     const prefix =
       `${CONTENT_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}/`;
     const kv = (
@@ -1498,10 +1592,14 @@ export class KvContentBlobStore implements ContentBlobStore {
       .filter((key) => key.startsWith(prefix))
       .map((key) => key.slice(prefix.length))
       .filter((sourceId) => !sourceId.includes("/") && isValidMeetingId(sourceId));
-    const blobs: Array<{ sourceId: string; updatedAt: string }> = [];
+    const blobs: Array<{ sourceId: string; storedAt?: string; updatedAt: string }> = [];
     for (const sourceId of ids) {
       const blob = await this.read(source, address, sourceId);
-      blobs.push({ sourceId, updatedAt: blob?.updatedAt ?? "" });
+      blobs.push({
+        sourceId,
+        ...(blob?.storedAt === undefined ? {} : { storedAt: blob.storedAt }),
+        updatedAt: blob?.updatedAt ?? "",
+      });
     }
     return blobs;
   }
@@ -1571,6 +1669,17 @@ export class KvContentBlobStore implements ContentBlobStore {
     return {
       ciphertext: blob.ciphertext,
       wrappedDEK: blob.wrappedDEK,
+      ...(blob.storedAt === undefined
+        ? {}
+        : { storedAt: typeof blob.storedAt === "string" ? blob.storedAt : "" }),
+      ...(blob.keyFingerprint === undefined
+        ? {}
+        : {
+            keyFingerprint:
+              typeof blob.keyFingerprint === "string"
+                ? blob.keyFingerprint
+                : "",
+          }),
       updatedAt:
         typeof blob.updatedAt === "string"
           ? blob.updatedAt
