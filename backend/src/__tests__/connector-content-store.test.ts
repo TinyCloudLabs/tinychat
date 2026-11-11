@@ -498,6 +498,9 @@ describe("W4 content store — fail closed", () => {
       if (this.failOn === "writeIndex") throw new Error("substrate write failed");
       return this.inner.writeIndex(source, address, blob);
     }
+    removeIndex(source: string, address: string): Promise<void> {
+      return this.inner.removeIndex(source, address);
+    }
 
     read(
       source: string,
@@ -625,6 +628,9 @@ describe("W4 content store — fail closed", () => {
       writeIndex(source: string, address: string, blob: SealedBlob) {
         return this.delegate.writeIndex(source, address, blob);
       }
+      removeIndex(source: string, address: string) {
+        return this.delegate.removeIndex(source, address);
+      }
       readKeyFailureSince(source: string, address: string) {
         return this.delegate.readKeyFailureSince(source, address);
       }
@@ -695,7 +701,7 @@ describe("W4 content store — fail closed", () => {
     expect(result.ok).toBe(false);
     expect(node.store.size).toBe(0);
   });
-  test("the KV adapter persists and clears the content-key failure horizon", async () => {
+  test("the KV adapter persists and clears the first-failure alert marker", async () => {
     const node = new FakeNode();
     const blobs = new KvContentBlobStore(node as unknown as TinyCloudNode);
     const failedAt = new Date(T0).toISOString();
@@ -1004,8 +1010,18 @@ describe("W4 content store — retention", () => {
     await store.upsert(upsertInput({ sourceId: "mtg-bad-date" }));
     await store.upsert(upsertInput({ sourceId: "mtg-missing-date" }));
     const rows = await store.list(SOURCE, ADDRESS_A);
-    const malformed = { ...rows[0]!.meta, storedAt: "not-a-date" };
-    const missing = { ...rows[1]!.meta, storedAt: undefined };
+    expect(rows).toHaveLength(2);
+    const missingBlob = await blobs.read(SOURCE, ADDRESS_A, "mtg-missing-date");
+    expect(missingBlob).not.toBeNull();
+    if (missingBlob !== null) {
+      const { storedAt: _storedAt, ...legacyBlob } = missingBlob;
+      await blobs.write(SOURCE, ADDRESS_A, "mtg-missing-date", {
+        ...legacyBlob,
+        updatedAt: "",
+      });
+    }
+    const malformed = { ...rows[0]!, storedAt: "not-a-date" };
+    const missing = { ...rows[1]!, storedAt: undefined };
     const seedIndex = store as unknown as {
       writeIndex(source: string, address: string, index: unknown): Promise<void>;
     };
@@ -1013,9 +1029,10 @@ describe("W4 content store — retention", () => {
       meetings: [malformed, missing],
       tombstones: [],
     });
-    clock.now = T0 + 100 * DAY_MS;
+    clock.now = T0 + DAY_MS;
 
-    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+    const result = await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+    expect(result.swept).toBe(1);
 
     expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-bad-date")).toBeNull();
     expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-missing-date")).toBeNull();
@@ -1055,17 +1072,15 @@ describe("W4 content store — retention", () => {
 
     expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-orphan")).toBeNull();
   });
-  test("an unreadable index alerts, retains young blobs, and expires old blobs by original storage time", async () => {
+  test("an unreadable index alerts once and expires blobs by their storedAt or legacy updatedAt", async () => {
     const { store, blobs, clock } = harness();
-    await store.upsert(upsertInput({ sourceId: "mtg-old-under-wrong-key" }));
-
-    clock.now = T0 + 2 * DAY_MS;
-    await store.upsert(upsertInput({ sourceId: "mtg-young-under-wrong-key" }));
+    await store.upsert(upsertInput({ sourceId: "mtg-old-stored-at" }));
+    await store.upsert(upsertInput({ sourceId: "mtg-legacy-updated-at" }));
 
     clock.now = T0 + 10 * DAY_MS;
     await store.upsert(
       upsertInput({
-        sourceId: "mtg-old-under-wrong-key",
+        sourceId: "mtg-legacy-updated-at",
         kind: "summary",
         content: { overview: SUMMARY_TEXT },
       }),
@@ -1073,57 +1088,113 @@ describe("W4 content store — retention", () => {
     const legacyBlob = await blobs.read(
       SOURCE,
       ADDRESS_A,
-      "mtg-old-under-wrong-key",
+      "mtg-legacy-updated-at",
     );
     expect(legacyBlob).not.toBeNull();
     if (legacyBlob !== null) {
       const { storedAt: _storedAt, ...legacy } = legacyBlob;
-      await blobs.write(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key", legacy);
+      await blobs.write(SOURCE, ADDRESS_A, "mtg-legacy-updated-at", legacy);
     }
-    expect(
-      await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
-    ).toMatchObject({ swept: 0 });
-    expect(
-      (await blobs.read(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key"))
-        ?.storedAt,
-    ).toBe(new Date(T0).toISOString());
 
+    clock.now = T0 + 13 * DAY_MS;
+    await store.upsert(upsertInput({ sourceId: "mtg-young-under-wrong-key" }));
     const wrongKeyStore = new ContentStore(blobs, {
       now: () => clock.now,
       master: () => CREDENTIAL_MASTER,
     });
-    clock.now = T0 + 14 * DAY_MS;
     const originalError = console.error;
     const errors: string[] = [];
     console.error = (...args: unknown[]) => {
       errors.push(args.map((arg) => String(arg)).join(" "));
     };
     try {
-      await wrongKeyStore.sweepRetention({
+      clock.now = T0 + 15 * DAY_MS;
+      const first = await wrongKeyStore.sweepRetention({
         source: SOURCE,
         address: ADDRESS_A,
       });
 
-      expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
-      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key")).not.toBeNull();
+      expect(first).toMatchObject({ swept: 1, unreadableIndex: true });
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-old-stored-at")).toBeNull();
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-legacy-updated-at")).not.toBeNull();
       expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-under-wrong-key")).not.toBeNull();
+      expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
+      await expect(
+        wrongKeyStore.deleteReconciled(SOURCE, ADDRESS_A),
+      ).rejects.toThrow("content index is unreadable");
       expect(errors.filter((line) => line.includes("first_failure=true"))).toHaveLength(1);
       expect(errors.join(" ")).not.toContain(ADDRESS_A);
 
-      clock.now = T0 + 28 * DAY_MS;
-      const expired = await wrongKeyStore.sweepRetention({
+      clock.now = T0 + 24 * DAY_MS;
+      const second = await wrongKeyStore.sweepRetention({
         source: SOURCE,
         address: ADDRESS_A,
       });
-      expect(expired.swept).toBe(2);
-      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-old-under-wrong-key")).toBeNull();
-      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-under-wrong-key")).toBeNull();
+      expect(second).toMatchObject({ swept: 1, unreadableIndex: true });
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-legacy-updated-at")).toBeNull();
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-under-wrong-key")).not.toBeNull();
       expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
+      expect(errors.filter((line) => line.includes("first_failure=true"))).toHaveLength(1);
     } finally {
       console.error = originalError;
     }
   });
-  test("a missing content master alerts once, waits out the retention horizon, then sweeps aged blobs", async () => {
+
+  test("an unreadable index younger than its cutoff is retained", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-aged-blob-young-index" }));
+    clock.now = T0 + 13 * DAY_MS;
+    await store.upsert(upsertInput({ sourceId: "mtg-young-blob-young-index" }));
+
+    const index = await blobs.readIndex(SOURCE, ADDRESS_A);
+    expect(index).not.toBeNull();
+    if (index !== null) {
+      await blobs.writeIndex(SOURCE, ADDRESS_A, {
+        ...index,
+        updatedAt: new Date(T0 + 13 * DAY_MS).toISOString(),
+      });
+    }
+    const wrongKeyStore = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => CREDENTIAL_MASTER,
+    });
+    clock.now = T0 + 15 * DAY_MS;
+    await wrongKeyStore.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-aged-blob-young-index")).toBeNull();
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-blob-young-index")).not.toBeNull();
+    expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
+  });
+
+  test("an unreadable index past its cutoff is deleted without deleting a young blob", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-index-old" }));
+    await blobs.write(SOURCE, ADDRESS_A, "mtg-young-blob-old-index", {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      storedAt: new Date(T0 + 13 * DAY_MS).toISOString(),
+      updatedAt: new Date(T0 + 13 * DAY_MS).toISOString(),
+    });
+    const index = await blobs.readIndex(SOURCE, ADDRESS_A);
+    expect(index).not.toBeNull();
+    if (index !== null) {
+      await blobs.writeIndex(SOURCE, ADDRESS_A, {
+        ...index,
+        updatedAt: new Date(T0).toISOString(),
+      });
+    }
+    const wrongKeyStore = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => CREDENTIAL_MASTER,
+    });
+    clock.now = T0 + 15 * DAY_MS;
+
+    await wrongKeyStore.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(await blobs.readIndex(SOURCE, ADDRESS_A)).toBeNull();
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-young-blob-old-index")).not.toBeNull();
+  });
+  test("a missing content master alerts and age-sweeps immediately; sync-off cleanup rejects", async () => {
     const blobs = new InMemoryContentBlobStore();
     const clock = { now: T0 };
     let unavailable = false;
@@ -1136,56 +1207,25 @@ describe("W4 content store — retention", () => {
     });
     await store.upsert(upsertInput({ sourceId: "mtg-master-old" }));
     clock.now = T0 + 13 * DAY_MS;
-    await store.upsert(upsertInput({ sourceId: "mtg-master-at-failure" }));
+    await store.upsert(upsertInput({ sourceId: "mtg-master-young" }));
 
     const logs = captureLogs();
     try {
       unavailable = true;
-      expect(
-        await store.deleteReconciled(SOURCE, ADDRESS_A),
-      ).toEqual({ removed: 0 });
+      clock.now = T0 + 15 * DAY_MS;
       expect(
         await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
-      ).toMatchObject({ swept: 0, unreadableIndex: true });
-      expect(
-        await blobs.read(SOURCE, ADDRESS_A, "mtg-master-old"),
-      ).not.toBeNull();
-      expect(
-        await blobs.read(SOURCE, ADDRESS_A, "mtg-master-at-failure"),
-      ).not.toBeNull();
+      ).toMatchObject({ swept: 1, unreadableIndex: true });
+      await expect(
+        store.deleteReconciled(SOURCE, ADDRESS_A),
+      ).rejects.toThrow("content master is unavailable");
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-master-old")).toBeNull();
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-master-young")).not.toBeNull();
       expect(
         logs.lines.filter((line) => line.includes("first_failure=true")),
       ).toHaveLength(1);
       expect(logs.lines.some((line) => line.includes("alert=true"))).toBe(true);
       expect(logs.lines.join(" ")).not.toContain(ADDRESS_A);
-
-      clock.now = T0 + 27 * DAY_MS;
-      const recoveredWriter = new ContentStore(blobs, {
-        now: () => clock.now,
-        master: () => CONTENT_MASTER,
-      });
-      await recoveredWriter.upsert(
-        upsertInput({ sourceId: "mtg-master-young" }),
-      );
-
-      expect(await store.deleteReconciled(SOURCE, ADDRESS_A)).toEqual({
-        removed: 2,
-      });
-      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-master-old")).toBeNull();
-      expect(
-        await blobs.read(SOURCE, ADDRESS_A, "mtg-master-at-failure"),
-      ).toBeNull();
-      expect(
-        await blobs.read(SOURCE, ADDRESS_A, "mtg-master-young"),
-      ).not.toBeNull();
-
-      unavailable = false;
-      expect(
-        await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
-      ).toMatchObject({ swept: 2, unreadableIndex: false });
-      expect(
-        (await store.list(SOURCE, ADDRESS_A)).map(({ sourceId }) => sourceId),
-      ).toEqual(["mtg-master-young"]);
     } finally {
       logs.restore();
     }
@@ -1333,26 +1373,17 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
 
   test("the first successful pass logs one deploy summary with counts and hashed tenants", async () => {
     const log = spyOn(console, "log").mockImplementation(() => {});
-    let pass = 0;
     const sweeper = new IngestRetentionSweeper({
       content: {
-        async sweepRetention() {
-          pass += 1;
-          return pass === 1
-            ? {
-                swept: 0,
-                bytesFreed: 0,
-                tombstones: 0,
-                storedAtBackfilled: 0,
-                unreadableIndex: true,
-              }
-            : {
-                swept: 1,
-                bytesFreed: 10,
-                tombstones: 0,
-                storedAtBackfilled: 2,
-                unreadableIndex: false,
-              };
+        async sweepRetention({ address }: { address: string }) {
+          if (address === ADDRESS_B) throw new Error("one index failed");
+          return {
+            swept: 1,
+            bytesFreed: 10,
+            tombstones: 0,
+            storedAtBackfilled: 2,
+            unreadableIndex: true,
+          };
         },
       },
       indexes: indexes(ADDRESS_A, ADDRESS_B),
@@ -1368,6 +1399,7 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
       expect(summaries[0]).toContain(
         "tenants_swept=2 stored_at_backfilled=2 unreadable_indexes=1",
       );
+      expect(summaries[0]).toContain("errors=1");
       expect(summaries[0]).toContain("tenant_hashes=");
       expect(summaries[0]).not.toContain(ADDRESS_A);
       expect(summaries[0]).not.toContain(ADDRESS_B);

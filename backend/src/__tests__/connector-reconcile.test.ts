@@ -90,6 +90,10 @@ class CountingBlobStore implements ContentBlobStore {
     this.writes += 1;
     return this.inner.writeIndex(source, address, blob);
   }
+  removeIndex(source: string, address: string): Promise<void> {
+    this.writes += 1;
+    return this.inner.removeIndex(source, address);
+  }
 
   read(source: string, address: string, sourceId: string): Promise<SealedBlob | null> {
     return this.inner.read(source, address, sourceId);
