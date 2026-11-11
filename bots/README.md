@@ -195,16 +195,38 @@ typecheck on every PR touching `bots/`; the smoke needs a Docker host and runs b
 
 ## Deploying
 
-A deploy, modelled on `.github/workflows/deploy-backend-phala.yml`:
+`.github/workflows/deploy-bots-phala.yml` deploys a commit on main to the dedicated bots CVM:
 
-1. Build `bots/` (context `bots/`, `linux/amd64`) and push `ghcr.io/tinycloudlabs/tinychat-bots`; reuse the
-   backend's ingress image (`infra/phala-ingress`). Write both pushed digests over `BOTS_IMAGE_DIGEST` and
-   `INGRESS_IMAGE_DIGEST` in `docker-compose.phala.yml`.
-2. Deploy to a dedicated CVM (its own `PHALA_CVM_ID`, the same pinned dstack OS image as the backend) with
-   encrypted envs `BOTS_SERVICE_SECRET`, `BOTS_TEST_ACCOUNTS`, `REDPILL_API_KEY` (dedicated key),
-   `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL`, `PHALA_GATEWAY_CNAME`, `BOTS_INGRESS_DOMAIN`, plus any limit overrides,
-   and sync `allowed_envs`. No other secrets belong in this CVM.
-3. Point `BOTS_INGRESS_DOMAIN` (DNS CNAME to the Phala gateway) at the CVM, then probe
-   `https://<BOTS_INGRESS_DOMAIN>/healthz` for `ok`.
-4. Set the backend's `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>`, the same `BOTS_SERVICE_SECRET`, and the
-   same `BOTS_TEST_ACCOUNTS`.
+```bash
+gh workflow run deploy-bots-phala.yml --ref main -f ref=<full main SHA>
+```
+
+It builds `bots/` (`linux/amd64`) as `ghcr.io/tinycloudlabs/tinychat-bots:<sha>` and the backend's ingress image
+(`infra/phala-ingress`) as `ghcr.io/tinycloudlabs/tinychat-backend:ingress-bots-<sha>`, writes both pushed digests
+over `BOTS_IMAGE_DIGEST` and `INGRESS_IMAGE_DIGEST` in a copy of `docker-compose.phala.yml`, and deploys that copy
+with the complete encrypted env set below. It checks the CVM runs the backend's pinned dstack OS image before and
+after, syncs `allowed_envs`, and probes `https://<BOTS_INGRESS_DOMAIN>/healthz` for `ok`. The job summary lists the
+commit, both digests, the rendered compose's sha256 and the env names. To roll back, run it with an earlier SHA;
+the `bot-data` and `bot-budget` volumes are kept.
+
+Its configuration lives in the `production-bots` GitHub environment:
+
+| Name | Kind | |
+| --- | --- | --- |
+| `BOTS_PHALA_CVM_ID` | variable | the bots CVM; required, never the backend's `PHALA_CVM_ID` |
+| `BOTS_INGRESS_DOMAIN` | variable | the bots TLS hostname; required |
+| `BOTS_TEST_ACCOUNTS` | variable | the same list as the backend's; empty admits nobody |
+| limit overrides from [Configuration](#configuration) | variables | optional, e.g. `BOTS_MODEL`, `BOTS_TOTAL_MEMORY_MB`, `BOTS_GLOBAL_DAILY_TOKENS`; empty keeps the compose default |
+| `PHALA_CLOUD_API_KEY` | secret | deploy tooling only; never a CVM env |
+| `BOTS_SERVICE_SECRET` | secret | the supervisor's secret, the same value as the backend's |
+| `BOTS_REDPILL_API_KEY` | secret | the dedicated RedPill key, written to the CVM as `REDPILL_API_KEY` |
+| `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL` | secrets | the ingress certificate |
+
+`PHALA_GATEWAY_CNAME` is read from the CVM. No other secrets belong in this CVM.
+
+The operator points `BOTS_INGRESS_DOMAIN` at the CVM with a DNS CNAME to its Phala gateway (`.gateway.cname`, shown
+in the job summary).
+
+The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>` and
+`BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
+through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
