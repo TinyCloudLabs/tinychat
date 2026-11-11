@@ -1,4 +1,4 @@
 ---
 ---
 
-TC-2839: CI setup-only change; no release package changes.
+Details: TC-2839 — CI setup-only change; no release package changes.
