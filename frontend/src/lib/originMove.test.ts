@@ -533,16 +533,31 @@ describe("origin move", () => {
       expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual({ saving: 2, localAudio: 0 });
     });
 
-    test("a copy taken from the space and a discarded note keep nobody here", async () => {
+    test("a note adopted from the space keeps nobody here; an unsynced local edit stays counted through an adopt", async () => {
+      // #638's real adoptNote (recordingNotes.ts): the adopted copy is stored with its revision acknowledged.
       const count = () => countLocalOnlyRecordingWork({ factory: null, storage });
       const at = "2026-11-01T00:00:00.000Z";
-      await adoptNote({ recordingId: "remote-1", md: "from another device", moments: [], createdAt: at, editedAt: at, revision: 3 }, "did:a");
+      const remote = (recordingId: string, savedEditAt: string | null = null) =>
+        ({ recordingId, md: "from another device", moments: [], createdAt: at, editedAt: savedEditAt ?? at, savedEditAt, revision: 3 });
+      await adoptNote(remote("remote-1"), "did:a");
+      await adoptNote(remote("remote-unclaimed"), null);
       expect(await count()).toEqual(none);
       await saveNote("remote-1", "edited here", { owner: "did:a" });
       expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+
+      // A local edit made before the space copy arrives is not covered by adopting that copy, even when the
+      // space's saved-edit time is newer and gets taken over.
+      await saveNote("local-first", "typed here first", { owner: "did:a" });
+      await adoptNote(remote("local-first", "2026-11-02T00:00:00.000Z"), "did:a");
+      expect(await count()).toEqual({ saving: 2, localAudio: 0 });
+    });
+
+    test("a discarded note keeps nobody here", async () => {
+      const count = () => countLocalOnlyRecordingWork({ factory: null, storage });
       await saveNote("gone-1", "typed", { owner: "did:a" });
-      await deleteNote("gone-1", "did:a");
       expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+      await deleteNote("gone-1", "did:a");
+      expect(await count()).toEqual(none);
     });
 
     test("an id-only note from before account binding counts only while its recording is here to re-sync it", async () => {
