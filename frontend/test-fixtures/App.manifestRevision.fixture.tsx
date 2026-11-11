@@ -1,3 +1,4 @@
+import { newIdbEnv } from "@/lib/voiceNotes/web/testing/idb";
 // Mounted-App proof of the manifest-revision gate at restore: a session saved under an older sign-in
 // manifest is handed off, cleared, and met with the sign-in screen carrying the one-line notice, with no
 // manifest fetch or storage restore before the handoff; a failed handoff keeps the session; offline defers;
@@ -154,7 +155,8 @@ function qualifyBrowser() {
     maxTouchPoints: { configurable: true, value: 0 },
     locks: { configurable: true, value: { request: () => undefined } },
   });
-  Object.defineProperty(globalThis, "indexedDB", { configurable: true, writable: true, value: {} });
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, writable: true, value: newIdbEnv().factory });
+  Object.defineProperty(globalThis, "IDBKeyRange", { configurable: true, value: newIdbEnv().keyRange });
   Object.defineProperty(globalThis, "Worker", { configurable: true, writable: true, value: class {} });
 }
 

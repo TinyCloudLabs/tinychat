@@ -1,3 +1,4 @@
+import { localDataEpoch } from "../localDataEpoch";
 import { readableError } from "@/lib/readableError";
 // The browser VoiceNotes engine: the webStore (IndexedDB) and webCapture (getUserMedia +
 // MediaRecorder + level meter) composed into a VoiceNotesPlugin the existing recorder
@@ -117,11 +118,12 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
   const captureEnv = options.captureEnv ?? (() => ({ ...browserCaptureEnv(), now }));
 
   const listeners = new Map<EventName, Set<Listener>>();
-  const retained = new Map<EventName, unknown[]>();
+  const retained = new Map<EventName, { value: unknown; owner: string | null }[]>();
   // Recordings that failed recovery stay announced until they are retried, discarded or recovered, so a controller
   // that attaches later (after sign-in, or on an account switch) is told again. Never one-shot.
   const recoveryIssues = new Map<string, { id: string; reason: string; error: string }>();
   const objectUrls = new Map<string, string>();
+  const accountEpoch = localDataEpoch("exo.capture.accountEpoch");
   let live: Live | null = null;
   let selectedId: string | null = null;
   let chain: Promise<unknown> = Promise.resolve();
@@ -133,14 +135,35 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     return result;
   };
 
-  const emit = (name: EventName, value: unknown) => {
+  const ownerVisible = async (owner: string | null): Promise<boolean> => {
+    if (!owner) return true;
+    const account = await store.getCaptureDefaults();
+    return account.status !== "signed_out" && account.accountDid === owner;
+  };
+  const assertLiveAccess = async (l: Live): Promise<void> => {
+    if (!await ownerVisible(l.record.owner)) throw failure("owner_mismatch");
+  };
+  const deliverEvent = async (name: EventName, payload: { value: unknown; owner: string | null }, listener: Listener) => {
+    try {
+      if (payload.owner && !await ownerVisible(payload.owner)) return;
+      const value = payload.value as { id?: string; recording?: VoiceNoteRecording | null };
+      // A formerly unowned completed note may since have been explicitly assigned to an account.
+      if (value.recording && value.id) await store.assertAccess(value.id);
+    } catch {
+      // An inaccessible or removed recording has no event for this account.
+      return;
+    }
+    if (listeners.get(name)?.has(listener)) listener(clone(payload.value));
+  };
+  const emit = async (name: EventName, value: unknown, owner = live?.record.owner ?? null) => {
     const set = listeners.get(name);
+    const payload = { value: clone(value), owner };
     if (retained.get(name)?.length || !set?.size) {
       if (name === "level" || name === "inputs") return;
       const queue = retained.get(name) ?? [];
-      queue.push(clone(value));
+      queue.push(payload);
       retained.set(name, queue);
-    } else for (const listener of set) listener(clone(value));
+    } else await Promise.all([...set].map((listener) => deliverEvent(name, payload, listener)));
   };
 
   const openSpanOf = (s: SessionRecord) => s.spans.find((span) => span.endedAt === null) ?? null;
@@ -173,7 +196,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
   const emitMicState = () => {
     const l = live;
-    emit("micState", { ...(l ? mic(l) : { state: "idle", reason: null }), detail: l?.detail, options: l?.record.options,
+    return emit("micState", { ...(l ? mic(l) : { state: "idle", reason: null }), detail: l?.detail, options: l?.record.options,
       input: l?.capture.activeInput ?? l?.record.input ?? null, at: now(), id: l?.id ?? null,
       audioMs: l?.record.audioMs ?? 0, elapsedMs: l ? elapsedMs(l) : 0, pausedMs: l ? pausedMs(l) : 0,
       openSpan: l ? openSpanOf(l.record) : null });
@@ -191,7 +214,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     l.writeFailed = error instanceof Error ? error : new Error(readableError(error));
     console.error("[webVoiceNotes] A recording chunk could not be stored", error);
     // Reported by finish() after committed/autoStopped, which resolve the note's capture issue by design.
-    if (l.closed) emit("writeFailure", { id: l.id, error: l.writeFailed.message });
+    if (l.closed) emit("writeFailure", { id: l.id, error: l.writeFailed.message }, l.record.owner);
     const reason: StopReason = error instanceof DOMException && error.name === "QuotaExceededError" ? "disk_full" : "write_failed";
     scheduleAutoStop(l, reason);
   };
@@ -235,10 +258,10 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
   const reportLoss = (l: Live, tailLost: boolean) => {
     l.closed = true;
-    if (l.writeFailed) emit("writeFailure", { id: l.id, error: l.writeFailed.message });
+    if (l.writeFailed) emit("writeFailure", { id: l.id, error: l.writeFailed.message }, l.record.owner);
     if (tailLost) {
       console.error("[webVoiceNotes] The recorder never delivered the last slice before the pause", l.id);
-      emit("writeFailure", { id: l.id, error: "pause_flush_timeout" });
+      emit("writeFailure", { id: l.id, error: "pause_flush_timeout" }, l.record.owner);
     }
   };
 
@@ -270,25 +293,27 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       emitMicState();
       if (reason !== "user") {
         emit("autoStopped", { id: l.id, reason, maxDurationMs: s.maxDurationMs, at: now(), recording: null,
-          error: (error as { code?: string }).code ?? "finalization_failed" });
+          error: (error as { code?: string }).code ?? "finalization_failed" }, s.owner);
       }
       reportLoss(l, tailLost);
       throw error;
     }
     releaseLive(l);
-    if (outcome.recording) emit("committed", { id: outcome.recording.id, recording: outcome.recording });
-    emitMicState();
+    if (outcome.recording) await emit("committed", { id: outcome.recording.id, recording: outcome.recording }, outcome.recording.owner);
+    await emitMicState();
     if (reason !== "user") {
-      emit("autoStopped", { id: l.id, reason, maxDurationMs: s.maxDurationMs, at: now(), recording: outcome.recording, error: outcome.error });
+      await emit("autoStopped", { id: l.id, reason, maxDurationMs: s.maxDurationMs, at: now(), recording: outcome.recording, error: outcome.error }, s.owner);
     }
     // Last: committed and autoStopped resolve the note's capture issue, and a lost slice must outlive them.
     reportLoss(l, tailLost);
     return outcome;
   }
 
-  const requireLive = (): Live => {
-    if (!live) throw failure("not_recording");
-    return live;
+  const requireLive = async (): Promise<Live> => {
+    const l = live;
+    if (!l) throw failure("not_recording");
+    await assertLiveAccess(l);
+    return l;
   };
 
   const snapshotInputs = async (): Promise<{ inputs: AudioInput[]; labelsAvailable: boolean }> => {
@@ -302,7 +327,9 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
   const inputsState = async () => {
     const { inputs, labelsAvailable } = await snapshotInputs();
-    return { inputs, labelsAvailable, selectedId, activeId: live?.capture.activeInput?.id ?? null };
+    const l = live;
+    const visible = !l || await ownerVisible(l.record.owner);
+    return { inputs, labelsAvailable, selectedId: visible ? selectedId : null, activeId: visible ? l?.capture.activeInput?.id ?? null : null };
   };
 
   const callbacksFor = (holder: { live: Live | null }) => ({
@@ -372,8 +399,8 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
             uploadAudio: startOptions?.uploadAudio ?? defaults.uploadAudio ?? false,
           };
           const maxDurationMs = clampLimitMs(startOptions?.maxDurationMs);
-          const begun = await store.beginSession({ id, startedAt: now(), source: "in_app", owner: signedIn ? defaults.accountDid : null,
-            transitionGen: defaults.transitionGen, options: opts, mimeType: capture.mimeType, input: null, maxDurationMs });
+          const begun = await store.beginSession({ id, startedAt: now(), source: "in_app", owner: defaults.accountDid,
+            transitionGen: defaults.transitionGen, options: opts, mimeType: capture.mimeType, input: null, maxDurationMs }, true);
           began = true;
           const l: Live = { id, record: begun, capture, availability: "available", reason: null, queue: Promise.resolve(),
             writeFailed: null, lastDurableAt: now(), pendingDevice: undefined, releaseLocks: releases, finishing: false, closed: false };
@@ -389,6 +416,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
           begun.input = input;
           l.lastDurableAt = startedAt;
           await store.updateSession(id, { startedAt, input });
+          await assertLiveAccess(l);
           live = l;
           emitMicState();
           return { id, startedAt, maxDurationMs };
@@ -405,7 +433,9 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       return run(async () => {
         const l = live;
         if (!l || l.finishing) throw failure("no_recording");
+        await assertLiveAccess(l);
         await l.queue;
+        await assertLiveAccess(l);
         const limit = clampLimitMs(maxDurationMs);
         l.record.maxDurationMs = limit;
         await journal(l, { maxDurationMs: limit });
@@ -417,15 +447,18 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
     async stop() {
       return run(async () => {
-        const l = requireLive();
+        const l = await requireLive();
         const { recording, error } = await finish(l, "user");
         if (!recording) throw failure(error ?? "no_audio_captured");
+        await assertLiveAccess(l);
+        if (!recording.owner) await store.assertAccess(recording.id);
         return clone(recording);
       });
     },
 
     async status() {
-      const l = live;
+      const current = live;
+      const l = current && await ownerVisible(current.record.owner) ? current : null;
       const s = l?.record;
       return clone({
         ...(l ? mic(l) : { state: "idle" as const, reason: null }), detail: l?.detail, id: l?.id ?? null,
@@ -439,7 +472,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
     async pause() {
       return run(async () => {
-        const l = requireLive();
+        const l = await requireLive();
         if (l.record.intent === "paused") return;
         try {
           await l.capture.pause();
@@ -447,6 +480,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
           throw Object.assign(failure("pause_failed"), { cause: error });
         }
         await l.queue;
+        await assertLiveAccess(l);
         closeSpan(l.record);
         l.record.intent = "paused";
         l.record.pauseStartedAt = now();
@@ -460,7 +494,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
     async resume() {
       return run(async () => {
-        const l = requireLive();
+        const l = await requireLive();
         const wasPaused = l.record.intent === "paused";
         if (!wasPaused && l.availability === "available") return;
         const at = now();
@@ -481,6 +515,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
           emitMicState();
           throw Object.assign(failure(reason === "resume_blocked" ? "resume_failed" : reason), { cause: error });
         }
+        await assertLiveAccess(l);
         l.pendingDevice = undefined;
         closeSpan(l.record);
         l.availability = "available";
@@ -496,10 +531,12 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       return run(async () => {
         const l = live;
         if (!l) return { id: null };
+        await assertLiveAccess(l);
         l.finishing = true;
         l.capture.abort();
         await l.queue;
         try {
+          await assertLiveAccess(l);
           await store.discardSession(l.id);
         } finally {
           releaseLive(l);
@@ -512,7 +549,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
     async setRecordingOptions(next) {
       return run(async () => {
-        const l = requireLive();
+        const l = await requireLive();
         const merged: CaptureOptions = { ...l.record.options, ...next,
           transcriber: l.record.owner ? (next.transcriber ?? l.record.options.transcriber) : "on-device" };
         l.record.options = merged;
@@ -521,12 +558,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       });
     },
 
-    async setCaptureDefaults(next) {
-      const result = await store.setCaptureDefaults(next);
-      const l = live;
-      if (l && result.claimed.includes(l.id)) l.record.owner = next.accountDid;
-      return result;
-    },
+    setCaptureDefaults: (next) => store.setCaptureDefaults(next),
 
     async deleteAudio({ id }) {
       if (live?.id === id) throw failure("recording_in_progress");
@@ -540,14 +572,23 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     },
 
     async localAudioUrl({ id }) {
+      const epoch = accountEpoch.read();
+      await store.assertAccess(id);
       const cached = objectUrls.get(id);
       if (cached) return { url: cached };
       const { bytes, mimeType } = await store.readNoteAudio(id);
+      if (epoch !== accountEpoch.read()) throw failure("owner_mismatch");
+      await store.assertAccess(id);
       const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeType }));
       objectUrls.set(id, url);
       return { url };
     },
-    async localAudioSize({ id }) { return { size: await store.audio.size(id) }; },
+    async localAudioSize({ id }) {
+      await store.assertAccess(id);
+      const size = await store.audio.size(id);
+      await store.assertAccess(id);
+      return { size };
+    },
     async audioMetadata() { throw failure("not_available_on_web"); },
     async uploadAudio() { throw failure("not_available_on_web"); },
     async cancelAudioUpload() {},
@@ -561,6 +602,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
         const { inputs } = await snapshotInputs();
         if (id !== null && !inputs.some((input) => input.id === id)) throw failure("input_not_found");
         const l = live;
+        if (l) await assertLiveAccess(l);
         if (l?.record.intent === "recording" && l.availability === "available") {
           let input: AudioInput;
           try {
@@ -568,6 +610,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
           } catch (error) {
             throw mapGetUserMediaError(error);
           }
+          await assertLiveAccess(l);
           l.record.input = input;
           await journal(l, { input });
         } else if (l) l.pendingDevice = id;
@@ -604,7 +647,16 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     readAudioChunk: (args) => store.readAudioChunk(args),
     listPending: () => store.listPending(),
     getCaptureDefaults: () => store.getCaptureDefaults(),
-    setAccountState: (args) => store.setAccountState(args),
+    async setAccountState(args) {
+      return run(async () => {
+        if (args.transitionGen < (await store.getCaptureDefaults()).transitionGen) throw failure("stale_transition");
+        if (args.status === "signed_out" && live) await finish(live, "user");
+        await store.setAccountState(args);
+        accountEpoch.advance();
+        retained.clear();
+        for (const id of [...objectUrls.keys()]) revokeUrl(id);
+      });
+    },
     beginRemoteOp: (receipt) => store.beginRemoteOp(receipt),
     recordRemoteResult: (args) => store.recordRemoteResult(args),
     claim: (args) => store.claim(args),
@@ -621,11 +673,13 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       set.add(listener);
       if (event === "inputs") watchDevices();
       if (event === "recoveryFailed") for (const issue of recoveryIssues.values()) deliverRecoveryIssue(issue, listener);
-      if (retained.get(event)?.length) queueMicrotask(() => {
-        if (!set?.has(listener)) return;
-        for (const payload of retained.get(event) ?? []) listener(clone(payload));
+      if (retained.get(event)?.length) {
+        const pending = retained.get(event)!;
         retained.delete(event);
-      });
+        void (async () => {
+          for (const payload of pending) await deliverEvent(event, payload, listener);
+        })();
+      }
       return Promise.resolve({
         remove: async () => {
           set?.delete(listener);
@@ -669,7 +723,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     for (const listener of listeners.get("recoveryFailed") ?? []) deliverRecoveryIssue(issue, listener);
   }
 
-  /** The owner is read when the listener is told, not when the failure was found: sign-in claims unowned recordings in between. */
+  /** Resolve ownership when delivering, including after account changes in another tab. */
   function deliverRecoveryIssue(issue: { id: string; reason: string; error: string }, listener: Listener) {
     store.recoveryOwner(issue.id).then((owner) => {
       if (recoveryIssues.get(issue.id) !== issue) return;
@@ -683,7 +737,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     const result = await store.recoverInterruptedSessions();
     for (const recording of result.recovered) {
       recoveryIssues.delete(recording.id);
-      emit("recovered", { id: recording.id, recording });
+      await emit("recovered", { id: recording.id, recording }, recording.owner);
     }
     for (const failed of result.failed) announceRecoveryFailed(failed);
     return result;

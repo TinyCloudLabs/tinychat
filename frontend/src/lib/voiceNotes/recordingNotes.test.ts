@@ -1,11 +1,14 @@
+import { beginStorageAccountSession, __resetStorageStatusForTests } from "@/lib/storageStatus";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { adoptNote, deleteNote, loadNote, noteMarkdown, parseMomentLines, parseNoteMarkdown, saveNote } from "./recordingNotes";
 
+const OWNER = "did:test:recording-notes";
 let serial = 0;
 const id = () => `notes-${++serial}`;
 const values = new Map<string, string>();
 let previous: PropertyDescriptor | undefined;
 beforeEach(() => {
+  beginStorageAccountSession({}, OWNER, OWNER);
   previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
   getItem: (key: string) => values.get(key) ?? null,
@@ -15,6 +18,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   values.clear();
+  __resetStorageStatusForTests();
   if (previous) Object.defineProperty(globalThis, "localStorage", previous);
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
@@ -93,7 +97,7 @@ describe("recording Markdown", () => {
 
   test("a stored note from before savedEditAt reads as null", async () => {
     const recordingId = id();
-    values.set(`exo.voiceNotes.note.${recordingId}`, JSON.stringify({ recordingId, md: "old", createdAt: "2026-10-09T10:00:00.000Z",
+    values.set(`exo.voiceNotes.note.${JSON.stringify([OWNER, recordingId])}`, JSON.stringify({ recordingId, md: "old", createdAt: "2026-10-09T10:00:00.000Z",
       editedAt: "2026-10-09T10:00:00.000Z", revision: 3 }));
     expect((await loadNote(recordingId))?.savedEditAt).toBeNull();
     const later = await saveNote(recordingId, "old, more");
@@ -130,4 +134,128 @@ describe("recording Markdown", () => {
     expect(await loadNote(recordingId)).toBeNull();
     await expect(saveNote(recordingId, "late draft")).rejects.toThrow("discarded");
   });
+});
+
+// TC-2785: remote notes need no native metadata, but their local text stays account-bound.
+test("account namespaces isolate colliding remote ids, sign-out, late writes and owner-specific deletion", async () => {
+  const recordingId = id();
+  beginStorageAccountSession({}, "did:A", "space:A");
+  await saveNote(recordingId, "A private text\n- **0:04** A moment");
+  beginStorageAccountSession({}, null, null);
+  expect(await loadNote(recordingId)).toBeNull();
+  beginStorageAccountSession({}, "did:B", "space:B");
+  expect(await loadNote(recordingId)).toBeNull();
+  expect(await loadNote(recordingId, "did:A")).toBeNull();
+  await adoptNote({ recordingId, md: "B remote note", moments: [], createdAt: "2026-11-11T00:00:00Z",
+    editedAt: "2026-11-11T00:00:00Z", revision: 1 }, "did:B");
+  await saveNote(recordingId, "B remote edit", { savedEdit: true, owner: "did:B" });
+  await saveNote(recordingId, "A late text\n- **0:05** A late moment", { owner: "did:A" });
+  expect((await loadNote(recordingId))?.md).toBe("B remote edit");
+  await deleteNote(recordingId, "did:B");
+  expect(await loadNote(recordingId)).toBeNull();
+  beginStorageAccountSession({}, "did:A", "space:A");
+  expect((await loadNote(recordingId))?.md).toBe("A late text\n- **0:05** A late moment");
+  expect((await loadNote(recordingId))?.moments).toEqual([{ atMs: 5_000, label: "A late moment" }]);
+});
+
+test("an id-only legacy copy stays hidden without native ownership proof", async () => {
+  const recordingId = id();
+  values.set(`exo.voiceNotes.note.${recordingId}`, JSON.stringify({ recordingId, md: "unproven private text",
+    createdAt: "2026-11-11T00:00:00Z", editedAt: "2026-11-11T00:00:00Z", revision: 1 }));
+  expect(await loadNote(recordingId)).toBeNull();
+  expect(values.get(`exo.voiceNotes.note.${recordingId}`)).toContain("unproven private text");
+});
+
+test("v1 copies require native ownership proof, and an explicit claim hides the anonymous copy before moving it", async () => {
+  const { IDBFactory } = await import("fake-indexeddb");
+  const { VoiceNotes, __setVoiceNotesForTests } = await import("./nativeVoiceNotes");
+  const original = VoiceNotes;
+  const previousDb = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
+  const factory = new IDBFactory();
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: factory });
+  const legacyId = id();
+  const unownedId = id();
+  const purgeLegacyId = id();
+  let active: string | null = "did:B";
+  const owners = new Map<string, string | null>([[legacyId, "did:A"], [unownedId, null]]);
+  __setVoiceNotesForTests({
+    getCaptureDefaults: async () => ({ accountDid: active, status: active ? "signed_in" : "signed_out", transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false }),
+    status: async () => ({ id: null, state: "idle" }),
+    listPending: async () => ({ recordings: [...owners].filter(([, owner]) => owner === null || owner === active).map(([recordingId, owner]) => ({ id: recordingId, owner })) }),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    const oldDb = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = factory.open("exo-recording-notes", 1);
+      open.onupgradeneeded = () => open.result.createObjectStore("notes", { keyPath: "recordingId" });
+      open.onsuccess = () => resolve(open.result);
+      open.onerror = () => reject(open.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = oldDb.transaction("notes", "readwrite");
+      tx.objectStore("notes").put({ recordingId: legacyId, md: "A legacy text", createdAt: "2026-11-11T00:00:00Z",
+        editedAt: "2026-11-11T00:00:00Z", revision: 1 });
+      tx.objectStore("notes").put({ recordingId: purgeLegacyId, md: "Unsynced legacy moments", createdAt: "2026-11-11T00:00:00Z",
+        editedAt: "2026-11-11T00:00:00Z", revision: 1 });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    oldDb.close();
+    const fresh = await import(`./recordingNotes?owner-migration=${id()}`) as typeof import("./recordingNotes");
+    beginStorageAccountSession({}, "did:B", "space:B");
+    expect(await fresh.loadNote(legacyId)).toBeNull();
+    active = "did:A";
+    beginStorageAccountSession({}, "did:A", "space:A");
+    expect((await fresh.loadNote(legacyId))?.md).toBe("A legacy text");
+    await fresh.deleteSyncedNote(purgeLegacyId, "did:A");
+    expect((await fresh.loadNote(purgeLegacyId))?.md).toBe("Unsynced legacy moments");
+    await fresh.saveNote(unownedId, "Signed-out text", { owner: null });
+    expect((await fresh.loadNote(unownedId))?.md).toBe("Signed-out text");
+    owners.set(unownedId, "did:A");
+    expect(await fresh.loadNote(unownedId, null)).toBeNull();
+    await fresh.claimRecordingNote(unownedId, "did:A");
+    expect((await fresh.loadNote(unownedId))?.md).toBe("Signed-out text");
+    active = null;
+    beginStorageAccountSession({}, null, null);
+    expect(await fresh.loadNote(legacyId)).toBeNull();
+    expect(await fresh.loadNote(unownedId)).toBeNull();
+    active = "did:B";
+    beginStorageAccountSession({}, "did:B", "space:B");
+    expect(await fresh.loadNote(legacyId)).toBeNull();
+    expect(await fresh.loadNote(unownedId)).toBeNull();
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+    if (previousDb) Object.defineProperty(globalThis, "indexedDB", previousDb);
+    else Reflect.deleteProperty(globalThis, "indexedDB");
+  }
+});
+
+test("synced audio cleanup keeps an unsynced Markdown edit and removes only an acknowledged revision", async () => {
+  const { deleteSyncedNote, markNoteSynced } = await import("./recordingNotes");
+  const recordingId = id();
+  const first = await saveNote(recordingId, "Only local text");
+  await deleteSyncedNote(recordingId, OWNER);
+  expect((await loadNote(recordingId))?.md).toBe("Only local text");
+  await markNoteSynced(recordingId, OWNER, first.revision);
+  const latest = await saveNote(recordingId, "New unsynced edit");
+  await markNoteSynced(recordingId, OWNER, first.revision);
+  await deleteSyncedNote(recordingId, OWNER);
+  expect((await loadNote(recordingId))?.md).toBe("New unsynced edit");
+  await markNoteSynced(recordingId, OWNER, latest.revision);
+  await deleteSyncedNote(recordingId, OWNER);
+  expect(await loadNote(recordingId)).toBeNull();
+  await expect(saveNote(recordingId, "Late autosave", { owner: OWNER })).rejects.toThrow("discarded");
+});
+
+test("another tab's account marker denies both directions instead of adopting its namespace", async () => {
+  const recordingId = id();
+  beginStorageAccountSession({}, "did:A", "space:A");
+  await saveNote(recordingId, "A text", { owner: "did:A" });
+  await saveNote(recordingId, "B text", { owner: "did:B" });
+  values.set("exo.recordingNotes.account", JSON.stringify("did:B"));
+  await expect(loadNote(recordingId)).rejects.toThrow("account changed");
+  await expect(saveNote(recordingId, "Stale A tab write")).rejects.toThrow("account changed");
+  beginStorageAccountSession({}, "did:B", "space:B");
+  values.set("exo.recordingNotes.account", JSON.stringify("did:A"));
+  await expect(loadNote(recordingId)).rejects.toThrow("account changed");
 });

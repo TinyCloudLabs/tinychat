@@ -1,3 +1,4 @@
+import { newIdbEnv } from "@/lib/voiceNotes/web/testing/idb";
 import { afterAll, afterEach, beforeEach, expect, jest, mock, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -222,6 +223,8 @@ async function mount(platform: AppPlatform) {
   root = createRoot(host);
   await act(async () => root!.render(<BrowserRouter><PlatformContext.Provider value={platform}><App /></PlatformContext.Provider></BrowserRouter>));
   await settle();
+  const deadline = Date.now() + 1000;
+  while (!restorePause && host!.textContent?.includes("Restoring your session") && Date.now() < deadline) await settle();
 }
 async function remount(platform: AppPlatform) {
   if (root) await act(async () => root!.unmount());
@@ -231,6 +234,8 @@ async function remount(platform: AppPlatform) {
   root = createRoot(host);
   await act(async () => root!.render(<BrowserRouter><PlatformContext.Provider value={platform}><App /></PlatformContext.Provider></BrowserRouter>));
   await settle();
+  const deadline = Date.now() + 1000;
+  while (!restorePause && host!.textContent?.includes("Restoring your session") && Date.now() < deadline) await settle();
 }
 async function click(label: string) {
   const button = [...document.body.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
@@ -247,6 +252,8 @@ async function navigate(path: string) {
 }
 
 beforeEach(() => {
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: newIdbEnv().factory });
+  Object.defineProperty(globalThis, "IDBKeyRange", { configurable: true, value: newIdbEnv().keyRange });
   authStorage.localStorage.clear();
   authStorage.sessionStorage.clear();
   nativeMode = false;
@@ -374,6 +381,7 @@ test("web sign-out clears SDK and app sessions before a hung OpenKey confirmatio
   releaseSignOut = () => {};
   await click("Test sign out");
   await startedPromise;
+  await settle();
 
   expect(Boolean(host!.querySelector('[data-testid="authenticated-workspace"]'))).toBe(false);
   expect(host!.textContent).toContain("Sign in");
@@ -437,7 +445,7 @@ test("a restore finishing after local sign-out cannot restore the session", asyn
   expect(cleanedClients).toBe(1);
 });
 
-test("sign-out offers save, delete, and cancel for local-only voice notes and stays signed in after save failure", async () => {
+test("TC-2785 sign-out offers keep, delete and cancel and retains local-only notes on keep", async () => {
   const address = loginAddress.toLowerCase();
   const did = `did:pkh:eip155:1:${loginAddress}`;
   setPendingVoiceNotes([{
@@ -454,32 +462,21 @@ test("sign-out offers save, delete, and cancel for local-only voice notes and st
 
   await click("Test sign out");
   await settle();
-  expect(document.body.textContent).toContain("A voice note isn't saved yet");
-  expect(document.body.textContent).toContain("1 voice note is only on this device.");
-  expect(document.body.textContent).toContain("Save and sign out");
-  expect(document.body.textContent).toContain("Sign out and delete it");
-  expect(document.body.textContent).toContain("Cancel");
+  expect(document.body.textContent).toContain("A voice note is still on this browser");
+  expect(document.body.textContent).toContain("It stays on this browser for this account");
+  expect(document.body.textContent).toContain("Keep & sign out");
+  expect(document.body.textContent).toContain("Delete from this browser & sign out");
+  expect(document.body.textContent).toContain("Stay signed in");
   expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
   expect(signOutEvents).toEqual([]);
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
-
-  await click("Cancel");
+  await click("Stay signed in");
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   await click("Test sign out");
-  await click("Save and sign out");
   await settle();
-  expect(document.body.textContent).toContain("Couldn't save your voice note. Try again, or sign out and delete it.");
-  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
-  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
-  expect(signOutEvents).toEqual([]);
-  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
-
-  await click("Cancel");
-  await click("Test sign out");
+  await click("Keep & sign out");
   await settle();
-  await click("Sign out and delete it");
-  await settle();
-  expect(deletedVoiceNoteIds).toEqual(["pending-note"]);
+  expect(deletedVoiceNoteIds).toEqual([]);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
   expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
@@ -508,9 +505,9 @@ test("the pending-note dialog uses plural copy for multiple voice notes", async 
   await click("Test sign out");
   await settle();
   expect(document.body.querySelector('[data-testid="pending-voice-note-signout"]')?.textContent)
-    .toContain("2 voice notes are only on this device.");
+    .toContain("2 voice notes haven't been saved to your TinyCloud yet.");
   expect(document.body.querySelector('[data-testid="pending-voice-note-signout"]')?.textContent)
-    .toContain("Sign out and delete them");
+    .toContain("Delete from this browser & sign out");
 });
 
 test("failed pending-note deletion keeps the owner signed in with recovery copy", async () => {
@@ -524,7 +521,7 @@ test("failed pending-note deletion keeps the owner signed in with recovery copy"
   window.localStorage.setItem(`tinycloud:session:${address}`, "sdk session");
   await click("Test sign out");
   await settle();
-  await click("Sign out and delete it");
+  await click("Delete from this browser & sign out");
   await settle();
   expect(document.body.querySelector('[data-testid="pending-voice-note-signout"] [role="alert"]')?.textContent)
     .toBe("Couldn't delete all your voice notes, so you're still signed in. Try again.");
@@ -556,7 +553,7 @@ test("a failed note deletion with a retained sign-out fence reports the signed-i
     },
   });
   try {
-    await click("Sign out and delete it");
+    await click("Delete from this browser & sign out");
     await settle();
     expect(document.body.querySelector('[data-testid="pending-voice-note-signout"] [role="alert"]')?.textContent)
       .toBe("Couldn't delete all your voice notes, so you're still signed in. Try again.");
@@ -720,3 +717,34 @@ test("mounted App shows one shared read-only notice outside Settings and keeps S
   expect(host!.querySelectorAll('[aria-label="Storage full"]')).toHaveLength(1);
 });
 
+
+test("TC-2785 native iOS retains the blocking Save/Delete flow until its ownership port", async () => {
+  const did = `did:pkh:eip155:1:${loginAddress}`;
+  setPendingVoiceNotes([{ id: "ios-only-copy", owner: did, ledger: { audio: { state: "pending" } } }]);
+  await mount("ios");
+  await click("Sign in");
+  await settle();
+  await click("Test sign out");
+  await settle();
+  expect(document.body.textContent).toContain("Save and sign out");
+  expect(document.body.textContent).not.toContain("Keep & sign out");
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+});
+
+test("TC-2785 a local-result clear failure releases the sign-out fence and keeps the session", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  const factory = globalThis.indexedDB;
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: {
+    open(name: string, version?: number) {
+      if (name === "exo-held-results") throw new Error("device storage unavailable");
+      return factory.open(name, version);
+    },
+  } });
+  await click("Test sign out");
+  await settle();
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
+  expect(signOutEvents).toEqual([]);
+});

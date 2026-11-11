@@ -168,7 +168,7 @@ describe("VoiceNotes v2 fake public contract", () => {
     expect(states).toEqual(["recording"]);
   });
 
-  test("defaults claim signed-out v2 only, reject stale transition and protect account ownership", async () => {
+  test("defaults leave signed-out v2 unowned, reject stale transition and protect account ownership", async () => {
     const { plugin, controls } = createFakeVoiceNotes();
     const first = await plugin.start({ transcriber: "assemblyai" });
     expect((await plugin.status()).options?.transcriber).toBe("on-device");
@@ -176,7 +176,11 @@ describe("VoiceNotes v2 fake public contract", () => {
     const second = await plugin.start();
     controls.commitLegacy(legacy("legacy"));
     const claimed = await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 5, transcriber: "assemblyai", identifySpeakers: false });
-    expect(claimed.claimed).toEqual([second.id, first.id]);
+    expect(claimed.claimed).toEqual([]);
+    expect((await plugin.status()).owner).toBeNull();
+    expect((await plugin.stop()).id).toBe(second.id);
+    expect((await plugin.listPending()).recordings.find((n) => n.id === first.id)?.owner).toBeNull();
+    await plugin.claim({ id: saved.id, did: "did:A", evidence: "user_choice" });
     expect((await plugin.listPending()).recordings.find((n) => n.id === saved.id)?.owner).toBe("did:A");
     expect((await plugin.listPending()).recordings.find((n) => n.id === "legacy")?.owner).toBeNull();
     await expect(plugin.setCaptureDefaults({ accountDid: "did:B", transitionGen: 4, transcriber: "assemblyai", identifySpeakers: false })).rejects.toEqual(code("stale_transition"));
@@ -186,6 +190,7 @@ describe("VoiceNotes v2 fake public contract", () => {
   test("legacy claim requires space row or user choice; space row means audio already saved", async () => {
     const { plugin, controls } = createFakeVoiceNotes();
     controls.commitLegacy(legacy("legacy"));
+    await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
     await expect(plugin.claim({ id: "legacy", did: "did:A", evidence: "signed_out_v2" })).rejects.toEqual(code("claim_evidence_required"));
     await plugin.claim({ id: "legacy", did: "did:A", evidence: "space_row", rowId: "old-random-row" });
     expect((await plugin.listPending()).recordings[0]).toMatchObject({ owner: "did:A", ownerUnknown: false, ledger: { audio: { state: "saved", rowId: "old-random-row" } } });
@@ -337,6 +342,7 @@ describe("VoiceNotes v2 fake public contract", () => {
     const stopped = await plugin.stop();
     await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
     expect(stopped).toMatchObject({ owner: null, rev: 1 });
+    await plugin.claim({ id, did: "did:A", evidence: "user_choice" });
     const listed = (await plugin.listPending()).recordings[0];
     listed.owner = "did:B";
     expect((await plugin.listPending()).recordings[0]).toMatchObject({ owner: "did:A", rev: 2 });

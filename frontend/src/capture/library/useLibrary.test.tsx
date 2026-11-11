@@ -14,6 +14,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 
+import { beginStorageAccountSession, endStorageAccountSession } from "@/lib/storageStatus";
 import { saveNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { clearDiscarded, markDiscarded, unmarkDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
@@ -97,6 +98,7 @@ function fakeSpace(options: {
       return call("transcript");
     } },
   } as unknown as TinyCloudWeb;
+  beginStorageAccountSession(tcw, tcw.did ?? null, tcw.spaceId ?? null);
   return {
     tcw,
     kinds,
@@ -125,6 +127,7 @@ let root: Root | null = null;
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  endStorageAccountSession();
 });
 async function render(props: Parameters<typeof Probe>[0]) {
   root ??= createRoot(container);
@@ -740,8 +743,8 @@ describe("useLibrary, notes still on this browser", () => {
   });
 
   test("a row is titled by its first moment on this browser, else its transcript preview", async () => {
-    await saveNote("rec-p1", "- **0:01**\n- **0:03** Call the landlord\n- **0:09** second");
     const space = fakeSpace({ previews: [["rec-a", "  The quarterly numbers look   good this time and we should send them to everyone before the end of the day tomorrow  "]] });
+    await saveNote("rec-p1", "- **0:01**\n- **0:03** Call the landlord\n- **0:09** second", { owner: space.tcw.did });
     const seen: Library[] = [];
     await render(props(space, seen, { onPhone: [phoneNote("rec-p1")] }));
     await space.answer("list", listedVoice("a", "b"));
@@ -816,8 +819,8 @@ describe("useLibrary, notes still on this browser", () => {
   });
 
   test("closing a saved row re-reads its first moment: an edited one retitles it, a removed one drops the title", async () => {
-    await saveNote("rec-ed", "- **0:01** Original words");
     const space = fakeSpace();
+    await saveNote("rec-ed", "- **0:01** Original words", { owner: space.tcw.did });
     const seen: Library[] = [];
     const base = props(space, seen);
     await render({ ...base, noteId: null });
@@ -825,11 +828,11 @@ describe("useLibrary, notes still on this browser", () => {
     expect(seen.at(-1)!.items[0].snippet).toBe("Original words");
     await render({ ...base, noteId: "ed" });
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
-    await saveNote("rec-ed", "- **0:01** Updated words", { savedEdit: true });
+    await saveNote("rec-ed", "- **0:01** Updated words", { savedEdit: true, owner: space.tcw.did });
     await render({ ...base, noteId: null });
     expect(seen.at(-1)!.items[0].snippet).toBe("Updated words");
     await render({ ...base, noteId: "ed" });
-    await saveNote("rec-ed", "just a note, no moments", { savedEdit: true });
+    await saveNote("rec-ed", "just a note, no moments", { savedEdit: true, owner: space.tcw.did });
     await render({ ...base, noteId: null });
     expect(seen.at(-1)!.items[0].snippet).toBeUndefined();
   });
