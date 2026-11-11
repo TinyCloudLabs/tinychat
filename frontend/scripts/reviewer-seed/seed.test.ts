@@ -221,6 +221,13 @@ test("an interrupted run resumes to the same content, and another revision is re
   await expect(runReviewerSeed(interrupted.space, interrupted.target, write(interrupted.spaceId)))
     .rejects.toThrow("xyz.tinycloud.tinychat/threads.threads has 1 row(s) the seed did not write");
   expect(interrupted.writes()).toBe(writesBefore);
+  // So is one whose seeded chat gained a message.
+  const extended = fakeSpace({ failAfterWrites: 16 });
+  await expect(runReviewerSeed(extended.space, extended.target, write(extended.spaceId))).rejects.toThrow("simulated interruption");
+  extended.heal();
+  extended.databases.get("xyz.tinycloud.tinychat/threads")!.query("INSERT INTO messages VALUES (?, 99, '{}', '2026-01-01')").run(CHAT_THREAD_ID);
+  await expect(runReviewerSeed(extended.space, extended.target, write(extended.spaceId)))
+    .rejects.toThrow("xyz.tinycloud.tinychat/threads.messages has 1 row(s) the seed did not write");
 
   fake.databases.get("xyz.tinycloud.tinychat/threads")!.query("UPDATE settings SET value = json_set(value, '$.revision', 99) WHERE key = ?").run(SEED_MARKER_KEY);
   await expect(runReviewerSeed(fake.space, fake.target, write(fake.spaceId))).rejects.toMatchObject({ code: "OTHER_REVISION" });

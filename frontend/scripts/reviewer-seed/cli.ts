@@ -30,7 +30,12 @@ async function main(argv: string[]): Promise<void> {
     sessionDid, requested: seedPermissions(options.mode), requestedExpiry: "1h",
   };
   // A fresh file only: a typo never overwrites something else.
-  writeFileSync(options.requestOut, `${JSON.stringify(request, null, 2)}\n`, { flag: "wx" });
+  try {
+    writeFileSync(options.requestOut, `${JSON.stringify(request, null, 2)}\n`, { flag: "wx" });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new UsageError(`${options.requestOut} already exists; pass a new --request-out path`);
+    throw error;
+  }
   process.stderr.write([
     `Seed session key (this run only): ${sessionDid}`,
     `Capability request (${options.mode.dryRun ? "read-only, dry run" : "read and write"}) written to ${options.requestOut}.`,

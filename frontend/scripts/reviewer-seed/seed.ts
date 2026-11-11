@@ -64,14 +64,17 @@ const FEED_PREFIX = "xyz.tinycloud.tinychat/feed";
 const FEED_NAMES = unwrap(feedResourceNames(FEED_PREFIX, FEED_AGENT.token), "feed resource names");
 /** Every database the seed writes, in the order the freshness check reads them. */
 const INSPECTED_DATABASES = [THREADS_SQL_DB_NAME, HOME_FEED_RESOURCE, FEED_NAMES.outputResource, FEED_NAMES.responseResource, CONNECTORS_SQL_DB_NAME];
-/** The rows this revision writes, by database, table and key column. A resumed run may find these and nothing else. */
-const SEED_ROWS: Record<string, Record<string, { column: string; values: string[] }>> = {
-  [THREADS_SQL_DB_NAME]: { threads: { column: "id", values: [CHAT_THREAD_ID] }, messages: { column: "thread_id", values: [CHAT_THREAD_ID] } },
-  [HOME_FEED_RESOURCE]: { feed_agents: { column: "agent_id", values: [FEED_AGENT.agentId] } },
-  [FEED_NAMES.outputResource]: { feed_cards: { column: "card_id", values: feedCards(new Date(0).toISOString()).map((card) => card.cardId) } },
+/** The rows this revision writes, by database, table, key column and row count. A resumed run may find these and nothing else. */
+const SEED_ROWS: Record<string, Record<string, { column: string; values: string[]; max: number }>> = {
+  [THREADS_SQL_DB_NAME]: {
+    threads: { column: "id", values: [CHAT_THREAD_ID], max: 1 },
+    messages: { column: "thread_id", values: [CHAT_THREAD_ID], max: chatMessages(new Date(0).toISOString()).length },
+  },
+  [HOME_FEED_RESOURCE]: { feed_agents: { column: "agent_id", values: [FEED_AGENT.agentId], max: 1 } },
+  [FEED_NAMES.outputResource]: { feed_cards: { column: "card_id", values: feedCards(new Date(0).toISOString()).map((card) => card.cardId), max: feedCards(new Date(0).toISOString()).length } },
   [CONNECTORS_SQL_DB_NAME]: {
-    connector_meeting: { column: "id", values: [`vn-${VOICE_NOTE.sourceId}`] },
-    voice_note_transcript: { column: "source_id", values: [VOICE_NOTE.sourceId] },
+    connector_meeting: { column: "id", values: [`vn-${VOICE_NOTE.sourceId}`], max: 1 },
+    voice_note_transcript: { column: "source_id", values: [VOICE_NOTE.sourceId], max: 1 },
   },
 };
 
@@ -163,7 +166,7 @@ export async function inspectSpace(space: SeedSpace): Promise<SpaceInspection> {
       const rows = await count(table);
       if (rows === 0) continue;
       const own = SEED_ROWS[database]?.[table];
-      const seedRows = own ? await count(table, ` WHERE "${own.column}" IN (${own.values.map(() => "?").join(", ")})`, own.values) : 0;
+      const seedRows = own ? Math.min(own.max, await count(table, ` WHERE "${own.column}" IN (${own.values.map(() => "?").join(", ")})`, own.values)) : 0;
       occupied.push({ database, table, rows, seedRows });
     }
   }
