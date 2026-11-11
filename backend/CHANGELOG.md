@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.5
+
+### Patch Changes
+
+- ae08fc0: Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196
+
 ## 0.8.0-beta.4
 
 ### Patch Changes
