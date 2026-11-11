@@ -75,6 +75,10 @@ export interface ConnectorMeetingsRouterOptions {
   modes?: IngestModeLookup;
   registry?: ReadonlySet<string>;
   defaultSource?: string;
+  /** Durable sync-off marker, checked after the user's-space write is acknowledged. */
+  isDisabled: (address: string) => Promise<boolean>;
+  /** Removes reconciled server copies while sync is off; separate from the read-only port. */
+  deleteReconciled: (source: string, address: string) => Promise<unknown>;
 }
 
 /** Page size when the caller does not ask. Whole pages are cheap: the index is ONE sealed read. */
@@ -129,7 +133,7 @@ function metaView(meta: ContentMeta) {
 export function createConnectorMeetingsRouter(
   options: ConnectorMeetingsRouterOptions,
 ): Router {
-  const { content } = options;
+  const { content, isDisabled, deleteReconciled } = options;
   const registry = options.registry ?? CONNECTOR_REGISTRY;
   const defaultSource = options.defaultSource ?? DEFAULT_CONNECTOR_SOURCE;
   const router = Router();
@@ -345,9 +349,9 @@ export function createConnectorMeetingsRouter(
    * space (the storage-before-ack invariant carried from `targetedSync`), so a stamp always
    * trails a durable user-space write, never leads it.
    *
-   * Idempotent: a lost response is retried and the retry is a success, as `POST /ack` treats an
-   * already-settled identity. The server copy is RETAINED (D2a `retain`) — a second device that
-   * has not reconciled still has to be able to read it.
+   * A lost response remains idempotent. While sync is on, the server copy stays available to
+   * other devices; while sync is off, this acknowledgement deletes it after the user's-space
+   * write. The sync-off cleanup also runs after the durable disabled marker is written.
    */
   router.post("/:source/:sourceId/reconciled", async (req, res) => {
     const target = await tenant(req, res, req.params.source);
@@ -360,15 +364,19 @@ export function createConnectorMeetingsRouter(
     }
 
     let stamped: boolean;
+    let disabled: boolean;
     try {
       stamped = await content.markReconciled(
         target.source,
         target.address,
         sourceId,
       );
+      disabled = await isDisabled(target.address);
+      if (disabled && stamped) {
+        await deleteReconciled(target.source, target.address);
+      }
     } catch (error) {
-      // A stamp that did not land must NOT be reported as one: the browser would stop
-      // re-reconciling a meeting the server still believes is unreconciled.
+      // A stamp or sync-off deletion that did not land must NOT be reported as success.
       warnMeetings(
         `op=reconcile result=unavailable source=${target.source} ` +
           `aid=${hashedField(target.address)} mid=${hashedField(sourceId)} ` +
@@ -377,7 +385,7 @@ export function createConnectorMeetingsRouter(
       res.status(503).json({ error: "unavailable" });
       return;
     }
-    if (!stamped) {
+    if (!stamped && !disabled) {
       res.status(404).json({ error: "not_found" });
       return;
     }

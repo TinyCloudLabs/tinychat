@@ -739,6 +739,76 @@ describe("W4 content store — retention", () => {
     const replay = await store.upsert(upsertInput({ sourceId: "mtg-retention" }));
     expect(replay).toEqual({ ok: true, stored: "created" });
   });
+  test("sync-off deletes reconciled rows and tombstones, but retains unreconciled-only data", async () => {
+    const { store, blobs } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-reconciled" }));
+    await store.upsert(upsertInput({ sourceId: "mtg-unreconciled" }));
+    await store.upsert(
+      upsertInput({ address: ADDRESS_B, sourceId: "mtg-other-user" }),
+    );
+    expect(
+      await store.markReconciled(SOURCE, ADDRESS_A, "mtg-reconciled"),
+    ).toBe(true);
+    expect(
+      await store.markReconciled(SOURCE, ADDRESS_B, "mtg-other-user"),
+    ).toBe(true);
+
+    // A still-live marker can be present from a previous index format; sync-off must clear it.
+    const internals = store as unknown as {
+      writeIndex(
+        source: string,
+        address: string,
+        index: unknown,
+      ): Promise<void>;
+    };
+    await internals.writeIndex(SOURCE, ADDRESS_A, {
+      meetings: await store.list(SOURCE, ADDRESS_A),
+      tombstones: [
+        {
+          sourceId: "mtg-expired-row-marker",
+          sweptAt: new Date(T0 - DAY_MS).toISOString(),
+          expiresAt: new Date(T0 + DAY_MS).toISOString(),
+        },
+      ],
+    });
+
+    const removed = await store.deleteReconciled(SOURCE, ADDRESS_A);
+
+    expect(removed).toEqual({ removed: 1 });
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-reconciled")).toBeNull();
+    expect(
+      await store.get(SOURCE, ADDRESS_A, "mtg-unreconciled"),
+    ).not.toBeNull();
+    expect(
+      await blobs.listContentIds(SOURCE, ADDRESS_A),
+    ).toEqual([{ sourceId: "mtg-unreconciled", updatedAt: new Date(T0).toISOString() }]);
+    expect(
+      await store.get(SOURCE, ADDRESS_B, "mtg-other-user"),
+    ).not.toBeNull();
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-expired-row-marker",
+      }),
+    ).toBe(false);
+  });
+
+  test("the sync-off gate refuses new server copies", async () => {
+    let disabled = false;
+    const { store } = harness({
+      isDisabled: async () => disabled,
+    });
+    expect(
+      await store.upsert(upsertInput({ sourceId: "mtg-before-off" })),
+    ).toEqual({ ok: true, stored: "created" });
+
+    disabled = true;
+    expect(
+      await store.upsert(upsertInput({ sourceId: "mtg-while-off" })),
+    ).toEqual({ ok: false, code: "sync_disabled" });
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-while-off")).toBeNull();
+  });
 
   test("[delta-05] storedAt expires content even when provider time is future", async () => {
     const { store, clock } = harness();
