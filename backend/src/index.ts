@@ -1261,6 +1261,13 @@ async function main() {
       () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
     );
   }
+  // Bun can leave a request that finishes during shutdown on a keep-alive connection.
+  // Retry idle-connection closure after it has left the active-request set.
+  server.on("request", (_req, res) => {
+    res.once("finish", () => {
+      if (shuttingDown) setTimeout(() => server.closeIdleConnections(), 0).unref();
+    });
+  });
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;

@@ -108,7 +108,7 @@ test("real stored index under a wrong master refuses enrollment without writes",
   expect(f.writes()).toBe(0);
 });
 
-test("singleton claim precedes archive reads; overlapping fresh startup cannot overwrite A's canary", async () => {
+test("startup B delayed before lease claim refuses after A enrolls and writes", async () => {
   const f = fixture();
   let lease: InstanceLeaseRecord | null = null;
   const leaseStore = { read: async () => lease, write: async (value: InstanceLeaseRecord) => { lease = value; }, clear: async () => { lease = null; } };
