@@ -1,5 +1,5 @@
-// Home's "What do you want done?" box (layout C on the mockups branch). In slice 1 only Main exists,
-// so the box shows Main's chip (which opens Main's chat) and no other bots or suggestions.
+// Home's "What do you want done?" box (layout C on the mockups branch): it shows Main's chip, which opens
+// Main's chat.
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { ArrowUpIcon } from "lucide-react";
 

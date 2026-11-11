@@ -41,6 +41,3 @@ A test account opens TinyCloud Home, types in the "What do you want done?" box, 
 
 ## Smoke check
 A flagged test account on a deployed preview: type "Reply with exactly: pong" in the Home box; Main's chat shows a streamed reply containing "pong". Local equivalent: bots service in Docker with gVisor + the backend + the frontend dev server, against the real model with a test key, or a mock upstream when no key is present (mock runs are reported as mock, never as the happy path).
-
-## Next slices
-Feed posting, making new bots, the Bots grid, routines, replacing today's chat, chat history in the owner's TinyCloud, receipt verification in the bots gateway, more model providers, connected chat apps.

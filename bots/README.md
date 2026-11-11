@@ -193,9 +193,9 @@ caps, no network, no model key in a sandbox or the supervisor). It exits 1 if an
 a mock run. It removes everything it creates. CI (`.github/workflows/bots.yml`) runs the unit tests and the
 typecheck on every PR touching `bots/`; the smoke needs a Docker host and runs by hand.
 
-## Deploying (no workflow yet)
+## Deploying
 
-A deploy workflow, modelled on `.github/workflows/deploy-backend-phala.yml`, needs to:
+A deploy, modelled on `.github/workflows/deploy-backend-phala.yml`:
 
 1. Build `bots/` (context `bots/`, `linux/amd64`) and push `ghcr.io/tinycloudlabs/tinychat-bots`; reuse the
    backend's ingress image (`infra/phala-ingress`). Write both pushed digests over `BOTS_IMAGE_DIGEST` and
@@ -208,12 +208,3 @@ A deploy workflow, modelled on `.github/workflows/deploy-backend-phala.yml`, nee
    `https://<BOTS_INGRESS_DOMAIN>/healthz` for `ok`.
 4. Set the backend's `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>`, the same `BOTS_SERVICE_SECRET`, and the
    same `BOTS_TEST_ACCOUNTS`.
-
-## Limits of this slice
-
-- Gateway budgets persist across restarts, but the provider-side budget on the dedicated key stays the backstop.
-- One upstream request at a time per bot: parallel model calls from one bot (for example subagents) get 429 and
-  OMP retries them.
-- The owner header is trusted from the backend (service secret only). Signed owner assertions and attestation checks
-  come before general availability.
-- A gateway restart drops registrations; the supervisor registers the bot again before every message.
