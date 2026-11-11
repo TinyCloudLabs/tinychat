@@ -49,12 +49,13 @@ export const tauriStartRequests: StartRequests = {
 
 export function useRecordShortcut(enabled: boolean, target: RecordShortcutTarget,
   requests: StartRequests = tauriStartRequests, waitMs = START_REQUEST_WAIT_MS): void {
-  const [requested, setRequested] = useState(false);
+  // 0: none. Each claim is a new value, so a later press restarts the wait.
+  const [request, setRequest] = useState(0);
   useEffect(() => {
     if (!enabled) return;
     let live = true;
     let stop: (() => void) | null = null;
-    const claim = () => void requests.take().then((pending) => { if (live && pending) setRequested(true); },
+    const claim = () => void requests.take().then((pending) => { if (live && pending) setRequest((n) => n + 1); },
       (error: unknown) => console.warn("[recordShortcut] Could not claim the Start recording request", error));
     void requests.subscribe(claim).then((unlisten) => {
       if (!live) { unlisten(); return; }
@@ -68,17 +69,17 @@ export function useRecordShortcut(enabled: boolean, target: RecordShortcutTarget
     };
   }, [enabled, requests]);
   useEffect(() => {
-    if (!requested) return;
-    const timer = setTimeout(() => setRequested(false), waitMs);
+    if (request === 0) return;
+    const timer = setTimeout(() => setRequest(0), waitMs);
     return () => clearTimeout(timer);
-  }, [requested, waitMs]);
+  }, [request, waitMs]);
   const { available, ready, active, record, openSheet } = target;
   useEffect(() => {
-    if (!requested) return;
+    if (request === 0) return;
     const action = recordShortcutAction({ available, ready, active });
     if (action === "wait") return;
-    setRequested(false);
+    setRequest(0);
     if (action === "open") openSheet();
     else record();
-  }, [requested, available, ready, active, record, openSheet]);
+  }, [request, available, ready, active, record, openSheet]);
 }

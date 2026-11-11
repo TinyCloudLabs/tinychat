@@ -145,6 +145,19 @@ describe("useRecordShortcut", () => {
     expect(off.calls).toEqual([]);
   });
 
+  test("a second press while waiting restarts the wait", async () => {
+    const native = nativeRequests();
+    const off = recorder({ available: false });
+    await render(true, off.target, native.requests, 80);
+    await native.press();
+    await act(async () => { await Bun.sleep(50); });
+    await native.press();
+    // Past the first press's wait, within the second's.
+    await act(async () => { await Bun.sleep(50); });
+    await render(true, { ...off.target, available: true }, native.requests, 80);
+    expect(off.calls).toEqual(["record"]);
+  });
+
   test("off the Mac app nothing listens, and unmounting stops listening", async () => {
     const web = nativeRequests();
     await render(false, recorder().target, web.requests);
