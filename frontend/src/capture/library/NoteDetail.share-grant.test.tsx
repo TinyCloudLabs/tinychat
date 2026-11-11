@@ -12,6 +12,7 @@ import { CONNECTORS_SQL_DB_NAME } from "@tinyboilerplate/core";
 import { installDom } from "@/test/dom";
 import { encryptionNetworkId } from "@/lib/connectors/encryptionGrant";
 import { associateStorageAccountClient, beginStorageAccountSession, endStorageAccountSession, __resetStorageStatusForTests } from "@/lib/storageStatus";
+import { isOriginMoveDeferred } from "@/lib/originMove";
 import * as share from "@/lib/exoTranscriptShare";
 import type { Library } from "./useLibrary";
 
@@ -262,6 +263,15 @@ grantTest("real beta.21 key.create activation survives a same-owner SDK and sour
   expect(document.querySelector<HTMLInputElement>('input[readonly]')?.value).toBe(`${ORIGINS.shareOrigin}/s/full#fixture-recipient-link`);
   expect(f.createdKeys()).toBe(1);
   expect(f.published()?.target).toEqual({ kind: "email", address: "qa@example.test" });
+});
+
+grantTest("a held tinycloud.chat page does not move while OpenKey consent and the publish run", async () => {
+  const f = await fixture();
+  expect(isOriginMoveDeferred()).toBe(false);
+  await startShare();
+  expect(isOriginMoveDeferred()).toBe(true);
+  await approveGrant(f.completed);
+  await until(() => !isOriginMoveDeferred(), "share settles and releases the move");
 });
 
 grantTest("a new Share review carries saved aliases without changing the stored transcript", async () => {

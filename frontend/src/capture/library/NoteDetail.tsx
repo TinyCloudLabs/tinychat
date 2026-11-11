@@ -18,6 +18,7 @@ import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { gateCombinedSummary, readAutomaticSummaries } from "@/lib/meetingSummary/automaticSummaries";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
 import { CombineSheet } from "./combine/CombineSheet";
 import { canCombine } from "./combine/candidates";
@@ -186,6 +187,8 @@ export function NoteDetail(props: {
   const [shareCopied, setShareCopied] = useState(false);
   const shareGeneration = useRef(0);
   const shareInFlight = useRef(false);
+  // OpenKey consent and the publish run in this page: a held tinycloud.chat page must not move mid-share.
+  useOriginMoveDeferral(shareBusy);
   const localTranscriptSyncing = props.activityView?.input?.transcript.onDevice?.sync?.state === "syncing";
   const shareSnapshot = useMemo(() => localTranscriptSyncing ? null
     : transcriptShareSnapshot(item, reads.metadata, remoteTranscript, applyWordFixes, names),
