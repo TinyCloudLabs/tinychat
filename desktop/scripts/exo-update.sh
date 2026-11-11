@@ -11,8 +11,9 @@
 # SHA256SUMS.txt, quits TinyCloud Home, replaces /Applications/TinyCloud Home.app (or an older /Applications/Exo.app)
 # and opens it. A first install works the
 # same way. There is no downgrade guard: switching from beta to stable installs the latest stable
-# even when it is older than the build you have. A file downloaded with curl is not quarantined, so
-# the unsigned app opens without "Open Anyway". Written for bash; it also runs under POSIX sh.
+# even when it is older than the build you have. Releases from 0.14.0-beta.6 on are Developer ID signed and notarized;
+# a file downloaded with curl is not quarantined anyway, so an older unsigned app also opens without "Open Anyway".
+# Written for bash; it also runs under POSIX sh.
 # scripts/__tests__/release.test.mjs runs it against stub tools.
 set -eu
 

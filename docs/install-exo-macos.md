@@ -1,12 +1,14 @@
 # Install TinyCloud Home on your Mac
 
-TinyCloud Home isn't signed with an Apple Developer certificate yet. Because of that, macOS blocks it the first time you open it, and you have to allow it once in System Settings. After that it opens normally.
+TinyCloud Home is signed with TinyCloud, Inc.'s Apple Developer ID and notarized by Apple from 0.14.0-beta.6 on, so it opens like any other app downloaded from the internet: macOS asks once whether to open it, and you click **Open**.
+
+Releases before that, including the current stable 0.13.0, are not signed. macOS blocks those the first time you open them, and you allow them once in System Settings (step 3).
 
 **Requirements:** a Mac with Apple silicon (M1 or newer).
 
 ## 1. Download
 
-Download the latest `TinyCloud-Home_<version>_aarch64.dmg` from the [TinyCloud Home releases page](https://github.com/TinyCloudLabs/tinychat/releases?q=exo-desktop&expanded=true). Pick the newest release that is **not** marked "Pre-release".
+Download the latest `TinyCloud-Home_<version>_aarch64.dmg` (`Exo_<version>_aarch64.dmg` before 0.14) from the [TinyCloud Home releases page](https://github.com/TinyCloudLabs/tinychat/releases?q=exo-desktop&expanded=true). Pick the newest release that is **not** marked "Pre-release", or the newest pre-release for a signed beta.
 
 ## 2. Install
 
@@ -15,6 +17,10 @@ Download the latest `TinyCloud-Home_<version>_aarch64.dmg` from the [TinyCloud H
 3. Eject the TinyCloud Home disk image.
 
 ## 3. Open it the first time
+
+A signed release (0.14.0-beta.6 or later): open **TinyCloud Home** from Applications and click **Open** when macOS asks. Skip to step 4.
+
+An unsigned release (0.13.0 or earlier):
 
 1. Open **TinyCloud Home** from Applications.
 2. macOS says Apple could not verify that "TinyCloud Home.app" is free of malware. Click **Done**, not Move to Trash.
@@ -43,7 +49,7 @@ The first time you start a **Local recording**, macOS asks for access to the **m
 
 ## Updating
 
-Download the new `.dmg` and drag TinyCloud Home into Applications again, replacing the old one. macOS may ask you to repeat step 3 once for the new version.
+Download the new `.dmg` and drag TinyCloud Home into Applications again, replacing the old one. An unsigned version may need step 3 again; a signed one opens directly.
 
 Or update from Terminal in one step. This also works for a first install:
 
@@ -61,9 +67,9 @@ curl -fsSL https://raw.githubusercontent.com/TinyCloudLabs/tinychat/main/desktop
 
 There's no downgrade check: switching from betas back to stable installs the latest stable release even when it's older than the build you have.
 
-## Alternative: Terminal
+## Alternative: Terminal (unsigned releases only)
 
-If you'd rather skip System Settings, run this once after step 2, then open TinyCloud Home normally:
+For an unsigned release, if you'd rather skip System Settings, run this once after step 2, then open TinyCloud Home normally:
 
 ```sh
 xattr -dr com.apple.quarantine "/Applications/TinyCloud Home.app"
