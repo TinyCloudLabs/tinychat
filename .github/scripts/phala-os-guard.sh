@@ -25,29 +25,32 @@ fi
 
 cvm="$(cat)"
 os="$(jq -c '.os' <<<"${cvm}" 2>/dev/null)" || fail "Cannot read the OS of the CVM from the Phala output"
-field() {
-  jq -r --arg key "$1" --arg type "$2" \
-    'if type == "object" and (.[$key] | type) == $type then .[$key] | tostring else "" end' <<<"${os}"
-}
-is_dev="$(field is_dev boolean)"
-name="$(field name string)"
-hash="$(field os_image_hash string)"
-if [ -z "${is_dev}" ] || [ -z "${name}" ] || [ -z "${hash}" ]; then
+if ! jq -e '(.os | type) == "object" and
+    (.os.is_dev | type) == "boolean" and
+    (.os.name | type) == "string" and .os.name != "" and
+    (.os.os_image_hash | type) == "string" and .os.os_image_hash != ""' \
+    <<<"${cvm}" 2>/dev/null | grep -qx true; then
   fail "The CVM OS is missing is_dev, name or os_image_hash. Found: ${os}"
 fi
 
-if [ "${is_dev}" = "false" ]; then
-  if [ "${name}" != "${PHALA_OS_IMAGE}" ] || [ "${hash}" != "${PHALA_OS_IMAGE_HASH}" ]; then
+if jq -e '.os.is_dev == false' <<<"${cvm}" >/dev/null; then
+  if ! jq -e --arg n "${PHALA_OS_IMAGE}" --arg h "${PHALA_OS_IMAGE_HASH}" \
+      '.os.name == $n and .os.os_image_hash == $h' \
+      <<<"${cvm}" >/dev/null; then
     fail "The CVM is not on the production OS image ${PHALA_OS_IMAGE} (${PHALA_OS_IMAGE_HASH}). Found: ${os}"
   fi
-  echo "The CVM runs the production OS image ${name}"
+  echo "The CVM runs the production OS image ${PHALA_OS_IMAGE}"
   exit 0
 fi
-
-[ "${allow_dev}" = true ] || fail "The dev OS image ${name} (${hash}) is refused; production OS is required by default (TC-2843)"
-if [ "${name}" != dstack-dev-0.5.12 ] || [ "${hash}" != e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b ]; then
+[ "${allow_dev}" = true ] || fail "The dev OS image is refused; production OS is required by default (TC-2843)"
+if ! jq -e --arg n dstack-dev-0.5.12 \
+    --arg h e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b \
+    '.os.is_dev == true and .os.name == $n and .os.os_image_hash == $h' \
+    <<<"${cvm}" >/dev/null; then
   fail "The CVM is not the recorded TC-2843 dev OS image. Found: ${os}"
 fi
+name=dstack-dev-0.5.12
+hash=e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b
 warning="TC-2843: permitting DEV OS ${name} (${hash}) ONLY because allow_current_dev_os_until_tc2843=true was explicitly selected for this manual dispatch. This is NOT a production OS; remove this input with the OS move or first post-move deploy."
 echo "::warning::${warning}"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

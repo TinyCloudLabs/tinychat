@@ -22,6 +22,12 @@ os_json() { # <is_dev> <name> <hash>
   jq -nc --argjson dev "$1" --arg name "$2" --arg hash "$3" \
     '{name: "cvm", os: {is_dev: $dev, name: $name, os_image_hash: $hash}}'
 }
+os_json_with_nul() { # <is_dev> <name-or-nul> <hash-or-nul>
+  jq -nc --argjson dev "$1" --arg name "$2" --arg hash "$3" \
+    --arg nul '\u0000' \
+    '{name: "cvm", os: {is_dev: $dev, name: (if $name == "nul" then (if $dev then "dstack-dev-0.5.12" else "dstack-0.5.12" end) + $nul else $name end), os_image_hash: (if $hash == "nul" then (if $dev then "e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b" else "8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd" end) + $nul else $hash end)}}'
+}
+
 
 failures=0
 # run <cvm-json> [VAR=value ...]: feed metadata exactly as the workflow does.
@@ -44,6 +50,35 @@ expect() { # <name> <exit code> <output regex>
     echo "ok: $1"
   fi
 }
+run "$(os_json false "${PROD_NAME}" "${PROD_HASH}" | jq -c '.os.name += "\n"')"
+expect "production name with trailing LF is refused" 1 "not on the production OS image"
+run "$(os_json false "${PROD_NAME}" "${PROD_HASH}" | jq -c '.os.os_image_hash += "\n"')"
+expect "production hash with trailing LF is refused" 1 "not on the production OS image"
+run "$(os_json_with_nul false nul "${PROD_HASH}")"
+expect "production name with embedded NUL is refused" 1 "not on the production OS image"
+run "$(os_json_with_nul false "${PROD_NAME}" nul)"
+expect "production hash with embedded NUL is refused" 1 "not on the production OS image"
+run "$(os_json false "${PROD_NAME} " "${PROD_HASH}")"
+expect "production name with trailing space is refused" 1 "not on the production OS image"
+run "$(os_json false "${PROD_NAME}x" "${PROD_HASH}")"
+expect "production name with suffix is refused" 1 "not on the production OS image"
+run "$(os_json false "${PROD_NAME}" "${PROD_HASH}a")"
+expect "production hash with extra hex is refused" 1 "not on the production OS image"
+
+run "$(os_json true "${DEV_NAME}" "${DEV_HASH}" | jq -c '.os.name += "\n"')" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "transition name with trailing LF is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV_NAME}" "${DEV_HASH}" | jq -c '.os.os_image_hash += "\n"')" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "transition hash with trailing LF is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json_with_nul true nul "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "transition name with embedded NUL is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json_with_nul true "${DEV_NAME}" nul)" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "transition hash with embedded NUL is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV_NAME} " "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "transition name with trailing space is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV_NAME}x" "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "transition name with suffix is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV_NAME}" "${DEV_HASH}a")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "transition hash with extra hex is refused" 1 "not the recorded TC-2843 dev OS image"
 
 run "$(os_json false "${PROD_NAME}" "${PROD_HASH}")"
 expect "production image passes" 0 "runs the production OS image"
