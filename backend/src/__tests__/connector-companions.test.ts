@@ -341,6 +341,7 @@ function createHarness(
     publicOrigin?: string;
     /** The exo ledger hook `DELETE /config` calls per source (`index.ts` wires it behind the flag). */
     exoClearSource?: (source: string, address: string) => Promise<void>;
+    deleteReconciled?: (source: string, address: string) => Promise<unknown>;
   } = {},
 ): Harness {
   const ops: string[] = [];
@@ -391,6 +392,8 @@ function createHarness(
       ...(options.exoClearSource
         ? { exo: { clearSource: options.exoClearSource } }
         : {}),
+      deleteReconciled:
+        options.deleteReconciled ?? (async () => ({ removed: 0 })),
       ...(options.drain
         ? {
             // Shaped like `ConnectorDrainWorker`'s `DrainResult`, because the routes now read
@@ -671,6 +674,31 @@ describe("DELETE /config teardown", () => {
       recentIdsAddedAt: {},
     });
   });
+  test("sync-off invokes reconciled-content deletion for the disconnected tenant", async () => {
+    const deletions: Array<{ source: string; address: string }> = [];
+    const h = createHarness({
+      sources: [SOURCE, SECOND_SOURCE],
+      deleteReconciled: async (source, address) => {
+        deletions.push({ source, address });
+      },
+    });
+    h.tokens.configs.set(ADDRESS, {
+      token: generateWebhookToken(),
+      source: SOURCE,
+      createdAt: new Date().toISOString(),
+    });
+
+    await withServer(h.app, async (base) => {
+      const response = await call(base, "/config", "DELETE");
+      expect(response.status).toBe(200);
+    });
+
+    expect(deletions).toEqual([
+      { source: SOURCE, address: ADDRESS },
+      { source: SECOND_SOURCE, address: ADDRESS },
+    ]);
+  });
+
 
   test("clears the exo ledger rows of every registered source", async () => {
     const cleared: Array<{ source: string; address: string }> = [];

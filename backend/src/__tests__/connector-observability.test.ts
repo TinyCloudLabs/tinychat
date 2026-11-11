@@ -804,6 +804,8 @@ describe("W8 — caller-facing errors are generic (anti-pattern 7)", () => {
           markReconciled: async () => boom(),
         } as never,
         modes: { mode: async (): Promise<IngestMode> => "backend" },
+        isDisabled: async () => false,
+        deleteReconciled: async () => ({ removed: 0 }),
       }),
     );
 

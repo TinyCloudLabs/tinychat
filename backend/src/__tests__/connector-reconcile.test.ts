@@ -151,6 +151,8 @@ function harness(options: { address?: string } = {}): Harness {
         mode: async (address: string): Promise<IngestMode> =>
           cohort.has(address.toLowerCase()) ? "backend" : "browser",
       },
+      isDisabled: async () => false,
+      deleteReconciled: async () => ({ removed: 0 }),
     }),
   );
 

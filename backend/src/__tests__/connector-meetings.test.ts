@@ -121,6 +121,10 @@ class CountingBlobStore implements ContentBlobStore {
     this.writes += 1;
     return this.inner.writeIndex(source, address, blob);
   }
+  listContentIds(source: string, address: string) {
+    this.reads += 1;
+    return this.inner.listContentIds(source, address);
+  }
 
   read(
     source: string,
@@ -159,6 +163,7 @@ interface Harness {
   cohort: Set<string>;
   clock: { now: number };
   session: { address: string | undefined };
+  disabled: { value: boolean };
 }
 
 function harness(
@@ -166,6 +171,7 @@ function harness(
     content?: MeetingsContentPort;
     modes?: { mode(address: string): Promise<IngestMode> };
     address?: string;
+    disabled?: boolean;
   } = {},
 ): Harness {
   const blobs = new CountingBlobStore(new InMemoryContentBlobStore());
@@ -174,6 +180,7 @@ function harness(
     now: () => clock.now,
     master: () => CONTENT_MASTER,
   });
+  const disabled = { value: options.disabled ?? false };
   const cohort = new Set<string>([ADDRESS_A.toLowerCase()]);
   const session = { address: options.address ?? ADDRESS_A };
 
@@ -191,10 +198,13 @@ function harness(
         mode: async (address: string): Promise<IngestMode> =>
           cohort.has(address.toLowerCase()) ? "backend" : "browser",
       },
+      isDisabled: async () => disabled.value,
+      deleteReconciled: (source, address) =>
+        store.deleteReconciled(source, address),
     }),
   );
 
-  return { app, store, blobs, cohort, clock, session };
+  return { app, store, blobs, cohort, clock, session, disabled };
 }
 
 async function withServer<T>(
@@ -625,6 +635,37 @@ describe("POST /api/connectors/meetings/:source/:sourceId/reconciled", () => {
       expect(content.body.content.transcript).toEqual({ text: TRANSCRIPT_TEXT });
     });
   });
+  test("sync-off keeps a server-only row until its device saves it, then removes the server copy", async () => {
+    const h = harness({ disabled: true });
+    await seed(h.store, {
+      address: ADDRESS_A,
+      sourceId: "mtg-only-server-copy",
+      kind: "transcript",
+      text: TRANSCRIPT_TEXT,
+    });
+    expect(
+      await h.store.get(SOURCE, ADDRESS_A, "mtg-only-server-copy"),
+    ).not.toBeNull();
+
+    await withServer(h.app, async (base) => {
+      const response = await call(
+        base,
+        `/api/connectors/meetings/${SOURCE}/mtg-only-server-copy/reconciled`,
+        "POST",
+        {},
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        reconciled: true,
+        source: SOURCE,
+        sourceId: "mtg-only-server-copy",
+      });
+    });
+
+    expect(
+      await h.store.get(SOURCE, ADDRESS_A, "mtg-only-server-copy"),
+    ).toBeNull();
+  });
 
   test("an unknown id stamps nothing and answers 404", async () => {
     const h = harness();
@@ -735,7 +776,11 @@ describe("cohort gating", () => {
     });
     app.use(
       "/api/connectors/meetings",
-      createConnectorMeetingsRouter({ content: store }),
+      createConnectorMeetingsRouter({
+        content: store,
+        isDisabled: async () => false,
+        deleteReconciled: async () => ({ removed: 0 }),
+      }),
     );
 
     await withServer(app, async (base) => {

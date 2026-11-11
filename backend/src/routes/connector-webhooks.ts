@@ -1635,6 +1635,8 @@ export interface ConnectorCompanionOptions {
    * disconnect makes no exo call. Best-effort: a failure is logged and never becomes a 503.
    */
   exo?: { clearSource: (source: string, address: string) => Promise<void> };
+  /** Removes reconciled server-side meetings during sync-off; unreconciled rows remain. */
+  deleteReconciled?: (source: string, address: string) => Promise<unknown>;
 }
 
 /**
@@ -1817,7 +1819,7 @@ function pendingView(item: PendingItem) {
 export function createConnectorWebhookCompanionRouter(
   options: ConnectorCompanionOptions,
 ): Router {
-  const { tokens, queue, control, limiters, exo } = options;
+  const { tokens, queue, control, limiters, exo, deleteReconciled } = options;
   const registry = options.registry ?? CONNECTOR_REGISTRY;
   const abort = options.abort ?? connectorDrainAbort;
   const now = options.now ?? (() => Date.now());
@@ -2108,20 +2110,19 @@ export function createConnectorWebhookCompanionRouter(
   /**
    * The SINGLE idempotent teardown (§3.6 rule 1), in the NORMATIVE ORDER:
    *
-   *   (1) durable disabled marker → (2) config delete (+ token delete, token-cache evict)
-   *   → (3) queue drop → (4) exo ledger rows, best-effort.
+   *   (1) durable disabled marker → (2) config/token revoke → (3) queue + ledger ID clear
+   *   → (4) reconciled ContentStore copy deletion → (5) exo ledger rows, best-effort.
    *
    * The marker goes first so every crash point below it leaves a state the drain classifies as
    * REVOKED; the reverse order leaves an enabled config over torn-down state, which §3.7's
    * silent renewer reads as *expired* and repairs by re-minting. One call, not two, for the
    * same reason: a second client call that never happens leaves a half-disabled connector.
    *
-   * OPTION C removed what were steps 3 and 4 — `delegations.remove` + `delegations.evict`.
+   * OPTION C removed the former delegation teardown (`delegations.remove` + `delegations.evict`).
    * Those tore down the app's GENERIC backend delegation, the one every authenticated TinyChat
    * write depends on, because an optional notification connector was switched off. The server
-   * holds no connector delegation (it queues meeting ids; the browser fetches and writes), so
-   * there is nothing here to revoke. Turning Fireflies webhooks off must not log a user out of
-   * their own space — see `connector-delegation-independence.test.ts`.
+   * holds no connector delegation; this teardown must not log the owner out of their own space —
+   * see `connector-delegation-independence.test.ts`.
    */
   router.delete("/config", async (req: Request, res: Response) => {
     const user = requireUser(req, res);
@@ -2178,9 +2179,15 @@ export function createConnectorWebhookCompanionRouter(
         }
         await control.clearQuarantinedLedger?.(source, user.address);
       }
-      // (4) The exo ledger rows of each source. Best-effort: the marker, config, token and queue are
-      // already torn down, so a failure is logged rather than answered with a 503 that the client would
-      // retry into a second, different call. The owner's exo DELETE clears what remains.
+      if (!deleteReconciled) {
+        throw new Error("sync-off content cleanup unavailable");
+      }
+      for (const source of sources) {
+        await deleteReconciled(source, user.address);
+      }
+      // (5) The exo ledger rows of each source. Best-effort: the marker, config, token, queue,
+      // ledgers and reconciled ContentStore copies are already torn down. The owner's exo DELETE
+      // clears what remains.
       if (exo) {
         for (const source of sources) {
           try {

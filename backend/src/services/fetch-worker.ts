@@ -219,6 +219,8 @@ export interface FetchWorkerDeps {
   fetcher: MeetingFetcher;
   content: ContentSink;
   retention?: RetentionGuard;
+  /** Durable connector-disabled marker, checked before fetch and before store. */
+  isDisabled?: (address: string) => Promise<boolean>;
 }
 
 export interface FetchWorkerOptions {
@@ -693,6 +695,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
     if (gate !== undefined && gate > this.now()) return;
     if (gate !== undefined) this.gates.delete(key);
 
+    if (await this.syncIsDisabled(target)) return;
     let due: PendingItem[];
     try {
       due = await this.deps.queue.due(target.source, target.address);
@@ -793,6 +796,20 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       }
     }
   }
+  private async syncIsDisabled(target: LaneTarget): Promise<boolean> {
+    if (this.deps.isDisabled === undefined) return false;
+    try {
+      return await this.deps.isDisabled(target.address);
+    } catch {
+      this.counters.errors += 1;
+      logWorkerWarn(
+        `op=lane result=disabled_marker_unavailable source=${target.source} ` +
+          `aid=${hashed(target.address)}`,
+      );
+      return true;
+    }
+  }
+
 
   private holdLane(
     key: string,
@@ -817,6 +834,8 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
     item: PendingItem,
     secret: CredentialSecret,
   ): Promise<ItemOutcome> {
+    if (await this.syncIsDisabled(target)) return { stopLane: true };
+
     // 1. Retention / purge tombstones (delta 5, W4/W7). Checked BEFORE the upstream call: a
     //    swept or purged meeting must cost neither a fetch nor a store.
     if (this.deps.retention !== undefined) {
@@ -869,6 +888,8 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       this.inFlightUpstream -= 1;
       release();
     }
+    if (await this.syncIsDisabled(target)) return { stopLane: true };
+
 
     if ("timeout" in result) {
       this.counters.timeouts += 1;
@@ -970,6 +991,14 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       return { settle: failedOutcome(item, CONTENT_STORE_FAILED) };
     }
     if (!isStoredOk(stored)) {
+      if (
+        typeof stored === "object" &&
+        stored !== null &&
+        "code" in stored &&
+        stored.code === "sync_disabled"
+      ) {
+        return { stopLane: true };
+      }
       // A resolved `{ok:false}` — or anything that is not the success shape — is a FAILURE.
       this.counters.storeFailures += 1;
       logWorkerWarn(
