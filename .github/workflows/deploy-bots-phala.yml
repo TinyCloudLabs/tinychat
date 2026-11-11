@@ -106,7 +106,6 @@ jobs:
 
       - name: Check deployment configuration
         env:
-          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           BOTS_SERVICE_SECRET: ${{ secrets.BOTS_SERVICE_SECRET }}
           BOTS_REDPILL_API_KEY: ${{ secrets.BOTS_REDPILL_API_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -116,7 +115,6 @@ jobs:
           for item in \
             BOTS_PHALA_CVM_ID \
             BOTS_INGRESS_DOMAIN \
-            PHALA_CLOUD_API_KEY \
             BOTS_SERVICE_SECRET \
             BOTS_REDPILL_API_KEY \
             CLOUDFLARE_API_TOKEN \
@@ -141,6 +139,10 @@ jobs:
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
+          if [ -z "$PHALA_CLOUD_API_KEY" ]; then
+            echo "::error title=Missing deployment config::PHALA_CLOUD_API_KEY is not configured"
+            exit 1
+          fi
           if ! RAW="$(phala whoami --json)"; then
             echo "::error title=Phala authentication failed::The configured API key could not access its workspace"
             echo "$RAW" | jq '{success, error, details}'
