@@ -1174,10 +1174,10 @@ export interface ConnectorQueueMaintenanceOptions {
   ) => Promise<unknown> | unknown;
   /** Purge ledger keys include disconnected users and therefore require their own scan. */
   listLedgerAddresses?: () => Promise<Array<{ source: string; address: string }>>;
-  sweepLedger?: (entry: {
-    source: string;
-    address: string;
-  }) => Promise<unknown> | unknown;
+  sweepLedger?: (
+    entry: { source: string; address: string },
+    safetyMarginMs: number,
+  ) => Promise<unknown> | unknown;
   intervalMs?: number;
 }
 
@@ -1251,7 +1251,7 @@ export function startConnectorQueueMaintenanceTimer(
           const ledgers = await options.listLedgerAddresses();
           for (const entry of ledgers) {
             try {
-              await options.sweepLedger(entry);
+              await options.sweepLedger(entry, intervalMs);
             } catch (error) {
               logDrainWarn(
                 `op=ledger-maintenance result=error source=${entry.source} aid=${hashed(safeAddress(entry.address))}`,

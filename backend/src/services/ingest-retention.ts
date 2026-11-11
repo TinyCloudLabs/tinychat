@@ -31,6 +31,8 @@ export interface RetentionSweepTarget {
     swept: number;
     bytesFreed: number;
     tombstones: number;
+    storedAtBackfilled?: number;
+    unreadableIndex?: boolean;
   }>;
 }
 
@@ -74,6 +76,7 @@ function warnRetention(fields: string): void {
 export class IngestRetentionSweeper {
   private timer: ReturnType<typeof setInterval> | null = null;
   private passing = false;
+  private deploySummaryLogged = false;
   private readonly intervalMs: number;
 
   constructor(private readonly deps: IngestRetentionSweeperDeps) {
@@ -103,6 +106,8 @@ export class IngestRetentionSweeper {
       let swept = 0;
       let errors = 0;
       let addresses = 0;
+      let storedAtBackfilled = 0;
+      let unreadableIndexes = 0;
       for (const { source, address } of indexes) {
         addresses += 1;
         try {
@@ -113,6 +118,8 @@ export class IngestRetentionSweeper {
             safetyMarginMs: this.intervalMs,
           });
           swept += result.swept;
+          storedAtBackfilled += result.storedAtBackfilled ?? 0;
+          if (result.unreadableIndex) unreadableIndexes += 1;
         } catch {
           // One tenant's substrate failure is not the directory's. Count and continue.
           errors += 1;
@@ -120,6 +127,19 @@ export class IngestRetentionSweeper {
             `op=retention-sweep result=failed source=${source} aid=${hashed(address)}`,
           );
         }
+      }
+      if (!this.deploySummaryLogged) {
+        const tenantHashes = indexes
+          .map(({ source, address }) => `${source}:${hashed(address)}`)
+          .sort()
+          .join(",");
+        logRetention(
+          `op=deploy-retention-summary tenants_swept=${addresses} ` +
+            `stored_at_backfilled=${storedAtBackfilled} ` +
+            `unreadable_indexes=${unreadableIndexes} ` +
+            `tenant_hashes=${tenantHashes || "none"}`,
+        );
+        this.deploySummaryLogged = true;
       }
 
       logRetention(
