@@ -806,6 +806,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       CredentialStore: class {},
       KvCredentialRowStore: class {},
     },
+    "./routes/content-continuity.js": { mountContentContinuityRoute: noop },
     "./services/content-store.js": {
       ...contentStore,
       currentContentMaster: () => env.CONNECTOR_CONTENT_MASTER,
