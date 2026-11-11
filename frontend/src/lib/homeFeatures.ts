@@ -1,6 +1,6 @@
 import { APP_ID, HOME_FEATURE_ENTRIES, type HomeFeature, type RequiredManifestEntry } from "@tinyboilerplate/core";
 import { composeManifestRequest, type Manifest, type PermissionEntry, type TinyCloudWeb } from "@tinycloud/web-sdk";
-import { encryptionDecryptGrant } from "./connectors/encryptionGrant";
+import { encryptionDecryptGrant, withEncryptionDecryptGrant } from "./connectors/encryptionGrant";
 
 export type { HomeFeature } from "@tinyboilerplate/core";
 
@@ -65,6 +65,11 @@ export function homeSignInManifest(base: Manifest, flags: readonly HomeFeature[]
   const entries = flaggedEntries(flags);
   if (entries.length === 0) return base;
   return { ...base, permissions: [...(base.permissions ?? []), ...entries, ...withDecrypt(flags, address)] } as Manifest;
+}
+
+/** The full web build already grants feature storage. Only remembered Connectors use adds decrypt. */
+export function webSignInManifest(base: Manifest, flags: readonly HomeFeature[], address: string): Manifest {
+  return flags.includes("connectors") ? withEncryptionDecryptGrant(base, address) : base;
 }
 
 /**

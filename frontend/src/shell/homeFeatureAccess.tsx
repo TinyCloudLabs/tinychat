@@ -1,6 +1,6 @@
 // Recording and Connectors on the Home site. The base sign-in grants neither, so each asks for its own set in place,
-// when the owner opens it, through an injected requestFeatureAccess; nothing asks at boot. Off the Home site every
-// feature is covered and permitted, and nothing here changes what renders.
+// when the owner opens it, through an injected requestFeatureAccess; nothing asks at boot. Off the Home site,
+// Recording stays available. The full web build checks Connectors before opening its secret-reading screens.
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { CONNECTORS_KV_PREFIX } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -21,7 +21,7 @@ export type RequestFeatureAccess = (feature: HomeFeature) => Promise<FeatureAcce
 export interface HomeFeatureAccess {
   /** The session's own approval covers the feature's set: its screens may open and use it. */
   covered(feature: HomeFeature): boolean;
-  /** Covered, and this device has used the feature: work that runs without the owner opening it may start. */
+  /** On Home, covered and remembered. Full web keeps its storage access, with secret-reading work checking covered too. */
   permitted(feature: HomeFeature): boolean;
   /** Ask for the feature's set in place. */
   request: RequestFeatureAccess;
@@ -56,33 +56,34 @@ export function useHomeFeatureAccess(): HomeFeatureAccess {
 // A read under connectors/, which both sets grant. Found or not found, it answers only when the session's rights work.
 const FIRST_USE_KEY = `${CONNECTORS_KV_PREFIX}/home-first-use`;
 
-/** The Home site's feature access for the signed-in `tcw` and `address`. Off the Home site, everything. */
+/** Home feature access, with optional Connectors permission checks for the full web build. */
 export function useHomeFeatureAccessState(options: {
   homeSite: boolean;
+  webConnectors?: boolean;
   tcw: (Partial<Pick<TinyCloudWeb, "hasPermissions">> & Pick<TinyCloudWeb, "kv">) | null;
   address: string | null;
   store: Pick<Storage, "getItem" | "setItem"> | null;
   requestFeatureAccess: RequestFeatureAccess;
   inFlight: InFlightWork;
 }): HomeFeatureAccess {
-  const { homeSite, tcw, address, store, requestFeatureAccess, inFlight } = options;
+  const { homeSite, webConnectors = false, tcw, address, store, requestFeatureAccess, inFlight } = options;
   // Bumped when a feature's flag is stored, so the flags are read again. A write the store refuses changes nothing,
   // so nothing reads again until the owner opens the feature again.
   const [remembered, setRemembered] = useState(0);
   const confirming = useRef(new Set<string>());
   const flags = useMemo(
-    () => (homeSite && address ? readHomeFeatures(store, address) : []),
-    [homeSite, address, store, remembered],
+    () => ((homeSite || webConnectors) && address ? readHomeFeatures(store, address) : []),
+    [homeSite, webConnectors, address, store, remembered],
   );
   const coverage = useMemo(() => {
-    if (!homeSite || !tcw || !address) return { recording: false, connectors: false };
+    if ((!homeSite && !webConnectors) || !tcw || !address) return { recording: false, connectors: false };
     return {
       recording: sessionCoversHomeFeature(tcw, "recording", address),
       connectors: sessionCoversHomeFeature(tcw, "connectors", address),
     };
-  }, [homeSite, tcw, address]);
+  }, [homeSite, webConnectors, tcw, address]);
   const confirmUse = useCallback((feature: HomeFeature) => {
-    if (!homeSite || !tcw || !address || !coverage[feature] || flags.includes(feature)) return;
+    if ((!homeSite && !webConnectors) || (!homeSite && feature !== "connectors") || !tcw || !address || !coverage[feature] || flags.includes(feature)) return;
     const attempt = `${address}:${feature}`;
     if (confirming.current.has(attempt)) return;
     confirming.current.add(attempt);
@@ -94,7 +95,7 @@ export function useHomeFeatureAccessState(options: {
       },
       () => undefined,
     ).finally(() => { confirming.current.delete(attempt); });
-  }, [homeSite, tcw, address, store, coverage, flags]);
+  }, [homeSite, webConnectors, tcw, address, store, coverage, flags]);
   return useMemo(() => homeSite
     ? {
       covered: (feature) => coverage[feature],
@@ -103,7 +104,15 @@ export function useHomeFeatureAccessState(options: {
       confirmUse,
       inFlight,
     }
-    : EVERYTHING, [homeSite, coverage, flags, requestFeatureAccess, confirmUse, inFlight]);
+    : webConnectors
+      ? {
+        ...EVERYTHING,
+        covered: (feature) => feature !== "connectors" || coverage.connectors,
+        request: requestFeatureAccess,
+        confirmUse,
+        inFlight,
+      }
+      : EVERYTHING, [homeSite, webConnectors, coverage, flags, requestFeatureAccess, confirmUse, inFlight]);
 }
 
 /**

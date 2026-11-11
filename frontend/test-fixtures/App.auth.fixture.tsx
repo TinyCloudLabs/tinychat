@@ -188,6 +188,7 @@ const nativeVoiceNotesFixture = {
   ...voiceNotesApi,
   VoiceNotes: {
     ...voiceNotesApi.VoiceNotes,
+    status: async () => ({ intent: "stopped" }),
     getCaptureDefaults: async () => ({ status: "signed_out", accountDid: null, transitionGen: 0 }),
     setAccountState: async () => {},
     listPending: async () => {
