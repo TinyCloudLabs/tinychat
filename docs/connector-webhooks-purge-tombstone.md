@@ -23,28 +23,8 @@ id aged out of that list.
 **Rule now:** an ABSENT provider stamp is treated exactly like an unparseable one — not evidence
 of safety. With a ledger present, a timestamp-less item is tombstoned.
 
-## 2. The cost, stated plainly
 
-After a purge, timestamp-less deliveries for that source are dropped until the user's explicit
-re-sync fires §4.8's `DELETE` — the one verb §6.2 allows to clear a tombstone. Fireflies has
-shipped both payload shapes and old workspace configs still send the legacy one, so this is a real
-availability cost for such a workspace, not a fossil case.
-
-It is bounded and visible:
-
-- it applies only to an address that has purged and not re-synced;
-- each drop is logged `op=drop … reason=purged_no_timestamp` (distinct from `reason=purged`), so
-  an operator can tell "this predates the purge" from "this shape carries no stamp";
-- the cohort is operator-only.
-
-The alternative reading — accept it — puts back a meeting the user deleted, while they are
-offline, which §6.2 calls the exact failure the ledger exists to prevent.
-
-**Open for an operator decision, NOT decided here:** whether to instead deprecate the legacy shape
-behind a flag (reject it at the route with a documented error) so the fail-closed drop never has to
-fire. That trades a silent post-purge gap for a loud pre-purge one and is a product call.
-
-## 3. `purgedThrough` defaults to *now*, and that is broad
+## 2. `purgedThrough` defaults to *now*, and that is broad
 
 §4.8 specifies `purgedThrough?: string /* ISO; defaults to now */`. The default is fail-closed and
 it is **wide**: the watermark tombstones by time, so a purge naming one meeting suppresses every
@@ -60,7 +40,7 @@ purge is distinguishable from a whole-history one after the fact.
 **For F3/F4 (frontend):** send `purgedThrough` when the purge is scoped to selected meetings.
 Omitting it is correct only for "forget everything up to now".
 
-## 4. A 404 is not permission to skip the tombstone
+## 3. A 404 is not permission to skip the tombstone
 
 `webhooksApi` maps every 404 to `feature-dark`, and the teardown used to treat that as "the router
 is not mounted, so there is nothing to record" and carry on. A per-route 404 from a **mounted**
@@ -85,7 +65,7 @@ Pinned by `connectorLifecycle.test.ts` ("an unexplained 404 on the tombstone del
 offers a retry", "…on disable stops the teardown with a retry") and by `ConnectorsCard.test.ts`
 ("the card carries the mount-time dark verdict into the teardown").
 
-## 5. What the server-side content store tombstones — and what it deliberately does not
+## 4. What the server-side content store tombstones
 
 Backend ingest stores content rows for 14 days from `storedAt`. A lease-held sweeper enumerates
 every existing content index, not just the current ingest cohort, so rows keep expiring when the
