@@ -53,7 +53,7 @@ const CORRUPT_KEY_PREFIX = "webhooks/corrupt";
 export const PENDING_CAP = 200;
 /** §5.3: dead-letter cap 50, drop-oldest. */
 export const DEAD_CAP = 50;
-/** §5.3: 14 days. An item older than this is PROMOTED to dead-letter, never silently dropped. */
+/** Pending and dead-letter meeting IDs expire 14 days after their original receipt. */
 export const QUEUE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 /** §5.5: `attempts >= 5` → dead-letter. */
 export const MAX_ATTEMPTS = 5;
@@ -128,10 +128,6 @@ export const NON_BURNING_ERRORS: readonly string[] = [
 
 const NON_BURNING = new Set(NON_BURNING_ERRORS);
 
-/** §5.6: a summary that outran its transcript is dead-lettered at the TTL, never at attempt 5. */
-export const AWAITING_TRANSCRIPT_TIMEOUT = "awaiting_transcript_timeout";
-/** Every other item promoted to dead-letter by the 14-day TTL. */
-export const TTL_EXPIRED = "ttl_expired";
 
 export function burnsAttempt(lastError: string | undefined): boolean {
   return !(typeof lastError === "string" && NON_BURNING.has(lastError));
@@ -580,6 +576,9 @@ export class ConnectorQueue {
         state.repaired,
         swept.dropped,
       );
+      await this.runStorage(() =>
+        this.deleteKey(corruptQueueKey(source, address)),
+      );
       this.logDeadChanges(source, address, swept.promoted);
       return { pending: swept.items.length, dead: swept.dead.length };
     });
@@ -842,12 +841,22 @@ export class ConnectorQueue {
       await this.runStorage(() =>
         this.deleteKey(deadLetterKey(source, address)),
       );
+      await this.runStorage(() =>
+        this.deleteKey(corruptQueueKey(source, address)),
+      );
       logQueue(
         `op=clear source=${source} cleared=${cleared} superseded=${superseded} ` +
           `aid=${hashed(normalizeWebhookAddress(address))}`,
       );
       return { cleared, superseded };
     });
+  }
+
+  /** Remove only a legacy raw quarantine copy; preserve any current pending/dead queue. */
+  async clearCorrupt(source: string, address: string): Promise<void> {
+    await this.runStorage(() =>
+      this.deleteKey(corruptQueueKey(source, address)),
+    );
   }
 
   // ── Internals ──────────────────────────────────────────────────────
@@ -919,7 +928,7 @@ export class ConnectorQueue {
     let items = state.items;
     let dead = state.dead;
 
-    // TTL first: an expired item is promoted to dead-letter before the cap can drop it.
+    // Drop already-expired pending and dead-letter IDs before applying queue caps.
     const swept = this.sweepExpired(items, dead);
     items = swept.items;
     dead = swept.dead;
@@ -1001,37 +1010,24 @@ export class ConnectorQueue {
   }
 
   /**
-   * §5.3/§5.6: an item older than the TTL is PROMOTED to dead-letter, not dropped. A summary
-   * still waiting on its transcript is dead-lettered here and ONLY here — never by the
-   * 5-attempt rule — with `lastError=awaiting_transcript_timeout`.
+   * Pending and dead-letter entries are both server-held meeting IDs. Drop each at the
+   * original receipt time plus the TTL; never promote an expired pending ID into the DLQ.
    */
   private sweepExpired(items: PendingItem[], dead: DeadItem[]): DeadSweep {
     const cutoff = this.now() - this.ttlMs;
-    const expired = items.filter(
-      (item) => Date.parse(item.receivedAt) <= cutoff,
-    );
-    if (expired.length === 0) return { items, dead, promoted: [], dropped: [] };
-
-    let nextDead = dead;
-    const promoted: PendingItem[] = [];
-    const dropped: DeadItem[][] = [];
-    for (const item of expired) {
-      const lastError =
-        item.lastError === AWAITING_TRANSCRIPT
-          ? AWAITING_TRANSCRIPT_TIMEOUT
-          : TTL_EXPIRED;
-      const deadItem = { ...item, lastError };
-      const appended = this.appendDead(nextDead, deadItem);
-      nextDead = appended.dead;
-      promoted.push(deadItem);
-      if (appended.dropped.length > 0) dropped.push(appended.dropped);
-    }
-    const expiredKeys = new Set(expired.map(itemKey));
+    const retainedItems = items.filter((item) => {
+      const receivedAt = Date.parse(item.receivedAt);
+      return Number.isFinite(receivedAt) && receivedAt > cutoff;
+    });
+    const retainedDead = dead.filter((item) => {
+      const receivedAt = Date.parse(item.receivedAt);
+      return Number.isFinite(receivedAt) && receivedAt > cutoff;
+    });
     return {
-      items: items.filter((item) => !expiredKeys.has(itemKey(item))),
-      dead: nextDead,
-      promoted,
-      dropped,
+      items: retainedItems,
+      dead: retainedDead,
+      promoted: [],
+      dropped: [],
     };
   }
 
@@ -1085,14 +1081,8 @@ export class ConnectorQueue {
   }
 
   /**
-   * Read + validate the queue value, with §5.3's CONTAINER-level recovery.
-   *
-   * §5.5's poison handling covers items; it cannot cover the container. If the single JSON
-   * array is unparseable or type-invalid, every read AND every enqueue for this address
-   * throws, no item ever reaches the attempt counter, nothing dead-letters, and the address
-   * is wedged forever. So: entries failing validation are dropped with their ids and count
-   * logged, and a TOTAL parse failure moves the raw value aside to
-   * `webhooks/corrupt/{source}/{address}` (preserved for triage) and starts a fresh queue.
+   * Read + validate the queue value. Corrupt queue payloads may contain meeting ids, so
+   * quarantine only a timestamp and reason, never the raw value.
    */
   private async readState(
     source: string,
@@ -1110,17 +1100,28 @@ export class ConnectorQueue {
           .filter((item): item is DeadItem => item !== null)
       : [];
 
+    const deadQueueNeedsRepair =
+      deadRaw.unparseable ||
+      (deadRaw.present && !Array.isArray(deadRaw.value)) ||
+      (Array.isArray(deadRaw.value) && dead.length !== deadRaw.value.length);
+    if (deadQueueNeedsRepair) {
+      await this.runStorage(() =>
+        this.writeJson(deadLetterKey(source, address), dead),
+      );
+    }
+
     if (!raw.present || raw.value === null || raw.value === undefined) {
       return { items: [], dead, repaired: false };
     }
 
     if (raw.unparseable || !Array.isArray(raw.value)) {
       await this.runStorage(() =>
-        this.writeJson(corruptQueueKey(source, address), raw.value),
+        this.writeJson(corruptQueueKey(source, address), {
+          quarantinedAt: new Date(this.now()).toISOString(),
+          reason: raw.unparseable ? "unparseable" : "not-an-array",
+        }),
       );
       await this.runStorage(() => this.writeJson(pendingKey, []));
-      // `moved_to` names the PREFIX, never the full key: the key's last segment is the raw
-      // address, and §6.3 forbids one in a world-readable line. `aid=` is the correlator.
       logQueueWarn(
         `op=queue-reset source=${source} reason=${raw.unparseable ? "unparseable" : "not-an-array"} ` +
           `moved_to=${CORRUPT_KEY_PREFIX}/${source} aid=${hashed(normalizeWebhookAddress(address))}`,

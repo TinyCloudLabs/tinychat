@@ -1,16 +1,13 @@
-import {
-  PURGE_RECENT_ID_CAP,
-  type PurgeLedger,
-  type PurgeLedgerRead,
+import type {
+  PurgeLedger,
+  PurgeLedgerRead,
 } from "../routes/connector-webhooks.js";
 import type { ClearResult } from "./connector-queue.js";
-import type { ContentMeta } from "./content-store.js";
 import type { CredentialRevokeResult } from "./credential-store.js";
 import {
   isValidSource,
   keyedLogHash,
   normalizeWebhookAddress,
-  redactedErrorMessage,
 } from "./webhook-tokens.js";
 
 /**
@@ -51,9 +48,8 @@ export interface TeardownCredentialStore {
   revoke(source: string, address: string): Promise<CredentialRevokeResult>;
 }
 
-/** The two content verbs a teardown needs. No list-every-tenant surface exists to reach for. */
+/** The one content verb a teardown needs; no list-every-tenant surface exists. */
 export interface TeardownContentStore {
-  list(source: string, address: string): Promise<ContentMeta[]>;
   purge(source: string, address: string): Promise<{ removed: number }>;
 }
 
@@ -66,7 +62,7 @@ export interface TeardownExoState {
   clearSource(source: string, address: string): Promise<void>;
 }
 
-/** The ledger slice — the same three methods the companions' `ConnectorControl` exposes. */
+/** The ledger slice — the same methods the companions' `ConnectorControl` exposes. */
 export interface TeardownControl {
   readLedger(source: string, address: string): Promise<PurgeLedgerRead>;
   writeLedger(
@@ -74,6 +70,7 @@ export interface TeardownControl {
     address: string,
     ledger: PurgeLedger,
   ): Promise<void>;
+  clearQuarantinedLedger?(source: string, address: string): Promise<void>;
   quarantineLedger(
     source: string,
     address: string,
@@ -179,40 +176,16 @@ export class ConnectorTeardownService implements ConnectorTeardown {
     };
   }
 
-  /**
-   * §6.2's ledger, merged the way `POST …/purged` merges it: MONOTONIC watermark (a teardown
-   * never moves it backwards) and `recentIds` capped at {@link PURGE_RECENT_ID_CAP}, newest
-   * kept. The ids are attribution only — the watermark is what protects, which is why a content
-   * index we cannot read is survivable here: the purge still lands, with fewer ids named.
-   */
+  /** Record only the non-ID watermark; disconnect clears all meeting-ID copies immediately. */
   private async recordPurge(source: string, address: string): Promise<string> {
     const read = await this.deps.control.readLedger(source, address);
     if (read.status === "unparseable") {
-      // Never read as empty — that reading is "nothing was ever purged" (§6.2).
       await this.deps.control.quarantineLedger(source, address, read.raw);
       warnTeardown(
         `op=ledger-quarantine source=${source} aid=${hashed(address)}`,
       );
     }
     const existing = read.status === "ok" ? read.ledger : null;
-
-    let ids: string[] = [];
-    try {
-      ids = (await this.deps.content.list(source, address)).map(
-        (meta) => meta.sourceId,
-      );
-    } catch (error) {
-      // Forensics degraded, protection intact: the watermark below tombstones a purge of any
-      // size. Said out loud rather than reported as a complete attribution.
-      warnTeardown(
-        `op=teardown result=content_ids_unavailable source=${source} ` +
-          `aid=${hashed(address)}`,
-      );
-      console.warn(
-        "[connector-teardown] content index read failed:",
-        redactedErrorMessage(error),
-      );
-    }
 
     const existingMs =
       existing === null
@@ -223,15 +196,15 @@ export class ConnectorTeardownService implements ConnectorTeardown {
       this.now(),
     );
     const purgedThrough = new Date(throughMs).toISOString();
-    const recentIds = [...new Set([...(existing?.recentIds ?? []), ...ids])].slice(
-      -PURGE_RECENT_ID_CAP,
-    );
+    const updatedAt = new Date(this.now()).toISOString();
 
     await this.deps.control.writeLedger(source, address, {
       purgedThrough,
-      recentIds,
-      updatedAt: new Date(this.now()).toISOString(),
+      recentIds: [],
+      recentIdsAddedAt: {},
+      updatedAt,
     });
+    await this.deps.control.clearQuarantinedLedger?.(source, address);
     return purgedThrough;
   }
 }

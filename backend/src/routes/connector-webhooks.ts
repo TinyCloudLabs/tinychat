@@ -1216,12 +1216,16 @@ export interface DisabledMarker {
   source: string | null;
 }
 
-/** §6.2's ledger value. `purgedThrough` is authoritative; `recentIds` is attribution only. */
+/** §6.2 ledger. The watermark is non-ID state; recent meeting IDs expire after 14 days. */
 export interface PurgeLedger {
   purgedThrough: string;
   recentIds: string[];
+  /** Backend-owned per-ID retention clocks; absent only in legacy records. */
+  recentIdsAddedAt?: Record<string, string>;
   updatedAt: string;
 }
+
+export const PURGE_RECENT_ID_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
  * A ledger read is a three-way answer, not a value-or-null. §6.2 makes the ledger an
@@ -1247,6 +1251,7 @@ export interface ConnectorControl {
     ledger: PurgeLedger,
   ): Promise<void>;
   clearLedger(source: string, address: string): Promise<void>;
+  clearQuarantinedLedger?(source: string, address: string): Promise<void>;
   quarantineLedger(
     source: string,
     address: string,
@@ -1270,7 +1275,7 @@ function parseDisabledMarker(raw: unknown): DisabledMarker | null {
   };
 }
 
-function parsePurgeLedger(raw: unknown): PurgeLedger | null {
+function parsePurgeLedger(raw: unknown, now: number): PurgeLedger | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     return null;
   const value = raw as Record<string, unknown>;
@@ -1281,14 +1286,34 @@ function parsePurgeLedger(raw: unknown): PurgeLedger | null {
     return null;
   }
   if (!Array.isArray(value.recentIds)) return null;
-  // A single bad id does not invalidate the watermark, but it must not survive into the
-  // ledger either — it would be compared against a `source_id` at drain time.
-  const recentIds = value.recentIds.filter((id): id is string =>
-    isValidMeetingId(id),
-  );
+  const rawTimes =
+    typeof value.recentIdsAddedAt === "object" &&
+    value.recentIdsAddedAt !== null &&
+    !Array.isArray(value.recentIdsAddedAt)
+      ? (value.recentIdsAddedAt as Record<string, unknown>)
+      : {};
+  const cutoff = now - PURGE_RECENT_ID_TTL_MS;
+  const recentIds: string[] = [];
+  const recentIdsAddedAt: Record<string, string> = {};
+  for (const id of value.recentIds) {
+    if (!isValidMeetingId(id) || recentIds.includes(id)) continue;
+    const addedAt = rawTimes[id];
+    if (
+      typeof addedAt !== "string" ||
+      !Number.isFinite(Date.parse(addedAt)) ||
+      Date.parse(addedAt) <= cutoff ||
+      Date.parse(addedAt) > now
+    ) continue;
+    recentIds.push(id);
+    recentIdsAddedAt[id] = addedAt;
+  }
+  const retainedIds = recentIds.slice(-PURGE_RECENT_ID_CAP);
   return {
     purgedThrough: value.purgedThrough,
-    recentIds: recentIds.slice(-PURGE_RECENT_ID_CAP),
+    recentIds: retainedIds,
+    recentIdsAddedAt: Object.fromEntries(
+      retainedIds.map((id) => [id, recentIdsAddedAt[id]!]),
+    ),
     updatedAt:
       typeof value.updatedAt === "string" &&
       Number.isFinite(Date.parse(value.updatedAt))
@@ -1305,7 +1330,10 @@ function parsePurgeLedger(raw: unknown): PurgeLedger | null {
 export class ConnectorControlStore implements ConnectorControl {
   private lane: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly node: TinyCloudNode) {}
+  constructor(
+    private readonly node: TinyCloudNode,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
   async readDisabled(address: string): Promise<DisabledMarker | null> {
     return parseDisabledMarker(
@@ -1326,12 +1354,26 @@ export class ConnectorControlStore implements ConnectorControl {
   }
 
   async readLedger(source: string, address: string): Promise<PurgeLedgerRead> {
-    const raw = await this.run(() =>
-      this.readJson(purgeLedgerKey(source, address)),
-    );
+    const key = purgeLedgerKey(source, address);
+    const raw = await this.run(() => this.readJson(key));
     if (raw === null || raw === undefined) return { status: "absent" };
-    const ledger = parsePurgeLedger(raw);
+    const ledger = parsePurgeLedger(raw, this.now());
     if (ledger === null) return { status: "unparseable", raw };
+
+    const value = raw as Record<string, unknown>;
+    const oldIds = Array.isArray(value.recentIds) ? value.recentIds : [];
+    const oldTimes =
+      typeof value.recentIdsAddedAt === "object" &&
+      value.recentIdsAddedAt !== null &&
+      !Array.isArray(value.recentIdsAddedAt)
+        ? value.recentIdsAddedAt
+        : {};
+    if (
+      JSON.stringify(oldIds) !== JSON.stringify(ledger.recentIds) ||
+      JSON.stringify(oldTimes) !== JSON.stringify(ledger.recentIdsAddedAt)
+    ) {
+      await this.run(() => this.writeJson(key, ledger));
+    }
     return { status: "ok", ledger };
   }
 
@@ -1348,15 +1390,26 @@ export class ConnectorControlStore implements ConnectorControl {
   async clearLedger(source: string, address: string): Promise<void> {
     await this.run(() => this.deleteKey(purgeLedgerKey(source, address)));
   }
+  async clearQuarantinedLedger(
+    source: string,
+    address: string,
+  ): Promise<void> {
+    await this.run(() =>
+      this.deleteKey(corruptPurgeLedgerKey(source, address)),
+    );
+  }
 
-  /** §6.2 extends §5.3's quarantine to the ledger: preserve the raw value, never read it as empty. */
+  /** Never persist raw corrupt ledger values: they may contain meeting IDs. */
   async quarantineLedger(
     source: string,
     address: string,
-    raw: unknown,
+    _raw: unknown,
   ): Promise<void> {
     await this.run(() =>
-      this.writeJson(corruptPurgeLedgerKey(source, address), raw),
+      this.writeJson(corruptPurgeLedgerKey(source, address), {
+        quarantinedAt: new Date(this.now()).toISOString(),
+        reason: "unparseable",
+      }),
     );
   }
 
@@ -2073,6 +2126,27 @@ export function createConnectorWebhookCompanionRouter(
         const { cleared } = await queue.clear(source, user.address);
         dropped += cleared;
       }
+      for (const source of sources) {
+        const read = await control.readLedger(source, user.address);
+        if (read.status === "ok") {
+          await control.writeLedger(source, user.address, {
+            ...read.ledger,
+            recentIds: [],
+            recentIdsAddedAt: {},
+            updatedAt: new Date(now()).toISOString(),
+          });
+        } else if (read.status === "unparseable") {
+          await control.quarantineLedger(source, user.address, read.raw);
+          const stamp = new Date(now()).toISOString();
+          await control.writeLedger(source, user.address, {
+            purgedThrough: stamp,
+            recentIds: [],
+            recentIdsAddedAt: {},
+            updatedAt: stamp,
+          });
+        }
+        await control.clearQuarantinedLedger?.(source, user.address);
+      }
       // (4) The exo ledger rows of each source. Best-effort: the marker, config, token and queue are
       // already torn down, so a failure is logged rather than answered with a 503 that the client would
       // retry into a second, different call. The owner's exo DELETE clears what remains.
@@ -2539,11 +2613,14 @@ export function createConnectorWebhookCompanionRouter(
       }
       const existing = read.status === "ok" ? read.ledger : null;
 
-      // §4.8: monotonic. A POST carrying an older value never moves the watermark backwards.
+      // A corrupted ledger cannot provide a safe prior watermark; fail closed at this
+      // authenticated purge rather than accepting an older client timestamp.
       const existingMs =
-        existing === null
-          ? Number.NEGATIVE_INFINITY
-          : Date.parse(existing.purgedThrough);
+        existing !== null
+          ? Date.parse(existing.purgedThrough)
+          : read.status === "unparseable"
+            ? now()
+            : Number.NEGATIVE_INFINITY;
       const nextThroughMs = Math.max(existingMs, purgedThroughMs);
 
       // §4.8: the per-request cap bounds `recentIds` (forensics) and NOTHING ELSE. The
@@ -2563,9 +2640,14 @@ export function createConnectorWebhookCompanionRouter(
       const merged = [...(existing?.recentIds ?? []), ...contributed];
       const recentIds = [...new Set(merged)].slice(-PURGE_RECENT_ID_CAP);
       const updatedAt = new Date(now()).toISOString();
+      const oldTimes = existing?.recentIdsAddedAt ?? {};
+      const recentIdsAddedAt = Object.fromEntries(
+        recentIds.map((id) => [id, oldTimes[id] ?? updatedAt]),
+      );
       await control.writeLedger(source, user.address, {
         purgedThrough: new Date(nextThroughMs).toISOString(),
         recentIds,
+        recentIdsAddedAt,
         updatedAt,
       });
 
@@ -2615,6 +2697,7 @@ export function createConnectorWebhookCompanionRouter(
 
     try {
       await control.clearLedger(source, user.address);
+      await control.clearQuarantinedLedger?.(source, user.address);
       logWebhook(
         `op=ledger-clear source=${source} aid=${hashedField(user.address)}`,
       );

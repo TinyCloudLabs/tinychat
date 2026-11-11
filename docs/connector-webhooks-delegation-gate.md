@@ -157,7 +157,7 @@ removed, in both directions:
 >   operator's signed blast-radius acceptance is what carries it.
 > - *"never writes meeting content"* / *"there is no server-side writer to drain into"* →
 >   **reversed for the server's own store.** The fetch worker fetches the meeting and keeps an
->   encrypted 90-day copy (`RETENTION_WINDOW_DAYS`, `services/content-store.ts`), and the delivery
+>   14-day copy (`RETENTION_WINDOW_DAYS`, `services/content-store.ts`), and the delivery
 >   route nudges it. The Now-column rationale in the table above is therefore *dated*, not current,
 >   for cohort addresses — `backend/src/__tests__/delegations.test.ts` carries the rewritten
 >   rationale.

@@ -51,8 +51,8 @@ import {
  * 1, 7, 8; §9 anti-patterns 1 and 2).
  *
  * The feature under test is DARK by default. Every assertion below is either about the flag-off
- * path (which must stay byte-identical Option C) or about a cohort address that the operator
- * explicitly allow-listed.
+ * path's Option C server behavior or about a cohort address that the operator explicitly
+ * allow-listed; consent wording is maintained by the frontend.
  *
  * REVIEW NOTE (§8.2 item 1, the Listen failure this excludes): nothing in `ingest-mode.ts` or
  * `ingest-nudge.ts` holds a "current user", a "latest address" or a "latest secret" at module
