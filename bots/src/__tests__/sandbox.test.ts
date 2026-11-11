@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { endSandbox, mountOf, type RunscStatus, runStateCopy, type SandboxEnd } from "../sandbox";
+import { endSandbox, listedStatus, mountOf, type RunscStatus, runStateCopy, type SandboxEnd } from "../sandbox";
 import { saveSnapshot, stateLimits } from "../state";
 
 describe("ending a sandbox", () => {
@@ -114,6 +114,33 @@ describe("state copy process", () => {
     expect(await runStateCopy(["true"], 5000)).toBeUndefined();
     expect(await runStateCopy(["sh", "-c", "printf too_large; exit 1"], 5000)).toBe("too_large");
     expect(await runStateCopy(["sh", "-c", "printf 'anything else'; exit 1"], 5000)).toBe("io");
+  });
+});
+
+describe("runsc list", () => {
+  const id = "bot-0123";
+
+  test("a well-formed list gives the container's status, or absent when it is not listed", () => {
+    expect(listedStatus("null", id)).toBe("absent");
+    expect(listedStatus("[]", id)).toBe("absent");
+    expect(listedStatus(JSON.stringify([{ id: "other", status: "running" }]), id)).toBe("absent");
+    expect(listedStatus(JSON.stringify([{ id: "other", status: "running" }, { id, status: "stopped", pid: 1 }]), id)).toBe("stopped");
+  });
+
+  test("a malformed list is never read as absent", () => {
+    for (const output of [
+      "[null]",
+      JSON.stringify([{ status: "running" }]),
+      JSON.stringify([{ id: "other", status: "running" }, null]),
+      JSON.stringify([{ id, status: 1 }]),
+      JSON.stringify([{ id, status: "exploded" }]),
+      JSON.stringify({ id, status: "running" }),
+      '"absent"',
+      "not json",
+      "",
+    ]) {
+      expect(listedStatus(output, id)).toBeUndefined();
+    }
   });
 });
 

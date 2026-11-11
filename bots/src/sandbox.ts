@@ -105,6 +105,30 @@ export function modelsYml(model: string): string {
 /** A container's status as `runsc list` reports it; "absent" once runsc no longer knows it. */
 export type RunscStatus = "created" | "running" | "paused" | "stopped" | "absent";
 
+/**
+ * One container's status from `runsc list -format=json` output. The whole list must check out first: `null` (no
+ * containers) or an array of objects, each with a string id and a string status. Anything else, or a listed status
+ * other than created, running, paused or stopped, is undefined (runsc cannot say), never "absent".
+ */
+export function listedStatus(output: string, containerId: string): RunscStatus | undefined {
+  let listed: unknown;
+  try {
+    listed = JSON.parse(output);
+  } catch {
+    return undefined;
+  }
+  if (listed === null) return "absent";
+  if (!Array.isArray(listed)) return undefined;
+  const entries: { id: string; status: string }[] = [];
+  for (const item of listed) {
+    if (!isRecord(item) || typeof item.id !== "string" || typeof item.status !== "string") return undefined;
+    entries.push({ id: item.id, status: item.status });
+  }
+  const status = entries.find(entry => entry.id === containerId)?.status;
+  if (status === undefined) return "absent";
+  return status === "created" || status === "running" || status === "paused" || status === "stopped" ? status : undefined;
+}
+
 /** What ending one sandbox needs from the host; RunscHost passes runsc, the cgroup tree, the state copy and umount. */
 export interface SandboxEnd {
   /** undefined when runsc cannot say. */
@@ -394,18 +418,7 @@ export class RunscHost implements SandboxLauncher {
   async #status(containerId: string): Promise<RunscStatus | undefined> {
     const proc = Bun.spawn([...this.#runsc, "list", "-format=json"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
     const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
-    if (code !== 0) return undefined;
-    try {
-      const listed: unknown = JSON.parse(out);
-      if (listed === null) return "absent";
-      if (!Array.isArray(listed)) return undefined;
-      const entry: unknown = listed.find(item => isRecord(item) && item.id === containerId);
-      if (!isRecord(entry)) return "absent";
-      const status = entry.status;
-      return status === "created" || status === "running" || status === "paused" || status === "stopped" ? status : undefined;
-    } catch {
-      return undefined;
-    }
+    return code === 0 ? listedStatus(out, containerId) : undefined;
   }
 
   /** Runs `job` after the bot's earlier copies; the chain never rejects. */

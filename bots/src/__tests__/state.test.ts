@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -15,8 +16,17 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { CopyError, type CopyLimits, copyTree, hasSnapshot, openSnapshot, recoverSnapshot, saveSnapshot } from "../state";
+import { basename, join } from "node:path";
+import {
+  CopyError,
+  type CopyLimits,
+  copyTree,
+  hasSnapshot,
+  openSnapshot,
+  type RecoverySteps,
+  recoverSnapshot,
+  saveSnapshot,
+} from "../state";
 
 const LIMITS: CopyLimits = { maxBytes: 1024 * 1024, maxEntries: 100 };
 let root: string;
@@ -226,5 +236,44 @@ describe("snapshot swap", () => {
     recoverSnapshot(state);
     expect(readFileSync(join(state, "note"), "utf8")).toBe("v1");
     expect(readdirSync(join(root, "bot"))).toEqual(["state"]);
+  });
+
+  test("recovery syncs the directory before it removes anything, on every branch", () => {
+    const record = () => {
+      const ops: string[] = [];
+      const steps: RecoverySteps = {
+        rename: (from, to) => {
+          ops.push(`rename ${basename(from)} ${basename(to)}`);
+          renameSync(from, to);
+        },
+        remove: path => {
+          ops.push(`remove ${basename(path)}`);
+          rmSync(path, { recursive: true, force: true });
+        },
+        sync: dir => {
+          ops.push(`sync ${basename(dir)}`);
+        },
+      };
+      return { ops, steps };
+    };
+
+    // A crash right after state.new became state: state, state.old and a stray state.new.
+    botTree(state, "v2");
+    botTree(old(), "v1");
+    botTree(fresh(), "partial");
+    const present = record();
+    recoverSnapshot(state, present.steps);
+    expect(present.ops).toEqual(["sync bot", "remove state.new", "remove state.old", "sync bot"]);
+    expect(readFileSync(join(state, "note"), "utf8")).toBe("v2");
+
+    // A crash between the two renames: state.new is promoted and synced before state.old goes.
+    rmSync(state, { recursive: true });
+    botTree(old(), "v2");
+    botTree(fresh(), "v3");
+    const absent = record();
+    recoverSnapshot(state, absent.steps);
+    expect(absent.ops).toEqual(["rename state.new state", "sync bot", "remove state.new", "remove state.old", "sync bot"]);
+    expect(readFileSync(join(state, "note"), "utf8")).toBe("v3");
+    expect(readFileSync(join(outside, "keep"), "utf8")).toBe("outside");
   });
 });

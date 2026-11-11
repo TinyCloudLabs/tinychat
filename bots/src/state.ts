@@ -204,24 +204,35 @@ export function hasSnapshot(state: string): boolean {
   return exists(state) || exists(`${state}.old`);
 }
 
+/** The directory steps recovery takes, in order; a test can watch them. */
+export interface RecoverySteps {
+  rename(from: string, to: string): void;
+  remove(path: string): void;
+  sync(dir: string): void;
+}
+
+const DISK: RecoverySteps = {
+  rename: renameSync,
+  remove: path => rmSync(path, { recursive: true, force: true }),
+  sync: fsyncDirectory,
+};
+
 /**
  * Finishes or undoes a swap a crash interrupted. A swap renames state to state.old, then state.new to state, then
  * removes state.old, syncing the directory after each step; state.new only takes part once it is complete and
  * synced, and `state` exists from a bot's first start (`openSnapshot`). So with `state` present any leftover is
  * stale; without it, state.new is complete if state.old is there too, and otherwise state.old is the last good copy.
- * A rename here is synced before anything is removed.
+ * On every branch the directory is synced, so whatever `state` names is durable, before anything is removed.
  */
-export function recoverSnapshot(state: string): void {
+export function recoverSnapshot(state: string, steps: RecoverySteps = DISK): void {
   const parent = dirname(state);
   const fresh = `${state}.new`;
   const old = `${state}.old`;
-  if (!exists(state) && exists(old)) {
-    renameSync(exists(fresh) ? fresh : old, state);
-    fsyncDirectory(parent);
-  }
-  rmSync(fresh, { recursive: true, force: true });
-  rmSync(old, { recursive: true, force: true });
-  fsyncDirectory(parent);
+  if (!exists(state) && exists(old)) steps.rename(exists(fresh) ? fresh : old, state);
+  steps.sync(parent);
+  steps.remove(fresh);
+  steps.remove(old);
+  steps.sync(parent);
 }
 
 /** Gets `state` ready to restore from: recovers an interrupted swap, or creates the empty first snapshot. */
