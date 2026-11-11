@@ -15,6 +15,8 @@ name: Mobile release (Android)
 #   refusing a keystore whose certificate is not vars.ANDROID_UPLOAD_CERT_SHA256 (pinned on its own, never derived
 #   from the keystore secret). scripts/release/verify-android-release.sh then checks both files against that variable
 #   before the verified AAB, APK and SHA256SUMS.txt are uploaded as the artifact exo-android-<versionName>-<versionCode>.
+#   Releases then upload the verified AAB to Google Play's internal testing track with a pinned
+#   r0adkll/upload-google-play, authenticated by the Play publisher service account in PLAY_SERVICE_ACCOUNT_JSON.
 #
 # - workflow_dispatch, from main only: `gh workflow run mobile-release-android.yml --ref main`. Every secret and
 #   variable reference is gated on workflow_dispatch, so no other event can read one.
@@ -27,11 +29,8 @@ name: Mobile release (Android)
 # upload, and the run number grows with every run whatever the product version does (betas share a version across many
 # merges). A re-run keeps its run number, so it rebuilds the same versionCode; dispatch a new run for a new upload.
 #
-# TODO(play, once the Play Console app exists and its first AAB was uploaded by hand): upload the verified AAB to the
-# internal testing track from the sign job, after "Verify the signed AAB and APK", with a pinned
-# r0adkll/upload-google-play (packageName xyz.tinycloud.home, track internal, status draft until the first review) and a
-# PLAY_SERVICE_ACCOUNT_JSON secret in the android-release environment. Until then, upload the artifact's .aab in Play
-# Console by hand.
+# Play: the service account in PLAY_SERVICE_ACCOUNT_JSON can release to testing tracks of xyz.tinycloud.home only, not
+# production. Each dispatch rolls its build out to internal testers (status completed); promote it in Play Console.
 
 on:
   workflow_dispatch:
@@ -86,7 +85,13 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEY_ALIAS || '' }}
           ANDROID_KEY_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEY_PASSWORD || '' }}
           ANDROID_UPLOAD_CERT_SHA256: ${{ github.event_name == 'workflow_dispatch' && vars.ANDROID_UPLOAD_CERT_SHA256 || '' }}
-        run: scripts/release/android-signing.sh check
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ github.event_name == 'workflow_dispatch' && secrets.PLAY_SERVICE_ACCOUNT_JSON || '' }}
+        run: |
+          scripts/release/android-signing.sh check
+          if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error::PLAY_SERVICE_ACCOUNT_JSON is not set in the android-release environment (mobile/README.md, Android release)"
+            exit 1
+          fi
 
   build:
     name: Build (unsigned AAB + APK, no secrets)
@@ -304,3 +309,16 @@ jobs:
           name: exo-android-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
           if-no-files-found: error
           path: dist/*
+
+      # The AAB the verify step accepted, to the internal track. The upload key signed it; Play re-signs it with the
+      # app signing key (Play App Signing).
+      - name: Upload the AAB to Google Play (internal testing)
+        if: env.RELEASE == 'true'
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ github.event_name == 'workflow_dispatch' && secrets.PLAY_SERVICE_ACCOUNT_JSON || '' }}
+          packageName: xyz.tinycloud.home
+          releaseFiles: ${{ runner.temp }}/signed/app-release.aab
+          releaseName: ${{ steps.version.outputs.name }} (${{ steps.version.outputs.code }})
+          track: internal
+          status: completed
