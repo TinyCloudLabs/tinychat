@@ -87,11 +87,13 @@ offers a retry", "…on disable stops the teardown with a retry") and by `Connec
 
 ## 5. What the server-side content store tombstones — and what it deliberately does not
 
-Backend ingest (backend-ingest plan §8.1 W4) keeps content rows for 14 days from `storedAt`.
-Tombstones carry the same expiry and are pruned at that boundary; they cannot retain an id after
-its content row expires. A provider replay after the window may be delivered once again, subject
-to the browser's check against the user's own space. The §6.2 purge ledger separately tracks
-disconnect/user-purge IDs for at most 14 days.
+Backend ingest stores content rows for 14 days from `storedAt`. A lease-held sweeper enumerates
+every existing content index, not just the current ingest cohort, so rows keep expiring when the
+backend-ingest flag is off or an address leaves the cohort. Tombstones share the row's expiry and
+are pruned at that boundary; they cannot retain an id after its content row expires. A provider
+replay after the window may be delivered once again, subject to the browser's check against the
+user's own space. The §6.2 purge ledger separately tracks disconnect/user-purge IDs for at most 14
+days. Infrastructure backup/log retention remains to confirm with Amos.
 
 The **per-user overflow caps** (500 meetings / 200 MB, oldest-drop) record **no** tombstone, on
 purpose. The two markers above both mean *the user no longer has this*; a cap eviction means only

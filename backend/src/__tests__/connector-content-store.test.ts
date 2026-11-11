@@ -1,6 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 
 import type {
@@ -13,6 +11,7 @@ import {
   ContentStore,
   InMemoryContentBlobStore,
   KvContentBlobStore,
+  createContentIndexDirectory,
   MAX_MEETING_CONTENT_BYTES,
   MAX_USER_CONTENT_BYTES,
   MAX_USER_MEETINGS,
@@ -30,6 +29,7 @@ import {
 } from "../services/ingest-instance.js";
 import {
   IngestRetentionSweeper,
+  shouldStartRetentionSweep,
   type RetentionSweepTarget,
 } from "../services/ingest-retention.js";
 import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
@@ -930,12 +930,9 @@ describe("W4 content store — retention", () => {
 // ── delta 5: the sweep RUNS — the D2a window is enforced, not just implemented ──
 
 /**
- * A sweep nothing calls is a retention policy that does not exist: without this, the only bound on
- * a cohort address's server-side archive is W4's overflow cap, which is a churn policy, not the
- * D2a time bound, and the retention tombstones delta 5 leans on are never produced outside this
- * suite. The sweeper belongs to the instance that HOLDS the D4 lease for the same reason the fetch
- * worker does: two processes sweeping one tenant's index is the interleaved read-modify-write W9
- * exists to prevent.
+ * A sweep nothing calls is not a retention policy. The directory must include every persisted
+ * index, even after an account leaves the active ingest cohort, and a single lease serializes
+ * writes across processes.
  */
 describe("W4 retention sweep — wired to the lease-holding instance", () => {
   interface SweepCall {
@@ -960,9 +957,8 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
           inflight += 1;
           peak = Math.max(peak, inflight);
           try {
-            // A real node call is not instantaneous; yield so an accidental Promise.all shows up
-            // as overlap rather than as a lucky serialization.
-            await new Promise((resolve) => setTimeout(resolve, 1));
+            // Yield once so Promise.all would overlap, without waiting on wall-clock time.
+            await Promise.resolve();
             if (options.throwOn === input.address) {
               throw new Error("substrate unavailable");
             }
@@ -975,12 +971,14 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
     };
   }
 
-  test("[delta-05] the sweeper sweeps every cohort address, one node call at a time", async () => {
+  const indexes = (...addresses: string[]) =>
+    async () => addresses.map((address) => ({ source: SOURCE, address }));
+
+  test("[delta-05] the sweeper visits every stored index one node call at a time", async () => {
     const recorder = sweepRecorder();
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
-      cohort: async () => new Set([ADDRESS_A, ADDRESS_B]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A, ADDRESS_B),
     });
 
     const result = await sweeper.sweepOnce();
@@ -990,47 +988,48 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
       { source: SOURCE, address: ADDRESS_A },
       { source: SOURCE, address: ADDRESS_B },
     ]);
-    // §9.3: TinyCloud drops concurrent responses on one space — never Promise.all across tenants.
     expect(recorder.maxInflight()).toBe(1);
   });
 
-  test("[delta-05] an unreadable cohort sweeps NOTHING rather than guessing the tenant list", async () => {
+  test("[delta-05] an unreadable index directory sweeps nothing", async () => {
     const recorder = sweepRecorder();
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
-      cohort: async () => {
-        throw new Error("cohort unavailable");
+      indexes: async () => {
+        throw new Error("index listing unavailable");
       },
-      sources: [SOURCE],
     });
 
-    const result = await sweeper.sweepOnce();
-
-    expect(result).toEqual({ addresses: 0, swept: 0, errors: 1 });
+    expect(await sweeper.sweepOnce()).toEqual({
+      addresses: 0,
+      swept: 0,
+      errors: 1,
+    });
     expect(recorder.calls).toEqual([]);
   });
 
-  test("[delta-05] one tenant's failed sweep does not cost the others theirs", async () => {
+  test("[delta-05] one index failure does not cost other indexes their sweep", async () => {
     const recorder = sweepRecorder({ throwOn: ADDRESS_A });
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
-      cohort: async () => new Set([ADDRESS_A, ADDRESS_B]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A, ADDRESS_B),
     });
 
     const result = await sweeper.sweepOnce();
 
     expect(result.errors).toBe(1);
     expect(result.swept).toBe(1);
-    expect(recorder.calls.map((c) => c.address)).toEqual([ADDRESS_A, ADDRESS_B]);
+    expect(recorder.calls.map((call) => call.address)).toEqual([
+      ADDRESS_A,
+      ADDRESS_B,
+    ]);
   });
 
-  test("[delta-05] the sweep never names a tenant or a meeting in its log line", async () => {
+  test("[delta-05] sweep logs never name a tenant or meeting", async () => {
     const recorder = sweepRecorder();
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
-      cohort: async () => new Set([ADDRESS_A]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
     });
 
     const capture = captureLogs();
@@ -1045,7 +1044,7 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
     expect(emitted).not.toContain(ADDRESS_A);
   });
 
-  test("[delta-05] the supervisor runs the sweep on the lease HOLDER and never on a refused instance", async () => {
+  test("[delta-05] the supervisor runs retention on the lease holder only", async () => {
     const lease = new Map<string, InstanceLeaseRecord>();
     const leaseStore = (): InstanceLeaseStore => ({
       read: async () => lease.get("k") ?? null,
@@ -1056,41 +1055,25 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
         lease.delete("k");
       },
     });
-    const fakeWorker = () => {
-      let running = false;
-      return {
-        start: () => {
-          running = true;
-        },
-        stop: () => {
-          running = false;
-        },
-        isRunning: () => running,
-      };
-    };
 
     const holderSweeper = new IngestRetentionSweeper({
       content: sweepRecorder().target,
-      cohort: async () => new Set([ADDRESS_A]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
     });
     const holder = new IngestInstanceSupervisor({
       guard: new IngestInstanceGuard(leaseStore(), { instanceId: "inst-one" }),
-      worker: fakeWorker(),
-      retention: holderSweeper,
+      worker: holderSweeper,
     });
     expect(await holder.tick()).toBe("holder");
     expect(holderSweeper.isRunning()).toBe(true);
 
     const refusedSweeper = new IngestRetentionSweeper({
       content: sweepRecorder().target,
-      cohort: async () => new Set([ADDRESS_A]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
     });
     const refused = new IngestInstanceSupervisor({
       guard: new IngestInstanceGuard(leaseStore(), { instanceId: "inst-two" }),
-      worker: fakeWorker(),
-      retention: refusedSweeper,
+      worker: refusedSweeper,
     });
     expect(await refused.tick()).toBe("inert");
     expect(refusedSweeper.isRunning()).toBe(false);
@@ -1099,40 +1082,55 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
     expect(holderSweeper.isRunning()).toBe(false);
   });
 
-  test("[delta-05] a held sweep pass really deletes aged-out content from the wired store", async () => {
+  test("[delta-05] with ingest off, a user outside cohort still has old content swept", async () => {
     const { store, clock } = harness();
-    clock.now = T0 - 100 * DAY_MS;
+    clock.now = T0 - 15 * DAY_MS;
+    await store.upsert(
+      upsertInput({
+        address: ADDRESS_B,
+        sourceId: "mtg-out-of-cohort",
+      }),
+    );
+    clock.now = T0;
+
+    const node = new FakeNode();
+    node.store.set(`connector-content-index/${SOURCE}/${ADDRESS_A}`, {});
+    node.store.set(`connector-content-index/${SOURCE}/${ADDRESS_B}`, {});
+    const directory = createContentIndexDirectory(node as unknown as TinyCloudNode);
+    const backendIngestEnabled = false;
+    const activeCohort = new Set([ADDRESS_A]);
+    const existingIndexes = await directory();
+    expect(activeCohort.has(ADDRESS_B)).toBe(false);
+    expect(shouldStartRetentionSweep(backendIngestEnabled, existingIndexes)).toBe(true);
+    const sweeper = new IngestRetentionSweeper({
+      content: store,
+      indexes: async () => existingIndexes,
+    });
+    const result = await sweeper.sweepOnce();
+
+    expect(result.addresses).toBe(2);
+    expect(result.swept).toBe(1);
+    expect(await store.get(SOURCE, ADDRESS_B, "mtg-out-of-cohort")).toBeNull();
+  });
+
+  test("[delta-05] a held sweep pass deletes aged-out content from the store", async () => {
+    const { store, clock } = harness();
+    clock.now = T0 - 15 * DAY_MS;
     await store.upsert(
       upsertInput({
         sourceId: "mtg-old",
-        ts: new Date(T0 - 100 * DAY_MS).toISOString(),
       }),
     );
-    clock.now = T0 + 1_000;
+    clock.now = T0;
 
     const sweeper = new IngestRetentionSweeper({
       content: store,
-      cohort: async () => new Set([ADDRESS_A]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
     });
     const result = await sweeper.sweepOnce();
 
     expect(result.swept).toBe(1);
     expect(await store.get(SOURCE, ADDRESS_A, "mtg-old")).toBeNull();
-  });
-
-  test("[delta-05] index.ts hands the content store's sweep to the lease-holding supervisor", () => {
-    const source = readFileSync(
-      resolve(import.meta.dir, "..", "index.ts"),
-      "utf8",
-    );
-    // The sweeper is constructed INSIDE the supervisor's options — the same seat the fetch worker
-    // takes — so a flag-armed instance that refused the lease sweeps nothing.
-    expect(source).toContain("new IngestRetentionSweeper({");
-    expect(source).toMatch(
-      /new IngestInstanceSupervisor\(\{[\s\S]{0,3000}retention: new IngestRetentionSweeper\(\{/,
-    );
-    expect(source).toMatch(/content: contentStore/);
   });
 });
 
@@ -1280,6 +1278,24 @@ class FakeNode {
         this.exit();
       }
     },
+    list: async (options: unknown): Promise<unknown> => {
+      const prefix =
+        typeof options === "object" && options !== null && "prefix" in options
+          ? String((options as { prefix: unknown }).prefix)
+          : "";
+      await this.enter("list", prefix);
+      try {
+        return {
+          data: {
+            keys: [...this.store.keys()]
+              .filter((key) => key.startsWith(prefix))
+              .map((key) => ({ key })),
+          },
+        };
+      } finally {
+        this.exit();
+      }
+    },
     put: async (key: string, value: unknown): Promise<unknown> => {
       await this.enter("put", key);
       try {
@@ -1308,7 +1324,7 @@ class FakeNode {
     this.calls.push({ op, key });
     this.inFlight += 1;
     this.maxConcurrent = Math.max(this.maxConcurrent, this.inFlight);
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    await Promise.resolve();
   }
 
   private exit(): void {

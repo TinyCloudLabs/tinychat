@@ -4,20 +4,18 @@ import { keyedLogHash } from "./webhook-tokens.js";
  * W4/D2a — the thing that makes the **retention window a fact** rather than a method (backend-ingest
  * plan §5.1 W4, §7, §11 requirement 2; DECISIONS `D2a-retention-days: 14`).
  *
- * `ContentStore.sweepRetention` is the per-tenant primitive; this is the periodic caller. Without a
- * caller the only bound on a cohort address's server-side archive is W4's overflow cap — a churn
- * policy, not a time bound — and expired rows would persist indefinitely.
+ * `ContentStore.sweepRetention` is the per-index primitive; this periodic caller enumerates every
+ * stored index, independent of the ingest flag and its current cohort.
  *
  * Three properties, and they are the whole design:
  *
  *  - **One instance sweeps.** This is a {@link SupervisedWorker}, driven by the D4 lease exactly
  *    like the fetch worker: an instance that refused the seat sweeps nothing. Two processes
  *    rewriting one tenant's index is the interleaved read-modify-write W9 exists to prevent.
- *  - **Sequential across tenants.** One `sweepRetention` at a time — never `Promise.all` across
+ *  - **Sequential across indexes.** One `sweepRetention` at a time — never `Promise.all` across
  *    addresses (§9.3: TinyCloud drops concurrent responses on one space).
- *  - **Fail closed, and cheap.** A cohort read that fails sweeps NOTHING (it never guesses a tenant
- *    list), one tenant's failure never costs the others theirs, and the pass logs numbers only:
- *    an address appears hashed or not at all (§6.3).
+ *  - **Fail closed, and cheap.** An unreadable directory sweeps NOTHING rather than guessing;
+ *    one index's failure never costs the others theirs, and the pass logs numbers only.
  */
 
 /** Frequent sweeps keep physical deletion close to the 14-day boundary. */
@@ -32,12 +30,24 @@ export interface RetentionSweepTarget {
   }>;
 }
 
+export interface RetentionIndex {
+  source: string;
+  address: string;
+}
+
 export interface IngestRetentionSweeperDeps {
   content: RetentionSweepTarget;
-  /** `IngestModeService.cohort` — the only addresses that HAVE server-side content. */
-  cohort: () => Promise<ReadonlySet<string>>;
-  sources: readonly string[];
+  /** All existing ContentStore indexes, not the feature's current allowlist/cohort. */
+  indexes: () => Promise<readonly RetentionIndex[]>;
   intervalMs?: number;
+}
+
+/** Keep retention active for old data after the ingest feature is switched off. */
+export function shouldStartRetentionSweep(
+  backendIngestEnabled: boolean,
+  existingIndexes: readonly RetentionIndex[],
+): boolean {
+  return backendIngestEnabled || existingIndexes.length > 0;
 }
 
 export interface RetentionPassResult {
@@ -75,49 +85,41 @@ export class IngestRetentionSweeper {
   }
 
   /**
-   * One pass over the cohort. NEVER rejects: this runs from a timer, and a retention sweep that
-   * could reject into a timer callback would be an unhandled rejection on a schedule.
+   * One pass over every stored content index. NEVER rejects: this runs from a timer, and a
+   * retention sweep that could reject into a timer callback would be an unhandled rejection.
    */
   async sweepOnce(): Promise<RetentionPassResult> {
     if (this.passing) return { addresses: 0, swept: 0, errors: 0 };
     this.passing = true;
     try {
-      let cohort: ReadonlySet<string>;
+      let indexes: readonly RetentionIndex[];
       try {
-        cohort = await this.deps.cohort();
+        indexes = await this.deps.indexes();
       } catch {
-        // Fail closed: "I could not read the cohort" is never "there is nobody to sweep" *and*
-        // never a licence to sweep an invented list. Skip the pass; the next one retries.
-        warnRetention(`op=retention-pass result=cohort_unavailable`);
+        warnRetention(`op=retention-pass result=index_directory_unavailable`);
         return { addresses: 0, swept: 0, errors: 1 };
       }
 
       let swept = 0;
       let errors = 0;
       let addresses = 0;
-      for (const source of this.deps.sources) {
-        for (const address of cohort) {
-          addresses += 1;
-          try {
-            // Sequential by construction — one node call at a time, across every tenant.
-            const result = await this.deps.content.sweepRetention({
-              source,
-              address,
-            });
-            swept += result.swept;
-          } catch {
-            // One tenant's substrate failure is not the cohort's. Counted, hashed, and carried on.
-            errors += 1;
-            warnRetention(
-              `op=retention-sweep result=failed source=${source} aid=${hashed(address)}`,
-            );
-          }
+      for (const { source, address } of indexes) {
+        addresses += 1;
+        try {
+          // Sequential by construction — one node call at a time, across every tenant.
+          const result = await this.deps.content.sweepRetention({ source, address });
+          swept += result.swept;
+        } catch {
+          // One tenant's substrate failure is not the directory's. Count and continue.
+          errors += 1;
+          warnRetention(
+            `op=retention-sweep result=failed source=${source} aid=${hashed(address)}`,
+          );
         }
       }
 
       logRetention(
-        `op=retention-pass result=ok sources=${this.deps.sources.length} ` +
-          `tenants=${addresses} swept=${swept} errors=${errors}`,
+        `op=retention-pass result=ok indexes=${addresses} swept=${swept} errors=${errors}`,
       );
       return { addresses, swept, errors };
     } finally {
@@ -125,16 +127,19 @@ export class IngestRetentionSweeper {
     }
   }
 
-  /** Start the periodic pass. The timer is unref'd: retention never holds the process open. */
+  private runPass(): void {
+    void this.sweepOnce().catch(() => {
+      // `sweepOnce` does not reject; this is the belt to that brace.
+      warnRetention(`op=retention-pass result=unexpected_error`);
+    });
+  }
+
+  /** Start with a pass immediately, then sweep periodically without keeping the process open. */
   start(): void {
     if (this.timer !== null) return;
     const intervalMs = this.deps.intervalMs ?? RETENTION_SWEEP_INTERVAL_MS;
-    this.timer = setInterval(() => {
-      void this.sweepOnce().catch(() => {
-        // `sweepOnce` does not reject; this is the belt to that brace.
-        warnRetention(`op=retention-pass result=unexpected_error`);
-      });
-    }, intervalMs);
+    this.runPass();
+    this.timer = setInterval(() => this.runPass(), intervalMs);
     this.timer.unref?.();
   }
 

@@ -104,6 +104,7 @@ import {
   currentContentMaster,
   assertNoContentKey,
   KvContentBlobStore,
+  createContentIndexDirectory,
   validateContentCustodyConfig,
 } from "./services/content-store.js";
 import {
@@ -133,7 +134,10 @@ import {
   KvInstanceLeaseStore,
 } from "./services/ingest-instance.js";
 import { createIngestOnDelivery } from "./services/ingest-nudge.js";
-import { IngestRetentionSweeper } from "./services/ingest-retention.js";
+import {
+  IngestRetentionSweeper,
+  shouldStartRetentionSweep,
+} from "./services/ingest-retention.js";
 import { IngestObservabilityReporter } from "./services/ingest-observability.js";
 import {
   ConnectorDrainWorker,
@@ -420,9 +424,9 @@ async function main() {
       process.exit(1);
       return;
     }
-    // W4 — the content-envelope master (backend-ingest plan §8.1 W4 / DECISIONS D3). Same gate,
-    // same reason, one invariant further: armed, the backend also holds a copy of the meeting
-    // itself. It must SURVIVE redeploys — a deploy that drops it orphans every stored meeting.
+    // W4 — the content-envelope master (backend-ingest plan §8.1 W4 / DECISIONS D3). It is
+    // required while intake is enabled and remains required while old indexes await expiry, so a
+    // later flag-off deployment can still delete its retained rows.
     const contentCustody = validateContentCustodyConfig(process.env);
     if (!contentCustody.ok) {
       console.error(contentCustody.error);
@@ -662,6 +666,7 @@ async function main() {
   // below only when the dark flag is armed; `shutdown` releases its lease so a rolling deploy
   // hands the seat over instead of idling out the TTL.
   let ingestSupervisor: IngestInstanceSupervisor | null = null;
+  const contentIndexDirectory = createContentIndexDirectory(node);
 
   // The connectors webhook MUST be mounted before the JSON body parser and CSRF middleware:
   // the HMAC is computed over the exact bytes Fireflies signed, and Fireflies does not send
@@ -948,12 +953,9 @@ async function main() {
           // replayed delivery.
           retention: contentStore,
         }),
-        // W4/D2a — the retention window is enforced by the instance that HOLDS the seat, so the
-        // 14-day bound is a running sweep rather than a documented intention.
         retention: new IngestRetentionSweeper({
           content: contentStore,
-          cohort: () => connectorWebhooks.modes.cohort(),
-          sources: [DEFAULT_CONNECTOR_SOURCE],
+          indexes: contentIndexDirectory,
         }),
       });
       ingestSupervisor = supervisor;
@@ -979,6 +981,39 @@ async function main() {
         },
         { enabled: () => supervisor.guard.isHolder() },
       ).start();
+    }
+  }
+  // Existing content must keep expiring when backend ingest is disabled or a tenant leaves its
+  // active cohort. The normal ingest supervisor owns the same sweeper while the feature is on;
+  // this retention-only supervisor acquires the same single-instance lease when it is off.
+  if (ingestSupervisor === null) {
+    const existingIndexes = await contentIndexDirectory();
+    if (shouldStartRetentionSweep(backendIngestEnabled(), existingIndexes)) {
+      if (!backendIngestEnabled()) {
+        const contentCustody = validateContentCustodyConfig(process.env);
+        if (!contentCustody.ok) {
+          console.error(contentCustody.error);
+          process.exit(1);
+          return;
+        }
+      }
+      const contentStore = new ContentStore(
+        new KvContentBlobStore(node, backendStorageLane),
+        {
+          purgeLedger:
+            connectorWebhooks?.control ?? new ConnectorControlStore(node),
+        },
+      );
+      const retention = new IngestRetentionSweeper({
+        content: contentStore,
+        indexes: contentIndexDirectory,
+      });
+      const supervisor = new IngestInstanceSupervisor({
+        guard: new IngestInstanceGuard(new KvInstanceLeaseStore(node)),
+        worker: retention,
+      });
+      ingestSupervisor = supervisor;
+      ingestSupervisor.start();
     }
   }
 
