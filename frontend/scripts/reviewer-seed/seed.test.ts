@@ -136,6 +136,8 @@ test("a write without the confirmation is refused before any storage request", a
   expect(() => parseSeedArgs(base)).toThrow(UsageError);
   expect(() => parseSeedArgs([...base, "--dry-run", "--confirm", fake.spaceId])).toThrow(UsageError);
   expect(parseSeedArgs([...base, "--confirm", fake.spaceId]).mode).toEqual({ dryRun: false, confirm: fake.spaceId });
+  for (const host of ["http://tee.node.tinycloud.xyz", "https://tee.node.tinycloud.xyz/", "https://tee.node.tinycloud.xyz@evil.example", "https://evil.example/?x"])
+    expect(() => parseSeedArgs([...base, "--dry-run", "--host", host])).toThrow(UsageError);
 });
 
 test("an owner off the operator's allowlist, or a handle for another space, is refused", async () => {
@@ -210,6 +212,16 @@ test("an interrupted run resumes to the same content, and another revision is re
   expect(readBack.feedCards).toHaveLength(4);
   expect(readBack.voiceNotes).toHaveLength(1);
 
+  // An interrupted run whose space then gained someone else's rows is not resumed.
+  const interrupted = fakeSpace({ failAfterWrites: 12 });
+  await expect(runReviewerSeed(interrupted.space, interrupted.target, write(interrupted.spaceId))).rejects.toThrow("simulated interruption");
+  interrupted.heal();
+  interrupted.databases.get("xyz.tinycloud.tinychat/threads")!.query("INSERT INTO threads VALUES ('mine', 'Mine', 'auto', '2026-01-01', '2026-01-01')").run();
+  const writesBefore = interrupted.writes();
+  await expect(runReviewerSeed(interrupted.space, interrupted.target, write(interrupted.spaceId)))
+    .rejects.toThrow("xyz.tinycloud.tinychat/threads.threads has 1 row(s) the seed did not write");
+  expect(interrupted.writes()).toBe(writesBefore);
+
   fake.databases.get("xyz.tinycloud.tinychat/threads")!.query("UPDATE settings SET value = json_set(value, '$.revision', 99) WHERE key = ?").run(SEED_MARKER_KEY);
   await expect(runReviewerSeed(fake.space, fake.target, write(fake.spaceId))).rejects.toMatchObject({ code: "OTHER_REVISION" });
 });
@@ -246,6 +258,8 @@ test("a grant is accepted only from the target owner, for the target space, to t
     [{ expiry: new Date(now + 48 * 3_600_000) }, "longer than 24 hours"],
     [{ resources: [{ service: "kv", space: fake.spaceId, path: "", actions: ["tinycloud.kv/get"] }] }, "wider than the request"],
     [{ resources: [{ service: "sql", space: fake.spaceId, path: "xyz.tinycloud.tinychat/threads", actions: ["tinycloud.sql/write"] }] }, "wider than the request"],
+    [{ resources: [] }, "does not list its resources"],
+    [{ path: "", actions: ["tinycloud.kv/del"] }, "wider than the request"],
   ];
   for (const [change, message] of refusals) expect(() => assertGrant({ ...grant, ...change }, options, "did:key:z6MkSeed", now)).toThrow(message);
 });

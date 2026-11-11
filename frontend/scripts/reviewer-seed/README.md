@@ -2,7 +2,8 @@
 
 Writes fixed demo data into one fresh TinyCloud Home applications space, for the App Store
 reviewer account (TC-2775). It uses TinyCloud Home's own write paths and reads the result back
-through Home's own readers. It holds no key: the space owner grants this run a short delegation.
+through Home's own readers. It takes no owner key: the space owner grants this run's in-memory
+session key a short delegation.
 
 ## Command
 
@@ -18,7 +19,8 @@ bun frontend/scripts/reviewer-seed/cli.ts \
 ```
 
 1. The CLI makes a session key in memory for this run and writes a capability request
-   (`tinycloud.auth.request`) for it to `--request-out`. It prints the session DID, which is public.
+   (`tinycloud.auth.request`) for it to `--request-out`, which must not exist yet. It prints the
+   session DID, which is public.
 2. The owner grants that request, for example
    `tinycloud --profile <reviewer owner profile> auth grant ./reviewer-seed-request.json > grant.json`.
    The owner's session must already cover the requested capabilities.
@@ -31,14 +33,15 @@ bun frontend/scripts/reviewer-seed/cli.ts \
 | --- | --- | --- |
 | `--space` | yes | The exact applications space id to seed. |
 | `--owner` | yes | The space owner's `did:pkh`. |
-| `--allow-owner` | yes, repeatable | The operator's allowlist. Pass the reviewer DID only. Never read from the environment. |
-| `--request-out` | yes | Where to write the capability request. Not secret. |
+| `--allow-owner` | yes, repeatable | The operator's allowlist. Pass the reviewer DID only. Never read from the environment. It guards against a mistyped `--owner`; the owner's grant is what authorizes the run. |
+| `--request-out` | yes | A new file for the capability request (an existing file is not overwritten). Not secret. |
 | `--dry-run` / `--confirm <space id>` | one of them | A dry run writes nothing. Writing needs `--confirm` set to the same space id as `--space`. |
-| `--host` | no | Node origin. Default `https://tee.node.tinycloud.xyz`. |
+| `--host` | no | Node origin, `https://` with no path. Default `https://tee.node.tinycloud.xyz`. |
 | grant JSON on stdin | yes | The owner's delegation to this run's session key. |
 
-The CLI never reads or prints a private key, a session key or a delegation. It has no key file or key
-environment variable. The session key exists only in the process and goes away when it exits.
+The CLI never reads or prints a private key and never prints or stores the session key or the grant.
+It has no key file or key environment variable. The session key exists only in the process and goes
+away when it exits.
 
 ## Requested capabilities
 
@@ -56,9 +59,11 @@ Writing (`--confirm`):
 | `tinycloud.kv` | `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript/tinychat-reviewer-seed-r1-voice-note` (one key) | get, put |
 | `tinycloud.kv` | `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/tinychat-reviewer-seed-r1-voice-note/` | get, put |
 
-Dry run: `tinycloud.sql` read on `threads`, `home_feed` and `connectors` only.
+Dry run: `tinycloud.sql` read on the five databases above.
 
-No delete, no other app, no other space, no secrets, no encryption.
+No KV delete, no other app, no other space, no secrets, no encryption. SQL write and schema are per
+database, so they would allow deleting rows in those five databases; the seed only inserts, and the
+freshness check is what keeps it off a space in use.
 
 ## Checks before any write
 
@@ -66,18 +71,21 @@ The CLI exits 2 (usage) or 3 (refused) and writes nothing when any check below f
 allowlist, owner/space and confirmation checks run before the capability request is written, so the
 owner is never asked to grant a run that would be refused.
 
-- neither `--dry-run` nor `--confirm` is given, or `--confirm` is not exactly `--space` (`CONFIRMATION_REQUIRED`);
+- neither `--dry-run` nor `--confirm` is given (usage error), or `--confirm` is not exactly `--space`
+  (`CONFIRMATION_REQUIRED`);
 - `--owner` is not on `--allow-owner` (`OWNER_NOT_ALLOWLISTED`);
 - `--space` is not `--owner`'s applications space, or the grant does not match the target (`TARGET_MISMATCH`):
   it must be addressed to this run's session key, issued by `--owner` for `--space` on `--host`,
-  unexpired and at most 24 hours long, and, where it lists its resources, no wider than the request
-  (plus `tinycloud.capabilities/read`, which OpenKey adds);
-- the space is not fresh (`NOT_FRESH`): any row in any table of the `threads` database except
-  `settings`, or of the `home_feed` or `connectors` databases. `settings` holds preferences, such as
-  the default Feed view, that Home may write at sign-in. The check only reads `sqlite_master` and
+  unexpired and at most 24 hours long, list its resources, and be no wider than the request in
+  those resources or its flat path and actions (plus `tinycloud.capabilities/read`, which OpenKey
+  adds). These are the grant's transport fields; the node enforces the signed delegation itself;
+- the space is not fresh (`NOT_FRESH`): any row in any table of the five databases above, except
+  `threads.settings`. `settings` holds preferences, such as the default Feed view, that Home may
+  write at sign-in. When the space has this revision's `in-progress` marker (an interrupted run),
+  only rows with the seed's own ids are allowed. The check only reads `sqlite_master` and
   `COUNT(*)`; it creates nothing;
 - the space has a seed marker from another revision, or one it cannot read (`OTHER_REVISION`);
-- the freshness check cannot read a database (`INSPECTION_FAILED`).
+- the freshness check cannot read a database or count a table (`INSPECTION_FAILED`).
 
 ## What it writes
 
@@ -132,20 +140,24 @@ interrupted run of this revision was finished) or `already-seeded` (nothing writ
 - Rerunning a seeded space (`complete` marker, same revision) writes nothing and reports `already-seeded`.
 - An interrupted run leaves an `in-progress` marker. Rerunning finishes it with the recorded `seededAt`:
   each step skips or repeats identically (cards are content-addressed by identity, messages by id, the
-  voice note row is looked up first, the transcript commit is by revision and hash).
+  voice note row is looked up first, the transcript commit is by revision and hash). It refuses if the
+  space has gained any row the seed did not write.
 - Reset: the operator wipes the reviewer's applications space on the node side (the seed deletes
-  nothing and is not granted delete), then runs the seed again. A wiped space is fresh.
-- Do not run two seeds against one space at once.
+  nothing and is not granted KV delete), then runs the seed again. A wiped space is fresh.
+- Do not run two seeds against one space at once, and keep the reviewer account signed out of Home
+  while the seed runs: the freshness check and the writes are not one transaction.
 
 ## What to check (security review)
 
 - No key input or output: `cli.ts` creates a session-only `TinyCloudNode`; there is no `privateKey`,
   key file or key environment variable, and only the session DID is printed. Errors print only messages.
-- Authority is the owner's grant alone, checked in `args.ts` (`assertGrant`) before it is used.
+- Authority is the owner's grant alone. `args.ts` `assertGrant` checks its transport fields before it
+  is used, and the handle's owner DID comes from the grant, so `seed.ts` checks it against the target again.
 - The allowlist and target come only from flags (`args.ts` `parseSeedArgs`); `seed.ts`
-  `assertSeedTarget` checks the owner, the space and the confirmation before any storage request.
-- The freshness check (`inspectSpace`) is read-only and fails closed on any read error.
-- The request (`seedPermissions`) is exact paths, no delete, one hour. A test checks that the seed and
+  `assertSeedTarget` checks the owner, the space and the confirmation before the request is written.
+  The allowlist is a guard against a mistyped owner, not authority.
+- The freshness check (`inspectSpace`) is read-only and fails closed on any read error or odd count.
+- The request (`seedPermissions`) is exact paths, no KV delete, one hour. A test checks that the seed and
   its read-back touch exactly the requested SQL databases and KV keys.
 - KV calls are made with an empty prefix (`cli.ts` `rootKv`), so keys are the full in-space keys Home
   uses and are not re-rooted under the grant's first path.

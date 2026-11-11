@@ -29,7 +29,9 @@ export function parseSeedArgs(argv: string[]): SeedCliOptions {
   if (values["dry-run"] && values.confirm !== undefined) throw new UsageError("--dry-run writes nothing; drop --confirm");
   if (!values["dry-run"] && values.confirm === undefined) throw new UsageError("Pass --dry-run, or --confirm <the target space id> to write");
   const host = values.host ?? DEFAULT_HOST;
-  if (!/^https:\/\/[^/]+$/.test(host)) throw new UsageError("--host must be an https origin");
+  let url: URL | null = null;
+  try { url = new URL(host); } catch { /* not a URL */ }
+  if (url?.protocol !== "https:" || url.origin !== host) throw new UsageError("--host must be an https origin, such as https://tee.node.tinycloud.xyz");
   return {
     target: { spaceId: values.space!, ownerDid: values.owner!, allowlist: values["allow-owner"]! },
     mode: values["dry-run"] ? { dryRun: true } : { dryRun: false, confirm: values.confirm },
@@ -51,7 +53,9 @@ export function parseGrant(raw: string, requestId: string): PortableDelegation {
 
 /**
  * The grant must be addressed to this run's key, issued by the target owner for the target
- * space on this host, live, short, and (where it lists its resources) no wider than asked.
+ * space on this host, live, short, and list resources no wider than asked (its flat
+ * path/actions too). These are the grant's transport fields; the node enforces the signed
+ * delegation itself, so this refuses an operator mistake rather than a forgery.
  */
 export function assertGrant(delegation: PortableDelegation, options: SeedCliOptions, sessionDid: string, now = Date.now()): void {
   const refuse = (message: string) => { throw new ReviewerSeedRefusal("TARGET_MISMATCH", message); };
@@ -63,13 +67,18 @@ export function assertGrant(delegation: PortableDelegation, options: SeedCliOpti
   const expiry = delegation.expiry instanceof Date ? delegation.expiry.getTime() : Number.NaN;
   if (!(expiry > now)) refuse("The grant has expired or has no expiry");
   if (expiry - now > MAX_GRANT_MS) refuse("The grant lasts longer than 24 hours; grant the request's 1 hour");
+  if (!Array.isArray(delegation.resources) || delegation.resources.length === 0) refuse("The grant does not list its resources");
   const requested = seedPermissions(options.mode);
+  const assertAsked = (rawService: string, path: string, actions: string[]) => {
+    const service = rawService.startsWith("tinycloud.") ? rawService : `tinycloud.${rawService}`;
+    if (service === "tinycloud.capabilities" && actions.every((action) => action === "tinycloud.capabilities/read")) return;
+    const asked = requested.find((entry) => entry.service === service && entry.path === path);
+    if (!asked || actions.some((action) => !asked.actions.includes(action)))
+      refuse(`The grant is wider than the request (${service} ${path || "/"} ${actions.join(",")})`);
+  };
   for (const resource of delegation.resources ?? []) {
-    const service = resource.service.startsWith("tinycloud.") ? resource.service : `tinycloud.${resource.service}`;
     if (resource.space !== options.target.spaceId) refuse(`The grant covers another space (${resource.space})`);
-    if (service === "tinycloud.capabilities" && resource.actions.every((action) => action === "tinycloud.capabilities/read")) continue;
-    const asked = requested.find((entry) => entry.service === service && entry.path === resource.path);
-    if (!asked || resource.actions.some((action) => !asked.actions.includes(action)))
-      refuse(`The grant is wider than the request (${service} ${resource.path || "/"} ${resource.actions.join(",")})`);
+    assertAsked(resource.service, resource.path, resource.actions);
   }
+  for (const action of delegation.actions ?? []) assertAsked(action.split("/")[0]!, delegation.path, [action]);
 }

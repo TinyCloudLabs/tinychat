@@ -54,30 +54,39 @@ export interface ReviewerSeedReport {
   writes: PlannedWrite[];
 }
 
-/** Rows that make a space not fresh, by database and table. `settings` (preferences) is the only table not counted. */
-export interface SpaceInspection { marker: SeedMarker | null; occupied: { database: string; table: string; rows: number }[] }
+/**
+ * Rows found per table of the inspected databases. `seedRows` are rows a run of this revision
+ * writes (by its fixed ids); everything else is someone else's. `settings` (preferences) is not counted.
+ */
+export interface SpaceInspection { marker: SeedMarker | null; occupied: { database: string; table: string; rows: number; seedRows: number }[] }
 
 const FEED_PREFIX = "xyz.tinycloud.tinychat/feed";
+const FEED_NAMES = unwrap(feedResourceNames(FEED_PREFIX, FEED_AGENT.token), "feed resource names");
+/** Every database the seed writes, in the order the freshness check reads them. */
+const INSPECTED_DATABASES = [THREADS_SQL_DB_NAME, HOME_FEED_RESOURCE, FEED_NAMES.outputResource, FEED_NAMES.responseResource, CONNECTORS_SQL_DB_NAME];
+/** The rows this revision writes, by database, table and key column. A resumed run may find these and nothing else. */
+const SEED_ROWS: Record<string, Record<string, { column: string; values: string[] }>> = {
+  [THREADS_SQL_DB_NAME]: { threads: { column: "id", values: [CHAT_THREAD_ID] }, messages: { column: "thread_id", values: [CHAT_THREAD_ID] } },
+  [HOME_FEED_RESOURCE]: { feed_agents: { column: "agent_id", values: [FEED_AGENT.agentId] } },
+  [FEED_NAMES.outputResource]: { feed_cards: { column: "card_id", values: feedCards(new Date(0).toISOString()).map((card) => card.cardId) } },
+  [CONNECTORS_SQL_DB_NAME]: {
+    connector_meeting: { column: "id", values: [`vn-${VOICE_NOTE.sourceId}`] },
+    voice_note_transcript: { column: "source_id", values: [VOICE_NOTE.sourceId] },
+  },
+};
 
 export interface SeedPermission { service: string; space: string; path: string; actions: string[] }
 
 /**
  * Exactly what the seed and its read-back touch in the applications space: the capability
  * request the owner grants to the seed's one-run session key (see ./cli.ts). A dry run
- * only inspects, so it asks to read the three databases the freshness check reads.
+ * only inspects, so it asks to read the databases the freshness check reads.
  */
 export function seedPermissions(mode: ReviewerSeedMode): SeedPermission[] {
-  if (mode.dryRun) return [THREADS_SQL_DB_NAME, HOME_FEED_RESOURCE, CONNECTORS_SQL_DB_NAME]
-    .map((path) => ({ service: "tinycloud.sql", space: "applications", path, actions: ["tinycloud.sql/read"] }));
-  const names = unwrap(feedResourceNames(FEED_PREFIX, FEED_AGENT.token), "feed resource names");
-  const sql = (path: string) => ({ service: "tinycloud.sql", space: "applications", path, actions: ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"] });
+  if (mode.dryRun) return INSPECTED_DATABASES.map((path) => ({ service: "tinycloud.sql", space: "applications", path, actions: ["tinycloud.sql/read"] }));
   const kv = (path: string) => ({ service: "tinycloud.kv", space: "applications", path, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] });
   return [
-    sql(THREADS_SQL_DB_NAME),
-    sql(HOME_FEED_RESOURCE),
-    sql(names.outputResource),
-    sql(names.responseResource),
-    sql(CONNECTORS_SQL_DB_NAME),
+    ...INSPECTED_DATABASES.map((path) => ({ service: "tinycloud.sql", space: "applications", path, actions: ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"] })),
     kv(transcriptKvKey(VOICE_NOTE_SOURCE, VOICE_NOTE.sourceId)),
     kv(`${transcriptRevKvPrefix(VOICE_NOTE_SOURCE)}${VOICE_NOTE.sourceId}/`),
   ];
@@ -118,19 +127,26 @@ function parseMarker(raw: unknown): SeedMarker | "foreign" {
 }
 
 /**
- * Read-only: lists the tables of the threads, home_feed and connectors databases and counts
- * their rows, and reads the seed marker. Never creates a table (Home's own readers do, so
- * they are not used here). A database that does not exist yet lists no tables.
+ * Read-only: lists the tables of every database the seed writes, counts their rows (and how
+ * many of them are this revision's own), and reads the seed marker. Never creates a table
+ * (Home's own readers do, so they are not used here). A database that does not exist yet
+ * lists no tables. Any read that fails or returns an unexpected shape refuses the run.
  */
 export async function inspectSpace(space: SeedSpace): Promise<SpaceInspection> {
   const occupied: SpaceInspection["occupied"] = [];
   let marker: SeedMarker | null = null;
-  for (const database of [THREADS_SQL_DB_NAME, HOME_FEED_RESOURCE, CONNECTORS_SQL_DB_NAME]) {
+  for (const database of INSPECTED_DATABASES) {
     const db = space.sql.db(database);
     const read = async (sql: string, params: string[] = []) => {
       const result = await db.query(sql, params);
       if (!result.ok) throw new ReviewerSeedRefusal("INSPECTION_FAILED", `Could not read ${database}: ${result.error.code} ${result.error.message}`);
       return result.data.rows as unknown[][];
+    };
+    const count = async (table: string, where = "", params: string[] = []) => {
+      const [row] = await read(`SELECT COUNT(*) FROM "${table.replaceAll('"', '""')}"${where}`, params);
+      const rows = Number(row?.[0]);
+      if (!Number.isSafeInteger(rows) || rows < 0) throw new ReviewerSeedRefusal("INSPECTION_FAILED", `Could not count ${database}.${table}`);
+      return rows;
     };
     const tables = (await read("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"))
       .map((row) => String(row[0]));
@@ -144,9 +160,11 @@ export async function inspectSpace(space: SeedSpace): Promise<SpaceInspection> {
         }
         continue;
       }
-      const [count] = await read(`SELECT COUNT(*) FROM "${table.replaceAll('"', '""')}"`);
-      const rows = Number(count?.[0] ?? 0);
-      if (rows > 0) occupied.push({ database, table, rows });
+      const rows = await count(table);
+      if (rows === 0) continue;
+      const own = SEED_ROWS[database]?.[table];
+      const seedRows = own ? await count(table, ` WHERE "${own.column}" IN (${own.values.map(() => "?").join(", ")})`, own.values) : 0;
+      occupied.push({ database, table, rows, seedRows });
     }
   }
   return { marker, occupied };
@@ -154,13 +172,12 @@ export async function inspectSpace(space: SeedSpace): Promise<SpaceInspection> {
 
 /** Every write the seed makes, in order. The same list is the dry-run output. */
 export function planSeed(seededAt: string): PlannedWrite[] {
-  const names = unwrap(feedResourceNames(FEED_PREFIX, FEED_AGENT.token), "feed resource names");
   return [
     { surface: "settings", database: THREADS_SQL_DB_NAME, detail: `setSetting ${SEED_MARKER_KEY} = revision ${SEED_REVISION}, in-progress (creates Home's threads tables)` },
     { surface: "feed", database: HOME_FEED_RESOURCE, detail: "createHomeFeedSource().load() (creates Home's Feed registry tables)" },
-    { surface: "feed", database: `${names.outputResource}, ${names.responseResource}`, detail: "initializeFeedDatabases" },
+    { surface: "feed", database: `${FEED_NAMES.outputResource}, ${FEED_NAMES.responseResource}`, detail: "initializeFeedDatabases" },
     ...feedCards(seededAt).map((card): PlannedWrite => ({
-      surface: "feed", database: names.outputResource, detail: `publishFeedCard ${card.cardId} r${card.revision} "${card.title}"` })),
+      surface: "feed", database: FEED_NAMES.outputResource, detail: `publishFeedCard ${card.cardId} r${card.revision} "${card.title}"` })),
     { surface: "feed", database: HOME_FEED_RESOURCE, detail: `register agent ${FEED_AGENT.agentId} ("${FEED_AGENT.label}") in feed_agents` },
     ...chatMessages(seededAt).map((item): PlannedWrite => ({
       surface: "chat", database: THREADS_SQL_DB_NAME, detail: `appendMessage ${CHAT_THREAD_ID} ${item.message.role} ${item.message.id}` })),
@@ -184,14 +201,13 @@ async function applySeed(space: SeedSpace, seededAt: string): Promise<void> {
   // Feed: Home's reader creates its registry; the agent's databases and cards go through the Feed SDK.
   // The agent row is written last, so Home never lists an agent whose cards are not there yet.
   await createHomeFeedSource(tcw).load();
-  const names = unwrap(feedResourceNames(FEED_PREFIX, FEED_AGENT.token), "feed resource names");
-  const output = space.sql.db(names.outputResource);
-  unwrap(await initializeFeedDatabases({ output, responses: space.sql.db(names.responseResource) }), "initializeFeedDatabases");
+  const output = space.sql.db(FEED_NAMES.outputResource);
+  unwrap(await initializeFeedDatabases({ output, responses: space.sql.db(FEED_NAMES.responseResource) }), "initializeFeedDatabases");
   for (const card of feedCards(seededAt)) unwrap(await publishFeedCard(output, card), `publishFeedCard ${card.cardId}`);
   unwrap(await space.sql.db(HOME_FEED_RESOURCE).execute(
     `INSERT INTO feed_agents (agent_id, agent_did, label, output_resource, response_resource, authorization_json)
      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO NOTHING`,
-    [FEED_AGENT.agentId, space.did, FEED_AGENT.label, names.outputResource, names.responseResource,
+    [FEED_AGENT.agentId, space.did, FEED_AGENT.label, FEED_NAMES.outputResource, FEED_NAMES.responseResource,
       JSON.stringify({ seed: SEED_NAME, revision: SEED_REVISION })],
   ), "register feed agent");
 
@@ -211,7 +227,8 @@ async function applySeed(space: SeedSpace, seededAt: string): Promise<void> {
 /**
  * Seeds `space` once. Refuses (ReviewerSeedRefusal) before any write unless the owner is
  * allowlisted, the handle is bound to that owner's applications space, the run is
- * confirmed (or a dry run), and the space is fresh or carries this revision's marker.
+ * confirmed (or a dry run), and the space is fresh, or holds only this revision's own rows
+ * under its in-progress marker (an interrupted run).
  */
 export async function runReviewerSeed(space: SeedSpace, target: ReviewerSeedTarget, mode: ReviewerSeedMode,
   now: () => Date = () => new Date()): Promise<ReviewerSeedReport> {
@@ -219,8 +236,9 @@ export async function runReviewerSeed(space: SeedSpace, target: ReviewerSeedTarg
   const { marker, occupied } = await inspectSpace(space);
   if (marker && marker.revision !== SEED_REVISION)
     throw new ReviewerSeedRefusal("OTHER_REVISION", `The space was seeded at revision ${marker.revision}; this is revision ${SEED_REVISION}. Wipe the space, then run again.`);
-  if (!marker && occupied.length)
-    throw new ReviewerSeedRefusal("NOT_FRESH", `The space is not fresh: ${occupied.map((o) => `${o.database}.${o.table} has ${o.rows} row(s)`).join("; ")}`);
+  const foreign = marker ? occupied.filter((o) => o.rows > o.seedRows) : occupied;
+  if (marker?.state !== "complete" && foreign.length)
+    throw new ReviewerSeedRefusal("NOT_FRESH", `The space is not fresh: ${foreign.map((o) => `${o.database}.${o.table} has ${o.rows - (marker ? o.seedRows : 0)} row(s) the seed did not write`).join("; ")}`);
 
   const seededAt = marker?.seededAt ?? now().toISOString();
   const report = (status: ReviewerSeedReport["status"], writes: PlannedWrite[]): ReviewerSeedReport =>

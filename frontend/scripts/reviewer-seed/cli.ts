@@ -29,7 +29,8 @@ async function main(argv: string[]): Promise<void> {
     kind: "tinycloud.auth.request", version: 1, requestId: `reviewer-seed-${randomUUID()}`, createdAt: new Date().toISOString(),
     sessionDid, requested: seedPermissions(options.mode), requestedExpiry: "1h",
   };
-  writeFileSync(options.requestOut, `${JSON.stringify(request, null, 2)}\n`);
+  // A fresh file only: a typo never overwrites something else.
+  writeFileSync(options.requestOut, `${JSON.stringify(request, null, 2)}\n`, { flag: "wx" });
   process.stderr.write([
     `Seed session key (this run only): ${sessionDid}`,
     `Capability request (${options.mode.dryRun ? "read-only, dry run" : "read and write"}) written to ${options.requestOut}.`,
@@ -42,7 +43,9 @@ async function main(argv: string[]): Promise<void> {
   const delegation = parseGrant(Buffer.concat(chunks).toString("utf8"), request.requestId);
   assertGrant(delegation, options, sessionDid);
   const access = await node.useDelegation(delegation);
-  const space = { did: options.target.ownerDid, spaceId: access.spaceId, sql: access.sql, kv: rootKv(access.kv) } as unknown as SeedSpace;
+  // The handle's owner is the grant's issuer, so seed.ts checks the grant against the target too.
+  const did = `did:pkh:eip155:${access.delegation.chainId}:${access.delegation.ownerAddress}`;
+  const space = { did, spaceId: access.spaceId, sql: access.sql, kv: rootKv(access.kv) } as unknown as SeedSpace;
   const report = await runReviewerSeed(space, options.target, options.mode);
   const readBack = options.mode.dryRun ? undefined : await readBackSeed(space);
   process.stdout.write(`${JSON.stringify({ ...report, ...(readBack ? { readBack } : {}) }, null, 2)}\n`);
