@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
+import { ANSWER_UNDO_HINT, AnswerOptions, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
@@ -93,7 +94,9 @@ function AnswerForm({ entry, source, onSaved }: { entry: HomeFeedEntry; source: 
   const [error, setError] = useState<string | null>(null);
   const [followup, setFollowup] = useState(false);
   const pendingResponse = useRef<NewFeedResponse | null>(null);
+  const hold = useUndoWindow(() => void save());
   const saved = entry.state.response;
+  const waiting = saving || hold.seconds !== null;
   async function save() {
     if (saving || (!text.trim() && !choice)) return;
     setSaving(true); setError(null);
@@ -117,20 +120,27 @@ function AnswerForm({ entry, source, onSaved }: { entry: HomeFeedEntry; source: 
     } finally { setSaving(false); }
   }
   function editText(value: string) { setText(value); pendingResponse.current = null; }
+  // One tap chooses: the option waits out the undo window, then is saved with any typed answer.
+  function choose(id: string) {
+    if (waiting) return;
+    if (id !== choice) pendingResponse.current = null;
+    setChoice(id); hold.start();
+  }
+  function undo() { hold.undo(); setChoice(undefined); pendingResponse.current = null; }
   if (!entry.state.card.needsResponse) return null;
   return <div className="mt-4 space-y-3">
     <ResponseStatus entry={entry} />
-    {saved && !followup ? <button type="button" className="min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setFollowup(true)}>Add follow-up</button> : <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="space-y-3">
+    {saved && !followup ? <button type="button" className="min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setFollowup(true)}>Add follow-up</button> : <form onSubmit={(event) => { event.preventDefault(); if (!waiting && text.trim()) hold.start(); }} className="space-y-3">
       {saved && <p className="text-xs text-muted-foreground">A follow-up does not cancel an action already received by the agent.</p>}
-      {!!entry.state.card.choices?.length && <fieldset disabled={saving} className="flex flex-wrap gap-2">
-        <legend className="mb-2 text-sm font-medium">Choose an option</legend>
-        {entry.state.card.choices.map((option) => <label key={option.id} className={`inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm ${choice === option.id ? "border-primary bg-primary/10" : "border-border"}`}>
-          <input type="radio" name={`answer-${keyOf(entry)}`} value={option.id} checked={choice === option.id} onChange={() => { setChoice(option.id); pendingResponse.current = null; }} />{option.label}
-        </label>)}
-      </fieldset>}
-      <label className="block text-sm font-medium">Your answer<textarea aria-label="Your answer" value={text} disabled={saving} onInput={(event) => editText(event.currentTarget.value)} className="mt-2 min-h-24 w-full resize-y rounded-xl border border-border bg-background p-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" /></label>
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      <button type="submit" disabled={saving || (!text.trim() && !choice)} className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">{saving ? "Saving answer…" : saved ? "Save follow-up" : "Save answer"}</button>
+      {!!entry.state.card.choices?.length && <AnswerOptions options={entry.state.card.choices} chosen={choice} seconds={hold.seconds} sending={saving} onChoose={(option) => choose(option.id)} onUndo={undo} />}
+      <label className="block text-sm font-medium">Your answer<textarea aria-label="Your answer" value={text} disabled={waiting} onInput={(event) => editText(event.currentTarget.value)} className="mt-2 min-h-24 w-full resize-y rounded-xl border border-border bg-background p-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" /></label>
+      <p className="text-xs text-muted-foreground">{ANSWER_UNDO_HINT}</p>
+      {error && <div role="alert" className="text-sm text-destructive"><p>{error}</p><button type="button" disabled={waiting} onClick={() => void save()} className="mt-1 min-h-9 underline">Try again</button></div>}
+      <div className="flex flex-wrap gap-2">
+        <button type="submit" disabled={waiting || !text.trim()} className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">{waiting && !choice ? sendingLabel(hold.seconds) : saved ? "Send follow-up" : "Send answer"}</button>
+        {hold.seconds !== null && !choice && <button type="button" onClick={undo} className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium">Undo</button>}
+      </div>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
     </form>}
   </div>;
 }
