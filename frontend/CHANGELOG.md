@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.12
+
+### Minor Changes
+
+- 680789e: TinyCloud Home for Mac starts a recording from anywhere: press ⌘⇧⌥R (Command-Shift-Option-R), or choose Start recording from its menu-bar icon. The app comes to the front with the recorder open and recording; if a recording is already going, it opens that recorder instead. The menu-bar icon also has Open TinyCloud Home.
+
 ## 0.14.0-beta.11
 
 ### Patch Changes
