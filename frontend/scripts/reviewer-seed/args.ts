@@ -52,12 +52,41 @@ export function parseGrant(raw: string, requestId: string): PortableDelegation {
 }
 
 /**
- * The grant must be addressed to this run's key, issued by the target owner for the target
- * space on this host, live, short, and list resources no wider than asked (its flat
- * path/actions too). These are the grant's transport fields; the node enforces the signed
- * delegation itself, so this refuses an operator mistake rather than a forgery.
+ * The authority a compact UCAN grant signs: its audience, expiry and capabilities, read from
+ * the signed payload rather than the transport fields beside it. The signature and the
+ * delegation chain back to the owner are verified by the node when the grant is used.
+ * Anything that is not a compact UCAN is refused.
  */
-export function assertGrant(delegation: PortableDelegation, options: SeedCliOptions, sessionDid: string, now = Date.now()): void {
+export function signedGrant(authorization: string): { audience: string; expiry: number; capabilities: { resource: string; actions: string[] }[] } {
+  const refuse = (message: string): never => { throw new ReviewerSeedRefusal("TARGET_MISMATCH", message); };
+  const parts = authorization.replace(/^Bearer /i, "").split(".");
+  if (parts.length !== 3 || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) refuse("The grant is not a compact UCAN");
+  let payload: unknown;
+  try { payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8")); } catch { refuse("The grant's signed payload is unreadable"); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return refuse("The grant's signed payload is unreadable");
+  const aud = "aud" in payload ? payload.aud : undefined;
+  const exp = "exp" in payload ? payload.exp : undefined;
+  const att = "att" in payload ? payload.att : undefined;
+  if (typeof aud !== "string" || typeof exp !== "number" || !Number.isFinite(exp)) return refuse("The grant's signed payload has no audience or expiry");
+  if (!att || typeof att !== "object" || Array.isArray(att)) return refuse("The grant's signed payload has no capabilities");
+  const capabilities = Object.entries(att).map(([resource, abilities]) => {
+    if (!abilities || typeof abilities !== "object" || Array.isArray(abilities)) return refuse(`The grant signs a malformed capability (${resource})`);
+    return { resource, actions: Object.keys(abilities) };
+  });
+  if (!capabilities.length || capabilities.some((capability) => !capability.actions.length)) refuse("The grant signs no capabilities");
+  return { audience: aud, expiry: exp * 1000, capabilities };
+}
+
+/**
+ * The grant must be addressed to this run's key, issued by the target owner for the target
+ * space on this host, live, at most 24 hours, and no wider than asked. Both its transport
+ * fields and its signed payload (`signedGrant`) are checked here, before use, and its `cid`
+ * must be the CID of those signed bytes (`cidOf`, the SDK's `computeDelegationCid`): the node
+ * enforces the delegation the CID names. The node then verifies the signature and the chain
+ * to the owner.
+ */
+export function assertGrant(delegation: PortableDelegation, options: SeedCliOptions, sessionDid: string,
+  cidOf: (authorization: string) => string, now = Date.now()): void {
   const refuse = (message: string) => { throw new ReviewerSeedRefusal("TARGET_MISMATCH", message); };
   if (delegation?.delegateDID?.split("#")[0] !== sessionDid) refuse("The grant is not addressed to this run's session key");
   if (delegation.spaceId !== options.target.spaceId) refuse("The grant is for a different space");
@@ -65,8 +94,11 @@ export function assertGrant(delegation: PortableDelegation, options: SeedCliOpti
     refuse("The grant was not issued by the target owner");
   if (delegation.host !== undefined && delegation.host.replace(/\/$/, "") !== options.host) refuse("The grant names a different node");
   const expiry = delegation.expiry instanceof Date ? delegation.expiry.getTime() : Number.NaN;
-  if (!(expiry > now)) refuse("The grant has expired or has no expiry");
-  if (expiry - now > MAX_GRANT_MS) refuse("The grant lasts longer than 24 hours; grant the request's 1 hour");
+  const assertLifetime = (end: number) => {
+    if (!(end > now)) refuse("The grant has expired or has no expiry");
+    if (end - now > MAX_GRANT_MS) refuse("The grant lasts longer than 24 hours; grant the request's 1 hour");
+  };
+  assertLifetime(expiry);
   if (!Array.isArray(delegation.resources) || delegation.resources.length === 0) refuse("The grant does not list its resources");
   const requested = seedPermissions(options.mode);
   const assertAsked = (rawService: string, path: string, actions: string[]) => {
@@ -81,4 +113,18 @@ export function assertGrant(delegation: PortableDelegation, options: SeedCliOpti
     assertAsked(resource.service, resource.path, resource.actions);
   }
   for (const action of delegation.actions ?? []) assertAsked(action.split("/")[0]!, delegation.path, [action]);
+
+  // The signed payload: what the node will actually enforce, under the CID that names it.
+  const authorization = delegation.delegationHeader?.Authorization ?? "";
+  const signed = signedGrant(authorization);
+  if (cidOf(authorization) !== delegation.cid) refuse("The grant's CID does not match its signed bytes");
+  if (signed.audience.split("#")[0] !== sessionDid) refuse("The grant's signed audience is not this run's session key");
+  assertLifetime(signed.expiry);
+  for (const { resource, actions } of signed.capabilities) {
+    const match = /^(tinycloud:[^/]+)\/([a-z]+)\/(.*)$/.exec(resource);
+    if (!match) return refuse(`The grant signs an unexpected resource (${resource})`);
+    const [, space, service, path] = match;
+    if (space !== options.target.spaceId) refuse(`The grant signs another space (${space})`);
+    assertAsked(service!, path!, actions);
+  }
 }
