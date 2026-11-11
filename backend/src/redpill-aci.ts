@@ -2,7 +2,9 @@ import { connectAci } from "@phala/aci-verifier/runtime";
 import type { AciConnection, ConnectAciOptions } from "@phala/aci-verifier/runtime";
 
 export const PRIVATE_RESPONSE_UNVERIFIED_MESSAGE =
-  "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again.";
+  "The model service could not complete this request. Try again later.";
+export const STREAMED_RESPONSE_UNVERIFIED_MESSAGE =
+  "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
 export const DEFAULT_RED_PILL_BASE_URL = "https://tee.redpill.ai/v1";
 
 export function validateRedPillBaseUrl(baseURL: string): string {
@@ -52,7 +54,7 @@ export class RedPillResponseLimitError extends Error {
 
 type AciConnector = (options: ConnectAciOptions) => Promise<AciConnection>;
 
-const MAX_BUFFERED_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_VERIFIED_RESPONSE_BYTES = 8 * 1024 * 1024;
 const RECEIPT_HISTORY_SIZE = 1000;
 const clients = new Map<string, typeof fetch>();
 
@@ -83,38 +85,83 @@ function signalReason(signal?: AbortSignal | null): unknown {
   return signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
 }
 
-async function bufferResponse(response: Response, signal?: AbortSignal | null): Promise<Uint8Array[]> {
-  const reader = response.body?.getReader();
-  if (!reader) throw new RedPillAttestationError();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  const cancel = () => { void reader.cancel(signalReason(signal)).catch(() => {}); };
-  signal?.addEventListener("abort", cancel, { once: true });
-  try {
-    for (;;) {
-      if (signal?.aborted) throw signalReason(signal);
-      const chunk = await reader.read();
-      if (signal?.aborted) throw signalReason(signal);
-      if (chunk.done) return chunks;
-      size += chunk.value.byteLength;
-      if (size > MAX_BUFFERED_RESPONSE_BYTES) throw new RedPillResponseLimitError();
-      chunks.push(chunk.value);
-    }
-  } catch (error) {
-    if (signal?.aborted) throw signalReason(signal);
-    if (error instanceof RedPillResponseLimitError) throw error;
-    throw new RedPillAttestationError();
-  } finally {
-    signal?.removeEventListener("abort", cancel);
-    try { reader.releaseLock(); } catch { /* Preserve the verification outcome. */ }
-  }
+function isDoneFrame(frame: string): boolean {
+  return frame.split(/\r?\n/).some((line) => {
+    const trimmed = line.trimStart();
+    return trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]";
+  });
 }
 
-function replayResponse(chunks: Uint8Array[], response: Response): Response {
+function verifiedResponse(response: Response, aci: AciConnection, receiptId: string, signal?: AbortSignal | null): Response {
+  const reader = response.body?.getReader();
+  if (!reader) throw new RedPillAttestationError();
+  let size = 0;
+  let settled = false;
+  let cancelled = false;
+  let buffer = "";
+  let sawDone = false;
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const cleanup = () => {
+    if (settled) return;
+    settled = true;
+    signal?.removeEventListener("abort", cancelOnAbort);
+    try { reader.releaseLock(); } catch { /* Keep the terminal stream result. */ }
+  };
+  const cancelOnAbort = () => { void reader.cancel(signalReason(signal)).catch(() => {}); };
+  signal?.addEventListener("abort", cancelOnAbort, { once: true });
   const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) controller.enqueue(chunk);
-      controller.close();
+    async pull(controller) {
+      if (cancelled) return;
+      try {
+        for (;;) {
+          if (signal?.aborted) throw signalReason(signal);
+          let separator = buffer.indexOf("\n\n");
+          while (separator !== -1) {
+            const frame = buffer.slice(0, separator + 2);
+            buffer = buffer.slice(separator + 2);
+            separator = buffer.indexOf("\n\n");
+            if (isDoneFrame(frame)) sawDone = true;
+            else if (!sawDone) {
+              controller.enqueue(encoder.encode(frame));
+              return;
+            }
+          }
+          const chunk = await reader.read();
+          if (signal?.aborted) throw signalReason(signal);
+          if (!chunk.done) {
+            size += chunk.value.byteLength;
+            if (size > MAX_VERIFIED_RESPONSE_BYTES) {
+              void reader.cancel().catch(() => {});
+              throw new RedPillResponseLimitError();
+            }
+            buffer += decoder.decode(chunk.value, { stream: true });
+            continue;
+          }
+          buffer += decoder.decode();
+          if (!sawDone || buffer.trim()) throw new RedPillAttestationError();
+          const audit = await aci.verifyReceipt(receiptId);
+          if (signal?.aborted) throw signalReason(signal);
+          if (audit.transcript.verdict.verified !== true) throw new RedPillAttestationError();
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\ndata: [DONE]\n\n`,
+          ));
+          cleanup();
+          controller.close();
+          return;
+        }
+      } catch (error) {
+        cleanup();
+        if (signal?.aborted) controller.error(signalReason(signal));
+        else if (error instanceof RedPillAttestationError || error instanceof RedPillResponseLimitError) controller.error(error);
+        else controller.error(new RedPillAttestationError());
+      }
+    },
+    async cancel(reason) {
+      cancelled = true;
+      signal?.removeEventListener("abort", cancelOnAbort);
+      await reader.cancel(reason).catch(() => {});
+      cleanup();
     },
   });
   const headers = new Headers();
@@ -184,18 +231,8 @@ export function createRedPillAciFetch(
       throw new RedPillAttestationError();
     }
 
-    const chunks = await bufferResponse(response, signal);
     if (signal?.aborted) throw signalReason(signal);
-    try {
-      const audit = await aci.verifyReceipt(receiptId);
-      if (audit.transcript.verdict.verified !== true) throw new RedPillAttestationError();
-    } catch (error) {
-      if (signal?.aborted) throw signalReason(signal);
-      if (error instanceof RedPillAttestationError) throw error;
-      throw new RedPillAttestationError();
-    }
-    if (signal?.aborted) throw signalReason(signal);
-    return replayResponse(chunks, response);
+    return verifiedResponse(response, aci, receiptId, signal);
   };
 }
 

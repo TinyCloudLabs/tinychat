@@ -45,7 +45,7 @@ import {
 import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
 import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
 
-import { RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, redPillAciFetch } from "../redpill-aci.js";
+import { RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
   creditsPerKInput: 200,
@@ -319,7 +319,12 @@ export async function* parseSseJson(
       throwIfAborted(signal);
       let chunk: ReadableStreamReadResult<Uint8Array> | IteratorResult<Uint8Array>;
       try { chunk = await withAbort(reader ? reader.read() : iterator!.next(), signal); }
-      catch (error) { throwIfAborted(signal); throw error instanceof StreamFailure ? error : new StreamFailure("upstream_failed"); }
+      catch (error) {
+        throwIfAborted(signal);
+        if (error instanceof RedPillAttestationError) throw new StreamFailure("private_response_unverified_streamed");
+        if (error instanceof RedPillResponseLimitError) throw new StreamFailure("result_size_limit");
+        throw error instanceof StreamFailure ? error : new StreamFailure("upstream_failed");
+      }
       throwIfAborted(signal);
       if (chunk.done) throw new StreamFailure("upstream_incomplete");
       buffer += decoder.decode(chunk.value, { stream: true });
@@ -332,7 +337,6 @@ export async function* parseSseJson(
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (data === "[DONE]") return;
-          if (!data) continue;
           let value: unknown;
           try { value = JSON.parse(data); } catch { throw new StreamFailure("upstream_incomplete"); }
           if (!value || typeof value !== "object" || Array.isArray(value)) throw new StreamFailure("upstream_incomplete");
@@ -350,6 +354,10 @@ export async function* parseSseJson(
 
 function contentFrame(text: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
+}
+
+function receiptVerificationFrame(): string {
+  return `data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\n`;
 }
 
 function toolActivityFrame(name: string, status: "running" | "done" | "error", id?: string): string {
@@ -1014,7 +1022,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
 }
 
-export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "private_response_unverified" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
+export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "private_response_unverified" | "private_response_unverified_streamed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
 class StreamFailure extends Error {
@@ -1211,9 +1219,9 @@ class AgentStreamOwner {
     }
   }
 
-  complete(result: OrchestrateResult, terminalErrorCode?: StreamErrorCode): Promise<void> {
+  complete(result: OrchestrateResult, terminalErrorCode?: StreamErrorCode, receiptVerified = false): Promise<void> {
     if (result.errorCode) return this.fail(new StreamFailure(result.errorCode));
-    if (this.claim(terminalErrorCode ?? "success")) void this.deliver(result, undefined, !terminalErrorCode);
+    if (this.claim(terminalErrorCode ?? "success")) void this.deliver(result, undefined, !terminalErrorCode, receiptVerified);
     return this.closed;
   }
 
@@ -1239,17 +1247,20 @@ class AgentStreamOwner {
     return true;
   }
 
-  private async deliver(result?: OrchestrateResult, code?: StreamErrorCode, includeMetadata = true): Promise<void> {
+  private async deliver(result?: OrchestrateResult, code?: StreamErrorCode, includeMetadata = true, receiptVerified = false): Promise<void> {
     try {
       if (this.busy) await this.busy;
       if (this.drain) await this.drain;
       if (!this.viable()) return;
       if (this.partialFrame) await this.writeBytes("\n\n", true);
-      if (code) {
+      if (code === "private_response_unverified_streamed") {
+        await this.writeBytes(contentFrame(`\n\n${STREAMED_RESPONSE_UNVERIFIED_MESSAGE}`), true);
+      } else if (code) {
         await this.writeBytes(`data: ${JSON.stringify({ stream_error: { code }, choices: [{ delta: { content: "\n\nThis reply was interrupted before it finished. Please try again." } }] })}\n\n`, true);
       } else if (result && includeMetadata) {
         if (result.completionId) await this.writeBytes(idFrame(result.completionId), true);
         await this.writeBytes(usageFrame(result.promptTokens, result.completionTokens), true);
+        if (receiptVerified) await this.writeBytes(receiptVerificationFrame(), true);
       }
       await this.writeBytes("data: [DONE]\n\n", true);
       if (!this.viable()) return;
@@ -1611,7 +1622,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           completionId: final.answerIsProviderVerbatim && !compositeAnswer ? final.finalProviderCompletionId ?? "" : "" });
       } else {
         const code = result.errorCode ?? final?.code;
-        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "private_response_unverified", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
+        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "private_response_unverified", "private_response_unverified_streamed", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
         await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed"));
       }
       return;
@@ -1708,7 +1719,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       }
     }
     // Also await an already claimed timeout/cancellation terminal's drain.
-    await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode);
+    await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode, true);
     } finally { releaseAccess?.(); }
   });
 }

@@ -124,11 +124,57 @@ describe("streamChat context-overflow classification (§C.12)", () => {
       { status: 502, headers: { "content-type": "application/json" } },
     ));
     expect(error).toMatchObject({
-      message: "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again.",
+      message: "The model service could not complete this request. Try again later.",
     });
     expect(error.message).not.toContain("RedPill");
     expect(error.message).not.toContain("receipt rejected");
     expect(error).not.toBeInstanceOf(ContextOverflowError);
+  });
+  test("shows a verified mark only after the explicit receipt event", async () => {
+    const verified: string[] = [];
+    const yielded: string[] = [];
+    globalThis.fetch = (async () => new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Reply" } }] })}\n\n`,
+      `data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""), { status: 200 })) as typeof fetch;
+    for await (const text of streamChat({
+      backendUrl: "http://backend.test", sessionStore, model: "z-ai/glm-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      onReceiptVerification: (status) => verified.push(status),
+    })) yielded.push(text);
+    expect(yielded).toEqual(["Reply"]);
+    expect(verified).toEqual(["verified"]);
+  });
+
+  test("keeps a failed streamed reply visible without setting verified, and absent verdict stays unmarked", async () => {
+    const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+    const statuses: string[] = [];
+    const frames = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Partial." } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: `\n\n${warning}` } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    globalThis.fetch = (async () => new Response(frames.join(""), { status: 200 })) as typeof fetch;
+    const yielded: string[] = [];
+    for await (const text of streamChat({
+      backendUrl: "http://backend.test", sessionStore, model: "z-ai/glm-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      onReceiptVerification: (status) => statuses.push(status),
+    })) yielded.push(text);
+    expect(yielded.at(-1)).toBe(`Partial.\n\n${warning}`);
+    expect(statuses).toEqual([]);
+
+    globalThis.fetch = (async () => new Response(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "No verdict." } }] })}\n\ndata: [DONE]\n\n`,
+      { status: 200 },
+    )) as typeof fetch;
+    for await (const _ of streamChat({
+      backendUrl: "http://backend.test", sessionStore, model: "z-ai/glm-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      onReceiptVerification: (status) => statuses.push(status),
+    })) { /* consume */ }
+    expect(statuses).toEqual([]);
   });
 });
 

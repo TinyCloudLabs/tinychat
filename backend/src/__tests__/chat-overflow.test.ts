@@ -234,12 +234,38 @@ describe("POST /api/chat attestation gate", () => {
       expect(res.status).toBe(502);
       const body = await res.text();
       expect(body).toContain("private_response_unverified");
-      expect(body).toContain("isn't shown");
+      expect(body).toContain("The model service could not complete this request. Try again later.");
       expect(body).not.toContain("synthetic receipt-verification failure");
       expect(body).not.toContain("must not be shown");
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+  test("keeps streamed text and appends one gateway warning when receipt verification fails", async () => {
+    const encoder = new TextEncoder();
+    let sentFrame = false;
+    const redpillFetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sentFrame) {
+          sentFrame = true;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "visible streamed text" } }] })}\n\n`));
+        } else {
+          controller.error(new RedPillAttestationError());
+        }
+      },
+    }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    const res = await post(createApp(undefined, redpillFetch), JSON.stringify({
+      model: OFFERED_MODEL,
+      messages: [{ role: "user", content: "synthetic question" }],
+    }));
+    const body = await res.text();
+    const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+    expect(res.status).toBe(200);
+    expect(body).toContain("visible streamed text");
+    expect(body.split(warning).length - 1).toBe(1);
+    expect(body).not.toContain("receipt_verification");
+    expect(body).not.toContain('"stream_error"');
+    expect(body.match(/data: \[DONE\]/g)).toHaveLength(1);
   });
   test.each([
     [new RedPillAciError(), "upstream_failed", "The model service could not complete this request. Try again later."],

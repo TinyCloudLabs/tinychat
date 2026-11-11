@@ -66,6 +66,7 @@ import {
 import { canOfferChatShare } from "@/lib/chatSharing";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
+import { getGatewayReceiptVerified, onGatewayReceipt } from "@/lib/gatewayReceiptStore";
 import { ToolActivityChip } from "./ToolActivityChip";
 import type { SelectionView } from "./modelSelection";
 
@@ -628,6 +629,7 @@ const AssistantMessage: FC = () => (
       <ThinkingIndicator />
       <StreamingCursor />
       <ToolActivityChip />
+      <GatewayReceiptMark />
     </div>
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -641,6 +643,27 @@ const AssistantMessage: FC = () => (
     </div>
   </MessagePrimitive.Root>
 );
+const GatewayReceiptMark: FC = () => {
+  const messageId = useMessage((message) => message.id);
+  const verified = useSyncExternalStore(
+    (notify) => onGatewayReceipt(messageId, notify),
+    () => getGatewayReceiptVerified(messageId),
+    () => false,
+  );
+  if (!verified) return null;
+  return (
+    <span
+      aria-label="Enclave verified"
+      className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-teal-700 dark:text-teal-300"
+      data-testid="gateway-receipt-verified"
+      role="status"
+      title="Enclave verified"
+    >
+      <CheckIcon aria-hidden="true" className="size-3.5" />
+      Enclave verified
+    </span>
+  );
+};
 
 // Three-way phase for the running assistant message — exactly one of the two
 // indicators below matches each phase, so the handoff is mutually exclusive.

@@ -259,6 +259,7 @@ describe("agent chat turn budget", () => {
         frame({ choices: [{ delta: { content: "Hello" } }] }) +
         frame({ id: "legacy-completion" }) +
         frame({ choices: [], usage: { prompt_tokens: 60_000, completion_tokens: 22_000 } }) +
+        frame({ receipt_verification: { status: "verified" } }) +
         "data: [DONE]\n\n",
       );
       expect(followUpStatus).toBe(402);

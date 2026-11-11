@@ -93,7 +93,7 @@ export type AgentStreamErrorCode =
 export class AgentStreamError extends Error {
   constructor(readonly code: AgentStreamErrorCode) {
     super(code === "private_response_unverified"
-      ? "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again."
+      ? "The model service could not complete this request. Please try again later."
       : code === "turn_timeout"
         ? "This reply took too long to finish. You can try again."
         : code === "interpretation_failed"
@@ -123,6 +123,8 @@ export interface StreamAgentChatOptions {
   /** Injectable for tests; normal browser turns derive this from the local clock. */
   clientContext?: AgentClientContext;
   abortSignal?: AbortSignal;
+  /** Called once when the final usage frame is observed. */
+  onUsage?: (usage: UsageInfo) => void;
   /** Fired per tool_activity frame (e.g. to render "Searching the web…"). */
   onToolActivity?: (activity: ToolActivity) => void;
   /**
@@ -137,11 +139,10 @@ export interface StreamAgentChatOptions {
    */
   onCompletionId?: (id: string) => void;
   /**
-   * Called once with token usage from the final usage frame
-   * (`{choices:[], usage:{prompt_tokens, completion_tokens}}`).
-   * Reuses the UsageInfo type from chatApi.ts so runtime.tsx handlers are compatible.
+   * Called when the backend confirms the streamed reply's gateway receipt.
+   * Absence means the receipt was not confirmed.
    */
-  onUsage?: (u: UsageInfo) => void;
+  onReceiptVerification?: (status: "verified") => void;
 }
 
 export interface AgentClientContext {
@@ -183,6 +184,7 @@ export async function* streamAgentChat(
     onDelegationError,
     onCompletionId,
     onUsage,
+    onReceiptVerification,
   } = options;
   const clientContext = options.clientContext ?? currentAgentClientContext();
 
@@ -295,6 +297,9 @@ export async function* streamAgentChat(
             // Ignore an incomplete/malformed event, including an abandoned
             // partial frame separated from a later terminal error by LF/LF.
             continue;
+          }
+          if (json?.receipt_verification?.status === "verified") {
+            try { onReceiptVerification?.("verified"); } catch { /* Listener failures never break the stream. */ }
           }
           if (json?.stream_error) {
             const code = json.stream_error.code;

@@ -42,7 +42,7 @@ import {
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import { selectChatModel } from "../modelSelection.js";
 import { noteRequestRecord, recordAfterHandler } from "../request-context.js";
-import { DEFAULT_RED_PILL_BASE_URL, PRIVATE_RESPONSE_UNVERIFIED_MESSAGE, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, redPillAciFetch } from "../redpill-aci.js";
+import { DEFAULT_RED_PILL_BASE_URL, PRIVATE_RESPONSE_UNVERIFIED_MESSAGE, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, redPillAciFetch } from "../redpill-aci.js";
 
 // ── RedPill config ───────────────────────────────────────────────────────────
 // REDPILL_API_KEY is required at call time. Missing key returns 500 per-request
@@ -526,6 +526,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
 
     const scanner = new UsageScanner();
     let streamFailed = false;
+    let receiptFailed = false;
     try {
       // Bun's fetch body is async-iterable. Forward every chunk byte-for-byte
       // while tee-ing a copy through the usage scanner.
@@ -539,13 +540,21 @@ export function createChatRouter(options?: ChatRouterOptions) {
         // Client disconnected — clean exit
       } else {
         streamFailed = true;
-        console.error("[chat] stream error:", error);
+        receiptFailed = error instanceof RedPillAttestationError;
+        console.error("[chat] stream error:", receiptFailed ? "receipt verification failed" : error);
       }
     } finally {
       noteRequestRecord(res, controller.signal.aborted
         ? { stream: "aborted" }
+        : receiptFailed ? { stream: "error", code: "private_response_unverified" }
         : streamFailed ? { stream: "error", code: "upstream_failed" } : { stream: "done" });
-      res.end();
+      if (!controller.signal.aborted) {
+        if (receiptFailed) {
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `\n\n${STREAMED_RESPONSE_UNVERIFIED_MESSAGE}` } }] })}\n\n`);
+          res.write("data: [DONE]\n\n");
+        }
+        res.end();
+      }
     }
 
     // ── Record usage (best effort; only when gating is active) ────────────────

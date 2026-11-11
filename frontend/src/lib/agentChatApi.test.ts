@@ -119,7 +119,7 @@ describe("agent stream lifecycle", () => {
     ["interpretation_timeout", "Understanding this request took too long. Please try again."],
     ["result_size_limit", "The response was too large to process safely. Try a smaller request or fewer meetings."],
     ["budget_exhausted", "You've reached today's credit limit, so this reply stopped early. What's below is what was produced before the limit."],
-    ["private_response_unverified", "Couldn't confirm this reply came from the confidential model, so it isn't shown. Try again."],
+    ["private_response_unverified", "The model service could not complete this request. Please try again later."],
     ["agent_failed", interruptionMessage],
   ] as const) {
     it(`handles ${code} before legacy text or any callbacks, after malformed data`, async () => {
@@ -143,6 +143,38 @@ describe("agent stream lifecycle", () => {
       expect(callbacks).toEqual([]);
     });
   }
+  it("reports receipt verification only after the verified event", async () => {
+    const statuses: string[] = [];
+    globalThis.fetch = (async () => sseResponse([
+      df({ choices: [{ delta: { content: "Reply" } }] }),
+      df({ receipt_verification: { status: "verified" } }),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+    const result = await collectStream({ ...streamOptions, onReceiptVerification: (status) => statuses.push(status) });
+    expect(result).toEqual({ chunks: ["Reply"], error: undefined });
+    expect(statuses).toEqual(["verified"]);
+  });
+
+  it("keeps a streamed receipt failure attached to the reply and never marks failed or missing checks", async () => {
+    const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+    const statuses: string[] = [];
+    globalThis.fetch = (async () => sseResponse([
+      df({ choices: [{ delta: { content: "Partial." } }] }),
+      df({ choices: [{ delta: { content: `\n\n${warning}` } }] }),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+    const failed = await collectStream({ ...streamOptions, onReceiptVerification: (status) => statuses.push(status) });
+    expect(failed).toEqual({ chunks: ["Partial.", `Partial.\n\n${warning}`], error: undefined });
+    expect(statuses).toEqual([]);
+
+    globalThis.fetch = (async () => sseResponse([
+      df({ choices: [{ delta: { content: "No verdict." } }] }),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+    const pending = await collectStream({ ...streamOptions, onReceiptVerification: (status) => statuses.push(status) });
+    expect(pending).toEqual({ chunks: ["No verdict."], error: undefined });
+    expect(statuses).toEqual([]);
+  });
 
   it("reports invalid model output without asking the user to rephrase, even when DONE follows", async () => {
     const failureText = "The model could not prepare a valid meeting request. Please try again.";

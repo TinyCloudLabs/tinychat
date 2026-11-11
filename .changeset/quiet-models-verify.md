@@ -3,4 +3,4 @@
 "@tinychat/frontend": patch
 ---
 
-Verify confidential-model responses before forwarding them. Details: TC-2196
+Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196

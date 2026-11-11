@@ -1771,6 +1771,44 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       } finally { restore(); }
     });
   }
+  it("does not dispatch tools from a reply whose receipt fails after streaming starts", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    const restore = stubCatalogFetch();
+    let toolDispatches = 0;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("/tools/")) toolDispatches++;
+      return Response.json({ result: { text: "tool result" } });
+    }) as typeof fetch;
+    const encoder = new TextEncoder();
+    let sentFrame = false;
+    const redpillFetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sentFrame) {
+          sentFrame = true;
+          controller.enqueue(encoder.encode(dataFrame({ choices: [{
+            delta: {
+              content: "unverified partial",
+              tool_calls: [{ index: 0, id: "unverified-call", function: { name: "web_search", arguments: '{"query":"private"}' } }],
+            },
+            finish_reason: "tool_calls",
+          }] })));
+        } else {
+          controller.error(new RedPillAttestationError());
+        }
+      },
+    }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    try {
+      const { req, res } = makeReqRes();
+      await createAgentChatHandler({ ...baseConfig(fetchImpl), redpillFetch })(req, res);
+      const body = res.chunks.join("");
+      const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+      expect(toolDispatches).toBe(0);
+      expect(body).toContain("unverified partial");
+      expect(body.split(warning).length - 1).toBe(1);
+      expect(body).not.toContain("receipt_verification");
+      expect(body).not.toContain('"stream_error"');
+    } finally { restore(); }
+  });
   it("fails closed when an agent model response receipt is unverified", async () => {
     process.env.PAYWALL_ENABLED = "false";
     const restore = stubCatalogFetch();
