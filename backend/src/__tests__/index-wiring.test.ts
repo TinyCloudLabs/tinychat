@@ -806,7 +806,14 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       CredentialStore: class {},
       KvCredentialRowStore: class {},
     },
-    "./services/content-store.js": { ...contentStore },
+    "./services/content-store.js": {
+      ...contentStore,
+      currentContentMaster: () => env.CONNECTOR_CONTENT_MASTER,
+      ContentStore: class extends contentStore.ContentStore {
+        async assertContinuity() {}
+        async probeIndex() { return { ok: true, id: "fixture-index" }; }
+      },
+    },
     "./services/fireflies-oauth.js": { ...firefliesOAuthModule },
     "./services/calendar-autojoin-connection.js": { CalendarAutojoinConnection: class {
       constructor(config: Record<string, unknown>) { options.capture?.("calendar", config); }
