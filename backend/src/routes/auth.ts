@@ -7,13 +7,14 @@ import { hasTinyChatNativeAudience } from "../native-siwe-audience.js";
 interface AuthRoutesConfig {
   nonceStore: NonceStore;
   privateKey: string;
-  frontendUrl: string;
+  /** The allowed web origins (`frontendOriginsFromEnv`); each one's hostname is an accepted SIWE domain. */
+  frontendOrigins: readonly string[];
   nativeSiweDomain?: string;
 }
 
 export function createAuthRouter(config: AuthRoutesConfig) {
   const router = Router();
-  const webDomain = new URL(config.frontendUrl).hostname;
+  const webDomains = config.frontendOrigins.map((origin) => new URL(origin).hostname);
   const nativeDomain = config.nativeSiweDomain ?? "openkey.so";
 
   // Without `address` the nonce is unbound (native OpenKey sign-in binds it to
@@ -38,7 +39,7 @@ export function createAuthRouter(config: AuthRoutesConfig) {
 
     try {
       const { address, nonce, domain, uri, chainId, resources, expirationTime } = await verifySIWE(message, signature);
-      if (!isExpectedSiweOrigin(domain, uri, webDomain, nativeDomain)) {
+      if (!isExpectedSiweOrigin(domain, uri, webDomains, nativeDomain)) {
         res.status(400).json({
           error: "invalid_origin", message: "SIWE domain or URI does not match this application",
         });

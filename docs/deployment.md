@@ -165,36 +165,70 @@ or host check that changes the product.
   variable (default `https://tinycloud.chat`); the same deployment serves both
   domains.
 - **Moving visitors off tinycloud.chat:** origins do not share IndexedDB or
-  localStorage, so a redirect would strand recordings kept only in the browser.
-  `frontend/src/lib/originMove.ts` runs only on `tinycloud.chat`: before the app
-  renders it counts, across every account, recordings still **saving** (capture
-  sessions, quarantined recoveries, notes not saved or with local work left,
-  outbox entries, and unsaved Upload-sheet jobs in localStorage) and notes whose
-  **audio is only local** (saved, but with no `verifiedInSpace` receipt: web
-  audio upload is off by default and webStore keeps that audio). None:
-  `location.replace` to `https://home.tinycloud.xyz` with the same path, query
-  and `#hash`. Otherwise (or if the check fails) the app runs as usual with a
-  notice (`shell/OriginMoveNotice.tsx`) and re-checks every 30 s, on focus and
-  when back online, also waiting for an upload running in the tab. Saving work
-  moves the visitor once it is saved; local-only audio keeps them on
-  tinycloud.chat, and the notice says so. A visitor who moves signs in once on
-  home.tinycloud.xyz. The edge 301 for tinycloud.chat waits on TC-2763 (upload
-  local-only audio from the notice, then move).
+  localStorage, so a redirect would strand work kept only in the browser.
+  `frontend/src/lib/originMove.ts` runs only on `tinycloud.chat`. It never moves
+  a Google same-tab OAuth return (`state=tab.…`/`hometab.…` with
+  `google_oauth_code`/`google_oauth_error`; its PKCE verifier is in this
+  origin's sessionStorage), a page opened as a popup, or `/agents` and
+  `/agents/…` (the published setup and tarball links). Otherwise, before the
+  app renders, it counts, across every account, work that exists only in this
+  browser: capture sessions, quarantined recoveries, notes not saved or with
+  local work left, outbox entries, local transcripts not yet saved,
+  `exo-held-results` rows, note Markdown edits the space has not confirmed
+  (`exo-recording-notes`), Private transcription jobs holding or producing a
+  transcript, unsaved Upload-sheet jobs, and notes whose **audio is only local**
+  (no `verifiedInSpace` receipt). The full store inventory, including the
+  stores that are not counted and why, is in the comments of `originMove.ts`.
+  None, and `https://home.tinycloud.xyz/version.json` names this same build's
+  commit: `location.replace` to `https://home.tinycloud.xyz` with the same path,
+  query and `#hash`. Otherwise (or if any check fails) the app runs as usual
+  with a notice (`shell/OriginMoveNotice.tsx`) when work is held, and re-checks
+  every 30 s, on focus and when back online. It never moves while the tab is
+  signing in, re-authorising Connectors, connecting Google, streaming or
+  drafting a chat reply, or editing a note (`deferOriginMove`). A visitor who
+  moves signs in once on home.tinycloud.xyz. The edge 301 for tinycloud.chat
+  waits on TC-2763 (upload local-only audio from the notice, then move).
+- **`version.json`:** every build writes `{"commit": …}` to `/version.json`
+  (`frontend/vite.config.ts`), served `no-store` with
+  `Access-Control-Allow-Origin: https://tinycloud.chat` (`frontend/public/_headers`).
+  Because tinycloud.chat moves nobody until home.tinycloud.xyz serves the same
+  commit, deploying this build before the custom domain moves is safe: visitors
+  stay on tinycloud.chat until home.tinycloud.xyz serves it.
 - **Google OAuth:** a page on `https://home.tinycloud.xyz` tags its `state`
   `home.`/`hometab.` so the backend returns to that origin
   (`HOME_WEB_ORIGIN`); anywhere else the state is untagged and returns to
-  `FRONTEND_URL`.
-- **Backend:** `HOME_WEB_ORIGIN` in `backend/src/cors-origins.ts` keeps
-  home.tinycloud.xyz in CORS, the SIWE domain check and the OAuth returns while
-  `FRONTEND_URL` is still `https://tinycloud.chat`.
+  `FRONTEND_URL`, or to `https://tinycloud.chat` once `FRONTEND_URL` is
+  home.tinycloud.xyz, so a flow started on tinycloud.chat finishes there.
+- **Backend:** the backend accepts both web origins through the
+  `FRONTEND_ORIGINS` allowlist (default
+  `https://tinycloud.chat,https://home.tinycloud.xyz`, plus `FRONTEND_URL`) for
+  CORS, the SIWE domain check and the OAuth returns, whichever of the two
+  `FRONTEND_URL` names. See **CORS** under "Notes" in section 2.
 - **Cutover order (once):** this build drops the separate `tinycloud-home`
-  Pages project, and tinycloud.chat starts moving visitors as soon as it is
-  live. Right after the first production web deploy of it, move the custom
+  Pages project. After the first production web deploy of it, move the custom
   domain `home.tinycloud.xyz` from `tinycloud-home` to `tinychat` (remove it
   from `tinycloud-home`, add it to `tinychat`, point the `CNAME` at
-  `tinychat-4jq.pages.dev`), then set `TINYCHAT_FRONTEND_URL` to
-  `https://home.tinycloud.xyz`. Until then home.tinycloud.xyz keeps serving the
-  previous Home build. Keep `tinycloud-home` 7 days as a rollback target.
+  `tinychat-4jq.pages.dev`). tinycloud.chat starts moving visitors only once
+  home.tinycloud.xyz serves the same commit (see `version.json`). Until then
+  home.tinycloud.xyz keeps serving the previous Home build. Keep
+  `tinycloud-home` 7 days as a rollback target. Set `TINYCHAT_FRONTEND_URL`
+  only as the next bullet says.
+- **Do not set `TINYCHAT_FRONTEND_URL` to `https://home.tinycloud.xyz` until
+  the backend with the `FRONTEND_ORIGINS` allowlist is deployed.** The one
+  variable drives two things: the `web` job in `deploy-production.yml` verifies
+  that URL, and `deploy-backend-phala.yml` writes it as the backend's
+  `FRONTEND_URL` on the next backend deploy. An older backend accepts only
+  `FRONTEND_URL` and home.tinycloud.xyz, so the switch would drop
+  tinycloud.chat from CORS, sign-in and Google OAuth for every visitor still
+  kept there, and send their OAuth returns to home.tinycloud.xyz, away from the
+  PKCE verifier. Confirm from `backend/CHANGELOG.md` that the deployed backend
+  release includes `FRONTEND_ORIGINS` before changing the variable; a CORS
+  check cannot tell, because an older backend also accepts tinycloud.chat while
+  it is still `FRONTEND_URL`.
+- **Links the backend generates** keep using `FRONTEND_URL`: the Stripe
+  checkout and portal returns (`/?billing=…`) and the connector-off link (the
+  bare origin). Both sites serve the same build, so those paths work on
+  either; after the switch they land on home.tinycloud.xyz.
 
 ---
 
@@ -298,7 +332,7 @@ Repository **variables** (all optional — defaults shown):
 | `PHALA_CVM_ID` | _(required — no default; the workflow fails fast if unset)_ |
 | `PHALA_INGRESS_DOMAIN` | `api.tinycloud.chat` |
 | `TINYCHAT_BACKEND_URL` | `https://api.tinycloud.chat` |
-| `TINYCHAT_FRONTEND_URL` | `https://tinycloud.chat` |
+| `TINYCHAT_FRONTEND_URL` | `https://tinycloud.chat` (web URL the `web` job verifies, and the backend's `FRONTEND_URL`: Stripe and connector-off links. Do not set it to `https://home.tinycloud.xyz` before the backend with the `FRONTEND_ORIGINS` allowlist is deployed; see "One web build") |
 | `TINYCHAT_BACKEND_IMAGE` / `TINYCHAT_INGRESS_IMAGE` | `ghcr.io/tinycloudlabs/tinychat-backend` |
 | `REDPILL_BASE_URL` | `https://tee.redpill.ai/v1` |
 | `REDPILL_DEFAULT_MODEL` | `z-ai/glm-5.2` (must stay an offered model — a non-offered value warns and falls back at runtime; `backend/src/routes/chat.ts` ST11) |
@@ -614,13 +648,17 @@ nothing below may be reported as done on its behalf.
   ports removal cherry-picked onto it first. After the new build is live it also
   requires `https://<app_id>-3001.<gateway>/health` to be closed (TLS accepted,
   no HTTP response) and fails on any HTTP status.
-- **CORS:** the backend allows `FRONTEND_URL`, the TinyCloud Home site
-  (`https://home.tinycloud.xyz`, the constant `HOME_WEB_ORIGIN` in
-  `backend/src/cors-origins.ts`), TinyCloud Home's fixed Tauri origins, the
-  TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
-  documented local origins on port `5186`. Production must still set
-  `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
-  ports, and lookalike domains remain blocked.
+- **CORS:** the backend allows the web origins in `FRONTEND_ORIGINS`
+  (comma-separated exact `http(s)` origins; unset means the built-in default
+  `https://tinycloud.chat,https://home.tinycloud.xyz`, `DEFAULT_FRONTEND_ORIGINS`
+  in `backend/src/cors-origins.ts`) plus `FRONTEND_URL`, which is always added;
+  TinyCloud Home's fixed Tauri and Capacitor origins; the TinyChat Cloudflare
+  Pages project (`*.tinychat-4jq.pages.dev`); and the exact documented local
+  origins on port `5186`. A malformed `FRONTEND_ORIGINS` entry stops startup.
+  The Phala deploy does not pass `FRONTEND_ORIGINS`, so production uses the
+  default and accepts both web sites whichever one `FRONTEND_URL` names.
+  Unrelated Pages projects, localhost ports, and lookalike domains remain
+  blocked.
 - **Home manifest (TC-2043):** deploy the backend that serves revision 3's
   manifest before the frontend revision gate. Existing web sessions re-sign
   once per device after the served bundle is available; native (mobile)
@@ -640,9 +678,9 @@ nothing below may be reported as done on its behalf.
   backend accepts, so it cannot complete `/api/auth/verify`; test web sign-in
   on a one-label `tinychat-4jq.pages.dev` preview instead. Older clients signing the paired
   `https://<hostname>` URI remain accepted for those web domains. The
-  production web domain comes from `FRONTEND_URL` in
-  `docker-compose.phala.yml`; the Home site (`home.tinycloud.xyz`, signing
-  the same way as the production web domain), local and Pages hosts come from
+  production web domains are the hostnames of the `FRONTEND_ORIGINS` allowlist
+  (tinycloud.chat and home.tinycloud.xyz, both signing the same way; see
+  **CORS**); local and Pages hosts come from
   `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and Android)
   signs its configured issuer domain (`openkey.so` by default) and a canonical
   `did:key` session URI, never a web HTTPS URI. Only this native domain
@@ -665,12 +703,15 @@ nothing below may be reported as done on its behalf.
 - **Google OAuth return:** the client tags the `state` it sends, and the tag
   picks where `/callback` returns. An untagged state and `tab.<path>.<nonce>`
   return to `FRONTEND_URL` (the popup `postMessage` target, or a redirect to
-  the path). `home.<nonce>` and `hometab.<path>.<nonce>` do the same for the
-  TinyCloud Home site, but to the fixed `HOME_WEB_ORIGIN`; the nonce is
-  base64url of at least 16 characters, and the path rules are the `tab.` ones.
-  `native.<nonce>` still returns to the app deep link, and `/desktop/start`
-  accepts untagged states only. An unknown or malformed tag is refused at
-  `/start` and `/callback`.
+  the path), except when `FRONTEND_URL` is `https://home.tinycloud.xyz`: then
+  they return to `https://tinycloud.chat`, because the client tags every flow
+  it starts on home.tinycloud.xyz. `home.<nonce>` and `hometab.<path>.<nonce>`
+  do the same for the TinyCloud Home site, but to the fixed `HOME_WEB_ORIGIN`;
+  the nonce is base64url of at least 16 characters, and the path rules are the
+  `tab.` ones. A return origin missing from `FRONTEND_ORIGINS` is refused at
+  `/start` and gets the no-code page at `/callback`. `native.<nonce>` still
+  returns to the app deep link, and `/desktop/start` accepts untagged states
+  only. An unknown or malformed tag is refused at `/start` and `/callback`.
 - **TLS:** Phala's `dstack-ingress` terminates TLS for the API. The backend's
   local-only `HTTPS_CERT_FILE`/`HTTPS_KEY_FILE` path is unused in production.
 - **What's not included yet:** CI (`ci.yml`) and PR-preview deployments. Port

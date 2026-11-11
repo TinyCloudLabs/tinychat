@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { OriginMoveNotice, originMoveNoticeText } from "./OriginMoveNotice";
+import { installReactTestEnv, mount } from "@/capture/recorder/final/shell/hookTestUtil";
+import { isOriginMoveDeferred } from "@/lib/originMove";
+import { OriginMoveNotice, originMoveNoticeText, useOriginMoveDeferral } from "./OriginMoveNotice";
 
 test("the notice is a status naming the new home and how many recordings are still saving", () => {
   const html = renderToStaticMarkup(<OriginMoveNotice work={{ saving: 2, localAudio: 3 }} />);
@@ -19,4 +21,23 @@ test("audio kept only on tinycloud.chat says the visitor stays, with no promise 
   const many = originMoveNoticeText({ saving: 0, localAudio: 4 });
   expect(many).toContain("keeps the audio of 4 recordings only here on tinycloud.chat, so you'll stay here.");
   expect(many).not.toContain("move automatically");
+});
+
+test("useOriginMoveDeferral defers the move only while active and while mounted", async () => {
+  const restore = installReactTestEnv();
+  const Busy = ({ active }: { active: boolean }) => { useOriginMoveDeferral(active); return null; };
+  const root = mount();
+  try {
+    await root.render(<Busy active={false} />);
+    expect(isOriginMoveDeferred()).toBe(false);
+    await root.render(<Busy active />);
+    expect(isOriginMoveDeferred()).toBe(true);
+    await root.render(<Busy active={false} />);
+    expect(isOriginMoveDeferred()).toBe(false);
+    await root.render(<Busy active />);
+    await root.unmount();
+    expect(isOriginMoveDeferred()).toBe(false);
+  } finally {
+    restore();
+  }
 });

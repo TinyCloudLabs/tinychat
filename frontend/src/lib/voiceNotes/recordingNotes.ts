@@ -20,9 +20,9 @@ export interface RecordingNote {
 
 type StoredRecordingNote = Omit<RecordingNote, "moments" | "savedEditAt"> & { savedEditAt?: string | null; syncedRevision?: number };
 type StoredNote = StoredRecordingNote | { recordingId: string; deleted: true };
-const DB_NAME = "exo-recording-notes";
-const STORE_NAME = "notes";
-const LOCAL_PREFIX = "exo.voiceNotes.note.";
+export const RECORDING_NOTES_DB = "exo-recording-notes";
+export const RECORDING_NOTES_STORE = "notes";
+export const RECORDING_NOTE_LOCAL_PREFIX = "exo.voiceNotes.note.";
 /** Bun's non-browser tests have neither IndexedDB nor localStorage. */
 const testMemory = new Map<string, StoredNote>();
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -62,17 +62,17 @@ export async function recordingNoteOwner(id: string, fallbackOwner?: string | nu
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
   const pending = new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 2);
+    const request = indexedDB.open(RECORDING_NOTES_DB, 2);
     request.onupgradeneeded = (event) => {
       const db = request.result;
       if (event.oldVersion === 0) {
-        db.createObjectStore(STORE_NAME, { keyPath: "storageId" });
+        db.createObjectStore(RECORDING_NOTES_STORE, { keyPath: "storageId" });
         return;
       }
-      const rows = request.transaction!.objectStore(STORE_NAME).getAll();
+      const rows = request.transaction!.objectStore(RECORDING_NOTES_STORE).getAll();
       rows.onsuccess = () => {
-        db.deleteObjectStore(STORE_NAME);
-        const next = db.createObjectStore(STORE_NAME, { keyPath: "storageId" });
+        db.deleteObjectStore(RECORDING_NOTES_STORE);
+        const next = db.createObjectStore(RECORDING_NOTES_STORE, { keyPath: "storageId" });
         for (const row of rows.result as StoredNote[]) next.put({ ...row, storageId: row.recordingId });
       };
     };
@@ -88,12 +88,12 @@ async function readStoredKey(key: string): Promise<StoredNote | null> {
   if (typeof indexedDB === "undefined") {
     if (typeof (globalThis as { Bun?: unknown }).Bun !== "undefined" && !globalThis.localStorage)
       return testMemory.get(key) ?? null;
-    const raw = globalThis.localStorage?.getItem(`${LOCAL_PREFIX}${key}`);
+    const raw = globalThis.localStorage?.getItem(`${RECORDING_NOTE_LOCAL_PREFIX}${key}`);
     return raw ? JSON.parse(raw) as StoredNote : null;
   }
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(key);
+    const request = db.transaction(RECORDING_NOTES_STORE, "readonly").objectStore(RECORDING_NOTES_STORE).get(key);
     request.onsuccess = () => {
       if (!request.result) return resolve(null);
       const { storageId: _key, owner: _owner, ...note } = request.result as PersistedNote;
@@ -111,13 +111,13 @@ async function writeStored(note: StoredNote, owner: string | null): Promise<void
       return;
     }
     if (!globalThis.localStorage) throw new Error("Recording note storage is unavailable");
-    globalThis.localStorage.setItem(`${LOCAL_PREFIX}${key}`, JSON.stringify(note));
+    globalThis.localStorage.setItem(`${RECORDING_NOTE_LOCAL_PREFIX}${key}`, JSON.stringify(note));
     return;
   }
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite", { durability: "strict" });
-    tx.objectStore(STORE_NAME).put({ ...note, storageId: key, owner });
+    const tx = db.transaction(RECORDING_NOTES_STORE, "readwrite", { durability: "strict" });
+    tx.objectStore(RECORDING_NOTES_STORE).put({ ...note, storageId: key, owner });
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error("Could not save recording note"));
     tx.onabort = () => reject(tx.error ?? new Error("Recording note write was aborted"));
@@ -127,13 +127,13 @@ async function writeStored(note: StoredNote, owner: string | null): Promise<void
 async function removeStoredKey(key: string): Promise<void> {
   if (typeof indexedDB === "undefined") {
     testMemory.delete(key);
-    globalThis.localStorage?.removeItem(`${LOCAL_PREFIX}${key}`);
+    globalThis.localStorage?.removeItem(`${RECORDING_NOTE_LOCAL_PREFIX}${key}`);
     return;
   }
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite", { durability: "strict" });
-    tx.objectStore(STORE_NAME).delete(key);
+    const tx = db.transaction(RECORDING_NOTES_STORE, "readwrite", { durability: "strict" });
+    tx.objectStore(RECORDING_NOTES_STORE).delete(key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error("Could not move recording note"));
     tx.onabort = () => reject(tx.error ?? new Error("Recording note move was aborted"));
@@ -274,8 +274,8 @@ async function updateOwnedNote(id: string, owner: string | null,
   }
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite", { durability: "strict" });
-    const store = tx.objectStore(STORE_NAME);
+    const tx = db.transaction(RECORDING_NOTES_STORE, "readwrite", { durability: "strict" });
+    const store = tx.objectStore(RECORDING_NOTES_STORE);
     const apply = (raw: PersistedNote | undefined, legacy = false) => {
       let note: StoredNote | null = null;
       if (raw) { const { storageId: _key, owner: _owner, ...content } = raw; note = content; }
@@ -334,6 +334,23 @@ export function claimRecordingNote(id: string, owner: string): Promise<void> {
     await removeStoredKey(storageId(id, null));
     await removeStoredKey(id);
   });
+}
+
+/**
+ * A stored record (IndexedDB row, or localStorage value with its key after the prefix) whose Markdown is the only
+ * copy: non-empty text at a revision the space has not acknowledged (`markNoteSynced`), as `deleteSyncedNote` keeps it.
+ * `owner` is undefined for a record still under its old id-only key, written before notes were bound to an account
+ * and before acknowledgements were stored. Null for a tombstone, an empty or synced note, or anything else.
+ */
+export function unsyncedStoredNote(value: unknown, key: string): { recordingId: string; owner: string | null | undefined } | null {
+  if (!value || typeof value !== "object" || "deleted" in value || !("recordingId" in value) || typeof value.recordingId !== "string"
+    || !("md" in value) || typeof value.md !== "string" || !value.md.trim() || !("revision" in value)) return null;
+  if ("syncedRevision" in value && value.syncedRevision === value.revision) return null;
+  if (key === value.recordingId) return { recordingId: value.recordingId, owner: undefined };
+  let parsed: unknown;
+  try { parsed = JSON.parse(key); } catch { return null; }
+  const owner: unknown = Array.isArray(parsed) ? parsed[0] : undefined;
+  return typeof owner === "string" || owner === null ? { recordingId: value.recordingId, owner } : null;
 }
 
 /** JSON scalars and arrays are valid YAML flow values; Markdown stays byte-for-byte intact. */

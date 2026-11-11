@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { CANONICAL_ORIGIN, LEGACY_HOSTNAME, moveWhenClear, type LocalRecordingWork } from "@/lib/originMove";
+import { CANONICAL_ORIGIN, deferOriginMove, LEGACY_HOSTNAME, moveWhenClear, type LocalRecordingWork } from "@/lib/originMove";
 
 const CANONICAL_HOST = new URL(CANONICAL_ORIGIN).host;
 
@@ -34,4 +34,9 @@ export function OriginMoveHold({ initialWork }: { initialWork: LocalRecordingWor
   const [work, setWork] = useState(initialWork);
   useEffect(() => moveWhenClear({ onPending: setWork }), []);
   return <OriginMoveNotice work={work} />;
+}
+
+/** While `active`, a held page does not move (originMove.ts `deferOriginMove`): pass true while work lives only in memory. */
+export function useOriginMoveDeferral(active: boolean): void {
+  useEffect(() => (active ? deferOriginMove() : undefined), [active]);
 }

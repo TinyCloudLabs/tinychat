@@ -69,6 +69,15 @@ export default defineConfig(({ command, mode }) => {
         }
       },
     },
+    {
+      // tinycloud.chat moves a visitor to home.tinycloud.xyz only once this file there names the commit the
+      // visitor's bundle was built from (src/lib/originMove.ts `canonicalServesThisBuild`).
+      name: "tinychat-version-json",
+      apply: "build",
+      generateBundle() {
+        this.emitFile({ type: "asset", fileName: "version.json", source: `${JSON.stringify({ commit: exoBuildInfo.commit ?? null })}\n` });
+      },
+    },
     nodePolyfills({ globals: { Buffer: true, process: true, global: true } }),
     react(),
     // Installable web app (PWA). Builds dist/manifest.webmanifest (linked from index.html) and a Workbox

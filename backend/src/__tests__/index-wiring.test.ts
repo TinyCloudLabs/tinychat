@@ -891,7 +891,10 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./redpill-aci.js": load("./redpill-aci.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
     "./local-validation.js": { localValidationFromEnv: () => false, localValidationGuard: noop },
-    "./cors-origins.js": { appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }) },
+    "./cors-origins.js": {
+      appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }),
+      frontendOriginsFromEnv: load("./cors-origins.ts").frontendOriginsFromEnv,
+    },
     "js-yaml": { load: () => ({}) },
     "@scalar/express-api-reference": { apiReference: router },
   };

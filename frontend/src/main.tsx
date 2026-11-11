@@ -68,10 +68,11 @@ setupPwa({
 
 registerWebCaptureEngine();
 
-// tinycloud.chat serves this same build; its visitors move to home.tinycloud.xyz (path, query and #hash kept) unless
-// recordings saved only in this origin's IndexedDB would be left behind. Only that host reads anything here.
+// tinycloud.chat serves this same build; its visitors move to home.tinycloud.xyz (path, query and #hash kept) once
+// that origin serves this build, unless recordings saved only in this origin's storage would be left behind, or this
+// page must finish here (originMove.ts `originMoveExemption`). Only that host reads anything here.
 const originMove: Promise<OriginMoveDecision> = isLegacyOrigin(window.location)
-  ? decideOriginMove({ location: window.location })
+  ? decideOriginMove({ location: window.location, opener: window.opener != null })
   : Promise.resolve({ kind: "stay" });
 
 // Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs. If the probe itself

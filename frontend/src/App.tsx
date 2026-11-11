@@ -34,6 +34,7 @@ import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
 import { reauthorizeHome } from "./lib/homeReauthorize";
 import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type FeatureAccessOutcome, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
+import { deferOriginMove } from "./lib/originMove";
 import { replicationConfigPatch, startReplicationFill, stopReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -306,7 +307,9 @@ export function App() {
   }, [connectorsAsk, tcw, state, address, homeFeatureStore]);
   const requestFeatureAccess = useCallback<RequestFeatureAccess>((feature) => {
     if (featureAskRef.current) return featureAskRef.current;
-    const ask = askForFeature(feature).finally(() => { featureAskRef.current = null; });
+    // OpenKey is open and the session is about to be swapped: a held tinycloud.chat tab must not move under it.
+    const releaseOriginMove = deferOriginMove();
+    const ask = askForFeature(feature).finally(() => { featureAskRef.current = null; releaseOriginMove(); });
     featureAskRef.current = ask;
     return ask;
   }, [askForFeature]);
@@ -1070,6 +1073,8 @@ export function App() {
     setError(null);
     // Each tab's remembered place belongs to the account that left it.
     resetNavigationMemory();
+    // OpenKey is open and the sign-in is being verified: a held tinycloud.chat tab must not move under it.
+    const releaseOriginMove = deferOriginMove();
     try {
       setState("connecting");
       if (isNativeOpenKeySignIn()) {
@@ -1171,6 +1176,7 @@ export function App() {
       setError(describeAuthFailure(caught));
       setState("recoverableError");
     } finally {
+      releaseOriginMove();
       if (prefetch) {
         prefetch.cancel();
       }

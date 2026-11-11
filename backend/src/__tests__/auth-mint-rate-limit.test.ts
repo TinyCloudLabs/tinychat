@@ -27,7 +27,7 @@ function productionApp() {
   const app = express();
   app.use(createApiBodyParser());
   applyRateLimiters(app, { sessionKey: SESSION_KEY });
-  app.use("/api/auth", createAuthRouter({ nonceStore: createNonceStore(), privateKey: SESSION_KEY, frontendUrl: "http://localhost:5186" }));
+  app.use("/api/auth", createAuthRouter({ nonceStore: createNonceStore(), privateKey: SESSION_KEY, frontendOrigins: ["http://localhost:5186"] }));
   app.get("/api/manifest", (_req, res) => res.json({ ok: true }));
   return app;
 }
