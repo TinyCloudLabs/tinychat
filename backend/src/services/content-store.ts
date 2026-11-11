@@ -197,6 +197,8 @@ export interface ContentStoreStats {
   purgeRefusals: number;
   /** Substrate/crypto failures on the upsert path — every one of them retried, none reported ok. */
   writeFailures: number;
+  /** Failed index/master reads during cleanup or sync-off deletion. */
+  unreadableIndexes: number;
   swept: number;
   reconciled: number;
 }
@@ -459,6 +461,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     tombstoneRefusals: 0,
     purgeRefusals: 0,
     writeFailures: 0,
+    unreadableIndexes: 0,
     swept: 0,
     reconciled: 0,
   };
@@ -852,6 +855,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         ) {
           throw error;
         }
+        this.counters.unreadableIndexes += 1;
         await this.noteRetentionFailure(target.source, target.address);
         const cutoff = this.now() - this.retentionMs;
         await this.removeExpiredBlobs(target.source, target.address, cutoff);
@@ -957,6 +961,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         ) {
           throw error;
         }
+        this.counters.unreadableIndexes += 1;
         await this.noteRetentionFailure(target.source, target.address);
         const swept = await this.removeExpiredBlobs(
           target.source,
