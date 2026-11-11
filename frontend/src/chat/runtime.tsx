@@ -119,6 +119,8 @@ export interface ChatRuntimeDeps {
    */
   agentEnabledRef: React.MutableRefObject<boolean>;
   privateAccessRef: React.MutableRefObject<PrivateAgentAccess>;
+  /** Wait for the initial access probe before a turn snapshots its route and grant. */
+  waitForInitialProbe?: (signal: AbortSignal) => Promise<void>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
   /** One mounted, browser-only meeting retriever with ephemeral thread state. */
