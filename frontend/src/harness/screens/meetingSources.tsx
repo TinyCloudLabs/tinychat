@@ -98,9 +98,7 @@ function MeetingSourcesFixture({
               connectorName={fireflies.name}
               state={state}
               consentVariant="C"
-              ingestConsentChecked={false}
               consentOpen={false}
-              onIngestConsentChange={noop}
               onToggleInstant={() => setInstant((was) => !was)}
               onConfirmEnable={noop}
               onCancelEnable={noop}
@@ -153,7 +151,7 @@ function MeetingSourcesFixture({
       <ConfirmDialog
         open={confirm === "rotate"}
         title="Rotate the webhook secret?"
-        message="Exo issues a new address and secret. The old ones stop working right away, so paste the new ones into your Fireflies webhook."
+        message="TinyCloud Home issues a new address and secret. The old ones stop working right away, so paste the new ones into your Fireflies webhook."
         keepLabel="Keep the current one"
         dropLabel="Rotate"
         onKeep={() => setConfirm(null)}

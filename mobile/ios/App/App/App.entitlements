@@ -3,7 +3,7 @@
 <!--
   Health spike (TC-525). Wired to the App target's DEBUG configuration only (CODE_SIGN_ENTITLEMENTS), together with
   the EXO_HEALTH Swift condition that compiles HealthPlugin.swift. Release builds (the TestFlight archive) have no
-  entitlements file: the App ID xyz.tinycloud.exo would need the HealthKit capability first, and App Review then
+  entitlements file: the App ID xyz.tinycloud.home would need the HealthKit capability first, and App Review then
   expects the HealthKit integration to be visible in the app and its description (mobile/docs/health-spike.md).
 
   - healthkit: read (and, for the spike's sample data, write) HealthKit.

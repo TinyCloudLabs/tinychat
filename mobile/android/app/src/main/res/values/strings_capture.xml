@@ -3,11 +3,12 @@
     <string name="capture_channel">Voice notes</string>
     <string name="capture_recording">Recording a voice note</string>
     <string name="capture_paused">Voice note paused</string>
-    <string name="capture_running_hint">Exo is using the microphone</string>
+    <string name="capture_running_hint">TinyCloud Home is using the microphone</string>
     <string name="capture_resume_hint">The microphone is off</string>
     <string name="capture_pause">Pause</string>
     <string name="capture_resume">Resume</string>
     <string name="capture_stop">Stop</string>
-    <string name="capture_shortcut_label">Record voice note</string>
-    <string name="capture_shortcut_long">Start a new voice note</string>
+    <string name="capture_shortcut_label">Record</string>
+    <string name="capture_shortcut_long">Record a voice note</string>
+    <string name="capture_tile_label">Record</string>
 </resources>

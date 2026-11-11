@@ -11,6 +11,10 @@
 # With location granted ("Always") and a simulated position set, the app also runs a location capture probe
 # (EXO_LOCATION_SMOKE=1 in its environment) and logs `EXO_LOCATION_SMOKE {json}`; its results are reported in the
 # summary but do not fail the job (simulated location delivery is not a property of the app).
+# With EXO_SHORTCUT_SMOKE=1 (the default), after the main probe the app runs the recording-shortcut start path that
+# the App Shortcut intent and the quick action call, and logs `EXO_SHORTCUT_SMOKE {json}`; the job fails unless the
+# engine and the bridge report a recording with source "intent", a second shortcut keeps that recording, its Live
+# Activity starts, and discarding the recording ends the activity.
 # Writes screenshot.png, sanitized console.log, allowlisted unified.log and app-unified-stream.log, structural
 # liveness/launch evidence, and summary.md to <out-dir>; crash reports are counted but never copied.
 #
@@ -27,13 +31,14 @@ case "$command" in
   run) app=${2:?$usage}; out=${3:?$usage} ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac
-bundle_id=xyz.tinycloud.exo
+bundle_id=xyz.tinycloud.home
 timeout_s=${SMOKE_TIMEOUT:-120}
 settle_s=${SMOKE_SETTLE:-10}
 # Post-publication observation gap that fails the run; the 30 s default is the documented contract.
 gap_fail_s=${SMOKE_GAP_FAIL_S:-30}
 capture_smoke=${EXO_CAPTURE_SMOKE:-1}
 location_smoke=${EXO_LOCATION_SMOKE:-1}
+shortcut_smoke=${EXO_SHORTCUT_SMOKE:-1}
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -298,6 +303,7 @@ deadline_log_at=$(date -u -r "$deadline_epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null 
 printf 'launch requested %s\n' "$launch_at" >>"$out/launch-timeline.log"
 log "launching $bundle_id at $launch_at"
 SIMCTL_CHILD_EXO_LOCATION_SMOKE="$location_smoke" SIMCTL_CHILD_EXO_CAPTURE_SMOKE="$capture_smoke" \
+  SIMCTL_CHILD_EXO_SHORTCUT_SMOKE="$shortcut_smoke" SIMCTL_CHILD_EXO_APP_LOCK=off \
   xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$private_logs/console.log" 2>&1 &
 launcher=$!
 app_launched=1
@@ -480,6 +486,10 @@ parse_location_probe() {
   grep -a -m1 'EXO_LOCATION_SMOKE ' "$private_logs/console.log" 2>/dev/null |
     sed 's/^.*EXO_LOCATION_SMOKE //' | tr -d '\r'
 }
+parse_shortcut_probe() {
+  grep -a -m1 'EXO_SHORTCUT_SMOKE ' "$private_logs/console.log" 2>/dev/null |
+    sed 's/^.*EXO_SHORTCUT_SMOKE //' | tr -d '\r'
+}
 count_crash_reports() {
   find "$reports" -newer "$marker" -type f \( -name 'App-*' -o -name 'App_*' -o -name 'ExoWidgets*' \) \
     -exec sh -c 'for report do printf x; done' sh {} + 2>/dev/null | wc -c | tr -d '[:space:]'
@@ -501,7 +511,7 @@ clock_pid=$!
 while [ "$SECONDS" -lt "$deadline" ]; do
   time_stage main.poll-sleep sleep 2
   if [ -f "$private_logs/watcher.exited" ]; then process_exited=1; break; fi
-  # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]".
+  # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.home[...]".
   observed_pid=$(time_stage main.launchctl-list discover_launchctl_pid)
   if [ -z "$pid" ] && [ -n "$observed_pid" ]; then
     if [ "$SECONDS" -lt "$deadline" ]; then
@@ -581,6 +591,7 @@ if [ -z "$probe" ] && [ "$process_exited" -eq 0 ]; then
 fi
 
 location_probe=""
+shortcut_probe=""
 if [ -n "$probe" ] && [ "$process_exited" -eq 0 ]; then
   # The location probe captures for about 15 s after the main probe; give it up to 60 s.
   location_deadline=$((SECONDS + 60))
@@ -590,6 +601,15 @@ if [ -n "$probe" ] && [ "$process_exited" -eq 0 ]; then
     location_probe=$(time_stage main.location-probe-parse parse_location_probe)
   done
   log "location probe: $([ -n "$location_probe" ] && echo received || echo none)"
+  # The shortcut probe starts right after the main probe and finishes within a few seconds.
+  shortcut_deadline=$((SECONDS + 30))
+  while [ "$shortcut_smoke" = 1 ] && [ -z "$shortcut_probe" ] && [ "$SECONDS" -lt "$shortcut_deadline" ]; do
+    shortcut_probe=$(time_stage main.shortcut-probe-parse parse_shortcut_probe)
+    [ -n "$shortcut_probe" ] && break
+    if [ -n "$pid" ] && ! time_stage main.shortcut-pid-check app_pid_alive "$pid"; then break; fi
+    time_stage main.shortcut-sleep sleep 1
+  done
+  log "shortcut probe: $([ -n "$shortcut_probe" ] && echo received || echo none)"
   log "letting it run ${settle_s}s more"
   time_stage main.settle sleep "$settle_s"
 elif [ "${#failures[@]}" -eq 0 ]; then
@@ -652,6 +672,7 @@ check '.href | startswith("capacitor://localhost")' "bundled web app loaded from
 check '.platform == "ios"' 'Capacitor platform is "ios"'
 check '.mounted == true' "React mounted into #root"
 check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes plugin registered and visible to JS"
+check '.appLock.deviceSecure == false' "AppLock plugin answers status(); the smoke runs with the app lock off"
 check '.voiceNotesStatus.state == "idle"' "VoiceNotes.status() answered over the bridge (state idle)"
 check '.voiceNotesStatus.maxDurationMs == 10800000' "VoiceNotes reports the 3-hour recording limit"
 check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() answered over the bridge (missing id: not_found)"
@@ -677,6 +698,23 @@ check '.serviceWorkerDecision == "skip:capacitor" and .serviceWorkerRegistration
 check '.locationAvailable == true and .locationStatus.platform == "ios"' "Location plugin (Debug-only TC-524 spike) registered and answering status()"
 check '.locationStatus.declared.foreground == true and .locationStatus.declared.background == true and .locationStatus.declared.backgroundExecution == true' \
   "Debug Info.plist has the location usage strings and the location background mode"
+if [ "$shortcut_smoke" = 1 ]; then
+  check_shortcut() { # check_shortcut <jq filter> <description>
+    if [ -n "$shortcut_probe" ] && time_stage main.shortcut-check jq -e "$1" >/dev/null 2>&1 <<<"$shortcut_probe"; then
+      checks+=("- [x] $2")
+    else
+      checks+=("- [ ] $2")
+      fail "$2"
+    fi
+  }
+  check_shortcut '.started == true and .state == "recording" and .source == "intent"' \
+    "the App Shortcut start path started a native recording with source intent"
+  check_shortcut '.bridge.state == "recording" and .bridge.source == "intent" and .bridge.sameId == true' \
+    "VoiceNotes.status() over the bridge sees the shortcut's recording"
+  check_shortcut '.secondKeptRecording == true' "a second shortcut presents the live recording instead of starting another"
+  check_shortcut '.activity == true and .discarded == true and .activityEnded == true' \
+    "the recording Live Activity started with the recording and ended when it was discarded"
+fi
 # Informational (never fails the job): the capture probe.
 note() { # note <jq filter> <description>
   if [ -n "$location_probe" ] && time_stage main.note jq -e "$1" >/dev/null 2>&1 <<<"$location_probe"; then

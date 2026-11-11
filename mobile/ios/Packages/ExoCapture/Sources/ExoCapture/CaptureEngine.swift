@@ -178,6 +178,9 @@ public final class CaptureEngine {
         debugTesting = true
     }
     var debugGraphActive: Bool { graphActive || inputRunning }
+    /// Stop finalizations (mux + commit) still running in the background. Tests drain this before
+    /// deleting their root so a late completion cannot fail a different test.
+    var debugPendingStopFinalizations: Int { pendingStopFinalizations }
     #if targetEnvironment(simulator)
     var debugSilentInputRunning: Bool { silentInput?.isRunning == true }
     func debugDeliverSilentTaps(_ buffers: Int = 1) { silentInput?.deliver(buffers: buffers) }
@@ -272,6 +275,10 @@ public final class CaptureEngine {
     /// ended, so the STT queue can resume from its checkpoint.
     public var captureSessionStarted: (() -> Void)?
     public var captureSessionEnded: (() -> Void)?
+    /// Receives every `micState` status, synchronously, alongside the bridge observers. The app sets it to keep
+    /// the recording Live Activity in step (CaptureLiveActivity.swift). Unlike `observe`, it never drains the
+    /// events retained for the WebView, so it can be installed at launch before the bridge exists.
+    public var micStateChanged: (([String: Any]) -> Void)?
 
     private func resumeSttIfIdle() {
         if info == nil && !stopInProgress && pendingStopFinalizations == 0 {
@@ -1546,7 +1553,11 @@ public final class CaptureEngine {
                 "inactiveAfterDiscard": !hasInput && !graphActive]
     }
 
-    private func emitState() { emit("micState", status().merging(["at": wallClock.nowMilliseconds()]) { _, newer in newer }, retained: true) }
+    private func emitState() {
+        let state = status().merging(["at": wallClock.nowMilliseconds()]) { _, newer in newer }
+        emit("micState", state, retained: true)
+        micStateChanged?(state)
+    }
 
     private static func spanObject(_ span: MissingAudioSpan) -> [String: Any] {
         ["kind": span.kind, "reason": span.reason, "startedAt": span.startedAt,

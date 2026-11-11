@@ -24,6 +24,8 @@ import "@/capture/home/desktop/systemAudioStart.css";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
 import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { isHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
 import { writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
@@ -36,6 +38,7 @@ import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
 import { useLimitNotifications } from "./limitNotifications";
+import { useRecordShortcut } from "./recordShortcut";
 
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
@@ -322,6 +325,8 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   }, [beginRecording, maybePromptPrivate, maybePromptPowerful, recorder.transcriber.id]);
   const record = useCallback(() => {
     if (disclosureBusy || disclosure) return;
+    // A Home permission ask has OpenKey open; a recording started now could be cut off by the session swap.
+    if (isHomeReauthorizing()) { setDisclosureError(FEATURE_ACCESS_WAIT_FOR_OPENKEY); return; }
     disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setDisclosureError(null);
     if (platform !== "tauri") { afterSystemAudio(); return; }
@@ -376,6 +381,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
   useLimitNotifications(state, openSheet);
+  // The Mac app's shortcut and menu-bar Start recording: the same Record (or open recorder) as the buttons.
+  // A discard still finishing is not ready yet: the request waits for it instead of being refused.
+  useRecordShortcut(platform === "tauri", { available: recorder.available, ready: state.ready && state.phase !== "discarding",
+    active: recorderActive(state), record, openSheet });
   const minimiseSheet = useCallback(async () => {
     if (state.permissionDenied) await recorder.dismissShortcutRecovery();
     setMomentFieldFocused(false);

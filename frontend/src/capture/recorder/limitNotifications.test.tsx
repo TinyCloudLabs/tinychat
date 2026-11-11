@@ -57,7 +57,7 @@ describe("recording limit notifications", () => {
     await root.render(createElement(Probe, { state: recording(20) }));
     expect(sent).toEqual([]);
     await wait(60);
-    expect(sent).toEqual([{ title: "Exo", body: LIMIT_WARNING_TEXT }]);
+    expect(sent).toEqual([{ title: "TinyCloud Home", body: LIMIT_WARNING_TEXT }]);
     // A later checkpoint for the same recording does not warn again.
     await root.render(createElement(Probe, { state: recording(-1000) }));
     await wait(20);
@@ -65,7 +65,7 @@ describe("recording limit notifications", () => {
 
     const stopped = { ...recording(-5 * 60_000), phase: "saving" as const, limitNotice: "Stopped at the 1-hour limit.", limitStopMs: HOUR };
     await root.render(createElement(Probe, { state: stopped }));
-    expect(sent[1]).toEqual({ title: "Exo", body: "Exo stopped recording at the 1-hour limit. Your recording is saved." });
+    expect(sent[1]).toEqual({ title: "TinyCloud Home", body: "TinyCloud Home stopped recording at the 1-hour limit. Your recording is saved." });
     // Saving finishing is not another stop.
     await root.render(createElement(Probe, { state: { ...stopped, phase: "idle", outcome: "saved" } }));
     expect(sent).toHaveLength(2);
@@ -76,11 +76,11 @@ describe("recording limit notifications", () => {
     const root = mount();
     await root.render(createElement(Probe, { state: recording(HOUR) }));
     await root.render(createElement(Probe, { state: { ...recording(HOUR), phase: "saving", limitStopMs: 3 * HOUR } }));
-    expect(sent).toEqual([{ title: "Exo", body: "Exo stopped recording at the 3-hour limit. Your recording is saved." }]);
+    expect(sent).toEqual([{ title: "TinyCloud Home", body: "TinyCloud Home stopped recording at the 3-hour limit. Your recording is saved." }]);
     await root.unmount();
   });
 
-  test("nothing while Exo is focused, or without permission", async () => {
+  test("nothing while TinyCloud Home is focused, or without permission", async () => {
     for (const [isFocused, allowed] of [[true, "granted"], [false, "default"], [false, "denied"]] as const) {
       focused = isFocused;
       permission = allowed;

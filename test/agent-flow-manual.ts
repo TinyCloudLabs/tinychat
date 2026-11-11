@@ -152,7 +152,7 @@ try {
   console.log(`Signed in. Address: ${session.address ?? "<unknown>"}`);
 
   // Wait for the chat composer to confirm the app shell is up.
-  await page.getByPlaceholder(/Message TinyCloud Chat/i).waitFor({ state: "visible", timeout: 30_000 })
+  await page.getByPlaceholder(/Message TinyCloud Home/i).waitFor({ state: "visible", timeout: 30_000 })
     .catch(() => console.log("  (composer not found by placeholder — continuing)"));
 
   // Wait for the one-time Enable banner (capability must probe → "available").
@@ -263,7 +263,7 @@ async function waitForAgentSession(
 
 async function runWebSearchExchange(page: Page): Promise<void> {
   const prompt = `Use web search to tell me one headline in the news today. Marker ${marker}`;
-  const composer = page.getByPlaceholder(/Message TinyCloud Chat/i);
+  const composer = page.getByPlaceholder(/Message TinyCloud Home/i);
   await composer.waitFor({ state: "visible", timeout: 15_000 });
   console.log("");
   console.log(`Sending web-search prompt (marker ${marker})…`);

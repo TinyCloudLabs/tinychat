@@ -16,6 +16,100 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.15
+
+### Patch Changes
+
+- 47e3ecf: Reviewer seed: check the grant's signed UCAN payload against the request before use, match resumed chat messages by their ids, and state the requested KV scope exactly.
+
+## 0.14.0-beta.14
+
+### Minor Changes
+
+- 7db69c7: TinyCloud Home opens from the device: the Feed, chat histories and Library show their last copy at once and refresh in the background. What you open is fetched first; background copying waits for it and pauses while the app is hidden. The Feed loads with far fewer requests.
+
+## 0.14.0-beta.13
+
+### Minor Changes
+
+- eed0f62: TinyCloud Home on iPhone and Android now opens with Face ID, Touch ID or the phone's screen lock instead of signing in again. A signed-in app asks when it opens, and when you come back after 5 minutes away (Settings › App lock: 1, 5 or 15 minutes, or an hour). Your feed and recordings load behind the lock screen and appear the moment you unlock; on iPhone and Android 13 and later the app switcher shows a blank screen while the lock is on. Cancelling keeps the lock screen up with a button to try again, and never signs you out. The lock is on by default where Face ID, Touch ID or a fingerprint is set up, and can be turned off in Settings. Recording from a shortcut starts without waiting for the unlock. Details: TC-2738
+
+## 0.14.0-beta.12
+
+### Minor Changes
+
+- 680789e: TinyCloud Home for Mac starts a recording from anywhere: press ⌘⇧⌥R (Command-Shift-Option-R), or choose Start recording from its menu-bar icon. The app comes to the front with the recorder open and recording; if a recording is already going, it opens that recorder instead. The menu-bar icon also has Open TinyCloud Home.
+
+## 0.14.0-beta.11
+
+### Patch Changes
+
+- faad27f: Add a reviewer seed CLI (`frontend/scripts/reviewer-seed`) that fills one fresh, explicitly confirmed TinyCloud Home space with fixed demo Feed cards, a chat and a transcript-only voice note through Home's own write paths, using only a short delegation the space owner grants to the run.
+
+## 0.14.0-beta.10
+
+### Patch Changes
+
+- 761a6ba: The web build includes connector secret permissions and the decrypt permission at sign-in for devices that have used Connectors. First use requests access through OpenKey in place. Remove the unused custom AssemblyAI key permission from the manifest.
+
+## 0.14.0-beta.9
+
+### Minor Changes
+
+- aaf1236: iOS: TinyCloud Home ships recording shortcuts that work right after install (TC-2740). Siri, Spotlight, the Shortcuts app and the Action button get **Record** ("Start recording in TinyCloud Home", "Record a note in TinyCloud Home") and **Stop Recording**; Control Center and the Lock Screen get a **Record a Voice Note** control that records without unlocking; the home-screen quick action uses the same start. Every recording shows a Live Activity with a timer and a Stop button. The test-only "TinyCloud Home probe" control and shortcut are gone.
+
+## 0.14.0-beta.8
+
+### Minor Changes
+
+- b589ec8: Android: add a Quick Settings "Record" tile that opens TinyCloud Home and starts a voice note, and relabel the launcher shortcut "Record".
+
+## 0.14.0-beta.7
+
+### Minor Changes
+
+- f8823ef: Exo is now TinyCloud Home everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud Home.app`), the Android and iOS app names, notifications, permission prompts and error messages. Home opens on Feed on the web, on desktop and on iOS and Android, on a fresh install and after signing in, unless you chose Apps as your first screen in Settings. Feed and Apps are no longer experimental: they are in the navigation for everyone, and Settings › Home holds the first-screen choice. App id, bundle ids, URL schemes and every data path are unchanged. Details: TC-2050, TC-2040
+
+## 0.14.0-beta.6
+
+No changes in this release.
+
+## 0.14.0-beta.5
+
+### Patch Changes
+
+- 451ae7e: Native sign-in on iOS and Android asks for every applications-space KV, SQL and hook entry of the manifest, the same grant as the web sign-in, so the Home feed works on the phone apps (TC-2720). Space info stays web-only until the backend accepts it. A CI job checks the native request against production OpenKey's ceiling.
+
+## 0.14.0-beta.4
+
+### Minor Changes
+
+- 657b2ef: Settings → Account has "Delete OpenKey account" (TC-2721, App Store 5.1.1(v)). It opens OpenKey's deletion page, `https://openkey.so/dashboard/settings/delete-account` on the configured `VITE_OPENKEY_HOST`, in the system browser sheet on the phone or a new tab on the web. The row isn't shown on desktop, which has no fixed-URL opener for it yet.
+
+## 0.14.0-beta.3
+
+### Minor Changes
+
+- ab71584: Native sign-in offers "Continue with Apple" once OpenKey lists Apple in `GET /api/auth/providers`; it opens Sign in with Apple in the existing OpenKey sheet (TC-1233). Updates `@openkey/sdk-capacitor` to the release that accepts `loginMethod: "apple"`.
+
+## 0.14.0-beta.2
+
+### Patch Changes
+
+- 0dd3bf2: Shorten connector consent screens and remove obsolete consent checkboxes.
+
+## 0.14.0-beta.1
+
+### Minor Changes
+
+- 79579b6: The Home site signs in with only the permissions Feed, Chat and Apps use (`manifest.home.json`): no secrets, no decrypt grant, and no access to the connectors, canvas, details, summaries or transcripts databases. Recording and Connectors stay on Home and ask for their own permissions in place the first time they are opened, in one OpenKey approval; once a feature has been used on a device, the next sign-in asks for it too. Background work for Recording or Connectors starts only once that feature's permissions are in place. Agent access, Canvas and Local copy stay off on Home. tinycloud.chat keeps the full grant and behaves as before. Existing Home sessions sign in once more (revision `home-1`). Linear: TC-2501
+
+## 0.13.1-beta.0
+
+### Patch Changes
+
+- 631a8bb: iOS: ship the app as TinyCloud Home with bundle ID `xyz.tinycloud.home` (dev `xyz.tinycloud.home.dev`) under the TinyCloud, Inc. team (TC-518).
+
 ## 0.13.0
 
 ### Minor Changes

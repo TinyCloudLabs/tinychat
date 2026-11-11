@@ -1,5 +1,4 @@
 import AVFoundation
-import CaptureCore
 import ExoCapture
 import ExoStt
 import UIKit
@@ -64,23 +63,10 @@ enum AppLifecycleHooks {
 
     @discardableResult static func performShortcut(_ item: UIApplicationShortcutItem) -> Bool {
         guard item.type == "xyz.tinycloud.exo.record" else { return false }
-        let record = {
-            do {
-                let result = try CaptureEngine.shared.start(source: "quick_action")
-                NSLog("EXO_QUICK_ACTION started id=%@ at=%@", result["id"] as? String ?? "unknown",
-                      String(describing: result["startedAt"] ?? "unknown"))
-            }
-            catch CaptureError.alreadyRecording {
-                CaptureEngine.shared.presentRecorder()
-                NSLog("EXO_QUICK_ACTION presented existing recording")
-            }
+        Task { @MainActor in
+            do { try await RecordingShortcut.start(.quickAction, foreground: .already) }
             catch { NSLog("Exo quick action could not start: %@", String(describing: error)) }
         }
-        if AVAudioApplication.shared.recordPermission == .granted { record() }
-        else { AVAudioApplication.requestRecordPermission { allowed in
-            guard allowed else { return }
-            DispatchQueue.main.async(execute: record)
-        } }
         return true
     }
 }

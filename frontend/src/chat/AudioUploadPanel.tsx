@@ -46,6 +46,8 @@ import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { localStorageVoiceNoteConsentStore } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { PlatformContext } from "@/lib/platform";
 import { FilePicker } from "./FilePicker";
+import { isHomeReauthorizing, subscribeHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
 
 /** Whether an engine can take a new upload, and if not, why (one line). */
 export type EngineStatus =
@@ -196,6 +198,8 @@ export interface AudioUploadViewProps {
   onOpenSettings: () => void;
   onRecheck: () => void;
   onOpenLibrary?: () => void;
+  /** A Home permission ask has OpenKey open: Retry and Discard wait until it is done (the runner refuses them now). */
+  waitForOpenKey?: boolean;
   /**
    * `inline` (default): one column. `sheet`: the Upload sheet's scrolling body,
    * with Transcribe pinned in its footer so it stays on screen.
@@ -225,6 +229,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   onOpenSettings,
   onRecheck,
   onOpenLibrary,
+  waitForOpenKey = false,
   layout = "inline",
 }) => {
   const inSheet = layout === "sheet";
@@ -249,7 +254,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
       <div className="flex flex-col gap-3">
         <p className="text-callout text-muted-foreground" role="status">
           {job.fileName ? <>&ldquo;{job.fileName}&rdquo; is </> : "An upload is "}
-          being transcribed in another Exo tab or window. It continues there.
+          being transcribed in another TinyCloud Home tab or window. It continues there.
         </p>
         <Button type="button" variant="outline" onClick={onRetry} className="w-full">
           Check again
@@ -307,26 +312,29 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           </>
         )}
         {!busy && (
-          <div className="flex flex-wrap justify-end gap-2">
-            {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
-              <Button type="button" onClick={onRetry}>
-                Retry
+          <>
+            {waitForOpenKey && <p className="text-callout text-muted-foreground" role="status">{FEATURE_ACCESS_WAIT_FOR_OPENKEY}</p>}
+            <div className="flex flex-wrap justify-end gap-2">
+              {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
+                <Button type="button" disabled={waitForOpenKey} onClick={onRetry}>
+                  Retry
+                </Button>
+              )}
+              {job.cleanupPending && (
+                <Button type="button" disabled={waitForOpenKey} onClick={onRetry}>
+                  Retry deleting
+                </Button>
+              )}
+              {saved && onOpenLibrary && !job.cleanupPending && (
+                <Button type="button" variant="outline" onClick={onOpenLibrary}>
+                  Open Library
+                </Button>
+              )}
+              <Button type="button" variant={saved && !job.cleanupPending ? "default" : "outline"} disabled={waitForOpenKey} onClick={onDismiss}>
+                {saved ? "Upload another file" : "Discard"}
               </Button>
-            )}
-            {job.cleanupPending && (
-              <Button type="button" onClick={onRetry}>
-                Retry deleting
-              </Button>
-            )}
-            {saved && onOpenLibrary && !job.cleanupPending && (
-              <Button type="button" variant="outline" onClick={onOpenLibrary}>
-                Open Library
-              </Button>
-            )}
-            <Button type="button" variant={saved && !job.cleanupPending ? "default" : "outline"} onClick={onDismiss}>
-              {saved ? "Upload another file" : "Discard"}
-            </Button>
-          </div>
+            </div>
+          </>
         )}
       </div>,
     );
@@ -435,7 +443,7 @@ export function assemblyAiStatus(
   mode: AssemblyAiKeyMode,
   hostedCaps: { state: "checking" } | { state: "ok"; caps: Pick<HostedAssemblyAiCapabilities, "hosted"> } | { state: "failed" },
 ): EngineStatus {
-  if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through Exo's server." };
+  if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through TinyCloud Home's server." };
   if (hostedCaps.state === "checking") return { state: "checking" };
   if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach the Powerful transcription service.", action: "recheck" };
   return hostedCaps.caps.hosted
@@ -466,6 +474,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   }, [tcw.did]);
   const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
+  // While a Home permission ask has OpenKey open, a new upload waits: the session swap after a grant must not cut it off.
+  const reauthorizing = useSyncExternalStore(subscribeHomeReauthorizing, isHomeReauthorizing, isHomeReauthorizing);
   const { deps, origin, api, hosted } = useUploadDeps(tcw, backendUrl, sessionStore);
   const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);
 
@@ -512,7 +522,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
 
   const privateStatus: EngineStatus =
     origin === null
-      ? { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet. Use Powerful instead." }
+      ? { state: "unavailable", reason: "Private transcription isn't set up in this version of TinyCloud Home yet. Use Powerful instead." }
       : caps.state === "checking"
         ? { state: "checking" }
         : caps.state === "failed"
@@ -538,8 +548,11 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   });
   const requestPowerful = powerfulConsent.request;
   const onTranscribe = useCallback(() => {
-    if (file === null) return;
+    if (file === null || isHomeReauthorizing()) return;
     const start = () => {
+      // A start deferred behind a consent can land while a Home re-authorise has OpenKey open: the runner refuses it
+      // then, so keep the chosen file for a later Transcribe.
+      if (isHomeReauthorizing()) return;
       uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
       setFile(null);
     };
@@ -567,7 +580,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         privateConsentText={privateConsentBody(privateConsentDevice(platform))}
         diarize={diarize}
         diarizeUnavailable={diarizeUnavailable}
-        fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
+        fileProblem={reauthorizing ? FEATURE_ACCESS_WAIT_FOR_OPENKEY : fileProblem(file, engine, maxBytes, assemblyAiMode)}
         onEngineChange={setEngine}
         onDiarizeChange={setDiarize}
         onFile={setFile}
@@ -581,6 +594,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
           navigate(PATHS.library);
         }}
         layout={layout}
+        waitForOpenKey={reauthorizing}
       />
       {powerfulConsent.dialog}
     </>

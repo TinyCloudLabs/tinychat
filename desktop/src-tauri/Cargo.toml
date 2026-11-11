@@ -1,6 +1,6 @@
 [package]
 name = "exo-desktop"
-version = "0.13.0"
+version = "0.14.0-beta.15"
 description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
@@ -26,6 +26,14 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 exo-local-transcription = { path = "../local-transcription", optional = true }
+
+# Start a recording from outside the window: a global shortcut and a menu-bar
+# item (src/record_launch.rs). Registered from Rust; no capability grants the
+# plugin's or the tray's commands to the webview.
+[dependencies.tauri-plugin-global-shortcut]
+# ~2.3: 2.4 requires tauri 2.12, and this crate's lock pins tauri 2.11.
+version = "~2.3"
+optional = true
 
 # --- Transcription (anarlog, MIT layer) -------------------------------------
 # Desktop recording + on-device Whisper, reused from fastrepl/anarlog's
@@ -188,6 +196,12 @@ transcription = [
     "dep:anlg-transcription-core",
     "dep:reqwest",
     "dep:parking_lot",
+    # Record shortcut and menu-bar item (src/record_launch.rs). The tray is
+    # created in code, not tauri.conf.json, so its tauri features are enabled
+    # here rather than in the CLI-managed `tauri` feature list.
+    "dep:tauri-plugin-global-shortcut",
+    "tauri/tray-icon",
+    "tauri/image-png",
 ]
 ipc-selftest = ["transcription"]
 recorder-failpoints = []

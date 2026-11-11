@@ -133,7 +133,7 @@ __setOnDeviceSttForTests({
 // fake App.getInfo() makes the build line resolve with the real native
 // segments (build number and bundle id), not just the web baseline (TC-840).
 if (platform === "ios" || platform === "android") {
-  __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.exo.dev" });
+  __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.home.dev" });
   const fake = createCaptureFakeVoiceNotes();
   if (params.get("screen")?.startsWith("recorder-") || params.get("screen")?.startsWith("pipeline-wire-")) {
     fake.controls.commitLegacy({
@@ -192,7 +192,7 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
 function Index() {
   return (
     <main className="mx-auto max-w-xl px-4 py-8">
-      <h1 className="font-display text-title-1">Exo UI screens</h1>
+      <h1 className="font-display text-title-1">TinyCloud Home UI screens</h1>
       <ul className="mt-4 flex flex-col gap-2 text-body">
         {SCREENS.map((screen) => (
           <li key={screen.id} className="flex items-baseline gap-3">

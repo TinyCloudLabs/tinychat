@@ -51,7 +51,7 @@ export function Confidential() {
               </h2>
               <p className="mt-4 text-muted-foreground">
                 Most AI providers can read — and keep — everything you send.
-                TinyCloud Chat runs inference inside TEEs: your prompt is
+                TinyCloud Home runs inference inside TEEs: your prompt is
                 processed in a sealed, hardware-isolated enclave the people
                 running the GPUs can't see into, and every reply carries a
                 hardware attestation you can verify. You get the model's help

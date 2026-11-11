@@ -1,5 +1,5 @@
 #!/bin/bash
-# exo-update: install or update Exo for Mac from this repo's GitHub releases.
+# exo-update: install or update TinyCloud Home for Mac from this repo's GitHub releases.
 #   exo-update         latest stable release
 #   exo-update beta    newest build, including betas
 #
@@ -8,10 +8,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/TinyCloudLabs/tinychat/main/desktop/scripts/exo-update.sh | bash -s -- beta
 #
 # It looks up the release and downloads its DMG over HTTPS from GitHub only, checks it against the release's
-# SHA256SUMS.txt, quits Exo, replaces /Applications/Exo.app and opens it. A first install works the
+# SHA256SUMS.txt, quits TinyCloud Home, replaces /Applications/TinyCloud Home.app (or an older /Applications/Exo.app)
+# and opens it. A first install works the
 # same way. There is no downgrade guard: switching from beta to stable installs the latest stable
-# even when it is older than the build you have. A file downloaded with curl is not quarantined, so
-# the unsigned app opens without "Open Anyway". Written for bash; it also runs under POSIX sh.
+# even when it is older than the build you have. Releases from 0.14.0-beta.6 on are Developer ID signed and notarized;
+# a file downloaded with curl is not quarantined anyway, so an older unsigned app also opens without "Open Anyway".
+# Written for bash; it also runs under POSIX sh.
 # scripts/__tests__/release.test.mjs runs it against stub tools.
 set -eu
 
@@ -19,9 +21,12 @@ REPO="TinyCloudLabs/tinychat"
 # Test seams (scripts/__tests__/release.test.mjs); real installs use the defaults.
 APPS="${EXO_UPDATE_APPLICATIONS:-/Applications}"
 PLISTBUDDY="${EXO_UPDATE_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
-APP="$APPS/Exo.app"
-NEW="$APPS/Exo.exo-update-new.app"
-OLD="$APPS/Exo.exo-update-old.app"
+APP="$APPS/TinyCloud Home.app"
+# Builds before the rename installed as Exo.app (same bundle id); the update replaces it.
+CURRENT="$APP"
+if [ ! -e "$APP" ] && [ -e "$APPS/Exo.app" ]; then CURRENT="$APPS/Exo.app"; fi
+NEW="$APPS/TinyCloud Home.exo-update-new.app"
+OLD="$APPS/TinyCloud Home.exo-update-old.app"
 STATE="$HOME/.exo-update"
 CURL="curl --proto =https --proto-redir =https"
 
@@ -60,7 +65,7 @@ MOUNTED=
 cleanup() {
   if [ -n "$MOUNTED" ]; then hdiutil detach -quiet "$MNT" 2>/dev/null || true; fi
   # A swap cut short puts the previous app back.
-  if [ ! -e "$APP" ] && [ -e "$OLD" ]; then mv "$OLD" "$APP"; fi
+  if [ ! -e "$APP" ] && [ ! -e "$CURRENT" ] && [ -e "$OLD" ]; then mv "$OLD" "$CURRENT"; fi
   rm -rf "$TMP" "$NEW" "$OLD"
 }
 # Interrupts and kills exit through cleanup with a failing status.
@@ -77,39 +82,45 @@ fi
 fetch "$URL" "$TMP/release.json"
 JSON=$(cat "$TMP/release.json")
 TAG=$(printf '%s\n' "$JSON" | grep -o '"tag_name": *"exo-desktop@[^"]*"' | sed -n '1s/.*"\(exo-desktop@[^"]*\)"$/\1/p')
-[ -n "$TAG" ] || { echo "Couldn't find an Exo release." >&2; exit 1; }
+[ -n "$TAG" ] || { echo "Couldn't find a TinyCloud Home release." >&2; exit 1; }
 V="${TAG#exo-desktop@}"
 
-installed_build() { "$PLISTBUDDY" -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" 2>/dev/null || true; }
-if [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$TAG $(installed_build)" ]; then
-  echo "Exo $V is already installed."
+installed_build() { "$PLISTBUDDY" -c 'Print :CFBundleVersion' "$1/Contents/Info.plist" 2>/dev/null || true; }
+if [ "$CURRENT" = "$APP" ] && [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$TAG $(installed_build "$APP")" ]; then
+  echo "TinyCloud Home $V is already installed."
   exit 0
 fi
 
-DMG="Exo_${V}_aarch64.dmg"
 BASE="https://github.com/$REPO/releases/download/exo-desktop%40$V"
 
-echo "Downloading Exo $V..."
-fetch "$BASE/$DMG" "$TMP/$DMG" progress
+# Releases before the rename ship Exo_<v>_aarch64.dmg holding Exo.app; later ones TinyCloud-Home_<v>_aarch64.dmg
+# holding TinyCloud Home.app. The checksum list names the DMG this release has.
 fetch "$BASE/SHA256SUMS.txt" "$TMP/SHA256SUMS.txt"
-LINE=$(grep " $DMG\$" "$TMP/SHA256SUMS.txt" || true)
-if [ -z "$LINE" ]; then
-  echo "The release's SHA256SUMS.txt has no entry for $DMG, so nothing was installed." >&2
+DMG=
+for candidate in "TinyCloud-Home_${V}_aarch64.dmg" "Exo_${V}_aarch64.dmg"; do
+  if grep -q " $candidate\$" "$TMP/SHA256SUMS.txt"; then DMG="$candidate"; break; fi
+done
+if [ -z "$DMG" ]; then
+  echo "The release's SHA256SUMS.txt has no entry for TinyCloud-Home_${V}_aarch64.dmg or Exo_${V}_aarch64.dmg, so nothing was installed." >&2
   exit 1
 fi
+LINE=$(grep " $DMG\$" "$TMP/SHA256SUMS.txt")
+
+echo "Downloading TinyCloud Home $V..."
+fetch "$BASE/$DMG" "$TMP/$DMG" progress
 if ! (cd "$TMP" && printf '%s\n' "$LINE" | shasum -a 256 -c - >/dev/null); then
   echo "The download didn't match its checksum, so nothing was installed." >&2
   exit 1
 fi
 
-# Replacing the app while it runs can lose work, so quit it first (Exo may ask to confirm).
-running() { pgrep -f "^$APP/Contents/MacOS/" >/dev/null; }
+# Replacing the app while it runs can lose work, so quit it first (TinyCloud Home may ask to confirm).
+running() { pgrep -f "^$CURRENT/Contents/MacOS/" >/dev/null; }
 if running; then
-  echo "Quitting Exo..."
+  echo "Quitting TinyCloud Home..."
   osascript -e 'tell application id "xyz.tinycloud.exo" to quit' >/dev/null 2>&1 || true
   for _ in $(seq 60); do running || break; sleep 1; done
   if running; then
-    echo "Exo didn't quit. Close it, then run exo-update again." >&2
+    echo "TinyCloud Home didn't quit. Close it, then run exo-update again." >&2
     exit 1
   fi
 fi
@@ -120,10 +131,12 @@ MOUNTED=1
 hdiutil attach -nobrowse -readonly -quiet -mountpoint "$MNT" "$TMP/$DMG"
 # Copy the new app in full, then swap; cleanup puts the old app back if the swap is cut short.
 rm -rf "$NEW" "$OLD"
-ditto "$MNT/Exo.app" "$NEW"
-if [ -e "$APP" ]; then mv "$APP" "$OLD"; fi
+SOURCE="$MNT/TinyCloud Home.app"
+[ -e "$SOURCE" ] || SOURCE="$MNT/Exo.app"
+ditto "$SOURCE" "$NEW"
+if [ -e "$CURRENT" ]; then mv "$CURRENT" "$OLD"; fi
 mv "$NEW" "$APP"
 rm -rf "$OLD"
-echo "$TAG $(installed_build)" > "$STATE"
-echo "Installed Exo $V. Release notes: https://github.com/$REPO/releases/tag/exo-desktop%40$V"
+echo "$TAG $(installed_build "$APP")" > "$STATE"
+echo "Installed TinyCloud Home $V. Release notes: https://github.com/$REPO/releases/tag/exo-desktop%40$V"
 open "$APP"

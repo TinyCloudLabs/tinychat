@@ -7,6 +7,8 @@ import {
   listFeedCards,
   listFeedCardHistory,
   listFeedResponses,
+  readFeedResponseHandling,
+  type FeedDatabase,
   type FeedCardIdentity,
   type FeedCard,
   type FeedCardState,
@@ -19,7 +21,9 @@ import {
 import { getSetting, setSetting } from "../lib/threadStore";
 import { storageScopeFor, trackStorageWrites } from "../lib/storageStatus";
 import { THREADS_SQL_DB_NAME } from "../lib/threadKeys";
-import type { HomeFeedEntry, HomeFeedSource, HomeFeedViewEvent } from "./feedStoreTypes";
+import { accountCacheKey, clearLocalMarker, hasLocalMarker, readLocal, setLocalMarker, writeLocal } from "../lib/localFirst/localCache";
+import { foregroundDatabase } from "../lib/localFirst/requestLanes";
+import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource, HomeFeedViewEvent } from "./feedStoreTypes";
 import { emptySitrepOwnerData, ownerThreadResponseKey, parseSitrepCardPayload, parseOfficerThreadEvent, validPreparedIdentity, validateSitrepAction, safeSitrepActionSummary } from "@tinyboilerplate/core/feed/sitrep";
 import { OWNER_EVENT_SCHEMA, readPrivateOwnerState, savePrivateOwnerState, savePrivateHeldNote, savePrivateGroupPriority, combineOwnerData } from "./sitrepOwnerStore";
 import { OWNER_IMPORT_SCHEMA, OwnerArchiveCache } from "./sitrepArchiveStore";
@@ -32,10 +36,49 @@ function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardI
 export const HOME_FEED_RESOURCE = "xyz.tinycloud.tinychat/home_feed";
 export const HOME_FEED_DEFAULT_KEY = "home-feed-default-view";
 const RECONCILE_MS = 5 * 60_000;
+/** Bump when the registry schema batch below changes, so devices re-run it once. */
+const FEED_SCHEMA_VERSION = 1;
 
 function unwrap<T>(result: { ok: boolean; data?: T; error?: { message?: string } }): T {
   if (!result.ok) throw new Error(result.error?.message ?? "Home feed storage failed");
   return result.data as T;
+}
+
+/** What the device keeps of the feed between opens: the last loaded snapshot and its agents. */
+interface LocalFeed {
+  snapshot: HomeFeedSnapshot;
+  sources: FeedSource[];
+}
+
+/**
+ * The same state `getFeedCardState` reads, built from rows the load already
+ * holds: the listed card, its newest answer or follow-up from the response
+ * history, and that response's handling. Saves two reads per card.
+ */
+async function stateFromLoaded(output: FeedDatabase, card: FeedCard, history: readonly FeedResponse[]): Promise<FeedCardState> {
+  let response: FeedResponse | null = null;
+  for (const candidate of history) {
+    if ((candidate.kind === "answer" || candidate.kind === "followup") && (!response || candidate.sequence > response.sequence)) response = candidate;
+  }
+  if (!response) return { card, response: null, acknowledgement: null, outcome: null };
+  const handling = await readFeedResponseHandling(output, response);
+  if (!handling.ok && handling.error.code !== "NOT_FOUND") throw new Error(handling.error.message);
+  return { card, response, acknowledgement: handling.ok ? handling.data.acknowledgement : null, outcome: handling.ok ? handling.data.outcome : null };
+}
+
+const sourcesByClient = new WeakMap<TinyCloudWeb, HomeFeedSource>();
+
+/**
+ * One feed source per signed-in client, so leaving and returning to the Feed
+ * keeps its stream, caches and schema check instead of starting over.
+ */
+export function homeFeedSourceFor(tcw: TinyCloudWeb): HomeFeedSource {
+  let source = sourcesByClient.get(tcw);
+  if (!source) {
+    source = createHomeFeedSource(tcw);
+    sourcesByClient.set(tcw, source);
+  }
+  return source;
 }
 
 export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
@@ -44,11 +87,14 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   const space: string = sessionSpace;
   function assertAccount() { if (tcw.spaceId !== space) throw new Error("Home account changed; open its current feed"); }
   const scope = storageScopeFor(tcw);
-  const db = (resource: string) => privateFeedDatabase(trackStorageWrites(tcw.sql.db(resource), scope), assertAccount);
+  const db = (resource: string) => privateFeedDatabase(trackStorageWrites(foregroundDatabase(tcw.sql.db(resource)), scope), assertAccount);
   const registry = db(HOME_FEED_RESOURCE);
   const archives = new OwnerArchiveCache(registry);
   const typedHistory = new TypedFeedHistory();
+  const localKey = accountCacheKey(typeof tcw.did === "string" && tcw.did ? tcw.did : space, "home-feed");
+  const schemaMarker = `tinychat:feed-schema:v${FEED_SCHEMA_VERSION}:${space}`;
   let schema: Promise<void> | undefined;
+  let loadedOnce = false;
   let sources: FeedSource[] = [];
   const listeners = new Set<() => void>();
   let controller: AbortController | undefined;
@@ -58,7 +104,10 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   let renewal: number | undefined;
   let streamError: Error | undefined;
 
+  // The registry tables only ever need creating once per account: after the
+  // first success this device skips the write on every later open.
   function ensureSchema(): Promise<void> {
+    if (!schema && hasLocalMarker(schemaMarker)) schema = Promise.resolve();
     schema ??= (async () => {
       unwrap(await registry.batch([
         { sql: `CREATE TABLE IF NOT EXISTS feed_agents (
@@ -75,6 +124,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         { sql: OWNER_EVENT_SCHEMA },
         { sql: OWNER_IMPORT_SCHEMA },
       ]));
+      setLocalMarker(schemaMarker);
     })().catch((error: unknown) => { schema = undefined; throw error; });
     return schema;
   }
@@ -141,176 +191,222 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     ));
   }
 
-  return {
-    async load(focused) {
-      assertAccount();
+  async function loadFeed(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot> {
+    assertAccount();
+    const readRegistry = async () => {
       await ensureSchema();
-      const [agentResult, eventResult, savedDefault] = await Promise.all([
+      const [agents, events] = await Promise.all([
         registry.query("SELECT agent_id,agent_did,label,output_resource,response_resource,authorization_json FROM feed_agents ORDER BY agent_id", []),
         registry.query("SELECT agent_id,card_id,revision,issuance_id,kind,created_at,snoozed_until,seq FROM feed_view_events ORDER BY seq", []),
-        getSetting(tcw, HOME_FEED_DEFAULT_KEY),
       ]);
-      // The node authorizes the full resource but stores by basename. Reject
-      // aliases here instead of accidentally merging two agents' databases.
-      const basenames = new Set([HOME_FEED_RESOURCE.split("/").at(-1)!, THREADS_SQL_DB_NAME.split("/").at(-1)!]);
-      sources = unwrap(agentResult).rows.map((row) => {
-        const [id, did, label, output, responses, provenance] = row as unknown[];
-        if (![id, did, label, output, responses, provenance].every((value) => typeof value === "string" && value.length)) throw new Error("Invalid Home feed registry entry");
-        // Provenance is retained for the connection owner, never interpreted as
-        // authority. Only the actual signed session authorizes these handles.
-        parseOwnerJSON(provenance as string, "Invalid persisted Home grant provenance JSON");
-        const prefix = "xyz.tinycloud.tinychat/feed";
-        const token = String(output).slice(`${prefix}/feed_output_`.length);
-        const expected = unwrap(feedResourceNames(prefix, token));
-        if (output !== expected.outputResource || responses !== expected.responseResource) throw new Error("Invalid per-agent Home feed resource pair");
-        for (const resource of [output as string, responses as string]) {
-          const basename = resource.split("/").at(-1)!;
-          if (basenames.has(basename)) throw new Error("Home feed resources must have distinct per-agent database names");
-          basenames.add(basename);
-        }
-        return {
-          sourceId: id as string, agentDid: did as string, label: label as string,
-          output: { spaceId: space, database: output as string },
-          responses: { spaceId: space, database: responses as string },
-        };
-      });
-      connect();
-      const imported = await archives.load(sources);
-      const privateState = await readPrivateOwnerState(registry, imported.scopes);
-      const views = new Map<string, FeedOwnerView>();
-      const events = new Map<string, HomeFeedViewEvent[]>();
-      for (const row of unwrap(eventResult).rows) {
-        const [sourceId, cardId, revision, issuanceId, kind, at, until, sequence] = row as unknown[];
-        if (kind !== "seen" && kind !== "snoozed") throw new Error("Invalid Home feed view event");
-        const key = JSON.stringify([sourceId, cardId, revision, issuanceId]);
-        const view = views.get(key) ?? { sourceId: String(sourceId), cardId: String(cardId), revision: Number(revision), issuanceId: String(issuanceId) };
-        if (kind === "seen") view.seenAt = String(at);
-        if (kind === "snoozed") view.snoozedUntil = typeof until === "string" ? until : undefined;
-        views.set(key, view);
-        const history = events.get(key) ?? [];
-        history.push({ sequence: Number(sequence), kind, createdAt: String(at), ...(typeof until === "string" ? { snoozedUntil: until } : {}) });
-        events.set(key, history);
+      return { agents, events };
+    };
+    await ensureSchema();
+    const [firstRows, savedDefault] = await Promise.all([readRegistry(), getSetting(tcw, HOME_FEED_DEFAULT_KEY)]);
+    let registryRows = firstRows;
+    // The device skipped the registry CREATE batch on its marker. Feed errors are
+    // redacted ("SQL operation failed"), so a missing table can't be told apart:
+    // when these reads fail, drop the marker and read once more after the batch.
+    if ((!registryRows.agents.ok || !registryRows.events.ok) && hasLocalMarker(schemaMarker)) {
+      clearLocalMarker(schemaMarker);
+      schema = undefined;
+      registryRows = await readRegistry();
+    }
+    const agentResult = registryRows.agents;
+    const eventResult = registryRows.events;
+    // The node authorizes the full resource but stores by basename. Reject
+    // aliases here instead of accidentally merging two agents' databases.
+    const basenames = new Set([HOME_FEED_RESOURCE.split("/").at(-1)!, THREADS_SQL_DB_NAME.split("/").at(-1)!]);
+    sources = unwrap(agentResult).rows.map((row) => {
+      const [id, did, label, output, responses, provenance] = row as unknown[];
+      if (![id, did, label, output, responses, provenance].every((value) => typeof value === "string" && value.length)) throw new Error("Invalid Home feed registry entry");
+      // Provenance is retained for the connection owner, never interpreted as
+      // authority. Only the actual signed session authorizes these handles.
+      parseOwnerJSON(provenance as string, "Invalid persisted Home grant provenance JSON");
+      const prefix = "xyz.tinycloud.tinychat/feed";
+      const token = String(output).slice(`${prefix}/feed_output_`.length);
+      const expected = unwrap(feedResourceNames(prefix, token));
+      if (output !== expected.outputResource || responses !== expected.responseResource) throw new Error("Invalid per-agent Home feed resource pair");
+      for (const resource of [output as string, responses as string]) {
+        const basename = resource.split("/").at(-1)!;
+        if (basenames.has(basename)) throw new Error("Home feed resources must have distinct per-agent database names");
+        basenames.add(basename);
       }
-      const perAgent = await Promise.all(sources.map(async (source) => {
-        const output = db(source.output.database);
-        const responses = db(source.responses.database);
-        const cards = unwrap(await listFeedCards(output));
-        const storedCards: FeedCard[] = [];
-        let afterIdentity: FeedCardIdentity | undefined;
-        for (;;) {
-          const page = unwrap(await listFeedCardHistory(output, { afterIdentity, limit: 1000 }));
-          storedCards.push(...page.cards);
-          if (!page.hasMore) break;
-          if (!page.nextIdentity || (afterIdentity && sameIdentity(page.nextIdentity, afterIdentity))) throw new Error("Output history page did not advance its full identity");
-          afterIdentity = page.nextIdentity;
-        }
-        const histories = new Map<string, FeedResponse[]>();
-        let afterSequence = 0;
-        for (;;) {
-          const page = unwrap(await listFeedResponses(responses, { afterSequence, limit: 1000 }));
-          for (const response of page) {
-            const key = JSON.stringify([source.sourceId, response.cardId, response.revision, response.issuanceId]);
-            const history = histories.get(key) ?? [];
-            history.push(response);
-            histories.set(key, history);
+      return {
+        sourceId: id as string, agentDid: did as string, label: label as string,
+        output: { spaceId: space, database: output as string },
+        responses: { spaceId: space, database: responses as string },
+      };
+    });
+    connect();
+    // Owner archives and private state run beside the per-agent card reads
+    // below instead of before them; both are needed only to assemble entries.
+    const ownerData = archives.load(sources).then(async (imported) => ({ imported, privateState: await readPrivateOwnerState(registry, imported.scopes) }));
+    ownerData.catch(() => {}); // awaited below; never an unhandled rejection meanwhile
+    const views = new Map<string, FeedOwnerView>();
+    const events = new Map<string, HomeFeedViewEvent[]>();
+    for (const row of unwrap(eventResult).rows) {
+      const [sourceId, cardId, revision, issuanceId, kind, at, until, sequence] = row as unknown[];
+      if (kind !== "seen" && kind !== "snoozed") throw new Error("Invalid Home feed view event");
+      const key = JSON.stringify([sourceId, cardId, revision, issuanceId]);
+      const view = views.get(key) ?? { sourceId: String(sourceId), cardId: String(cardId), revision: Number(revision), issuanceId: String(issuanceId) };
+      if (kind === "seen") view.seenAt = String(at);
+      if (kind === "snoozed") view.snoozedUntil = typeof until === "string" ? until : undefined;
+      views.set(key, view);
+      const history = events.get(key) ?? [];
+      history.push({ sequence: Number(sequence), kind, createdAt: String(at), ...(typeof until === "string" ? { snoozedUntil: until } : {}) });
+      events.set(key, history);
+    }
+    const perAgent = await Promise.all(sources.map(async (source) => {
+      const output = db(source.output.database);
+      const responses = db(source.responses.database);
+      const historyKey = (identity: FeedCardIdentity) => JSON.stringify([source.sourceId, identity.cardId, identity.revision, identity.issuanceId]);
+      const [cards, storedCards, histories] = await Promise.all([
+        listFeedCards(output).then(unwrap),
+        (async () => {
+          const stored: FeedCard[] = [];
+          let afterIdentity: FeedCardIdentity | undefined;
+          for (;;) {
+            const page = unwrap(await listFeedCardHistory(output, { afterIdentity, limit: 1000 }));
+            stored.push(...page.cards);
+            if (!page.hasMore) return stored;
+            if (!page.nextIdentity || (afterIdentity && sameIdentity(page.nextIdentity, afterIdentity))) throw new Error("Output history page did not advance its full identity");
+            afterIdentity = page.nextIdentity;
           }
-          if (page.length < 1000) break;
-          afterSequence = page[page.length - 1]!.sequence;
-        }
-        const latestKeys = new Set(cards.map((card) => ownerCardKey(source.sourceId, card)));
-        const loadCard = async (identity: FeedCardIdentity, providedState?: FeedCardState): Promise<HomeFeedEntry> => {
-          const state = providedState ?? unwrap(await getFeedCardState(output, responses, identity));
-          const key = JSON.stringify([source.sourceId, identity.cardId, identity.revision, identity.issuanceId]);
-          const entry: HomeFeedEntry = {
-            source, state,
-            currentIssuance: latestKeys.has(key),
-            view: views.get(key) ?? { sourceId: source.sourceId, cardId: identity.cardId, revision: identity.revision, issuanceId: identity.issuanceId },
-            responses: histories.get(key) ?? [],
-            viewEvents: events.get(key) ?? [],
-          };
-          return typedHistory.enrich(entry, output, responses, histories.get(key) ?? [], privateState.byCard, imported, privateState.groupPriorities);
-        };
-        const loadedEntries = await Promise.all(cards.map((card) => loadCard(card)));
-        loadedEntries.push(...await Promise.all(storedCards.filter((card) => {
-          const key = ownerCardKey(source.sourceId, card);
-          const owner = imported.owners.get(key);
-          const archivedHistory = !!(owner && (owner.answers.length || owner.claimDecisions.length || owner.threads.length || owner.states.length || owner.outboundNotes?.length || owner.heldNotes?.length || owner.deliveries.length)) || !!imported.historicalCommands.get(key)?.length;
-          return !latestKeys.has(key) && (archivedHistory || card.payload?.sitrepThread !== undefined || histories.has(key) || privateState.byCard[key] !== undefined || events.get(key)?.some((event) => event.kind === "snoozed"));
-        }).map((card) => loadCard(card))));
-        const entries: HomeFeedEntry[] = [];
-        const historicalEntries: HomeFeedEntry[] = [];
-        const retainedParents = new Map<string, HomeFeedEntry>();
-        const officerMessages = new Map<string, { target: HomeFeedEntry; parsed: NonNullable<ReturnType<typeof parseOfficerThreadEvent>>; outputs: HomeFeedEntry[]; conflict: boolean }>();
-        for (const entry of loadedEntries) {
-          const event = entry.state.card.payload?.sitrepThread;
-          if (event === undefined) {
-            const key = ownerCardKey(source.sourceId, entry.state.card);
-            if (!imported.retired.has(key)) (latestKeys.has(key) ? entries : historicalEntries).push(entry);
-            continue;
-          }
-          if (!event || typeof event !== "object" || !("parent" in event) || !validPreparedIdentity(event.parent) || entry.state.card.needsResponse) { entries.push(entry); continue; }
-          const parentKey = ownerCardKey(source.sourceId, event.parent);
-          let parent = loadedEntries.find((candidate) => ownerCardKey(source.sourceId, candidate.state.card) === parentKey) ?? retainedParents.get(parentKey);
-          if (!parent) {
-            const result = await getFeedCardState(output, responses, event.parent);
-            if (!result.ok) {
-              if (result.error.code === "NOT_FOUND") { entries.push(entry); continue; }
-              throw new Error(result.error.message);
+        })(),
+        (async () => {
+          const byCard = new Map<string, FeedResponse[]>();
+          let afterSequence = 0;
+          for (;;) {
+            const page = unwrap(await listFeedResponses(responses, { afterSequence, limit: 1000 }));
+            for (const response of page) {
+              const key = historyKey(response);
+              const history = byCard.get(key) ?? [];
+              history.push(response);
+              byCard.set(key, history);
             }
-            parent = await loadCard(event.parent, result.data);
-            retainedParents.set(parentKey, parent);
+            if (page.length < 1000) return byCard;
+            afterSequence = page[page.length - 1]!.sequence;
           }
-          const typed = parseSitrepCardPayload(parent.state.card.payload?.sitrep);
-          const parsed = typed && typed.record.kind === parent.state.card.kind ? parseOfficerThreadEvent(event, typed.record) : null;
-          const replyTo = parsed?.message.side === "officer" ? parsed.message.replyTo : undefined;
-          if (!parsed || (replyTo && !parent.owner?.threads.some((message) => message.side === "sam" && message.messageId === replyTo))) { entries.push(entry); continue; }
-          const key = JSON.stringify([parentKey, ownerThreadResponseKey(parsed.message)]);
-          const pending = officerMessages.get(key);
-          if (pending) {
-            pending.outputs.push(entry);
-            if (JSON.stringify(pending.parsed.message) !== JSON.stringify(parsed.message)) pending.conflict = true;
-          } else officerMessages.set(key, { target: parent, parsed, outputs: [entry], conflict: false });
+        })(),
+      ]);
+      const { imported, privateState } = await ownerData;
+      const latestKeys = new Set(cards.map((card) => ownerCardKey(source.sourceId, card)));
+      const loadCard = async (identity: FeedCardIdentity, providedState?: FeedCardState): Promise<HomeFeedEntry> => {
+        const state = providedState ?? unwrap(await getFeedCardState(output, responses, identity));
+        const key = JSON.stringify([source.sourceId, identity.cardId, identity.revision, identity.issuanceId]);
+        const entry: HomeFeedEntry = {
+          source, state,
+          currentIssuance: latestKeys.has(key),
+          view: views.get(key) ?? { sourceId: source.sourceId, cardId: identity.cardId, revision: identity.revision, issuanceId: identity.issuanceId },
+          responses: histories.get(key) ?? [],
+          viewEvents: events.get(key) ?? [],
+        };
+        return typedHistory.enrich(entry, output, responses, histories.get(key) ?? [], privateState.byCard, imported, privateState.groupPriorities);
+      };
+      const loadListed = async (card: FeedCard) => loadCard(card, await stateFromLoaded(output, card, histories.get(historyKey(card)) ?? []));
+      const loadedEntries = await Promise.all(cards.map(loadListed));
+      loadedEntries.push(...await Promise.all(storedCards.filter((card) => {
+        const key = ownerCardKey(source.sourceId, card);
+        const owner = imported.owners.get(key);
+        const archivedHistory = !!(owner && (owner.answers.length || owner.claimDecisions.length || owner.threads.length || owner.states.length || owner.outboundNotes?.length || owner.heldNotes?.length || owner.deliveries.length)) || !!imported.historicalCommands.get(key)?.length;
+        return !latestKeys.has(key) && (archivedHistory || card.payload?.sitrepThread !== undefined || histories.has(key) || privateState.byCard[key] !== undefined || events.get(key)?.some((event) => event.kind === "snoozed"));
+      }).map(loadListed)));
+      const entries: HomeFeedEntry[] = [];
+      const historicalEntries: HomeFeedEntry[] = [];
+      const retainedParents = new Map<string, HomeFeedEntry>();
+      const officerMessages = new Map<string, { target: HomeFeedEntry; parsed: NonNullable<ReturnType<typeof parseOfficerThreadEvent>>; outputs: HomeFeedEntry[]; conflict: boolean }>();
+      for (const entry of loadedEntries) {
+        const event = entry.state.card.payload?.sitrepThread;
+        if (event === undefined) {
+          const key = ownerCardKey(source.sourceId, entry.state.card);
+          if (!imported.retired.has(key)) (latestKeys.has(key) ? entries : historicalEntries).push(entry);
+          continue;
         }
-        for (const pending of officerMessages.values()) {
-          const { target, parsed, outputs } = pending;
-          const existing = target.owner?.threads.find((message) => message.side === "officer" && ownerThreadResponseKey(message) === ownerThreadResponseKey(parsed.message));
-          if (pending.conflict || (existing && JSON.stringify(existing) !== JSON.stringify(parsed.message))) { entries.push(...outputs); continue; }
-          target.owner ??= emptySitrepOwnerData();
-          if (!existing) target.owner.threads.push(parsed.message);
-          const output = outputs[0];
-          if (!output) throw new Error("Officer output identity is missing");
-          (target.owner.threadOrigins ??= {})[ownerThreadResponseKey(parsed.message)] ??= { kind: "agent-output", sourceId: source.sourceId, cardId: output.state.card.cardId, revision: output.state.card.revision, issuanceId: output.state.card.issuanceId };
+        if (!event || typeof event !== "object" || !("parent" in event) || !validPreparedIdentity(event.parent) || entry.state.card.needsResponse) { entries.push(entry); continue; }
+        const parentKey = ownerCardKey(source.sourceId, event.parent);
+        let parent = loadedEntries.find((candidate) => ownerCardKey(source.sourceId, candidate.state.card) === parentKey) ?? retainedParents.get(parentKey);
+        if (!parent) {
+          const result = await getFeedCardState(output, responses, event.parent);
+          if (!result.ok) {
+            if (result.error.code === "NOT_FOUND") { entries.push(entry); continue; }
+            throw new Error(result.error.message);
+          }
+          parent = await loadCard(event.parent, result.data);
+          retainedParents.set(parentKey, parent);
         }
-        for (const parent of retainedParents.values()) {
-          if (!latestKeys.has(ownerCardKey(source.sourceId, parent.state.card)) && !historicalEntries.some((entry) => sameIdentity(entry.state.card, parent.state.card))) historicalEntries.push(parent);
-        }
-        let focusedEntry: HomeFeedEntry | undefined;
-        if (focused?.source.sourceId === source.sourceId) {
-          const identity = focused.state.card;
-          focusedEntry = loadedEntries.find((entry) => sameIdentity(entry.state.card, identity))
-            ?? retainedParents.get(ownerCardKey(source.sourceId, identity)) ?? await loadCard(identity);
-        }
-        return { sourceId: source.sourceId, entries, historicalEntries, focusedEntry, loadCard, retainedParents };
-      }));
-      const focusedEntry = perAgent.find((group) => group.focusedEntry)?.focusedEntry;
-      if (focused && !focusedEntry) throw new Error("Focused card source is no longer registered");
-      const related = new Map<string, HomeFeedEntry>();
-      if (focusedEntry?.modelScope) {
-        for (const member of imported.members.get(focusedEntry.modelScope) ?? []) {
-          const key = ownerCardKey(member.sourceId, member.identity);
-          if (imported.retired.has(key) || key === ownerCardKey(focusedEntry.source.sourceId, focusedEntry.state.card)) continue;
-          const group = perAgent.find((candidate) => candidate.sourceId === member.sourceId);
-          if (!group) throw new Error("Focused historical relationship has no registered source");
-          const existing = [...group.entries, ...group.historicalEntries].find((entry) => ownerCardKey(entry.source.sourceId, entry.state.card) === key) ?? group.retainedParents.get(key);
-          const entry = existing ?? await group.loadCard(member.identity);
-          related.set(key, { ...entry, modelScope: focusedEntry.modelScope });
-        }
+        const typed = parseSitrepCardPayload(parent.state.card.payload?.sitrep);
+        const parsed = typed && typed.record.kind === parent.state.card.kind ? parseOfficerThreadEvent(event, typed.record) : null;
+        const replyTo = parsed?.message.side === "officer" ? parsed.message.replyTo : undefined;
+        if (!parsed || (replyTo && !parent.owner?.threads.some((message) => message.side === "sam" && message.messageId === replyTo))) { entries.push(entry); continue; }
+        const key = JSON.stringify([parentKey, ownerThreadResponseKey(parsed.message)]);
+        const pending = officerMessages.get(key);
+        if (pending) {
+          pending.outputs.push(entry);
+          if (JSON.stringify(pending.parsed.message) !== JSON.stringify(parsed.message)) pending.conflict = true;
+        } else officerMessages.set(key, { target: parent, parsed, outputs: [entry], conflict: false });
       }
-      const all = new Map(perAgent.flatMap((group) => group.entries).map((entry) => [ownerCardKey(entry.source.sourceId, entry.state.card), entry]));
-      if (focusedEntry) all.set(ownerCardKey(focusedEntry.source.sourceId, focusedEntry.state.card), focusedEntry);
-      const sitrep = combineOwnerData([...all.values()].flatMap((entry) => entry.owner ? [entry.owner] : []));
-      const defaultSelector: FeedSelector = savedDefault === "information" || savedDefault === "both" ? savedDefault : "needs-action";
-      return { entries: perAgent.flatMap((group) => group.entries), historicalEntries: perAgent.flatMap((group) => group.historicalEntries), settings: { defaultSelector }, sitrep, relatedEntries: [...related.values()], ...(focusedEntry ? { focusedEntry } : {}), ...(streamError ? { connectionError: `Live updates unavailable: ${streamError.message}` } : {}) };
+      for (const pending of officerMessages.values()) {
+        const { target, parsed, outputs } = pending;
+        const existing = target.owner?.threads.find((message) => message.side === "officer" && ownerThreadResponseKey(message) === ownerThreadResponseKey(parsed.message));
+        if (pending.conflict || (existing && JSON.stringify(existing) !== JSON.stringify(parsed.message))) { entries.push(...outputs); continue; }
+        target.owner ??= emptySitrepOwnerData();
+        if (!existing) target.owner.threads.push(parsed.message);
+        const output = outputs[0];
+        if (!output) throw new Error("Officer output identity is missing");
+        (target.owner.threadOrigins ??= {})[ownerThreadResponseKey(parsed.message)] ??= { kind: "agent-output", sourceId: source.sourceId, cardId: output.state.card.cardId, revision: output.state.card.revision, issuanceId: output.state.card.issuanceId };
+      }
+      for (const parent of retainedParents.values()) {
+        if (!latestKeys.has(ownerCardKey(source.sourceId, parent.state.card)) && !historicalEntries.some((entry) => sameIdentity(entry.state.card, parent.state.card))) historicalEntries.push(parent);
+      }
+      let focusedEntry: HomeFeedEntry | undefined;
+      if (focused?.source.sourceId === source.sourceId) {
+        const identity = focused.state.card;
+        focusedEntry = loadedEntries.find((entry) => sameIdentity(entry.state.card, identity))
+          ?? retainedParents.get(ownerCardKey(source.sourceId, identity)) ?? await loadCard(identity);
+      }
+      return { sourceId: source.sourceId, entries, historicalEntries, focusedEntry, loadCard, retainedParents };
+    }));
+    const focusedEntry = perAgent.find((group) => group.focusedEntry)?.focusedEntry;
+    if (focused && !focusedEntry) throw new Error("Focused card source is no longer registered");
+    const { imported } = await ownerData;
+    const related = new Map<string, HomeFeedEntry>();
+    if (focusedEntry?.modelScope) {
+      for (const member of imported.members.get(focusedEntry.modelScope) ?? []) {
+        const key = ownerCardKey(member.sourceId, member.identity);
+        if (imported.retired.has(key) || key === ownerCardKey(focusedEntry.source.sourceId, focusedEntry.state.card)) continue;
+        const group = perAgent.find((candidate) => candidate.sourceId === member.sourceId);
+        if (!group) throw new Error("Focused historical relationship has no registered source");
+        const existing = [...group.entries, ...group.historicalEntries].find((entry) => ownerCardKey(entry.source.sourceId, entry.state.card) === key) ?? group.retainedParents.get(key);
+        const entry = existing ?? await group.loadCard(member.identity);
+        related.set(key, { ...entry, modelScope: focusedEntry.modelScope });
+      }
+    }
+    const all = new Map(perAgent.flatMap((group) => group.entries).map((entry) => [ownerCardKey(entry.source.sourceId, entry.state.card), entry]));
+    if (focusedEntry) all.set(ownerCardKey(focusedEntry.source.sourceId, focusedEntry.state.card), focusedEntry);
+    const sitrep = combineOwnerData([...all.values()].flatMap((entry) => entry.owner ? [entry.owner] : []));
+    const defaultSelector: FeedSelector = savedDefault === "information" || savedDefault === "both" ? savedDefault : "needs-action";
+    const entries = perAgent.flatMap((group) => group.entries);
+    const historicalEntries = perAgent.flatMap((group) => group.historicalEntries);
+    loadedOnce = true;
+    // The device's copy for the next open: the feed itself, not the card
+    // the user happens to have open or a transient connection error.
+    void writeLocal<LocalFeed>(localKey, { snapshot: { entries, historicalEntries, settings: { defaultSelector }, sitrep }, sources });
+    return { entries, historicalEntries, settings: { defaultSelector }, sitrep, relatedEntries: [...related.values()], ...(focusedEntry ? { focusedEntry } : {}), ...(streamError ? { connectionError: `Live updates unavailable: ${streamError.message}` } : {}) };
+  }
+
+  return {
+    load: (focused) => loadFeed(focused),
+    async cached() {
+      const local = await readLocal<LocalFeed>(localKey);
+      if (!local) return null;
+      // Subscribe to every agent's databases from the first connection, so the
+      // first network load does not have to re-subscribe.
+      if (!loadedOnce && !sources.length) {
+        sources = local.value.sources;
+        connect();
+      }
+      return local.value.snapshot;
     },
     async saveResponse(entry, response, payload) {
       assertEntryScope(entry, response);

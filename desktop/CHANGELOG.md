@@ -1,5 +1,75 @@
 # exo-desktop
 
+## 0.14.0-beta.15
+
+No changes in this release.
+
+## 0.14.0-beta.14
+
+No changes in this release.
+
+## 0.14.0-beta.13
+
+### Minor Changes
+
+- eed0f62: TinyCloud Home on iPhone and Android now opens with Face ID, Touch ID or the phone's screen lock instead of signing in again. A signed-in app asks when it opens, and when you come back after 5 minutes away (Settings › App lock: 1, 5 or 15 minutes, or an hour). Your feed and recordings load behind the lock screen and appear the moment you unlock; on iPhone and Android 13 and later the app switcher shows a blank screen while the lock is on. Cancelling keeps the lock screen up with a button to try again, and never signs you out. The lock is on by default where Face ID, Touch ID or a fingerprint is set up, and can be turned off in Settings. Recording from a shortcut starts without waiting for the unlock. Details: TC-2738
+
+## 0.14.0-beta.12
+
+No changes in this release.
+
+## 0.14.0-beta.11
+
+No changes in this release.
+
+## 0.14.0-beta.10
+
+No changes in this release.
+
+## 0.14.0-beta.9
+
+No changes in this release.
+
+## 0.14.0-beta.8
+
+No changes in this release.
+
+## 0.14.0-beta.7
+
+### Minor Changes
+
+- f8823ef: Exo is now TinyCloud Home everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud Home.app`), the Android and iOS app names, notifications, permission prompts and error messages. Home opens on Feed on the web, on desktop and on iOS and Android, on a fresh install and after signing in, unless you chose Apps as your first screen in Settings. Feed and Apps are no longer experimental: they are in the navigation for everyone, and Settings › Home holds the first-screen choice. App id, bundle ids, URL schemes and every data path are unchanged. Details: TC-2050, TC-2040
+
+## 0.14.0-beta.6
+
+### Patch Changes
+
+- 2357deb: Desktop releases are Developer ID signed, notarized and stapled: the app opens from the downloaded DMG without Open Anyway. Release titles and assets are named after the app (TinyCloud Home).
+
+## 0.14.0-beta.5
+
+No changes in this release.
+
+## 0.14.0-beta.4
+
+No changes in this release.
+
+## 0.14.0-beta.3
+
+No changes in this release.
+
+## 0.14.0-beta.2
+
+No changes in this release.
+
+## 0.14.0-beta.1
+
+No changes in this release.
+
+## 0.13.1-beta.0
+
+No changes in this release.
+
 ## 0.13.0
 
 No changes in this release.

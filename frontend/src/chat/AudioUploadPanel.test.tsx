@@ -18,8 +18,12 @@ import { POWERFUL_PROVIDER_NAME, TRANSCRIBER_NAME } from "@/capture/recorder/fin
 import { SoftActions } from "@/capture/home/SoftActions";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AboutPage } from "./AboutPage";
-import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
+import { assemblyAiStatus, AudioUploadPanel, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
 import type { UploadState } from "@/lib/audioUpload";
+import { setHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
+import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 const noop = () => {};
 
@@ -89,7 +93,7 @@ describe("AudioUploadView", () => {
   test("an unavailable engine says why, links where it can be fixed, and Transcribe stays off", () => {
     const noOrigin = renderUpload({
       engines: {
-        "private-cloud": { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet." },
+        "private-cloud": { state: "unavailable", reason: "Private transcription isn't set up in this version of TinyCloud Home yet." },
         assemblyai: { state: "available" },
       },
     });
@@ -133,7 +137,7 @@ describe("AudioUploadView", () => {
       expect(html).toContain(">This browser<");
     }
     // TinyCloud's account: the file passes through Exo's server, and the line says so.
-    expect(hosted).toContain("Not private: Powerful sends your audio through Exo&#x27;s server to an outside transcription service. Exo deletes the service&#x27;s copy once the transcript is saved.");
+    expect(hosted).toContain("Not private: Powerful sends your audio through TinyCloud Home&#x27;s server to an outside transcription service. TinyCloud Home deletes the service&#x27;s copy once the transcript is saved.");
     expect(hosted).toContain("Powerful · not private");
     expect(hosted).not.toContain("your key");
     expect(priv).toContain("Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.");
@@ -227,7 +231,7 @@ describe("Settings → Transcription", () => {
     const radios = [...html.matchAll(/role="radio"[^>]*>([^<]*)</g)].map((match) => match[1]);
     expect(radios).toEqual([TRANSCRIBER_NAME["private-cloud"], TRANSCRIBER_NAME.assemblyai]);
     expect(html).not.toContain("assemblyai-api-key");
-    expect(html).toContain("Exo&#x27;s server");
+    expect(html).toContain("TinyCloud Home&#x27;s server");
   });
 });
 
@@ -248,4 +252,36 @@ test("discard cleanup offers Retry deleting without claiming the meeting was sav
   expect(html).toContain("Retry deleting</button>");
   expect(html).not.toContain(">Retry</button>");
   expect(html).not.toContain("Saved to your TinyCloud space");
+});
+
+test("while a Home permission ask has OpenKey open, a failed upload says to finish there first, beside Retry and Discard that wait", () => {
+  const failed = job({ stage: "failed", error: { message: "The upload stopped.", retry: true, reference: null } });
+  const waiting = renderUpload({ job: failed, waitForOpenKey: true });
+  expect(waiting).toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
+  expect(waiting).toMatch(/<button[^>]*disabled=""[^>]*>Retry<\/button>/);
+  expect(waiting).toMatch(/<button[^>]*disabled=""[^>]*>Discard<\/button>/);
+  const open = renderUpload({ job: failed });
+  expect(open).not.toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
+  expect(open).not.toMatch(/disabled=""[^>]*>(Retry|Discard)<\/button>/);
+});
+
+test("while a Home permission ask has OpenKey open, Upload says to finish there first and offers no Transcribe", () => {
+  const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1", spaceId: "space-1" } as unknown as TinyCloudWeb;
+  const sessionStore = { getToken: () => "token" } as unknown as SessionStore;
+  const render = () => renderToStaticMarkup(
+    <MemoryRouter>
+      <StaticRecorderProvider value={{ available: false }}>
+        <AudioUploadPanel tcw={tcw} backendUrl="http://localhost" sessionStore={sessionStore} />
+      </StaticRecorderProvider>
+    </MemoryRouter>,
+  );
+  setHomeReauthorizing(true);
+  try {
+    const html = render();
+    expect(html).toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Transcribe<\/button>/);
+  } finally {
+    setHomeReauthorizing(false);
+  }
+  expect(render()).not.toContain(FEATURE_ACCESS_WAIT_FOR_OPENKEY);
 });

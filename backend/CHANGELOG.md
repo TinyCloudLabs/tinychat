@@ -1,5 +1,37 @@
 # @tinychat/backend
 
+## 0.8.0-beta.4
+
+### Patch Changes
+
+- 761a6ba: The web build includes connector secret permissions and the decrypt permission at sign-in for devices that have used Connectors. First use requests access through OpenKey in place. Remove the unused custom AssemblyAI key permission from the manifest.
+
+## 0.8.0-beta.3
+
+### Patch Changes
+
+- f8823ef: Exo is now TinyCloud Home everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud Home.app`), the Android and iOS app names, notifications, permission prompts and error messages. Home opens on Feed on the web, on desktop and on iOS and Android, on a fresh install and after signing in, unless you chose Apps as your first screen in Settings. Feed and Apps are no longer experimental: they are in the navigation for everyone, and Settings › Home holds the first-screen choice. App id, bundle ids, URL schemes and every data path are unchanged. Details: TC-2050, TC-2040
+
+## 0.8.0-beta.2
+
+### Patch Changes
+
+- 0d8fa35: Distinguish slow storage-lane waits from queue timeouts in private logs and include closed calendar failure classifications without account IDs, storage keys, values or error text. Preserve request-log rate limits and existing storage scheduling.
+
+  Bound every non-request log stream to ten samples per minute and retain pre-sampling outcome counts in one fixed-size summary per minute, without changing the existing request-record limits.
+
+## 0.8.0-beta.1
+
+### Minor Changes
+
+- e31dd71: Ship one metadata record per request to the private log sink: request id, route template, method, status, duration, stream outcome and code, credits charged and a keyed account hash (new optional `REQUEST_LOG_HMAC_KEY`). Records are capped per minute and never carry bodies, headers, keys, emails or IPs. The local `tinychat_request` event's `route` now includes the mount template (for example `/api/chat` instead of `/`).
+
+## 0.7.1-beta.0
+
+### Patch Changes
+
+- 9bf796f: Record legacy agent-turn credit usage before ending either successful or failed responses so immediate follow-up chat requests enforce the updated budget. Preserve the existing soft-cap policy and streamed answer.
+
 ## 0.7.0
 
 ### Minor Changes

@@ -36,7 +36,7 @@ export const nativeSignInScreens: HarnessScreen[] = [
     platform: "android",
     displayTitle: true,
     readyWhen: "[data-testid='native-sign-in']",
-    render: () => pane({ state: "recoverableError", error: "Couldn't sign in. Please try again." }),
+    render: () => pane({ state: "recoverableError", error: "Couldn't sign in. Try again." }),
   },
   {
     id: "native-sign-in-from-local-home",

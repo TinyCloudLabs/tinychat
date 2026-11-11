@@ -54,9 +54,9 @@ describe("createGmeetSyncLogRecorder", () => {
     clock += 250;
     recorder.record(progress({ current: 1, total: 2 })); // identical: not a new row
     recorder.record(progress({ current: 2, total: 2, stage: "notes", notesDone: 1, notesTotal: 3, docsListed: 200, docsMatched: 3 }));
-    const log = recorder.build({ generatedAt: new Date("2026-10-19T12:00:00Z"), build: "Exo 0.9.0 · web" });
+    const log = recorder.build({ generatedAt: new Date("2026-10-19T12:00:00Z"), build: "TinyCloud Home 0.9.0 · web" });
     expect(log.generatedAt).toBe("2026-10-19T12:00:00.000Z");
-    expect(log.build).toBe("Exo 0.9.0 · web");
+    expect(log.build).toBe("TinyCloud Home 0.9.0 · web");
     expect(log.timeline).toEqual([
       { tMs: 0, stage: "meetings", meetingsChecked: 1, meetingsTotal: 2, notesDone: null, notesTotal: null, docsListed: null, docsMatched: null },
       { tMs: 250, stage: "notes", meetingsChecked: 2, meetingsTotal: 2, notesDone: 1, notesTotal: 3, docsListed: 200, docsMatched: 3 },
@@ -114,7 +114,7 @@ describe("createGmeetSyncLogRecorder", () => {
     };
     recorder.setResult(summarizeGmeetSyncResult(failed));
     recorder.setNotesOutcome({ ok: false, errorKind: TITLE as never });
-    const text = JSON.stringify(recorder.build({ generatedAt: new Date(0), build: "Exo 0.9.0" }));
+    const text = JSON.stringify(recorder.build({ generatedAt: new Date(0), build: "TinyCloud Home 0.9.0" }));
     for (const secret of [TOKEN, "SECRET", "Quarterly", "Alice", "confidential", "Bearer", "store said"]) {
       expect(text).not.toContain(secret);
     }

@@ -1,6 +1,6 @@
 # Health spike: HealthKit and Health Connect (TC-525)
 
-What it takes for Exo (Capacitor 8, app id `xyz.tinycloud.exo`) to read health data into the user's
+What it takes for TinyCloud Home (Capacitor 8, app id `xyz.tinycloud.exo`) to read health data into the user's
 own TinyCloud space: steps first, then sleep and heart rate, on iOS (HealthKit) and Android (Health
 Connect). October 2026. Spike branch `spike/tc-525-health`, not for merge as is.
 
@@ -26,7 +26,7 @@ Connect). October 2026. Spike branch `spike/tc-525-health`, not for merge as is.
 - **Storage is a stand-in.** Summaries are written under the existing `connectors/` KV grant, which
   the private agent's transcript delegation can also read. A shipped version needs its own `health`
   permission ([Storage and permissions](#storage-and-permissions)).
-- **Both stores need paperwork before anything ships**: a published privacy policy (Exo has none),
+- **Both stores need paperwork before anything ships**: a published privacy policy (TinyCloud Home has none),
   App Store guideline 5.1.3 and HealthKit review, the Google Play Health apps declaration and Health
   Connect permission justifications, and privacy manifest / Data safety updates.
 
@@ -59,8 +59,8 @@ says so instead of hiding it.
 | `authorizationStatus()` | per type `granted`, `denied` (asked, not granted), `not_determined` (never asked); `readStateKnowable: true` | per type `not_determined` (never asked) or `unknown` (asked; the answer is private); `readStateKnowable: false` |
 | `requestAuthorization({ types, background, sampleWrite })` | Health Connect's permission screen through `PermissionController.createRequestPermissionResultContract()` | HealthKit's Health Access sheet through `requestAuthorization(toShare:read:)` |
 | `readDailySummaries({ days, types })` | `aggregateGroupByPeriod` (steps, heart rate) and sleep sessions | `HKStatisticsCollectionQuery` (steps, heart rate) and sleep samples |
-| `insertSampleData()` | development only: a week of steps, sleep, heart rate written as Exo | same, in HealthKit |
-| `openSettings()` | Health Connect's page for Exo, or Play to update Health Connect | opens the Health app (iOS has no deep link to an app's Health access) |
+| `insertSampleData()` | development only: a week of steps, sleep, heart rate written as TinyCloud Home | same, in HealthKit |
+| `openSettings()` | Health Connect's page for TinyCloud Home, or Play to update Health Connect | opens the Health app (iOS has no deep link to an app's Health access) |
 | `enableBackgroundDelivery()` | rejects `not_supported` (no push in Health Connect) | `HKObserverQuery` + `enableBackgroundDelivery(.hourly)`, emits `healthDataChanged` |
 
 A summary day is `{ date, steps, sleepMinutes, sleepBlocks, heartRate: { min, avg, max }, sources }`
@@ -73,7 +73,7 @@ in the device's time zone, oldest first. Both platforms use the same rules:
   18:00 on D-1 and 18:00 on D. iOS uses the asleep sleep-analysis values (unspecified, core, deep,
   REM); Android uses each session minus its awake stages (the whole session when it has none).
 - **`sources`**: the apps (Android package names) or HealthKit sources (bundle ids) that recorded
-  the day. Exo can see which apps write health data.
+  the day. TinyCloud Home can see which apps write health data.
 
 ### Try it
 
@@ -155,7 +155,7 @@ review until we decide to ship. Moving these entries to `src/main` is part of sh
    `not_declared`), remembers what it asked for, and starts the contract's intent with
    `startActivityForResult`. The contract's result lists only what that screen granted, so the
    plugin reports `getGrantedPermissions()` instead.
-3. Health Connect's screen lists Exo and the requested types with a toggle each and "Allow all".
+3. Health Connect's screen lists TinyCloud Home and the requested types with a toggle each and "Allow all".
    The privacy-policy link on it opens `HealthPermissionsRationaleActivity`.
 4. Background reading is a separate, later prompt (`background: true`).
 
@@ -164,8 +164,8 @@ in SharedPreferences: requested and not granted is `denied`. Google's guidance i
 refusals the screen is no longer shown and the user has to grant access in Health Connect's own
 settings. The UI needs an "Open Health Connect" fallback for that, which `openSettings()` provides.
 
-**Exact strings.** Exo controls only its rationale screen (`HealthPermissionsRationaleActivity.TEXT`,
-title "Exo and Health Connect"). Health Connect's own dialog copy differs by version and is to be
+**Exact strings.** TinyCloud Home controls only its rationale screen (`HealthPermissionsRationaleActivity.TEXT`,
+title "TinyCloud Home and Health Connect"). Health Connect's own dialog copy differs by version and is to be
 captured on the emulator (see [Device checks](#device-checks-android-emulator)).
 
 ### What Android lets the app see
@@ -209,10 +209,10 @@ Background and history permissions each need their own justification in the Play
   - `com.apple.developer.healthkit.background-delivery` = true (required for background delivery
     since iOS 15).
 - `Info.plist` (all builds; harmless without the entitlement):
-  - `NSHealthShareUsageDescription`: "Exo reads the steps, sleep and heart rate you allow and saves
+  - `NSHealthShareUsageDescription`: "TinyCloud Home reads the steps, sleep and heart rate you allow and saves
     a daily summary to your own TinyCloud space. It never uses health data for advertising."
-  - `NSHealthUpdateUsageDescription`: "Exo's development preview can add sample steps, sleep and
-    heart rate to Health for testing. Exo never writes health data otherwise." Drop it, and the
+  - `NSHealthUpdateUsageDescription`: "TinyCloud Home's development preview can add sample steps, sleep and
+    heart rate to Health for testing. TinyCloud Home never writes health data otherwise." Drop it, and the
     sample writer, before shipping (see 5.1.3(ii) below).
 
 ### Permission flow
@@ -222,8 +222,8 @@ Background and history permissions each need their own justification in the Play
    `shouldRequest` is `not_determined`, `unnecessary` is `unknown`. Without the entitlement this call
    fails ("Missing com.apple.developer.healthkit entitlement"), so it doubles as an entitlement check.
 3. `requestAuthorization()`: `requestAuthorization(toShare:read:)` shows the Health Access sheet,
-   once per type: "“Exo” would like to access and update your Health data.", "Turn On All", a toggle
-   per type under "Allow “Exo” to read", "App Explanation: " plus `NSHealthShareUsageDescription`
+   once per type: "“TinyCloud Home” would like to access and update your Health data.", "Turn On All", a toggle
+   per type under "Allow “TinyCloud Home” to read", "App Explanation: " plus `NSHealthShareUsageDescription`
    (and `NSHealthUpdateUsageDescription` for writes), and "Allow" / "Don't Allow" (exact capture in
    [iOS Simulator in CI](#ios-simulator-in-ci)). Completion `success == true` only means the request
    was handled.
@@ -233,8 +233,8 @@ Background and history permissions each need their own justification in the Play
    <HKHealthPrivacyHostAuthorizationViewController>") and its completion never runs, so the JS promise
    hangs forever. The CI probe hit exactly this when it asked for write access right after read
    access. The plugin now waits until nothing is presented before asking, and again before reporting.
-5. Later changes happen outside the app: Settings → Health → Data Access & Devices → Exo, or the
-   Health app → profile → Apps → Exo. `openSettings()` can only open the Health app.
+5. Later changes happen outside the app: Settings → Health → Data Access & Devices → TinyCloud Home, or the
+   Health app → profile → Apps → TinyCloud Home. `openSettings()` can only open the Health app.
 
 ### What iOS lets the app see
 
@@ -263,7 +263,7 @@ A real sync needs more than the spike: register the observers in
 `application(_:didFinishLaunchingWithOptions:)` (HealthKit relaunches the app in the background and
 delivers only to observers that exist), read with an `HKAnchoredObjectQuery` (anchor kept on the
 device), and write to TinyCloud natively, because the WebView may not run in a background launch.
-Exo's TinyCloud session lives in the WebView today, so native background writes need a native
+TinyCloud Home's TinyCloud session lives in the WebView today, so native background writes need a native
 session (or a delegated key) first. That is the largest piece of background work.
 
 ### iOS Simulator in CI
@@ -285,16 +285,16 @@ plugin's answer without gating on it.
 
 The sheet the ad-hoc build gets for the read-only request (the product's request), as captured:
 
-- title "Health Access", then "Health" and "“Exo” would like to access and update your Health
+- title "Health Access", then "Health" and "“TinyCloud Home” would like to access and update your Health
   data." (the same sentence for a read-only request);
 - a "Turn On All" button;
-- "Allow “Exo” to read" with a toggle each for "Heart Rate", "Sleep" and "Steps" (alphabetical, with
+- "Allow “TinyCloud Home” to read" with a toggle each for "Heart Rate", "Sleep" and "Steps" (alphabetical, with
   the Health app's icons);
 - "App Explanation: " followed by `NSHealthShareUsageDescription`, then a note on background reads
   ("… General > Background App Refresh");
 - "Allow" (disabled until a toggle is on) and "Don't Allow".
 
-The write request (`sampleWrite`) gets the same sheet with "Allow “Exo” to write" first and
+The write request (`sampleWrite`) gets the same sheet with "Allow “TinyCloud Home” to write" first and
 `NSHealthUpdateUsageDescription` as its explanation.
 
 **End to end in the simulator.** The CI probe (`mobile/scripts/ios-health-probe.sh`) launches the
@@ -311,7 +311,7 @@ answers it by screen position (Turn On All, then Allow), with retries. The run o
 | `authorizationStatus()` before | steps, sleep, heart rate `not_determined` |
 | `requestAuthorization()` (read only), sheet answered | all three `unknown`: asked, answer hidden. Never "granted", even though every toggle was on |
 | `requestAuthorization({ sampleWrite: true })`, second sheet answered | `sampleWrite: "granted"` (write status *is* visible) |
-| `insertSampleData()` | 60 samples saved as Exo |
+| `insertSampleData()` | 60 samples saved as TinyCloud Home |
 | `readDailySummaries({ days: 7 })` | 7 days; for example 2026-10-03: 5,974 steps, 460 min asleep (1 block), heart rate 65 / 77 / 90; `sources: ["xyz.tinycloud.exo"]`; today null (the samples are later in the day) |
 | `enableBackgroundDelivery({ types: ["steps"] })` | `enabled: ["steps"]`, frequency `hourly`: the background-delivery entitlement is accepted too |
 | `readDailySummaries({ days: 3, types: ["steps"] })` | only `steps` and `sources` per day |
@@ -384,7 +384,7 @@ Add a dedicated SQL database (and, only if raw samples are ever kept, a KV prefi
   "service": "tinycloud.sql",
   "path": "health",
   "actions": ["read", "write", "schema"],
-  "description": "Store daily health summaries (steps, sleep, heart rate) that you allow Exo to read from Apple Health or Health Connect, in your space's SQL database."
+  "description": "Store daily health summaries (steps, sleep, heart rate) that you allow TinyCloud Home to read from Apple Health or Health Connect, in your space's SQL database."
 }
 ```
 
@@ -451,16 +451,16 @@ CREATE TABLE IF NOT EXISTS health_daily (
 > **5.1.1 (i)** All apps must include a link to their privacy policy in the App Store Connect metadata
 > field and within the app in an easily accessible manner. […]
 
-What that means for Exo:
+What that means for TinyCloud Home:
 
 - **Privacy policy:** required, linked in App Store Connect and in the app, naming the health data
-  read, its uses, retention and deletion, and how to revoke. Exo has none yet. This blocks shipping on
+  read, its uses, retention and deletion, and how to revoke. TinyCloud Home has none yet. This blocks shipping on
   both stores.
-- **No ads, no data mining:** Exo has no ads or analytics SDK (`NSPrivacyTracking` is false). Keep
+- **No ads, no data mining:** TinyCloud Home has no ads or analytics SDK (`NSPrivacyTracking` is false). Keep
   health data out of any analytics or logs. Sending health data to an LLM (chat about "my sleep this
   week") is disclosure to a third party (the model provider). Do it only for a user-facing feature,
   with explicit consent, and say so in the policy.
-- **No iCloud:** Exo uses no iCloud storage, and the summaries go to the user's own TinyCloud space.
+- **No iCloud:** TinyCloud Home uses no iCloud storage, and the summaries go to the user's own TinyCloud space.
   That is the "user-owned storage" story: the space belongs to the user's key, and the app reaches it
   only through the user's delegation. Apple still counts it as data collected (it leaves the device
   and is not end-to-end encrypted), so it goes in the privacy labels. Anything health-related cached
@@ -480,7 +480,7 @@ What that means for Exo:
 - **Health apps declaration** (Play Console → App content): required once the app declares health
   permissions. Today's release AAB declares none.
 - **Health Connect permissions declaration:** one justification per permission, tied to an approved
-  use case. Exo's is fitness and wellness (tracking activity, sleep). Background
+  use case. TinyCloud Home's is fitness and wellness (tracking activity, sleep). Background
   (`READ_HEALTH_DATA_IN_BACKGROUND`) and history (`READ_HEALTH_DATA_HISTORY`) each need their own
   justification. Ask only for what a user-facing feature uses: v1 should declare `READ_STEPS` only,
   and no write permission at all.
@@ -559,13 +559,13 @@ Android 14+, so nothing to install). Build as in [Try it](#try-it) with `VITE_EX
 2. **Permission screen.** Tap **Ask for access**: Health Connect's screen opens listing Steps, Sleep,
    Heart rate (and a separate background-access prompt, since the button asks for it when the
    feature exists). Capture the exact title, body and button strings; they belong in this doc.
-3. **Privacy link.** On that screen, the privacy policy link opens "Exo and Health Connect" with the
+3. **Privacy link.** On that screen, the privacy policy link opens "TinyCloud Home and Health Connect" with the
    placeholder text, and Close returns to it. (If the screen never appears and the call returns at
    once with nothing granted, the `VIEW_PERMISSION_USAGE` alias is not being picked up.)
 4. **Partial grant is reported truthfully.** Allow Steps only: the card shows Steps "Allowed", Sleep
    and Heart rate "Not allowed (asked; turned off or refused)".
 5. **Sample data.** **Allow sample data** (grant the write toggles), then **Add sample data**: "Added
-   N sample records as Exo" (up to 35: three step records, one heart-rate record and one sleep session
+   N sample records as TinyCloud Home" (up to 35: three step records, one heart-rate record and one sleep session
    per day; times later today are skipped). Running it twice must not double the numbers on the next read.
 6. **Read.** **Read last 7 days**: 7 rows, oldest first, steps between 2,700 and 10,500 a day for the
    allowed type, "—" for types not allowed, "Not read (not allowed): …" listing them, "Recorded by:
@@ -574,7 +574,7 @@ Android 14+, so nothing to install). Build as in [Try it](#try-it) with `VITE_EX
 7. **Save.** **Save to my space**: "Saved N days … under
    `xyz.tinycloud.tinychat/connectors/exo-health/health_connect/daily/`". Optional: confirm one key
    with `tc` (KV get on that prefix plus a date).
-8. **Revoke.** **Open Health settings** opens Health Connect's page for Exo. Turn Steps off, come back:
+8. **Revoke.** **Open Health settings** opens Health Connect's page for TinyCloud Home. Turn Steps off, come back:
    Steps reads "Not allowed", and a read shows it under "Not read".
 9. **Background.** After asking, "Background reads" shows granted / denied (or "unavailable" if this
    Health Connect build lacks the feature). Record which.
@@ -583,5 +583,5 @@ Android 14+, so nothing to install). Build as in [Try it](#try-it) with `VITE_EX
     `not_declared` instead of opening anything.
 11. Logcat: `adb logcat | grep -i -E 'healthconnect|Health'` during steps 2-6 for anything unexpected.
 
-Sample data lives in Health Connect under Exo's data; delete it there (Health Connect → App
-permissions → Exo → Delete app data) after testing.
+Sample data lives in Health Connect under TinyCloud Home's data; delete it there (Health Connect → App
+permissions → TinyCloud Home → Delete app data) after testing.

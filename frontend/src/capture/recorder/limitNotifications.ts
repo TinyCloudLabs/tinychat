@@ -11,14 +11,14 @@ import type { RecorderState } from "./recorderReducer";
 export const LIMIT_WARNING_LEAD_MS = 5 * 60_000;
 /** A checkpoint can land just after the warning was due; past this, "in 5 minutes" would no longer be true. */
 const LATE_WARNING_MS = 60_000;
-const NOTIFICATION_TITLE = "Exo";
+const NOTIFICATION_TITLE = "TinyCloud Home";
 /** The stop replaces its warning in the notification centre. */
 const NOTIFICATION_TAG = "exo-recording-limit";
 
-export const LIMIT_WARNING_TEXT = "Exo will stop recording in 5 minutes.";
+export const LIMIT_WARNING_TEXT = "TinyCloud Home will stop recording in 5 minutes.";
 
 export function limitStoppedText(limitMs: number): string {
-  return `Exo stopped recording at the ${formatLimit(limitMs)} limit. Your recording is saved.`;
+  return `TinyCloud Home stopped recording at the ${formatLimit(limitMs)} limit. Your recording is saved.`;
 }
 
 export function useLimitNotifications(

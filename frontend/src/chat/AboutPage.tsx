@@ -37,11 +37,11 @@ const VOICE_NOTE_MAX_HOURS = VOICE_NOTE_MAX_DURATION_MS / (60 * 60 * 1000);
 export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
   capture: (
     <>
-      <p>Exo records audio in two ways.</p>
+      <p>TinyCloud Home records audio in two ways.</p>
       <List>
         <li>
           <strong className="font-semibold">Voice notes</strong>, in the phone app. A note can run up to {VOICE_NOTE_MAX_HOURS} hours; the
-          recorder stops at the limit. It is saved to your TinyCloud space and shows up in Library. While Exo records,
+          recorder stops at the limit. It is saved to your TinyCloud space and shows up in Library. While TinyCloud Home records,
           your phone shows its microphone indicator and a notification.
         </li>
         <li>
@@ -88,9 +88,9 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       <Sub>Powerful · {POWERFUL_PROVIDER_NAME}</Sub>
       <List>
         <li>
-          Powerful transcription, for voice notes and uploads, sends your audio through Exo’s server (a confidential VM on
+          Powerful transcription, for voice notes and uploads, sends your audio through TinyCloud Home’s server (a confidential VM on
           Phala Cloud) to {POWERFUL_PROVIDER_NAME}, under TinyCloud’s account and {POWERFUL_PROVIDER_NAME}’s terms.{" "}
-          {POWERFUL_PROVIDER_NAME} isn’t part of TinyCloud’s private transcription. Exo deletes {POWERFUL_PROVIDER_NAME}’s
+          {POWERFUL_PROVIDER_NAME} isn’t part of TinyCloud’s private transcription. TinyCloud Home deletes {POWERFUL_PROVIDER_NAME}’s
           copy once the transcript is saved.
         </li>
       </List>
@@ -157,13 +157,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       </p>
       <Sub>Calendar autojoin</Sub>
       <p>
-        A notetaker joins confirmed Google Meet events on your primary calendar when you organize or accept them, from
-        one minute before start until five minutes after start or the event ends. The host still needs to admit it.
-      </p>
-      <p>
-        It works while TinyChat is closed. Recordings import when you return and unlock your space. Turning it off
-        removes the server’s saved Google token and requests stops for active autojoined bots; Google’s granted
-        permissions and your browser importer remain.
+        A notetaker joins Google Meet events on your main calendar that you organize or have accepted, even while TinyChat is closed; the host still admits it. Recordings reach your space the next time you open TinyChat. Turning it off deletes our server&apos;s copy of your Google sign-in.
       </p>
     </>
   ),

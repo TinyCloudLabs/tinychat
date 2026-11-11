@@ -66,6 +66,8 @@ export interface HomeFeedSnapshot {
 /** Owner-session persistence boundary; notifications invalidate durable reads. */
 export interface HomeFeedSource {
   load(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot>;
+  /** The device's last loaded feed for this account, shown while `load` refreshes it; null when none. */
+  cached?: () => Promise<HomeFeedSnapshot | null>;
   saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload): Promise<FeedResponse>;
   sendMessage?: (entry: HomeFeedEntry, message: HomeFeedMessageDraft, payload?: FeedResponsePayload) => Promise<FeedResponse>;
   saveOwnerState?: (entry: HomeFeedEntry, event: HomeFeedOwnerEvent) => Promise<void>;
