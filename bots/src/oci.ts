@@ -31,7 +31,7 @@ export interface SandboxSpecInput {
   token: string;
   /** The bot's own egress directory (only its socket), mounted read-only. */
   egressDir: string;
-  /** The bot's own state filesystem, mounted read-write. */
+  /** The bot's own state tmpfs, mounted read-write and noexec. */
   stateMount: string;
   cgroupsPath: string;
   limits: SandboxLimits;
@@ -61,12 +61,12 @@ export function sandboxSpec(base: OciSpec, input: SandboxSpecInput): OciSpec {
       noNewPrivileges: true,
     },
     // runsc's defaults are proc, a /dev tmpfs and a read-only sysfs. On top: a capped /tmp (runsc would otherwise
-    // add an uncapped one) and exactly two binds, the bot's own egress directory and state filesystem.
+    // add an uncapped one) and exactly two binds, the bot's own egress directory and state tmpfs.
     mounts: [
       ...base.mounts.filter(mount => mount.type !== "bind" && mount.destination !== "/tmp"),
       { destination: "/tmp", type: "tmpfs", source: "tmpfs", options: ["nosuid", "nodev", `size=${input.limits.tmpMb}m`] },
       { destination: SANDBOX_EGRESS_DIR, type: "bind", source: input.egressDir, options: ["rbind", "ro", "nosuid", "nodev", "noexec"] },
-      { destination: SANDBOX_STATE_DIR, type: "bind", source: input.stateMount, options: ["rbind", "rw", "nosuid", "nodev"] },
+      { destination: SANDBOX_STATE_DIR, type: "bind", source: input.stateMount, options: ["rbind", "rw", "nosuid", "nodev", "noexec"] },
     ],
     linux: {
       ...base.linux,

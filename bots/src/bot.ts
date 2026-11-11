@@ -42,12 +42,16 @@ export interface Sandbox {
   readonly exited: Promise<void>;
   /** Registers the bot's egress socket and token with the gateway again (idempotent; the gateway may have restarted). */
   refreshEgress(): Promise<void>;
+  /** Saves the bot's state to disk while the sandbox is paused. Never rejects; a failure keeps the previous copy. */
+  snapshot(): Promise<void>;
   stop(): Promise<void>;
 }
 
 export interface SandboxLauncher {
   /** Whether the bot has ever run, i.e. has a session to list. */
   hasState(layout: BotLayout): boolean;
+  /** Whether the bot's last sandbox ended without a confirmed teardown, so it may still be running. */
+  leftover(layout: BotLayout): boolean;
   launch(layout: BotLayout): Promise<Sandbox>;
 }
 
@@ -62,6 +66,28 @@ export interface BotOptions {
   /** Assistant text bytes per turn; past it the agent's turn is aborted and the stream ends with an error. */
   maxTurnBytes: number;
 }
+
+/** How many sandboxes may run at once (BOTS_MAX_RUNNING), shared by every bot. */
+export class RunningLimit {
+  readonly #max: number;
+  #running = 0;
+
+  constructor(max: number) {
+    this.#max = max;
+  }
+
+  /** Takes a place for one sandbox; false at the cap. */
+  take(): boolean {
+    if (this.#running >= this.#max) return false;
+    this.#running++;
+    return true;
+  }
+
+  release(): void {
+    this.#running--;
+  }
+}
+
 const LIST_LIMIT = 50;
 const PAGE_LIMIT = 256;
 const MAX_PAGES = 64;
@@ -138,6 +164,7 @@ export class Bot {
   readonly layout: BotLayout;
   readonly #launcher: SandboxLauncher;
   readonly #options: BotOptions;
+  readonly #running: RunningLimit;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<void> | undefined;
@@ -145,11 +172,14 @@ export class Bot {
   #listing = 0;
   #settled = true;
   #idle: Timer | undefined;
+  /** This bot holds one BOTS_MAX_RUNNING place: for its sandbox, or for a leftover whose end is unconfirmed. */
+  #hasPlace = false;
 
-  constructor(layout: BotLayout, launcher: SandboxLauncher, options: BotOptions) {
+  constructor(layout: BotLayout, launcher: SandboxLauncher, options: BotOptions, running: RunningLimit) {
     this.layout = layout;
     this.#launcher = launcher;
     this.#options = options;
+    this.#running = running;
   }
 
   /** Runs one message through Main. Reports through `sink` and always ends with exactly one done or error. */
@@ -274,19 +304,35 @@ export class Bot {
   #ensure(): Promise<Sandbox> {
     if (this.#sandbox) return Promise.resolve(this.#sandbox);
     this.#starting ??= (async () => {
-      // Never launch over a sandbox still being torn down: both would mount the same state filesystem.
+      // Never launch over a sandbox still being torn down: both would use the same state tmpfs and snapshot.
       await this.#stopping;
+      // At the cap a start is refused, never squeezed into memory the running bots may need. A leftover's place
+      // passes to the next start, which first ends the leftover.
+      if (!this.#hasPlace) {
+        if (!this.#running.take()) throw new Error("BOTS_MAX_RUNNING sandboxes already running");
+        this.#hasPlace = true;
+      }
       const started = Date.now();
-      const sandbox = await this.#launcher.launch(this.layout);
+      let sandbox: Sandbox;
+      try {
+        sandbox = await this.#launcher.launch(this.layout);
+      } catch (error) {
+        this.#releasePlace();
+        throw error;
+      }
       log("started", this.layout.botId, { ms: Date.now() - started });
       this.#sandbox = sandbox;
       this.#settled = true;
       sandbox.onFrame(frame => {
         if (frame.type !== "session_settled") return;
         this.#settled = true;
+        void sandbox.snapshot();
         this.#armIdle();
       });
+      // `exited` settles once the teardown is over, so the place frees only after the state is saved and unmounted,
+      // and not at all while the end is unconfirmed.
       void sandbox.exited.then(() => {
+        this.#releasePlace();
         if (this.#sandbox !== sandbox) return;
         this.#sandbox = undefined;
         this.#clearIdle();
@@ -297,6 +343,13 @@ export class Bot {
       this.#starting = undefined;
     });
     return this.#starting;
+  }
+
+  /** Gives the bot's place back, unless a leftover of it may still be running. */
+  #releasePlace(): void {
+    if (!this.#hasPlace || this.#launcher.leftover(this.layout)) return;
+    this.#hasPlace = false;
+    this.#running.release();
   }
 
   async #stop(sandbox: Sandbox): Promise<void> {
@@ -331,18 +384,20 @@ export class BotManager {
   readonly #launcher: SandboxLauncher;
   readonly #roots: LayoutRoots;
   readonly #options: BotOptions;
+  readonly #running: RunningLimit;
 
-  constructor(launcher: SandboxLauncher, roots: LayoutRoots, options: BotOptions) {
+  constructor(launcher: SandboxLauncher, roots: LayoutRoots, options: BotOptions, maxRunning: number) {
     this.#launcher = launcher;
     this.#roots = roots;
     this.#options = options;
+    this.#running = new RunningLimit(maxRunning);
   }
 
   forOwner(ownerDid: string): Bot {
     const botId = botIdFor(ownerDid);
     let bot = this.#bots.get(botId);
     if (!bot) {
-      bot = new Bot(botLayout(botId, this.#roots), this.#launcher, this.#options);
+      bot = new Bot(botLayout(botId, this.#roots), this.#launcher, this.#options, this.#running);
       this.#bots.set(botId, bot);
     }
     return bot;
