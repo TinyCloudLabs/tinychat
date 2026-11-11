@@ -1,6 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 
 import { createPrefetchQueue, type ThreadFetcher } from "./historyPrefetch";
+import { inForeground, resetLanesForTests } from "./localFirst/requestLanes";
 import type { ThreadDoc } from "./threadStore";
 
 // ── Test helpers ─────────────────────────────────────────────────────
@@ -63,6 +64,10 @@ function manualFetcher() {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("createPrefetchQueue", () => {
+  // Every queue shares the app's request lanes; a test that leaves a fetch
+  // unresolved must not hold the background lane for the next one.
+  beforeEach(resetLanesForTests);
+
   it("drains newest-first and keeps exactly one fetch in flight", async () => {
     const m = manualFetcher();
     const q = createPrefetchQueue(m.fetcher);
@@ -236,5 +241,91 @@ describe("createPrefetchQueue", () => {
     await tick();
     expect(m.calls).toEqual(["a", "a"]);
     expect(m.pendingCount()).toBe(1);
+  });
+
+  it("an opened thread is fetched at once in the foreground while the copy is busy, and the copy waits for it", async () => {
+    const m = manualFetcher();
+    const lanes: string[] = [];
+    const q = createPrefetchQueue((id, lane) => { lanes.push(`${id}:${lane}`); return m.fetcher(id, lane); });
+
+    q.enqueueAll(["c", "b"]);
+    await tick();
+    expect(lanes).toEqual(["c:background"]);
+
+    // The user opens "a": it is requested now, not after "c" lands or behind "b".
+    const opened = q.promote("a");
+    expect(lanes).toEqual(["c:background", "a:foreground"]);
+
+    m.resolve("c");
+    await tick();
+    // The copy does not start "b" while the user's fetch is still out.
+    expect(lanes).toEqual(["c:background", "a:foreground"]);
+
+    const doc = makeDoc("a");
+    m.resolve("a", doc);
+    await expect(opened).resolves.toEqual(doc);
+    await tick();
+    expect(lanes).toEqual(["c:background", "a:foreground", "b:background"]);
+  });
+
+  it("a hydrated copy that matches the list is not fetched again; a changed one is re-copied and not served until then", async () => {
+    const m = manualFetcher();
+    const q = createPrefetchQueue(m.fetcher);
+    const fresh = makeDoc("fresh");
+    const old = { ...makeDoc("changed"), updatedAt: "2026-06-01T00:00:00.000Z" };
+    q.hydrate([fresh, old]);
+
+    q.enqueueAll(["fresh", "changed"], new Map([["fresh", fresh.updatedAt], ["changed", "2026-06-05T00:00:00.000Z"]]));
+    await tick();
+    expect(m.calls).toEqual(["changed"]);
+    expect(q.get("changed")).toBeUndefined(); // never shown once the list says it changed
+
+    const updated = makeDoc("changed");
+    m.resolve("changed", updated);
+    await tick();
+    expect(q.get("changed")).toEqual(updated);
+  });
+
+  it("fetched docs go to the device copy; invalidation removes them there too", async () => {
+    const m = manualFetcher();
+    const saved: string[] = [];
+    const removed: string[] = [];
+    const q = createPrefetchQueue(m.fetcher, () => ({ save: (doc) => saved.push(doc.id), remove: (id) => removed.push(id) }));
+
+    q.enqueueAll(["a"]);
+    await tick();
+    m.resolve("a");
+    await tick();
+    expect(saved).toEqual(["a"]);
+
+    q.invalidate("a");
+    expect(removed).toEqual(["a"]);
+  });
+
+  it("opening a thread whose copy is still waiting for its background turn fetches it now", async () => {
+    const m = manualFetcher();
+    const lanes: string[] = [];
+    const q = createPrefetchQueue((id, lane) => { lanes.push(`${id}:${lane}`); return m.fetcher(id, lane); });
+    // A foreground request holds the background lane, so "a" is queued in the lane but not sent.
+    let release!: () => void;
+    const screen = inForeground(() => new Promise<void>((resolve) => { release = resolve; }));
+    q.enqueueAll(["a"]);
+    await tick();
+    expect(lanes).toEqual([]);
+
+    const opened = q.promote("a");
+    expect(lanes).toEqual(["a:foreground"]);
+    const doc = makeDoc("a");
+    m.resolve("a", doc);
+    await expect(opened).resolves.toEqual(doc);
+    release();
+    await screen;
+  });
+
+  it("a device copy read before a write does not come back after the write", () => {
+    const q = createPrefetchQueue(manualFetcher().fetcher);
+    q.invalidate("a"); // the user sent a message while the startup read was out
+    q.hydrate([makeDoc("a")]);
+    expect(q.get("a")).toBeUndefined();
   });
 });

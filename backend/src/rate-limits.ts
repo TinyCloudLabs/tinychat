@@ -146,7 +146,7 @@ export const PRIVATE_CLOUD_TRANSCRIPTION_PATHS = ["/api/transcriber/private-clou
  * call). A request budget, not a dollar guarantee.
  */
 export const PAID_CHAT_LIMIT = 600;
-export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
+export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat", "/api/bots/main/messages"] as const;
 
 /**
  * Session minting (`/api/auth`: `GET /nonce`, `POST /verify`; the only routes that issue a

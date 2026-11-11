@@ -30,6 +30,7 @@ import {
   getThread,
   getThreadTitle,
   isKnownThreadId,
+  isLocalThreadStorage,
   listThreads,
   memoryWriteGen,
   readMemoryCache,
@@ -52,6 +53,7 @@ import {
 } from "../lib/conversationCanvasStore";
 import { activePathItems, type ConversationCanvas } from "./canvas/model";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
+import { readThreadCopy, threadCopyFor } from "../lib/localFirst/threadCopy";
 import { privateMemoryContext, runPrivateMemoryExtraction } from "./privateAgentMemory";
 import type { PrivateAgentAccess } from "./useAgentEnablement";
 import { pickExtractionModel } from "../lib/extractionModel";
@@ -568,14 +570,22 @@ function useThreadListAdapter(
   const depsRef = useRef(deps);
   depsRef.current = deps;
 
-  // Point the prefetch queue at this session's `getThread`. Bound during render
-  // (not in an effect) so the fetcher is in place before assistant-ui ever
-  // calls the history adapter's load() — otherwise a miss could fetch through a
-  // stale/default fetcher. Re-binds only when the account (tcw) changes.
+  // Point the prefetch queue at this session's `getThread` and this account's
+  // device copy of chat histories. Bound during render (not in an effect) so
+  // the fetcher is in place before assistant-ui ever calls the history
+  // adapter's load() — otherwise a miss could fetch through a stale/default
+  // fetcher. Re-binds only when the account (tcw) changes. The device copy is
+  // loaded into the cache at once, so a copied thread opens without a request.
   const fetcherTcwRef = useRef<TinyCloudWeb | null>(null);
   if (fetcherTcwRef.current !== tcw) {
     fetcherTcwRef.current = tcw;
-    setPrefetchFetcher((id) => getThread(tcw, id));
+    const account = !isLocalThreadStorage(tcw) && typeof tcw.did === "string" && tcw.did ? tcw.did : null;
+    setPrefetchFetcher((id, lane) => getThread(tcw, id, undefined, lane), account ? threadCopyFor(account) : null);
+    if (account) {
+      void readThreadCopy(account).then((docs) => {
+        if (fetcherTcwRef.current === tcw) historyPrefetch.hydrate(docs);
+      });
+    }
   }
 
   const onAssistantTurn = useCallback(
@@ -721,11 +731,13 @@ function useThreadListAdapter(
   return useMemo<RemoteThreadListAdapter>(
     () => ({
       async list() {
-        // The account's Canvas state is read once with the thread list, so a
-        // failure surfaces here rather than in a send.
+        // The chat list never waits on the Canvas settings read: the cached
+        // list paints at once. The read starts here so the first send or
+        // Canvas view finds it loaded; those await it (and retry a failure).
+        void loadCanvasState(tcw).catch(() => {});
         let summaries;
         try {
-          [summaries] = await Promise.all([listThreads(tcw), loadCanvasState(tcw)]);
+          summaries = await listThreads(tcw);
         } catch (err) {
           // A failed load is shown by the sidebar as an error with a retry
           // (threadStore's load state), never as "No chats yet". Hand the
@@ -900,12 +912,14 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     const unsubIndex = subscribeThreadIndex((summaries, changed) => {
       // Wait-for-boot-critical-reads is already satisfied: this fires only after
       // listThreads' revalidate (or a mutation) has resolved. Enqueue newest-
-      // first, sequential (concurrency-1 is enforced inside the queue).
+      // first; the queue copies one at a time in the background lane, and
+      // skips threads whose local copy matches the list's updatedAt.
       // NOT gated on `changed`: a typical boot revalidates to an UNCHANGED
-      // list, and the prefetch still has to warm it.
+      // list, and the copy still has to fill in what this device lacks.
       const activeId = runtime.thread.getState().threadId;
       historyPrefetch.enqueueAll(
         summaries.map((s) => s.id).filter((id) => id !== activeId),
+        new Map(summaries.map((s) => [s.id, s.updatedAt])),
       );
       // The sidebar reload IS gated on `changed` — identical lists never
       // trigger a needless refetch (and never risk the C.1 defer path).

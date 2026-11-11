@@ -283,7 +283,8 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
 
 type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "group"; name: string; items: HomeFeedEntry[] };
 
-export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: HomeFeedSource; homeSite?: boolean }) {
+/** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
+export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source: HomeFeedSource; homeSite?: boolean; ask?: ReactNode }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
   // No segment is pressed until the saved view arrives, so the row never flips while loading.
   const [view, setView] = useState<HomeView | null>(null);
@@ -318,6 +319,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
     let alive = true;
     let running = false;
     let dirty = false;
+    let loaded = false;
     let flushed = false;
     chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
@@ -345,6 +347,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           if (next.focusedEntry) next.focusedEntry = reconcile(next.focusedEntry);
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
+          loaded = true;
           setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
           if (!hasDefault.current && !chosenView.current) setView(next.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
           hasDefault.current = true;
@@ -367,9 +370,19 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
       running = false;
     };
     refreshRef.current = () => { void refresh(); };
-    const unsubscribe = source.subscribe(refreshRef.current);
+    // The device's last copy of the feed shows at once; the network load below
+    // replaces it. Subscribing after the local read lets the first live-update
+    // connection already cover every agent the copy knows.
+    let unsubscribe: (() => void) | undefined;
+    void (source.cached?.() ?? Promise.resolve(null)).then((local) => {
+      if (!alive || loaded || !local) return;
+      setSnapshot(local); setClock(Date.now());
+      if (!hasDefault.current && !chosenView.current) setView(local.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
+    }).catch(() => {}).finally(() => {
+      if (alive) unsubscribe = source.subscribe(refreshRef.current);
+    });
     void refresh();
-    return () => { alive = false; unsubscribe(); refreshRef.current = () => {}; };
+    return () => { alive = false; unsubscribe?.(); refreshRef.current = () => {}; };
   }, [source]);
 
   /**
@@ -649,6 +662,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: Home
           ? <>{needsCount ? <b className="font-semibold text-foreground">{needsCount} {needsCount === 1 ? "needs" : "need"} you.</b> : <b className="font-semibold text-foreground">Nothing needs you.</b>}{today > 0 && ` ${today} ${today === 1 ? "update" : "updates"} today.`}</>
           : "Updates and decisions from your agents."}</p>
       </header>
+      {ask}
       {!bare && <div className="mt-4 flex items-center gap-2">
         <div role="group" aria-label="Show" className="flex gap-0.5 rounded-full bg-muted">
           {VIEWS.map((option) => <button key={option.id} type="button" aria-pressed={view === option.id} onClick={() => changeView(option.id)}

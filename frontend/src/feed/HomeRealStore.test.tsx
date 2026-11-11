@@ -904,11 +904,10 @@ test("a sign-out bound that lands during a held answer's reads stops its write: 
   const owner = await ownerFixture(); const agent = await owner.agent("slow-read");
   value(await publishFeedCard(agent.output, plainCard()));
   hold(owner.spaceId, plainHeld("slow-read"));
-  // The card-state read is the last read before the write. Its first run is the launch load's (skipped);
-  // the second is the flush's own, and the entry was still held when it began.
+  // The local-first launch loader reads card state in bulk, so the first matching response read is the flush's.
   const gate = Promise.withResolvers<void>();
   const reached = Promise.withResolvers<void>();
-  owner.faults.readPause = { match: /IN \('answer', 'followup'\)/, skip: 1, gate: gate.promise, reached };
+  owner.faults.readPause = { match: /IN \('answer', 'followup'\)/, skip: 0, gate: gate.promise, reached };
   const signingOut = settleHeldAnswersForSignOut(owner.tcw);
   await act(async () => { await reached.promise; });
   await clock.advance(SIGN_OUT_FLUSH_MS);

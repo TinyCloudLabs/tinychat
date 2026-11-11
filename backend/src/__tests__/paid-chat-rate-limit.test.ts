@@ -50,7 +50,7 @@ beforeEach(() => {
   upstreamCalls = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("api.redpill.ai") && url.endsWith("/chat/completions")) {
+    if (url.includes("tee.redpill.ai") && url.endsWith("/chat/completions")) {
       upstreamCalls++;
       return new globalThis.Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', {
         status: 200,
@@ -76,7 +76,7 @@ function productionApp() {
   app.use(createApiBodyParser());
   const { paidChatLimiter } = applyRateLimiters(app, { sessionKey: SESSION_KEY });
   app.get("/api/manifest", (_req, res) => res.json({ ok: true }));
-  app.use("/api/chat", authStub, createChatRouter({ paidLimiter: paidChatLimiter }));
+  app.use("/api/chat", authStub, createChatRouter({ paidLimiter: paidChatLimiter, redpillFetch: (input, init) => globalThis.fetch(input, init) }));
   // The agent router's shape: router-level auth, then `POST /chat` behind the paid limiter.
   const agent = Router();
   agent.use(authStub);
@@ -99,7 +99,7 @@ function productionAppWithAuth() {
   app.use(createApiBodyParser());
   const { paidChatLimiter } = applyRateLimiters(app, { sessionKey: SESSION_KEY });
   const auth = createAuthMiddleware(SESSION_KEY);
-  app.use("/api/chat", auth, createChatRouter({ paidLimiter: paidChatLimiter }));
+  app.use("/api/chat", auth, createChatRouter({ paidLimiter: paidChatLimiter, redpillFetch: (input, init) => globalThis.fetch(input, init) }));
   const agent = Router();
   agent.use(auth);
   agent.post("/chat", paidChatLimiter, (_req, res) => {

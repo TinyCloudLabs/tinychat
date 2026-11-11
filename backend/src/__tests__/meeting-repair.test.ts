@@ -25,7 +25,7 @@ async function run(draft: unknown, metadata = false) {
     if (requests.length === 1) return response(metadata ? { kind: "meeting_metadata", scope: "selected" } : { kind: "meeting_content", scope: "selected", purpose: "summary", evidenceRequirement: "overview" }, true);
     return response(requests.length === 2 ? draft : good);
   }) as typeof fetch;
-  const config: AgentChatConfig = { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: trace => { traces.push(trace); }, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
+  const config: AgentChatConfig = { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, meetingTrace: trace => { traces.push(trace); }, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
   await orchestrateToolCalling({ config, model: "test-model", messages: [{ role: "user", content: metadata ? "Who attended it?" : "Summarize it." }], entityId: "entity", roomId: "room", write: frame => { frames.push(frame); } });
   const answer = frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content ?? ""; } catch { return ""; } }).join("");
   return { requests, answer, traces };

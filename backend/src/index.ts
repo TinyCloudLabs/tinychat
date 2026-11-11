@@ -22,12 +22,14 @@ import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { mcpChatFromEnv } from "./mcp-meetings/config.js";
+import { botsFromEnv, createBotsRouter } from "./routes/bots.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
 import { meetingRolloutFromEnv } from "./transcripts/meeting-rollout.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter, defaultModel } from "./routes/chat.js";
+import { DEFAULT_RED_PILL_BASE_URL, RECEIPT_AUDIT_TIMEOUT_MS, redPillAciFetch, validateRedPillBaseUrl } from "./redpill-aci.js";
 import { LedgerFlusher } from "./billing/ledger-flusher.js";
 import { LedgerRehydrator } from "./billing/ledger-rehydrate.js";
 import { isOfferedModel } from "./billing/catalog.js";
@@ -300,6 +302,15 @@ async function main() {
   const diagnosticKey = process.env.MEETING_DIAGNOSTIC_FOREGROUND_API_KEY;
   if ((diagnosticUrl !== undefined || diagnosticKey !== undefined) && (!diagnosticUrl?.trim() || !diagnosticKey?.trim())) {
     console.error("Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither");
+    process.exit(1);
+    return;
+  }
+  let redpillBaseUrl: string;
+  try {
+    redpillBaseUrl = validateRedPillBaseUrl(process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL);
+    if (diagnosticUrl) validateRedPillBaseUrl(diagnosticUrl);
+  } catch {
+    console.error("Invalid confidential model endpoint: expected the attested gateway");
     process.exit(1);
     return;
   }
@@ -1026,6 +1037,9 @@ async function main() {
     );
   }
 
+  // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
+  app.use("/api/bots", createBotsRouter({ config: botsFromEnv(process.env), authMiddleware, paidLimiter: paidChatLimiter }));
+
   // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
   const mcpChat = mcpChatFromEnv(process.env);
   if ((AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) || mcpChat.mcpMeetings) {
@@ -1064,7 +1078,8 @@ async function main() {
                 elizaServiceUrl: elizaServiceUrl ?? "",
                 elizaServiceSecret: ELIZA_SERVICE_SECRET ?? "",
                 redpillApiKey: diagnosticKey ?? redpillApiKey,
-                redpillBaseUrl: diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
+                redpillBaseUrl: diagnosticUrl ?? redpillBaseUrl,
+                redpillFetch: redPillAciFetch(diagnosticUrl ?? redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS),
                 defaultModel,
                 isModelOffered: (m: string) => isOfferedModel(m),
                 flusher: ledgerFlusher,
@@ -1083,7 +1098,12 @@ async function main() {
   app.use(
     "/api/chat",
     authMiddleware,
-    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator, paidLimiter: paidChatLimiter }),
+    createChatRouter({
+      flusher: ledgerFlusher,
+      rehydrator: ledgerRehydrator,
+      redpillFetch: redPillAciFetch(redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS),
+      paidLimiter: paidChatLimiter,
+    }),
   );
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());

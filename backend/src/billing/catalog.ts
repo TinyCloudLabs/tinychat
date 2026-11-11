@@ -14,7 +14,8 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 
-const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
+import { DEFAULT_RED_PILL_BASE_URL } from "../redpill-aci.js";
+const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 // Hard ceiling on a single catalog fetch. RedPill's /models is "up" but its
 // gateway has flaky TLS termination — ~30% of handshakes stall, and successful

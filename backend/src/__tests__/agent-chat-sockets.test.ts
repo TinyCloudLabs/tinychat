@@ -27,7 +27,7 @@ function config(fetchImpl: typeof fetch, timeoutMs = 2_000): AgentChatConfig {
     elizaServiceUrl: "https://eliza.invalid", elizaServiceSecret: "synthetic-placeholder",
     redpillApiKey: "synthetic-placeholder", redpillBaseUrl: "https://provider.invalid/v1",
     defaultModel: () => "moonshotai/kimi-k3", isModelOffered: () => true,
-    fetchImpl, maxRounds: 3,
+    redpillFetch: fetchImpl, fetchImpl, maxRounds: 3,
     streamPolicy: { heartbeatMs: HEARTBEAT_MS, turnTimeoutMs: timeoutMs, drainGraceMs: 100 },
     streamRuntime: {
       now: () => performance.now(),
