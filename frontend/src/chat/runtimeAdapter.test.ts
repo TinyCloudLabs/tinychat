@@ -137,7 +137,7 @@ describe("createChatModelAdapter — C1 branch selection", () => {
     const { calledUrl } = await drainAdapter(makeDeps(true, "thread-x"));
     expect(calledUrl).toContain("/api/agent/chat");
   });
-  it("waits for restored private-agent access before routing the first send", async () => {
+  it("waits when the restored-session first send precedes the access probe", async () => {
     let resolveProbe!: (response: Response) => void;
     const probeResponse = new Promise<Response>((resolve) => { resolveProbe = resolve; });
     let resolveChat!: (response: Response) => void;
@@ -157,7 +157,6 @@ describe("createChatModelAdapter — C1 branch selection", () => {
       appName: "test",
       openkeyHost: "https://openkey.test",
     });
-    const probe = controller.refresh();
     const deps = makeDeps(false);
     deps.agentEnabledRef = controller.agentEnabledRef as never;
     deps.privateAccessRef = controller.privateAccessRef;
@@ -182,6 +181,7 @@ describe("createChatModelAdapter — C1 branch selection", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     const requestBeforeProbeSettled = calledUrl;
+    const probe = controller.refresh();
     resolveProbe(Response.json({ status: "active", transcriptStatus: "active", revision: "restored-r1" }));
     await probe;
     resolveChat(sseResponse(calledUrl));
