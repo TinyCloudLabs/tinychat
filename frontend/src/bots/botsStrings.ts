@@ -8,6 +8,7 @@ export const BOTS_STRINGS = {
   openMain: "Open Main's chat",
   messageMain: "Message Main",
   sendToMain: "Send to Main",
+  modelLine: "Runs on a confidential model.",
   tryAgain: "Try again",
   historyFailed: "Couldn't load your earlier messages with Main.",
   errors: {

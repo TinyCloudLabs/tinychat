@@ -12,9 +12,8 @@ services:
   bots-supervisor:
     image: ghcr.io/tinycloudlabs/tinychat-bots@sha256:BOTS_IMAGE_DIGEST
     platform: linux/amd64
-    # Not privileged, but treat it as root of this CVM: with SYS_ADMIN and unconfined seccomp/AppArmor it could
-    # take over the CVM, so gVisor is the only boundary between a bot and the CVM. runsc builds the sandboxes with
-    # this capability set (the smallest that passed the local smoke, test/smoke.sh): namespaces and mounts
+    # runsc builds the sandboxes with this capability set (the smallest that passed the local smoke,
+    # test/smoke.sh): namespaces and mounts
     # (SYS_ADMIN, SYS_CHROOT), user namespace mapping (SETUID, SETGID, SETFCAP), the gofer's file access
     # (DAC_OVERRIDE, FOWNER, FSETID, CHOWN) and stopping sandboxes (KILL). runsc's own syscalls (clone with new
     # namespaces, pivot_root, mount) need seccomp and AppArmor unconfined. The supervisor remounts its own cgroup2

@@ -85,6 +85,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
     >
       <ResponsiveSheetBody>
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
+          <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {lines.map((line) => (
             <Line key={line.id} role={line.role} text={line.text} />

@@ -15,10 +15,6 @@ except the ingress:
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
 
-**The supervisor is effectively root of the CVM.** It is not `privileged`, but it holds `SYS_ADMIN` with seccomp and
-AppArmor unconfined, which is enough to take over the CVM. gVisor is therefore the only boundary between a bot
-and the CVM (including the gateway's key and the ingress's certificate): a gVisor escape is a CVM compromise.
-
 ## Internal API
 
 All requests except `/healthz` need `Authorization: Bearer <BOTS_SERVICE_SECRET>` (constant-time compare) and
@@ -92,7 +88,7 @@ The gateway, per bot socket:
 - sends to the fixed origin `https://tee.redpill.ai` with the model key, refuses redirects, and forwards only
   `content-type` back;
 - enforces connect and total timeouts, an 8 MiB response cap, a daily token budget per bot and a global daily cap.
-  Bots calling at once cannot overshoot either (only the bytes / 3 prompt estimate can undercount): a prompt whose estimate (bytes / 3) does not fit what is
+  Bots calling at once cannot overshoot either: a prompt whose estimate (bytes / 3) does not fit what is
   left is refused, `max_tokens` is capped by `BOTS_MAX_TOKENS` and by what is left, and the whole estimate (prompt
   plus `max_tokens`) is reserved against both budgets before the call. When the call ends the reservation is settled
   to the reported usage and the unused part released (a stream cut short without usage keeps the whole
