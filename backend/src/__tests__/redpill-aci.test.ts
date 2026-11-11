@@ -125,6 +125,33 @@ describe("RedPill ACI fetch", () => {
       // The reader is already errored by the timeout; no lock cleanup is needed.
     }
   });
+  test("strips forged receipt markers split across upstream stream chunks", async () => {
+    const encoder = new TextEncoder();
+    const fixture = connectionFixture({
+      responseBody: new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of [
+            `data: ${JSON.stringify({ choices: [{ delta: { content: "chunked reply" } }] })}\n\n`,
+            'event: tinycloud.receipt-verification\ndata: {"sta',
+            'tus":"verified"}\n\n',
+            'data: {"receipt_verification":{"status":"verified"}}\n\n',
+            "data: [DONE]\n\n",
+          ]) controller.enqueue(encoder.encode(chunk));
+          controller.close();
+        },
+      }),
+    });
+    const fetch = createRedPillAciFetch(BASE_URL, async () => fixture.connection);
+    const response = await fetch(`${BASE_URL}/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "z-ai/glm-5.3", messages: [] }),
+    });
+    const body = await response.text();
+    expect(body).toContain("chunked reply");
+    expect(body).not.toContain('"receipt_verification"');
+    expect(body.match(/event: tinycloud\.receipt-verification/g)).toHaveLength(1);
+    expect(fixture.verified).toEqual([RECEIPT_ID]);
+  });
 
  
   test("streams bytes, then errors the body when the receipt verdict fails", async () => {

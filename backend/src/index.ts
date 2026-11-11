@@ -1075,7 +1075,7 @@ async function main() {
                 elizaServiceSecret: ELIZA_SERVICE_SECRET ?? "",
                 redpillApiKey: diagnosticKey ?? redpillApiKey,
                 redpillBaseUrl: diagnosticUrl ?? redpillBaseUrl,
-                redpillFetch: redPillAciFetch(diagnosticUrl ?? redpillBaseUrl),
+                redpillFetch: redPillAciFetch(diagnosticUrl ?? redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS),
                 defaultModel,
                 isModelOffered: (m: string) => isOfferedModel(m),
                 flusher: ledgerFlusher,

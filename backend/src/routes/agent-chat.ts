@@ -45,7 +45,7 @@ import {
 import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
 import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
 
-import { RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
+import { RECEIPT_AUDIT_TIMEOUT_MS, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
   creditsPerKInput: 200,
@@ -654,7 +654,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
   const maxChars = request.maxOutputTokens === 1024 ? 12288 : 24576;
   params.onPhase?.(request.phase);
-  const redpillFetch = params.config.redpillFetch ?? redPillAciFetch(params.config.redpillBaseUrl);
+  const redpillFetch = params.config.redpillFetch ?? redPillAciFetch(params.config.redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS);
   const upstream = await fetchForTurn(redpillFetch, `${params.config.redpillBaseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
     body: JSON.stringify({ model: params.model, provider: { aci_verified: true }, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
@@ -691,7 +691,7 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
 async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = false): Promise<OrchestrateResult> {
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
-  const redpillFetch = config.redpillFetch ?? redPillAciFetch(config.redpillBaseUrl);
+  const redpillFetch = config.redpillFetch ?? redPillAciFetch(config.redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS);
   const maxRounds = generalOnly ? Math.min(config.maxRounds ?? 3, 3) : config.maxRounds ?? 3;
   // Missing access outranks model admission: changing the model cannot fix it.
   const accessIssue = config.privateAccessActive === false ? config.privateAccessIssue ?? "delegation_required" : undefined;

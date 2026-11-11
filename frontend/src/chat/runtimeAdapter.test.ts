@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "./chatModelAdapter.js";
 import { createMeetingMessageRegistry, takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
 import { DEFAULT_MODEL } from "../lib/threadStore.js";
+import { clearGatewayReceipt, getGatewayReceiptVerified } from "../lib/gatewayReceiptStore";
 import { offeredChatModelContextTokens } from "@tinyboilerplate/core";
 import type { MeetingCandidate } from "../lib/meetingChat/types.js";
 
@@ -275,6 +276,40 @@ describe("createChatModelAdapter — C2 receipt+badge stashing on agent path", (
     const receipt = takePendingReceipt(msgId);
     expect(receipt).not.toBeNull();
     expect(receipt?.usage).toEqual({ promptTokens: 1, completionTokens: 1 });
+  });
+});
+
+describe("createChatModelAdapter — streamed gateway receipt state", () => {
+  const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+
+  for (const outcome of ["failed", "timed out"] as const) {
+    it(`keeps the reply unverified after a ${outcome} audit`, async () => {
+      const msgId = `msg-receipt-${outcome.replaceAll(" ", "-")}`;
+      clearGatewayReceipt(msgId);
+      globalThis.fetch = (async () => new Response([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: `Partial reply. ${warning}` } }] })}\n\n`,
+        "data: [DONE]\n\n",
+      ].join(""), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+
+      const result = await drainAdapter(makeDeps(false), msgId);
+      expect(result.chunks.at(-1)).toContain(warning);
+      expect(getGatewayReceiptVerified(msgId)).toBe(false);
+      clearGatewayReceipt(msgId);
+    });
+  }
+
+  it("marks the adapter reply verified only after the backend verifier event", async () => {
+    const msgId = "msg-receipt-verified";
+    clearGatewayReceipt(msgId);
+    globalThis.fetch = (async () => new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Verified reply." } }] })}\n\n`,
+      'event: tinycloud.receipt-verification\ndata: {"status":"verified"}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+
+    await drainAdapter(makeDeps(false), msgId);
+    expect(getGatewayReceiptVerified(msgId)).toBe(true);
+    clearGatewayReceipt(msgId);
   });
 });
 

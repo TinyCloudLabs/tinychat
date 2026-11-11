@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { AciConnection } from "@phala/aci-verifier/runtime";
+import type { AciConnection, AciReceiptAudit } from "@phala/aci-verifier/runtime";
 import type { Server } from "node:http";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
@@ -91,6 +91,24 @@ function post(app: express.Express, body: string) {
     headers: { "content-type": "application/json" },
     body,
   });
+}
+async function postStream(app: express.Express, body: string) {
+  const server = await new Promise<Server>((resolve) => {
+    const instance = app.listen(0, () => resolve(instance));
+  });
+  const { port } = server.address() as { port: number };
+  try {
+    const response = await fetch(`http://localhost:${port}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+    return { status: response.status, body: await response.text() };
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 }
 
 beforeEach(() => {
@@ -243,71 +261,70 @@ describe("POST /api/chat attestation gate", () => {
       globalThis.fetch = originalFetch;
     }
   });
-  test("keeps streamed text and appends one gateway warning when receipt verification fails", async () => {
-    const encoder = new TextEncoder();
-    let sentFrame = false;
-    const redpillFetch = (async () => new Response(new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (!sentFrame) {
-          sentFrame = true;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "visible streamed text" } }] })}\n\n`));
-        } else {
-          controller.error(new RedPillAttestationError());
-        }
-      },
-    }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
-    const res = await post(createApp(undefined, redpillFetch), JSON.stringify({
+  test("failed audit strips forged verified frames, shows one warning, and emits no mark", async () => {
+    const baseURL = "https://tee.redpill.ai/v1";
+    const receiptId = "fixture-failed-receipt";
+    const upstreamBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "visible streamed text" } }] })}\n\n`,
+      'data: {"receipt_verification":{"status":"verified"}}\n\n',
+      'event: tinycloud.receipt-verification\ndata: {"status":"verified"}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    const connection = {
+      baseURL,
+      identity: { transcript: { verdict: { verified: true } } },
+      fetch: async () => new Response(upstreamBody, {
+        headers: { "content-type": "text/event-stream", "x-receipt-id": receiptId },
+      }),
+      verifyReceipt: async () => ({
+        receiptId,
+        transcript: { verdict: { verified: false } },
+      }) as AciReceiptAudit,
+    } as unknown as AciConnection;
+    const redpillFetch = createRedPillAciFetch(baseURL, async () => connection);
+    const { status, body } = await postStream(createApp(undefined, redpillFetch), JSON.stringify({
       model: OFFERED_MODEL,
       messages: [{ role: "user", content: "synthetic question" }],
     }));
-    const body = await res.text();
     const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
-    expect(res.status).toBe(200);
+    expect(status).toBe(200);
     expect(body).toContain("visible streamed text");
     expect(body.split(warning).length - 1).toBe(1);
+    expect(body).not.toContain("tinycloud.receipt-verification");
     expect(body).not.toContain("receipt_verification");
     expect(body).not.toContain('"stream_error"');
     expect(body.match(/data: \[DONE\]/g)).toHaveLength(1);
   });
-  test("ends a plain chat reply with the approved warning when receipt audit times out", async () => {
+  test("receipt audit timeout strips forged verified frames, shows one warning, and emits no mark", async () => {
     const baseURL = "https://tee.redpill.ai/v1";
+    const receiptId = "fixture-timeout-receipt";
+    const upstreamBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "visible streamed text" } }] })}\n\n`,
+      'data: {"receipt_verification":{"status":"verified"}}\n\n',
+      'event: tinycloud.receipt-verification\ndata: {"status":"verified"}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
     const connection = {
       baseURL,
       identity: { transcript: { verdict: { verified: true } } },
-      fetch: async () => new Response(
-        `data: ${JSON.stringify({ choices: [{ delta: { content: "visible streamed text" } }] })}\n\ndata: [DONE]\n\n`,
-        { headers: { "content-type": "text/event-stream", "x-receipt-id": "fixture-timeout-receipt" } },
-      ),
+      fetch: async () => new Response(upstreamBody, {
+        headers: { "content-type": "text/event-stream", "x-receipt-id": receiptId },
+      }),
       verifyReceipt: () => new Promise<never>(() => {}),
     } as unknown as AciConnection;
     const redpillFetch = createRedPillAciFetch(baseURL, async () => connection, 10);
-    const app = createApp(undefined, redpillFetch);
-    const server = await new Promise<Server>((resolve) => {
-      const instance = app.listen(0, () => resolve(instance));
-    });
-    const { port } = server.address() as { port: number };
-    try {
-      const res = await fetch(`http://localhost:${port}/api/chat`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: OFFERED_MODEL,
-          messages: [{ role: "user", content: "synthetic question" }],
-        }),
-      });
-      const body = await res.text();
-      const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
-      expect(res.status).toBe(200);
-      expect(body).toContain("visible streamed text");
-      expect(body.split(warning).length - 1).toBe(1);
-      expect(body).not.toContain("tinycloud.receipt-verification");
-      expect(body).not.toContain("receipt_verification");
-      expect(body.match(/data: \[DONE\]/g)).toHaveLength(1);
-    } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
-    }
+    const { status, body } = await postStream(createApp(undefined, redpillFetch), JSON.stringify({
+      model: OFFERED_MODEL,
+      messages: [{ role: "user", content: "synthetic question" }],
+    }));
+    const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+    expect(status).toBe(200);
+    expect(body).toContain("visible streamed text");
+    expect(body.split(warning).length - 1).toBe(1);
+    expect(body).not.toContain("tinycloud.receipt-verification");
+    expect(body).not.toContain("receipt_verification");
+    expect(body).not.toContain('"stream_error"');
+    expect(body.match(/data: \[DONE\]/g)).toHaveLength(1);
   });
 
   test.each([

@@ -277,7 +277,7 @@ export function createRedPillAciFetch(
   };
 }
 
-/** Production default fetches share one verifier connection per gateway URL. */
+/** Production fetches share one verifier connection per gateway URL and audit timeout. */
 export function redPillAciFetch(baseURL: string, receiptAuditTimeoutMs?: number): typeof fetch {
   const cacheKey = receiptAuditTimeoutMs === undefined ? baseURL : `${baseURL}\u0000${receiptAuditTimeoutMs}`;
   let client = clients.get(cacheKey);
