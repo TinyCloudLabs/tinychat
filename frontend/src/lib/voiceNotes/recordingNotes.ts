@@ -219,7 +219,7 @@ export function saveNote(id: string, md: string, options: { savedEdit?: boolean;
   return ordered(id, async () => {
     const boundOwner = await owner;
     const stored = await readStored(id, boundOwner);
-    if (stored && "deleted" in stored) throw new Error("This recording was discarded");
+    if (stored && "deleted" in stored) throw new Error("This recording was deleted.");
     const note = changed(id, stored);
     note.md = md;
     if (options.savedEdit) note.savedEditAt = note.editedAt;
@@ -235,7 +235,7 @@ export function adoptNote(remote: Omit<RecordingNote, "savedEditAt"> & { savedEd
   return ordered(remote.recordingId, async () => {
     const boundOwner = await owner;
     const stored = await readStored(remote.recordingId, boundOwner);
-    if (stored && "deleted" in stored) throw new Error("This recording was discarded");
+    if (stored && "deleted" in stored) throw new Error("This recording was deleted.");
     // A stored note keeps its text; its saved-edit time only ever moves forward, so a record without one cannot clear it.
     if (stored) {
       const mine = stored.savedEditAt ?? null;
@@ -255,7 +255,7 @@ export function adoptNote(remote: Omit<RecordingNote, "savedEditAt"> & { savedEd
       else adopted = current;
       return null;
     });
-    if (discarded) throw new Error("This recording was discarded");
+    if (discarded) throw new Error("This recording was deleted.");
     return loaded(adopted);
   });
 }

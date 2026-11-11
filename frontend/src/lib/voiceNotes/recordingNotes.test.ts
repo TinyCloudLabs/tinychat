@@ -132,7 +132,7 @@ describe("recording Markdown", () => {
     await saveNote(recordingId, "draft");
     await deleteNote(recordingId);
     expect(await loadNote(recordingId)).toBeNull();
-    await expect(saveNote(recordingId, "late draft")).rejects.toThrow("discarded");
+    await expect(saveNote(recordingId, "late draft")).rejects.toThrow("This recording was deleted.");
   });
 });
 
@@ -249,7 +249,7 @@ test("synced audio cleanup keeps an unsynced Markdown edit and removes only an a
   await markNoteSynced(recordingId, OWNER, latest.revision);
   await deleteSyncedNote(recordingId, OWNER);
   expect(await loadNote(recordingId)).toBeNull();
-  await expect(saveNote(recordingId, "Late autosave", { owner: OWNER })).rejects.toThrow("discarded");
+  await expect(saveNote(recordingId, "Late autosave", { owner: OWNER })).rejects.toThrow("This recording was deleted.");
 });
 
 test("another tab's account marker denies both directions instead of adopting its namespace", async () => {

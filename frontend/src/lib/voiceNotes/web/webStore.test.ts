@@ -1173,7 +1173,7 @@ test("sign-out deletes verified synced data and retains unsynced audio for its a
   expect((await store.listPending()).recordings).toEqual([]);
   expect(await store.audio.size(synced.id)).toBe(0);
   expect(await loadNote(synced.id)).toBeNull();
-  await expect(saveNote(synced.id, "Late autosave", { owner: "did:A" })).rejects.toThrow("discarded");
+  await expect(saveNote(synced.id, "Late autosave", { owner: "did:A" })).rejects.toThrow("This recording was deleted.");
   expect(await store.audio.size(retained.id)).toBe(8);
   await expect(store.readAudioChunk({ id: retained.id, offset: 0, length: 8 })).rejects.toEqual(code("owner_mismatch"));
   store.close();
