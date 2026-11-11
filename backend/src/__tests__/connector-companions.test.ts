@@ -649,6 +649,26 @@ describe("DELETE /config teardown", () => {
     expect(h.queue.items.size).toBe(0);
   });
 
+  test("DELETE /config reports teardown_incomplete when the content key is unavailable", async () => {
+    const h = createHarness({
+      deleteReconciled: async () => {
+        throw new Error("content master is unavailable");
+      },
+    });
+    h.tokens.configs.set(ADDRESS, {
+      token: generateWebhookToken(),
+      source: SOURCE,
+      createdAt: new Date().toISOString(),
+    });
+
+    await withServer(h.app, async (base) => {
+      const res = await call(base, "/config", "DELETE");
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: "teardown_incomplete" });
+    });
+  });
+
+
   test("DELETE /config clears recorded IDs immediately while retaining the purge watermark", async () => {
     const h = createHarness();
     h.tokens.configs.set(ADDRESS, {
