@@ -21,7 +21,7 @@ await host.init();
 const bots = new BotManager(
   host,
   cfg,
-  { idleMs: cfg.idleMs, turnTimeoutMs: cfg.turnTimeoutMs, maxTurnBytes: cfg.maxTurnBytes },
+  { idleMs: cfg.idleMs, turnTimeoutMs: cfg.turnTimeoutMs, maxTurnBytes: cfg.maxTurnBytes, history: cfg.history },
   cfg.maxRunning,
 );
 
@@ -29,7 +29,7 @@ Bun.serve({
   port: cfg.port,
   // Cold starts can take a while before the first byte of a list response.
   idleTimeout: 120,
-  maxRequestBodySize: 64 * 1024,
+  maxRequestBodySize: 1024 * 1024,
   fetch: createApp({ secret: cfg.serviceSecret, accounts: cfg.accounts, bots }),
 });
 console.log(

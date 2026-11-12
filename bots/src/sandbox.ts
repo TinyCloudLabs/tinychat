@@ -309,6 +309,14 @@ export class RunscHost implements SandboxLauncher {
     return parseMountinfo(readFileSync("/proc/self/mountinfo", "utf8"));
   }
 
+  async provenance(layout: BotLayout): Promise<unknown> {
+    const response = await fetch(`http://gateway/bots/${layout.botId}/receipts`, {
+      unix: join(this.#cfg.egressRoot, "control.sock"), signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error("model_provenance_unavailable");
+    return response.json();
+  }
+
   async launch(layout: BotLayout): Promise<Sandbox> {
     if (!this.#baseSpec) throw new Error("sandbox host not initialised");
     // A sandbox whose end was not confirmed still holds its tmpfs; end it first, or refuse to start over it.

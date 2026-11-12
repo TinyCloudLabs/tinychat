@@ -1,6 +1,7 @@
 // Internal HTTP API, called only by the TinyChat backend (docs/plans/tiny-bots-slice1.md, piece 1).
 // Every SSE event is encoded here from checked fields; nothing from a sandbox is passed through raw.
 
+import type { StagedHistory } from "./history";
 import { type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
 import { isRecord } from "./guards";
 import { authorizedOwner } from "./owner";
@@ -8,8 +9,14 @@ import { authorizedOwner } from "./owner";
 const MESSAGES_PATH = "/v1/bots/main/messages";
 
 export interface BotApi {
-  send(text: string, sink: TurnSink): Promise<void>;
+  send(text: string, sink: TurnSink, owner?: string): Promise<void>;
   list(): Promise<ListedMessage[]>;
+  historyPending?(): Promise<unknown>;
+  historyStage?(staged: StagedHistory): Promise<void>;
+  historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
+  historyNotice?(): Promise<unknown>;
+  historyNoticeAck?(id: string, receivedAt: number): Promise<void>;
+  historyReceipt?(receipt: unknown): Promise<void>;
 }
 
 export interface AppOptions {
@@ -72,6 +79,36 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (req.method === "GET" && path === "/healthz") return new Response("ok");
     const owner = authorizedOwner(req, options.secret, options.accounts);
     if (!owner) return new Response(null, { status: 401 });
+    if (path === "/v1/bots/main/history/stage" && req.method === "POST") {
+      try { await options.bots.forOwner(owner).historyStage?.(await req.json()); return new Response(null, { status: 204 }); }
+      catch { return new Response(null, { status: 503 }); }
+    }
+    if (path === "/v1/bots/main/history/permission" && req.method === "PUT") {
+      try {
+        const body = await req.json();
+        await options.bots.forOwner(owner).historyPermission?.(owner, body.expiresAt, body.validUntil);
+        return new Response(null, { status: 204 });
+      } catch { return new Response(null, { status: 503 }); }
+    }
+    if (path === "/v1/bots/main/history/notice") {
+      try {
+        const bot = options.bots.forOwner(owner);
+        if (req.method === "GET") return Response.json({ notice: await bot.historyNotice?.() ?? null });
+        if (req.method === "POST") {
+          const body = await req.json();
+          await bot.historyNoticeAck?.(body.id, body.receivedAt);
+          return Response.json({ notice: await bot.historyNotice?.() ?? null });
+        }
+      } catch { return new Response(null, { status: 503 }); }
+    }
+    if (path === "/v1/bots/main/history") {
+      const bot = options.bots.forOwner(owner);
+      try {
+        if (req.method === "GET") return Response.json({ batch: await bot.historyPending?.() ?? null });
+        if (req.method === "POST" && bot.historyReceipt) { await bot.historyReceipt(await req.json()); return new Response(null, { status: 204 }); }
+      } catch { return Response.json({ error: "history_unavailable" }, { status: 503 }); }
+      return new Response(null, { status: 405 });
+    }
     if (path !== MESSAGES_PATH) return new Response(null, { status: 404 });
     const bot = options.bots.forOwner(owner);
 
@@ -81,7 +118,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
         return eventStream(async sink => sink.error("invalid"));
       }
-      return eventStream(sink => bot.send(text, sink));
+      return eventStream(sink => bot.send(text, sink, owner));
     }
     if (req.method === "GET") {
       try {

@@ -1567,7 +1567,7 @@ export function App() {
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
               /></HomeFeatureGate>}
-              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} />}
+              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
               apps={LOCAL_VALIDATION ? null : <AppsPage />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}

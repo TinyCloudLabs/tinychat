@@ -3,6 +3,7 @@
 // fields are turned into events, which the server encodes itself.
 
 import { readdirSync } from "node:fs";
+import { HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { BOT_ID, botIdFor } from "./owner";
@@ -57,6 +58,7 @@ export interface SandboxLauncher {
   launch(layout: BotLayout): Promise<Sandbox>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
   mountPoints?(): string[];
+  provenance?(layout: BotLayout): Promise<unknown>;
 }
 
 /** Repeated while waiting, so idle proxies keep the stream open through slow starts and long turns. */
@@ -69,6 +71,7 @@ export interface BotOptions {
   turnTimeoutMs: number;
   /** Assistant text bytes per turn; past it the agent's turn is aborted and the stream ends with an error. */
   maxTurnBytes: number;
+  history?: HistoryOptions;
 }
 
 /** How many sandboxes may run at once (BOTS_MAX_RUNNING), shared by every bot. */
@@ -169,6 +172,7 @@ export class Bot {
   readonly #launcher: SandboxLauncher;
   readonly #options: BotOptions;
   readonly #running: RunningLimit;
+  #history: HistoryJournal | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<void> | undefined;
@@ -188,11 +192,28 @@ export class Bot {
   }
 
   /** Runs one message through Main. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink): Promise<void> {
+  async send(text: string, sink: TurnSink, owner?: string): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
     }
+    if (this.#options.history) {
+      this.#busy = true;
+      await this.#deleting;
+      try {
+        this.#history ??= new HistoryJournal(this.layout, this.#options.history);
+        this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
+        this.#history.append({ type: "user", text, at: new Date().toISOString() });
+        this.#history.startDraft();
+      } catch { this.#busy = false; sink.error("bot_unavailable"); return; }
+    }
+    const output = sink;
+    sink = {
+      status: state => output.status(state),
+      delta: text => { this.#history?.delta(text); output.delta(text); },
+      done: messageId => { this.#history?.finishDraft({ type: "done", messageId }); output.done(messageId); },
+      error: code => { this.#history?.finishDraft({ type: "error", code }); output.error(code); },
+    };
     this.#busy = true;
     this.#clearIdle();
     let state: "starting" | "working" = this.#sandbox ? "working" : "starting";
@@ -216,6 +237,10 @@ export class Bot {
       await this.#turn(sandbox, text, sink);
     } finally {
       clearInterval(heartbeat);
+      if (this.#history) {
+        try { this.#history.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
+        catch { this.#history.append({ type: "provenance", verified: false }); }
+      }
       this.#busy = false;
       this.#armIdle();
     }
@@ -223,6 +248,15 @@ export class Bot {
 
   /** The newest messages of Main's session; empty for a bot that has never run (without starting one). */
   async list(): Promise<ListedMessage[]> {
+    if (this.#options.history) {
+      await this.#deleting;
+      this.#history ??= new HistoryJournal(this.layout, this.#options.history);
+      if (!this.#history.legacyPending) {
+        const messages = this.#history.messages();
+        if (messages.length) this.#markUsed();
+        return messages;
+      }
+    }
     this.#listing++;
     this.#clearIdle();
     try {
@@ -263,16 +297,53 @@ export class Bot {
       let cause: DeleteSkip | undefined;
       try {
         const stopped = await this.stop();
-        cause = closing() ? "closing" : !stopped || this.#launcher.leftover(this.layout) ? "teardown_failed" : await removeWorkingState(this.layout, this.#launcher);
+        if (!stopped || this.#launcher.leftover(this.layout)) cause = "teardown_failed";
+        else {
+          const covered = await this.historyCovered();
+          // Signature checks await: closing or a newly appended message can change eligibility meanwhile.
+          cause = closing() ? "closing" : this.#options.history && (!covered || !this.#history?.covered) && !this.#history?.expiryDue() ? "archive_pending"
+            : await removeWorkingState(this.layout, this.#launcher);
+        }
       } catch {
         cause = "error";
       }
       if (cause) log("state_delete_skipped", this.layout.botId, { reason, cause });
-      else log("state_deleted", this.layout.botId, { reason });
+      else { this.#history = undefined; log("state_deleted", this.layout.botId, { reason }); }
     })().finally(() => {
       this.#deleting = undefined;
     });
     return this.#deleting;
+  }
+
+  #journal() {
+    if (!this.#options.history) throw new Error("history_disabled");
+    return this.#history ??= new HistoryJournal(this.layout, this.#options.history);
+  }
+  async #historyOperation<T>(run: (journal: HistoryJournal) => T | Promise<T>): Promise<T> {
+    this.#listing++;
+    try {
+      await this.#deleting;
+      return await run(this.#journal());
+    } finally { this.#listing--; }
+  }
+  historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
+    return this.#historyOperation(journal => {
+      if (expiresAt === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!); }
+      else journal.permissionExpired(expiresAt, owner);
+    });
+  }
+  historyStage(staged: StagedHistory) { return this.#historyOperation(journal => journal.stage(staged)); }
+  historyNotice() { return this.#options.history ? this.#historyOperation(journal => journal.notice()) : Promise.resolve(undefined); }
+  historyNoticeAck(id: string, receivedAt: number) { return this.#historyOperation(journal => journal.acknowledgeNotice(id, receivedAt)); }
+  historyExpiryDue(now = Date.now()) { return this.#options.history ? this.#journal().expiryDue(now) : false; }
+  historyPending() {
+    return this.#options.history ? this.#historyOperation(journal => journal.pending()) : Promise.resolve(undefined);
+  }
+  historyReceipt(receipt: unknown) { return this.#historyOperation(journal => journal.accept(receipt)); }
+  async historyCovered(): Promise<boolean> {
+    if (!this.#options.history) return true;
+    this.#history ??= new HistoryJournal(this.layout, this.#options.history);
+    return this.#history.verifyCoverage();
   }
 
   #markUsed(): void {
@@ -482,6 +553,8 @@ export class BotManager {
     for (const botId of botIds) {
       if (this.#closing) return;
       try {
+        const bot = this.#bot(botId);
+        if (bot.historyExpiryDue(now) && !bot.inUse) { await this.deleteWorkingState(botId, "permission_expired"); continue; }
         const used = lastUsed(botLayout(botId, this.#roots));
         if (used === undefined || now - used <= retentionMs || this.#bots.get(botId)?.inUse) continue;
         await this.deleteWorkingState(botId, "unused");

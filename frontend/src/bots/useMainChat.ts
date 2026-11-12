@@ -23,7 +23,7 @@ export interface MainChatState {
 
 export const isWorking = (turn: MainTurn | null): boolean => !!turn && turn.state !== "error";
 
-export function useMainChat(api: BotsApi) {
+export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
   const [state, setState] = useState<MainChatState>({ lines: [], history: "idle", turn: null });
   const lifetime = useRef<AbortController | null>(null);
   const turnController = useRef<AbortController | null>(null);
@@ -72,6 +72,7 @@ export function useMainChat(api: BotsApi) {
     });
     try {
       // The earlier messages load first, so the new one is never listed twice.
+      await prepare?.();
       await ensureHistory();
       if (controller.signal.aborted) return;
       let reply = "";
@@ -94,7 +95,7 @@ export function useMainChat(api: BotsApi) {
     } finally {
       if (turnController.current === controller) turnController.current = null;
     }
-  }, [api, ensureHistory]);
+  }, [api, ensureHistory, prepare]);
 
   const send = useCallback((text: string) => run(text, true), [run]);
   const retry = useCallback(() => {

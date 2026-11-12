@@ -34,7 +34,8 @@ COPY --from=bot / /bot-rootfs
 # The gateway's budget volume is created from this directory, so it starts owned by the gateway's user.
 RUN mkdir -p /var/lib/bots-gateway && chown 65532:65532 /var/lib/bots-gateway
 WORKDIR /bots
-COPY package.json tsconfig.json ./
+COPY package.json bun.lock tsconfig.json ./
+RUN bun install --frozen-lockfile --production
 COPY src ./src
 ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
 CMD ["bun", "src/supervisor.ts"]

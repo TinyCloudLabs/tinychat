@@ -22,3 +22,7 @@ export const BOTS_STRINGS = {
 } as const;
 
 export type BotsErrorCode = keyof typeof BOTS_STRINGS.errors;
+
+// Monica, TC-2808, 2026-11-12. Keep the disclosure in one constant for copy review.
+export const HISTORY_EXPIRY_NOTICE = "Your TinyCloud permission expired on {expiryDate}. Main's chat history on our server will be deleted on {deletionDate}. Reconnect TinyCloud before then to save it to your space.";
+export const HISTORY_RECONNECT_LABEL = "Reconnect TinyCloud";
