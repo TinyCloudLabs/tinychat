@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
-import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type ThreadMessage } from "@tinyboilerplate/core/feed/sitrep";
-import { ANSWER_UNDO_HINT, AnswerOptions, answerSummary, sendingLabel, useUndoWindow } from "./AnswerOptions";
+import { cardPriority, claimDecisionHistory, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepOwnerData, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
+import { AnswerOptions, answerSummary, OWN_OPTION, OwnAnswerBox, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
-import { cardAuthor, ReplyBox, replyRoute, usePostReply } from "./CardReply";
+import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
 import { CardActions, CardDetails } from "./CardActions";
-import { HomeCardThread } from "./HomeCardThread";
+import { CardConversation, typedConversation } from "./CardConversation";
 import { shortTime } from "./ShortTime";
 
 const buttonClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
@@ -57,6 +57,7 @@ export function SitrepCard(props: Props) {
   const { entry, record, records, entries, owner, projection, source, now, onSaved, onOwnerSaved } = props;
   const state = projection.state;
   const [text, setText] = useState("");
+  const [ownOpen, setOwnOpen] = useState(false);
   const [chosen, setChosen] = useState<AskAnswer>();
   const [selfNote, setSelfNote] = useState("");
   const [reason, setReason] = useState("");
@@ -126,9 +127,11 @@ export function SitrepCard(props: Props) {
   }
   async function askAnswer({ action, choice }: AskAnswer) {
     if (record.kind !== "ask") return;
-    const result = await send("sitrep.answer", { askId: record.id, action, ...(choice ? { choice } : {}), text, at: new Date().toISOString() }, `ask:${action}:${choice ?? ""}:${text}`);
-    setText(""); setChosen(undefined); setFollowup(false); setEngaged(false);
-    props.onAnswered(result, action === "drop" ? "You dropped this question" : answerSummary(record.options.find((option) => option.id === choice)?.label, text.trim()));
+    // An option goes alone; "Your own option" goes as the words in its box.
+    const words = choice ? "" : text;
+    const result = await send("sitrep.answer", { askId: record.id, action, ...(choice ? { choice } : {}), text: words, at: new Date().toISOString() }, `ask:${action}:${choice ?? ""}:${words}`);
+    setText(""); setChosen(undefined); setOwnOpen(false); setFollowup(false); setEngaged(false);
+    props.onAnswered(result, action === "drop" ? "You dropped this question" : answerSummary(record.options.find((option) => option.id === choice)?.label, words.trim()));
   }
   // One tap chooses: the answer waits out the undo window, then is saved with any typed answer.
   function holdAnswer(answer: AskAnswer) {
@@ -146,18 +149,6 @@ export function SitrepCard(props: Props) {
     await send("sitrep.state", data, `command:${event.eventId}`, true, event.eventId);
     setNotice(`Sent to ${author}. It is done when ${author} reports so.`);
   }
-  function threadMessage(value: string, resendOf?: string): ThreadMessage {
-    const at = new Date().toISOString();
-    return { side: "sam", kind: record.kind, id: record.id, at, text: value, messageId: `${compactStamp(at)}-${id()}`, ...(resendOf ? { resendOf } : {}) };
-  }
-  // Sends a message again to exactly where the original went; a held original stays held.
-  async function resendThread(value: string, resendOf: string) {
-    const original = owner.threads.find((message) => message.side === "sam" && message.kind === record.kind && message.id === record.id && message.messageId === resendOf);
-    const originalRoute = original && entry.threadRoutes?.[ownerThreadResponseKey(original)];
-    if (!originalRoute || originalRoute.kind === "held") throw new Error("The original logical destination is not approved; the message remains held");
-    const delivery: SitrepMessageDelivery | undefined = originalRoute.kind === "recipients" ? originalRoute.delivery : undefined;
-    await send("sitrep.thread", { ...threadMessage(value, resendOf), ...(delivery ? { delivery } : {}) }, `thread:${resendOf}:${JSON.stringify(delivery)}:${value}`, true);
-  }
   const graph = depGraph(records);
   const dependencies = "unblockedBy" in record ? record.unblockedBy ?? [] : [];
   const pinned = cardPriority(record, state?.priority);
@@ -168,6 +159,20 @@ export function SitrepCard(props: Props) {
 
   return <div className="mt-4 space-y-4 text-sm" aria-label={`${record.kind} details`}>
     {pinned && <p className="text-xs text-muted-foreground">Priority · {pinned.reason}</p>}
+    {/* The card's actions sit at its top (Sam, 11-12): Ask me later, and the page's own ("Next card"). */}
+    <CardActions>
+      <button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>
+      {props.actions}
+    </CardActions>
+    {/* A note to yourself goes with a reminder: it is saved with the time you pick and only you see it. */}
+    {later && <section aria-label="Ask me later" className="space-y-3 rounded-xl border border-border p-3">
+      <p className="font-medium">Ask me again</p>
+      <div className="flex flex-wrap gap-2">{snoozePresets(now).slice(0, 3).map((preset) => <button key={preset.id} type="button" className={buttonClass} disabled={busy} onClick={() => void perform(async () => {
+        if (selfNote.trim()) await savePrivate({ notes: [{ id: id(), at: new Date().toISOString(), text: selfNote.trim() }] }, `private-note:${selfNote}`);
+        await source.snooze(entry, preset.until); setSelfNote(""); setLater(false); onOwnerSaved();
+      })}>{preset.label}</button>)}</div>
+      <label className="block font-medium">Add a note to yourself<span className="block text-xs font-normal text-muted-foreground">Only you see this. It is not sent to any agent.</span><textarea aria-label="Note to yourself" value={selfNote} disabled={busy} onInput={(event) => setSelfNote(event.currentTarget.value)} className={`${inputClass} min-h-16`} /></label>
+    </section>}
     {/* A note saved with Ask me later is here when the card comes back. */}
     {!!state?.notes?.length && <section aria-label="Notes to yourself" className="space-y-1 rounded-xl border border-dashed border-border p-3">
       <p className="text-xs font-medium text-muted-foreground">Your {state.notes.length > 1 ? "notes" : "note"} · only you see {state.notes.length > 1 ? "them" : "it"}</p>
@@ -184,14 +189,14 @@ export function SitrepCard(props: Props) {
       {record.mode !== "proceeding" && record.recommend && !visibleQuestion && <p>Recommended: {record.options.find((option) => option.id === record.recommend)?.label}</p>}
       <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} />
       {entry.state.card.needsResponse && !closed && !visibleQuestion && <button type="button" className={buttonClass} onClick={() => setFollowup(true)}>Add follow-up</button>}
-      {!closed && visibleQuestion && <form className="space-y-3" onFocusCapture={() => setEngaged(true)} onSubmit={(event) => { event.preventDefault(); if (text.trim()) holdAnswer({ action: "answer" }); }}>
-        <AnswerOptions options={record.options} suggested={record.recommend} chosen={chosen?.choice} seconds={hold.seconds} sending={saving} to={author} onChoose={(option) => holdAnswer({ action: "answer", choice: option.id })} onUndo={undoAnswer} />
-        <label className="block font-medium">Reply to {author}<span className="block text-xs font-normal text-muted-foreground">Write instead of choosing, or as well.</span><textarea name="answer" aria-label={`Reply to ${author}`} value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24`} /></label>
-        <p className="text-xs text-muted-foreground">{ANSWER_UNDO_HINT}</p>
+      {!closed && visibleQuestion && <div className="space-y-3" onFocusCapture={() => setEngaged(true)}>
+        <AnswerOptions options={record.options} suggested={record.recommend} chosen={chosen?.choice ?? (chosen?.action === "answer" ? OWN_OPTION.id : undefined)} seconds={hold.seconds} sending={saving} to={author} onUndo={undoAnswer}
+          onChoose={(option) => option.id === OWN_OPTION.id ? setOwnOpen(!ownOpen) : holdAnswer({ action: "answer", choice: option.id })}
+          own={{ open: ownOpen, box: <OwnAnswerBox text={text} disabled={busy} onText={setText} onSend={() => { if (text.trim()) holdAnswer({ action: "answer" }); }} /> }} />
         {error && chosen && !busy && <div role="alert" className="text-destructive"><p>{error}</p><button type="button" className="mt-1 min-h-9 underline" onClick={() => void perform(() => askAnswer(chosen))}>Try again</button></div>}
-        <div className="flex flex-wrap gap-2"><button className={primaryClass} disabled={busy || !text.trim()}>{sendingAs("answer") ?? "Send answer"}</button>{record.mode === "proceeding" && record.default && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.default })}>Fine, go ahead</button>}{record.recommend && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.recommend })}>Accept recommendation</button>}<button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "drop" })}>{sendingAs("drop") ?? "Drop question"}</button>{hold.seconds !== null && !chosen?.choice && <button type="button" className={buttonClass} onClick={undoAnswer}>Undo</button>}</div>
+        <div className="flex flex-wrap gap-2">{record.mode === "proceeding" && record.default && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.default })}>Fine, go ahead</button>}{record.recommend && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.recommend })}>Accept recommendation</button>}<button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "drop" })}>{sendingAs("drop") ?? "Drop question"}</button>{hold.seconds !== null && chosen?.action !== "answer" && <button type="button" className={buttonClass} onClick={undoAnswer}>Undo</button>}</div>
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
-      </form>}
+      </div>}
       {projection.parts.map((part) => <section key={part.view.approval.id} className="space-y-3 rounded-xl border border-border p-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });
         const target = matches.length === 1 ? matches[0] : undefined;
@@ -243,7 +248,7 @@ export function SitrepCard(props: Props) {
     </div>}
     {record.kind === "progress" && <div className="space-y-3"><p>{prose(record.ticket)} · {record.owner} · {record.currentStep + 1}/{record.steps.length}</p><ol className="list-decimal space-y-2 pl-5">{record.steps.map((step, index) => <li key={`${index}:${step.name}`} aria-current={index === record.currentStep ? "step" : undefined}>{step.name} · {step.state}</li>)}</ol>{record.note && <p>{record.note}</p>}{record.eta && <p>ETA {stamp(record.eta)}</p>}<p className="text-xs text-muted-foreground">Updated by {record.updatedBy ?? record.owner} at {stamp(record.updatedAt)}. Owner and appointed live updaters manage this progress; viewing it does not grant edit authority.</p>{!!record.updaters?.length && <details><summary>Appointed updater identities</summary><ul>{record.updaters.map((updater) => <li key={updater} className="break-all">{updater}</li>)}</ul></details>}</div>}
 
-    <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} route={route} reply={route.to && !visibleQuestion ? <ReplyBox key={route.to} to={route.to} disabled={busy} onSend={(value) => postReply(value, route.delivery)} /> : null} onResend={(value, resendOf) => perform(() => resendThread(value, resendOf))} />
+    <CardConversation lines={typedConversation(entry, record, owner)} to={route.to} reason={"reason" in route ? route.reason : undefined} disabled={busy} onSend={(value) => postReply(value, "delivery" in route ? route.delivery : undefined)} />
     {owner.commands?.map((command) => { const handling = entry.responseHandling?.[command.eventId]; return <div key={command.eventId} role="status" className="rounded-xl border border-border p-3 text-xs"><p>Owner command saved{handling?.acknowledgement && " · Publisher received"}{handling?.outcome && ` · Publisher reported ${handling.outcome.phase}`}</p>{!handling && <p>Receipt not reported. Saving again preserves this command identity; it does not prove delivery or repeat its effect.</p>}</div>; })}
     {!!entry.historicalCommands?.length && <section aria-label="Historical owner commands" className="space-y-2 rounded-xl border border-border p-3">
       <h3 className="font-medium">Historical owner commands</h3>
@@ -256,7 +261,6 @@ export function SitrepCard(props: Props) {
         </div>;
       })}
     </section>}
-    {(!!answers.length || !!state?.snoozes?.length) && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-medium">Typed card history</summary><ol className="mt-2 space-y-2">{answers.map((answer, index) => <li key={`${answer.at}:${index}`}>{answer.action === "code" ? "Approval code saved privately" : `${answer.action}${answer.choice ? ` · ${answer.choice}` : ""}${answer.text ? ` · ${answer.text}` : ""}`} · {stamp(answer.at)}{record.kind === "approval" && answer.issuedAt && <span> · Issuance {answer.issuedAt}</span>}</li>)}{state?.snoozes?.map((snooze) => <li key={`${snooze.at}:${snooze.until}`}>Snoozed at {stamp(snooze.at)} until {stamp(snooze.until)}</li>)}</ol></details>}
     {!!owner.outboundNotes?.length && <details aria-label="Legacy outbound notes" className="space-y-2 rounded-xl border border-border p-3"><summary className="min-h-8 cursor-pointer font-medium">Legacy explicit owner messages</summary>{owner.outboundNotes.filter((note) => note.card.kind === record.kind && note.card.id === record.id).map((note) => <div key={note.responseId} className="space-y-1">
       <p className="text-xs font-medium">{note.type === "hold-notice" ? "Historical hold notice — not authority to repeat the command" : "Explicit legacy send-note event — not a private Home note"}</p>
       <p className="whitespace-pre-wrap">{note.text}</p><p className="text-xs text-muted-foreground">{stamp(note.at)} · {note.eventKey}</p>
@@ -264,9 +268,8 @@ export function SitrepCard(props: Props) {
       {note.unresolvedRecipients.map((recipient) => <p key={recipient} className="text-xs">Held / unrouted · {recipient} · owner archive only; not sent</p>)}
     </div>)}</details>}
     {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className="text-xs text-muted-foreground">{response.reason}. Saved transport record preserved; no question decision inferred.</p>)}
-    <CardActions>
-      <button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>
-      {props.actions}
+    {/* The card's foot is one control, Details: who posted it, its history and its wiring, in a pop-up. */}
+    <div className="border-t border-border pt-3">
       <CardDetails>
         <p>{record.kind} · {record.status} · {record.id}</p>
         <p>Posted by {entry.source.label} · {entry.source.agentDid}{record.from !== entry.source.label && ` · from ${record.from}`}</p>
@@ -277,17 +280,9 @@ export function SitrepCard(props: Props) {
         {/* Private priority puts the card first in your list. Only you see it; it is not sent to any agent. */}
         <button type="button" className={`${buttonClass} bg-background`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Clear private priority" : "Mark private priority"}</button>
         {props.reference}
+    {(!!answers.length || !!state?.snoozes?.length) && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-medium">Typed card history</summary><ol className="mt-2 space-y-2">{answers.map((answer, index) => <li key={`${answer.at}:${index}`}>{answer.action === "code" ? "Approval code saved privately" : `${answer.action}${answer.choice ? ` · ${answer.choice}` : ""}${answer.text ? ` · ${answer.text}` : ""}`} · {stamp(answer.at)}{record.kind === "approval" && answer.issuedAt && <span> · Issuance {answer.issuedAt}</span>}</li>)}{state?.snoozes?.map((snooze) => <li key={`${snooze.at}:${snooze.until}`}>Snoozed at {stamp(snooze.at)} until {stamp(snooze.until)}</li>)}</ol></details>}
       </CardDetails>
-    </CardActions>
-    {/* A note to yourself goes with a reminder: it is saved with the time you pick and only you see it. */}
-    {later && <section aria-label="Ask me later" className="space-y-3 rounded-xl border border-border p-3">
-      <label className="block font-medium">Add a note to yourself<span className="block text-xs font-normal text-muted-foreground">Only you see this. It is not sent to any agent.</span><textarea aria-label="Note to yourself" value={selfNote} disabled={busy} onInput={(event) => setSelfNote(event.currentTarget.value)} className={`${inputClass} min-h-16`} /></label>
-      <p className="font-medium">Ask me again</p>
-      <div className="flex flex-wrap gap-2">{snoozePresets(now).map((preset) => <button key={preset.id} type="button" className={buttonClass} disabled={busy} onClick={() => void perform(async () => {
-        if (selfNote.trim()) await savePrivate({ notes: [{ id: id(), at: new Date().toISOString(), text: selfNote.trim() }] }, `private-note:${selfNote}`);
-        await source.snooze(entry, preset.until); setSelfNote(""); setLater(false); onOwnerSaved();
-      })}>{preset.label}</button>)}</div>
-    </section>}
+    </div>
     {error && !(chosen && !closed && visibleQuestion) && <p role="alert" className="text-destructive">{error}</p>}{notice && <p role="status" className="text-muted-foreground">{notice}</p>}
   </div>;
 }

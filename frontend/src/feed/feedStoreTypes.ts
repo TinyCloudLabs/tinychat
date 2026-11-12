@@ -78,6 +78,13 @@ export interface HomeFeedSource {
   setDefaultSelector(selector: FeedSelector): Promise<void>;
   subscribe(onChange: () => void): () => void;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
+  /** Feed lab only: adds more made-up cards at the end of the feed, for its infinite scroll. */
+  loadMore?: () => Promise<void>;
+  /**
+   * Feed lab only: up to `limit` cards you already answered, each answered before `before` (or now), newest answer
+   * first. Pulling down at the top of the feed shows them, back indefinitely.
+   */
+  loadAnswered?: (before: string | undefined, limit: number) => Promise<HomeFeedEntry[]>;
 }
 
 export interface HomeFeedEntriesProps {

@@ -1,7 +1,7 @@
 // Answering a feed card with one tap: the tap chooses, the answer waits a few
 // seconds with Undo, then it is sent. Plain cards (HomeFeedEntries.tsx) and typed
 // asks (SitrepCard.tsx) share the wait, its words and the option buttons.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /** Seconds an answer waits, after the tap or Send, before it is sent. Undo works until then and not after. */
 export const ANSWER_UNDO_SECONDS = 4;
@@ -57,27 +57,33 @@ export function useUndoWindow(send: () => void) {
 
 export interface AnswerOption { id: string; label: string; detail?: string; cost?: string }
 
+/** The last entry of every option list (feed lab, Sam's order of 11-12): it opens a box to write your own answer. */
+export const OWN_OPTION: AnswerOption = { id: "lab-your-own-option", label: "Your own option" };
+
 /**
  * A question's options as choices: filled rows, each with a round marker, its label and detail, and "Suggested" on
  * the one its agent recommends. The chosen one stays pressed; while its answer waits or is sent (`seconds`,
  * `sending`) it reads as the wait, with Undo and a line that runs out, and the others dim.
  */
-export function AnswerOptions({ options, suggested, chosen, seconds, sending, to, onChoose, onUndo }: {
+export function AnswerOptions({ options: given, suggested, chosen, seconds, sending, to, own, onChoose, onUndo }: {
   options: readonly AnswerOption[];
   /** The option the agent recommends. */
   suggested?: string;
   /** The agent the answer goes to, named while it waits. */
   to?: string;
   chosen?: string;
+  /** "Your own option" as the last entry; `open` shows `box` (the text and Send) under it. */
+  own?: { open: boolean; box: ReactNode };
   seconds: number | null;
   sending: boolean;
   onChoose: (option: AnswerOption) => void;
   onUndo: () => void;
 }) {
   const waiting = seconds !== null || sending;
+  const options = own ? [...given, OWN_OPTION] : given;
   return <fieldset className="space-y-2 text-sm"><legend className="mb-2 text-xs font-medium text-muted-foreground">Choose an option</legend>
     {options.map((option) => {
-      const pressed = chosen === option.id;
+      const pressed = chosen === option.id || (option === OWN_OPTION && !!own?.open);
       return <div key={option.id} className={`relative rounded-xl border ${pressed ? "border-primary bg-selected" : "border-transparent bg-surface-2"} ${waiting && !pressed ? "opacity-50" : ""}`}>
         <button type="button" aria-pressed={pressed} disabled={waiting && !pressed} onClick={() => onChoose(option)} className="flex min-h-12 w-full items-start gap-3 rounded-xl px-3 py-3 text-left active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
           <span aria-hidden className={`mt-0.5 flex size-[1.125rem] shrink-0 items-center justify-center rounded-full border-2 ${pressed ? "border-primary" : "border-muted-foreground"} ${pressed && waiting ? "opacity-0" : ""}`}>{pressed && <span className="size-2 rounded-full bg-primary" />}</span>
@@ -95,6 +101,15 @@ export function AnswerOptions({ options, suggested, chosen, seconds, sending, to
           {seconds !== null && <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-primary motion-safe:animate-out motion-safe:slide-out-to-left motion-safe:ease-linear motion-safe:fill-mode-forwards motion-reduce:hidden" style={{ animationDuration: `${ANSWER_UNDO_SECONDS}s` }} />}
         </div>}
       </div>;
-    })}
+    }).flatMap((row, index) => options[index] === OWN_OPTION && own?.open ? [row, <div key="own-box">{own.box}</div>] : [row])}
   </fieldset>;
+}
+
+/** What "Your own option" opens: a text box and Send. Send waits out the same undo window as a tap. */
+export function OwnAnswerBox({ text, disabled, onText, onSend }: { text: string; disabled: boolean; onText: (text: string) => void; onSend: () => void }) {
+  return <div className="space-y-2 rounded-xl border border-border p-3">
+    <textarea autoFocus rows={3} aria-label={OWN_OPTION.label} value={text} disabled={disabled} onInput={(event) => onText(event.currentTarget.value)}
+      className="block min-h-20 w-full resize-y rounded-lg border border-border bg-background p-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" />
+    <button type="button" disabled={disabled || !text.trim()} onClick={onSend} className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">Send</button>
+  </div>;
 }

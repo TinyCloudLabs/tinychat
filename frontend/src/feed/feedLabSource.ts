@@ -127,9 +127,32 @@ function labCards(now: number): LabCard[] {
   ];
 }
 
+// More made-up questions for the lab's infinite scroll, posted ever earlier as you scroll down. Agents cycle.
+const MORE_QUESTIONS: { title: string; body: string; choices: string[] }[] = [
+  { title: "Move the dentist appointment to Tuesday?", body: "The clinic offered 10:30 on Tuesday. Your calendar is clear then.", choices: ["Yes, Tuesday", "Keep Thursday"] },
+  { title: "Renew the domain for two years?", body: "It expires in 12 days. Two years costs 24, one year 13.", choices: ["Two years", "One year"] },
+  { title: "Which photo goes on the studio's front page?", body: "Three photos from the spring open day are ready.", choices: ["The kiln", "The wheel room", "The mugs"] },
+  { title: "Order more clay before the price rises?", body: "The supplier raises prices on the 1st. Stock lasts about three weeks.", choices: ["Order now", "Wait"] },
+  { title: "Reply to the hall about the choir's dates?", body: "They asked whether the studio still needs the hall on Thursdays.", choices: ["Keep Thursdays", "Release them"] },
+  { title: "Book the van for the market?", body: "The market is on the 23rd. The van is free that day.", choices: ["Book it", "Not this time"] },
+];
+// Questions you answered earlier, shown when you pull down at the top of the feed. Times go back from now.
+const ANSWERED: { title: string; body: string; choices: string[]; chose: number }[] = [
+  { title: "Which train should I hold for the 3rd?", body: "Two trains reach the meeting in time.", choices: ["07:50 direct", "08:40, one change"], chose: 0 },
+  { title: "Pay the October hosting invoice?", body: "214.60, due on the 15th. Same as last month.", choices: ["Pay it", "Hold for review"], chose: 0 },
+  { title: "Keep the gym membership?", body: "It renews on the 1st. You went four times last month.", choices: ["Keep it", "Cancel it"], chose: 1 },
+  { title: "Which cover for the newsletter?", body: "Two covers are ready.", choices: ["The garden", "The kiln"], chose: 1 },
+  { title: "Accept the call with the supplier at 15:00?", body: "They want to talk about delivery dates.", choices: ["Accept", "Ask for tomorrow"], chose: 0 },
+];
+
 /** `stop` cancels the simulated agent's pending work; the lab calls it when it resets or closes. */
 export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop(): void } {
   const cards = labCards(now);
+  // Cards you answered earlier, made as you pull down for them; they load as the feed's history.
+  const archived: LabCard[] = [];
+  // The agent's replies to your comments on plain cards, as `payload.replies` on the card.
+  const plainReplies = new Map<string, { text: string; at: string }[]>();
+  let more = 0;
   const saved: { response: FeedResponse; payload?: FeedResponsePayload }[] = [];
   const handling = new Map<string, FeedResponseHandling>();
   const views = new Map<string, { seenAt?: string; snoozedUntil?: string; events: HomeFeedViewEvent[] }>();
@@ -150,8 +173,11 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
   const wait = (ms: number) => new Promise<void>((resolve) => later(ms, resolve));
   function notify() { for (const listener of listeners) listener(); }
 
-  function entryOf({ source, card, route }: LabCard): HomeFeedEntry {
-    const key = ownerCardKey(source.sourceId, card);
+  function entryOf({ source, card: posted, route }: LabCard): HomeFeedEntry {
+    const key = ownerCardKey(source.sourceId, posted);
+    // The agent's replies to your comments show on the card itself, as a plain card carries them.
+    const answered = plainReplies.get(key);
+    const card = answered ? { ...posted, payload: { ...posted.payload, replies: answered } } : posted;
     const history = saved.filter(({ response }) => ownerCardKey(source.sourceId, response) === key);
     const latest = history.filter(({ response }) => response.kind !== "message").at(-1)?.response ?? null;
     const receipt = latest ? handling.get(latest.responseId) : undefined;
@@ -161,6 +187,8 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
       state: { card, response: latest, acknowledgement: receipt?.acknowledgement ?? null, outcome: receipt?.outcome ?? null },
       view: { sourceId: source.sourceId, cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, ...(view.seenAt ? { seenAt: view.seenAt } : {}), ...(view.snoozedUntil ? { snoozedUntil: view.snoozedUntil } : {}) },
       responses: history.map(({ response }) => response), viewEvents: view.events,
+      // Each response's receipt, as the real store attaches it, so a comment shows "<agent> received" too.
+      responseHandling: Object.fromEntries(history.flatMap(({ response }) => { const reported = handling.get(response.responseId); return reported ? [[response.responseId, reported] as const] : []; })),
     };
     const typed = parseSitrepCardPayload(card.payload?.sitrep);
     if (!typed) return entry;
@@ -210,7 +238,7 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
     async load(focused) {
       const entries = cards.map(entryOf);
       const focusedEntry = focused ? entries.find((entry) => keyOf(entry) === keyOf(focused)) : undefined;
-      const snapshot: HomeFeedSnapshot = { entries, historicalEntries: [], settings: { defaultSelector }, sitrep: combineOwnerData(entries.flatMap((entry) => entry.owner ? [entry.owner] : [])), relatedEntries: [], ...(focusedEntry ? { focusedEntry } : {}) };
+      const snapshot: HomeFeedSnapshot = { entries, historicalEntries: archived.map(entryOf), settings: { defaultSelector }, sitrep: combineOwnerData(entries.flatMap((entry) => entry.owner ? [entry.owner] : [])), relatedEntries: [], ...(focusedEntry ? { focusedEntry } : {}) };
       return structuredClone(snapshot);
     },
     async saveResponse(entry, response, payload) {
@@ -233,6 +261,15 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
           notify();
         });
       }
+      // A comment on a plain card: the agent receives it, then replies under it on the card.
+      if (!typed && message.text) {
+        const text = message.text;
+        later(LAB_REPLY_RECEIVED_MS, () => report(stored, "acknowledged"));
+        later(LAB_REPLY_MS, () => {
+          plainReplies.set(keyOf(entry), [...(plainReplies.get(keyOf(entry)) ?? []), { text: labReplyText(text), at: new Date().toISOString() }]);
+          notify();
+        });
+      }
       return stored;
     },
     async saveOwnerState(entry, event) { states.set(keyOf(entry), [...(states.get(keyOf(entry)) ?? []), structuredClone(event)]); notify(); },
@@ -248,6 +285,41 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
       view.events.push({ sequence: view.events.length + 1, kind: "snoozed", createdAt: new Date().toISOString(), snoozedUntil: until });
     },
     async setDefaultSelector(selector) { defaultSelector = selector; },
+    async loadMore() {
+      const agents = [agent("trip", "Trip agent"), agent("home", "Home agent"), agent("studio", "Studio agent")];
+      for (let index = 0; index < 4; index++, more++) {
+        const question = MORE_QUESTIONS[more % MORE_QUESTIONS.length]!;
+        const minutes = 120 + more * 37;
+        cards.push({ source: agents[more % agents.length]!, card: {
+          cardId: `lab-more-${more}`, revision: 1, issuanceId: "lab-1", kind: "question", needsResponse: true, urgency: 0,
+          createdAt: new Date(now - minutes * 60_000).toISOString(), title: question.title, body: question.body,
+          choices: question.choices.map((label, choice) => ({ id: `c${choice}`, label })),
+        } });
+      }
+      notify();
+    },
+    async loadAnswered(before, limit) {
+      const agents = [agent("trip", "Trip agent"), agent("home", "Home agent"), agent("backup", "Backup agent")];
+      const start = before ? Date.parse(before) : now - 2 * 3_600_000;
+      const made: LabCard[] = [];
+      for (let index = 0; index < limit; index++) {
+        const number = archived.length;
+        const template = ANSWERED[number % ANSWERED.length]!;
+        const answeredAt = start - (index + 1) * 150 * 60_000;
+        const card: FeedCard = {
+          cardId: `lab-answered-${number}`, revision: 1, issuanceId: "lab-1", kind: "question", needsResponse: true, urgency: 0,
+          createdAt: new Date(answeredAt - 20 * 60_000).toISOString(), title: template.title, body: template.body,
+          choices: template.choices.map((label, choice) => ({ id: `c${choice}`, label })),
+        };
+        const labCard = { source: agents[number % agents.length]!, card };
+        archived.push(labCard); made.push(labCard);
+        const response: FeedResponse = { responseId: crypto.randomUUID(), cardId: card.cardId, revision: 1, issuanceId: "lab-1", kind: "answer", choiceId: `c${template.chose}`, createdAt: new Date(answeredAt).toISOString(), sequence: saved.length + 1 };
+        saved.push({ response });
+        const reported = (phase: FeedHandling["phase"], ms: number): FeedHandling => ({ cardId: card.cardId, revision: 1, issuanceId: "lab-1", responseId: response.responseId, handlingId: crypto.randomUUID(), phase, createdAt: new Date(answeredAt + ms).toISOString(), ...(phase === "succeeded" ? { detail: { message: LAB_OUTCOME } } : {}) });
+        handling.set(response.responseId, { acknowledgement: reported("acknowledged", 15_000), outcome: reported("succeeded", 60_000) });
+      }
+      return structuredClone(made.map(entryOf));
+    },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     stop() { for (const timer of timers) clearTimeout(timer); timers.clear(); },
   };

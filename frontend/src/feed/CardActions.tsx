@@ -1,19 +1,23 @@
-// The foot of an open card, inside its surface: its small actions in one row (CardActions), with the card's wiring
-// closed under Details as the last of them (CardDetails). Plain cards (HomeFeedEntries.tsx) and typed cards
-// (SitrepCard.tsx) share them.
-import type { ReactNode } from "react";
+// An open card's controls (feed lab, Sam's order of 11-12): its small actions in one row at its top (CardActions),
+// and one control at its foot, "Details", which opens a pop-up with who posted the card, its history and its wiring
+// (CardDetails). Plain cards (HomeFeedEntries.tsx) and typed cards (SitrepCard.tsx) share them.
+import { useState, type ReactNode } from "react";
+import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 
-/** The class of a small action at a card's foot. */
+/** The class of a small action on a card. */
 export const actionClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
 
-/** The small actions at the foot of an open card, inside it. */
+/** The small actions of an open card, in one row at its top. */
 export function CardActions({ children }: { children: ReactNode }) {
-  return <div aria-label="Card actions" className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-sm">{children}</div>;
+  return <div aria-label="Card actions" className="flex flex-wrap items-center gap-2 text-sm">{children}</div>;
 }
-/** The card's wiring, closed by default, last among its actions: open, it takes the whole width below them. */
+/** The card's foot: "Details", which opens the card's facts in a pop-up. */
 export function CardDetails({ children }: { children: ReactNode }) {
-  return <details aria-label="Card details" className="min-w-0 text-xs open:basis-full">
-    <summary className="inline-flex min-h-10 cursor-pointer list-none items-center rounded-lg border border-border px-3 text-sm [&::-webkit-details-marker]:hidden">Details</summary>
-    <div className="mt-2 space-y-2 break-words rounded-xl bg-muted/50 p-3">{children}</div>
-  </details>;
+  const [open, setOpen] = useState(false);
+  return <>
+    <button type="button" aria-haspopup="dialog" onClick={() => setOpen(true)} className="inline-flex min-h-11 items-center rounded-lg px-1 text-sm text-muted-foreground underline decoration-border underline-offset-4">Details</button>
+    <ResponsiveSheet open={open} onOpenChange={setOpen} title="Details">
+      <ResponsiveSheetBody className="space-y-3 break-words pb-6 text-sm">{children}</ResponsiveSheetBody>
+    </ResponsiveSheet>
+  </>;
 }
