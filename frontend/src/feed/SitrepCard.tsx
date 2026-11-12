@@ -1,17 +1,28 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
-import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
+import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
+import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, cardTime, commentCopy, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, MoreSheet, OptionButtons, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, QuietRow, quietClass, SheetSection, SnoozeChoices } from "./cardKit";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
 import { HomeCardThread } from "./HomeCardThread";
 
-const buttonClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
-const primaryClass = "min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50";
-const inputClass = "mt-2 w-full rounded-xl border border-border bg-background p-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
-function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-2">{part.label}</a> : part.text); }
-function stamp(at: string) { return new Date(at).toLocaleString(); }
+function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
+function stamp(at: string) { return cardTime(at, Date.now()); }
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
+const DAY = 86_400_000;
+/** "Request ends in 6 days"; nothing for expiries more than a year out. */
+function requestEnds(expiresAt: string | undefined, now: number): string | null {
+  const ends = Date.parse(expiresAt ?? "");
+  if (!Number.isFinite(ends) || ends - now > 365 * DAY) return null;
+  if (ends <= now) return "This request has ended";
+  const hours = Math.ceil((ends - now) / 3_600_000);
+  if (hours < 24) return `Request ends in ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  const days = Math.round((ends - now) / DAY);
+  return `Request ends in ${days} ${days === 1 ? "day" : "days"}`;
+}
+const STEP_WORDS: Record<StepState, string> = { pending: "Waiting for you", done: "Done", "not needed": "Not needed", expired: "Ended", closed: "Closed" };
 
 interface Props {
   entry: HomeFeedEntry;
@@ -22,43 +33,93 @@ interface Props {
   projection: SitrepProjection;
   source: HomeFeedSource;
   now: number;
+  /** Expanded in place: context, links, details and history show. */
+  expanded?: boolean;
+  /** A newer issuance replaced this card: drafts stay, but nothing more is sent for it. */
+  stale?: boolean;
+  /** An answer whose countdown ended after the card was replaced: nothing was written. */
+  onRefused: (label: string) => void;
+  /** The card reference, shown under More → Details. */
+  reference?: ReactNode;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
   onOwnerSaved: () => void;
+  onSnoozed?: (entry: HomeFeedEntry) => void;
   onNavigate: (entry: HomeFeedEntry) => void;
 }
 
-function TypedAnswerStatus({ entry, owner, answer }: { entry: HomeFeedEntry; owner: SitrepOwnerData; answer?: Answer }) {
-  if (!answer) return null;
+function OpenFoldedApproval({ approval, source, sourceId, onNavigate }: { approval: Approval; source: HomeFeedSource; sourceId: string; onNavigate: Props["onNavigate"] }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function open() {
+    setBusy(true); setError(undefined);
+    try {
+      const snapshot = await source.load();
+      const matches = snapshot.entries.filter((candidate) => {
+        const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep);
+        return candidate.source.sourceId === sourceId && typed?.record.kind === "approval" && typed.record.id === approval.id;
+      });
+      if (matches.length !== 1 || matches[0]!.currentIssuance === false) throw new Error("Current approval is not available");
+      onNavigate(matches[0]!);
+    } catch { setError("The new request couldn't be opened. Try again."); }
+    finally { setBusy(false); }
+  }
+  return <div className="space-y-1">
+    <button type="button" disabled={busy} onClick={() => void open()} className="text-sm underline underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Open this step's own card.</button>
+    {error && <ErrorLine>{error}</ErrorLine>}
+  </div>;
+}
+
+/** Whether this answer has its saved transport record here, or is history restored from the owner archive. */
+function answerReceipt(entry: HomeFeedEntry, owner: SitrepOwnerData, answer: Answer) {
   const original = owner.answers.find((row) => row.value === answer);
   const responseIds = original ? Object.entries(entry.owner?.responseOrigins ?? owner.responseOrigins ?? {}).flatMap(([responseId, origin]) => origin.sourceKey === original.sourceKey ? [responseId] : []) : [];
   const header = responseIds.length === 1 ? entry.responses?.find((response) => response.kind !== "message" && response.responseId === responseIds[0]) : undefined;
   const receipt = header ? entry.responseHandling?.[header.responseId] : undefined;
   const acknowledgement = receipt?.acknowledgement ?? (header && entry.state.acknowledgement?.responseId === header.responseId ? entry.state.acknowledgement : null);
   const outcome = receipt?.outcome ?? (header && entry.state.outcome?.responseId === header.responseId ? entry.state.outcome : null);
-  return <div role="status" className="rounded-xl border border-border bg-muted/40 p-3 text-sm">
-    <p className="font-medium">{header ? "Answer saved" : "Historical owner answer"}{acknowledgement && " · Agent received"}{outcome && (outcome.phase === "succeeded" ? " · Completed" : " · Failed")}</p>
-    {!header && <p className="text-xs text-muted-foreground">Publisher receipt not reported for this exact historical answer.</p>}
-    {answer.action === "code" ? <p>Approval code stored privately for the intended agent. Its value is not shown in history or receipts.</p> : <>{answer.choice && <p>Choice: {answer.choice}</p>}{answer.text && <p className="whitespace-pre-wrap">{answer.text}</p>}{typeof outcome?.detail?.message === "string" && <p>{outcome.detail.message}</p>}</>}
-    <time className="text-xs text-muted-foreground" dateTime={answer.at}>{stamp(answer.at)}</time>
-  </div>;
+  return { header, acknowledgement, outcome };
+}
+
+/** The saved answer in words: the option's label (never its id); "got it" only once the agent acknowledged. */
+function TypedAnswerStatus({ entry, owner, answer, record, focusOnMount = false }: { entry: HomeFeedEntry; owner: SitrepOwnerData; answer?: Answer; record: BoardRecord; focusOnMount?: boolean }) {
+  if (!answer) return null;
+  const { acknowledgement, outcome } = answerReceipt(entry, owner, answer);
+  const agent = entry.source.label;
+  const choice = answer.choice && record.kind === "ask" ? record.options.find((option) => option.id === answer.choice) : undefined;
+  const label = choice && optionText(choice.label);
+  const lead = answer.action === "code" ? `Code saved privately for ${agent}. It isn't shown again.`
+    : answer.action === "drop" ? "You dropped this question."
+      : answer.action === "done" ? record.kind === "approval" && record.approvalType === "go" ? "You gave the go." : "You marked this step done."
+        : label ? <>You chose <b className="font-semibold">{label}</b>.</>
+          : answer.choice ? "You chose an option that is no longer listed." : "You answered.";
+  return <AnsweredPanel focusOnMount={focusOnMount}>
+    <p>{lead}{acknowledgement && ` ${agent} got it.`}{outcome && (outcome.phase === "succeeded" ? ` ${agent} finished it.` : ` ${agent} couldn't finish it.`)}</p>
+    {answer.action !== "code" && answer.text && <p className="whitespace-pre-wrap">{answer.text}</p>}
+    {typeof outcome?.detail?.message === "string" && <p className="whitespace-pre-wrap">{outcome.detail.message}</p>}
+  </AnsweredPanel>;
 }
 
 /** Owns its draft for one complete canonical identity, not a changing list index. */
 export function SitrepCard(props: Props) {
-  const { entry, record, records, entries, owner, projection, source, now, onSaved, onOwnerSaved } = props;
-  const answerGroup = useId();
+  const { entry, record, records, entries, owner, projection, source, now, expanded = false, stale = false, reference, onRefused, onSaved, onOwnerSaved, onSnoozed } = props;
   const state = projection.state;
   const [text, setText] = useState("");
-  const [choice, setChoice] = useState<string>();
-  const [privateNote, setPrivateNote] = useState("");
-  const [outboundNote, setOutboundNote] = useState("");
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [tapped, setTapped] = useState<string>();
+  const [justSaved, setJustSaved] = useState(false);
+  const [more, setMore] = useState(false);
+  const [confirmDrop, setConfirmDrop] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const countdown = usePendingSend({ stale, onRefused });
   const [reason, setReason] = useState("");
   const [claimNote, setClaimNote] = useState("");
   const [followup, setFollowup] = useState(false);
-  const [engaged, setEngaged] = useState(false);
   const [later, setLater] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // The answer whose send failed: whether it is still held is read when the line renders.
+  const [failedAnswer, setFailedAnswer] = useState<string | null>(null);
+  const answerId = useRef<string | undefined>(undefined);
   const [notice, setNotice] = useState<string>();
   const pending = useRef<{ key: string; header: NewFeedResponse | NewFeedMessage; payload: FeedResponsePayload } | undefined>(undefined);
   const privatePending = useRef<{ key: string; event: HomeFeedOwnerEvent } | undefined>(undefined);
@@ -68,15 +129,18 @@ export function SitrepCard(props: Props) {
   const answers = owner.answers.filter((answer) => answer.card.kind === record.kind && answer.card.id === record.id).map((answer) => answer.value);
   const claims = claimDecisionHistory(owner, record.id);
 
-  async function perform(work: () => Promise<unknown>): Promise<boolean> {
+  async function perform(work: () => Promise<unknown>, failure = "That wasn't saved. Try again.", answer = false): Promise<boolean> {
     if (busyRef.current) return false;
     busyRef.current = true;
-    setBusy(true); setError(undefined); setNotice(undefined);
+    setBusy(true); setError(undefined); setFailedAnswer(null); setNotice(undefined);
+    if (answer) answerId.current = undefined;
     try { await work(); return true; }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Home action could not be saved"); return false; }
+    catch { setError(failure); if (answer) setFailedAnswer(answerId.current ?? ""); return false; }
     finally { busyRef.current = false; setBusy(false); }
   }
-  async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string) {
+  async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string, hold = false) {
+    // A replaced issuance is never answered: the owner answers the newer card instead.
+    if (stale) throw new Error("This card was replaced by a newer one.");
     const action = validateSitrepAction(record, type, data, new Date().toISOString());
     let draft = pending.current?.key === operationKey ? pending.current : undefined;
     if (!draft) {
@@ -93,7 +157,7 @@ export function SitrepCard(props: Props) {
     if (draft.header.kind === "message") {
       if (!source.sendMessage) throw new Error("This feed source does not provide durable card messaging");
       result = await source.sendMessage(entry, draft.header, draft.payload);
-    } else result = await source.saveResponse(entry, draft.header, draft.payload);
+    } else { answerId.current = draft.header.responseId; result = await source.saveResponse(entry, draft.header, draft.payload, { hold }); }
     pending.current = undefined;
     onSaved(entry, result);
     onOwnerSaved();
@@ -114,10 +178,16 @@ export function SitrepCard(props: Props) {
     await source.saveOwnerState(entry, draft.event); privatePending.current = undefined; onOwnerSaved();
     return draft.event;
   }
-  async function askAnswer(action: "answer" | "drop" | "accept-default" = "answer", selected = choice) {
+  /** `hold`: an answer from the undo countdown, held in the page-close outbox until its write is confirmed. */
+  async function askAnswer(action: "answer" | "drop" | "accept-default" = "answer", selected?: string, hold = false) {
     if (record.kind !== "ask") return;
-    await send("sitrep.answer", { askId: record.id, action, ...(selected ? { choice: selected } : {}), text, at: new Date().toISOString() }, `ask:${action}:${selected ?? ""}:${text}`);
-    setText(""); setChoice(undefined); setFollowup(false); setEngaged(false);
+    await send("sitrep.answer", { askId: record.id, action, ...(selected ? { choice: selected } : {}), text, at: new Date().toISOString() }, `ask:${action}:${selected ?? ""}:${text}`, false, undefined, hold);
+    setText(""); setNoteOpen(false); setFollowup(false); setConfirmDrop(false); setMore(false); setJustSaved(true);
+  }
+  async function tap(action: "answer" | "accept-default", selected: string) {
+    setTapped(selected);
+    await perform(() => askAnswer(action, selected, true), ANSWER_FAILED_COPY, true);
+    setTapped(undefined);
   }
   async function command(patch: Partial<SamState>, key: string) {
     const matching = owner.commands?.filter((event) => patch.doneAt ? !!event.state.doneAt : patch.lift ? !!event.state.lift : patch.clears?.some((request) => event.state.clears?.some((prior) => prior.ref === request.ref))).at(-1);
@@ -126,7 +196,7 @@ export function SitrepCard(props: Props) {
     const selectedClear = patch.clears?.[0]?.ref;
     const data = { kind: record.kind, id: record.id, steps: {}, updatedAt: value.updatedAt, ...(patch.doneAt && value.doneAt ? { doneAt: value.doneAt } : {}), ...(patch.lift && value.lift ? { lift: value.lift } : {}), ...(selectedClear ? { clears: value.clears?.filter((request) => request.ref === selectedClear) } : {}) };
     await send("sitrep.state", data, `command:${event.eventId}`, true, event.eventId);
-    setNotice("Request saved for the publisher; completion requires its actual outcome.");
+    setNotice(`Saved. ${entry.source.label} confirms when it's done.`);
   }
   function threadMessage(value: string, resendOf?: string): ThreadMessage {
     const at = new Date().toISOString();
@@ -142,18 +212,29 @@ export function SitrepCard(props: Props) {
       delivery = originalRoute.kind === "recipients" ? originalRoute.delivery : undefined;
     }
     await send("sitrep.thread", { ...threadMessage(value, resendOf), ...(delivery ? { delivery } : {}) }, `thread:${resendOf ?? ""}:${JSON.stringify(delivery)}:${value}`, true);
-    setNotice("Message saved for the authenticated publisher. Saved is not received or delivered to every logical recipient.");
   }
-  async function holdNote() {
+  async function holdNote(value: string) {
     if (!source.saveHeldNote) throw new Error("This feed source does not provide private held-note storage");
     const intendedRecipient = unresolved.join(" / ") || ownerLabel;
-    const key = `${intendedRecipient}:${outboundNote}`;
-    const pending = heldPending.current?.key === key ? heldPending.current : { key, note: { eventId: crypto.randomUUID(), at: new Date().toISOString(), text: outboundNote, intendedRecipient } };
+    const key = `${intendedRecipient}:${value}`;
+    const pending = heldPending.current?.key === key ? heldPending.current : { key, note: { eventId: crypto.randomUUID(), at: new Date().toISOString(), text: value, intendedRecipient } };
     heldPending.current = pending;
     await source.saveHeldNote(entry, pending.note);
-    setNotice(`Saved privately, not sent: ${intendedRecipient} is unrouted.`); onOwnerSaved();
+    onOwnerSaved();
   }
-  const badge = projection.attention === "expired" ? "Expired" : projection.attention === "closed" ? "Closed" : projection.attention === "snoozed" ? "Snoozed" : projection.needsAction ? "Needs action" : projection.request ? "Waiting on owner" : "Information";
+  /**
+   * A message from the card's thread composer. With an owner route on this card it goes
+   * only to the owner-approved destinations (unresolved recipients are held privately);
+   * without one it goes to the publishing agent.
+   */
+  async function messageAgent(value: string) {
+    if (route) {
+      if (!routeReady || unresolved.length) await holdNote(value);
+      if (routeReady) await sendThread(value, undefined, true);
+      heldPending.current = undefined;
+      if (routeReady && unresolved.length) setNotice(`Sent to ${destinations.map((recipient) => recipient.legacyName).join(" / ")}. ${unresolved.join(" / ")}: kept private, not sent.`);
+    } else await sendThread(value);
+  }
   const graph = depGraph(records);
   const dependencies = "unblockedBy" in record ? record.unblockedBy ?? [] : [];
   const pinned = cardPriority(record, state?.priority);
@@ -162,128 +243,161 @@ export function SitrepCard(props: Props) {
   const destinations = route?.recipients.flatMap((recipient) => recipient.runtimeTarget ? [{ ...recipient, runtimeTarget: recipient.runtimeTarget }] : []) ?? [];
   const unresolved = [...new Set([...(route?.unresolved ?? []), ...(route?.recipients.filter((recipient) => !recipient.runtimeTarget).map((recipient) => recipient.legacyName) ?? [])])];
   const routeReady = destinations.length > 0;
-  const visibleQuestion = entry.state.card.needsResponse && record.kind === "ask" && (!projection.answer || followup || engaged || !!text || !!choice);
+  const agent = entry.source.label;
+  const responds = entry.state.card.needsResponse && !closed;
+  const asking = record.kind === "ask" && responds && (!projection.answer || followup || !!text.trim());
+  const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > now;
+  const deadline = (record.kind === "ask" || record.kind === "task") && record.deadline && !closed ? Date.parse(record.deadline) : NaN;
+  const hint = expiryHint(record, now, state);
+  const receipt = projection.answer && answerReceipt(entry, owner, projection.answer);
+  const options = record.kind === "ask" ? record.options.map((option) => ({ id: option.id, label: option.label, detail: [option.detail, option.cost && `Cost: ${option.cost}`].filter(Boolean).join(" · ") || undefined })) : [];
+  const steer = record.kind === "ask" && record.mode === "proceeding" ? steerState(record, now, answers) : undefined;
+  const optionLabel = (optionId?: string) => { const option = record.kind === "ask" ? record.options.find((candidate) => candidate.id === optionId) : undefined; return option && optionText(option.label); };
 
-  return <div className="mt-4 space-y-4 text-sm" aria-label={`${record.kind} details`}>
-    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span className="rounded-full border border-border px-2 py-1">{badge}</span><span>{record.kind} · {record.status}</span><span>Owner: {record.owner ?? record.from}</span>{pinned && <span>Priority · {pinned.reason}</span>}</div>
-    {"context" in record && <div className="space-y-2 rounded-xl bg-muted/30 p-4"><p>{prose(record.context.background, record.repo)}</p>{record.context.whyNow && <p><strong>Why now: </strong>{prose(record.context.whyNow, record.repo)}</p>}{record.context.ifNoAnswer && <p><strong>If no answer: </strong>{prose(record.context.ifNoAnswer, record.repo)}</p>}{!!record.context.known.length && <ul className="list-disc space-y-1 pl-5">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul>}{!!record.context.related.length && <p>Earlier questions: {record.context.related.join(", ")}</p>}</div>}
-    {!!record.links.length && <nav aria-label="Card reports and sources" className="flex flex-wrap gap-x-4 gap-y-2">{record.links.map((link) => <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer" className="min-h-9 break-all underline underline-offset-2">{linkCaption(link)}</a>)}</nav>}
-    {!!dependencies.length && <div><p className="font-medium">Dependencies</p><ul className="mt-1 space-y-1">{dependencies.map((ref) => { const resolved = graph.resolve(ref); return <li key={ref}>{ref} · {resolved.state}{resolved.record && ` · ${depTitle(resolved.record)}`}</li>; })}</ul></div>}
-    {record.blocks && <p><strong>Blocks: </strong>{record.blocks}</p>}
-    {(record.kind === "ask" || record.kind === "task") && <p className="text-xs text-muted-foreground">{record.deadline && `Deadline ${stamp(record.deadline)} · `}{projection.expiryAt === null ? "No automatic expiry" : projection.expiryAt ? `Legacy expiry ${stamp(new Date(projection.expiryAt).toISOString())}` : ""}{expiryHint(record, now, state) && ` · ${expiryHint(record, now, state)}`}</p>}
+  const audience = route ? commentCopy({ approved: destinations.map((recipient) => recipient.legacyName), held: unresolved }) : commentCopy({ approved: [agent] });
+  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} composing={composing && !closed} input={audience.input} helper={audience.helper}
+    onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} onClose={() => setComposing(false)} />;
 
-    {record.kind === "ask" && <div className="space-y-3">
-      {record.mode === "proceeding" && <div className="rounded-xl border border-border p-3"><p>Recommended: {record.options.find((option) => option.id === record.recommend)?.label ?? "None"}</p><p>Default: {record.options.find((option) => option.id === record.default)?.label ?? record.default}</p><p>{steerState(record, now, answers) === "done" ? "Already proceeded" : steerState(record, now, answers) === "closed-proceeding" ? "Decision window closed; owner is proceeding" : "Decision window open"}{record.decideBy && ` · ${stamp(record.decideBy)}`}</p>{record.proceededAt && <p>Proceeded at {stamp(record.proceededAt)}. A new response cannot undo that action.</p>}</div>}
-      {record.mode !== "proceeding" && record.recommend && <p>Recommended: {record.options.find((option) => option.id === record.recommend)?.label}</p>}
-      <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} />
-      {entry.state.card.needsResponse && !closed && !visibleQuestion && <button type="button" className={buttonClass} onClick={() => setFollowup(true)}>Add follow-up</button>}
-      {!closed && visibleQuestion && <form className="space-y-3" onFocusCapture={() => setEngaged(true)} onSubmit={(event) => { event.preventDefault(); void perform(() => askAnswer()); }}>
-        <fieldset disabled={busy} className="space-y-2"><legend className="font-medium">Choose an option</legend>{record.options.map((option) => <label key={option.id} className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3"><input type="radio" name={answerGroup} value={option.id} checked={choice === option.id} onChange={() => setChoice(option.id)} /><span><span className="font-medium">{option.label}</span>{option.detail && <span className="mt-1 block text-muted-foreground">{option.detail}</span>}{option.cost && <span className="mt-1 block text-xs">Cost: {option.cost}</span>}</span></label>)}</fieldset>
-        <label className="block font-medium">Your answer<textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24`} /></label>
-        <div className="flex flex-wrap gap-2"><button className={primaryClass} disabled={busy || (!choice && !text.trim())}>Save answer</button>{record.mode === "proceeding" && record.default && <button type="button" className={buttonClass} disabled={busy} onClick={() => void perform(() => askAnswer("accept-default", record.default))}>Fine, go ahead</button>}{record.recommend && <button type="button" className={buttonClass} disabled={busy} onClick={() => void perform(() => askAnswer("accept-default", record.recommend))}>Accept recommendation</button>}<button type="button" className={buttonClass} disabled={busy} onClick={() => void perform(() => askAnswer("drop"))}>Drop question</button></div>
+  return <div className="text-[15px]" aria-label={`${kindWord(record.kind)} details`}>
+    {Number.isFinite(deadline) && <p className={`mt-2 text-[13px] tabular-nums ${deadline - now < 86_400_000 ? "font-medium text-warning" : "text-muted-foreground"}`}>{record.kind === "ask" ? "Answer by" : "Due"} {stamp(new Date(deadline).toISOString()).replace(/^Today, /, "today ")}</p>}
+    {!Number.isFinite(deadline) && hint && <p className="mt-2 text-[13px] font-medium text-warning">{hint.replace(/^expires/, "Expires")}</p>}
+
+    {record.kind === "ask" && <>
+      {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
+        {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>}
+      </PendingAnswer>}
+      {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
+      {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
+      {!countdown.pending && asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => { if (!stale) countdown.start(optionLabel(choice) ?? "", () => void tap("answer", choice)); }} />}
+      {!countdown.pending && asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => countdown.start(optionLabel(record.default) ?? "its plan", () => void tap("accept-default", record.default!))}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
+      {!countdown.pending && asking && (noteOpen || !options.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); if (!stale && text.trim()) countdown.start(NOT_SENT_COPY.yourAnswer, () => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED_COPY, true)); }}>
+        <label className="block"><span className="sr-only">Your answer</span><textarea aria-label="Your answer" value={text} disabled={busy} onInput={(event) => setText(event.currentTarget.value)} className={`${inputClass} min-h-24 resize-y`} /></label>
+        <button className={`mt-2 ${buttonClass}`} disabled={busy || stale || !text.trim()}>{busy && !tapped ? "Sending…" : "Send answer"}</button>
       </form>}
-      {projection.parts.map((part) => <section key={part.view.approval.id} className="space-y-3 rounded-xl border border-border p-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
+      {projection.parts.map((part) => <section key={part.view.approval.id} className="mt-3.5 space-y-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });
         const target = matches.length === 1 ? matches[0] : undefined;
-        return <div key={step.approval.id} className="space-y-2"><p className="font-medium">{step.approval.title}</p><p>{stepState(part, step)}{part.notNeeded && ` · ${part.notNeeded}`}</p>
-          {target ? <ApprovalActions entry={target} approval={step.approval} source={source} owner={owner} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} showStatus inactive={stepState(part, step) !== "pending"} /> : stepState(part, step) === "pending" && <p role="alert">Approval reference is unresolved or ambiguous; open its full card identity.</p>}
+        return <div key={step.approval.id} className="space-y-1"><p className="font-semibold">{step.approval.title}</p><p className={fineClass}>{STEP_WORDS[stepState(part, step)]}{part.notNeeded && ` · ${part.notNeeded}`}</p>
+          {target ? <ApprovalActions entry={target} approval={step.approval} source={source} owner={owner} now={now} expanded={expanded} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} showStatus inactive={stepState(part, step) !== "pending"} /> : stepState(part, step) === "pending" && <OpenFoldedApproval approval={step.approval} source={source} sourceId={entry.source.sourceId} onNavigate={props.onNavigate} />}
         </div>;
       })}</section>)}
-    </div>}
+    </>}
 
-    {record.kind === "approval" && <><TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} /><ApprovalActions entry={entry} approval={record} source={source} owner={owner} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} inactive={projection.attention === "not-needed"} /></>}
-    {record.kind === "task" && <div className="space-y-3">
-      <fieldset disabled={busy || closed || !entry.state.card.needsResponse} className="space-y-2"><legend className="font-medium">{entry.state.card.needsResponse ? "Your task checks (private)" : "Task checklist (information)"}</legend>
-        {record.steps.map((step) => <label key={step.id} className="flex min-h-10 items-center gap-3"><input type="checkbox" checked={!!state?.steps[step.id]} onChange={(event) => { const checked = event.currentTarget.checked; void perform(() => savePrivate({ steps: { [step.id]: checked ? new Date().toISOString() : null } }, `tick:${step.id}:${checked}`)); }} />{step.text}</label>)}
+    {record.kind === "approval" && <><TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} /><ApprovalActions entry={entry} approval={record} source={source} owner={owner} now={now} expanded={expanded} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} inactive={projection.attention === "not-needed"} /></>}
+    {record.kind === "task" && <div className="mt-3.5 space-y-2">
+      <fieldset disabled={busy || closed || !entry.state.card.needsResponse}><legend className="sr-only">{entry.state.card.needsResponse ? "Your steps (private)" : "Steps"}</legend>
+        {record.steps.map((step) => <label key={step.id} className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5 accent-foreground" checked={!!state?.steps[step.id]} onChange={(event) => { const checked = event.currentTarget.checked; void perform(() => savePrivate({ steps: { [step.id]: checked ? new Date().toISOString() : null } }, `tick:${step.id}:${checked}`)); }} /><span className={state?.steps[step.id] ? "text-muted-foreground line-through" : ""}>{step.text}</span></label>)}
       </fieldset>
-      {record.chatLink && safeUrl(record.chatLink) && <a href={record.chatLink} target="_blank" rel="noopener noreferrer" className="underline">Open task context</a>}
-      <p className="text-xs text-muted-foreground">Completion requests address authenticated publisher {entry.source.label} · {entry.source.agentDid}.</p>
-      {entry.state.card.needsResponse && <button type="button" className={buttonClass} disabled={busy || closed} onClick={() => void perform(() => { const at = new Date().toISOString(); return command({ doneAt: at, dismissedAt: at }, "task-done"); })}>{state?.doneAt ? "Ensure completion request is saved" : "Mark task done and tell owner"}</button>}
+      {record.chatLink && safeUrl(record.chatLink) && <a href={record.chatLink} target="_blank" rel="noopener noreferrer" className={`inline-flex min-h-11 items-center text-sm underline underline-offset-[3px] ${focusRing}`}>Open task context</a>}
+      {entry.state.card.needsResponse && <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><button type="button" className={buttonClass} disabled={busy || closed} onClick={() => void perform(() => { const at = new Date().toISOString(); return command({ doneAt: at, dismissedAt: at }, "task-done"); })}>{state?.doneAt ? "Send “done” again" : "Mark done"}</button><span className={fineClass}>Goes to {agent}.</span></div>}
     </div>}
-    {record.kind === "incident" && <dl className="space-y-2"><div><dt className="font-medium">Impact · {record.severity ?? "Unrated"}</dt><dd>{record.impact}</dd></div><div><dt className="font-medium">Started</dt><dd>{stamp(record.startedAt)}{record.resolvedAt && ` · Resolved ${stamp(record.resolvedAt)}`}</dd></div></dl>}
-    {record.kind === "incident" && <button type="button" className={buttonClass} disabled={busy || !!state?.dismissedAt} onClick={() => void perform(() => savePrivate({ dismissedAt: new Date().toISOString() }, "incident-read"))}>{state?.dismissedAt ? "Incident acknowledged privately" : "Mark incident acknowledged (private)"}</button>}
-    {record.kind === "work" && <div className="space-y-2"><p><strong>Next: </strong>{record.next ?? "Not reported"}</p>{record.waitsOn && <p><strong>Waiting on: </strong>{record.waitsOn}</p>}{!!record.askIds.length && <p>Related questions: {record.askIds.join(", ")}. Respond on their exact cards, not this status update.</p>}{record.standing && <p>Standing loop</p>}</div>}
-    {record.kind === "ship" && <div><p className="font-medium">{record.component} · {record.version}</p>{record.prevVersion && <p>Previous: {record.prevVersion}</p>}<p>{record.status} · {stamp(record.at)}</p><p className="text-xs text-muted-foreground">Immutable release history; no human response requested.</p></div>}
-    {record.kind === "order" && <div className="space-y-2"><blockquote className="whitespace-pre-wrap border-l-2 border-border pl-4">{record.verbatim}</blockquote><p>{record.source} · {stamp(record.at)}</p>{record.appliesTo && <p>Applies to: {record.appliesTo}</p>}<p className="text-xs text-muted-foreground">Standing instruction history; no human response requested.</p></div>}
-    {record.kind === "claim" && <div className="space-y-3">
-      <p><a href={record.url} target="_blank" rel="noopener noreferrer" className="underline">{record.site}</a> · {record.location} · {record.severity}</p>
-      <blockquote className="border-l-2 border-border pl-4">{record.quote}</blockquote><p><strong>True today: </strong>{record.trueToday}</p>
-      <ul>{record.evidence.map((evidence) => <li key={evidence.ref}>{safeUrl(evidence.ref) ? <a href={evidence.ref} target="_blank" rel="noopener noreferrer" className="underline">{evidence.label}</a> : <span>{evidence.label}: {evidence.ref}</span>}</li>)}</ul>
-      <p>To make true: {record.makeTrue.tc?.join(", ") || "No issue reported"}{record.makeTrue.effort && ` · ${record.makeTrue.effort}`}</p>
-      <p aria-live="polite">{claims.length ? `Current decision: ${claims.at(-1)!.value.choice}` : "Not decided yet"}</p>
-      {claims.map((decision) => <p key={decision.sourceKey}>Decision saved: {decision.value.choice} · {stamp(decision.value.at)}{decision.value.note && ` · ${decision.value.note}`}</p>)}
+    {record.kind === "incident" && !state?.dismissedAt && <button type="button" className={`mt-3.5 ${buttonClass}`} disabled={busy} onClick={() => void perform(() => savePrivate({ dismissedAt: new Date().toISOString() }, "incident-read"))}>Mark as read</button>}
+    {record.kind === "progress" && !!record.steps.length && <>
+      <div role="img" aria-label={`Step ${Math.min(record.currentStep + 1, record.steps.length)} of ${record.steps.length}`} className="mt-3.5 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-foreground" style={{ width: `${Math.min(100, ((record.currentStep + 1) / record.steps.length) * 100)}%` }} /></div>
+      <p className={`mt-2 ${fineClass}`}>Step {Math.min(record.currentStep + 1, record.steps.length)} of {record.steps.length}{record.steps[record.currentStep] && ` · ${record.steps[record.currentStep]!.name}`}</p>
+    </>}
+    {record.kind === "claim" && <div className="mt-3.5 space-y-3">
+      <p aria-live="polite" className="text-sm">{claims.length ? <>You chose to <b className="font-semibold">{claims.at(-1)!.value.choice}</b> this claim.</> : "Not decided yet."}</p>
       {entry.state.card.needsResponse && <>
-        <p className="text-xs text-muted-foreground">Decision to authenticated publisher {entry.source.label} · {entry.source.agentDid}; logical recipient delivery requires its own receipt.</p>
-        <label className="block">Decision note (optional)<textarea aria-label="Claim decision note" maxLength={4000} value={claimNote} onInput={(event) => setClaimNote(event.currentTarget.value)} className={inputClass} /></label>
-        <div className="flex flex-wrap gap-2">{(["keep", "remove", "ignore"] as const).map((value) => <button key={value} type="button" className={buttonClass} aria-pressed={claims.at(-1)?.value.choice === value} disabled={busy} onClick={() => void perform(async () => {
+        <label className="block text-[13px] font-semibold">Note (optional)<textarea aria-label="Claim decision note" maxLength={4000} value={claimNote} onInput={(event) => setClaimNote(event.currentTarget.value)} className={inputClass} /></label>
+        <div className="flex flex-wrap gap-2">{(["keep", "remove", "ignore"] as const).map((value) => <button key={value} type="button" className={`${buttonClass} aria-pressed:bg-muted aria-pressed:shadow-[inset_0_0_0_2px_hsl(var(--foreground))]`} aria-pressed={claims.at(-1)?.value.choice === value} disabled={busy} onClick={() => void perform(async () => {
           const at = nextClaimDecisionAt(owner, record.id, Date.now());
           await send("sitrep.claim", { choice: value, ...(claimNote.trim() ? { note: claimNote.trim() } : {}), at }, `claim:${value}:${claimNote}`);
           setClaimNote("");
         })}>{value === "keep" ? "Keep claim" : value === "remove" ? "Remove claim" : "Ignore claim"}</button>)}</div>
+        <p className={fineClass}>Goes to {agent}.</p>
       </>}
     </div>}
-    {record.kind === "hold" && <div className="space-y-3">
-      <p><strong>Held: </strong>{record.what}</p><p><strong>Cause: </strong>{record.cause}</p><p><strong>Exit: </strong>{record.exit}</p>{record.samWords && <blockquote>{record.samWords}</blockquote>}
-      <p>Released by {record.releasedBy}{record.expectedRelease && ` · Expected ${record.expectedRelease}`} · {record.unblockedByMode === "any" ? "Any blocker may clear it" : "All blockers must clear"}</p>
-      {entry.state.card.needsResponse && <label className="block">Request reason (optional)<input aria-label="Hold request reason" value={reason} onInput={(event) => setReason(event.currentTarget.value)} className={inputClass} /></label>}
-      {record.unblockedBy.map((ref) => <div key={ref} className="flex flex-wrap items-center gap-2">
-        <span>{ref}{record.clearedRefs?.some((cleared) => cleared.ref === ref) && " · Cleared by owner"}{state?.clears?.some((clear) => clear.ref === ref) && " · Clear requested"}</span>
-        {entry.state.card.needsResponse && <button type="button" className={buttonClass} disabled={busy || closed || !!record.clearedRefs?.some((cleared) => cleared.ref === ref)} onClick={() => void perform(() => command({ clears: [{ id: id(), ref, at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) }] }, `clear:${ref}:${reason}`))}>Mark blocker cleared</button>}
+    {record.kind === "hold" && entry.state.card.needsResponse && <div className="mt-3.5 space-y-2">
+      <label className="block text-[13px] font-semibold">Reason (optional)<input aria-label="Hold request reason" value={reason} onInput={(event) => setReason(event.currentTarget.value)} className={inputClass} /></label>
+      {record.unblockedBy.map((ref) => <div key={ref} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="text-sm">{ref}{record.clearedRefs?.some((cleared) => cleared.ref === ref) && " · Cleared"}{state?.clears?.some((clear) => clear.ref === ref) && " · Clear requested"}</span>
+        <button type="button" className={buttonClass} disabled={busy || closed || !!record.clearedRefs?.some((cleared) => cleared.ref === ref)} onClick={() => void perform(() => command({ clears: [{ id: id(), ref, at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) }] }, `clear:${ref}:${reason}`))}>Mark blocker cleared</button>
       </div>)}
-      {entry.state.card.needsResponse && <button type="button" className={buttonClass} disabled={busy || closed} onClick={() => void perform(() => command({ lift: { at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) } }, `lift:${reason}`))}>Request hold lift</button>}
-      {record.liftedAt && <p>Lifted {stamp(record.liftedAt)} · {record.liftReason}</p>}
+      <button type="button" className={buttonClass} disabled={busy || closed} onClick={() => void perform(() => command({ lift: { at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) } }, `lift:${reason}`))}>Ask to lift the hold</button>
     </div>}
-    {record.kind === "progress" && <div className="space-y-3"><p>{prose(record.ticket)} · {record.owner} · {record.currentStep + 1}/{record.steps.length}</p><ol className="list-decimal space-y-2 pl-5">{record.steps.map((step, index) => <li key={`${index}:${step.name}`} aria-current={index === record.currentStep ? "step" : undefined}>{step.name} · {step.state}</li>)}</ol>{record.note && <p>{record.note}</p>}{record.eta && <p>ETA {stamp(record.eta)}</p>}<p className="text-xs text-muted-foreground">Updated by {record.updatedBy ?? record.owner} at {stamp(record.updatedAt)}. Owner and appointed live updaters manage this progress; viewing it does not grant edit authority.</p>{!!record.updaters?.length && <details><summary>Appointed updater identities</summary><ul>{record.updaters.map((updater) => <li key={updater} className="break-all">{updater}</li>)}</ul></details>}</div>}
 
-    <div className="flex flex-wrap gap-2"><button type="button" className={buttonClass} disabled={busy} onClick={() => setLater(!later)}>Ask me later</button><button type="button" className={buttonClass} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Clear private priority" : "Mark private priority"}</button></div>
-    {later && <div className="flex flex-wrap gap-2">{snoozePresets(now).map((preset) => <button key={preset.id} type="button" className={buttonClass} disabled={busy} onClick={() => void perform(async () => { await source.snooze(entry, preset.until); setLater(false); onOwnerSaved(); })}>{preset.label}</button>)}</div>}
-    <section className="space-y-2 rounded-xl border border-border p-3" aria-label="Private owner notes">
-      <label className="block font-medium">Private note<textarea aria-label="Private note" value={privateNote} onInput={(event) => setPrivateNote(event.currentTarget.value)} className={`${inputClass} min-h-20`} /></label>
-      <p className="text-xs text-muted-foreground">Stored only in your owner registry. Not sent to any agent.</p>
-      <button type="button" className={buttonClass} disabled={busy || !privateNote.trim()} onClick={() => void perform(async () => { await savePrivate({ notes: [{ id: id(), at: new Date().toISOString(), text: privateNote }] }, `private-note:${privateNote}`); setPrivateNote(""); setNotice("Private note saved; not sent."); })}>Save private note</button>
-      {state?.notes?.map((note) => <p key={note.id} className="whitespace-pre-wrap">{note.text} <time className="text-xs text-muted-foreground" dateTime={note.at}>{stamp(note.at)}</time></p>)}
-    </section>
-    <section className="space-y-2 rounded-xl border border-border p-3" aria-label="Explicit note delivery">
-      <label className="block font-medium">Note to owner<textarea aria-label="Note to owner" value={outboundNote} onInput={(event) => setOutboundNote(event.currentTarget.value)} className={`${inputClass} min-h-20`} /></label>
-      <p className="text-xs text-muted-foreground">{routeReady ? `To ${destinations.map((recipient) => `${recipient.legacyName} (${recipient.runtimeTarget.agentId})`).join(", ")} via publisher ${entry.source.label}. Only these approved destinations receive this explicit message.` : `${ownerLabel} has no owner-approved recipient mapping. This note remains private and unrouted.`}{unresolved.length ? ` Held privately, not sent: ${unresolved.join(" / ")}.` : ""}</p>
-      <button type="button" className={buttonClass} disabled={busy || !outboundNote.trim()} onClick={() => void perform(async () => {
-        if (!routeReady || unresolved.length) await holdNote();
-        if (routeReady) await sendThread(outboundNote, undefined, true);
-        heldPending.current = undefined; setOutboundNote("");
-        if (routeReady && unresolved.length) setNotice(`Message saved for ${destinations.map((recipient) => recipient.legacyName).join(" / ")}; ${unresolved.join(" / ")} remains held privately, not sent.`);
-      })}>{routeReady ? `Send note to ${destinations.map((recipient) => recipient.legacyName).join(" / ")}${unresolved.length ? `; hold ${unresolved.join(" / ")} privately` : ""}` : "Save unrouted note privately"}</button>
-      {owner.heldNotes?.map((note) => <div key={note.eventId} className="space-y-1 rounded-lg bg-muted/30 p-3"><p className="font-medium">Unrouted · {note.intendedRecipient}</p><p className="whitespace-pre-wrap">{note.text}</p><p className="text-xs text-muted-foreground">Owner-only; not sent. {stamp(note.at)}</p><button type="button" className={buttonClass} onClick={() => setOutboundNote(note.text)}>Copy into note composer</button></div>)}
-    </section>
+    {expanded && <div className="mt-4 space-y-3">
+      {"context" in record && <div className="space-y-2"><p>{prose(record.context.background, record.repo)}</p>{record.context.whyNow && <p><strong className="font-semibold">Why now: </strong>{prose(record.context.whyNow, record.repo)}</p>}{record.context.ifNoAnswer && <p><strong className="font-semibold">If no answer: </strong>{prose(record.context.ifNoAnswer, record.repo)}</p>}{!!record.context.known.length && <ul className="list-disc space-y-1 pl-5">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul>}{!!record.context.related.length && <p>Earlier questions: {record.context.related.join(", ")}</p>}</div>}
+      {steer && <div className="space-y-1 text-sm"><p>{record.kind === "ask" && <>If you don't choose, {agent} goes ahead with <b className="font-semibold">{optionLabel(record.default) ?? "its plan"}</b>.</>}</p><p className="text-muted-foreground">{steer === "done" ? "It has gone ahead." : steer === "closed-proceeding" ? "The time to choose has passed; it is going ahead." : `You can still choose${record.kind === "ask" && record.decideBy ? ` until ${stamp(record.decideBy)}` : ""}.`}</p>{record.kind === "ask" && record.proceededAt && <p className="text-muted-foreground">Went ahead {stamp(record.proceededAt)}. A new answer can't undo that.</p>}</div>}
+      {!!dependencies.length && <div className="text-sm"><p className="font-semibold">Waiting on</p><ul className="mt-1 space-y-1">{dependencies.map((ref) => { const resolved = graph.resolve(ref); return <li key={ref}>{resolved.record ? depTitle(resolved.record) : ref} · {resolved.state}</li>; })}</ul></div>}
+      {record.blocks && <p className="text-sm"><strong className="font-semibold">Holds up: </strong>{record.blocks}</p>}
+      {record.kind === "incident" && <dl className="space-y-2 text-sm"><div><dt className="font-semibold">Impact · {record.severity ?? "Unrated"}</dt><dd>{record.impact}</dd></div><div><dt className="font-semibold">Started</dt><dd>{stamp(record.startedAt)}{record.resolvedAt && ` · Resolved ${stamp(record.resolvedAt)}`}</dd></div></dl>}
+      {record.kind === "work" && <div className="space-y-2 text-sm"><p><strong className="font-semibold">Next: </strong>{record.next ?? "Not reported"}</p>{record.waitsOn && <p><strong className="font-semibold">Waiting on: </strong>{record.waitsOn}</p>}{!!record.askIds.length && <p>Answer its questions on their own cards.</p>}</div>}
+      {record.kind === "ship" && <div className="text-sm"><p className="font-semibold">{record.component} · {record.version}</p>{record.prevVersion && <p>Previous: {record.prevVersion}</p>}<p>{record.status} · {stamp(record.at)}</p></div>}
+      {record.kind === "order" && <div className="space-y-2 text-sm"><blockquote className="whitespace-pre-wrap border-l border-border pl-4">{record.verbatim}</blockquote><p>{record.source} · {stamp(record.at)}</p>{record.appliesTo && <p>Applies to: {record.appliesTo}</p>}</div>}
+      {record.kind === "claim" && <div className="space-y-2 text-sm">
+        <p><a href={record.url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{record.site}</a> · {record.location} · {record.severity}</p>
+        <blockquote className="border-l border-border pl-4">{record.quote}</blockquote><p><strong className="font-semibold">True today: </strong>{record.trueToday}</p>
+        <ul>{record.evidence.map((evidence) => <li key={evidence.ref}>{safeUrl(evidence.ref) ? <a href={evidence.ref} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{evidence.label}</a> : <span>{evidence.label}: {evidence.ref}</span>}</li>)}</ul>
+        {!!record.makeTrue.tc?.length && <p>To make it true: {record.makeTrue.tc.join(", ")}{record.makeTrue.effort && ` · ${record.makeTrue.effort}`}</p>}
+        {!!claims.length && <ol aria-label="Your decisions" className="space-y-1">{claims.map((decision) => <li key={decision.sourceKey}>{decision.value.choice === "keep" ? "Keep" : decision.value.choice === "remove" ? "Remove" : "Ignore"} · {stamp(decision.value.at)}{decision.value.note && ` · ${decision.value.note}`}</li>)}</ol>}
+      </div>}
+      {record.kind === "hold" && <div className="space-y-1 text-sm">
+        <p><strong className="font-semibold">On hold: </strong>{record.what}</p><p><strong className="font-semibold">Why: </strong>{record.cause}</p><p><strong className="font-semibold">Ends when: </strong>{record.exit}</p>{record.samWords && <blockquote className="border-l border-border pl-4">{record.samWords}</blockquote>}
+        <p className="text-muted-foreground">Released by {record.releasedBy}{record.expectedRelease && ` · Expected ${record.expectedRelease}`} · {record.unblockedByMode === "any" ? "Any blocker can clear it" : "Every blocker must clear"}</p>
+        {record.liftedAt && <p>Lifted {stamp(record.liftedAt)} · {record.liftReason}</p>}
+      </div>}
+      {record.kind === "progress" && <div className="space-y-2 text-sm"><p className="tabular-nums text-muted-foreground">Step {record.currentStep + 1} of {record.steps.length} · {prose(record.ticket)}</p><ol className="list-decimal space-y-1 pl-5">{record.steps.map((step, index) => <li key={`${index}:${step.name}`} aria-current={index === record.currentStep ? "step" : undefined}>{step.name} · {step.state}</li>)}</ol>{record.note && <p>{record.note}</p>}{record.eta && <p>Expected {stamp(record.eta)}</p>}<p className="text-muted-foreground">Updated by {record.updatedBy ?? record.owner} · {stamp(record.updatedAt)}</p></div>}
+      {!!record.links.length && <nav aria-label="Card reports and sources" className="flex flex-wrap gap-x-4">{record.links.map((link) => <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer" className={`inline-flex min-h-11 items-center break-all text-sm underline underline-offset-[3px] ${focusRing}`}>{linkCaption(link)}</a>)}</nav>}
+      {owner.commands?.map((command) => { const handling = entry.responseHandling?.[command.eventId]; return <p key={command.eventId} role="status" className={fineClass}>Request saved{handling?.acknowledgement && ` · ${agent} got it`}{handling?.outcome && ` · ${handling.outcome.phase === "succeeded" ? "done" : handling.outcome.phase}`}</p>; })}
+      {!!entry.historicalCommands?.length && <section aria-label="Historical owner commands" className="space-y-2 text-sm">
+        <h4 className="text-[13px] font-semibold">Earlier requests</h4>
+        {entry.historicalCommands.map((command) => {
+          const saved = entry.responses?.some((response) => response.responseId === command.responseId);
+          const handling = saved ? entry.responseHandling?.[command.responseId] : undefined;
+          return <div key={command.responseId} className="space-y-1"><p>{command.state.doneAt ? "Marked done" : command.state.lift ? "Asked to lift the hold" : "Marked a blocker cleared"} · {stamp(command.state.updatedAt)}{handling?.acknowledgement && ` · ${agent} got it`}{handling?.outcome && ` · ${handling.outcome.phase}`}</p>
+            <p className={fineClass}>{saved ? "Saved here." : "From your archive; not sent again."}</p>
+          </div>;
+        })}
+      </section>}
+      {(!!answers.length || !!state?.snoozes?.length) && <section aria-label="Card history" className="space-y-1 text-sm"><h4 className="text-[13px] font-semibold">History</h4><ol className="space-y-1">{answers.map((answer, index) => <li key={`${answer.at}:${index}`}>{answer.action === "code" ? "Code saved privately" : answer.action === "drop" ? "Dropped" : answer.action === "done" ? "Done" : `Chose ${optionLabel(answer.choice) ?? (answer.choice ? "an option no longer listed" : "a written answer")}`}{answer.action !== "code" && answer.text ? ` · ${answer.text}` : ""} · {stamp(answer.at)}</li>)}{state?.snoozes?.map((snooze) => <li key={`${snooze.at}:${snooze.until}`}>Asked to see it later · {stamp(snooze.at)}, until {stamp(snooze.until)}</li>)}</ol></section>}
+      {!!owner.outboundNotes?.length && <section aria-label="Legacy outbound notes" className="space-y-2 text-sm"><h4 className="text-[13px] font-semibold">Earlier notes</h4>{owner.outboundNotes.filter((note) => note.card.kind === record.kind && note.card.id === record.id).map((note) => <div key={note.responseId} className="space-y-1">
+        <p className="whitespace-pre-wrap">{note.text}</p><p className={fineClass}>{note.type === "hold-notice" ? "Hold notice" : "Note"} · {stamp(note.at)}</p>
+        {note.recipientKeys.map((recipientKey) => { const receipts = owner.deliveries.filter((receipt) => receipt.responseId === note.responseId && receipt.recipientKey === recipientKey); return <p key={recipientKey} className={fineClass}>{entry.recipientRoute?.recipients.find((recipient) => recipient.recipientKey === recipientKey)?.legacyName ?? "A recipient"}: {receipts.length ? receipts.map((receipt) => receipt.state).join(", ") : "not reported"}</p>; })}
+        {note.unresolvedRecipients.map((recipient) => <p key={recipient} className={fineClass}>{recipient} · kept private, not sent</p>)}
+      </div>)}</section>}
+      {!!owner.unsupportedResponses?.length && <p className={fineClass}>An earlier reply here is kept and isn't counted as an answer.</p>}
+    </div>}
 
-    <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} onSend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />
-    {owner.commands?.map((command) => { const handling = entry.responseHandling?.[command.eventId]; return <div key={command.eventId} role="status" className="rounded-xl border border-border p-3 text-xs"><p>Owner command saved{handling?.acknowledgement && " · Publisher received"}{handling?.outcome && ` · Publisher reported ${handling.outcome.phase}`}</p>{!handling && <p>Receipt not reported. Saving again preserves this command identity; it does not prove delivery or repeat its effect.</p>}</div>; })}
-    {!!entry.historicalCommands?.length && <section aria-label="Historical owner commands" className="space-y-2 rounded-xl border border-border p-3">
-      <h3 className="font-medium">Historical owner commands</h3>
-      {entry.historicalCommands.map((command) => {
-        const saved = entry.responses?.some((response) => response.responseId === command.responseId);
-        const handling = saved ? entry.responseHandling?.[command.responseId] : undefined;
-        return <div key={command.responseId} className="space-y-1 text-xs"><p>{command.state.doneAt ? "Task completion" : command.state.lift ? "Hold lift" : "Blocker clear"} · {stamp(command.state.updatedAt)} · {saved ? "Saved transport record" : "Owner archive only; no restored transport record"}{handling?.acknowledgement && " · Publisher received"}{handling?.outcome && ` · Publisher reported ${handling.outcome.phase}`}</p>
-          {owner.deliveries.filter((receipt) => receipt.responseId === command.responseId).map((receipt) => <p key={`${receipt.sourceKey}:${receipt.recipientKey}:${receipt.state}`}>{receipt.recipient} · Legacy {receipt.state} · {receipt.routedTo}</p>)}
-          <p className="text-muted-foreground">Historical evidence is retained, not permission to repeat the command. Overall publisher handling is not every recipient's delivery receipt.</p>
-        </div>;
-      })}
-    </section>}
-    {(!!answers.length || !!state?.snoozes?.length) && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-medium">Typed card history</summary><ol className="mt-2 space-y-2">{answers.map((answer, index) => <li key={`${answer.at}:${index}`}>{answer.action === "code" ? "Approval code saved privately" : `${answer.action}${answer.choice ? ` · ${answer.choice}` : ""}${answer.text ? ` · ${answer.text}` : ""}`} · {stamp(answer.at)}{record.kind === "approval" && answer.issuedAt && <span> · Issuance {answer.issuedAt}</span>}</li>)}{state?.snoozes?.map((snooze) => <li key={`${snooze.at}:${snooze.until}`}>Snoozed at {stamp(snooze.at)} until {stamp(snooze.until)}</li>)}</ol></details>}
-    {!!owner.outboundNotes?.length && <section aria-label="Legacy outbound notes" className="space-y-2 rounded-xl border border-border p-3"><h3 className="font-medium">Legacy explicit owner messages</h3>{owner.outboundNotes.filter((note) => note.card.kind === record.kind && note.card.id === record.id).map((note) => <div key={note.responseId} className="space-y-1">
-      <p className="text-xs font-medium">{note.type === "hold-notice" ? "Historical hold notice — not authority to repeat the command" : "Explicit legacy send-note event — not a private Home note"}</p>
-      <p className="whitespace-pre-wrap">{note.text}</p><p className="text-xs text-muted-foreground">{stamp(note.at)} · {note.eventKey}</p>
-      {note.recipientKeys.map((recipientKey) => { const receipts = owner.deliveries.filter((receipt) => receipt.responseId === note.responseId && receipt.recipientKey === recipientKey); return <p key={recipientKey} className="text-xs">{entry.recipientRoute?.recipients.find((recipient) => recipient.recipientKey === recipientKey)?.legacyName ?? recipientKey}: {receipts.length ? receipts.map((receipt) => `${receipt.state} (${receipt.dispatch})`).join(", ") : "not reported"}</p>; })}
-      {note.unresolvedRecipients.map((recipient) => <p key={recipient} className="text-xs">Held / unrouted · {recipient} · owner archive only; not sent</p>)}
-    </div>)}</section>}
-    {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className="text-xs text-muted-foreground">{response.reason}. Saved transport record preserved; no question decision inferred.</p>)}
-    {error && <p role="alert" className="text-destructive">{error}</p>}{notice && <p role="status" className="text-muted-foreground">{notice}</p>}
+    {thread}
+    {!countdown.pending && (projection.request || expanded) && <QuietRow>
+      {asking && !!options.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Answer in your own words</button>}
+      {record.kind === "ask" && responds && !asking && projection.answer?.action !== "drop" && <button type="button" className={quietClass} onClick={() => { setFollowup(true); setJustSaved(false); }}>Change answer</button>}
+      {followup && <button type="button" className={quietClass} disabled={busy} onClick={() => { setFollowup(false); setText(""); setNoteOpen(false); }}>Keep my answer</button>}
+      {projection.needsAction && !snoozed && <button type="button" className={quietClass} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}
+      {!closed && !composing && <button type="button" className={quietClass} onClick={() => setComposing(true)}>{audience.button}</button>}
+      <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>
+    </QuietRow>}
+    {later && <SnoozeChoices now={now} disabled={busy} onPick={(until) => void perform(async () => { await source.snooze(entry, until); setLater(false); onOwnerSaved(); onSnoozed?.(entry); })} />}
+    {failedAnswer !== null ? <AnswerFailedLine held={!!answerId.current && !!source.holdsAnswer?.(entry, answerId.current)} /> : error && <ErrorLine>{error}</ErrorLine>}{notice && <p role="status" className={`mt-2 ${fineClass}`}>{notice}</p>}
+
+    <MoreSheet open={more} onOpenChange={setMore} title={entry.state.card.title || kindWord(record.kind)}>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={`${buttonClass} aria-pressed:bg-muted`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Clear priority" : "Mark as priority"}</button>
+        {record.kind === "ask" && responds && !confirmDrop && <button type="button" className={buttonClass} disabled={busy} onClick={() => setConfirmDrop(true)}>Drop question</button>}
+      </div>
+      {confirmDrop && <div role="group" aria-label="Drop this question?" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm">
+        <p>Drop this question? {agent} stops waiting for your answer.</p>
+        <div className="flex flex-wrap gap-2"><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void perform(() => askAnswer("drop"))}>Drop it</button><button type="button" className={quietClass} onClick={() => setConfirmDrop(false)}>Keep it</button></div>
+      </div>}
+      <SheetSection title="Details">
+        <p className="text-sm">{kindWord(record.kind)} · {record.status}{pinned && ` · Priority (${pinned.reason})`}</p>
+        {receipt && <p className="text-sm">{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
+        {routeReady && <p className="text-[12.5px] leading-[1.4] text-muted-foreground">Messages on this card go to: {destinations.map((recipient) => <span key={recipient.recipientKey} className="block break-all font-mono">{recipient.legacyName} · {recipient.runtimeTarget.agentId}</span>)}</p>}
+        {!!state?.notes?.length && <div aria-label="Your private notes" className="space-y-1 text-sm"><p className={fineClass}>Your private notes. Only you can see them; they aren't sent to the agent.</p>{state.notes.map((note) => <p key={note.id} className="whitespace-pre-wrap">{note.text} <time className={fineClass} dateTime={note.at}>{stamp(note.at)}</time></p>)}</div>}
+        {reference}
+      </SheetSection>
+      {(error || notice) && <p role={error ? "alert" : "status"} className="text-sm">{error ?? notice}</p>}
+    </MoreSheet>
   </div>;
 }
 
-function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, source, owner: contextOwner, onSaved, onOwnerSaved, onNavigate, showStatus = false, inactive = false }: { entry: HomeFeedEntry; approval: Approval; source: HomeFeedSource; owner: SitrepOwnerData; onSaved: Props["onSaved"]; onOwnerSaved: Props["onOwnerSaved"]; onNavigate: Props["onNavigate"]; showStatus?: boolean; inactive?: boolean }) {
+function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, source, owner: contextOwner, now, expanded, onSaved, onOwnerSaved, onNavigate, showStatus = false, inactive = false }: { entry: HomeFeedEntry; approval: Approval; source: HomeFeedSource; owner: SitrepOwnerData; now: number; expanded: boolean; onSaved: Props["onSaved"]; onOwnerSaved: Props["onOwnerSaved"]; onNavigate: Props["onNavigate"]; showStatus?: boolean; inactive?: boolean }) {
   const [binding, setBinding] = useState(() => ({ entry: incomingEntry, approval: incomingApproval }));
   const { entry, approval } = binding;
   const [code, setCode] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
+  const [codeOpen, setCodeOpen] = useState(false);
   const pending = useRef<{ key: string; header: NewFeedResponse; payload: FeedResponsePayload } | undefined>(undefined);
   const engagedOnce = useRef(entry.state.response !== null);
   const key = homeFeedKey(entry); const incomingKey = homeFeedKey(incomingEntry);
@@ -313,7 +427,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
           const typed = restored && parseSitrepCardPayload(restored.state.card.payload?.sitrep);
           if (!restored || homeFeedKey(restored) !== key || typed?.record.kind !== "approval" || JSON.stringify(typed.record) !== JSON.stringify(approval)) throw new Error("Original approval identity could not be refreshed");
           if (alive) setBinding((current) => homeFeedKey(current.entry) === key ? { ...current, entry: restored } : current);
-        } catch { if (alive) setError("Original approval could not be refreshed; its draft remains bound to its original identity"); }
+        } catch { if (alive) setError("This request couldn't be refreshed. What you typed stays with it."); }
       } while (alive && dirty);
       running = false;
     };
@@ -329,7 +443,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
       const latest = snapshot.entries.find((candidate) => candidate.source.sourceId === entry.source.sourceId && candidate.state.card.cardId === entry.state.card.cardId);
       if (!latest || latest.currentIssuance === false) throw new Error("Current approval is not available");
       onNavigate(latest);
-    } catch { setError("Current approval could not be loaded; the original draft has not been transferred"); }
+    } catch { setError("The new request couldn't be opened. Try again."); }
     finally { setBusy(false); }
   }
   const validCode = /^\S{4,}$/.test(code) && code.length <= 12000;
@@ -349,19 +463,37 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
       }
       const result = await source.saveResponse(entry, draft.header, draft.payload);
       pending.current = undefined; setCode(""); onSaved(entry, result); onOwnerSaved();
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Approval could not be saved"); }
+    } catch { setError("Your approval wasn't saved. Try again."); }
     finally { setBusy(false); }
   }
-  return <div className="space-y-3" onFocusCapture={() => { engagedOnce.current = true; }}>
-    {superseded && <div role="status" className="rounded-xl border border-border p-3 text-xs"><p>Re-issued. This view and any code draft remain bound to <code className="break-all">{entry.state.card.cardId}/{entry.state.card.revision}/{entry.state.card.issuanceId}</code>. Codes are not transferred to the new request.</p><button type="button" className={buttonClass} disabled={busy} onClick={() => void openCurrent()}>Open current approval</button></div>}
-    {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} />}
-    <p>{approval.approvalType}{approval.approvalKind && ` · ${approval.approvalKind}`}{expired && " · Expired"} · Issued {stamp(approval.issuedAt)}{approval.expiresAt && ` · Expires ${stamp(approval.expiresAt)}`}</p>
-    {approval.permissions && <p><strong>Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
-    {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.grantMode && <p>Grant mode: {approval.grantMode}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
-    {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
-    {approval.url && safeUrl(approval.url) && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center underline underline-offset-2">Open approval · {new URL(approval.url).hostname}</a>}
-    {visibleForm && approval.codeExpected && <label className="block font-medium">Approval code<input aria-label="Approval code" type="password" autoComplete="off" value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className="mt-1 block text-xs text-muted-foreground">Exact code, without spaces. Stored in the private payload for the intended agent; never the answer text.</span></label>}
-    {visibleForm && <button type="button" disabled={disabled || (approval.codeExpected && !validCode)} className={primaryClass} onClick={() => void submit()}>{busy ? "Saving approval…" : approval.approvalType === "go" ? "Give the go" : approval.codeExpected ? "Save code" : "I completed this step"}</button>}
-    {error && <p role="alert" className="text-destructive">{error}</p>}
+  const ends = requestEnds(approval.expiresAt, now);
+  const link = approval.url && safeUrl(approval.url) ? new URL(approval.url) : undefined;
+  // "Allows …" belongs to permission requests (an OpenKey link or a code), never to a go/no-go.
+  const scoped = approval.approvalType !== "go" && (approval.codeExpected || (!!link && /openkey/i.test(link.hostname)));
+  // The code box waits behind "Got a code? Paste it": reviewing comes first.
+  const codeShown = visibleForm && approval.codeExpected && (codeOpen || code.length > 0 || busy);
+  const action = visibleForm && !approval.codeExpected;
+  return <div className="mt-3.5 space-y-3" onFocusCapture={() => { engagedOnce.current = true; }}>
+    {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
+    {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
+    {approval.warning && <p className="text-sm font-medium text-warning">{approval.warning}</p>}
+    {!expanded && approval.permissions && scoped && <p className="line-clamp-2 text-sm">Allows {approval.permissions}</p>}
+    <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
+      {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className={action ? buttonClass : primaryClass}>{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
+      {action && <button type="button" disabled={disabled} className={approval.approvalType === "go" ? primaryClass : buttonClass} onClick={() => void submit()}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}
+      {(ends || expired) && <span className={fineClass}>{expired ? "This request has ended" : ends}</span>}
+    </div>
+    {visibleForm && approval.codeExpected && !codeShown && <button type="button" className={quietClass} disabled={disabled} onClick={() => { engagedOnce.current = true; setCodeOpen(true); }}>Got a code? Paste it</button>}
+    {codeShown && <div className="space-y-2">
+      <label className="block text-[13px] font-semibold">Approval code<input aria-label="Approval code" type="password" autoComplete="off" autoFocus={codeOpen && !code} value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>
+      <button type="button" disabled={disabled || !validCode} className={buttonClass} onClick={() => void submit()}>{busy ? "Saving…" : "Save code"}</button>
+    </div>}
+    {expanded && <div className="space-y-1 text-sm">
+      {approval.permissions && <p><strong className="font-semibold">Allows: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>For: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " (everything in it)"}</p>}
+      {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also kept: {approval.keepNames.join(", ")}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
+      {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
+      <p className={fineClass}>Asked {stamp(approval.issuedAt)}</p>
+    </div>}
+    {error && <ErrorLine>{error}</ErrorLine>}
   </div>;
 }

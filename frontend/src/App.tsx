@@ -105,6 +105,8 @@ import { SettingsPage } from "./chat/SettingsPage";
 import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
+import { clearHeldAnswers } from "./feed/answerOutbox";
+import { settleHeldAnswersForSignOut } from "./feed/feedStore";
 import { AppsPage } from "./home/AppsPage";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
@@ -413,6 +415,8 @@ export function App() {
     uploadRunner.reset();
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
+    const accountSpace = tcw?.spaceId ?? spaceId;
+    if (accountSpace) clearHeldAnswers(accountSpace);
     if (storedAddress) clearPersistedSession(storedAddress);
     if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
     sessionStoreRef.current.clear();
@@ -454,7 +458,7 @@ export function App() {
     setPricingOpen(false);
     setError(warning);
     setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
-  }, [address, did, tcw, voiceNotePipeline]);
+  }, [address, did, tcw, voiceNotePipeline, spaceId]);
   useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,
     () => completeLocalSignOut(null)), [captureHandoff, completeLocalSignOut]);
   const [models, setModels] = useState<ModelOption[]>(() =>
@@ -1295,6 +1299,8 @@ export function App() {
         if (!options.terminal) void nativeRenewalRef.current?.resume();
         return;
       }
+      // Home answers held from a closed page get one bounded try while the session still works.
+      if (tcw) await settleHeldAnswersForSignOut(tcw);
       const openKeyClient = !nativeSession && !options.terminal ? openkeyRef.current : null;
       completeLocalSignOut(nativeFenceStored ? options.terminal ?? null : NATIVE_SIGN_OUT_WARNING,
         Boolean(options.terminal), webFenceToken);
@@ -1567,7 +1573,7 @@ export function App() {
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
               /></HomeFeatureGate>}
-              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} />}
+              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
               apps={LOCAL_VALIDATION ? null : <AppsPage />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}

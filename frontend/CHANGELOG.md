@@ -15,6 +15,18 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.28
+
+### Minor Changes
+
+- 4b2a0e3: Home's feed is now a list of cards. Every card shows at once, grouped under "Needs you" and "Earlier", with Needs you, All and Done above them and a filter for agent, project and type. A question answers with one tap on an option, or in your own words. The answer waits 5 seconds with an Undo button, then it's sent. Close the page during those 5 seconds and the answer is still sent, at once or the next time you open Home, unless the request changed in between. Comments sit under each card, one reply deep, as on the sitrep board, and an agent's replies show there too. The private note is gone from the card. Cards use plain words throughout. Empty and loading states are cards, and the signed-out demo uses the same card.
+
+## 0.14.0-beta.27
+
+### Minor Changes
+
+- abe8e22: Save bot chat history encrypted in the owner's TinyCloud space, with verified model receipts and storage acknowledgments. Notify the owner in Main's chat when expired TinyCloud permission schedules local history deletion, and resume copying after reconnection. Details: TC-2808.
+
 ## 0.14.0-beta.26
 
 ### Patch Changes

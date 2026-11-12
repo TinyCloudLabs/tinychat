@@ -1,5 +1,35 @@
 # @tinychat/backend
 
+## 0.8.0-beta.16
+
+### Patch Changes
+
+- 339a1d2: Route Fireflies ingestion by the user's connection: server OAuth plus cohort eligibility selects backend ingestion; users without server OAuth keep browser access to their queued meetings.
+
+## 0.8.0-beta.15
+
+### Patch Changes
+
+- 915a8f9: Stop webhook admission on Fireflies disconnect, close the in-flight enqueue race, and retain purge-ledger ID timestamps without extending them on retries.
+
+## 0.8.0-beta.14
+
+### Patch Changes
+
+- fc73a24: Remove reconciled server copies when Fireflies sync is disabled, preserving unreadable or unreconciled copies for retention cleanup.
+
+## 0.8.0-beta.13
+
+### Patch Changes
+
+- 20484c4: Delete server-held Fireflies meeting IDs within 14 days and enforce authenticated content expiry and bounded replay protection.
+
+## 0.8.0-beta.12
+
+### Minor Changes
+
+- abe8e22: Save bot chat history encrypted in the owner's TinyCloud space, with verified model receipts and storage acknowledgments. Notify the owner in Main's chat when expired TinyCloud permission schedules local history deletion, and resume copying after reconnection. Details: TC-2808.
+
 ## 0.8.0-beta.11
 
 ### Patch Changes

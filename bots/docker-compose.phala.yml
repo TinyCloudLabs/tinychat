@@ -39,6 +39,11 @@ services:
       BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET}
       # Same list as the backend's BOTS_TEST_ACCOUNTS; the service enforces it too. Empty admits nobody.
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
+      # Owner history stays off; enabling requires the receipt signer and node-origin pins.
+      BOTS_HISTORY_ENABLED: ${BOTS_HISTORY_ENABLED:-false}
+      BOTS_HISTORY_SIGNER_DID: ${BOTS_HISTORY_SIGNER_DID:-}
+      BOTS_HISTORY_NODE_ORIGIN: ${BOTS_HISTORY_NODE_ORIGIN:-}
+      BOTS_UNARCHIVED_HISTORY_POLICY: ${BOTS_UNARCHIVED_HISTORY_POLICY:-notice-then-expiry-30-days}
       BOTS_MODEL: ${BOTS_MODEL:-z-ai/glm-5.2}
       BOTS_IDLE_MS: ${BOTS_IDLE_MS:-600000}
       BOTS_SANDBOX_MEMORY_MB: ${BOTS_SANDBOX_MEMORY_MB:-1536}
@@ -75,6 +80,7 @@ services:
     environment:
       # A dedicated RedPill key with its own provider-side budget; never the main chat key.
       REDPILL_API_KEY: ${REDPILL_API_KEY}
+      BOTS_HISTORY_ENABLED: ${BOTS_HISTORY_ENABLED:-false}
       BOTS_MODEL: ${BOTS_MODEL:-z-ai/glm-5.2}
       BOTS_MODELS: ${BOTS_MODELS:-}
       BOTS_MAX_TOKENS: ${BOTS_MAX_TOKENS:-8192}

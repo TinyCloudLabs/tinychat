@@ -297,9 +297,11 @@ code:
   throwaway key generated there and verified against its certificate. No
   environment and no secret; only the unsigned build passes between the jobs,
   and nothing signed is uploaded.
-- Play upload is not wired yet. Until the Play app exists, upload the `.aab` by
-  hand. The workflow header has a TODO for an internal-track upload step with a
-  pinned `r0adkll/upload-google-play` and a `PLAY_SERVICE_ACCOUNT_JSON` secret.
+- Releases (not rehearsals) end by uploading the verified `.aab` to Play's **internal testing**
+  track (pinned `r0adkll/upload-google-play`, status `completed`), so internal
+  testers get every dispatched build. The `PLAY_SERVICE_ACCOUNT_JSON` service
+  account can release to testing tracks of this app only, never production;
+  promote a build in Play Console.
 
 Environment `android-release`:
 
@@ -310,6 +312,7 @@ Environment `android-release`:
 | `ANDROID_KEY_ALIAS` | secret | the key alias, e.g. `exo-upload` |
 | `ANDROID_KEY_PASSWORD` | secret | the key password; for a PKCS12 keystore (keytool's default) it equals the keystore password |
 | `ANDROID_UPLOAD_CERT_SHA256` | variable | the upload certificate's SHA-256 (64 hex digits; colons are fine). Public: Play Console shows it under App integrity |
+| `PLAY_SERVICE_ACCOUNT_JSON` | secret | the JSON key of the `play-publisher` service account, invited in Play Console → Users and permissions with release-to-testing-tracks permissions for TinyCloud Home only. `gh secret set PLAY_SERVICE_ACCOUNT_JSON --env android-release --repo $repo < key.json` |
 
 ### Sideloaded APK vs Play installs
 

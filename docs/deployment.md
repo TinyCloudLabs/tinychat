@@ -553,10 +553,11 @@ above for the listed addresses. This is deliberate and operator-signed
   expiry are the only bounds, which is why the breach-response runbook (plan
   §12.2, W11) is a precondition for enabling the flag rather than a follow-up.
 - The backend **fetches the meeting and keeps its own copy**, encrypted under
-  `CONNECTOR_CONTENT_MASTER`, for **90 days** (`D2a-retention-days`;
+  `CONNECTOR_CONTENT_MASTER`, for **14 days** at most (`D2a-retention-days`;
   `RETENTION_WINDOW_DAYS` in `backend/src/services/content-store.ts`). The
-  retention sweep then deletes it and records a tombstone, so a provider replay
-  cannot silently re-store aged-out content. Disconnect/purge deletes the stored
+  retention sweep deletes it at the authenticated expiry day (first-store UTC day
+  plus 13), checked every five minutes. A keyed replay marker lasts 14 days after
+  deletion; provider meetings older than 14 days are refused on re-delivery. Disconnect/purge deletes the stored
   meetings and the credential immediately.
 - What does **not** change: the backend still holds **no connector delegation**.
   Custody is out of band (plan §6), so no new permission is minted inside a

@@ -28,17 +28,21 @@ async function mount() {
 }
 const click = (node: Element) => act(async () => { node.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); });
 
-test("answering the question shows the answered state and offers no second answer", async () => {
+test("answering the question shows the answered state, and Change answer brings the options back", async () => {
   const { host } = await mount();
   const card = host.querySelector('article[aria-label="Which flight should I hold for Thursday?"]')!;
   expect(card.textContent).toContain("Needs you");
-  const options = [...card.querySelectorAll("button")];
-  expect(options.map((option) => option.textContent)).toHaveLength(2);
+  const options = [...card.querySelectorAll('[role="group"][aria-label="Answers"] button')];
+  expect(options).toHaveLength(2);
   await click(options[0]!);
   const status = card.querySelector('[role="status"]');
   expect(status?.textContent).toContain("You chose 07:10 direct");
   expect(card.textContent).toContain("Answered");
-  expect(card.querySelectorAll("button")).toHaveLength(0);
+  expect(card.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
+  const change = [...card.querySelectorAll("button")].find((node) => node.textContent === "Change answer")!;
+  await click(change);
+  expect(card.querySelectorAll('[role="group"][aria-label="Answers"] button')).toHaveLength(2);
+  expect(card.textContent).toContain("Needs you");
 });
 
 test("ticking a step strikes it, and unticking restores it", async () => {

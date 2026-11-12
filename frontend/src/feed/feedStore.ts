@@ -12,6 +12,9 @@ import {
   type FeedCardIdentity,
   type FeedCard,
   type FeedCardState,
+  type FeedReadDatabase,
+  type FeedResponsePayload,
+  type NewFeedResponse,
   type FeedHooks,
   type FeedOwnerView,
   type FeedResponse,
@@ -23,13 +26,15 @@ import { storageScopeFor, trackStorageWrites } from "../lib/storageStatus";
 import { THREADS_SQL_DB_NAME } from "../lib/threadKeys";
 import { accountCacheKey, clearLocalMarker, hasLocalMarker, readLocal, setLocalMarker, writeLocal } from "../lib/localFirst/localCache";
 import { foregroundDatabase } from "../lib/localFirst/requestLanes";
-import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource, HomeFeedViewEvent } from "./feedStoreTypes";
-import { emptySitrepOwnerData, ownerThreadResponseKey, parseSitrepCardPayload, parseOfficerThreadEvent, validPreparedIdentity, validateSitrepAction, safeSitrepActionSummary } from "@tinyboilerplate/core/feed/sitrep";
+import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSaveOptions, HomeFeedSnapshot, HomeFeedSource, HomeFeedViewEvent } from "./feedStoreTypes";
+import { emptySitrepOwnerData, isClosed, jsonValue, ownerThreadResponseKey, parseSitrepCardPayload, parseOfficerThreadEvent, validPreparedIdentity, validateSitrepAction, safeSitrepActionSummary, type SitrepAction } from "@tinyboilerplate/core/feed/sitrep";
 import { OWNER_EVENT_SCHEMA, readPrivateOwnerState, savePrivateOwnerState, savePrivateHeldNote, savePrivateGroupPriority, combineOwnerData } from "./sitrepOwnerStore";
 import { OWNER_IMPORT_SCHEMA, OwnerArchiveCache } from "./sitrepArchiveStore";
 import { TypedFeedHistory } from "./loadTypedFeed";
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
+import { clearHeldAnswers, heldAnswers, holdAnswer, isHeld, releaseAnswer, type HeldAnswer } from "./answerOutbox";
+import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 
 function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardId === b.cardId && a.revision === b.revision && a.issuanceId === b.issuanceId; }
 
@@ -44,6 +49,74 @@ function unwrap<T>(result: { ok: boolean; data?: T; error?: { message?: string }
   return result.data as T;
 }
 
+async function cardHistory(output: FeedReadDatabase): Promise<FeedCard[]> {
+  const cards: FeedCard[] = [];
+  let afterIdentity: FeedCardIdentity | undefined;
+  for (;;) {
+    const page = unwrap(await listFeedCardHistory(output, { afterIdentity, limit: 1000 }));
+    cards.push(...page.cards);
+    if (!page.hasMore) return cards;
+    if (!page.nextIdentity || (afterIdentity && sameIdentity(page.nextIdentity, afterIdentity))) throw new Error("Output history page did not advance its full identity");
+    afterIdentity = page.nextIdentity;
+  }
+}
+
+async function allResponses(responses: FeedReadDatabase): Promise<FeedResponse[]> {
+  const all: FeedResponse[] = [];
+  let afterSequence = 0;
+  for (;;) {
+    const page = unwrap(await listFeedResponses(responses, { afterSequence, limit: 1000 }));
+    all.push(...page);
+    if (page.length < 1000) return all;
+    afterSequence = page[page.length - 1]!.sequence;
+  }
+}
+
+/** The feed's definitive no to a write (invalid for this card), as opposed to a failed transport. */
+class RefusedWrite extends Error {}
+
+/** An option's label as the answered revision published it (a typed question's, or the card's choice). */
+function optionLabel(card: FeedCard, choiceId: string): string | undefined {
+  const typed = parseSitrepCardPayload(card.payload?.sitrep);
+  const options = typed?.record.kind === "ask" ? typed.record.options : card.choices ?? [];
+  return options.find((option) => option.id === choiceId)?.label;
+}
+
+/** The outbox entry for an answer: only what rebuilds it (see answerOutbox.ts). */
+function heldAnswerOf(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload): HeldAnswer {
+  const data = payload?.type === "sitrep.answer" && payload.data && typeof payload.data === "object" && !Array.isArray(payload.data) ? payload.data : undefined;
+  const choiceId = data ? data.choice : response.choiceId;
+  const text = data ? data.text : response.text;
+  const action = data?.action;
+  return {
+    sourceId: entry.source.sourceId, cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId,
+    ...(typeof choiceId === "string" && choiceId ? { choiceId } : {}),
+    ...(typeof text === "string" && text ? { text } : {}),
+    ...(action === "answer" || action === "accept-default" ? { action } : {}),
+    ...(response.supersedesResponseId ? { supersedesResponseId: response.supersedesResponseId } : {}),
+    at: response.createdAt,
+  };
+}
+
+/** The answer exactly as the card built it when the page closed: same header, same payload, same responseId. */
+function rebuildAnswer(held: HeldAnswer, card: FeedCard): { response: NewFeedResponse; payload?: FeedResponsePayload } {
+  const header = {
+    responseId: held.responseId, cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId,
+    kind: held.supersedesResponseId ? "followup" as const : "answer" as const,
+    ...(held.supersedesResponseId ? { supersedesResponseId: held.supersedesResponseId } : {}),
+    createdAt: held.at,
+  };
+  const typed = parseSitrepCardPayload(card.payload?.sitrep);
+  if (!typed) return { response: { ...header, ...(held.choiceId ? { choiceId: held.choiceId } : {}), ...(held.text ? { text: held.text } : {}) } };
+  let action: SitrepAction;
+  try {
+    action = validateSitrepAction(typed.record, "sitrep.answer", { askId: typed.record.id, action: held.action ?? "answer", ...(held.choiceId ? { choice: held.choiceId } : {}), text: held.text ?? "", at: held.at }, new Date().toISOString());
+  } catch (error) { throw new RefusedWrite(error instanceof Error ? error.message : "Invalid held answer"); }
+  return {
+    response: { ...header, text: safeSitrepActionSummary(action), ...(held.choiceId && card.choices?.some((option) => option.id === held.choiceId) ? { choiceId: held.choiceId } : {}) },
+    payload: { type: "sitrep.answer", version: 1, data: jsonValue(action.value) },
+  };
+}
 /** What the device keeps of the feed between opens: the last loaded snapshot and its agents. */
 interface LocalFeed {
   snapshot: HomeFeedSnapshot;
@@ -191,6 +264,55 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     ));
   }
 
+  async function saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload, options?: HomeFeedSaveOptions) {
+    assertEntryScope(entry, response);
+    let approval = false;
+    if (payload?.type.startsWith("sitrep.")) {
+      const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);
+      if (!typed || payload.version !== 1) throw new Error("Unsupported typed Home response");
+      const action = validateSitrepAction(typed.record, payload.type, payload.data, new Date().toISOString());
+      if (action.type !== "sitrep.answer" && action.type !== "sitrep.claim") throw new Error("Owner updates must not be submitted as question answers");
+      approval = typed.record.kind === "approval";
+      response = { ...response, text: safeSitrepActionSummary(action) };
+    }
+    // Before the first await: a page that closes mid-write runs only this synchronous part for certain.
+    if (options?.hold) holdAnswer(space, heldAnswerOf(entry, response, payload));
+    const release = () => { if (options?.hold) releaseAnswer(space, { sourceId: entry.source.sourceId, ...response }); };
+    if (approval) {
+      const latest = unwrap(await listFeedCards(db(entry.source.output.database))).find((card) => card.cardId === response.cardId);
+      if (!latest || latest.revision !== response.revision || latest.issuanceId !== response.issuanceId) throw new Error("Approval was re-issued; open its current issuance");
+    }
+    const result = await appendFeedResponse(db(entry.source.output.database), db(entry.source.responses.database), response, payload);
+    // A definitive refusal clears the hold; a failed transport keeps it, so the answer still goes at the next launch.
+    if (!result.ok && result.error.code === "INVALID_INPUT") { release(); throw new RefusedWrite(result.error.message); }
+    const saved = unwrap(result);
+    release();
+    return saved;
+  }
+
+  /**
+   * Where a held answer may still land: its own issuance while that is the card's latest and
+   * still open. A plain card whose later revisions only appended agent replies is the same
+   * request: an unanswered card's answer moves to the latest revision, and a follow-up stays
+   * on the issuance it changes. Otherwise nothing is sent: the agent closed, ended or expired
+   * the request ("closed"), or a newer revision changed it ("replaced").
+   */
+  function heldAnswerTarget(source: FeedSource, held: HeldAnswer, revisions: readonly FeedCard[], latest: FeedCard | undefined): FeedCardIdentity | "closed" | "replaced" {
+    const answered = revisions.find((card) => sameIdentity(card, held));
+    if (!latest || !answered || !latest.needsResponse) return "closed";
+    const typed = parseSitrepCardPayload(latest.payload?.sitrep);
+    if (typed && isClosed(typed.record)) return "closed";
+    if (sameIdentity(latest, held)) return latest;
+    if (typed || latest.payload?.sitrepThread !== undefined) return "replaced";
+    let previous = answered;
+    for (const card of revisions.filter((candidate) => candidate.revision > answered.revision)) {
+      if (!isReplyOnlyRevision(storedRevisionEntry(source, previous), storedRevisionEntry(source, card))) return "replaced";
+      previous = card;
+    }
+    if (!sameIdentity(previous, latest)) return "replaced";
+    return held.supersedesResponseId ? answered : latest;
+  }
+
   async function loadFeed(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot> {
     assertAccount();
     const readRegistry = async () => {
@@ -290,6 +412,12 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           }
         })(),
       ]);
+      const revisionsByCard = new Map<string, FeedCard[]>();
+      for (const card of storedCards) {
+        const revisions = revisionsByCard.get(card.cardId) ?? [];
+        revisions.push(card);
+        revisionsByCard.set(card.cardId, revisions);
+      }
       const { imported, privateState } = await ownerData;
       const latestKeys = new Set(cards.map((card) => ownerCardKey(source.sourceId, card)));
       const loadCard = async (identity: FeedCardIdentity, providedState?: FeedCardState): Promise<HomeFeedEntry> => {
@@ -299,6 +427,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           source, state,
           currentIssuance: latestKeys.has(key),
           view: views.get(key) ?? { sourceId: source.sourceId, cardId: identity.cardId, revision: identity.revision, issuanceId: identity.issuanceId },
+          earlierRevisions: (revisionsByCard.get(identity.cardId) ?? []).filter((card) => card.revision < identity.revision),
           responses: histories.get(key) ?? [],
           viewEvents: events.get(key) ?? [],
         };
@@ -408,20 +537,63 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       }
       return local.value.snapshot;
     },
-    async saveResponse(entry, response, payload) {
-      assertEntryScope(entry, response);
-      if (payload?.type.startsWith("sitrep.")) {
-        const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);
-        if (!typed || payload.version !== 1) throw new Error("Unsupported typed Home response");
-        const action = validateSitrepAction(typed.record, payload.type, payload.data, new Date().toISOString());
-        if (action.type !== "sitrep.answer" && action.type !== "sitrep.claim") throw new Error("Owner updates must not be submitted as question answers");
-        if (typed.record.kind === "approval") {
-          const latest = unwrap(await listFeedCards(db(entry.source.output.database))).find((card) => card.cardId === response.cardId);
-          if (!latest || latest.revision !== response.revision || latest.issuanceId !== response.issuanceId) throw new Error("Approval was re-issued; open its current issuance");
+    saveResponse,
+    holdsAnswer(entry, responseId) {
+      const card = entry.state.card;
+      return isHeld(space, { sourceId: entry.source.sourceId, cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, responseId });
+    },
+    async flushHeldAnswers() {
+      const outcomes: HeldAnswerOutcome[] = [];
+      for (const held of heldAnswers(space)) {
+        // Cleared meanwhile (sign-out gave up on this flush): an entry that hasn't started is never sent.
+        if (!isHeld(space, held)) continue;
+        const source = sources.find((candidate) => candidate.sourceId === held.sourceId);
+        // Its agent is no longer connected: there is no card left to answer or to tell.
+        if (!source) { releaseAnswer(space, held); continue; }
+        const output = db(source.output.database);
+        const responses = db(source.responses.database);
+        try {
+          const stored = (await allResponses(responses)).filter((response) => response.cardId === held.cardId && response.kind !== "message");
+          // The write started before the page closed may have landed: then it is already sent.
+          if (stored.some((response) => response.responseId === held.responseId)) { releaseAnswer(space, held); continue; }
+          const revisions = (await cardHistory(output)).filter((card) => card.cardId === held.cardId).sort((a, b) => a.revision - b.revision);
+          const latest = unwrap(await listFeedCards(output)).find((card) => card.cardId === held.cardId);
+          const answered = revisions.find((card) => sameIdentity(card, held));
+          const label = held.choiceId && answered ? optionLabel(answered, held.choiceId) : undefined;
+          const refusal = (outcome: "closed" | "replaced" | "refused"): HeldAnswerOutcome => ({
+            sourceId: held.sourceId, cardId: held.cardId, outcome,
+            ...(label ? { choiceLabel: label } : {}),
+            ...(outcome === "replaced" && answered ? { answered: storedRevisionEntry(source, answered) } : {}),
+          });
+          const target = heldAnswerTarget(source, held, revisions, latest);
+          if (typeof target === "string") { releaseAnswer(space, held); outcomes.push(refusal(target)); continue; }
+          // Nothing newer may be overwritten: the owner may have answered since, on another device or tab.
+          // A held answer goes only to a card not answered from its answered revision on; a held follow-up
+          // only while the answer it replaces is still the newest on its issuance.
+          const newest = stored.filter((response) => sameIdentity(response, held)).sort((a, b) => a.sequence - b.sequence).at(-1);
+          const newer = held.supersedesResponseId
+            ? newest?.responseId !== held.supersedesResponseId
+            : stored.some((response) => response.revision >= held.revision);
+          // The card shows that newer answer; nothing else to say.
+          if (newer) { releaseAnswer(space, held); continue; }
+          const state = unwrap(await getFeedCardState(output, responses, target));
+          // Again right before the write: only a write already started may finish after a clear.
+          if (!isHeld(space, held)) continue;
+          try {
+            const rebuilt = rebuildAnswer(held, state.card);
+            await saveResponse({ source, state, view: { sourceId: source.sourceId, cardId: target.cardId, revision: target.revision, issuanceId: target.issuanceId } }, rebuilt.response, rebuilt.payload);
+          } catch (error) {
+            // The feed's definitive no: the request no longer takes this answer.
+            if (error instanceof RefusedWrite) { releaseAnswer(space, held); outcomes.push(refusal("refused")); continue; }
+            throw error;
+          }
+          releaseAnswer(space, held);
+          outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "sent" });
+        } catch {
+          // A failed transport keeps the answer for the next launch.
         }
-        response = { ...response, text: safeSitrepActionSummary(action) };
       }
-      return unwrap(await appendFeedResponse(db(entry.source.output.database), db(entry.source.responses.database), response, payload));
+      return outcomes;
     },
     async sendMessage(entry, message, payload) {
       assertEntryScope(entry, message);
@@ -467,4 +639,35 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       };
     },
   };
+}
+
+/** How long sign-out waits for this space's held answers to go before clearing them anyway. */
+export const SIGN_OUT_FLUSH_MS = 3000;
+
+/**
+ * At sign-out, with the session still live: one try, at most `boundMs`, to send this space's held
+ * answers through the same flush as a launch (the same checks, expiry included). Then every one is
+ * cleared, sent or not, also after a failure or the bound. Nothing held: no request at all.
+ * A flush still running at the bound finishes only the write it already started: the flush skips
+ * every entry that is no longer held, so clearing the outbox stops the rest.
+ */
+export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = SIGN_OUT_FLUSH_MS): Promise<void> {
+  const space = tcw.spaceId;
+  if (!space) return;
+  let timer: number | undefined;
+  try {
+    if (!heldAnswers(space).length) return;
+    await Promise.race([
+      (async () => {
+        const source = createHomeFeedSource(tcw);
+        await source.load();
+        await source.flushHeldAnswers?.();
+      })(),
+      new Promise<void>((resolve) => { timer = window.setTimeout(resolve, boundMs); }),
+    ]);
+  } catch { /* Not sent: cleared below all the same. */ }
+  finally {
+    window.clearTimeout(timer);
+    clearHeldAnswers(space);
+  }
 }

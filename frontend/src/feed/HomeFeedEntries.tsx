@@ -1,24 +1,39 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
+import { PATHS } from "@/shell/routes";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
+import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
-import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
+import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
+import { threadSize, ThreadView, type ThreadItem } from "./HomeCardThread";
+import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
+import { AnsweredPanel, AnswerFailedLine, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
-import { PATHS } from "@/shell/routes";
+import { AgentPrompt } from "@/home/AgentPromptCard";
+import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 import { FEED_SKILL_URL } from "./strings";
+
+type HomeView = "needs-you" | "all" | "done";
+const VIEWS: readonly { id: HomeView; label: string }[] = [{ id: "needs-you", label: "Needs you" }, { id: "all", label: "All" }, { id: "done", label: "History" }];
 
 function keyOf(entry: HomeFeedEntry): string {
   const card = entry.state.card;
   return JSON.stringify([entry.source.sourceId, card.cardId, card.revision, card.issuanceId]);
 }
+function isTypedPayload(entry: HomeFeedEntry): boolean {
+  return entry.state.card.payload?.sitrep !== undefined || entry.state.card.payload?.sitrepThread !== undefined;
+}
+function snoozedNow(entry: HomeFeedEntry, now: number): boolean {
+  return Date.parse(entry.view.snoozedUntil ?? "") > now;
+}
 function needsAttention(entry: HomeFeedEntry, now: number, typed?: SitrepProjection): boolean {
-  if (entry.state.card.payload?.sitrep !== undefined || entry.state.card.payload?.sitrepThread !== undefined) return !!typed?.needsAction && !(Date.parse(entry.view.snoozedUntil ?? "") > now);
-  return entry.state.card.needsResponse && !entry.state.response && !(Date.parse(entry.view.snoozedUntil ?? "") > now);
+  if (isTypedPayload(entry)) return !!typed?.needsAction && !snoozedNow(entry, now);
+  return entry.state.card.needsResponse && !entry.state.response && !snoozedNow(entry, now);
 }
 function compare(a: HomeFeedEntry, b: HomeFeedEntry): number {
   return b.state.card.urgency - a.state.card.urgency || a.state.card.createdAt.localeCompare(b.state.card.createdAt) || keyOf(a).localeCompare(keyOf(b));
@@ -26,6 +41,11 @@ function compare(a: HomeFeedEntry, b: HomeFeedEntry): number {
 function projectOf(entry: HomeFeedEntry): string {
   const project = entry.state.card.payload?.project;
   return typeof project === "string" ? project : "";
+}
+/** The Type filter's value: "question" and "ask" are one kind for the owner. */
+function kindOf(entry: HomeFeedEntry): string {
+  const kind = entry.state.card.kind;
+  return kind === "question" ? "ask" : kind;
 }
 function cardView(entry: HomeFeedEntry): FeedCard {
   const card = entry.state.card;
@@ -36,7 +56,7 @@ function cardView(entry: HomeFeedEntry): FeedCard {
   return {
     key: keyOf(entry), at: card.createdAt, author: { name: entry.source.label }, render,
     title: card.title, lead: { text: card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
-    ...(Array.isArray(payload.replies) ? { replies: payload.replies.filter((reply): reply is { text: string } => !!reply && typeof reply === "object" && "text" in reply && typeof reply.text === "string") } : {}),
+    // Replies on a plain card render in its conversation (plainThreadItems), not in the body.
     ...(typeof payload.body === "string" ? { body: payload.body } : {}),
     ...(typeof payload.url === "string" ? { url: payload.url } : {}),
     ...(sourceRecord && typeof sourceRecord.label === "string" ? { source: {
@@ -51,86 +71,203 @@ function ReportLink({ entry }: { entry: HomeFeedEntry }) {
   if (!report || typeof report !== "object") return null;
   const { url, label } = report as Record<string, unknown>;
   if (!safeUrl(url)) return null;
-  return <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-9 max-w-full items-center break-all text-sm underline underline-offset-2">{typeof label === "string" ? label : "Full report"}</a>;
+  return <a href={url} target="_blank" rel="noopener noreferrer" className={`mt-0.5 inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px] ${focusRing}`}>{typeof label === "string" ? label : "Full report"}</a>;
 }
 
-function CardHistory({ entry }: { entry: HomeFeedEntry }) {
+function CardHistory({ entry, now }: { entry: HomeFeedEntry; now: number }) {
   const responses = entry.responses ?? (entry.state.response ? [entry.state.response] : []);
   const snoozes = entry.viewEvents?.filter((event) => event.kind === "snoozed") ?? [];
   if (!responses.length && !snoozes.length) return null;
-  return <details className="mt-4 rounded-xl border border-border p-3 text-sm">
-    <summary className="min-h-8 cursor-pointer font-medium">Card history</summary>
-    <ol className="mt-2 space-y-3">
+  return <SheetSection title="History">
+    <ol className="space-y-3 text-sm">
       {responses.map((response) => <li key={response.responseId} className="break-words">
-        <p className="text-xs text-muted-foreground">{response.kind === "message" ? "Message saved" : response.kind === "followup" ? "Follow-up saved" : "Answer saved"} · <time dateTime={response.createdAt}>{new Date(response.createdAt).toLocaleString()}</time></p>
-        {response.choiceId && <p>{entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? response.choiceId}</p>}
+        <p className="text-[13px] text-muted-foreground">{response.kind === "message" ? "Message saved" : response.kind === "followup" ? "Changed answer" : "Answer saved"} · <time dateTime={response.createdAt}>{cardTime(response.createdAt, now)}</time></p>
+        {response.choiceId && <p>{optionText(entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? "An option that is no longer listed")}</p>}
         {response.text && <p className="whitespace-pre-wrap">{response.text}</p>}
-        {response.supersedesResponseId && <p className="text-xs text-muted-foreground">Follows response {response.supersedesResponseId}</p>}
       </li>)}
-      {snoozes.map((event) => <li key={`snooze-${event.sequence}`} className="text-xs text-muted-foreground">Snoozed at {new Date(event.createdAt).toLocaleString()}{event.snoozedUntil && ` until ${new Date(event.snoozedUntil).toLocaleString()}`}</li>)}
+      {snoozes.map((event) => <li key={`snooze-${event.sequence}`} className="text-[13px] text-muted-foreground">Asked to see it later · {cardTime(event.createdAt, now)}{event.snoozedUntil && `, until ${dueTime(event.snoozedUntil, now)}`}</li>)}
     </ol>
-  </details>;
+  </SheetSection>;
 }
-function ResponseStatus({ entry }: { entry: HomeFeedEntry }) {
+
+/** The saved answer in words: the option label, never its id; "got it" only once the agent acknowledged. */
+function ResponseStatus({ entry, focusOnMount }: { entry: HomeFeedEntry; focusOnMount: boolean }) {
   const { response, acknowledgement, outcome } = entry.state;
   if (!response) return null;
+  const agent = entry.source.label;
   const received = acknowledgement?.responseId === response.responseId;
   const result = outcome?.responseId === response.responseId ? outcome : null;
   const detail = result?.detail?.message;
-  return <div className="space-y-2 rounded-xl border border-border bg-muted/40 p-4 text-sm" role="status" aria-label="Answer status">
-    <p className="font-medium">Answer saved{received && " · Agent received"}{result && (result.phase === "succeeded" ? " · Completed" : " · Failed")}</p>
-    {response.choiceId && <p>{entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? response.choiceId}</p>}
-    {response.text && <p className="whitespace-pre-wrap break-words">{response.text}</p>}
-    {typeof detail === "string" && <p className="whitespace-pre-wrap break-words">{detail}</p>}
-  </div>;
+  const choice = response.choiceId ? entry.state.card.choices?.find((option) => option.id === response.choiceId) : undefined;
+  const label = choice && optionText(choice.label);
+  return <AnsweredPanel focusOnMount={focusOnMount}>
+    <p>{label ? <>You chose <b className="font-semibold">{label}</b>.</> : "You answered."}{received && ` ${agent} got it.`}{result && (result.phase === "succeeded" ? ` ${agent} finished it.` : ` ${agent} couldn't finish it.`)}</p>
+    {response.text && <p className="whitespace-pre-wrap">{response.text}</p>}
+    {typeof detail === "string" && <p className="whitespace-pre-wrap">{detail}</p>}
+  </AnsweredPanel>;
 }
 
-function AnswerForm({ entry, source, onSaved }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void }) {
+/**
+ * A plain card's conversation: the owner's messages on every revision of the card, and the
+ * agent's `payload.replies`, each timed by the first revision that carried it. Replies are
+ * append-only, so reply i first appears in the earliest revision with more than i replies.
+ */
+function plainThreadItems(entry: HomeFeedEntry, revisions: readonly HomeFeedEntry[]): ThreadItem[] {
+  const agent = entry.source.label;
+  const upTo = [...revisions, entry].filter((candidate) => candidate.state.card.revision <= entry.state.card.revision)
+    .sort((a, b) => a.state.card.revision - b.state.card.revision);
+  const items: ThreadItem[] = [];
+  const seen = new Set<string>();
+  let replies = 0;
+  for (const revision of upTo) {
+    for (const message of revision.responses ?? []) {
+      if (message.kind !== "message" || !message.text || seen.has(message.responseId)) continue;
+      seen.add(message.responseId);
+      items.push({ key: `message:${message.responseId}`, id: message.responseId, at: message.createdAt, speaker: COMMENT_COPY.you, text: message.text, mine: true,
+        ...(revision.responseHandling?.[message.responseId]?.acknowledgement ? { status: <span>{agent} got it</span> } : {}) });
+    }
+    const payload = revision.state.card.payload;
+    const list = payload?.render === "thread" && Array.isArray(payload.replies) ? payload.replies.filter((reply): reply is { text: string } => !!reply && typeof reply === "object" && "text" in reply && typeof reply.text === "string") : [];
+    for (let index = replies; index < list.length; index++) items.push({ key: `reply:${index}`, id: `reply:${index}`, at: revision.state.card.createdAt, speaker: agent, text: list[index]!.text, mine: false });
+    replies = Math.max(replies, list.length);
+  }
+  return items;
+}
+
+/** An untyped card's answer and conversation: one tap on an option, or an answer in words, sent after a short undo window. */
+function AnswerForm({ entry, answered, revisions, source, now, attention, expanded, reference, stale = false, onRefused, onSaved, onSnooze }: {
+  entry: HomeFeedEntry; source: HomeFeedSource; now: number; attention: boolean; expanded: boolean; reference: ReactNode;
+  /**
+   * The revision that holds the card's stored answer, when an earlier revision was answered and
+   * only agent replies followed. The answer stays bound to that issuance: it is shown on this
+   * card, and a follow-up to it still names that issuance.
+   */
+  answered?: HomeFeedEntry;
+  /** The card's other revisions Home holds (for its conversation). */
+  revisions: readonly HomeFeedEntry[];
+  /** A newer issuance replaced this card: its draft stays, but it can no longer be answered. */
+  stale?: boolean;
+  /** An answer whose countdown ended after the card was replaced: nothing was written. */
+  onRefused: (label: string) => void;
+  onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
+  onSnooze: (entry: HomeFeedEntry, until: string) => Promise<void>;
+}) {
   const [text, setText] = useState("");
-  const [choice, setChoice] = useState<string | undefined>();
-  const [saving, setSaving] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The answer whose send failed: whether it is still held is read when the line renders.
+  const [failed, setFailed] = useState<{ target: HomeFeedEntry; responseId: string } | null>(null);
   const [followup, setFollowup] = useState(false);
-  const pendingResponse = useRef<NewFeedResponse | null>(null);
-  const saved = entry.state.response;
-  async function save() {
+  const [later, setLater] = useState(false);
+  const [more, setMore] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const countdown = usePendingSend({ stale, onRefused });
+  const [composing, setComposing] = useState(false);
+  const [messaging, setMessaging] = useState(false);
+  const pendingResponse = useRef<{ key: string; response: NewFeedResponse } | null>(null);
+  const pendingMessage = useRef<{ text: string; message: NewFeedMessage } | null>(null);
+  const card = entry.state.card;
+  const choices = card.choices ?? [];
+  // Writes go to the answered issuance when there is one, otherwise to the card as it is now.
+  const target = answered ?? entry;
+  const saved = target.state.response;
+  // Read when a countdown commits, so an answer re-targets to a reply-only revision that arrived meanwhile.
+  const live = useRef({ target, saved, text });
+  live.current = { target, saved, text };
+  async function save(choice?: string) {
+    const { target, saved, text } = live.current;
     if (saving || (!text.trim() && !choice)) return;
-    setSaving(true); setError(null);
-    const card = entry.state.card;
-    // Retain the response identity across a failed/ambiguous write. A retry
-    // cannot create a second answer simply because its first response was lost.
-    const response = pendingResponse.current ?? {
+    setSaving(choice ?? "text"); setError(null); setFailed(null);
+    const card = target.state.card;
+    // Retain the response identity across a failed/ambiguous write. A retry of
+    // the same answer to the same issuance cannot create a second one.
+    const key = JSON.stringify([card.cardId, card.revision, card.issuanceId, choice ?? null, text.trim()]);
+    const response = pendingResponse.current?.key === key ? pendingResponse.current.response : {
       responseId: crypto.randomUUID(), cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId,
       kind: saved ? "followup" as const : "answer" as const,
       ...(choice ? { choiceId: choice } : {}), ...(text.trim() ? { text: text.trim() } : {}),
       ...(saved ? { supersedesResponseId: saved.responseId } : {}), createdAt: new Date().toISOString(),
     };
-    pendingResponse.current = response;
+    pendingResponse.current = { key, response };
     try {
-      const result = await source.saveResponse(entry, response);
-      onSaved(entry, result);
+      // Held until confirmed: a page that closes before this write lands sends it at the next launch.
+      const result = await source.saveResponse(target, response, undefined, { hold: true });
+      onSaved(target, result);
       pendingResponse.current = null;
-      setText(""); setChoice(undefined); setFollowup(false);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Answer could not be saved");
-    } finally { setSaving(false); }
+      setText(""); setNoteOpen(false); setFollowup(false); setJustSaved(true);
+    } catch {
+      setFailed({ target, responseId: response.responseId });
+    } finally { setSaving(null); }
   }
-  function editText(value: string) { setText(value); pendingResponse.current = null; }
-  if (!entry.state.card.needsResponse) return null;
-  return <div className="mt-4 space-y-3">
-    <ResponseStatus entry={entry} />
-    {saved && !followup ? <button type="button" className="min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setFollowup(true)}>Add follow-up</button> : <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="space-y-3">
-      {saved && <p className="text-xs text-muted-foreground">A follow-up does not cancel an action already received by the agent.</p>}
-      {!!entry.state.card.choices?.length && <fieldset disabled={saving} className="flex flex-wrap gap-2">
-        <legend className="mb-2 text-sm font-medium">Choose an option</legend>
-        {entry.state.card.choices.map((option) => <label key={option.id} className={`inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm ${choice === option.id ? "border-primary bg-primary/10" : "border-border"}`}>
-          <input type="radio" name={`answer-${keyOf(entry)}`} value={option.id} checked={choice === option.id} onChange={() => { setChoice(option.id); pendingResponse.current = null; }} />{option.label}
-        </label>)}
-      </fieldset>}
-      <label className="block text-sm font-medium">Your answer<textarea aria-label="Your answer" value={text} disabled={saving} onInput={(event) => editText(event.currentTarget.value)} className="mt-2 min-h-24 w-full resize-y rounded-xl border border-border bg-background p-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" /></label>
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      <button type="submit" disabled={saving || (!text.trim() && !choice)} className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">{saving ? "Saving answer…" : saved ? "Save follow-up" : "Save answer"}</button>
-    </form>}
+  /** A card message to the publishing agent (the existing card-message path). A retry reuses its id. */
+  async function message(value: string): Promise<boolean> {
+    if (!source.sendMessage || messaging) return false;
+    setMessaging(true); setError(null);
+    const draft = pendingMessage.current?.text === value ? pendingMessage.current.message
+      : { responseId: crypto.randomUUID(), cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, kind: "message" as const, text: value, createdAt: new Date().toISOString() };
+    pendingMessage.current = { text: value, message: draft };
+    try {
+      const result = await source.sendMessage(entry, draft);
+      pendingMessage.current = null;
+      onSaved(entry, result);
+      return true;
+    } catch { setError("Your message wasn't sent. Try again."); return false; }
+    finally { setMessaging(false); }
+  }
+  async function snooze(until: string) {
+    setError(null);
+    try { await onSnooze(entry, until); setLater(false); }
+    catch { setError("That wasn't saved. Try again."); }
+  }
+  const details = <MoreSheet open={more} onOpenChange={setMore} title={card.title || "This card"}>
+    <SheetSection title="Details">{reference}</SheetSection>
+    <CardHistory entry={target} now={now} />
+  </MoreSheet>;
+  const items = plainThreadItems(entry, revisions);
+  const audience = commentCopy({ approved: [entry.source.label] });
+  const canMessage = !!source.sendMessage;
+  const thread = <ThreadView items={items} now={now} open={expanded} composing={composing} input={audience.input} helper={audience.helper} busy={messaging} closed={false} onSend={message} onClose={() => setComposing(false)} />;
+  const askButton = canMessage && !composing && <button type="button" className={quietClass} onClick={() => setComposing(true)}>{audience.button}</button>;
+  if (!card.needsResponse) return <>
+    {thread}
+    {error && <ErrorLine>{error}</ErrorLine>}
+    {(expanded || items.length > 0) && <QuietRow>{askButton}{expanded && <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>}</QuietRow>}
+    {details}
+  </>;
+  const asking = !saved || followup || !!text.trim();
+  const choose = (choice: string) => {
+    if (stale || saving) return;
+    countdown.start(optionText(choices.find((option) => option.id === choice)?.label ?? ""), () => void save(choice));
+  };
+  const reply = () => {
+    if (stale || saving || !text.trim()) return;
+    countdown.start(NOT_SENT_COPY.yourAnswer, () => void save());
+  };
+  return <div>
+    {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
+      {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>}
+    </PendingAnswer> : <>
+      {saved && !asking && <ResponseStatus entry={target} focusOnMount={justSaved} />}
+      {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
+      {asking && !!choices.length && <OptionButtons options={choices} saving={saving ?? undefined} disabled={!!saving || stale} onChoose={choose} />}
+      {asking && (noteOpen || !choices.length) && <form className="mt-3.5" onSubmit={(event) => { event.preventDefault(); reply(); }}>
+        <label className="block"><span className="sr-only">Your answer</span><textarea aria-label="Your answer" value={text} disabled={!!saving} onInput={(event) => { setText(event.currentTarget.value); }} className={`${fieldClass} min-h-24 resize-y`} /></label>
+        <button type="submit" disabled={!!saving || stale || !text.trim()} className={`mt-2 ${pillClass}`}>{saving === "text" ? "Sending…" : "Send answer"}</button>
+      </form>}
+    </>}
+    {thread}
+    {failed ? <AnswerFailedLine held={!!source.holdsAnswer?.(failed.target, failed.responseId)} /> : error && <ErrorLine>{error}</ErrorLine>}
+    {!countdown.pending && <QuietRow>
+      {asking && !!choices.length && !noteOpen && <button type="button" className={quietClass} onClick={() => setNoteOpen(true)}>Answer in your own words</button>}
+      {saved && !asking && <button type="button" className={quietClass} onClick={() => setFollowup(true)}>Change answer</button>}
+      {followup && <button type="button" className={quietClass} disabled={!!saving} onClick={() => { setFollowup(false); setText(""); setNoteOpen(false); }}>Keep my answer</button>}
+      {attention && <button type="button" className={quietClass} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}
+      {askButton}
+      <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>
+    </QuietRow>}
+    {later && <SnoozeChoices now={now} onPick={(until) => void snooze(until)} />}
+    {details}
   </div>;
 }
 
@@ -145,37 +282,50 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
   };
 }
 
+type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "group"; name: string; items: HomeFeedEntry[] };
+
 /** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
 export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
-  const [selector, setSelector] = useState<FeedSelector>("needs-action");
+  // No segment is pressed until the saved view arrives, so the row never flips while loading.
+  const [view, setView] = useState<HomeView | null>(null);
   const [active, setActive] = useState<HomeFeedEntry | null>(null);
+  const [sticky, setSticky] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const [awake, setAwake] = useState<ReadonlySet<string>>(() => new Set());
+  // Answers not sent because the card was replaced during their countdown, by card key.
+  const [refused, setRefused] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // Answers held when the page closed and settled at this launch, by card.
+  const [heldOutcomes, setHeldOutcomes] = useState<ReadonlyMap<string, HeldAnswerOutcome>>(() => new Map());
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
-  const [history, setHistory] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [savingDefault, setSavingDefault] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [error, setError] = useState<{ lead: string; text: string } | null>(null);
   const [viewBusy, setViewBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
-  const chosenSelector = useRef(false);
+  const chosenView = useRef(false);
   const hasDefault = useRef(false);
   const refreshRef = useRef<() => void>(() => {});
   const committed = useRef(new Map<string, FeedResponse>());
   const activeRef = useRef<HomeFeedEntry | null>(null);
   const currentSource = useRef(source);
+  const pendingSends = useRef(new Set<() => void>());
   currentSource.current = source;
+  const history = view === "done";
+  const selector: FeedSelector = view === "all" ? "both" : "needs-action";
 
   useEffect(() => {
     let alive = true;
     let running = false;
     let dirty = false;
     let loaded = false;
-    chosenSelector.current = false; hasDefault.current = false;
+    let flushed = false;
+    chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
     activeRef.current = null;
-    setSnapshot(null); setActive(null); setError(null);
+    setSnapshot(null); setView(null); setActive(null); setError(null); setSticky(new Map()); setExpanded(new Set()); setAwake(new Set()); setHeldOutcomes(new Map());
     setExpandedGroups(new Set());
     const refresh = async () => {
       if (running) { dirty = true; return; }
@@ -199,11 +349,23 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
           loaded = true;
-          setSnapshot(next); setClock(Date.now()); setError(next.connectionError ?? null);
-          if (!hasDefault.current && !chosenSelector.current) setSelector(next.settings.defaultSelector);
+          setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
+          if (!hasDefault.current && !chosenView.current) setView(next.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
           hasDefault.current = true;
-        } catch (cause) {
-          if (alive) setError(cause instanceof Error ? cause.message : "Home feed unavailable");
+          // The first load registered the agents: answers held when the page last closed go now.
+          if (!flushed && source.flushHeldAnswers) {
+            flushed = true;
+            void source.flushHeldAnswers().then((outcomes) => {
+              if (!alive || !outcomes.length) return;
+              setHeldOutcomes(new Map(outcomes.map((outcome) => [JSON.stringify([outcome.sourceId, outcome.cardId]), outcome])));
+              // A replaced card's answer stays on screen with its refusal, as when a countdown is refused.
+              const replaced = outcomes.find((outcome) => outcome.answered)?.answered;
+              if (replaced) setActive(replaced);
+              void refresh();
+            }).catch(() => { /* Held answers stay held for the next launch. */ });
+          }
+        } catch {
+          if (alive) setError({ lead: "Home didn't load.", text: "Check your connection, then try again." });
         }
       } while (alive && dirty);
       running = false;
@@ -216,7 +378,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     void (source.cached?.() ?? Promise.resolve(null)).then((local) => {
       if (!alive || loaded || !local) return;
       setSnapshot(local); setClock(Date.now());
-      if (!chosenSelector.current) setSelector(local.settings.defaultSelector);
+      if (!hasDefault.current && !chosenView.current) setView(local.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
     }).catch(() => {}).finally(() => {
       if (alive) unsubscribe = source.subscribe(refreshRef.current);
     });
@@ -224,7 +386,45 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     return () => { alive = false; unsubscribe?.(); refreshRef.current = () => {}; };
   }, [source]);
 
-  const entries = history ? [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()] : snapshot?.entries ?? [];
+  /**
+   * The card's revisions, oldest first: those Home loaded as entries (with their owner history),
+   * and the rest of the output's stored revisions, which carry no response, message or view.
+   */
+  const revisionsOf = (entry: HomeFeedEntry): HomeFeedEntry[] => {
+    const known = new Map<number, HomeFeedEntry>();
+    const candidates = [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? []), ...(snapshot?.focusedEntry ? [snapshot.focusedEntry] : []), ...(active ? [active] : []), entry]
+      .filter((candidate) => candidate.source.sourceId === entry.source.sourceId && candidate.state.card.cardId === entry.state.card.cardId);
+    for (const candidate of candidates) known.set(candidate.state.card.revision, candidate);
+    for (const card of candidates.flatMap((candidate) => candidate.earlierRevisions ?? [])) {
+      if (!known.has(card.revision)) known.set(card.revision, storedRevisionEntry(entry.source, card));
+    }
+    return [...known.values()].sort((a, b) => a.state.card.revision - b.state.card.revision);
+  };
+  /**
+   * A plain card's run of reply-only revisions ending at `entry`, oldest first: the revisions
+   * that differ from their predecessor only by appended agent replies. Typed cards and any
+   * other change start a new run.
+   */
+  const replyChain = (entry: HomeFeedEntry): HomeFeedEntry[] => {
+    if (isTypedPayload(entry)) return [entry];
+    const chain = [entry];
+    for (const previous of revisionsOf(entry).filter((candidate) => candidate.state.card.revision < entry.state.card.revision).reverse()) {
+      if (!isReplyOnlyRevision(previous, chain[0]!)) break;
+      chain.unshift(previous);
+    }
+    return chain;
+  };
+  /** One identity for a card across reply-only revisions: its drafts, countdowns and view state survive them. */
+  const lineageKey = (entry: HomeFeedEntry) => keyOf(replyChain(entry)[0]!);
+  /** The revision in the reply-only run that holds the stored answer, if any. */
+  const answeredIn = (entry: HomeFeedEntry) => isTypedPayload(entry) ? undefined : [...replyChain(entry)].reverse().find((candidate) => candidate.state.response);
+  const entries = history
+    ? (() => {
+      const all = [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()];
+      // A revision that only gained agent replies is shown as its latest revision, once.
+      return all.filter((entry) => !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === lineageKey(entry)));
+    })()
+    : snapshot?.entries ?? [];
   const contextFor = useMemo(() => {
     const current = typedContexts(snapshot?.entries ?? [], snapshot?.sitrep, clock);
     const retained = new Map<string, ReturnType<typeof current>>();
@@ -257,19 +457,22 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const timer = window.setTimeout(() => setClock(Date.now()), Math.min(Math.max(0, next - Date.now() + 1), 2_147_483_647));
     return () => window.clearTimeout(timer);
   }, [snapshot, clock, contextFor]);
-  const matchesFilters = (entry: HomeFeedEntry) => (!agent || entry.source.sourceId === agent) && (!kind || entry.state.card.kind === kind) && (!project || projectOf(entry) === project);
-  const matching = entries.filter((entry) => {
-    const card = entry.state.card;
-    if (!matchesFilters(entry)) return false;
-    if (history) return entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || Date.parse(entry.view.snoozedUntil ?? "") > clock;
+  const matchesFilters = (entry: HomeFeedEntry) => (!agent || entry.source.sourceId === agent) && (!kind || kindOf(entry) === kind) && (!project || projectOf(entry) === project);
+  const attention = (entry: HomeFeedEntry) => needsAttention(entry, clock, contextFor(entry)?.projection) && !answeredIn(entry);
+  const folded = (entry: HomeFeedEntry) => {
     const typed = contextFor(entry);
-    const unsupported = card.payload?.sitrep !== undefined || card.payload?.sitrepThread !== undefined;
-    if (selector === "needs-action" && typed?.projection.foldedInto) {
-      const parent = typed.entries.find((candidate) => { const context = contextFor(candidate); return context?.record.kind === "ask" && context.record.id === typed.projection.foldedInto?.id; });
-      if (parent && matchesFilters(parent) && needsAttention(parent, clock, contextFor(parent)?.projection)) return false;
-    }
-    return selector === "both" || (selector === "information" ? typed ? !typed.projection.request : unsupported || !card.needsResponse : needsAttention(entry, clock, typed?.projection));
-  }).sort((a, b) => { const first = contextFor(a)?.waiting; const second = contextFor(b)?.waiting; return first && second ? compareWaiting(first, second) || compare(a, b) : compare(a, b); });
+    if (!typed?.projection.foldedInto) return false;
+    const parent = typed.entries.find((candidate) => { const context = contextFor(candidate); return context?.record.kind === "ask" && context.record.id === typed.projection.foldedInto?.id; });
+    return !!parent && matchesFilters(parent) && attention(parent);
+  };
+  const inDone = (entry: HomeFeedEntry) => entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!answeredIn(entry) || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || snoozedNow(entry, clock);
+  // A card the owner touched in this view keeps its place until the view changes,
+  // so an answer stays on screen (with "Change answer") instead of vanishing under the tap.
+  const keepsNeeds = (entry: HomeFeedEntry) => sticky.get(lineageKey(entry)) === true;
+  const needing = (entry: HomeFeedEntry) => (attention(entry) && !(selector === "needs-action" && folded(entry))) || keepsNeeds(entry);
+  const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry)).length;
+  const matching = entries.filter((entry) => matchesFilters(entry) && (history ? inDone(entry) : selector === "both" || needing(entry)))
+    .sort((a, b) => { const first = contextFor(a)?.waiting; const second = contextFor(b)?.waiting; return first && second ? compareWaiting(first, second) || compare(a, b) : compare(a, b); });
   const grouped = groupCards(matching, (entry) => {
     const record = contextFor(entry)?.record;
     const group = record && cardGroup(record);
@@ -282,31 +485,38 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const flagged = row.kind === "group" && group && first ? groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[group], pinned) : pinned.some(Boolean);
     return { value: row, flagged, blocker: members.some((entry) => { const context = contextFor(entry); return !!context && (!!context.record.blocks || !!context.waiting?.unblockWeight); }) };
   }));
-  const navigation = [...priority.priority, ...priority.rest];
-  const filtered = navigation.flatMap((row) => row.kind === "card" ? [row.item] : row.items);
+  const rows: Row[] = [...priority.priority, ...priority.rest];
   const activeKey = active ? keyOf(active) : null;
-  const selected = entries.find((entry) => keyOf(entry) === activeKey)
+  let selected = entries.find((entry) => keyOf(entry) === activeKey)
     ?? (snapshot?.focusedEntry && keyOf(snapshot.focusedEntry) === activeKey ? snapshot.focusedEntry : active);
-  const focused = selected ?? filtered[0];
-  const focusedKey = focused ? keyOf(focused) : null;
-  const focusedContext = focused ? contextFor(focused) : undefined;
-  const focusedUnsupported = !!focused && (focused.state.card.payload?.sitrep !== undefined || focused.state.card.payload?.sitrepThread !== undefined) && !focusedContext;
-  activeRef.current = focused ?? null;
-  const focusedIndex = filtered.findIndex((entry) => keyOf(entry) === focusedKey);
-  const nextEntry = filtered.length ? filtered[(focusedIndex + 1) % filtered.length] : undefined;
-  useEffect(() => { if (focused && activeKey !== focusedKey) setActive(focused); }, [focusedKey, activeKey]);
+  // A card the owner is working on stays bound to its exact issuance when a newer one
+  // arrives: it keeps its place (in place of its successor) until the owner moves on.
+  // A successor that only appends agent replies swaps in place instead.
+  if (selected && !rows.some((row) => (row.kind === "card" ? [row.item] : row.items).some((entry) => keyOf(entry) === keyOf(selected!)))) {
+    const current = selected;
+    const successor = rows.findIndex((row) => row.kind === "card" && row.item.source.sourceId === current.source.sourceId && row.item.state.card.cardId === current.state.card.cardId);
+    const next = successor >= 0 ? rows[successor] : undefined;
+    if (next?.kind === "card" && !isTypedPayload(current) && isReplyOnlyRevision(current, next.item)) selected = next.item;
+    else if (successor >= 0) rows[successor] = { kind: "card", item: current, retained: true };
+    else if (!entries.some((entry) => keyOf(entry) === keyOf(current))) rows.unshift({ kind: "card", item: current, retained: true });
+  }
+  const selectedKey = selected ? keyOf(selected) : null;
+  activeRef.current = selected ?? null;
+  useEffect(() => { if (selected && activeKey && selectedKey !== activeKey) setActive(selected); }, [selectedKey, activeKey]);
+  const filteredCount = rows.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0);
+
   useEffect(() => {
-    if (!focused || focused.view.seenAt) return;
+    if (!selected || selected.view.seenAt) return;
     let alive = true;
-    void source.markSeen(focused).then(() => {
+    void source.markSeen(selected).then(() => {
       if (!alive) return;
       const seenAt = new Date().toISOString();
       const update = (entry: HomeFeedEntry): HomeFeedEntry => ({ ...entry, view: { ...entry.view, seenAt } });
-      setSnapshot((current) => updateSnapshotEntry(current, focusedKey!, update));
-      setActive((current) => current && keyOf(current) === focusedKey ? update(current) : current);
-    }).catch((cause: unknown) => { if (alive) setError(cause instanceof Error ? cause.message : "Could not mark card seen"); });
+      setSnapshot((current) => updateSnapshotEntry(current, selectedKey!, update));
+      setActive((current) => current && keyOf(current) === selectedKey ? update(current) : current);
+    }).catch(() => { /* Seen is a hint; the card stays as it is. */ });
     return () => { alive = false; };
-  }, [source, focusedKey]);
+  }, [source, selectedKey]);
 
   const onSaved = useCallback((entry: HomeFeedEntry, response: FeedResponse) => {
     if (currentSource.current !== source) return;
@@ -318,97 +528,190 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     setActive((current) => current && keyOf(current) === key ? update(current) : current);
     refreshRef.current();
   }, [source]);
-  function changeSelector(value: FeedSelector) { chosenSelector.current = true; setSelector(value); setHistory(false); setActive(null); }
-  async function saveDefault() {
-    setSavingDefault(true); setError(null);
-    try {
-      await source.setDefaultSelector(selector);
-      setSnapshot((current) => current ? { ...current, settings: { defaultSelector: selector } } : current);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Default could not be saved"); }
-    finally { setSavingDefault(false); }
+  function changeView(next: HomeView) {
+    if (next === view) return;
+    // Answers still counting down are sent now: the owner chose them, then moved on.
+    for (const send of [...pendingSends.current]) send();
+    chosenView.current = true; setView(next); setActive(null); setSticky(new Map()); setExpanded(new Set());
+    if (next === "done") return;
+    // The last view is the next session's default; a failed write only loses that preference.
+    const value: FeedSelector = next === "needs-you" ? "needs-action" : "both";
+    if (snapshot?.settings.defaultSelector === value) return;
+    setSnapshot((current) => current ? { ...current, settings: { defaultSelector: value } } : current);
+    source.setDefaultSelector(value).catch(() => {});
   }
-  async function snooze() {
-    if (!focused || viewBusy) return;
-    setViewBusy(true); setError(null);
-    try {
-      const until = new Date(Date.now() + 60 * 60_000).toISOString();
-      await source.snooze(focused, until);
-      setSnapshot((current) => updateSnapshotEntry(current, focusedKey!, (entry) => ({ ...entry, view: { ...entry.view, snoozedUntil: until } })));
-      setActive(null);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Card could not be snoozed"); }
-    finally { setViewBusy(false); }
+  function engage(entry: HomeFeedEntry) {
+    if (keyOf(entry) !== activeKey) setActive(entry);
+    const key = lineageKey(entry);
+    if (!sticky.has(key)) setSticky((current) => new Map(current).set(key, view !== "done" && attention(entry)));
   }
-
-  function navigationCard(entry: HomeFeedEntry) {
-    const context = contextFor(entry);
-    const status = context ? context.projection.answer ? " · Answer saved" : context.record.kind === "claim" && context.owner.claimDecisions.some((decision) => decision.card.id === context.record.id) ? " · Decision saved" : context.projection.state?.doneAt ? " · Completion requested" : "" : entry.state.response ? " · Answer saved" : entry.view.snoozedUntil && Date.parse(entry.view.snoozedUntil) > clock ? " · Snoozed" : "";
-    return <button type="button" key={keyOf(entry)} aria-current={focusedKey === keyOf(entry) ? "true" : undefined} onClick={() => setActive(entry)} className="min-h-11 w-full rounded-xl border border-border bg-card px-3 py-2 text-left text-sm aria-[current=true]:border-primary"><span className="font-medium">{entry.state.card.title}</span><span className="ml-2 text-xs text-muted-foreground">{entry.source.label} · {entry.state.card.kind}{status}</span></button>;
+  function toggle(entry: HomeFeedEntry) {
+    engage(entry);
+    const key = lineageKey(entry);
+    setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   }
+  function release(entry: HomeFeedEntry) {
+    const key = lineageKey(entry);
+    setRefused((current) => { const next = new Map(current); next.delete(key); return next; });
+    setHeldOutcomes((current) => { const next = new Map(current); next.delete(JSON.stringify([entry.source.sourceId, entry.state.card.cardId])); return next; });
+    setSticky((current) => { const next = new Map(current); next.delete(key); return next; });
+    if (keyOf(entry) === activeKey) setActive(null);
+  }
+  const snooze = useCallback(async (entry: HomeFeedEntry, until: string) => {
+    await source.snooze(entry, until);
+    const key = keyOf(entry);
+    setSnapshot((current) => updateSnapshotEntry(current, key, (candidate) => ({ ...candidate, view: { ...candidate.view, snoozedUntil: until } })));
+    release(entry);
+    const lineage = lineageKey(entry);
+    setAwake((current) => { const next = new Set(current); next.delete(lineage); return next; });
+  }, [source, activeKey]);
+  function setFilter(update: () => void) { update(); setActive(null); setSticky(new Map()); }
 
   async function saveGroup(entry: HomeFeedEntry, group: string, on: boolean) {
     setViewBusy(true); setError(null);
     try {
       if (!source.setGroupPriority) throw new Error("This feed source does not provide private group storage");
       await source.setGroupPriority(entry, group, on); refreshRef.current();
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Private group decision could not be saved"); }
+    } catch { setError({ lead: "That wasn't saved.", text: "Try again." }); }
     finally { setViewBusy(false); }
   }
 
-  // Home shows only the heading and its empty state until the first card arrives.
-  const bare = !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
-  const selectClass = "min-h-10 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-  return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={NAV_LABEL_HOME}>
-    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-6 sm:px-5">
-      <header className="mb-6"><h1 className="font-display text-3xl font-semibold tracking-tight">{NAV_LABEL_HOME}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
-      {ask}
-      {!bare && <><div className="mb-4 flex flex-wrap items-center gap-2">
-        <label className="sr-only" htmlFor="home-feed-view">Feed view</label>
-        <select id="home-feed-view" aria-label="Feed view" value={selector} className={selectClass} onChange={(event) => changeSelector(event.target.value as FeedSelector)}>
-          <option value="information">Information</option><option value="both">Both</option><option value="needs-action">Needs action</option>
-        </select>
-        <button type="button" disabled={savingDefault || snapshot?.settings.defaultSelector === selector} onClick={() => void saveDefault()} className="min-h-10 rounded-lg border border-border px-3 text-xs disabled:opacity-50">{savingDefault ? "Saving default…" : "Use as default"}</button>
-        <button type="button" aria-pressed={history} onClick={() => { setHistory(!history); setActive(null); }} className="ml-auto min-h-10 rounded-lg border border-border px-3 text-sm">History</button>
-      </div>
-      <div className="mb-5 flex flex-wrap gap-2">
-        <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { setAgent(event.target.value); setActive(null); }}><option value="">All agents</option>{[...new Map(entries.map((entry) => [entry.source.sourceId, entry.source.label])).entries()].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>
-        <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { setKind(event.target.value); setActive(null); }}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { setProject(event.target.value); setActive(null); }}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
-      </div></>}
-      {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
-      {!snapshot && !error && <p className="text-sm text-muted-foreground">Loading your feed…</p>}
-      {snapshot && !filtered.length && !focused && (bare
-        ? <section aria-label={HOME_EMPTY_TITLE} className="rounded-xl border border-border bg-card p-6 text-sm">
-          <h2 className="font-display text-lg font-semibold">{HOME_EMPTY_TITLE}</h2>
-          <p className="mt-2 text-muted-foreground">{HOME_EMPTY_BODY}</p>
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            <Link to={PATHS.chat} className="inline-flex min-h-10 items-center rounded-lg bg-primary px-4 font-medium text-primary-foreground">{HOME_EMPTY_CHAT}</Link>
-            <a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{HOME_EMPTY_HOW}</a>
-          </div>
-        </section>
-        : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
-      {focused && <section aria-label="Focused card" className="mb-5 min-w-0">
-        <FeedCardView card={cardView(focused)} sample={false} readBody={source.readBody} />
-        <ReportLink entry={focused} />
-        <p className="mt-3 text-xs text-muted-foreground" aria-label="Card reference"><code className="select-all break-all" title={homeFeedKey(focused)}>{humanFeedReference(focused, entries)}</code></p>
-        {focusedContext ? <SitrepCard key={focusedKey!} entry={focused} record={focusedContext.record} records={focusedContext.records} entries={focusedContext.entries} owner={focusedContext.owner} projection={focusedContext.projection} source={source} now={clock} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onNavigate={setActive} /> : focusedUnsupported ? <p role="status" className="mt-4 rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p> : <><AnswerForm key={focusedKey!} entry={focused} source={source} onSaved={onSaved} /><CardHistory entry={focused} /></>}
-        <div className="mt-4 flex flex-wrap gap-2">
-          {!focusedContext && !focusedUnsupported && needsAttention(focused, clock) && <button type="button" disabled={viewBusy} onClick={() => void snooze()} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">Snooze for 1 hour</button>}
-          {nextEntry && keyOf(nextEntry) !== focusedKey && <button type="button" onClick={() => { if (nextEntry) setActive(nextEntry); }} className="min-h-10 rounded-lg border border-border px-3 text-sm">Next card</button>}
+  function chipFor(entry: HomeFeedEntry): ReactNode {
+    const context = contextFor(entry);
+    if (snoozedNow(entry, clock)) return <span className={chipClass}>Snoozed until {dueTime(entry.view.snoozedUntil!, clock)}</span>;
+    if (context) {
+      if (context.projection.attention === "closed" || isClosed(context.record)) return <span className={chipClass}>Closed</span>;
+      if (context.projection.answer) return <span className={chipClass}>Answered</span>;
+      return null;
+    }
+    return answeredIn(entry) ? <span className={chipClass}>Answered</span> : null;
+  }
+  function renderCard(entry: HomeFeedEntry, retained = false) {
+    const key = lineageKey(entry);
+    const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
+    const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : NOT_SENT_COPY.yourAnswer;
+    const refusedLabel = refused.get(key) ?? (retained && held?.answered && keyOf(held.answered) === keyOf(entry) ? heldLabel : undefined);
+    const onRefused = (label: string) => setRefused((current) => new Map(current).set(key, label));
+    const context = contextFor(entry);
+    const unsupported = isTypedPayload(entry) && !context;
+    const open = expanded.has(key);
+    // A snoozed card rests as its title until the owner asks to answer it now.
+    const resting = snoozedNow(entry, clock) && !awake.has(key) && !open;
+    const reference = <Reference title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</Reference>;
+    const comments = context ? threadSize(entry, context.record, context.owner) : unsupported ? 0 : plainThreadItems(entry, revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))).length;
+    return <li key={key} className="min-w-0">
+      <FeedCardView card={cardView(entry)} sample={false} readBody={source.readBody} now={clock} heading="h3" chip={chipFor(entry)} comments={resting ? 0 : comments} onOpenComments={() => { if (!open) toggle(entry); }} expanded={open} compact={resting || unsupported} clampTitle={view === "done" || !needing(entry)} onToggle={() => toggle(entry)} onEngage={() => engage(entry)}>
+        {resting && <QuietRow><button type="button" className={quietClass} onClick={() => { engage(entry); setAwake((current) => new Set(current).add(key)); }}>Answer now</button></QuietRow>}
+        {!resting && <>
+        {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
+          ? <NotSent label={refusedLabel} changed />
+          : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
+        {!retained && held?.outcome === "sent" && <p role="status" className="mt-3 text-[13px] text-muted-foreground">{HELD_ANSWER_COPY.sent}</p>}
+        {!retained && (held?.outcome === "closed" || held?.outcome === "refused") && <p role="alert" className="mt-3 text-[13px]"><NotSent label={heldLabel} /></p>}
+        <ReportLink entry={entry} />
+        {context
+          ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded={open} stale={retained} reference={reference} onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={release} onNavigate={(next) => { setActive(next); setExpanded((current) => new Set(current).add(keyOf(next))); }} />
+          : unsupported
+            ? <p role="status" className="mt-3.5 text-sm">Ask your agent about this card.</p>
+            : <AnswerForm key={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock} attention={attention(entry)} expanded={open} stale={retained} reference={reference} onSaved={onSaved} onSnooze={snooze} />}
+        </>}
+      </FeedCardView>
+    </li>;
+  }
+  function renderRow(row: Row) {
+    if (row.kind === "card") return renderCard(row.item, row.retained);
+    const first = row.items[0]; const record = first && contextFor(first)?.record; const name = record && cardGroup(record);
+    if (!first || !name) throw new Error("Invalid grouped Home card");
+    const open = expandedGroups.has(row.name);
+    const pinned = groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[name], row.items.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); }));
+    return <li key={row.name}>
+      <section aria-label={`Card group ${name}`} className="rounded-[20px] bg-muted/50 p-2">
+        <div className="flex flex-wrap items-center gap-x-3 px-2">
+          <button type="button" className={`min-h-11 grow text-left text-[15px] font-semibold ${focusRing}`} aria-expanded={open} onClick={() => setExpandedGroups((previous) => { const next = new Set(previous); if (next.has(row.name)) next.delete(row.name); else next.add(row.name); return next; })}>{name} <span className="font-normal tabular-nums text-muted-foreground">{row.items.length} cards</span></button>
+          <button type="button" disabled={viewBusy} aria-pressed={pinned} className={quietClass} onClick={() => void saveGroup(first, name, !pinned)}>{pinned ? "Clear priority" : "Mark priority"}</button>
         </div>
-      </section>}
-      {!!filtered.length && <nav aria-label="Cards in this view" className="mb-4 grid max-h-72 gap-2 overflow-y-auto">
-        {navigation.map((row) => {
-          if (row.kind === "card") return navigationCard(row.item);
-          const first = row.items[0]; const record = first && contextFor(first)?.record; const name = record && cardGroup(record);
-          if (!first || !name) throw new Error("Invalid grouped Home card");
-          const open = expandedGroups.has(row.name);
-          const pinned = groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[name], row.items.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); }));
-          return <section key={row.name} aria-label={`Card group ${name}`} className="space-y-2 rounded-xl border border-border p-2">
-            <div className="flex flex-wrap items-center gap-2"><button type="button" className="min-h-10 grow px-2 text-left text-sm font-medium" aria-expanded={open} onClick={() => setExpandedGroups((previous) => { const next = new Set(previous); if (next.has(row.name)) next.delete(row.name); else next.add(row.name); return next; })}>{name} · {row.items.length} cards</button><button type="button" disabled={viewBusy} aria-pressed={pinned} className="min-h-10 rounded-lg border border-border px-2 text-xs disabled:opacity-50" onClick={() => void saveGroup(first, name, !pinned)}>{pinned ? "Clear private group priority" : "Mark private group priority"}</button></div>
-            {open && <div className="grid gap-2 pl-2">{row.items.map(navigationCard)}</div>}
-          </section>;
-        })}
-      </nav>}
+        {open && <ul className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-3">{row.items.map((entry) => renderCard(entry))}</ul>}
+      </section>
+    </li>;
+  }
+  const rowNeeds = (row: Row) => (row.kind === "card" ? [row.item] : row.items).some(needing);
+  function group(label: string, list: Row[], count?: number, hidden = false) {
+    if (!list.length) return null;
+    const headingId = `home-group-${label.toLowerCase().replace(/\s+/g, "-")}`;
+    return <section aria-labelledby={headingId} className="mt-6">
+      <h2 id={headingId} className={hidden ? "sr-only" : "mb-2.5 flex gap-1.5 text-[13px] font-semibold leading-none"}>{label}{count !== undefined && <span className="font-normal tabular-nums text-muted-foreground">{count}</span>}</h2>
+      <ul className="grid grid-cols-[minmax(0,1fr)] gap-3">{list.map(renderRow)}</ul>
+    </section>;
+  }
+
+  const agents = [...new Map((snapshot?.entries ?? []).map((entry) => [entry.source.sourceId, entry.source.label])).entries()];
+  const projects = [...new Set((snapshot?.entries ?? []).map(projectOf).filter(Boolean))].sort();
+  const kinds = [...new Set((snapshot?.entries ?? []).map(kindOf))].sort();
+  const activeFilters = [agent, kind, project].filter(Boolean).length;
+  const filtering = activeFilters > 0;
+  const today = (snapshot?.entries ?? []).filter((entry) => !attention(entry) && new Date(entry.state.card.createdAt).toDateString() === new Date(clock).toDateString()).length;
+  // The Home site shows only the heading and its empty state until the first card arrives.
+  // The Home site shows only the heading and its empty card until the first card arrives;
+  // while loading, the control row is already in place so nothing moves when cards land.
+  const bare = !!snapshot && !snapshot.entries.length && !snapshot.historicalEntries?.length;
+  const selectClass = `mt-2 block h-11 w-full rounded-xl bg-background px-3 text-[15px] shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] ${focusRing}`;
+  return <PendingSendContext.Provider value={pendingSends.current}><main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={NAV_LABEL_HOME}>
+    <div className="mx-auto w-full max-w-[672px] min-w-0 px-4 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10">
+      <header>
+        <h1 className="font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
+        <p className="mt-1 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
+          ? <>{needsCount ? <b className="font-semibold text-foreground">{needsCount} {needsCount === 1 ? "needs" : "need"} you.</b> : <b className="font-semibold text-foreground">Nothing needs you.</b>}{today > 0 && ` ${today} ${today === 1 ? "update" : "updates"} today.`}</>
+          : "Updates and decisions from your agents."}</p>
+      </header>
+      {ask}
+      {!bare && <div className="mt-4 flex items-center gap-2">
+        <div role="group" aria-label="Show" className="flex gap-0.5 rounded-full bg-muted">
+          {VIEWS.map((option) => <button key={option.id} data-testid={`feed-view-${option.id}`} type="button" aria-pressed={view === option.id} onClick={() => changeView(option.id)}
+            className={`h-11 whitespace-nowrap rounded-full px-4 text-sm font-medium aria-pressed:bg-background aria-pressed:font-semibold aria-pressed:shadow-[inset_0_0_0_2px_hsl(var(--foreground))] ${focusRing}`}>
+            {option.label}{option.id === "needs-you" && snapshot && <span className="ml-1 tabular-nums">{needsCount}</span>}
+          </button>)}
+        </div>
+        {(agents.length > 1 || projects.length > 1 || filtering) && <button type="button" aria-haspopup="dialog" aria-label={`Filter by agent or project${activeFilters ? `, ${activeFilters} active` : ""}`} onClick={() => setFilterOpen(true)}
+          className={`relative ml-auto grid size-11 shrink-0 place-items-center rounded-full shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] ${focusRing}`}>
+          <SlidersHorizontalIcon aria-hidden className="size-5" />
+          {!!activeFilters && <span aria-hidden className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-foreground px-1 text-[11px] font-semibold tabular-nums text-background">{activeFilters}</span>}
+        </button>}
+      </div>}
+      <ResponsiveSheet open={filterOpen} onOpenChange={setFilterOpen} title={<span className="block text-[1.375rem] font-normal leading-[1.2]">Filter</span>}>
+        <ResponsiveSheetBody className="space-y-4 pb-6">
+          <label className="block text-[13px] font-semibold">Agent<select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { const value = event.target.value; setFilter(() => setAgent(value)); }}><option value="">All agents</option>{agents.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+          {projects.length > 0 && <label className="block text-[13px] font-semibold">Project<select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { const value = event.target.value; setFilter(() => setProject(value)); }}><option value="">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>}
+          <label className="block text-[13px] font-semibold">Type<select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { const value = event.target.value; setFilter(() => setKind(value)); }}><option value="">All types</option>{kinds.map((value) => <option key={value} value={value}>{kindWord(value)}</option>)}</select></label>
+          {filtering && <button type="button" className={pillClass} onClick={() => setFilter(() => { setAgent(""); setKind(""); setProject(""); })}>Clear filter</button>}
+        </ResponsiveSheetBody>
+      </ResponsiveSheet>
+      {error && <div role="alert" className="mt-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+        <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
+        <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className={`mt-2 ${pillClass}`}>Try again</button></div>
+      </div>}
+      {!snapshot && !error && <ul aria-busy="true" aria-label="Loading your feed" className="mt-6 grid gap-3">
+        {[0, 1, 2].map((index) => <li key={index} aria-hidden className={`${cardClass} space-y-3`}>
+          <div className="flex items-center gap-2"><span className="size-7 rounded-full bg-muted" /><span className="h-3 w-2/5 rounded-full bg-muted" /></div>
+          <div className="h-3.5 w-4/5 rounded-full bg-muted" />
+          <div className="h-3.5 w-3/5 rounded-full bg-muted" />
+          <div className="h-14" />
+        </li>)}
+      </ul>}
+      {snapshot && !filteredCount && (bare
+        ? <section aria-labelledby="home-empty-title" className={`mt-6 ${cardClass}`}>
+          <h2 id="home-empty-title" className="font-display text-[1.375rem] font-normal leading-[1.2]">{HOME_EMPTY_TITLE}</h2>
+          <p className="mt-2 max-w-[60ch] text-base leading-[1.5]">{HOME_EMPTY_BODY}</p>
+          <Link to={PATHS.chat} className={primaryPillClass}>{HOME_EMPTY_CHAT}</Link>
+          <AgentPrompt copyButton={({ onClick, children }) => <button type="button" className={primaryPillClass} onClick={onClick}>{children}</button>}
+            aside={<a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className={quietClass}>{HOME_EMPTY_HOW}</a>} />
+        </section>
+        : <div className="mt-6 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+          <p>{filtering ? "No cards match this filter." : history ? "Nothing answered or snoozed yet." : view === "needs-you" ? "Nothing needs you." : "No cards yet."}</p>
+          {filtering && <button type="button" className={`mt-2 ${pillClass} text-foreground`} onClick={() => setFilter(() => { setAgent(""); setKind(""); setProject(""); })}>Clear filter</button>}
+        </div>)}
+      {!!filteredCount && (view === "all"
+        ? <>{group("Needs you", rows.filter(rowNeeds), needsCount)}{group("Earlier", rows.filter((row) => !rowNeeds(row)))}</>
+        : group(view === "done" ? "History" : "Needs you", rows, undefined, true))}
     </div>
-  </main>;
+  </main></PendingSendContext.Provider>;
 }

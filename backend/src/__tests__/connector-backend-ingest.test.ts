@@ -247,7 +247,7 @@ function deliveryHarness(
   const tokens = new FakeTokenStore();
   const queue = new RecordingQueue();
   const cohortNode = new CohortNode();
-  const modes = new IngestModeService(cohortNode.asNode());
+  const modes = new IngestModeService(cohortNode.asNode(), { hasOAuthCredential: async () => true });
   const nudges: Array<{ source: string; address: string }> = [];
   registerFetchWorkerNudge({
     nudge: (input) => {
@@ -346,7 +346,7 @@ describe("backend-ingest flag (dark default)", () => {
   test("flag off costs the shared node ZERO reads — Option C is untouched, not re-decided", async () => {
     const node = new CohortNode();
     node.seedCohort([ADDRESS_A]);
-    const modes = new IngestModeService(node.asNode());
+    const modes = new IngestModeService(node.asNode(), { hasOAuthCredential: async () => true });
 
     expect(await modes.mode(ADDRESS_A)).toBe("browser");
     expect(node.calls).toHaveLength(0);
@@ -362,7 +362,7 @@ describe("cohort allowlist (D5: operator-only, backend config KV)", () => {
     enabled();
     const node = new CohortNode();
     node.seedCohort([ADDRESS_A]);
-    const modes = new IngestModeService(node.asNode());
+    const modes = new IngestModeService(node.asNode(), { hasOAuthCredential: async () => true });
 
     expect(await modes.mode(ADDRESS_A)).toBe("backend");
     expect(await modes.mode(ADDRESS_B)).toBe("browser");
@@ -372,7 +372,7 @@ describe("cohort allowlist (D5: operator-only, backend config KV)", () => {
     enabled();
     const node = new CohortNode();
     node.seedCohort([ADDRESS_A_MIXED]);
-    const modes = new IngestModeService(node.asNode());
+    const modes = new IngestModeService(node.asNode(), { hasOAuthCredential: async () => true });
 
     expect(await modes.mode(ADDRESS_A)).toBe("backend");
     expect(await modes.mode(ADDRESS_A_MIXED)).toBe("backend");
@@ -381,7 +381,7 @@ describe("cohort allowlist (D5: operator-only, backend config KV)", () => {
   test("an absent cohort key means an empty cohort, not an error", async () => {
     enabled();
     const node = new CohortNode();
-    const modes = new IngestModeService(node.asNode());
+    const modes = new IngestModeService(node.asNode(), { hasOAuthCredential: async () => true });
 
     expect(await modes.mode(ADDRESS_A)).toBe("browser");
   });
@@ -392,6 +392,7 @@ describe("cohort allowlist (D5: operator-only, backend config KV)", () => {
     node.seedCohort([ADDRESS_A]);
     const clock = { now: 1_000 };
     const modes = new IngestModeService(node.asNode(), {
+      hasOAuthCredential: async () => true,
       ttlMs: 60_000,
       now: () => clock.now,
     });
@@ -408,7 +409,7 @@ describe("cohort allowlist (D5: operator-only, backend config KV)", () => {
     enabled();
     const node = new CohortNode();
     node.failGetWith = new Error("kv down");
-    const modes = new IngestModeService(node.asNode());
+    const modes = new IngestModeService(node.asNode(), { hasOAuthCredential: async () => true });
 
     await expect(modes.mode(ADDRESS_A)).rejects.toThrow();
   });
@@ -417,7 +418,7 @@ describe("cohort allowlist (D5: operator-only, backend config KV)", () => {
     enabled();
     const node = new CohortNode();
     node.rawOverride = { addresses: "0xnot-an-array" };
-    const modes = new IngestModeService(node.asNode());
+    const modes = new IngestModeService(node.asNode(), { hasOAuthCredential: async () => true });
 
     await expect(modes.mode(ADDRESS_A)).rejects.toThrow();
   });
@@ -430,7 +431,7 @@ describe("cohort allowlist (D5: operator-only, backend config KV)", () => {
       (_, i) => `0x${String(i).padStart(40, "0")}`,
     );
     node.seedCohort(many);
-    const modes = new IngestModeService(node.asNode());
+    const modes = new IngestModeService(node.asNode(), { hasOAuthCredential: async () => true });
 
     const capture = captureLogs();
     try {
@@ -449,7 +450,7 @@ describe("cohort allowlist (D5: operator-only, backend config KV)", () => {
     enabled();
     const node = new CohortNode();
     node.seedCohort([ADDRESS_A]);
-    const modes = new IngestModeService(node.asNode());
+    const modes = new IngestModeService(node.asNode(), { hasOAuthCredential: async () => true });
 
     const capture = captureLogs();
     try {
@@ -558,7 +559,7 @@ describe("delivery-path routing", () => {
     const cohortNode = new CohortNode();
     cohortNode.seedCohort([ADDRESS_A]);
     const onDelivery = createIngestOnDelivery({
-      modes: new IngestModeService(cohortNode.asNode()),
+      modes: new IngestModeService(cohortNode.asNode(), { hasOAuthCredential: async () => true }),
     });
 
     await onDelivery({ source: SOURCE, address: ADDRESS_A });
@@ -575,7 +576,7 @@ describe("delivery-path routing", () => {
       },
     });
     const onDelivery = createIngestOnDelivery({
-      modes: new IngestModeService(cohortNode.asNode()),
+      modes: new IngestModeService(cohortNode.asNode(), { hasOAuthCredential: async () => true }),
     });
 
     await onDelivery({ source: SOURCE, address: ADDRESS_A });
@@ -821,7 +822,7 @@ function companionHarness(
       limiters: new ConnectorWebhookLimiters(),
       ...(options.modes === false
         ? {}
-        : { modes: new IngestModeService(cohortNode.asNode()) }),
+        : { modes: new IngestModeService(cohortNode.asNode(), { hasOAuthCredential: async () => true }) }),
       drain: async (input) => {
         drains.push(input);
         const due = await queue.list(input.source, input.address);
@@ -966,7 +967,6 @@ describe("index.ts wiring", () => {
   });
 
   test("the companions receive the same ingest-mode service the delivery path uses", () => {
-    expect(source).toContain("new IngestModeService(node)");
     expect(source).toMatch(/modes:\s*connectorWebhooks\.modes/);
   });
 });
