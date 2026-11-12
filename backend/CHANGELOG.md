@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.12
+
+### Minor Changes
+
+- abe8e22: Save bot chat history encrypted in the owner's TinyCloud space, with verified model receipts and storage acknowledgments. Notify the owner in Main's chat when expired TinyCloud permission schedules local history deletion, and resume copying after reconnection. Details: TC-2808.
+
 ## 0.8.0-beta.11
 
 ### Patch Changes

@@ -32,17 +32,35 @@ export const ORIGIN_MOVE_RECHECK_MS = 30_000;
 export const CANONICAL_VERSION_TIMEOUT_MS = 5_000;
 
 /**
- * Recordings that exist only in this browser, by why they keep the visitor here.
+ * Recordings that exist only in this browser, by why they keep the visitor here. Each recording counts once, in the
+ * first of these that applies.
  * `saving`: work that is still on its way to the space and finishes by itself (a recording, an
  * unsaved note, outbox work, a held or local transcript, a Private transcription job, unsynced
  * note Markdown, an Upload-sheet job). Infinity when the check failed: unknown blocks.
- * `localAudio`: notes saved to the space whose audio is not (web audio upload is off by default);
- * webStore never deletes that audio, so it stays reachable only on this origin.
+ * `unclaimed`: committed recordings made signed out, kept until "Save to this account".
+ * `otherAccount`: committed recordings bound to an account that is not signed in here.
+ * `localAudio`: the signed-in account's notes saved to the space whose audio is not (web audio upload is off by
+ * default), by recording id; webStore never deletes that audio, so it stays reachable only on this origin.
+ * `signedIn`: an account is signed in here.
  */
 export interface LocalRecordingWork {
   saving: number;
-  localAudio: number;
+  localAudio: readonly string[];
+  unclaimed: number;
+  otherAccount: number;
+  signedIn: boolean;
 }
+
+/** Nothing local-only: the move may go ahead, and no notice shows. */
+export const NO_LOCAL_WORK: LocalRecordingWork = { saving: 0, localAudio: [], unclaimed: 0, otherAccount: 0, signedIn: false };
+
+/** Whether anything in `work` keeps the visitor on this origin. */
+export function holdsOriginMove(work: LocalRecordingWork): boolean {
+  return work.saving !== 0 || work.localAudio.length > 0 || work.unclaimed > 0 || work.otherAccount > 0;
+}
+
+/** The count when this browser's recordings could not be read: unknown blocks the move. */
+const UNKNOWN_WORK: LocalRecordingWork = { ...NO_LOCAL_WORK, saving: Number.POSITIVE_INFINITY };
 
 export type OriginMoveDecision =
   | { kind: "stay" }
@@ -258,9 +276,11 @@ const NO_ROWS = new Map<string, unknown[]>();
  *   re-keys and re-syncs it;
  * - Private transcription jobs in localStorage whose transcript is not in the space;
  * plus unsaved Upload-sheet jobs.
- * `localAudio`: the remaining notes whose audio has no verified space copy (audioPlaybackCache.ts
- * `hasVerifiedSpaceCopy`), and every counted committed recording that is unclaimed or bound to an account that is
- * not signed in here (webStore.ts keeps them through sign-out until that account syncs or deletes them).
+ * The rest keep the visitor here without making progress by themselves, split by owner: notes whose audio has no
+ * verified space copy (audioPlaybackCache.ts `hasVerifiedSpaceCopy`), and every counted committed recording that is
+ * unclaimed or bound to an account that is not signed in here (webStore.ts keeps them through sign-out until that
+ * account syncs or deletes them). Unclaimed ones count as `unclaimed`, another account's as `otherAccount`, and the
+ * signed-in account's own (only audio is left for them) as `localAudio`.
  *
  * Not counted, because they hold no data of their own that the counted stores or the space lack:
  * exo-pending-save-state and the Private choice/hold markers (a note id and a status; the note is
@@ -276,7 +296,7 @@ export async function countLocalOnlyRecordingWork(env: OriginMoveEnv = {}): Prom
   try {
     const storage = env.storage !== undefined ? env.storage : globalThis.localStorage ?? null;
     const saving = new Set<string>();
-    const localAudio = new Set<string>();
+    const keptHere = new Set<string>();
     const [voice, held, notes] = factory
       ? await Promise.all([
         readExisting<unknown>(factory, VOICE_NOTES_DB,
@@ -300,7 +320,7 @@ export async function countLocalOnlyRecordingWork(env: OriginMoveEnv = {}): Prom
     for (const note of (voice.get(STORES.notes) ?? []) as VoiceNoteRecording[]) {
       recordings.set(note.id, note);
       if (note.ledger?.audio.state !== "saved" || hasLocalWorkInProgress(note)) saving.add(note.id);
-      else if (!hasVerifiedSpaceCopy(note)) localAudio.add(note.id);
+      else if (!hasVerifiedSpaceCopy(note)) keptHere.add(note.id);
     }
     for (const row of (voice.get(STORES.transcripts) ?? []) as { id: string; transcript: LocalTranscript }[]) {
       // A hosted (AssemblyAI) transcript is written here just before its save to the space, and its remote op
@@ -331,18 +351,27 @@ export async function countLocalOnlyRecordingWork(env: OriginMoveEnv = {}): Prom
     const capture = (voice.get(STORES.kv) ?? []).find((row) => row && typeof row === "object" && "key" in row && row.key === "capture");
     const signedIn = capture && typeof capture === "object" && "status" in capture && capture.status === "signed_in"
       && "defaults" in capture && capture.defaults && typeof capture.defaults === "object" && "accountDid" in capture.defaults
-      ? capture.defaults.accountDid : null;
+      && typeof capture.defaults.accountDid === "string" && capture.defaults.accountDid !== "" ? capture.defaults.accountDid : null;
     for (const id of saving) {
       const owner = recordings.get(id)?.owner;
       if (!capturing.has(id) && recordings.has(id) && (!owner || owner !== signedIn)) {
         saving.delete(id);
-        localAudio.add(id);
-      } else localAudio.delete(id);
+        keptHere.add(id);
+      } else keptHere.delete(id);
     }
-    return { saving: saving.size + local.uploads, localAudio: localAudio.size };
+    const localAudio: string[] = [];
+    let unclaimed = 0;
+    let otherAccount = 0;
+    for (const id of keptHere) {
+      const owner = recordings.get(id)?.owner;
+      if (!owner) unclaimed++;
+      else if (owner !== signedIn) otherAccount++;
+      else localAudio.push(id);
+    }
+    return { saving: saving.size + local.uploads, localAudio, unclaimed, otherAccount, signedIn: signedIn !== null };
   } catch (error) {
     console.warn("[originMove] Could not check local recordings; staying on this origin", error);
-    return { saving: Number.POSITIVE_INFINITY, localAudio: 0 };
+    return UNKNOWN_WORK;
   }
 }
 
@@ -367,9 +396,9 @@ export async function decideOriginMove({
   try {
     work = await countWork();
   } catch {
-    work = { saving: Number.POSITIVE_INFINITY, localAudio: 0 };
+    work = UNKNOWN_WORK;
   }
-  if (work.saving !== 0 || work.localAudio !== 0) return { kind: "hold", work };
+  if (holdsOriginMove(work)) return { kind: "hold", work };
   const ready = await canonicalReady().catch(() => false);
   return ready ? { kind: "move", url: canonicalUrlFor(location) } : { kind: "stay" };
 }
@@ -402,8 +431,8 @@ export interface MoveWhenClearOptions {
 
 /**
  * Checks right away, then while held re-checks every `intervalMs`, when the page becomes visible, when
- * the browser comes back online and when the last `deferOriginMove` ends. A visitor kept only by audio
- * that lives here (nothing saving) stays put, so once its notice is up the timed re-check pauses until
+ * the browser comes back online and when the last `deferOriginMove` ends. A visitor kept only by recordings
+ * that do not save by themselves (nothing saving) stays put, so once its notice is up the timed re-check pauses until
  * something is saving again. Replaces the location with the canonical URL (computed from the location at that moment) once
  * nothing is left, this tab runs no upload, nothing defers the move and home.tinycloud.xyz serves this
  * build. Returns a function that stops checking.
@@ -431,7 +460,7 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
   let again = false;
   // The notice says the visitor will move; it is shown only once home.tinycloud.xyz has served this build.
   let servedThisBuild = false;
-  // Off while only audio kept here holds the visitor (and the notice is up): nothing changes by itself, so the timer reads nothing.
+  // Off while nothing is saving and the notice is up: nothing changes by itself, so the timer reads nothing.
   let polling = true;
 
   const buildServed = async () => {
@@ -460,13 +489,13 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
         const shown = await buildServed();
         // Until home.tinycloud.xyz serves this build, keep asking it, so the notice can appear.
         polling = work.saving !== 0 || !shown;
-        if (!stopped) options.onPending?.(shown ? work : { saving: 0, localAudio: 0 });
+        if (!stopped) options.onPending?.(shown ? work : NO_LOCAL_WORK);
         return;
       }
       polling = true;
       // Nothing local is left: whatever blocks the move now, the notice has no count to show.
       if (isOriginMoveDeferred() || !await canonicalReady().catch(() => false) || stopped || isOriginMoveDeferred()) {
-        if (!stopped) options.onPending?.({ saving: 0, localAudio: 0 });
+        if (!stopped) options.onPending?.(NO_LOCAL_WORK);
         return;
       }
       stop();

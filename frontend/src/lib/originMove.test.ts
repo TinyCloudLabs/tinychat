@@ -17,12 +17,16 @@ import { newIdbEnv } from "./voiceNotes/web/testing/idb";
 import { memoryLocks, openWebStore, recordingFromSession, type WebStore } from "./voiceNotes/web/webStore";
 import {
   CANONICAL_ORIGIN, CANONICAL_VERSION_URL, canonicalServesThisBuild, LEGACY_HOSTNAME, canonicalUrlFor, countLocalOnlyRecordingWork,
-  decideOriginMove, deferOriginMove, isLegacyOrigin, isOriginMoveDeferred, moveWhenClear, originMoveExemption,
+  decideOriginMove, deferOriginMove, isLegacyOrigin, isOriginMoveDeferred, moveWhenClear, NO_LOCAL_WORK, originMoveExemption,
   type LocalRecordingWork,
 } from "./originMove";
 
 const legacy = { hostname: "tinycloud.chat", pathname: "/notes/abc", search: "?tab=all&x=1", hash: "#share=tc1.eyJhIjoxfQ" };
-const none: LocalRecordingWork = { saving: 0, localAudio: 0 };
+const none = NO_LOCAL_WORK;
+/** A count of `patch` over nothing, with no account signed in. */
+const counted = (patch: Partial<LocalRecordingWork>): LocalRecordingWork => ({ ...NO_LOCAL_WORK, ...patch });
+/** The same with did:a signed in (`seededStore`). */
+const signedInCount = (patch: Partial<LocalRecordingWork> = {}) => counted({ signedIn: true, ...patch });
 const receipt = { sha256: "a".repeat(64), size: 4 };
 const ready = async () => true;
 
@@ -74,6 +78,13 @@ async function savedInSpace(store: WebStore, id: string) {
   return store.updateLedger({ id, did: "did:a", rev: note.rev!, patch: {
     audio: { state: "saved", rowId: `row-${id}`, at: 2000, verifiedInSpace: receipt },
   } });
+}
+
+/** A recording saved to the space without its audio (web audio upload is off by default): the audio is only here. */
+async function savedAudioHere(store: WebStore, id: string) {
+  await startRecording(store, id);
+  const note = await commit(store, id);
+  return store.updateLedger({ id, did: "did:a", rev: note.rev!, patch: { audio: { state: "saved", rowId: `row-${id}`, at: 2000 } } });
 }
 
 /** The page's existing IndexedDB database `name`, with `rows` put into `store` (keyPath `keyPath`). */
@@ -130,7 +141,7 @@ describe("origin move", () => {
     expect(await factory.databases()).toEqual([]);
     const store = await openWebStore({ env, locks: memoryLocks(), decodeCheck: null });
     await startRecording(store, "rec");
-    expect(await countLocalOnlyRecordingWork({ factory: noListing, storage: null })).toEqual({ saving: 1, localAudio: 0 });
+    expect(await countLocalOnlyRecordingWork({ factory: noListing, storage: null })).toEqual(counted({ saving: 1 }));
     store.close();
   });
 
@@ -139,16 +150,16 @@ describe("origin move", () => {
     const store = await open();
     await startRecording(store, "rec");
     const decide = () => decideOriginMove({ location: legacy, countWork: count, canonicalReady: ready });
-    expect(await decide()).toEqual({ kind: "hold", work: { saving: 1, localAudio: 0 } });
+    expect(await decide()).toEqual({ kind: "hold", work: signedInCount({ saving: 1 }) });
 
     const note = await commit(store, "rec");
-    expect(await decide()).toEqual({ kind: "hold", work: { saving: 1, localAudio: 0 } });
+    expect(await decide()).toEqual({ kind: "hold", work: signedInCount({ saving: 1 }) });
 
     const { rev } = await store.updateLedger({ id: "rec", did: "did:a", rev: note.rev!, patch: {
       audio: { state: "saved", rowId: "row-1", at: 2000 },
     } });
     // Saved without uploading the audio (web audio upload is off by default): the audio is only here.
-    expect(await decide()).toEqual({ kind: "hold", work: { saving: 0, localAudio: 1 } });
+    expect(await decide()).toEqual({ kind: "hold", work: signedInCount({ localAudio: ["rec"] }) });
 
     await store.updateLedger({ id: "rec", did: "did:a", rev, patch: {
       audio: { state: "saved", rowId: "row-1", at: 2000, verifiedInSpace: receipt },
@@ -162,9 +173,9 @@ describe("origin move", () => {
     const store = await open();
     await store.beginRemoteOp({ id: "gone", did: "did:a", opId: "op1", provider: "assemblyai", mode: "hosted",
       kind: "hosted_create", fingerprint: "fp", startedAt: 1 });
-    expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+    expect(await count()).toEqual(signedInCount({ saving: 1 }));
     await store.completeOutbox({ entryId: "gone:op1", result: "done" });
-    expect(await count()).toEqual(none);
+    expect(await count()).toEqual(signedInCount());
     store.close();
   });
 
@@ -179,15 +190,15 @@ describe("origin move", () => {
       "exo.other": job({}),
     });
     const countWork = () => countLocalOnlyRecordingWork({ factory: null, storage });
-    expect(await countWork()).toEqual({ saving: 1, localAudio: 0 });
-    expect(await decideOriginMove({ location: legacy, countWork })).toEqual({ kind: "hold", work: { saving: 1, localAudio: 0 } });
+    expect(await countWork()).toEqual(counted({ saving: 1 }));
+    expect(await decideOriginMove({ location: legacy, countWork })).toEqual({ kind: "hold", work: counted({ saving: 1 }) });
   });
 
   test("an unreadable store or failing count blocks the move", async () => {
     const broken = { databases: async () => { throw new Error("denied"); } } as unknown as IDBFactory;
-    expect(await countLocalOnlyRecordingWork({ factory: broken, storage: null })).toEqual({ saving: Number.POSITIVE_INFINITY, localAudio: 0 });
+    expect(await countLocalOnlyRecordingWork({ factory: broken, storage: null })).toEqual(counted({ saving: Number.POSITIVE_INFINITY }));
     expect(await decideOriginMove({ location: legacy, countWork: async () => { throw new Error("x"); } }))
-      .toEqual({ kind: "hold", work: { saving: Number.POSITIVE_INFINITY, localAudio: 0 } });
+      .toEqual({ kind: "hold", work: counted({ saving: Number.POSITIVE_INFINITY }) });
   });
 
   /** Records what moveWhenClear reports (a notice's count, or the move); `reported(n)` waits for the n-th report. */
@@ -218,12 +229,12 @@ describe("origin move", () => {
 
   test("moveWhenClear checks at once, re-checks on online and visibility, and moves to the URL of the location at move time", async () => {
     const w = watcher();
-    let work: LocalRecordingWork = { saving: 1, localAudio: 0 };
+    let work: LocalRecordingWork = counted({ saving: 1 });
     let checks = 0;
     const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
       opener: w.opener, canonicalReady: ready, upload: () => null, countWork: async () => { checks++; return work; } });
     await w.reported(1);
-    expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }]);
+    expect(w.seen).toEqual([counted({ saving: 1 })]);
     w.window.dispatchEvent(new Event("online"));
     await w.reported(2);
     expect(w.seen).toHaveLength(2);
@@ -247,12 +258,12 @@ describe("origin move", () => {
     const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
       opener: w.opener, canonicalReady: ready, upload: () => live, countWork: async () => none });
     await w.reported(1);
-    expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }]);
+    expect(w.seen).toEqual([counted({ saving: 1 })]);
 
     live = { ...live!, stage: "saved", audio: { stage: "storing", pct: 50 } };
     w.window.dispatchEvent(new Event("online"));
     await w.reported(2);
-    expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }, { saving: 1, localAudio: 0 }]);
+    expect(w.seen).toEqual([counted({ saving: 1 }), counted({ saving: 1 })]);
     expect(w.replaced).toEqual([]);
 
     live = { ...live, audio: { stage: "stored", pct: null } };
@@ -266,7 +277,7 @@ describe("origin move", () => {
     jest.useFakeTimers();
     try {
       const w = watcher();
-      let work: LocalRecordingWork = { saving: 1, localAudio: 0 };
+      let work: LocalRecordingWork = counted({ saving: 1 });
       let checks = 0;
       const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
         opener: w.opener, canonicalReady: ready, upload: () => null, countWork: async () => { checks++; return work; } });
@@ -277,14 +288,14 @@ describe("origin move", () => {
       await w.reported(2);
       expect(checks).toBe(2);
 
-      // Audio kept only here: the visitor stays, so the timer stops reading storage; events still re-check.
-      work = { saving: 0, localAudio: 2 };
+      // Only recordings that do not save by themselves: the visitor stays, so the timer stops reading storage; events still re-check.
+      work = counted({ localAudio: ["a", "b"], unclaimed: 1, otherAccount: 1 });
       jest.advanceTimersByTime(30_000);
       await w.reported(3);
-      expect(w.seen.at(-1)).toEqual({ saving: 0, localAudio: 2 });
+      expect(w.seen.at(-1)).toEqual(counted({ localAudio: ["a", "b"], unclaimed: 1, otherAccount: 1 }));
       jest.advanceTimersByTime(120_000);
       expect(checks).toBe(3);
-      work = { saving: 1, localAudio: 2 };
+      work = counted({ saving: 1, localAudio: ["a", "b"] });
       w.window.dispatchEvent(new Event("online"));
       await w.reported(4);
       jest.advanceTimersByTime(30_000);
@@ -376,15 +387,15 @@ describe("origin move", () => {
     expect(await decideOriginMove({ location: legacy, countWork: async () => none, canonicalReady: async () => { throw new Error("x"); } }))
       .toEqual({ kind: "stay" });
     let asked = 0;
-    expect(await decideOriginMove({ location: legacy, countWork: async () => ({ saving: 1, localAudio: 0 }),
-      canonicalReady: async () => { asked++; return true; } })).toEqual({ kind: "hold", work: { saving: 1, localAudio: 0 } });
+    expect(await decideOriginMove({ location: legacy, countWork: async () => counted({ saving: 1 }),
+      canonicalReady: async () => { asked++; return true; } })).toEqual({ kind: "hold", work: counted({ saving: 1 }) });
     expect(asked).toBe(0);
   });
 
   test("a held page shows no notice until home.tinycloud.xyz serves this build, and clears it while the move is blocked", async () => {
     const w = watcher();
     let servesThisBuild = false;
-    let work: LocalRecordingWork = { saving: 1, localAudio: 0 };
+    let work: LocalRecordingWork = counted({ saving: 1 });
     const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
       opener: false, upload: () => null, countWork: async () => work, canonicalReady: async () => servesThisBuild });
     // Between the deploy and the domain move the notice would promise a move that cannot happen yet.
@@ -396,7 +407,7 @@ describe("origin move", () => {
     servesThisBuild = true;
     w.window.dispatchEvent(new Event("online"));
     await w.reported(3);
-    expect(w.seen.at(-1)).toEqual({ saving: 1, localAudio: 0 });
+    expect(w.seen.at(-1)).toEqual(counted({ saving: 1 }));
 
     // Saved, but the build check fails this time: no stale count is left on screen, and no move.
     servesThisBuild = false;
@@ -415,11 +426,11 @@ describe("origin move", () => {
 
   test("a held page never moves while something defers it, clears its count, and moves once the last deferral ends", async () => {
     const w = watcher();
-    let work: LocalRecordingWork = { saving: 1, localAudio: 0 };
+    let work: LocalRecordingWork = counted({ saving: 1 });
     const stop = moveWhenClear({ location: w.location, window: w.window, document: w.document, onPending: w.onPending,
       opener: false, upload: () => null, countWork: async () => work, canonicalReady: ready });
     await w.reported(1);
-    expect(w.seen).toEqual([{ saving: 1, localAudio: 0 }]);
+    expect(w.seen).toEqual([counted({ saving: 1 })]);
 
     const chatDraft = deferOriginMove();
     const noteEdit = deferOriginMove();
@@ -458,7 +469,7 @@ describe("origin move", () => {
     const { env, open, count } = seededStore();
     const store = await open();
     await savedInSpace(store, "note-a");
-    expect(await count()).toEqual(none);
+    expect(await count()).toEqual(signedInCount());
     const hold = (did: string, sourceId: string) => createHeldResultStore(did, { env, isSignedIn: async () => true }).hold({
       version: 1, did, spaceId: "space-a", sourceId, engine: "private-cloud",
       transcript: { rev: 2, sentences: [{ index: 0, text: "only here", speaker_name: "Speaker 1", start_time: 0, end_time: 1 }],
@@ -466,10 +477,10 @@ describe("origin move", () => {
       provider: null, intent: { kind: "unknown" },
     });
     await hold("did:a", "note-a");
-    expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+    expect(await count()).toEqual(signedInCount({ saving: 1 }));
     // Another account's row (its sign-out clears it, heldResults.ts `clearHeldResultsForSignOut`, unless that failed) counts too.
     await hold("did:b", "note-b");
-    expect(await count()).toEqual({ saving: 2, localAudio: 0 });
+    expect(await count()).toEqual(signedInCount({ saving: 2 }));
     store.close();
   });
 
@@ -481,12 +492,12 @@ describe("origin move", () => {
       engine: "whispercpp", model: null, language: "en", outcome: "transcribed", diarized: false,
       segments: [{ start: 0, end: 1000, text: "only here", speaker: null }] };
     await store.putTranscript({ id: "note-a", transcript });
-    expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+    expect(await count()).toEqual(signedInCount({ saving: 1 }));
     await store.updateLedger({ id: "note-a", did: "did:a", rev, patch: { transcriptSync: { state: "saved", rev: 1, at: 3000 } } });
-    expect(await count()).toEqual(none);
+    expect(await count()).toEqual(signedInCount());
     // A hosted transcript is held through its remote op instead (localWork.ts), so the copy alone keeps nobody here.
     await store.putTranscript({ id: "note-a", transcript: { ...transcript, transcriber: "assemblyai", engine: "assemblyai", rev: 2 } });
-    expect(await count()).toEqual(none);
+    expect(await count()).toEqual(signedInCount());
     store.close();
   });
 
@@ -507,14 +518,14 @@ describe("origin move", () => {
       expect(typeof indexedDB).toBe("undefined"); // recordingNotes.ts keeps notes in localStorage here.
       const count = () => countLocalOnlyRecordingWork({ factory: null, storage });
       const typed = await saveNote("note-1", "typed while recording", { owner: "did:a" });
-      expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+      expect(await count()).toEqual(counted({ saving: 1 }));
       await markNoteSynced("note-1", "did:a", typed.revision);
       expect(await count()).toEqual(none);
       const edited = await saveNote("note-1", "edited after the sync", { owner: "did:a" });
-      expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+      expect(await count()).toEqual(counted({ saving: 1 }));
       // An acknowledgement of an older revision never covers the newer edit.
       await markNoteSynced("note-1", "did:a", typed.revision);
-      expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+      expect(await count()).toEqual(counted({ saving: 1 }));
       await markNoteSynced("note-1", "did:a", edited.revision);
       expect(await count()).toEqual(none);
 
@@ -522,7 +533,7 @@ describe("origin move", () => {
       await saveNote("note-b", "the other account's edit", { owner: "did:b" });
       await saveNote("note-unclaimed", "typed while signed out", { owner: null });
       await saveNote("note-empty", "   ", { owner: "did:a" });
-      expect(await count()).toEqual({ saving: 2, localAudio: 0 });
+      expect(await count()).toEqual(counted({ saving: 2 }));
 
       // The same records in IndexedDB (the browser's normal store) count the same way.
       const env = newIdbEnv();
@@ -530,7 +541,7 @@ describe("origin move", () => {
         .map((key) => ({ ...JSON.parse(storage.getItem(key)!) as object, storageId: key.slice(RECORDING_NOTE_LOCAL_PREFIX.length) }));
       expect(rows).toHaveLength(4);
       await seedDatabase(env.factory, RECORDING_NOTES_DB, RECORDING_NOTES_STORE, "storageId", rows);
-      expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual({ saving: 2, localAudio: 0 });
+      expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual(counted({ saving: 2 }));
     });
 
     test("a note adopted from the space keeps nobody here; an unsynced local edit stays counted through an adopt", async () => {
@@ -543,19 +554,19 @@ describe("origin move", () => {
       await adoptNote(remote("remote-unclaimed"), null);
       expect(await count()).toEqual(none);
       await saveNote("remote-1", "edited here", { owner: "did:a" });
-      expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+      expect(await count()).toEqual(counted({ saving: 1 }));
 
       // A local edit made before the space copy arrives is not covered by adopting that copy, even when the
       // space's saved-edit time is newer and gets taken over.
       await saveNote("local-first", "typed here first", { owner: "did:a" });
       await adoptNote(remote("local-first", "2026-11-02T00:00:00.000Z"), "did:a");
-      expect(await count()).toEqual({ saving: 2, localAudio: 0 });
+      expect(await count()).toEqual(counted({ saving: 2 }));
     });
 
     test("a discarded note keeps nobody here", async () => {
       const count = () => countLocalOnlyRecordingWork({ factory: null, storage });
       await saveNote("gone-1", "typed", { owner: "did:a" });
-      expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+      expect(await count()).toEqual(counted({ saving: 1 }));
       await deleteNote("gone-1", "did:a");
       expect(await count()).toEqual(none);
     });
@@ -569,7 +580,7 @@ describe("origin move", () => {
       await savedInSpace(store, "local-1");
       await seedDatabase(env.factory, RECORDING_NOTES_DB, RECORDING_NOTES_STORE, "storageId",
         [legacyNote("local-1"), legacyNote("elsewhere-1")]);
-      expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual({ saving: 1, localAudio: 0 });
+      expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual(signedInCount({ saving: 1 }));
       store.close();
     });
 
@@ -581,12 +592,12 @@ describe("origin move", () => {
       await savedInSpace(store, "local-1");
       await seedDatabase(env.factory, RECORDING_NOTES_DB, RECORDING_NOTES_STORE, "recordingId",
         [v1Note("local-1"), v1Note("elsewhere-1")]);
-      expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual({ saving: 1, localAudio: 0 });
+      expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage: null })).toEqual(signedInCount({ saving: 1 }));
       store.close();
     });
   });
 
-  test("recordings that are unclaimed or bound to an account not signed in here keep the visitor, not as saving", async () => {
+  test("recordings that are unclaimed or bound to an account not signed in here keep the visitor, each under its own reason", async () => {
     const { open, count } = seededStore();
     const store = await open();
     await startRecording(store, "mine");
@@ -597,13 +608,68 @@ describe("origin move", () => {
     await commit(store, "theirs");
     // A live capture is saving whoever owns it.
     await startRecording(store, "live", null);
-    expect(await count()).toEqual({ saving: 2, localAudio: 2 });
+    expect(await count()).toEqual(signedInCount({ saving: 2, unclaimed: 1, otherAccount: 1 }));
 
     // Signed out: did:a's recording is kept for did:a, so it no longer saves by itself here.
     const defaults = await store.getCaptureDefaults();
     await store.setCaptureDefaults({ ...defaults, accountDid: null, transitionGen: defaults.transitionGen + 1 });
-    expect(await count()).toEqual({ saving: 1, localAudio: 3 });
+    expect(await count()).toEqual(counted({ saving: 1, unclaimed: 1, otherAccount: 2 }));
     store.close();
+  });
+
+  test("audio only in this browser counts this account's recordings by id, and nobody else's", async () => {
+    const { open, count } = seededStore();
+    const store = await open();
+    await savedAudioHere(store, "audio-1");
+    expect(await count()).toEqual(signedInCount({ localAudio: ["audio-1"] }));
+    await savedAudioHere(store, "audio-2");
+    expect(await count()).toEqual(signedInCount({ localAudio: ["audio-1", "audio-2"] }));
+    // Signed out, the same recordings are another account's: they need that account, not an upload from here.
+    const defaults = await store.getCaptureDefaults();
+    await store.setCaptureDefaults({ ...defaults, accountDid: null, transitionGen: defaults.transitionGen + 1 });
+    expect(await count()).toEqual(counted({ otherAccount: 2 }));
+    // Signed in as someone else, too.
+    await store.setCaptureDefaults({ ...defaults, accountDid: "did:c", transitionGen: defaults.transitionGen + 2 });
+    expect(await count()).toEqual(signedInCount({ otherAccount: 2 }));
+    store.close();
+  });
+
+  test("mixed reasons: each recording counts once, saving first, then by owner", async () => {
+    const { env, open, count } = seededStore();
+    const store = await open();
+    await savedAudioHere(store, "audio-1");
+    await savedAudioHere(store, "audio-2");
+    // Audio only here, and a transcript still on its way: it saves by itself, so it is saving, not audio.
+    const { rev } = await savedAudioHere(store, "audio-saving");
+    await store.putTranscript({ id: "audio-saving", transcript: { version: 2, noteId: "audio-saving", transcriber: "on-device", rev: 1,
+      engine: "whispercpp", model: null, language: "en", outcome: "transcribed", diarized: false,
+      segments: [{ start: 0, end: 1000, text: "only here", speaker: null }] } });
+    // Unclaimed, with a held transcript as well: still one unclaimed recording, never saving.
+    await startRecording(store, "unclaimed", null);
+    await commit(store, "unclaimed");
+    await startRecording(store, "theirs", "did:b");
+    await commit(store, "theirs");
+    await createHeldResultStore("did:b", { env, isSignedIn: async () => true }).hold({
+      version: 1, did: "did:b", spaceId: "space-b", sourceId: "theirs", engine: "private-cloud",
+      transcript: { rev: 2, sentences: [{ index: 0, text: "theirs", speaker_name: "Speaker 1", start_time: 0, end_time: 1 }],
+        metadata: {}, speakers: [] },
+      provider: null, intent: { kind: "unknown" },
+    });
+    expect(await count()).toEqual(signedInCount({ saving: 1, localAudio: ["audio-1", "audio-2"], unclaimed: 1, otherAccount: 1 }));
+    expect(await decideOriginMove({ location: legacy, countWork: count, canonicalReady: ready })).toEqual({
+      kind: "hold", work: signedInCount({ saving: 1, localAudio: ["audio-1", "audio-2"], unclaimed: 1, otherAccount: 1 }),
+    });
+
+    // Once the transcript is saved, only the audio is left of it.
+    await store.updateLedger({ id: "audio-saving", did: "did:a", rev, patch: { transcriptSync: { state: "saved", rev: 1, at: 3000 } } });
+    expect(await count()).toEqual(signedInCount({ localAudio: ["audio-1", "audio-2", "audio-saving"], unclaimed: 1, otherAccount: 1 }));
+    store.close();
+  });
+
+  test("any one held reason alone holds the move", async () => {
+    for (const work of [counted({ localAudio: ["a"] }), counted({ unclaimed: 1 }), counted({ otherAccount: 1 }), counted({ saving: 1 })]) {
+      expect(await decideOriginMove({ location: legacy, countWork: async () => work, canonicalReady: ready })).toEqual({ kind: "hold", work });
+    }
   });
 
   test("a Private transcription job holds the move until its transcript is in the space", async () => {
@@ -611,16 +677,16 @@ describe("origin move", () => {
     const jobs = localStorageVoiceNotePendingStore("did:a", storage);
     const count = () => countLocalOnlyRecordingWork({ factory: null, storage });
     jobs.write("running", { attemptId: "a1", transcriptionId: "t1" });
-    expect(await count()).toEqual({ saving: 1, localAudio: 0 });
+    expect(await count()).toEqual(counted({ saving: 1 }));
     const held = { rev: 1, sentences: [{ index: 0, text: "only here", speaker_name: "Speaker 1", start_time: 0, end_time: 1 }],
       speakers: ["Speaker 1"], metadata: {} };
     jobs.write("held", { attemptId: "a2", transcriptionId: "t2", held, failure: "transcript_save_failed" });
     jobs.write("retrying", { attemptId: "a3", transcriptionId: null, failure: "offline" });
     jobs.write("failed", { attemptId: "a4", transcriptionId: "t4", failure: "transcription_failed" });
     localStorageVoiceNotePendingStore("did:b", storage).write("other-account", { attemptId: "b1", transcriptionId: null });
-    expect(await count()).toEqual({ saving: 4, localAudio: 0 });
+    expect(await count()).toEqual(counted({ saving: 4 }));
     jobs.clear("running");
-    expect(await count()).toEqual({ saving: 3, localAudio: 0 });
+    expect(await count()).toEqual(counted({ saving: 3 }));
   });
 
   test("markers whose underlying work is elsewhere hold nothing by themselves", async () => {
@@ -633,7 +699,7 @@ describe("origin move", () => {
     await savedInSpace(store, "note-a");
     await seedDatabase(env.factory, "exo-pending-save-state", "notes", "key",
       [{ key: JSON.stringify(["did:a", "note-a"]), id: "note-a", failed: { kind: "offline", message: "Offline" } }]);
-    expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage })).toEqual(none);
+    expect(await countLocalOnlyRecordingWork({ factory: env.factory, storage })).toEqual(signedInCount());
     store.close();
   });
 });

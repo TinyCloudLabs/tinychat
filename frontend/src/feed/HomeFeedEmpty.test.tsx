@@ -36,7 +36,6 @@ async function mount(snapshot: HomeFeedSnapshot | "loading") {
   return host;
 }
 const empty: HomeFeedSnapshot = { entries: [], settings: { defaultSelector: "needs-action" } };
-const views = (host: HTMLElement) => [...host.querySelectorAll('[role="group"][aria-label="Show"] button')].map((node) => node.textContent?.trim());
 
 function card(): HomeFeedEntry {
   return {
@@ -75,9 +74,9 @@ test("while loading, the control row is in place and three placeholder cards sho
 });
 
 test("the view controls return once the feed has a card", async () => {
-  const host = await mount({ ...empty, entries: [card()] });
+  await mount({ ...empty, entries: [card()] });
 });
 
 test("a feed with only past cards keeps Done reachable", async () => {
-  const host = await mount({ ...empty, historicalEntries: [card()] });
+  await mount({ ...empty, historicalEntries: [card()] });
 });

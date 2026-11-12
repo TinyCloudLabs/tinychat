@@ -228,9 +228,9 @@ export function FeedViewEntries({ realEntries, source, ask }: { realEntries: unk
   return source ? <HomeFeedEntries source={source} ask={ask} /> : <SampleFeedEntries realEntries={realEntries} />;
 }
 
-export function FeedView({ tcw }: { tcw: TinyCloudWeb | null }): JSX.Element {
+export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onReconnect?: () => void }): JSX.Element {
   const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
   return source
-    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} ask={<HomeAskBox />} />
+    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} ask={<HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} />} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
 }

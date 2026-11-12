@@ -264,5 +264,33 @@
     "check": "text-size",
     "reason": "The design's Coming soon badge is 10.5px uppercase.",
     "removeIn": "n/a"
+  },
+  {
+    "screen": "bots-home",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed (HomeFeedEntries): the Open Chat button is min-h-10 and How agents post is an inline link. Not tiny bots UI; these screens are the first to render that empty state. #610 replaces it.",
+    "removeIn": "#610"
+  },
+  {
+    "screen": "bots-main-reply",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
+    "removeIn": "#610"
+  },
+  {
+    "screen": "bots-history-expiry",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
+    "removeIn": "#610"
+  },
+  {
+    "screen": "bots-history-expiry-pending",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
+    "removeIn": "#610"
   }
 ]
