@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.23
+
+### Patch Changes
+
+- 7b41d89: Android: TinyCloud Home's package is now `xyz.tinycloud.home`, the same id as the iPhone app, ahead of its first Google Play release. To Android it is a new app: an installed debug or sideloaded `xyz.tinycloud.exo` build does not update in place. Open the old build and let its pending recordings upload, then uninstall it (uninstalling deletes its local data, and both builds answer the same `xyz.tinycloud.exo://` sign-in link), install the new one and sign in again. Sign-in and Google return links are unchanged. Details: TC-2846
+
 ## 0.14.0-beta.22
 
 ### Patch Changes
