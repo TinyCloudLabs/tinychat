@@ -21,8 +21,8 @@ function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
 function ExpiryNotice({ notice, onReconnect }: { notice: HistoryNotice; onReconnect: () => void }) {
   const [renderedAt] = useState(Date.now);
   const deleteAt = historyNoticeDeadline(notice, renderedAt);
-  const text = HISTORY_EXPIRY_NOTICE.replace("{expiryDate}", new Date(notice.expiresAt).toLocaleDateString())
-    .replace("{deletionDate}", new Date(deleteAt).toLocaleDateString());
+  const text = HISTORY_EXPIRY_NOTICE.replace("{expiryDate}", new Date(notice.expiresAt).toLocaleDateString(undefined, { dateStyle: "medium" }))
+    .replace("{deletionDate}", new Date(deleteAt).toLocaleDateString(undefined, { dateStyle: "medium" }));
   useEffect(() => {
     if (notice.deliveredAt === undefined) void acknowledgeHistoryNotice(notice, renderedAt, deleteAt).catch(() => {});
   }, [notice, renderedAt, deleteAt]);

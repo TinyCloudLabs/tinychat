@@ -32,7 +32,7 @@ test("Main acknowledges the expiry notice only after opening it, with the deleti
     await page.waitForSelector("[data-history-expiry-notice]");
     const ack = await acknowledged.promise;
     expect(ack.id).toBe("f".repeat(64));
-    expect(await page.locator("[data-history-expiry-notice]").textContent()).toContain(new Date(ack.deleteAt).toLocaleDateString("en-US", { timeZone: "UTC" }));
+    expect(await page.locator("[data-history-expiry-notice]").textContent()).toContain(new Date(ack.deleteAt).toLocaleDateString("en-US", { timeZone: "UTC", dateStyle: "medium" }));
     expect(await page.getByRole("button", { name: "Reconnect TinyCloud", exact: true }).isVisible()).toBe(true);
     expect(calls).toBeGreaterThan(0);
   } finally { await browser.close(); server.stop(true); }
