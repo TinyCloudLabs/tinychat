@@ -44,6 +44,11 @@ services:
       BOTS_SERVICE_URL: ${BOTS_SERVICE_URL:-}
       BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET:-}
       BOTS_POST_TIMEOUT_MS: ${BOTS_POST_TIMEOUT_MS:-}
+      # Owner history stays off; enabling requires the receipt signer and node-origin pins.
+      BOTS_HISTORY_ENABLED: ${BOTS_HISTORY_ENABLED:-false}
+      BOTS_HISTORY_SIGNER_DID: ${BOTS_HISTORY_SIGNER_DID:-}
+      BOTS_HISTORY_NODE_ORIGIN: ${BOTS_HISTORY_NODE_ORIGIN:-}
+      BOTS_UNARCHIVED_HISTORY_POLICY: ${BOTS_UNARCHIVED_HISTORY_POLICY:-notice-then-expiry-30-days}
       # Optional meeting rollout; empty allowlists admit no accounts or models.
       MEETING_CONTENT_RETRIEVAL_ENABLED: ${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}
       MEETING_CONTENT_TEST_ACCOUNTS: ${MEETING_CONTENT_TEST_ACCOUNTS:-}
