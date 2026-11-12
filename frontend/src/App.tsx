@@ -87,6 +87,7 @@ import { DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { bindSharedWithMe } from "./lib/sharedWithMe";
 import { historyPrefetch } from "./lib/historyPrefetch";
+import { noteScreen } from "./lib/localFirst/requestLanes";
 import {
   createBillingClient,
   type BillingClient,
@@ -1380,6 +1381,11 @@ export function App() {
   // /chat/*: the shell toggles surfaces, so the chat runtime, drafts and
   // streams survive every move between them.
   const screen = useMemo(() => screenFor(location.pathname), [location.pathname]);
+  // An open that lands on the Feed holds the other startup reads until the
+  // Feed's first network load renders; any other screen releases them
+  // (requestLanes.ts, Feed first).
+  const onFeed = !LOCAL_VALIDATION && !shareToken && screen.destination === "feed";
+  useEffect(() => { noteScreen(onFeed); }, [onFeed]);
   const showSettings = !LOCAL_VALIDATION && screen.id === "settings";
   // Retired addresses (/chat/meetings, /chat/connectors/library) still resolve:
   // they are replaced with their new home below.

@@ -53,6 +53,7 @@ import {
 } from "../lib/conversationCanvasStore";
 import { activePathItems, type ConversationCanvas } from "./canvas/model";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
+import { afterFeedFirst } from "../lib/localFirst/requestLanes";
 import { readThreadCopy, threadCopyFor } from "../lib/localFirst/threadCopy";
 import { privateMemoryContext, runPrivateMemoryExtraction } from "./privateAgentMemory";
 import type { PrivateAgentAccess } from "./useAgentEnablement";
@@ -734,9 +735,10 @@ function useThreadListAdapter(
     () => ({
       async list() {
         // The chat list never waits on the Canvas settings read: the cached
-        // list paints at once. The read starts here so the first send or
-        // Canvas view finds it loaded; those await it (and retry a failure).
-        void loadCanvasState(tcw).catch(() => {});
+        // list paints at once. The read starts here (after the Feed's first
+        // load on a Feed open) so the first send or Canvas view finds it
+        // loaded; those await it (and retry a failure).
+        void afterFeedFirst(() => loadCanvasState(tcw)).catch(() => {});
         let summaries;
         try {
           summaries = await listThreads(tcw);
@@ -962,7 +964,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     if (!access.active) return;
     const startGen = memoryWriteGen();
     (async () => {
-      const sqlDoc = await getMemory(deps.tcw).catch(() => null);
+      const sqlDoc = await afterFeedFirst(() => getMemory(deps.tcw)).catch(() => null);
       if (cancelled || deps.privateAccessRef.current !== access) return;
       if (
         sqlDoc !== null

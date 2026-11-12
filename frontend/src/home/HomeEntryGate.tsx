@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { PATHS } from "../shell/routes";
+import { afterFeedFirst } from "../lib/localFirst/requestLanes";
 import type { FirstScreen } from "./firstScreenStore";
 
 /**
@@ -73,7 +74,8 @@ export function HomeEntryGate({ load, cached, children }: {
     if (!refreshing.has(key)) {
       refreshing.add(key);
       const done = () => { refreshing.delete(key); };
-      try { load().then(done, done); } catch { done(); }
+      // Only refreshes the copy: on a Feed open it waits for the Feed's first load.
+      try { afterFeedFirst(load).then(done, done); } catch { done(); }
     }
     navigate({ pathname: known === "apps" ? PATHS.apps : PATHS.feed, search, hash }, { replace: true, state: null });
   }, [entry, key, load, cached, search, hash, navigate]);

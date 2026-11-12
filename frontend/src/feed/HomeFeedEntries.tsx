@@ -14,6 +14,7 @@ import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { AnsweredPanel, AnswerFailedLine, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
+import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 import { FEED_SKILL_URL } from "./strings";
@@ -350,6 +351,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
           loaded = true;
           setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
+          markFeedFresh();
           if (!hasDefault.current && !chosenView.current) setView(next.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
           hasDefault.current = true;
           // The first load registered the agents: answers held when the page last closed go now.
@@ -366,6 +368,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           }
         } catch {
           if (alive) setError({ lead: "Home didn't load.", text: "Check your connection, then try again." });
+          markFeedFresh();
         }
       } while (alive && dirty);
       running = false;
