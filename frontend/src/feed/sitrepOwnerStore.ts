@@ -75,9 +75,8 @@ export async function savePrivateGroupPriority(database: FeedDatabase, entry: Ho
   await appendPrivateEvent(database, entry, crypto.randomUUID(), "group-priority", parsed.value, at);
 }
 
-export async function readPrivateOwnerState(database: FeedDatabase, archiveScopes?: ReadonlyMap<string, string>): Promise<{ byCard: Record<string, SitrepOwnerData>; groupPriorities: Map<string, GroupPriority> }> {
-  database = privateFeedDatabase(database);
-  const rows = unwrap(await database.query("SELECT event_id,agent_id,card_id,revision,issuance_id,event_type,payload_json,created_at FROM feed_owner_events ORDER BY rowid", [])).rows;
+/** The private owner state from `feed_owner_events` rows (event_id … created_at), in rowid order; the Feed's registry read returns them. */
+export function privateOwnerStateFromRows(rows: readonly unknown[][], archiveScopes?: ReadonlyMap<string, string>): { byCard: Record<string, SitrepOwnerData>; groupPriorities: Map<string, GroupPriority> } {
   const bySource: Record<string, SitrepOwnerData> = {};
   const groupPriorities = new Map<string, GroupPriority>();
   for (const row of rows) {
