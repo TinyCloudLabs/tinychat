@@ -7,8 +7,8 @@ import { useEffect, useRef, useState } from "react";
 export const ANSWER_UNDO_SECONDS = 4;
 export const ANSWER_UNDO_HINT = `Your answer is sent ${ANSWER_UNDO_SECONDS} seconds after you tap an option or press Send. You can undo it until then, not after.`;
 
-/** What a send control reads while its answer waits (`seconds` left) or is being sent (null). */
-export const sendingLabel = (seconds: number | null, verb = "Sending") => seconds === null ? "Sending…" : `${verb} in ${seconds}s`;
+/** What a send control reads while its answer waits (`seconds` left) or is being sent (null), naming who gets it (`to`). */
+export const sendingLabel = (seconds: number | null, verb = "Sending", to?: string) => seconds === null ? "Sending…" : `${verb}${to ? ` to ${to}` : ""} in ${seconds}s`;
 
 /** The line a card keeps once its answer is sent: what was chosen, or else what was written. */
 export const answerSummary = (label?: string, text?: string) => label ? `You chose ${label}` : `You answered “${text}”`;
@@ -62,8 +62,10 @@ export interface AnswerOption { id: string; label: string; detail?: string; cost
  * waits or is sent (`seconds`, `sending`) it reads as the wait, with Undo and a
  * line that runs out, and the others dim.
  */
-export function AnswerOptions({ options, chosen, seconds, sending, onChoose, onUndo }: {
+export function AnswerOptions({ options, chosen, seconds, sending, to, onChoose, onUndo }: {
   options: readonly AnswerOption[];
+  /** The agent the answer goes to, named while it waits. */
+  to?: string;
   chosen?: string;
   seconds: number | null;
   sending: boolean;
@@ -85,7 +87,7 @@ export function AnswerOptions({ options, chosen, seconds, sending, onChoose, onU
         {/* The wait lies over the option, which keeps its size: nothing moves while Undo is on offer. */}
         {pressed && waiting && <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden rounded-lg px-3">
           <span aria-hidden className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-          <span className="tnum shrink-0 text-xs">{sendingLabel(seconds)}</span>
+          <span className="tnum min-w-0 shrink text-right text-xs">{sendingLabel(seconds, "Sending", to)}</span>
           {seconds !== null && <button type="button" onClick={onUndo} className="pointer-events-auto min-h-10 shrink-0 rounded-lg border border-border bg-background px-3 font-medium">Undo</button>}
           {seconds !== null && <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-primary motion-safe:animate-out motion-safe:slide-out-to-left motion-safe:ease-linear motion-safe:fill-mode-forwards motion-reduce:hidden" style={{ animationDuration: `${ANSWER_UNDO_SECONDS}s` }} />}
         </div>}

@@ -322,7 +322,6 @@ for (const history of ["answer", "claim", "thread", "command"] as const) {
     if (history === "answer") expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Immutable archive-only answer");
     if (history === "claim") expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Immutable archive-only claim decision");
     if (history === "thread") {
-      await click(fresh, button(view.host, `Message ${agent.source.label}`));
       expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Immutable archive-only thread message");
     }
     if (history === "command") expect(view.host.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);

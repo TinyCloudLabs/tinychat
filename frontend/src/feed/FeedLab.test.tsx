@@ -124,7 +124,7 @@ test("in the lab an answer runs its whole course: one tap, the undo window, the 
   const pass = (ms: number) => act(async () => { jest.advanceTimersByTime(ms); });
   const steps = () => [...host.querySelectorAll<HTMLElement>('[aria-label="Answer sent"] [aria-label="Answer steps"] li')].map((step) => `${step.dataset.step}:${step.dataset.state}`);
   await act(async () => button(host, "08:15 direct").click());
-  expect(host.textContent).toContain(`Sending in ${ANSWER_UNDO_SECONDS}s`);
+  expect(host.textContent).toContain(`Sending to Trip agent in ${ANSWER_UNDO_SECONDS}s`);
   await pass(ANSWER_UNDO_SECONDS * 1_000);
   expect(host.textContent).toContain("Sending…");
   expect(host.querySelector('[aria-label="Answer sent"]')).toBeNull();

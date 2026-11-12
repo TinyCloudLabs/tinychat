@@ -100,7 +100,7 @@ function button(host: HTMLElement, label: string) {
   return node!;
 }
 function answer(host: HTMLElement) {
-  const node = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
+  const node = host.querySelector<HTMLTextAreaElement>('textarea[name="answer"]');
   expect(node).not.toBeNull();
   return node!;
 }
@@ -353,10 +353,10 @@ test("one tap chooses: the option is pressed, the others dim, and nothing is sav
   expect(button(view.host, "Proceed").getAttribute("aria-pressed")).toBe("true");
   expect(button(view.host, "Hold").disabled).toBe(true);
   expect(answer(view.host).disabled).toBe(true);
-  expect(view.host.textContent).toContain(`Sending in ${ANSWER_UNDO_SECONDS}s`);
+  expect(view.host.textContent).toContain(`Sending to Test agent in ${ANSWER_UNDO_SECONDS}s`);
   expect(announced(view.host)).toBe(`Sending in ${ANSWER_UNDO_SECONDS} seconds. Undo is available until then.`);
   await wait(ANSWER_UNDO_SECONDS - 1);
-  expect(view.host.textContent).toContain("Sending in 1s");
+  expect(view.host.textContent).toContain("Sending to Test agent in 1s");
   expect(store.responses).toEqual([]);
   await wait(1);
   expect(store.responses).toHaveLength(1);
@@ -390,7 +390,7 @@ test("a typed answer has its own Send with the same undo window, and Undo keeps 
   expect(button(view.host, "Send answer").disabled).toBe(true);
   await typeAnswer(view.host, "Hold until the report is in");
   await act(async () => button(view.host, "Send answer").click());
-  expect(button(view.host, `Sending in ${ANSWER_UNDO_SECONDS}s`).disabled).toBe(true);
+  expect(button(view.host, `Sending to Test agent in ${ANSWER_UNDO_SECONDS}s`).disabled).toBe(true);
   expect(button(view.host, "Proceed").disabled).toBe(true);
   await act(async () => button(view.host, "Undo").click());
   expect(answer(view.host).value).toBe("Hold until the report is in");

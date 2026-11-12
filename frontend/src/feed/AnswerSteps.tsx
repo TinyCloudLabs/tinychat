@@ -11,15 +11,18 @@ export function answerHandling(entry: HomeFeedEntry, responseId: string): FeedRe
   };
 }
 
-/** A saved answer's three steps, each ticked with its time as it arrives: Sent, Agent received, then Completed or Failed. */
-export function AnswerSteps({ sent, acknowledgement, outcome }: { sent: string } & FeedResponseHandling) {
+/**
+ * A saved answer's three steps, each ticked with its time as it arrives: Sent, Agent received (or "<agent> received
+ * it"), then Completed or Failed. A message (`final` false) has no outcome step unless the agent reports one.
+ */
+export function AnswerSteps({ sent, acknowledgement, outcome, agent, final = true }: { sent: string; agent?: string; final?: boolean } & FeedResponseHandling) {
   const failed = outcome?.phase === "failed";
   const steps = [
     { key: "sent", label: "Sent", state: "done", at: sent },
     // An outcome comes from the agent, so it also shows the answer was received.
-    { key: "received", label: "Agent received", state: acknowledgement || outcome ? "done" : "upcoming", at: acknowledgement?.createdAt },
+    { key: "received", label: agent ? `${agent} received it` : "Agent received", state: acknowledgement || outcome ? "done" : "upcoming", at: acknowledgement?.createdAt },
     { key: "outcome", label: failed ? "Failed" : "Completed", state: !outcome ? "upcoming" : failed ? "failed" : "done", at: outcome?.createdAt },
-  ];
+  ].filter((step) => final || step.key !== "outcome" || outcome);
   return <ol aria-label="Answer steps" className="space-y-1.5">
     {steps.map((step) => <li key={step.key} data-step={step.key} data-state={step.state} className="flex items-center gap-2 data-[state=upcoming]:text-muted-foreground">
       {step.state === "upcoming"

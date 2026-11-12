@@ -52,10 +52,12 @@ function CardImage({ image, alt }: { image?: string; alt: string }) {
   return <img className="mt-4 max-h-80 w-full rounded-xl border border-border bg-muted object-cover" src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-export function FeedCardView({ card, sample = true, readBody }: {
+export function FeedCardView({ card, sample = true, readBody, status }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
+  /** The card's one status word ("Needs you", "Done"). */
+  status?: string;
 }): JSX.Element {
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
   return (
@@ -63,10 +65,11 @@ export function FeedCardView({ card, sample = true, readBody }: {
       <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
         {avatar && <img src={avatar} alt="" className="size-9 shrink-0 rounded-full bg-muted object-cover" />}
         <div className="min-w-[6rem] flex-1">
-          <p className="break-words font-semibold">{card.author.name}</p>
+          <p className="break-words font-semibold">{card.author.name}{card.author.via && <span className="font-normal text-muted-foreground"> · via {card.author.via}</span>}</p>
           <time dateTime={card.at} className="text-xs text-muted-foreground">{new Date(card.at).toLocaleDateString()}</time>
         </div>
         {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
+        {status && <span data-status className="shrink-0 rounded-full border border-border px-2 py-1 text-xs font-medium">{status}</span>}
       </div>
       {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-xl font-semibold leading-tight">{card.title}</h2>}
       <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>

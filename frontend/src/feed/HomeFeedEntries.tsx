@@ -4,11 +4,13 @@ import { CheckIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { ANSWER_UNDO_HINT, AnswerOptions, answerSummary, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
+import { cardAuthor } from "./CardReply";
+import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SitrepCard } from "./SitrepCard";
-import { typedContexts } from "./sitrepProjection";
+import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, partPending, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_SITE } from "@/lib/homeSite";
@@ -31,14 +33,14 @@ function projectOf(entry: HomeFeedEntry): string {
   const project = entry.state.card.payload?.project;
   return typeof project === "string" ? project : "";
 }
-function cardView(entry: HomeFeedEntry): FeedCard {
+function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
   const card = entry.state.card;
   const payload = card.payload ?? {};
   const render = ["post", "image", "thread", "article", "link"].includes(String(payload.render)) ? payload.render as FeedCard["render"] : "post";
   const source = payload.source;
   const sourceRecord = source && typeof source === "object" ? source as Record<string, unknown> : undefined;
   return {
-    key: keyOf(entry), at: card.createdAt, author: { name: entry.source.label }, render,
+    key: keyOf(entry), at: card.createdAt, author: cardAuthor(entry, context?.record), render,
     title: card.title, lead: { text: card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
     ...(Array.isArray(payload.replies) ? { replies: payload.replies.filter((reply): reply is { text: string } => !!reply && typeof reply === "object" && "text" in reply && typeof reply.text === "string") } : {}),
     ...(typeof payload.body === "string" ? { body: payload.body } : {}),
@@ -93,7 +95,7 @@ interface SentAnswer { key: string; response: FeedResponse; summary: string; ope
  * What stays of a card once its answer is sent: what was chosen and, while the card is folded away, the
  * answer's steps. It takes focus when it appears, so the result is announced where the card was.
  */
-function AnswerFold({ entry, sent, onToggle }: { entry: HomeFeedEntry; sent: SentAnswer; onToggle: () => void }) {
+function AnswerFold({ entry, sent, agent, onToggle }: { entry: HomeFeedEntry; sent: SentAnswer; agent: string; onToggle: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.focus(); }, []);
   const handling = answerHandling(entry, sent.response.responseId);
@@ -101,10 +103,10 @@ function AnswerFold({ entry, sent, onToggle }: { entry: HomeFeedEntry; sent: Sen
   return <div ref={ref} role="status" tabIndex={-1} aria-label="Answer sent" className="mb-3 space-y-3 rounded-2xl border border-border bg-card p-4 text-sm text-card-foreground shadow-sm motion-safe:animate-rise-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
     <div className="flex items-start gap-2">
       <CheckIcon aria-hidden className="mt-0.5 size-4 shrink-0" />
-      <p className="min-w-0 flex-1 break-words"><span className="font-medium">{sent.summary}</span><span className="block text-xs text-muted-foreground">{entry.state.card.title}</span></p>
+      <p className="min-w-0 flex-1 break-words"><span className="font-medium">{sent.summary}</span><span className="block text-xs text-muted-foreground">Sent to {agent} · {entry.state.card.title}</span></p>
       <button type="button" aria-expanded={sent.open} onClick={onToggle} className="min-h-10 shrink-0 rounded-lg border border-border px-3 text-sm">{sent.open ? "Hide card" : "Show card"}</button>
     </div>
-    {!sent.open && <AnswerSteps sent={sent.response.createdAt} {...handling} />}
+    {!sent.open && <AnswerSteps sent={sent.response.createdAt} {...handling} agent={agent} />}
     {!sent.open && typeof detail === "string" && <p className="whitespace-pre-wrap break-words">{detail}</p>}
   </div>;
 }
@@ -155,12 +157,12 @@ function AnswerForm({ entry, source, onSaved, onAnswered }: { entry: HomeFeedEnt
     <ResponseStatus entry={entry} />
     {saved && !followup ? <button type="button" className="min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setFollowup(true)}>Add follow-up</button> : <form onSubmit={(event) => { event.preventDefault(); if (!waiting && text.trim()) hold.start(); }} className="space-y-3">
       {saved && <p className="text-xs text-muted-foreground">A follow-up does not cancel an action already received by the agent.</p>}
-      {!!entry.state.card.choices?.length && <AnswerOptions options={entry.state.card.choices} chosen={choice} seconds={hold.seconds} sending={saving} onChoose={(option) => choose(option.id)} onUndo={undo} />}
-      <label className="block text-sm font-medium">Your answer<textarea aria-label="Your answer" value={text} disabled={waiting} onInput={(event) => editText(event.currentTarget.value)} className="mt-2 min-h-24 w-full resize-y rounded-xl border border-border bg-background p-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" /></label>
+      {!!entry.state.card.choices?.length && <AnswerOptions options={entry.state.card.choices} chosen={choice} seconds={hold.seconds} sending={saving} to={entry.source.label} onChoose={(option) => choose(option.id)} onUndo={undo} />}
+      <label className="block text-sm font-medium">Reply to {entry.source.label}<span className="block text-xs font-normal text-muted-foreground">Write instead of choosing, or as well.</span><textarea name="answer" aria-label={`Reply to ${entry.source.label}`} value={text} disabled={waiting} onInput={(event) => editText(event.currentTarget.value)} className="mt-2 min-h-24 w-full resize-y rounded-xl border border-border bg-background p-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" /></label>
       <p className="text-xs text-muted-foreground">{ANSWER_UNDO_HINT}</p>
       {error && <div role="alert" className="text-sm text-destructive"><p>{error}</p><button type="button" disabled={waiting} onClick={() => void save()} className="mt-1 min-h-9 underline">Try again</button></div>}
       <div className="flex flex-wrap gap-2">
-        <button type="submit" disabled={waiting || !text.trim()} className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">{waiting && !choice ? sendingLabel(hold.seconds) : saved ? "Send follow-up" : "Send answer"}</button>
+        <button type="submit" disabled={waiting || !text.trim()} className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">{waiting && !choice ? sendingLabel(hold.seconds, "Sending", entry.source.label) : saved ? "Send follow-up" : "Send answer"}</button>
         {hold.seconds !== null && !choice && <button type="button" onClick={undo} className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium">Undo</button>}
       </div>
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
@@ -332,6 +334,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
   const settling = !!sent && committed.current.has(sent.key);
   const fold = sent && focused && sent.key === focusedKey && !(settling ? focusedContext?.projection.parts.some(partPending) : needsAttention(focused, clock, focusedContext?.projection)) ? sent : null;
   const onAnswered = (response: FeedResponse, summary: string) => setSent({ key: focusedKey!, response, summary, open: false });
+  const reference = focused && <p className="text-xs text-muted-foreground" aria-label="Card reference"><code className="select-all break-all" title={homeFeedKey(focused)}>{humanFeedReference(focused, entries)}</code></p>;
+  const focusedAuthor = focused ? cardAuthor(focused, focusedContext?.record).name : "";
   const focusedIndex = filtered.findIndex((entry) => keyOf(entry) === focusedKey);
   const nextEntry = filtered.length ? filtered[(focusedIndex + 1) % filtered.length] : undefined;
   useEffect(() => { if (focused && activeKey !== focusedKey) setActive(focused); }, [focusedKey, activeKey]);
@@ -381,8 +385,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
 
   function navigationCard(entry: HomeFeedEntry) {
     const context = contextFor(entry);
-    const status = context ? context.projection.answer ? " · Answer saved" : context.record.kind === "claim" && context.owner.claimDecisions.some((decision) => decision.card.id === context.record.id) ? " · Decision saved" : context.projection.state?.doneAt ? " · Completion requested" : "" : entry.state.response ? " · Answer saved" : entry.view.snoozedUntil && Date.parse(entry.view.snoozedUntil) > clock ? " · Snoozed" : "";
-    return <button type="button" key={keyOf(entry)} aria-current={focusedKey === keyOf(entry) ? "true" : undefined} onClick={() => setActive(entry)} className="min-h-11 w-full rounded-xl border border-border bg-card px-3 py-2 text-left text-sm aria-[current=true]:border-primary"><span className="font-medium">{entry.state.card.title}</span><span className="ml-2 text-xs text-muted-foreground">{entry.source.label} · {entry.state.card.kind}{status}</span></button>;
+    const author = cardAuthor(entry, context?.record).name;
+    return <button type="button" key={keyOf(entry)} aria-current={focusedKey === keyOf(entry) ? "true" : undefined} onClick={() => setActive(entry)} className="min-h-11 w-full rounded-xl border border-border bg-card px-3 py-2 text-left text-sm aria-[current=true]:border-primary"><span className="font-medium">{entry.state.card.title}</span><span className="ml-2 text-xs text-muted-foreground">{author} · {cardStatus(entry, context?.projection, clock, author)}</span></button>;
   }
 
   async function saveGroup(entry: HomeFeedEntry, group: string, on: boolean) {
@@ -427,12 +431,12 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
         </section>
         : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
       {focused && <section aria-label="Focused card" className="mb-5 min-w-0">
-        {fold && <AnswerFold key={fold.response.responseId} entry={focused} sent={fold} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
+        {fold && <AnswerFold key={fold.response.responseId} entry={focused} sent={fold} agent={focusedAuthor} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
         <div hidden={!!fold && !fold.open}>
-          <FeedCardView card={cardView(focused)} sample={false} readBody={source.readBody} />
+          <FeedCardView card={cardView(focused, focusedContext)} sample={false} readBody={source.readBody} status={focusedUnsupported ? undefined : cardStatus(focused, focusedContext?.projection, clock, focusedAuthor)} />
           <ReportLink entry={focused} />
-          <p className="mt-3 text-xs text-muted-foreground" aria-label="Card reference"><code className="select-all break-all" title={homeFeedKey(focused)}>{humanFeedReference(focused, entries)}</code></p>
-          {focusedContext ? <SitrepCard key={focusedKey!} entry={focused} record={focusedContext.record} records={focusedContext.records} entries={focusedContext.entries} owner={focusedContext.owner} projection={focusedContext.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={setActive} /> : focusedUnsupported ? <p role="status" className="mt-4 rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p> : <><AnswerForm key={focusedKey!} entry={focused} source={source} onSaved={onSaved} onAnswered={onAnswered} /><CardHistory entry={focused} /></>}
+          {focusedContext ? <SitrepCard key={focusedKey!} entry={focused} record={focusedContext.record} records={focusedContext.records} entries={focusedContext.entries} owner={focusedContext.owner} projection={focusedContext.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={setActive} reference={reference} /> : focusedUnsupported ? <><p role="status" className="mt-4 rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p>{reference}</> : <><AnswerForm key={focusedKey!} entry={focused} source={source} onSaved={onSaved} onAnswered={onAnswered} /><CardHistory entry={focused} />
+            <details className="mt-4 rounded-xl border border-border p-3 text-xs" aria-label="Card details"><summary className="min-h-8 cursor-pointer text-sm font-medium">Details</summary><div className="mt-2 space-y-2 break-words"><p>Posted by {focused.source.label} · {focused.source.agentDid}</p><p>{focused.state.card.kind}</p>{reference}</div></details></>}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           {!focusedContext && !focusedUnsupported && needsAttention(focused, clock) && <button type="button" disabled={viewBusy} onClick={() => void snooze()} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">Snooze for 1 hour</button>}

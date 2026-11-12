@@ -7,7 +7,7 @@ import { ANSWER_UNDO_SECONDS } from "./AnswerOptions";
 import { FeedViewEntries } from "./FeedView";
 import type { HomeFeedEntry, HomeFeedMessageDraft, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SITREP_CREATED, SITREP_NOW, SITREP_REASKED, syntheticRecord } from "./sitrep.fixtures";
-import { foldsInto, parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
+import { foldsInto, parseSitrepCardPayload, type SitrepMessageDelivery } from "@tinyboilerplate/core/feed/sitrep";
 import { homeFeedKey } from "./feedIdentity";
 
 type PrivatePayload = { type: string; version: number; data: unknown };
@@ -47,7 +47,12 @@ function typedFixture(record: Record<string, unknown>) {
     async sendMessage(_entry, message, payload?: PrivatePayload) {
       saved.push(structuredClone({ response: message, ...(payload ? { payload } : {}) }));
       const value = { ...message, sequence: saved.length };
-      if (payload?.type === "sitrep.thread") owner.threads.push(payload.data);
+      if (payload?.type === "sitrep.thread") {
+        owner.threads.push(payload.data);
+        // As the real loader does: each saved message keeps the route it was sent on.
+        const { kind, id, messageId, delivery } = payload.data as { kind: string; id: string; messageId: string; delivery?: SitrepMessageDelivery };
+        (entry.threadRoutes ??= {})[JSON.stringify([kind, id, messageId])] = delivery ? { kind: "recipients", delivery } : { kind: "publisher" };
+      }
       if (payload?.type === "sitrep.claim" || payload?.type === "sitrep.answer") throw new Error("A message cannot decide a card");
       return value;
     },
@@ -81,6 +86,12 @@ async function mount(source: HomeFeedSource) {
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={source} />));
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
+}
+/** What the card shows before any Details or other closed control is opened. */
+function face(host: HTMLElement) {
+  const copy = host.cloneNode(true) as HTMLElement;
+  for (const node of copy.querySelectorAll("details")) node.remove();
+  return copy.textContent ?? "";
 }
 function button(host: HTMLElement, label: string) {
   const found = [...host.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
@@ -122,7 +133,7 @@ test.each(visibleFields)("%s retains its type-specific content and private repor
   const view = await mount(fixture.source);
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain(content);
   expect(view.host.querySelector("a[href='https://reports.synthetic-example.ts.net/rehearsal.md']") !== null).toBe(true);
-  if (["incident", "ship", "order", "progress"].includes(kind)) expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+  if (["incident", "ship", "order", "progress"].includes(kind)) expect(view.host.querySelector('textarea[name="answer"]')).toBeNull();
 });
 
 test("a go approval has its own exact-issuance action, not a generic answer", async () => {
@@ -152,7 +163,7 @@ test("a reasked question remains actionable when the last imported response belo
   fixture.entry.state.response = { cardId: fixture.entry.state.card.cardId, revision: 1, issuanceId: "synthetic-issuance", responseId: "imported-last", sequence: 999, kind: "answer", text: "Old owner answer", createdAt: SITREP_CREATED };
   const view = await mount(fixture.source);
   await viewSelector(view.host, "needs-action");
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]') !== null).toBe(true);
+  expect(view.host.querySelector('textarea[name="answer"]') !== null).toBe(true);
   expect(view.host.querySelector('[aria-label="Focused card"] [aria-label="Answer steps"]')).toBeNull();
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).not.toContain("Historical owner answer");
 });
@@ -209,18 +220,27 @@ test("a blocker clear is a request for that hold/reference, not an answered ques
   expect(fixture.entry.state.card.payload?.sitrep).toMatchObject({ record: { status: "active" } });
 });
 
-test("owner notes are not answers and do not remove a question from Needs action", async () => {
+test("a note to yourself is offered only inside Ask me later, saved with the reminder, and is not an answer", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
-  await enter(view.host, "Private note", "This is an update, not a decision.");
-  await act(async () => button(view.host, "Save private note").click());
-  expect(fixture.ownerWrites[0]?.state).toMatchObject({ notes: [expect.objectContaining({ text: "This is an update, not a decision." })] });
+  expect(view.host.querySelector('[aria-label="Private note"]')).toBeNull();
+  expect(view.host.querySelector('[aria-label="Note to yourself"]')).toBeNull();
+  await act(async () => button(view.host, "Ask me later").click());
+  expect(view.host.querySelector('[aria-label="Ask me later"]')?.textContent).toContain("Only you see this.");
+  await enter(view.host, "Note to yourself", "Check the review first.");
+  await act(async () => button(view.host, "Tomorrow morning").click());
+  expect(fixture.ownerWrites[0]?.state).toMatchObject({ notes: [expect.objectContaining({ text: "Check the review first." })] });
+  expect(fixture.entry.viewEvents).toContainEqual(expect.objectContaining({ kind: "snoozed" }));
   expect(fixture.saved).toEqual([]);
   expect(fixture.owner.answers).toEqual([]);
   await view.unmount();
   const reopened = await mount(fixture.source);
-  await viewSelector(reopened.host, "needs-action");
-  expect(reopened.host.querySelector('textarea[aria-label="Your answer"]') !== null).toBe(true);
+  expect(reopened.host.querySelector('textarea[name="answer"]') !== null).toBe(true);
+  const details = reopened.host.querySelector<HTMLDetailsElement>('[aria-label="Card details"]');
+  expect(details?.open).toBe(false);
+  expect(details?.textContent).toContain("Notes to yourself");
+  expect(details?.textContent).toContain("Check the review first.");
+  expect(face(reopened.host)).not.toContain("Check the review first.");
 });
 
 test("unconfirmed thread delivery stays historical until an explicit resend creates a new immutable message", async () => {
@@ -232,11 +252,11 @@ test("unconfirmed thread delivery stays historical until an explicit resend crea
   fixture.entry.recipientRoute = { recipients: [{ recipientKey: target.recipientKey, legacyName: "SyntheticOfficer", runtimeTarget: { agentId: target.agentId } }], unresolved: [] };
   fixture.entry.threadRoutes = { [JSON.stringify(["ask", "ask-synthetic", messageId])]: { kind: "recipients", delivery: { version: 1, targets: [target] } } };
   const view = await mount(fixture.source);
-  await act(async () => button(view.host, "Message SyntheticOfficer").click());
-  expect(view.host.textContent).toContain("Existing synthetic owner message");
-  expect(view.host.textContent).toContain("Unconfirmed");
+  expect(view.host.querySelector('[aria-label="Card thread"] ol')?.textContent).toContain("Existing synthetic owner message");
+  expect(view.host.querySelector('[aria-label="Card thread"] details')?.textContent).toContain("Unconfirmed");
+  expect(view.host.textContent).toContain("It may arrive twice.");
   expect(fixture.saved).toEqual([]);
-  await act(async () => button(view.host, "Resend message").click());
+  await act(async () => button(view.host, "Send again").click());
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", version: 1, data: { kind: "ask", id: "ask-synthetic", text: "Existing synthetic owner message", resendOf: messageId, delivery: { version: 1, targets: [target] } } });
   expect(fixture.saved[0]?.response.responseId).not.toBe("old-thread-response");
   expect(fixture.owner.answers).toEqual([]);
@@ -246,7 +266,7 @@ test("an unknown typed record is visibly unsupported and never receives an actio
   const fixture = typedFixture({ ...syntheticRecord("ask"), kind: "future-kind", title: "Unknown preserved record" });
   const view = await mount(fixture.source);
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Unsupported");
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+  expect(view.host.querySelector('textarea[name="answer"]')).toBeNull();
   expect(fixture.saved).toEqual([]);
 });
 
@@ -258,7 +278,7 @@ test("a proceeding question distinguishes the recommendation, default, and alrea
   expect(focused?.textContent).toContain("Recommended: Careful option");
   expect(focused?.textContent).toContain("Default: Quick option");
   expect(focused?.textContent).toContain("Already proceeded");
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]') !== null).toBe(true);
+  expect(view.host.querySelector('textarea[name="answer"]') !== null).toBe(true);
   expect(fixture.saved).toEqual([]);
 });
 
@@ -282,7 +302,7 @@ test("a folded approval step follows skipOn but becomes needed again after the p
   expect(view.host.querySelector('[aria-label="Focused card"] [aria-label="Answer sent"]')).toBeNull();
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Synthetic key requirement");
   expect(view.host.querySelector('[aria-label="Folded approval step"] button') !== null).toBe(true);
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]') !== null).toBe(true);
+  expect(view.host.querySelector('textarea[name="answer"]') !== null).toBe(true);
 });
 
 test("typed snooze presets append owner history without creating an answer", async () => {
@@ -295,31 +315,71 @@ test("typed snooze presets append owner history without creating an answer", asy
   expect(fixture.owner.answers).toEqual([]);
 });
 
-test("matching display labels never turn an unresolved owner into an authenticated message destination", async () => {
-  const fixture = typedFixture(syntheticRecord("ask"));
+test("with no approved link for the owner there is no note-to-owner box: a reply goes only to the posting agent and nothing is held", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture({ ...syntheticRecord("task"), owner: "MissingOfficer" });
+  fixture.entry.recipientRoute = { recipients: [], unresolved: ["MissingOfficer"] };
   const view = await mount(fixture.source);
-  await enter(view.host, "Note to owner", "Keep this held until its actual recipient is mapped.");
-  await act(async () => button(view.host, "Save unrouted note privately").click());
-  expect(fixture.saved).toEqual([]);
-  expect(fixture.owner.heldNotes).toContainEqual(expect.objectContaining({ intendedRecipient: "SyntheticOfficer", text: "Keep this held until its actual recipient is mapped." }));
-  await view.unmount();
-  const reopened = await mount(fixture.source);
-  expect(reopened.host.textContent).toContain("Unrouted");
-  expect(reopened.host.textContent).toContain("Keep this held until its actual recipient is mapped.");
+  expect(view.host.querySelector('[aria-label="Note to owner"]')).toBeNull();
+  expect(view.host.querySelectorAll("textarea")).toHaveLength(1);
+  expect(face(view.host)).not.toContain("unrouted");
+  expect(face(view.host)).not.toContain("MissingOfficer");
+  await enter(view.host, "Reply to SyntheticOfficer", "Matching names must not pick a destination.");
+  await act(async () => button(view.host, "Send").click());
+  expect(button(view.host, `Sending to SyntheticOfficer in ${ANSWER_UNDO_SECONDS}s`).disabled).toBe(true);
+  await wait();
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.response.kind).toBe("message");
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "Matching names must not pick a destination." } });
+  expect((fixture.saved[0]?.payload?.data as { delivery?: unknown }).delivery).toBeUndefined();
+  expect(fixture.owner.heldNotes).toEqual([]);
+  expect(view.host.querySelector('[aria-label="Card details"]')?.textContent).toContain("MissingOfficer has no link you approved");
 });
 
-test("an explicit owner note shows its approved recipients and sends a message without answering", async () => {
+test("held notes saved before stay readable behind a closed Held notes control", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
-  fixture.entry.recipientRoute = { recipients: [{ recipientKey: "approved-officer", legacyName: "SyntheticOfficer", runtimeTarget: { agentId: "00000000-0000-4000-8000-000000000002", provider: "omp" } }], unresolved: [] };
+  fixture.owner.heldNotes.push({ eventId: "held-one", at: SITREP_CREATED, text: "Keep this held until its recipient is mapped.", intendedRecipient: "UnmappedOwner" });
   const view = await mount(fixture.source);
-  expect(view.host.textContent).toContain("00000000-0000-4000-8000-000000000002");
-  await enter(view.host, "Note to owner", "Explicitly send this update.");
-  await act(async () => button(view.host, "Send note to SyntheticOfficer").click());
+  const held = [...view.host.querySelectorAll<HTMLDetailsElement>("details")].find((node) => node.querySelector("summary")?.textContent === "Held notes (1)");
+  expect(held?.open).toBe(false);
+  expect(held?.textContent).toContain("Keep this held until its recipient is mapped.");
+  expect(held?.textContent).toContain("Not sent · meant for UnmappedOwner");
+});
+
+test("with an approved link the one box replies straight to the card's owner, and its id stays under Details", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture({ ...syntheticRecord("task"), owner: "LinkedOwner" });
+  fixture.entry.recipientRoute = { recipients: [{ recipientKey: "approved-officer", legacyName: "LinkedOwner", runtimeTarget: { agentId: "00000000-0000-4000-8000-000000000002", provider: "omp" } }], unresolved: [] };
+  const view = await mount(fixture.source);
+  expect(view.host.querySelectorAll("textarea")).toHaveLength(1);
+  // With no messages yet, the conversation is just the box: no list, no delivery details, no stray text.
+  const thread = view.host.querySelector('[aria-label="Card thread"]')!;
+  expect([...thread.childNodes].map((node) => node.nodeName)).toEqual(["FORM"]);
+  expect(face(view.host)).not.toContain("00000000-0000-4000-8000-000000000002");
+  expect(view.host.querySelector('[aria-label="Card details"]')?.textContent).toContain("00000000-0000-4000-8000-000000000002");
+  await enter(view.host, "Reply to LinkedOwner", "Explicitly send this update.");
+  await act(async () => button(view.host, "Send").click());
+  await act(async () => button(view.host, "Undo").click());
+  await wait(ANSWER_UNDO_SECONDS * 2);
+  expect(fixture.saved).toEqual([]);
+  await act(async () => button(view.host, "Send").click());
+  await wait();
   expect(fixture.saved[0]?.response.kind).toBe("message");
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "Explicitly send this update.", delivery: { version: 1, targets: [{ recipientKey: "approved-officer", agentId: "00000000-0000-4000-8000-000000000002", provider: "omp" }] } } });
   expect(fixture.owner.answers).toEqual([]);
-  await viewSelector(view.host, "needs-action");
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]') !== null).toBe(true);
+  expect(view.host.querySelector('[aria-label="Card thread"] ol')?.textContent).toContain("You to LinkedOwner");
+});
+
+test("an open ask has one box, its answer; the reply box takes over once it is answered", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  expect([...view.host.querySelectorAll("textarea")].map((node) => node.name)).toEqual(["answer"]);
+  expect(view.host.querySelector('textarea[name="answer"]')?.getAttribute("aria-label")).toBe("Reply to SyntheticOfficer");
+  await act(async () => option(view.host, "Careful option").click());
+  await wait();
+  await act(async () => button(view.host, "Show card").click());
+  expect([...view.host.querySelectorAll("textarea")].map((node) => node.name)).toEqual(["reply"]);
 });
 
 test("a typed information card cannot manufacture a human question from its extension payload", async () => {
@@ -328,7 +388,7 @@ test("a typed information card cannot manufacture a human question from its exte
   const view = await mount(fixture.source);
   await viewSelector(view.host, "information");
   expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain(String(syntheticRecord("ask").title));
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]') === null).toBe(true);
+  expect(view.host.querySelector('textarea[name="answer"]') === null).toBe(true);
   expect([...view.host.querySelectorAll("button")].some((button) => button.textContent === "Send answer")).toBe(false);
   expect(fixture.saved).toEqual([]);
 });
@@ -353,18 +413,20 @@ test("matching display authors cannot fold an approval from a different register
 });
 
 test("a failed card message retains the exact draft until durable saving succeeds", async () => {
-  const fixture = typedFixture(syntheticRecord("ask"));
+  jest.useFakeTimers();
+  const fixture = typedFixture(syntheticRecord("task"));
   const send = fixture.source.sendMessage!;
   let fail = true;
   fixture.source.sendMessage = async (...args) => { if (fail) { fail = false; throw new Error("Isolated message write refused"); } return send(...args); };
   const view = await mount(fixture.source);
-  await act(async () => button(view.host, "Message SyntheticOfficer").click());
-  await enter(view.host, "Card message", "Keep this exact draft after the refused write.");
-  await act(async () => button(view.host, "Send message").click());
-  expect(view.host.querySelector<HTMLTextAreaElement>('[aria-label="Card message"]')?.value).toBe("Keep this exact draft after the refused write.");
+  await enter(view.host, "Reply to SyntheticOfficer", "Keep this exact draft after the refused write.");
+  await act(async () => button(view.host, "Send").click());
+  await wait();
+  expect(view.host.querySelector<HTMLTextAreaElement>('textarea[name="reply"]')?.value).toBe("Keep this exact draft after the refused write.");
+  expect(view.host.querySelector('[aria-label="Card thread"] [role="alert"]')?.textContent).toContain("Isolated message write refused");
   expect(fixture.saved).toEqual([]);
-  await act(async () => button(view.host, "Send message").click());
-  expect(view.host.querySelector<HTMLTextAreaElement>('[aria-label="Card message"]')?.value).toBe("");
+  await act(async () => button(view.host, "Try again").click());
+  expect(view.host.querySelector<HTMLTextAreaElement>('textarea[name="reply"]')?.value).toBe("");
   expect(fixture.owner.answers).toEqual([]);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "Keep this exact draft after the refused write." } });
 });
@@ -400,15 +462,18 @@ test("a proceeding question accepts its actual default instead of silently subst
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { action: "accept-default", choice: "quick" } });
 });
 
-test("an explicit owner note discloses only to resolved recipients and retains each unrouted intent privately", async () => {
+test("a reply reaches only the linked co-owner; an unlinked one gets nothing and nothing is held for it", async () => {
+  jest.useFakeTimers();
   const fixture = typedFixture({ ...syntheticRecord("task"), owner: "SyntheticOwner / MissingOfficer" });
   fixture.entry.recipientRoute = { recipients: [{ recipientKey: "known-owner", legacyName: "SyntheticOwner", runtimeTarget: { agentId: "00000000-0000-4000-8000-000000000001" } }], unresolved: ["MissingOfficer"] };
   const view = await mount(fixture.source);
-  expect(view.host.textContent).toContain("MissingOfficer");
-  await enter(view.host, "Note to owner", "An explicit bounded owner note.");
-  await act(async () => button(view.host, "Send note to SyntheticOwner; hold MissingOfficer privately").click());
+  expect(view.host.querySelector('[aria-label="Card details"]')?.textContent).toContain("MissingOfficer has no link you approved and does not get it.");
+  await enter(view.host, "Reply to SyntheticOwner", "An explicit bounded owner note.");
+  await act(async () => button(view.host, "Send").click());
+  await wait();
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "An explicit bounded owner note.", delivery: { targets: [{ recipientKey: "known-owner", agentId: "00000000-0000-4000-8000-000000000001" }] } } });
-  expect(fixture.owner.heldNotes).toContainEqual(expect.objectContaining({ intendedRecipient: "MissingOfficer", text: "An explicit bounded owner note." }));
+  expect((fixture.saved[0]?.payload?.data as { delivery: { targets: unknown[] } }).delivery.targets).toHaveLength(1);
+  expect(fixture.owner.heldNotes).toEqual([]);
   expect(fixture.saved[0]?.response.kind).toBe("message");
 });
 
@@ -460,10 +525,12 @@ test("an officer reply cannot inherit an owner's receipt merely by reusing its m
   fixture.entry.responseHandling = { "owner-message-response": { acknowledgement: { ...identity, responseId: "owner-message-response", handlingId: "owner-message-ack", phase: "acknowledged", createdAt: SITREP_NOW }, outcome: null } };
   Object.assign(fixture.owner, { threadResponses: { [JSON.stringify(["ask", "ask-synthetic", messageId])]: "owner-message-response" } });
   const view = await mount(fixture.source);
-  await act(async () => button(view.host, "Message SyntheticOfficer").click());
   const items = [...view.host.querySelectorAll('[aria-label="Card thread"] li')];
-  expect(items.find((item) => item.textContent?.includes("Original owner message"))?.textContent).toContain("Publisher received");
-  expect(items.find((item) => item.textContent?.includes("Separate incoming officer message"))?.textContent).not.toContain("Publisher received");
+  expect(items.find((item) => item.textContent?.includes("Original owner message"))?.querySelector('[data-step="received"]')?.getAttribute("data-state")).toBe("done");
+  expect(items.find((item) => item.textContent?.includes("Separate incoming officer message"))?.querySelector('[aria-label="Answer steps"]')).toBeNull();
+  const delivery = [...view.host.querySelectorAll('[aria-label="Message delivery"]')];
+  expect(delivery.find((item) => item.textContent?.includes("Original owner message"))?.textContent).toContain("Publisher received");
+  expect(delivery.find((item) => item.textContent?.includes("Separate incoming officer message"))?.textContent).not.toContain("Publisher received");
 });
 
 test("an unresolved original thread destination is held instead of silently resending to the publisher", async () => {
@@ -473,10 +540,9 @@ test("an unresolved original thread destination is held instead of silently rese
   fixture.owner.deliveries.push({ sourceKey: "watch.threads.json", eventSourceKey: `xyz.tinycloud.rocinante/sam/thread/ask/ask-synthetic/${messageId}.json`, publisherId: "legacy", identity: { cardId: fixture.entry.state.card.cardId, revision: 1, issuanceId: "synthetic-issuance" }, responseId: "held-thread-response", recipientKey: "unmapped-owner", state: "unconfirmed", routedTo: "owner", dispatch: "never", evidence: "explicit", originalReceipt: { state: "unconfirmed" } });
   fixture.entry.threadRoutes = { [JSON.stringify(["ask", "ask-synthetic", messageId])]: { kind: "held", unresolved: ["UnmappedOwner"] } };
   const view = await mount(fixture.source);
-  await act(async () => button(view.host, "Message SyntheticOfficer").click());
-  expect(button(view.host, "Resend message").disabled).toBe(true);
-  expect(view.host.textContent).toContain("UnmappedOwner");
-  await act(async () => button(view.host, "Resend message").click());
+  expect(button(view.host, "Send again").disabled).toBe(true);
+  expect(view.host.textContent).toContain("Not sent: UnmappedOwner had no link you approved.");
+  await act(async () => button(view.host, "Send again").click());
   expect(fixture.saved).toEqual([]);
 });
 
@@ -510,8 +576,8 @@ test("a typed ask is answered with one tap once the undo window runs out, and Un
   await act(async () => option(view.host, "Careful option").click());
   expect(option(view.host, "Careful option").getAttribute("aria-pressed")).toBe("true");
   expect(option(view.host, "Quick option").disabled).toBe(true);
-  expect(button(view.host, "Save private note").disabled).toBe(true);
-  expect(view.host.textContent).toContain(`Sending in ${ANSWER_UNDO_SECONDS}s`);
+  expect(button(view.host, "Ask me later").disabled).toBe(true);
+  expect(view.host.textContent).toContain(`Sending to SyntheticOfficer in ${ANSWER_UNDO_SECONDS}s`);
   await wait(ANSWER_UNDO_SECONDS - 1);
   await act(async () => button(view.host, "Undo").click());
   expect(option(view.host, "Careful option").getAttribute("aria-pressed")).toBe("false");
@@ -540,7 +606,7 @@ test("a typed answer keeps its own Send, and Accept recommendation and Drop ques
   await act(async () => button(view.host, "Undo").click());
   await wait(ANSWER_UNDO_SECONDS * 3);
   expect(fixture.saved).toEqual([]);
-  await enter(view.host, "Your answer", "Neither yet: wait for the review.");
+  await enter(view.host, "Reply to SyntheticOfficer", "Neither yet: wait for the review.");
   await act(async () => button(view.host, "Send answer").click());
   expect(option(view.host, "Careful option").disabled).toBe(true);
   await wait();
@@ -641,4 +707,27 @@ test("an answered ask stays open while one of its approval steps still needs the
   expect(fold(view.host)).toBeNull();
   expect(folded(view.host)).toBe(false);
   expect(view.host.querySelector('[aria-label="Folded approval step"] button') !== null).toBe(true);
+});
+
+test("the card face says who is asking and what it needs in plain words; ids and wiring wait under a closed Details", async () => {
+  const fixture = typedFixture(syntheticRecord("task"));
+  const view = await mount(fixture.source);
+  const card = view.host.querySelector('[aria-label="Focused card"]') as HTMLElement;
+  expect(card.querySelector("article [data-status]")?.textContent).toBe("Needs you");
+  expect(card.querySelector("article")?.textContent).toContain("SyntheticOfficer");
+  for (const wiring of ["did:key:synthetic-publisher", "authenticated publisher", "owner registry", "unrouted", "immutable message", "Owner:", "F-syntheti"]) expect(face(card)).not.toContain(wiring);
+  const details = card.querySelector<HTMLDetailsElement>('[aria-label="Card details"]');
+  expect(details?.open).toBe(false);
+  expect(details?.querySelector("summary")?.textContent).toBe("Details");
+  expect(details?.textContent).toContain("did:key:synthetic-publisher");
+  expect(details?.querySelector('[aria-label="Card reference"]')?.textContent).toContain("F-syntheti");
+  expect(details?.textContent).toContain("Agent working on this: SyntheticOwner");
+});
+
+test("a typed card from a crew member shows that name as its author and the posting agent as via", async () => {
+  const fixture = typedFixture({ ...syntheticRecord("ask"), from: "CrewMember" });
+  const view = await mount(fixture.source);
+  expect(view.host.querySelector('[aria-label="Focused card"] article p')?.textContent).toBe("CrewMember · via SyntheticOfficer");
+  expect(view.host.querySelector('textarea[name="answer"]')?.getAttribute("aria-label")).toBe("Reply to CrewMember");
+  expect(view.host.querySelector('[aria-label="Cards in this view"]')?.textContent).toContain("CrewMember · Needs you");
 });
