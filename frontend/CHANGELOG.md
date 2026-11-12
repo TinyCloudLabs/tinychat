@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.31
+
+### Patch Changes
+
+- 97dbe56: iOS and Android: a returning user's Feed no longer waits for the TinyCloud node to re-activate a delegation it already holds (TC-2865). Once a launch has seen the node accept the current delegation, later launches still send `/delegate`, but in the background. On the iOS simulator, the time to the first Feed card dropped from about 3.0 s to about 0.6 s. If a background activation fails, the next launch waits for activation again and shows its error. Sign-in and renewal still wait for activation.
+
 ## 0.14.0-beta.30
 
 ### Patch Changes
