@@ -15,6 +15,14 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.29
+
+### Minor Changes
+
+- cf05789: The app links TinyCloud's privacy policy, `https://tinycloud.xyz/privacy` (TC-2876, App Store 5.1.1(i), Play User Data policy). The link appears in Settings → Account (signed in, and the signed-out phone Settings) and in How it works → Your data. It opens in the in-app browser on iOS and Android, in the system browser on desktop (a fixed-URL Tauri command), and in a new tab on the web.
+
+  The iOS privacy manifest now also declares Name, Purchase History, Product Interaction and Performance Data, to match the App Store privacy answers. The HealthKit purpose strings are now added to Debug builds only, and `ios-build.yml` fails a Release archive that has them.
+
 ## 0.14.0-beta.28
 
 ### Minor Changes
