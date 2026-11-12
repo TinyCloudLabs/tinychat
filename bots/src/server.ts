@@ -11,11 +11,11 @@ const MESSAGES_PATH = "/v1/bots/main/messages";
 export interface BotApi {
   send(text: string, sink: TurnSink, owner?: string): Promise<void>;
   list(): Promise<ListedMessage[]>;
-  historyPending?(): unknown;
-  historyStage?(staged: StagedHistory): void;
-  historyPermission?(owner: string, expiresAt?: number, validUntil?: number): void;
-  historyNotice?(): unknown;
-  historyNoticeAck?(id: string, renderedAt: number, deleteAt: number): void;
+  historyPending?(): Promise<unknown>;
+  historyStage?(staged: StagedHistory): Promise<void>;
+  historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
+  historyNotice?(): Promise<unknown>;
+  historyNoticeAck?(id: string, renderedAt: number, deleteAt: number): Promise<void>;
   historyReceipt?(receipt: unknown): Promise<void>;
 }
 
@@ -80,23 +80,23 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     const owner = authorizedOwner(req, options.secret, options.accounts);
     if (!owner) return new Response(null, { status: 401 });
     if (path === "/v1/bots/main/history/stage" && req.method === "POST") {
-      try { options.bots.forOwner(owner).historyStage?.(await req.json()); return new Response(null, { status: 204 }); }
+      try { await options.bots.forOwner(owner).historyStage?.(await req.json()); return new Response(null, { status: 204 }); }
       catch { return new Response(null, { status: 503 }); }
     }
     if (path === "/v1/bots/main/history/permission" && req.method === "PUT") {
       try {
         const body = await req.json();
-        options.bots.forOwner(owner).historyPermission?.(owner, body.expiresAt, body.validUntil);
+        await options.bots.forOwner(owner).historyPermission?.(owner, body.expiresAt, body.validUntil);
         return new Response(null, { status: 204 });
       } catch { return new Response(null, { status: 503 }); }
     }
     if (path === "/v1/bots/main/history/notice") {
       try {
         const bot = options.bots.forOwner(owner);
-        if (req.method === "GET") return Response.json({ notice: bot.historyNotice?.() ?? null });
+        if (req.method === "GET") return Response.json({ notice: await bot.historyNotice?.() ?? null });
         if (req.method === "POST") {
           const body = await req.json();
-          bot.historyNoticeAck?.(body.id, body.renderedAt, body.deleteAt);
+          await bot.historyNoticeAck?.(body.id, body.renderedAt, body.deleteAt);
           return new Response(null, { status: 204 });
         }
       } catch { return new Response(null, { status: 503 }); }
@@ -104,7 +104,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (path === "/v1/bots/main/history") {
       const bot = options.bots.forOwner(owner);
       try {
-        if (req.method === "GET") return Response.json({ batch: bot.historyPending?.() ?? null });
+        if (req.method === "GET") return Response.json({ batch: await bot.historyPending?.() ?? null });
         if (req.method === "POST" && bot.historyReceipt) { await bot.historyReceipt(await req.json()); return new Response(null, { status: 204 }); }
       } catch { return Response.json({ error: "history_unavailable" }, { status: 503 }); }
       return new Response(null, { status: 405 });

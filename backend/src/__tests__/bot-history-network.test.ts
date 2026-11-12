@@ -130,8 +130,8 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
       await manager.deleteWorkingState(historyBotId(address), "unused");
       expect(await bot.historyCovered()).toBe(false);
       for (;;) {
-        const next = bot.historyPending(); if (!next) break;
-        await bot.historyReceipt(await writer.archive(address, next, async staged => { bot.historyStage(staged); }));
+        const next = await bot.historyPending(); if (!next) break;
+        await bot.historyReceipt(await writer.archive(address, next, async staged => { await bot.historyStage(staged); }));
       }
       expect(await bot.historyCovered()).toBe(true);
       await manager.deleteWorkingState(historyBotId(address), "unused");

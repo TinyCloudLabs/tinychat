@@ -198,12 +198,14 @@ export class Bot {
       return;
     }
     if (this.#options.history) {
+      this.#busy = true;
+      await this.#deleting;
       try {
         this.#history ??= new HistoryJournal(this.layout, this.#options.history);
-        this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 8 + 128 * 1024);
+        this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
         this.#history.append({ type: "user", text, at: new Date().toISOString() });
         this.#history.startDraft();
-      } catch { sink.error("bot_unavailable"); return; }
+      } catch { this.#busy = false; sink.error("bot_unavailable"); return; }
     }
     const output = sink;
     sink = {
@@ -249,7 +251,11 @@ export class Bot {
     if (this.#options.history) {
       await this.#deleting;
       this.#history ??= new HistoryJournal(this.layout, this.#options.history);
-      if (!this.#history.legacyPending) return this.#history.messages();
+      if (!this.#history.legacyPending) {
+        const messages = this.#history.messages();
+        if (messages.length) this.#markUsed();
+        return messages;
+      }
     }
     this.#listing++;
     this.#clearIdle();
@@ -313,24 +319,27 @@ export class Bot {
     if (!this.#options.history) throw new Error("history_disabled");
     return this.#history ??= new HistoryJournal(this.layout, this.#options.history);
   }
-  historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
-    if (expiresAt === undefined) { this.#journal().begin(owner, 0); this.#journal().permissionActive(validUntil!); }
-    else this.#journal().permissionExpired(expiresAt, owner);
+  async #historyOperation<T>(run: (journal: HistoryJournal) => T | Promise<T>): Promise<T> {
+    this.#listing++;
+    try {
+      await this.#deleting;
+      return await run(this.#journal());
+    } finally { this.#listing--; }
   }
-  historyStage(staged: StagedHistory) { this.#journal().stage(staged); }
-  historyNotice() { return this.#options.history ? this.#journal().notice() : undefined; }
-  historyNoticeAck(id: string, renderedAt: number, deleteAt: number) { this.#journal().acknowledgeNotice(id, renderedAt, deleteAt); }
+  historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
+    return this.#historyOperation(journal => {
+      if (expiresAt === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!); }
+      else journal.permissionExpired(expiresAt, owner);
+    });
+  }
+  historyStage(staged: StagedHistory) { return this.#historyOperation(journal => journal.stage(staged)); }
+  historyNotice() { return this.#options.history ? this.#historyOperation(journal => journal.notice()) : Promise.resolve(undefined); }
+  historyNoticeAck(id: string, renderedAt: number, deleteAt: number) { return this.#historyOperation(journal => journal.acknowledgeNotice(id, renderedAt, deleteAt)); }
   historyExpiryDue(now = Date.now()) { return this.#options.history ? this.#journal().expiryDue(now) : false; }
   historyPending() {
-    if (!this.#options.history) return undefined;
-    this.#history ??= new HistoryJournal(this.layout, this.#options.history);
-    return this.#history.pending();
+    return this.#options.history ? this.#historyOperation(journal => journal.pending()) : Promise.resolve(undefined);
   }
-  async historyReceipt(receipt: unknown) {
-    if (!this.#options.history) throw new Error("history_disabled");
-    this.#history ??= new HistoryJournal(this.layout, this.#options.history);
-    await this.#history.accept(receipt);
-  }
+  historyReceipt(receipt: unknown) { return this.#historyOperation(journal => journal.accept(receipt)); }
   async historyCovered(): Promise<boolean> {
     if (!this.#options.history) return true;
     this.#history ??= new HistoryJournal(this.layout, this.#options.history);
