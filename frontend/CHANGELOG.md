@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.26
+
+### Patch Changes
+
+- 31c1323: tinycloud.chat notice: one recording that belongs to another account now reads "…Sign in to that account here to save it." The Library's "Audio only in this browser" filter, when empty, says "No recordings have audio only in this browser." Details: TC-2050
+
 ## 0.14.0-beta.25
 
 ### Patch Changes
