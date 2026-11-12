@@ -310,8 +310,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     if (request.signal.aborted) return;
     baseline = loadFailures === failures ? current : undefined;
     // With no earlier fingerprint, the feed can only lack a write when a load
-    // began before this stream was ready. A load another view starts meanwhile
-    // may have begun before the gap write landed, so it never cancels this one.
+    // began before this stream was ready. A load another view (a sitrep card)
+    // starts meanwhile never reaches the Feed's snapshot, so it cancels nothing.
     const stale = previous === undefined ? begun > 0 : current === undefined || current !== previous;
     if (stale || recovering) wake();
   }
