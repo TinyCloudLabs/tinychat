@@ -1519,6 +1519,7 @@ test('Android: the upload key only in tooling-only jobs, an unsigned build witho
   assert.ok(plan.indexOf('Require the release workflow from main') < plan.indexOf('${{ github.event_name == \'workflow_dispatch\' && secrets.'));
   assert.match(stepNamed(plan, 'Check signing secrets'), /run: scripts\/release\/android-signing\.sh check\n/);
   assert.match(stepNamed(plan, 'Check signing secrets'), /vars\.ANDROID_UPLOAD_CERT_SHA256/);
+  assert.match(stepNamed(plan, 'Check the Play service account'), /secrets\.PLAY_SERVICE_ACCOUNT_JSON/);
   assert.doesNotMatch(withoutComments(plan), PROJECT_CODE);
 
   // The build job: bun, Capacitor and Gradle with no environment and nothing secret, unsigned by explicit override.
@@ -1552,6 +1553,15 @@ test('Android: the upload key only in tooling-only jobs, an unsigned build witho
   // Releases verify against the pinned variable, never a digest taken from the keystore secret.
   assert.match(stepNamed(sign, 'Verify the signed AAB and APK'), /CERT_SHA256: \$\{\{ github\.event_name == 'workflow_dispatch' && vars\.ANDROID_UPLOAD_CERT_SHA256 \|\| steps\.sign\.outputs\.rehearsal-cert-sha256 \}\}/);
   assert.match(stepNamed(sign, 'Verify the signed AAB and APK'), /scripts\/release\/verify-android-release\.sh /);
+  // Play: the verified AAB, to the internal track of xyz.tinycloud.home, by a pinned action.
+  const play = stepNamed(sign, 'Upload the AAB to Google Play (internal testing)');
+  assert.ok(sign.indexOf('- name: Upload the AAB to Google Play (internal testing)\n') > sign.indexOf('- name: Upload AAB + APK\n'), 'Play gets the AAB after the artifact is archived');
+  assert.match(play, /\n\s+if: env\.RELEASE == 'true'\n/);
+  assert.match(play, /uses: r0adkll\/upload-google-play@[0-9a-f]{40} # v/);
+  assert.match(play, /packageName: xyz\.tinycloud\.home\n/);
+  assert.match(play, /releaseFiles: \$\{\{ runner\.temp \}\}\/signed\/app-release\.aab\n/);
+  assert.match(play, /tracks: internal\n/);
+  assert.match(play, /status: completed\n/);
 
   // Signing outside Gradle, passwords from the environment only.
   const signing = read(repo, 'scripts/release/android-signing.sh');
