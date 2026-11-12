@@ -23,7 +23,7 @@ const REVEAL_WINDOW_MS = 4000;
 /** The foot of Settings: the build line, and the playback diagnostics it reveals. */
 export function SettingsBuildFooter() {
   const platform = useContext(PlatformContext);
-  const enabled = useSyncExternalStore(subscribePlaybackDiagnostics, playbackDiagnosticsEnabled);
+  const enabled = useSyncExternalStore(subscribePlaybackDiagnostics, playbackDiagnosticsEnabled, playbackDiagnosticsEnabled);
   const [revealed, setRevealed] = useState(false);
   const taps = useRef<number[]>([]);
   return (
@@ -41,8 +41,8 @@ export function SettingsBuildFooter() {
 }
 
 export function PlaybackDiagnosticsSection({ platform }: { platform: AppPlatform }) {
-  const enabled = useSyncExternalStore(subscribePlaybackDiagnostics, playbackDiagnosticsEnabled);
-  const count = useSyncExternalStore(subscribePlaybackDiagnostics, playbackDiagnosticsCount);
+  const enabled = useSyncExternalStore(subscribePlaybackDiagnostics, playbackDiagnosticsEnabled, playbackDiagnosticsEnabled);
+  const count = useSyncExternalStore(subscribePlaybackDiagnostics, playbackDiagnosticsCount, playbackDiagnosticsCount);
   const [status, setStatus] = useState<string | null>(null);
   const exportLog = async (share: boolean) => {
     const text = playbackDiagnosticsText({ build: await resolveBuildInfo(platform).catch(() => null) });
