@@ -2158,6 +2158,7 @@ describe("W4 content store — immutable expiry and replay protection", () => {
       expect(await store.upsert(upsertInput({sourceId: "invalid-time", ts: undefined, receivedAt: new Date(clock.now).toISOString()}))).toEqual({ok:false, code:"meeting_time_invalid"});
       expect(await blobs.read(SOURCE, ADDRESS_A, "invalid-time")).toBeNull();
       expect(logs.lines.join(" ")).not.toContain("invalid-time");
+      expect(logs.lines.join(" ")).not.toContain(ADDRESS_A);
       expect(logs.lines.some(line => line.includes("meeting_time_invalid"))).toBe(true);
     } finally { logs.restore(); }
   });
