@@ -45,8 +45,8 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
  * `webhook-tokens.ts` and `connector-drain.ts`; the spec records it too.
  */
 
-const PENDING_KEY_PREFIX = "webhooks/pending";
-const DEAD_KEY_PREFIX = "webhooks/dead";
+export const PENDING_KEY_PREFIX = "webhooks/pending";
+export const DEAD_KEY_PREFIX = "webhooks/dead";
 const CORRUPT_KEY_PREFIX = "webhooks/corrupt";
 
 /** §5.3: cap 200 items/user, drop-oldest, and log the drop. */
@@ -79,10 +79,10 @@ export interface PendingItem {
   /** ISO. Also what the 14-day TTL is measured from. */
   receivedAt: string;
   /**
-   * ISO, the PROVIDER's `timestamp` on the delivery (§4.5) when it carried one — absent for the
-   * legacy shape. `receivedAt` is refreshed by a duplicate delivery, so a captured delivery
-   * replayed after a purge arrives with `receivedAt = now` and slips past §6.2's tombstone
-   * watermark. This field does not move on a replay, so it is what the tombstone compares.
+   * ISO, the provider's timestamp on the delivery (§4.5) when it carried one — absent for the
+   * legacy shape. `receivedAt` is the first server receipt time and never moves on a duplicate,
+   * so replaying a delivery cannot restart the 14-day retention window. `sourceTimestamp` also
+   * never changes on replay and is compared with the purge watermark.
    */
   sourceTimestamp?: string;
   /** 0 on enqueue. Only ITEM-state failures increment this (§5.5). */
@@ -578,9 +578,6 @@ export class ConnectorQueue {
         state.repaired,
         swept.dropped,
       );
-      await this.runStorage(() =>
-        this.deleteKey(corruptQueueKey(source, address)),
-      );
       this.logDeadChanges(source, address, swept.promoted);
       return { pending: swept.items.length, dead: swept.dead.length };
     });
@@ -854,12 +851,6 @@ export class ConnectorQueue {
     });
   }
 
-  /** Remove only a legacy raw quarantine copy; preserve any current pending/dead queue. */
-  async clearCorrupt(source: string, address: string): Promise<void> {
-    await this.runStorage(() =>
-      this.deleteKey(corruptQueueKey(source, address)),
-    );
-  }
 
   // ── Internals ──────────────────────────────────────────────────────
 

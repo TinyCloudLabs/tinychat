@@ -1,6 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import {
   CEILING_WINDOW_MS,
@@ -15,8 +13,10 @@ import {
   REVOCATION_RECHECK_MS,
   classifyDrainError,
   createWebhookConfigDirectory,
+  createWebhookPurgeLedgerDirectory,
   createWebhookQueueDirectory,
   drainIntervalFromEnv,
+  type ConnectorRetentionAddress,
   isTombstoned,
   REVOCATION_RECHECK_ITEMS_SIDE_EFFECTING,
   tombstoneReason,
@@ -72,6 +72,7 @@ afterEach(() => {
 class FakeNode {
   readonly store = new Map<string, unknown>();
   listResponse: unknown = { data: [] };
+  listResponses = new Map<string, unknown>();
   listCalls: unknown[] = [];
 
   readonly kv = {
@@ -89,7 +90,17 @@ class FakeNode {
     },
     list: async (options: unknown): Promise<unknown> => {
       this.listCalls.push(options);
-      return this.listResponse;
+      const record =
+        typeof options === "object" && options !== null
+          ? (options as { prefix?: unknown; cursor?: unknown })
+          : {};
+      const prefix = typeof record.prefix === "string" ? record.prefix : "";
+      const cursor = typeof record.cursor === "string" ? record.cursor : "";
+      const cursorKey = `${prefix}|${cursor}`;
+      if (this.listResponses.has(cursorKey)) {
+        return this.listResponses.get(cursorKey);
+      }
+      return this.listResponses.get(prefix) ?? this.listResponse;
     },
   };
 }
@@ -613,7 +624,7 @@ describe("purge ledger (step -1)", () => {
     expect(result.dropped).toBe(1);
   });
 
-  test("a duplicate delivery preserves receivedAt and the provider stamp", async () => {
+  test("duplicate delivery does not extend the 14-day retention clock", async () => {
     const h = harness();
     const sourceTimestamp = new Date(T0 - 120_000).toISOString();
     await h.queue.enqueue(SOURCE, ADDRESS, {
@@ -1159,39 +1170,7 @@ describe("queue maintenance timer", () => {
       timer.stop();
     }
   });
-  test("queue-key maintenance passes its interval as the expiry safety margin", async () => {
-    const margins: number[] = [];
-    const timer = startConnectorQueueMaintenanceTimer({
-      listQueueEntries: async () => [{ source: SOURCE, address: ADDRESS }],
-      sweepQueue: async (_entry, safetyMarginMs) => {
-        margins.push(safetyMarginMs);
-      },
-      intervalMs: 1_234,
-    });
-    try {
-      await timer.tick();
-      expect(margins).toEqual([1_234]);
-    } finally {
-      timer.stop();
-    }
-  });
 
-  test("ledger maintenance passes its interval as the expiry safety margin", async () => {
-    const margins: number[] = [];
-    const timer = startConnectorQueueMaintenanceTimer({
-      listLedgerAddresses: async () => [{ source: SOURCE, address: ADDRESS }],
-      sweepLedger: async (_entry, safetyMarginMs = 0) => {
-        margins.push(safetyMarginMs);
-      },
-      intervalMs: 1_234,
-    });
-    try {
-      await timer.tick();
-      expect(margins).toEqual([1_234]);
-    } finally {
-      timer.stop();
-    }
-  });
   test("a scan failure is logged, not thrown, and the timer survives it", async () => {
     const timer = startConnectorQueueMaintenanceTimer({
       sweep: async () => {},
@@ -1285,32 +1264,6 @@ describe("queue maintenance timer", () => {
     expect(node.listCalls[0]).toEqual({ prefix: "webhooks/config/" });
   });
 
-  test("the queue directory scans live and corrupt pending/dead keys, including disconnected users", async () => {
-    const node = new FakeNode();
-    node.listResponse = {
-      data: [
-        `webhooks/pending/fireflies/${LOWER}`,
-        `webhooks/dead/fireflies/${OTHER}`,
-        `webhooks/corrupt/fireflies/${LOWER}`,
-        `webhooks/corrupt/purged/fireflies/${OTHER}`,
-        "webhooks/pending/not-a-source/not-an-address",
-      ],
-    };
-    const directory = createWebhookQueueDirectory(
-      node as unknown as TinyCloudNode,
-    );
-
-    await expect(directory()).resolves.toEqual([
-      { source: "fireflies", address: LOWER },
-      { source: "fireflies", address: OTHER },
-    ]);
-    expect(node.listCalls).toEqual([
-      { prefix: "webhooks/pending/" },
-      { prefix: "webhooks/dead/" },
-      { prefix: "webhooks/corrupt/" },
-    ]);
-  });
-
   test("the config directory parses the production Result data.keys shape", async () => {
     const node = new FakeNode();
     node.listResponse = {
@@ -1363,6 +1316,126 @@ describe("queue maintenance timer", () => {
     await expect(directory()).rejects.toThrow(
       /KV operation failed.*FETCH_FAILED/,
     );
+  });
+
+  test("retention directories enumerate pending, dead and purge-ledger addresses only", async () => {
+    const node = new FakeNode();
+    node.listResponses.set("webhooks/pending", {
+      ok: true,
+      data: {
+        keys: [
+          `ops.tinycloud.backend/webhooks/pending/fireflies/${LOWER}`,
+          "webhooks/pending/invalid/not-an-address",
+          "webhooks/pending/fireflies/",
+        ],
+      },
+    });
+    node.listResponses.set("webhooks/dead", {
+      ok: true,
+      data: { keys: [`webhooks/dead/fireflies/${OTHER}`] },
+    });
+    node.listResponses.set("webhooks/purged", {
+      ok: true,
+      data: { keys: [`webhooks/purged/fireflies/${LOWER}`] },
+    });
+
+    await expect(
+      createWebhookQueueDirectory(node as unknown as TinyCloudNode)(),
+    ).resolves.toEqual([
+      { source: "fireflies", address: LOWER },
+      { source: "fireflies", address: OTHER },
+    ]);
+    await expect(
+      createWebhookPurgeLedgerDirectory(node as unknown as TinyCloudNode)(),
+    ).resolves.toEqual([{ source: "fireflies", address: LOWER }]);
+    expect(node.listCalls).toEqual([
+      { prefix: "webhooks/pending" },
+      { prefix: "webhooks/dead" },
+      { prefix: "webhooks/purged" },
+    ]);
+  });
+
+  test("retention directory follows KV cursors and refuses incomplete pages", async () => {
+    const node = new FakeNode();
+    node.listResponses.set("webhooks/pending|", {
+      ok: true,
+      data: {
+        keys: [`webhooks/pending/fireflies/${LOWER}`],
+        truncated: true,
+        nextCursor: "page-2",
+      },
+    });
+    node.listResponses.set("webhooks/pending|page-2", {
+      ok: true,
+      data: {
+        keys: [`webhooks/pending/fireflies/${OTHER}`],
+        truncated: false,
+      },
+    });
+    node.listResponses.set("webhooks/dead", {
+      ok: true,
+      data: { keys: [] },
+    });
+    const directory = createWebhookQueueDirectory(
+      node as unknown as TinyCloudNode,
+    );
+    await expect(directory()).resolves.toEqual([
+      { source: "fireflies", address: LOWER },
+      { source: "fireflies", address: OTHER },
+    ]);
+    expect(node.listCalls).toEqual([
+      { prefix: "webhooks/pending" },
+      { prefix: "webhooks/pending", cursor: "page-2" },
+      { prefix: "webhooks/dead" },
+    ]);
+
+    const broken = new FakeNode();
+    broken.listResponses.set("webhooks/pending", {
+      ok: true,
+      data: {
+        keys: [`webhooks/pending/fireflies/${LOWER}`],
+        truncated: true,
+      },
+    });
+    await expect(
+      createWebhookQueueDirectory(broken as unknown as TinyCloudNode)(),
+    ).rejects.toThrow(/truncated/);
+  });
+
+  test("retention runs immediately and uses the interval as an early-expiry margin", async () => {
+    let finished!: () => void;
+    const done = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
+    const queueSweeps: Array<[ConnectorRetentionAddress, number]> = [];
+    const ledgerSweeps: Array<[ConnectorRetentionAddress, number]> = [];
+    const timer = startConnectorQueueMaintenanceTimer({
+      listQueueEntries: async () => [
+        { source: "fireflies", address: LOWER },
+      ],
+      listLedgerAddresses: async () => [
+        { source: "fireflies", address: OTHER },
+      ],
+      sweepQueue: async (entry, margin) => {
+        queueSweeps.push([entry, margin]);
+      },
+      sweepLedger: async (entry, margin) => {
+        ledgerSweeps.push([entry, margin]);
+        finished();
+      },
+      intervalMs: 60_000,
+    });
+    try {
+      await done;
+      expect(queueSweeps).toEqual([
+        [{ source: "fireflies", address: LOWER }, 60_000],
+      ]);
+      expect(ledgerSweeps).toEqual([
+        [{ source: "fireflies", address: OTHER }, 60_000],
+      ]);
+    } finally {
+      timer.stop();
+    }
   });
 });
 
@@ -1446,62 +1519,3 @@ describe("gateless drain (Option C construction)", () => {
 
 // ── §5.4/§4.7: the triggers that survive Option C are wired in index.ts ──
 
-describe("index.ts wiring", () => {
-  const source = readFileSync(join(import.meta.dir, "..", "index.ts"), "utf8");
-
-  // OPTION C retires trigger 1's DRAIN KICK, and it stays retired. The kick ran a full drain
-  // pass — config read, marker read, queue read, ledger read — after EVERY delivery, and handed
-  // the surfaced ids to a fire-and-forget promise nobody awaited. With no backend writer and no
-  // connected response consumer that is cost and surfacing risk for no product behaviour; the
-  // delivery's own enqueue is the whole server-side job.
-  //
-  // W1 (backend-ingest plan §8.1) wires the `onDelivery` SEAM for the first time — to the
-  // cohort-gated ingest nudge, which tells the fetch worker an item landed and does nothing at
-  // all for a non-cohort address or with the flag dark. So the assertion is rewritten to the new
-  // truth per plan §11's disposition rule (no assertion keeps a stale rationale): what must never
-  // come back is a drain pass on the delivery path, not the seam itself.
-  test("trigger 1's drain kick is retired — the delivery seam nudges the fetch worker instead", () => {
-    expect(source).not.toMatch(/onDelivery[\s\S]{0,200}drain\.kick/);
-    expect(source).toContain("onDelivery: createIngestOnDelivery(");
-  });
-
-
-  test("trigger 3 — the authenticated user-visit drain — is THE processing trigger", () => {
-    expect(source).toMatch(
-      /drain:\s*\(\{ source, address \}\)[\s\S]{0,160}drain\.kick/,
-    );
-  });
-
-  // OPTION C replaces trigger 4. The fresh-grant kick made an accepted CHAT delegation reach
-  // into the connector, and its sibling (`isBackgroundSyncDisabled`) let the webhook toggle
-  // refuse that delegation outright. Neither may be wired: the server holds no connector
-  // delegation, and turning notifications off must not touch chat access.
-  test("no connector hook is wired into POST /api/delegations", () => {
-    expect(source).not.toContain("onDelegationAccepted");
-    expect(source).not.toContain("isBackgroundSyncDisabled");
-  });
-
-  test("DELETE /config is not wired to the app's delegation store", () => {
-    // The companion router no longer takes a `delegations` collaborator at all.
-    expect(source).not.toMatch(
-      /createConnectorWebhookCompanionRouter\(\{[\s\S]*?\n\s*delegations:/,
-    );
-  });
-
-  // OPTION C: the backend holds NO connector delegation, so there is no stored record for the
-  // drain to re-validate. Wiring the gate anyway would make every drain depend on the app's
-  // unrelated chat delegation — an expired chat grant would silently stop the connector card,
-  // and a `needsReauth` prompt would ask the user to re-grant something the connector never
-  // used. The gate stays an Option-A-only seam on the worker; index.ts must not fill it.
-  test("no stored delegation gate is wired into the drain (Option C)", () => {
-    expect(source).not.toContain("createStoredDelegationGate");
-    expect(source).not.toMatch(
-      /new ConnectorDrainWorker\(\{[\s\S]*?\n\s*delegations:/,
-    );
-  });
-
-  test("no server-side writer is wired into the drain (§4.7, binding)", () => {
-    expect(source).not.toContain("connector-writer");
-    expect(source).not.toContain("removeOnRelease");
-  });
-});

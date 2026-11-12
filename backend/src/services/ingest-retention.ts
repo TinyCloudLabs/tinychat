@@ -14,8 +14,8 @@ import { keyedLogHash } from "./webhook-tokens.js";
  *    rewriting one tenant's index is the interleaved read-modify-write W9 exists to prevent.
  *  - **Sequential across indexes.** One `sweepRetention` at a time — never `Promise.all` across
  *    addresses (§9.3: TinyCloud drops concurrent responses on one space).
- *  - **Fail closed, and cheap.** An unreadable directory sweeps NOTHING rather than guessing;
- *    one index's failure never costs the others theirs, and the pass logs numbers only.
+ *  - **Fail closed, and cheap.** An unreadable directory sweeps no content indexes; replay-marker
+ *    expiry is independent of that directory. One index's failure never costs the others theirs.
  */
 
 /** Frequent sweeps keep physical deletion close to the 14-day boundary. */
@@ -34,6 +34,7 @@ export interface RetentionSweepTarget {
     storedAtBackfilled?: number;
     unreadableIndex?: boolean;
   }>;
+  sweepExpiredReplayTombstones(): Promise<number>;
 }
 
 export interface RetentionIndex {
@@ -94,17 +95,27 @@ export class IngestRetentionSweeper {
   async sweepOnce(): Promise<RetentionPassResult> {
     if (this.passing) return { addresses: 0, swept: 0, errors: 0 };
     this.passing = true;
+    let errors = 0;
     try {
+      try {
+        const removed = await this.deps.content.sweepExpiredReplayTombstones();
+        if (removed > 0) {
+          logRetention(`op=replay-tombstone-sweep result=ok removed=${removed}`);
+        }
+      } catch {
+        errors += 1;
+        warnRetention(`op=replay-tombstone-sweep result=failed`);
+      }
+
       let indexes: readonly RetentionIndex[];
       try {
         indexes = await this.deps.indexes();
       } catch {
         warnRetention(`op=retention-pass result=index_directory_unavailable`);
-        return { addresses: 0, swept: 0, errors: 1 };
+        return { addresses: 0, swept: 0, errors: errors + 1 };
       }
 
       let swept = 0;
-      let errors = 0;
       let addresses = 0;
       let storedAtBackfilled = 0;
       let unreadableIndexes = 0;

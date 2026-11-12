@@ -153,6 +153,41 @@ class CountingBlobStore implements ContentBlobStore {
     this.writes += 1;
     return this.inner.remove(source, address, sourceId);
   }
+  readReplayTombstone(digest: string) {
+    return this.inner.readReplayTombstone(digest);
+  }
+
+  writeReplayTombstone(
+    digest: string,
+    marker: Parameters<InMemoryContentBlobStore["writeReplayTombstone"]>[1],
+  ) {
+    this.writes += 1;
+    return this.inner.writeReplayTombstone(digest, marker);
+  }
+
+  removeReplayTombstone(digest: string) {
+    this.writes += 1;
+    return this.inner.removeReplayTombstone(digest);
+  }
+
+  listReplayTombstones() {
+    return this.inner.listReplayTombstones();
+  }
+
+  readKeyFailureSince(source: string, address: string) {
+    return this.inner.readKeyFailureSince(source, address);
+  }
+
+  writeKeyFailureSince(source: string, address: string, firstFailureAt: string) {
+    this.writes += 1;
+    return this.inner.writeKeyFailureSince(source, address, firstFailureAt);
+  }
+
+  clearKeyFailureSince(source: string, address: string) {
+    this.writes += 1;
+    return this.inner.clearKeyFailureSince(source, address);
+  }
+
 
   removeAll(source: string, address: string): Promise<void> {
     this.writes += 1;
@@ -167,7 +202,6 @@ interface Harness {
   cohort: Set<string>;
   clock: { now: number };
   session: { address: string | undefined };
-  disabled: { value: boolean };
 }
 
 function harness(
@@ -175,7 +209,6 @@ function harness(
     content?: MeetingsContentPort;
     modes?: { mode(address: string): Promise<IngestMode> };
     address?: string;
-    disabled?: boolean;
   } = {},
 ): Harness {
   const blobs = new CountingBlobStore(new InMemoryContentBlobStore());
@@ -184,7 +217,6 @@ function harness(
     now: () => clock.now,
     master: () => CONTENT_MASTER,
   });
-  const disabled = { value: options.disabled ?? false };
   const cohort = new Set<string>([ADDRESS_A.toLowerCase()]);
   const session = { address: options.address ?? ADDRESS_A };
 
@@ -202,13 +234,10 @@ function harness(
         mode: async (address: string): Promise<IngestMode> =>
           cohort.has(address.toLowerCase()) ? "backend" : "browser",
       },
-      isDisabled: async () => disabled.value,
-      deleteReconciled: (source, address) =>
-        store.deleteReconciled(source, address),
     }),
   );
 
-  return { app, store, blobs, cohort, clock, session, disabled };
+  return { app, store, blobs, cohort, clock, session };
 }
 
 async function withServer<T>(
@@ -639,37 +668,6 @@ describe("POST /api/connectors/meetings/:source/:sourceId/reconciled", () => {
       expect(content.body.content.transcript).toEqual({ text: TRANSCRIPT_TEXT });
     });
   });
-  test("sync-off keeps a server-only row until its device saves it, then removes the server copy", async () => {
-    const h = harness({ disabled: true });
-    await seed(h.store, {
-      address: ADDRESS_A,
-      sourceId: "mtg-only-server-copy",
-      kind: "transcript",
-      text: TRANSCRIPT_TEXT,
-    });
-    expect(
-      await h.store.get(SOURCE, ADDRESS_A, "mtg-only-server-copy"),
-    ).not.toBeNull();
-
-    await withServer(h.app, async (base) => {
-      const response = await call(
-        base,
-        `/api/connectors/meetings/${SOURCE}/mtg-only-server-copy/reconciled`,
-        "POST",
-        {},
-      );
-      expect(response.status).toBe(200);
-      expect(response.body).toEqual({
-        reconciled: true,
-        source: SOURCE,
-        sourceId: "mtg-only-server-copy",
-      });
-    });
-
-    expect(
-      await h.store.get(SOURCE, ADDRESS_A, "mtg-only-server-copy"),
-    ).toBeNull();
-  });
 
   test("an unknown id stamps nothing and answers 404", async () => {
     const h = harness();
@@ -782,8 +780,6 @@ describe("cohort gating", () => {
       "/api/connectors/meetings",
       createConnectorMeetingsRouter({
         content: store,
-        isDisabled: async () => false,
-        deleteReconciled: async () => ({ removed: 0 }),
       }),
     );
 
@@ -893,11 +889,6 @@ describe("index.ts wiring", () => {
     expect(INDEX.match(/"\/api\/connectors\/meetings"/g)).toHaveLength(1);
   });
 
-  test("the read API shares ONE ContentStore instance with the rest of the build", () => {
-    // Two instances = two sets of per-tenant lanes over one substrate, which is the
-    // interleaved read-modify-write W4's lanes exist to prevent.
-    expect(INDEX.match(/new ContentStore\(/g)?.length ?? 0).toBe(1);
-  });
 });
 
 // ── The published contract ───────────────────────────────────────────

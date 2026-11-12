@@ -94,12 +94,20 @@ async function runIsolatedStartup(
         return valid ? { ok: true } : { ok: false, error: "content master missing" };
       },
       KvContentBlobStore: class {},
+      assertNoContentKey: async () => {},
       ContentStore: class {
-        async sweepRetention(index: { source: string; address: string }) {
+        async assertContinuity() {}
+        async probeIndex() { return { ok: true, id: "fixture-index" }; }
+        async sweepRetention(index: {
+          source: string;
+          address: string;
+          safetyMarginMs: number;
+        }) {
           retentionSweeps.push(index);
           finishRetentionSweep();
           return { swept: 1, bytesFreed: 0, tombstones: 0 };
         }
+        async sweepExpiredReplayTombstones() { return 0; }
       },
     },
     "./services/ingest-retention.js": load("./services/ingest-retention.ts"),
@@ -899,9 +907,15 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       ...contentStore,
       assertNoContentKey: async () => {},
       currentContentMaster: () => env.CONNECTOR_CONTENT_MASTER,
-      ContentStore: class extends contentStore.ContentStore {
+      ContentStore: class {
         async assertContinuity() {}
         async probeIndex() { return { ok: true, id: "fixture-index" }; }
+        async sweepRetention(index: { source: string; address: string }) {
+          retentionSweeps.push(index);
+          finishRetentionSweep();
+          return { swept: 1, bytesFreed: 0, tombstones: 0 };
+        }
+        async sweepExpiredReplayTombstones() { return 0; }
       },
     },
     "./services/fireflies-oauth.js": { ...firefliesOAuthModule },

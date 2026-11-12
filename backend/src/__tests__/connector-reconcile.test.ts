@@ -113,6 +113,41 @@ class CountingBlobStore implements ContentBlobStore {
     this.writes += 1;
     return this.inner.remove(source, address, sourceId);
   }
+  readReplayTombstone(digest: string) {
+    return this.inner.readReplayTombstone(digest);
+  }
+
+  writeReplayTombstone(
+    digest: string,
+    marker: Parameters<InMemoryContentBlobStore["writeReplayTombstone"]>[1],
+  ) {
+    this.writes += 1;
+    return this.inner.writeReplayTombstone(digest, marker);
+  }
+
+  removeReplayTombstone(digest: string) {
+    this.writes += 1;
+    return this.inner.removeReplayTombstone(digest);
+  }
+
+  listReplayTombstones() {
+    return this.inner.listReplayTombstones();
+  }
+
+  readKeyFailureSince(source: string, address: string) {
+    return this.inner.readKeyFailureSince(source, address);
+  }
+
+  writeKeyFailureSince(source: string, address: string, firstFailureAt: string) {
+    this.writes += 1;
+    return this.inner.writeKeyFailureSince(source, address, firstFailureAt);
+  }
+
+  clearKeyFailureSince(source: string, address: string) {
+    this.writes += 1;
+    return this.inner.clearKeyFailureSince(source, address);
+  }
+
 
   removeAll(source: string, address: string): Promise<void> {
     this.writes += 1;
@@ -155,8 +190,6 @@ function harness(options: { address?: string } = {}): Harness {
         mode: async (address: string): Promise<IngestMode> =>
           cohort.has(address.toLowerCase()) ? "backend" : "browser",
       },
-      isDisabled: async () => false,
-      deleteReconciled: async () => ({ removed: 0 }),
     }),
   );
 

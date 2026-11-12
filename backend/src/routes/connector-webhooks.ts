@@ -545,7 +545,6 @@ export interface WebhookEnqueuer {
     address: string,
     input: EnqueueInput,
   ): Promise<EnqueueResult>;
-  clear?(source: string, address: string): Promise<unknown>;
 }
 
 export interface ConnectorWebhookHandlerOptions {
@@ -554,8 +553,6 @@ export interface ConnectorWebhookHandlerOptions {
   limiters: ConnectorWebhookLimiters;
   registry?: ReadonlySet<string>;
   now?: () => number;
-  /** Post-write recheck for a concurrent disconnect; true causes the address queue to be cleared. */
-  discardIfDisconnected?: (source: string, address: string) => Promise<boolean>;
   /**
    * Fire-and-forget post-ack hook, invoked AFTER the response is written (§4.6's fast-ack
    * discipline: the 202 never waits on a delegation activation or a write to the user's space).
@@ -1090,33 +1087,6 @@ export function createConnectorWebhookHandler(
         return;
       }
 
-      // Disconnect writes its durable marker before clearing. Re-check after enqueue so a
-      // delivery whose write raced behind that clear cannot recreate the pending queue.
-      try {
-        if (await options.discardIfDisconnected?.(source, record.address)) {
-          if (queue.clear === undefined) {
-            throw new Error("queue clear unavailable");
-          }
-          await queue.clear(source, record.address);
-          logWebhook(
-            `recv tid=${hashedField(token)} source=${source} ` +
-              `mid=${hashedField(meetingId)} result=discarded_disconnected`,
-          );
-          respond(202, { status: "queued" });
-          return;
-        }
-      } catch (error) {
-        logWebhookWarn(
-          `op=disconnect-recheck-error tid=${hashedField(token)} ` +
-            `source=${source} mid=${hashedField(meetingId)}`,
-        );
-        console.warn(
-          "[connector-webhook] disconnect recheck failed:",
-          redactedErrorMessage(error),
-        );
-        respond(503, { error: "unavailable" });
-        return;
-      }
 
       logWebhook(
         `recv tid=${hashedField(token)} sig=${hashedField(signatureValue(req))} ` +
@@ -1193,7 +1163,7 @@ function signatureValue(req: Request): string {
 
 /** §5.1-shaped, backend-own keys — auto-prefixed under `ops.tinychat.backend`, NOT `xyz.tinycloud.tinychat/…`. */
 const DISABLED_KEY_PREFIX = "webhooks/disabled";
-const PURGED_KEY_PREFIX = "webhooks/purged";
+export const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
 const CORRUPT_PURGED_KEY_PREFIX = "webhooks/corrupt/purged";
 
 /** §6.2: `recentIds` is forensics only and stays capped; `purgedThrough` is what protects. */
@@ -1229,7 +1199,7 @@ export function disabledMarkerKey(address: string): string {
 
 export function purgeLedgerKey(source: string, address: string): string {
   if (!isValidSource(source)) throw new Error("Invalid webhook source");
-  return `${PURGED_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}`;
+  return `${PURGE_LEDGER_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}`;
 }
 
 export function corruptPurgeLedgerKey(source: string, address: string): string {
@@ -1286,7 +1256,6 @@ export interface ConnectorControl {
     ledger: PurgeLedger,
   ): Promise<void>;
   clearLedger(source: string, address: string): Promise<void>;
-  clearQuarantinedLedger?(source: string, address: string): Promise<void>;
   quarantineLedger(
     source: string,
     address: string,
@@ -1436,14 +1405,6 @@ export class ConnectorControlStore implements ConnectorControl {
 
   async clearLedger(source: string, address: string): Promise<void> {
     await this.run(() => this.deleteKey(purgeLedgerKey(source, address)));
-  }
-  async clearQuarantinedLedger(
-    source: string,
-    address: string,
-  ): Promise<void> {
-    await this.run(() =>
-      this.deleteKey(corruptPurgeLedgerKey(source, address)),
-    );
   }
 
   /** Never persist raw corrupt ledger values: they may contain meeting IDs. */
@@ -1651,8 +1612,6 @@ export interface ConnectorCompanionOptions {
    * disconnect makes no exo call. Best-effort: a failure is logged and never becomes a 503.
    */
   exo?: { clearSource: (source: string, address: string) => Promise<void> };
-  /** Removes reconciled server-side meetings during sync-off; unreconciled rows remain. */
-  deleteReconciled?: (source: string, address: string) => Promise<unknown>;
 }
 
 /**
@@ -1835,7 +1794,7 @@ function pendingView(item: PendingItem) {
 export function createConnectorWebhookCompanionRouter(
   options: ConnectorCompanionOptions,
 ): Router {
-  const { tokens, queue, control, limiters, exo, deleteReconciled } = options;
+  const { tokens, queue, control, limiters, exo } = options;
   const registry = options.registry ?? CONNECTOR_REGISTRY;
   const abort = options.abort ?? connectorDrainAbort;
   const now = options.now ?? (() => Date.now());
@@ -2174,36 +2133,8 @@ export function createConnectorWebhookCompanionRouter(
         const { cleared } = await queue.clear(source, user.address);
         dropped += cleared;
       }
-      for (const source of sources) {
-        const read = await control.readLedger(source, user.address);
-        if (read.status === "ok") {
-          await control.writeLedger(source, user.address, {
-            ...read.ledger,
-            recentIds: [],
-            recentIdsAddedAt: {},
-            updatedAt: new Date(now()).toISOString(),
-          });
-        } else if (read.status === "unparseable") {
-          await control.quarantineLedger(source, user.address, read.raw);
-          const stamp = new Date(now()).toISOString();
-          await control.writeLedger(source, user.address, {
-            purgedThrough: stamp,
-            recentIds: [],
-            recentIdsAddedAt: {},
-            updatedAt: stamp,
-          });
-        }
-        await control.clearQuarantinedLedger?.(source, user.address);
-      }
-      if (!deleteReconciled) {
-        throw new Error("sync-off content cleanup unavailable");
-      }
-      for (const source of sources) {
-        await deleteReconciled(source, user.address);
-      }
-      // (5) The exo ledger rows of each source. Best-effort: the marker, config, token, queue,
-      // ledgers and reconciled ContentStore copies are already torn down. The owner's exo DELETE
-      // clears what remains.
+      // The marker, config, token and queue are torn down before best-effort Exo cleanup.
+      // Purge-ledger IDs and reconciled archive content follow their own retention rules.
       if (exo) {
         for (const source of sources) {
           try {
@@ -2751,7 +2682,7 @@ export function createConnectorWebhookCompanionRouter(
 
     try {
       await control.clearLedger(source, user.address);
-      await control.clearQuarantinedLedger?.(source, user.address);
+
       logWebhook(
         `op=ledger-clear source=${source} aid=${hashedField(user.address)}`,
       );

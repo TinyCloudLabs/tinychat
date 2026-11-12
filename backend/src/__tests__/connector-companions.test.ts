@@ -341,7 +341,6 @@ function createHarness(
     publicOrigin?: string;
     /** The exo ledger hook `DELETE /config` calls per source (`index.ts` wires it behind the flag). */
     exoClearSource?: (source: string, address: string) => Promise<void>;
-    deleteReconciled?: (source: string, address: string) => Promise<unknown>;
   } = {},
 ): Harness {
   const ops: string[] = [];
@@ -392,8 +391,6 @@ function createHarness(
       ...(options.exoClearSource
         ? { exo: { clearSource: options.exoClearSource } }
         : {}),
-      deleteReconciled:
-        options.deleteReconciled ?? (async () => ({ removed: 0 })),
       ...(options.drain
         ? {
             // Shaped like `ConnectorDrainWorker`'s `DrainResult`, because the routes now read
@@ -642,80 +639,10 @@ describe("DELETE /config teardown", () => {
       "mark-disabled",
       "revoke",
       `clear:${SOURCE}/${ADDRESS}`,
-      `clear-corrupt-ledger:${SOURCE}/${ADDRESS}`,
     ]);
     expect(h.control.markers.has(ADDRESS)).toBe(true);
     expect(h.tokens.configs.has(ADDRESS)).toBe(false);
     expect(h.queue.items.size).toBe(0);
-  });
-
-  test("DELETE /config reports teardown_incomplete when the content key is unavailable", async () => {
-    const h = createHarness({
-      deleteReconciled: async () => {
-        throw new Error("content master is unavailable");
-      },
-    });
-    h.tokens.configs.set(ADDRESS, {
-      token: generateWebhookToken(),
-      source: SOURCE,
-      createdAt: new Date().toISOString(),
-    });
-
-    await withServer(h.app, async (base) => {
-      const res = await call(base, "/config", "DELETE");
-      expect(res.status).toBe(503);
-      expect(await res.json()).toEqual({ error: "teardown_incomplete" });
-    });
-  });
-
-  test("DELETE /config clears recorded IDs immediately while retaining the purge watermark", async () => {
-    const h = createHarness();
-    h.tokens.configs.set(ADDRESS, {
-      token: generateWebhookToken(),
-      source: SOURCE,
-      createdAt: new Date().toISOString(),
-    });
-    const through = new Date(1_700_000_000_000).toISOString();
-    h.control.ledgers.set(`${SOURCE}/${ADDRESS}`, {
-      purgedThrough: through,
-      recentIds: ["01OLDMEETING"],
-      recentIdsAddedAt: { "01OLDMEETING": through },
-      updatedAt: through,
-    });
-
-    await withServer(h.app, async (base) => {
-      expect((await call(base, "/config", "DELETE")).status).toBe(200);
-    });
-
-    expect(h.control.ledgers.get(`${SOURCE}/${ADDRESS}`)).toMatchObject({
-      purgedThrough: through,
-      recentIds: [],
-      recentIdsAddedAt: {},
-    });
-  });
-  test("sync-off invokes reconciled-content deletion for the disconnected tenant", async () => {
-    const deletions: Array<{ source: string; address: string }> = [];
-    const h = createHarness({
-      sources: [SOURCE, SECOND_SOURCE],
-      deleteReconciled: async (source, address) => {
-        deletions.push({ source, address });
-      },
-    });
-    h.tokens.configs.set(ADDRESS, {
-      token: generateWebhookToken(),
-      source: SOURCE,
-      createdAt: new Date().toISOString(),
-    });
-
-    await withServer(h.app, async (base) => {
-      const response = await call(base, "/config", "DELETE");
-      expect(response.status).toBe(200);
-    });
-
-    expect(deletions).toEqual([
-      { source: SOURCE, address: ADDRESS },
-      { source: SECOND_SOURCE, address: ADDRESS },
-    ]);
   });
 
 
@@ -850,8 +777,6 @@ describe("DELETE /config teardown", () => {
       "revoke",
       `clear:${SOURCE}/${ADDRESS}`,
       `clear:${SECOND_SOURCE}/${ADDRESS}`,
-      `clear-corrupt-ledger:${SOURCE}/${ADDRESS}`,
-      `clear-corrupt-ledger:${SECOND_SOURCE}/${ADDRESS}`,
     ]);
     expect(h.queue.items.size).toBe(0);
   });

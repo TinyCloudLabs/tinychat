@@ -1,5 +1,6 @@
 import {
   createHash,
+  createHmac,
   createCipheriv,
   createDecipheriv,
   hkdfSync,
@@ -122,10 +123,10 @@ const GCM_IV_BYTES = 12;
 const GCM_TAG_BYTES = 16;
 const DEK_BYTES = 32;
 
-/** Backend-owned ContentStore keys. */
 const CONTENT_KEY_PREFIX = "connector-content";
 const CONTENT_INDEX_KEY_PREFIX = "connector-content-index";
 const CONTENT_KEY_FAILURE_PREFIX = "connector-content-key-failure";
+const REPLAY_TOMBSTONE_KEY_PREFIX = "connector-content-replay-tombstone/v1";
 
 // ── Result / row shapes ──────────────────────────────────────────────
 
@@ -135,6 +136,8 @@ export interface SealedBlob {
   wrappedDEK: string;
   /** Original storage time, kept outside encryption for index-independent expiry. */
   storedAt?: string;
+  /** UTC day expiry, authenticated as part of the per-meeting envelope AAD. */
+  expiresAt?: string;
   /** Detect a rotated content master before attempting destructive maintenance. */
   keyFingerprint?: string;
   /** ISO time of the most recent write. */
@@ -155,9 +158,15 @@ export interface ContentMeta {
   /** Bytes of the merged, serialized content — the number the per-user cap counts. */
   sizeBytes: number;
   storedAt: string;
+  /** Immutable UTC-day expiry set by the backend on first storage. */
+  expiresAt?: string;
   updatedAt: string;
   /** Stamped by W5's reconcile-ack after the browser wrote the user's OWN space (W6). */
   reconciledAt?: string;
+}
+export interface ReplayTombstoneRecord {
+  expiresAt: string;
+  mac: string;
 }
 
 /** Both provider halves. Either may be absent — a partial row is legal (delta 6). */
@@ -208,9 +217,6 @@ export interface ContentStoreStats {
  * The D3 substrate seam. Every content operation is keyed by `(source, address)`; the retention
  * directory may enumerate sealed index keys, but it never reads or returns content globally.
  */
-export function contentMasterFingerprint(master: string): string {
-  return createHash("sha256").update(master, "utf8").digest("hex");
-}
 
 export async function assertNoContentKey(storage: ContentContinuityStorage): Promise<void> {
   try {
@@ -251,6 +257,16 @@ export interface ContentBlobStore {
     blob: SealedBlob,
   ): Promise<void>;
   remove(source: string, address: string, sourceId: string): Promise<void>;
+  readReplayTombstone(digest: string): Promise<ReplayTombstoneRecord | null>;
+  writeReplayTombstone(
+    digest: string,
+    marker: ReplayTombstoneRecord,
+  ): Promise<void>;
+  removeReplayTombstone(digest: string): Promise<void>;
+  listReplayTombstones(): Promise<Array<{
+    digest: string;
+    marker: ReplayTombstoneRecord | null;
+  }>>;
   removeIndex(source: string, address: string): Promise<void>;
   readKeyFailureSince(source: string, address: string): Promise<string | null>;
   writeKeyFailureSince(
@@ -272,7 +288,14 @@ export interface ContentPurgeLedgerReader {
   readLedger(source: string, address: string): Promise<PurgeLedgerRead>;
 }
 
+/** The instance lease that owns archive mutations for this process. */
+export interface ContentMutationGuard {
+  isHolder(): boolean;
+}
+
+
 export interface ContentStoreOptions {
+
   now?: () => number;
   /** Injectable so a test pins the master without mutating the process env. */
   master?: () => string;
@@ -282,8 +305,8 @@ export interface ContentStoreOptions {
    * the same ledger the drain and `POST …/purged` already read and write.
    */
   purgeLedger?: ContentPurgeLedgerReader;
-  /** Sync-off gate, backed by the connector's durable disabled marker. */
-  isDisabled?: (address: string) => Promise<boolean>;
+  /** Production always supplies the continuity-claimed ingest/retention lease. */
+  mutationGuard?: ContentMutationGuard;
   retentionMs?: number;
   maxMeetingBytes?: number;
   maxUserMeetings?: number;
@@ -294,7 +317,7 @@ export interface ContentStoreOptions {
 /** Fixed, short codes. A provider payload or a title must never become one. */
 const INVALID_TARGET = "invalid_target";
 const CONTENT_TOO_LARGE = "content_too_large";
-const SYNC_DISABLED = "sync_disabled";
+const MEETING_TOO_OLD = "meeting_too_old";
 const RETENTION_TOMBSTONED = "retention_tombstoned";
 const CONTENT_STORE_FAILED = "content_store_failed";
 /** W7: distinct from the retention code so an operator can tell a purge from an aged-out sweep. */
@@ -353,7 +376,7 @@ function sameSecret(a: string, b: string): boolean {
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
 }
-function contentMasterFingerprint(master: string): string {
+export function contentMasterFingerprint(master: string): string {
   return createHash("sha256").update(master, "utf8").digest("hex");
 }
 
@@ -379,8 +402,18 @@ export function _resetContentMasterCache(): void {
 // ── Envelope encryption ──────────────────────────────────────────────
 
 /** `sourceId` is part of the AAD, so a blob cannot be moved between meetings either. */
-function envelopeAad(source: string, address: string, scope: string): Buffer {
-  return Buffer.from(`${source}:${address}:${scope}`, "utf8");
+function envelopeAad(
+  source: string,
+  address: string,
+  scope: string,
+  expiresAt?: string,
+): Buffer {
+  return Buffer.from(
+    expiresAt === undefined
+      ? `${source}:${address}:${scope}`
+      : `${source}:${address}:${scope}:expiry:${expiresAt}`,
+    "utf8",
+  );
 }
 
 function keyEncryptionKey(
@@ -416,6 +449,57 @@ function open(key: Buffer, sealed: string, aad: Buffer): Buffer {
   // A wrong tenant, a wrong master and a tampered blob all land here as the SAME failure with
   // no detail: an "unreadable envelope" diagnostic must not become an oracle.
   return Buffer.concat([decipher.update(body), decipher.final()]);
+}
+const CONTENT_DAY_MS = 86_400_000;
+const RETENTION_SWEEP_GRACE_MS = 60 * 60_000;
+const REPLAY_TOMBSTONE_HKDF_INFO = "tinychat-content-replay-tombstone-v1";
+
+function isUtcDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const parsed = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+}
+
+function expiryDateForStoredAt(storedAt: string, retentionMs: number): string {
+  const parsed = Date.parse(storedAt);
+  if (!Number.isFinite(parsed)) throw new Error("content storage date is unreadable");
+  const date = new Date(parsed);
+  const day = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const retentionDays = Math.ceil(retentionMs / CONTENT_DAY_MS);
+  return new Date(day + retentionDays * CONTENT_DAY_MS).toISOString().slice(0, 10);
+}
+
+function expiryDeadline(expiresAt: string): number | null {
+  if (!isUtcDate(expiresAt)) return null;
+  return Date.parse(`${expiresAt}T00:00:00.000Z`) +
+    CONTENT_DAY_MS +
+    RETENTION_SWEEP_GRACE_MS -
+    1;
+}
+
+function replayTombstoneKey(master: string): Buffer {
+  return Buffer.from(
+    hkdfSync("sha256", master, KEK_HKDF_SALT, REPLAY_TOMBSTONE_HKDF_INFO, 32),
+  );
+}
+
+function replayTombstoneDigest(
+  master: string,
+  source: string,
+  address: string,
+  sourceId: string,
+): string {
+  return createHmac("sha256", replayTombstoneKey(master))
+    .update(`object:${source}:${normalizeWebhookAddress(address)}:${sourceId}`)
+    .digest("hex");
+}
+
+function replayTombstoneMac(master: string, digest: string, expiresAt: string): string {
+  return createHmac("sha256", replayTombstoneKey(master))
+    .update(`marker:${digest}:${expiresAt}`)
+    .digest("hex");
 }
 
 // ── Logging (ops + hashed ids + fixed codes; never content) ──────────
@@ -478,8 +562,8 @@ export class ContentStore implements ContentSink, RetentionGuard {
   private readonly maxUserMeetings: number;
   private readonly maxUserBytes: number;
   private readonly maxUserTombstones: number;
-  private readonly isDisabled: ((address: string) => Promise<boolean>) | null;
   private readonly purgeLedger: ContentPurgeLedgerReader | null;
+  private readonly mutationGuard: ContentMutationGuard | null;
   private readonly lanes = new Map<string, Promise<unknown>>();
   private readonly counters: ContentStoreStats = {
     created: 0,
@@ -506,8 +590,14 @@ export class ContentStore implements ContentSink, RetentionGuard {
     this.maxUserMeetings = options.maxUserMeetings ?? MAX_USER_MEETINGS;
     this.maxUserBytes = options.maxUserBytes ?? MAX_USER_CONTENT_BYTES;
     this.maxUserTombstones = options.maxUserTombstones ?? MAX_USER_TOMBSTONES;
-    this.isDisabled = options.isDisabled ?? null;
     this.purgeLedger = options.purgeLedger ?? null;
+    this.mutationGuard = options.mutationGuard ?? null;
+  }
+
+  private assertMutationAllowed(): void {
+    if (this.mutationGuard && !this.mutationGuard.isHolder()) {
+      throw new Error("content continuity lease is not held");
+    }
   }
 
   /** Read-only proof: no missing index is treated as a successful decrypt. */
@@ -517,7 +607,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     try {
       const blob = await this.blobs.readIndex(target.source, target.address);
       if (!blob) return { ok: false, id };
-      parseIndex(this.unseal(target.source, target.address, "index", blob));
+      parseIndex(this.unseal(target.source, target.address, "index", blob), this.now());
       return { ok: true, id };
     } catch {
       return { ok: false, id };
@@ -554,6 +644,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
       // Recheck after archive I/O as well as taking the singleton seat before the first read.
       // A delayed boot must never replace a canary enrolled while it was inspecting archives.
       if (await storage.readCanary() !== null) throw new Error();
+      this.assertMutationAllowed();
       await storage.writeCanary(this.sealBlob("continuity", "backend", "canary", "tinychat-content-canary-v1"));
       const saved = await storage.readCanary();
       if (!saved || this.unseal("continuity", "backend", "canary", saved) !== "tinychat-content-canary-v1") throw new Error();
@@ -580,6 +671,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
       const existing = await this.blobs.readKeyFailureSince(source, address);
       const recorded = existing === null ? NaN : Date.parse(existing);
       if (Number.isFinite(recorded)) return;
+      this.assertMutationAllowed();
       await this.blobs.writeKeyFailureSince(
         source,
         address,
@@ -602,6 +694,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     address: string,
   ): Promise<void> {
     try {
+      this.assertMutationAllowed();
       await this.blobs.clearKeyFailureSince(source, address);
     } catch {
       warnContent(
@@ -610,6 +703,78 @@ export class ContentStore implements ContentSink, RetentionGuard {
       );
     }
   }
+
+  private warnUnreadableExpiry(
+    source: string,
+    address: string,
+    sourceId: string,
+  ): void {
+    warnContent(
+      `op=retention-sweep result=expiry_unreadable source=${source} ` +
+        `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+    );
+  }
+  private replayMarkerMacValid(
+    digest: string,
+    marker: ReplayTombstoneRecord,
+  ): boolean {
+    if (!/^[a-f0-9]{64}$/.test(digest)) return false;
+    const parsed = Date.parse(marker.expiresAt);
+    if (
+      !Number.isFinite(parsed) ||
+      new Date(parsed).toISOString() !== marker.expiresAt
+    ) {
+      return false;
+    }
+    return sameSecret(
+      marker.mac,
+      replayTombstoneMac(this.contentMaster(), digest, marker.expiresAt),
+    );
+  }
+
+  private async replayMarker(
+    source: string,
+    address: string,
+    sourceId: string,
+  ): Promise<ReplayTombstoneRecord | null> {
+    const digest = replayTombstoneDigest(
+      this.contentMaster(),
+      source,
+      address,
+      sourceId,
+    );
+    const marker = await this.blobs.readReplayTombstone(digest);
+    if (marker === null) return null;
+    if (
+      typeof marker.expiresAt !== "string" ||
+      typeof marker.mac !== "string" ||
+      !this.replayMarkerMacValid(digest, marker)
+    ) {
+      throw new Error("replay tombstone is unreadable");
+    }
+    if (Date.parse(marker.expiresAt) <= this.now()) {
+      this.assertMutationAllowed();
+      await this.blobs.removeReplayTombstone(digest);
+      return null;
+    }
+    return marker;
+  }
+
+  private async writeReplayMarker(
+    source: string,
+    address: string,
+    sourceId: string,
+  ): Promise<void> {
+    const master = this.contentMaster();
+    const digest = replayTombstoneDigest(master, source, address, sourceId);
+    const expiresAt = new Date(this.now() + this.retentionMs).toISOString();
+    this.assertMutationAllowed();
+    await this.blobs.writeReplayTombstone(digest, {
+      expiresAt,
+      mac: replayTombstoneMac(master, digest, expiresAt),
+    });
+  }
+
 
   /**
    * The worker's {@link ContentSink}. Upsert identity is `(source, source_id)` SCOPED BY
@@ -638,31 +803,34 @@ export class ContentStore implements ContentSink, RetentionGuard {
     }
 
     const { source, address, sourceId } = target;
+    const sourceTimestamp =
+      input.ts === undefined ? NaN : Date.parse(input.ts);
+    if (
+      Number.isFinite(sourceTimestamp) &&
+      this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS
+    ) {
+      warnContent(
+        `op=upsert result=${MEETING_TOO_OLD} source=${source} ` +
+          `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+      );
+      return { ok: false, code: MEETING_TOO_OLD };
+    }
+    if (!Number.isFinite(sourceTimestamp)) {
+      warnContent(
+        `op=upsert result=meeting_time_missing source=${source} ` +
+          `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+      );
+    }
+
     return this.lane(source, address, async () => {
       try {
-        if (this.isDisabled !== null) {
-          let disabled: boolean;
-          try {
-            disabled = await this.isDisabled(address);
-          } catch {
-            // Failure to read the durable marker must not collect another server copy.
-            disabled = true;
-          }
-          if (disabled) {
-            warnContent(
-              `op=upsert result=${SYNC_DISABLED} source=${source} ` +
-                `mid=${hashed(sourceId)} aid=${hashed(address)}`,
-            );
-            return { ok: false, code: SYNC_DISABLED };
-          }
-        }
-
         const index = await this.openIndex(source, address);
-
-        // Step -1, before any fetch result is believed: the retention tombstone. A provider can
-        // replay a timestamp-less delivery indefinitely (findings §2.1); re-storing content the
-        // window already aged out would make the retention promise a fiction.
         if (index.tombstones.some((t) => t.sourceId === sourceId)) {
+          this.counters.tombstoneRefusals += 1;
+          return { ok: false, code: RETENTION_TOMBSTONED };
+        }
+        const replayMarker = await this.replayMarker(source, address, sourceId);
+        if (replayMarker !== null && Date.parse(replayMarker.expiresAt) > this.now()) {
           this.counters.tombstoneRefusals += 1;
           logContent(
             `op=upsert result=${RETENTION_TOMBSTONED} source=${source} ` +
@@ -670,11 +838,6 @@ export class ContentStore implements ContentSink, RetentionGuard {
           );
           return { ok: false, code: RETENTION_TOMBSTONED };
         }
-
-        // Step -1's other half (W7, delta 12): the §6.2 PURGE ledger. A disconnect deleted this
-        // tenant's rows; an at-least-once provider can replay the delivery that created them for
-        // as long as it likes. Re-storing it would hand the user back meetings they tore down.
-        // An unreadable ledger throws from here into the catch below — never "not purged".
         if (await this.purgeTombstoned(source, address, sourceId, input)) {
           this.counters.purgeRefusals += 1;
           logContent(
@@ -684,15 +847,46 @@ export class ContentStore implements ContentSink, RetentionGuard {
           return { ok: false, code: PURGE_TOMBSTONED };
         }
 
+        const prior = index.meetings.find((m) => m.sourceId === sourceId);
         const existing = await this.readMeeting(source, address, sourceId);
+        if (prior !== undefined && existing === null) {
+          if (prior.expiresAt === undefined || !isUtcDate(prior.expiresAt)) {
+            throw new Error("missing content has no authenticated expiry");
+          }
+          await this.writeReplayMarker(source, address, sourceId);
+          await this.writeIndex(source, address, {
+            meetings: index.meetings.filter((m) => m.sourceId !== sourceId),
+            tombstones: index.tombstones,
+          });
+          this.counters.tombstoneRefusals += 1;
+          return { ok: false, code: RETENTION_TOMBSTONED };
+        }
+        if (
+          prior !== undefined &&
+          existing !== null &&
+          (prior.storedAt !== existing.meta.storedAt ||
+            prior.expiresAt !== existing.meta.expiresAt)
+        ) {
+          throw new Error("content index metadata does not match its blob");
+        }
+
+        const priorMeta = prior ?? existing?.meta;
+        const stamp = new Date(this.now()).toISOString();
+        const storedAt = priorMeta?.storedAt ?? stamp;
+        const expiresAt =
+          priorMeta?.expiresAt ?? expiryDateForStoredAt(storedAt, this.retentionMs);
+        if (!isUtcDate(expiresAt)) throw new Error("content expiry is unreadable");
+        if (this.now() >= Date.parse(`${expiresAt}T00:00:00.000Z`)) {
+          await this.writeReplayMarker(source, address, sourceId);
+          this.counters.tombstoneRefusals += 1;
+          return { ok: false, code: RETENTION_TOMBSTONED };
+        }
+
         const content: MeetingContent = { ...(existing?.content ?? {}) };
         content[input.kind] = input.content;
-
         const body = JSON.stringify(content);
         const sizeBytes = Buffer.byteLength(body, "utf8");
         if (sizeBytes > this.maxMeetingBytes) {
-          // REJECT, never truncate: half a transcript is a silent corruption that surfaces
-          // months later, and the operator needs to know the meeting did not land.
           this.counters.rejectedTooLarge += 1;
           warnContent(
             `op=upsert result=${CONTENT_TOO_LARGE} source=${source} ` +
@@ -702,54 +896,52 @@ export class ContentStore implements ContentSink, RetentionGuard {
           return { ok: false, code: CONTENT_TOO_LARGE };
         }
 
-        const stamp = new Date(this.now()).toISOString();
-        const prior = index.meetings.find((m) => m.sourceId === sourceId);
+        const normalizedTs = Number.isFinite(sourceTimestamp)
+          ? new Date(sourceTimestamp).toISOString()
+          : priorMeta?.ts;
         const meta: ContentMeta = {
           sourceId,
           ...(input.title !== undefined
             ? { title: input.title }
-            : prior?.title !== undefined
-              ? { title: prior.title }
+            : priorMeta?.title !== undefined
+              ? { title: priorMeta.title }
               : {}),
-          ...(input.ts !== undefined
-            ? { ts: input.ts }
-            : prior?.ts !== undefined
-              ? { ts: prior.ts }
-              : {}),
+          ...(normalizedTs !== undefined ? { ts: normalizedTs } : {}),
           ...(input.participantNames !== undefined
             ? { participantNames: input.participantNames }
-            : prior?.participantNames !== undefined ? { participantNames: prior.participantNames } : {}),
+            : priorMeta?.participantNames !== undefined
+              ? { participantNames: priorMeta.participantNames }
+              : {}),
           ...(input.participantEmails !== undefined
             ? { participantEmails: input.participantEmails }
-            : prior?.participantEmails !== undefined ? { participantEmails: prior.participantEmails } : {}),
+            : priorMeta?.participantEmails !== undefined
+              ? { participantEmails: priorMeta.participantEmails }
+              : {}),
           ...(input.organizerEmail !== undefined
             ? { organizerEmail: input.organizerEmail }
-            : prior?.organizerEmail !== undefined ? { organizerEmail: prior.organizerEmail } : {}),
+            : priorMeta?.organizerEmail !== undefined
+              ? { organizerEmail: priorMeta.organizerEmail }
+              : {}),
           ...(input.kind === "transcript"
             ? { transcriptStoredAt: stamp }
-            : prior?.transcriptStoredAt !== undefined
-              ? { transcriptStoredAt: prior.transcriptStoredAt }
+            : priorMeta?.transcriptStoredAt !== undefined
+              ? { transcriptStoredAt: priorMeta.transcriptStoredAt }
               : {}),
           ...(input.kind === "summary"
             ? { summaryStoredAt: stamp }
-            : prior?.summaryStoredAt !== undefined
-              ? { summaryStoredAt: prior.summaryStoredAt }
+            : priorMeta?.summaryStoredAt !== undefined
+              ? { summaryStoredAt: priorMeta.summaryStoredAt }
               : {}),
           sizeBytes,
-          storedAt: prior?.storedAt ?? stamp,
+          storedAt,
+          expiresAt,
           updatedAt: stamp,
-          // `reconciledAt` is deliberately NOT carried forward: the user-space copy is now
-          // stale, so W6 must write it again. Keeping the stamp strands the new half on the
-          // server for a browser that already ticked this meeting off.
         };
 
         const others = index.meetings.filter((m) => m.sourceId !== sourceId);
         const { kept, evicted } = this.enforceCaps(source, address, others, meta);
-
-        // When overwriting a reconciled row, revoke its cleanup eligibility durably before
-        // replacing the blob. If a later write fails, sync-off cleanup retains the new blob.
-        if (prior?.reconciledAt !== undefined) {
-          const unreconciledPrior = { ...prior };
+        if (priorMeta?.reconciledAt !== undefined) {
+          const unreconciledPrior = { ...priorMeta };
           delete unreconciledPrior.reconciledAt;
           await this.writeIndex(source, address, {
             meetings: index.meetings.map((entry) =>
@@ -759,15 +951,13 @@ export class ContentStore implements ContentSink, RetentionGuard {
           });
         }
 
-        // Both writes are result-checked and both must resolve before a success exists.
         await this.writeMeeting(source, address, meta, content);
         await this.writeIndex(source, address, {
           meetings: [...kept, meta],
           tombstones: index.tombstones,
         });
-        // Only once the index no longer names them do the evicted blobs go — an orphaned blob
-        // is recoverable, an index pointing at a deleted blob is not.
         for (const victim of evicted) {
+          this.assertMutationAllowed();
           await this.blobs.remove(source, address, victim.sourceId);
         }
 
@@ -780,8 +970,6 @@ export class ContentStore implements ContentSink, RetentionGuard {
         );
         return { ok: true, stored };
       } catch {
-        // A substrate failure, an unreadable index, a failed decrypt — the same disposition.
-        // The item is NOT stored and NOT reported stored; the worker retries it.
         this.counters.writeFailures += 1;
         warnContent(
           `op=upsert result=${CONTENT_STORE_FAILED} source=${source} ` +
@@ -882,104 +1070,10 @@ export class ContentStore implements ContentSink, RetentionGuard {
       return true;
     });
   }
-  /**
-   * Sync-off cleanup. Reconciled meetings already exist in the owner's space, so remove their
-   * server rows and blobs immediately. Unreconciled rows remain available until acknowledgement
-   * or the 14-day retention boundary. Tombstones are IDs too and are cleared for this tenant.
-   */
-  async deleteReconciled(
-    source: string,
-    address: string,
-  ): Promise<{ removed: number }> {
-    const target = normalizeTarget(source, address);
-    return this.lane(target.source, target.address, async () => {
-      let index: ContentIndex;
-      try {
-        this.contentMaster();
-        index = await this.openIndex(target.source, target.address);
-      } catch (error) {
-        if (
-          !(error instanceof ContentIndexUnreadableError) &&
-          !(error instanceof ContentMasterUnavailableError)
-        ) {
-          throw error;
-        }
-        this.counters.unreadableIndexes += 1;
-        await this.noteRetentionFailure(target.source, target.address);
-        throw error;
-      }
-      await this.clearRetentionFailure(target.source, target.address);
-      const now = this.now();
-      const cutoff = now - this.retentionMs;
-      const keep: ContentMeta[] = [];
-      const remove = new Set<string>();
-      for (const meta of index.meetings) {
-        const storedAt = Date.parse(meta.storedAt);
-        if (
-          meta.reconciledAt !== undefined ||
-          !Number.isFinite(storedAt) ||
-          storedAt <= cutoff
-        ) {
-          remove.add(meta.sourceId);
-        } else {
-          keep.push(meta);
-        }
-      }
-
-      const indexedIds = new Set(index.meetings.map((meta) => meta.sourceId));
-      for (const blob of await this.blobs.listContentIds(
-        target.source,
-        target.address,
-      )) {
-        if (remove.has(blob.sourceId)) continue;
-        if (indexedIds.has(blob.sourceId)) continue;
-
-        // An orphan can still be the only copy. Keep it only while its sealed metadata proves it
-        // is unreconciled and within retention; unreadable or malformed orphans cannot be exposed
-        // for reconciliation and must not become unbounded retained IDs.
-        try {
-          const orphan = await this.readMeeting(
-            target.source,
-            target.address,
-            blob.sourceId,
-          );
-          const storedAt = Date.parse(orphan?.meta.storedAt ?? "");
-          if (
-            orphan === null ||
-            orphan.meta.reconciledAt !== undefined ||
-            !Number.isFinite(storedAt) ||
-            storedAt <= cutoff
-          ) {
-            remove.add(blob.sourceId);
-          }
-        } catch {
-          remove.add(blob.sourceId);
-        }
-      }
-      for (const sourceId of remove) {
-        await this.blobs.remove(target.source, target.address, sourceId);
-      }
-      if (remove.size > 0 || index.tombstones.length > 0) {
-        await this.writeIndex(target.source, target.address, {
-          meetings: keep,
-          tombstones: [],
-        });
-      }
-
-      if (remove.size > 0 || index.tombstones.length > 0) {
-        logContent(
-          `op=sync-off-cleanup result=ok source=${target.source} ` +
-            `aid=${hashed(target.address)} removed=${remove.size} tombstones=${index.tombstones.length}`,
-        );
-      }
-      return { removed: remove.size };
-    });
-  }
 
   async sweepRetention(input: {
     source: string;
     address: string;
-    safetyMarginMs?: number;
   }): Promise<{
     swept: number;
     bytesFreed: number;
@@ -989,10 +1083,8 @@ export class ContentStore implements ContentSink, RetentionGuard {
   }> {
     const target = normalizeTarget(input.source, input.address);
     return this.lane(target.source, target.address, async () => {
-      let index: ContentIndex;
+      let index: ContentIndex | null = null;
       const now = this.now();
-      const safetyMarginMs = Math.max(0, input.safetyMarginMs ?? 0);
-      const cutoff = now - Math.max(0, this.retentionMs - safetyMarginMs);
       try {
         this.contentMaster();
         index = await this.openIndex(target.source, target.address);
@@ -1005,113 +1097,201 @@ export class ContentStore implements ContentSink, RetentionGuard {
         }
         this.counters.unreadableIndexes += 1;
         await this.noteRetentionFailure(target.source, target.address);
-        return {
-          swept: 0,
-          bytesFreed: 0,
-          tombstones: 0,
-          storedAtBackfilled: 0,
-          unreadableIndex: true,
-        };
       }
-      await this.clearRetentionFailure(target.source, target.address);
-      const expirationCutoff = now + safetyMarginMs;
-      const stamp = new Date(now).toISOString();
-
-      const keep: ContentMeta[] = [];
-      const swept: ContentMeta[] = [];
-      for (const meta of index.meetings) {
-        const storedAt = Date.parse(meta.storedAt);
-        (Number.isFinite(storedAt) && storedAt > cutoff ? keep : swept).push(meta);
+      if (index !== null) {
+        await this.clearRetentionFailure(target.source, target.address);
       }
-      let bytesFreed = 0;
-      for (const meta of swept) bytesFreed += meta.sizeBytes;
 
-      const retainedTombstones = index.tombstones.filter(
-        (tombstone) => Date.parse(tombstone.expiresAt) > expirationCutoff,
+      const indexed = new Map(
+        (index?.meetings ?? []).map((meta) => [meta.sourceId, meta] as const),
       );
-      const newTombstones = swept
-        .map((meta) => {
-          const storedAt = Date.parse(meta.storedAt);
-          if (!Number.isFinite(storedAt)) return null;
-          const expiresAt = storedAt + this.retentionMs;
-          return expiresAt > expirationCutoff
-            ? {
-                sourceId: meta.sourceId,
-                sweptAt: stamp,
-                expiresAt: new Date(expiresAt).toISOString(),
-              }
-            : null;
-        })
-        .filter((item): item is RetentionTombstone => item !== null);
-      const tombstones = this.capTombstones(
-        target.source,
-        target.address,
-        [...retainedTombstones, ...newTombstones],
-      );
-      await this.writeIndex(target.source, target.address, {
-        meetings: keep,
-        tombstones,
-      });
-
-      for (const meta of swept) {
-        await this.blobs.remove(
-          target.source,
-          target.address,
-          meta.sourceId,
-        );
+      const ids = new Set([
+        ...indexed.keys(),
+        ...(await this.blobs.listContentIds(target.source, target.address))
+          .map(({ sourceId }) => sourceId),
+      ]);
+      const expired: Array<{
+        sourceId: string;
+        meta: ContentMeta;
+        missing: boolean;
+      }> = [];
+      for (const sourceId of ids) {
+        const indexMeta = indexed.get(sourceId);
+        let stored: StoredMeeting | null;
+        try {
+          stored = await this.readMeeting(target.source, target.address, sourceId);
+        } catch {
+          // An unreadable or malformed expiry is not evidence that content may be deleted.
+          this.warnUnreadableExpiry(target.source, target.address, sourceId);
+          continue;
+        }
+        if (stored === null) {
+          if (
+            indexMeta === undefined ||
+            indexMeta.expiresAt === undefined ||
+            !isUtcDate(indexMeta.expiresAt)
+          ) {
+            this.warnUnreadableExpiry(target.source, target.address, sourceId);
+            continue;
+          }
+          let expectedExpiry: string;
+          try {
+            expectedExpiry = expiryDateForStoredAt(
+              indexMeta.storedAt,
+              this.retentionMs,
+            );
+          } catch {
+            this.warnUnreadableExpiry(target.source, target.address, sourceId);
+            continue;
+          }
+          if (
+            expectedExpiry !== indexMeta.expiresAt ||
+            Date.parse(indexMeta.storedAt) > now
+          ) {
+            this.warnUnreadableExpiry(target.source, target.address, sourceId);
+            continue;
+          }
+          // The row is already absent; prune its readable index entry on this pass.
+          expired.push({ sourceId, meta: indexMeta, missing: true });
+          continue;
+        }
+        const meta = stored.meta;
+        let expectedExpiry: string;
+        try {
+          expectedExpiry = expiryDateForStoredAt(meta.storedAt, this.retentionMs);
+        } catch {
+          this.warnUnreadableExpiry(target.source, target.address, sourceId);
+          continue;
+        }
+        if (
+          Date.parse(meta.storedAt) > now ||
+          meta.expiresAt === undefined ||
+          !isUtcDate(meta.expiresAt) ||
+          meta.expiresAt !== expectedExpiry
+        ) {
+          this.warnUnreadableExpiry(target.source, target.address, sourceId);
+          continue;
+        }
+        const deadline = expiryDeadline(meta.expiresAt);
+        if (deadline === null) {
+          this.warnUnreadableExpiry(target.source, target.address, sourceId);
+          continue;
+        }
+        if (now > deadline) {
+          expired.push({ sourceId, meta, missing: false });
+        }
       }
-      const retainedById = new Map(
-        keep.map((meta) => [meta.sourceId, meta] as const),
-      );
-      let storedAtBackfilled = 0;
-      for (const blob of await this.blobs.listContentIds(
-        target.source,
-        target.address,
-      )) {
-        const retainedMeta = retainedById.get(blob.sourceId);
-        if (retainedMeta !== undefined && blob.storedAt !== retainedMeta.storedAt) {
-          const sealed = await this.blobs.read(
+
+      const confirmed: typeof expired = [];
+      for (const candidate of expired) {
+        try {
+          await this.writeReplayMarker(
             target.source,
             target.address,
-            blob.sourceId,
+            candidate.sourceId,
           );
-          if (sealed !== null) {
-            await this.blobs.write(
-              target.source,
-              target.address,
-              blob.sourceId,
-              { ...sealed, storedAt: retainedMeta.storedAt },
-            );
-            storedAtBackfilled += 1;
-          }
-        }
-        const storedAt = Date.parse(blob.storedAt ?? blob.updatedAt);
-        if (
-          retainedMeta === undefined &&
-          (!Number.isFinite(storedAt) || storedAt <= cutoff)
-        ) {
-          await this.blobs.remove(target.source, target.address, blob.sourceId);
+          confirmed.push(candidate);
+        } catch {
+          warnContent(
+            `op=retention-sweep result=tombstone_write_failed source=${target.source} ` +
+              `mid=${hashed(candidate.sourceId)} aid=${hashed(target.address)}`,
+          );
         }
       }
 
-      this.counters.swept += swept.length;
-      if (swept.length > 0 || retainedTombstones.length !== index.tombstones.length) {
+      let tombstones = index?.tombstones.length ?? 0;
+      if (index !== null) {
+        const removedIds = new Set(confirmed.map(({ sourceId }) => sourceId));
+        const retainedTombstones = index.tombstones.filter((item) => {
+          const legacyExpiry = Math.min(
+            Date.parse(item.expiresAt),
+            Date.parse(item.sweptAt) + this.retentionMs,
+          );
+          return Number.isFinite(legacyExpiry) && legacyExpiry > now;
+        });
+        const nextTombstones = this.capTombstones(
+          target.source,
+          target.address,
+          retainedTombstones,
+        );
+        tombstones = nextTombstones.length;
+        if (
+          removedIds.size > 0 ||
+          nextTombstones.length !== index.tombstones.length
+        ) {
+          await this.writeIndex(target.source, target.address, {
+            meetings: index.meetings.filter((meta) => !removedIds.has(meta.sourceId)),
+            tombstones: nextTombstones,
+          });
+        }
+      }
+
+      let swept = 0;
+      let bytesFreed = 0;
+      for (const candidate of confirmed) {
+        try {
+          if (!candidate.missing) {
+            this.assertMutationAllowed();
+            await this.blobs.remove(
+              target.source,
+              target.address,
+              candidate.sourceId,
+            );
+            bytesFreed += candidate.meta.sizeBytes;
+          }
+          swept += 1;
+        } catch {
+          warnContent(
+            `op=retention-sweep result=blob_delete_failed source=${target.source} ` +
+              `mid=${hashed(candidate.sourceId)} aid=${hashed(target.address)}`,
+          );
+        }
+      }
+      this.counters.swept += swept;
+      if (swept > 0 || tombstones !== (index?.tombstones.length ?? 0)) {
         logContent(
           `op=retention-sweep result=ok source=${target.source} ` +
-            `aid=${hashed(target.address)} swept=${swept.length} ` +
-            `bytes=${bytesFreed} tombstones=${tombstones.length}`,
+            `aid=${hashed(target.address)} swept=${swept} ` +
+            `bytes=${bytesFreed} tombstones=${tombstones}`,
         );
       }
       return {
-        swept: swept.length,
+        swept,
         bytesFreed,
-        tombstones: tombstones.length,
-        storedAtBackfilled,
-        unreadableIndex: false,
+        tombstones,
+        storedAtBackfilled: 0,
+        unreadableIndex: index === null,
       };
-
     });
   }
+  async sweepExpiredReplayTombstones(): Promise<number> {
+    this.contentMaster();
+    const now = this.now();
+    const markers = await this.blobs.listReplayTombstones();
+    let removed = 0;
+    for (const { digest, marker } of markers) {
+      if (
+        marker === null ||
+        typeof marker.expiresAt !== "string" ||
+        !Number.isFinite(Date.parse(marker.expiresAt)) ||
+        typeof marker.mac !== "string" ||
+        !this.replayMarkerMacValid(digest, marker)
+      ) {
+        warnContent("op=replay-tombstone-sweep result=unreadable_marker");
+        continue;
+      }
+      if (now >= Date.parse(marker.expiresAt)) {
+        this.assertMutationAllowed();
+        await this.blobs.removeReplayTombstone(digest);
+        removed += 1;
+      }
+    }
+    if (removed > 0) {
+      logContent(`op=replay-tombstone-sweep result=ok removed=${removed}`);
+    }
+    return removed;
+  }
+
 
   /**
    * The worker's {@link RetentionGuard}. A check that FAILS propagates — the worker holds the
@@ -1125,17 +1305,28 @@ export class ContentStore implements ContentSink, RetentionGuard {
     sourceTimestamp?: string;
   }): Promise<boolean> {
     const target = normalizeTarget(input.source, input.address, input.meetingId);
-    const index = await this.lane(target.source, target.address, () =>
-      this.openIndex(target.source, target.address),
-    );
-    if (index.tombstones.some((t) => t.sourceId === target.sourceId)) return true;
-    // W7: the same purge verdict the upsert applies, one step earlier — a purged id must cost
-    // neither a store nor an upstream FETCH. A ledger this cannot read throws to the worker,
-    // which holds the item (its `retention_unavailable` arm) instead of fetching.
-    return this.purgeTombstoned(target.source, target.address, target.sourceId, {
-      ...(input.sourceTimestamp !== undefined
-        ? { ts: input.sourceTimestamp }
-        : {}),
+    return this.lane(target.source, target.address, async () => {
+      const index = await this.openIndex(target.source, target.address);
+      if (index.tombstones.some((t) => t.sourceId === target.sourceId)) {
+        return true;
+      }
+      if (
+        await this.replayMarker(
+          target.source,
+          target.address,
+          target.sourceId,
+        )
+      ) {
+        return true;
+      }
+      // W7: the same purge verdict the upsert applies, one step earlier — a purged id must cost
+      // neither a store nor an upstream FETCH. A ledger this cannot read throws to the worker,
+      // which holds the item (its `retention_unavailable` arm) instead of fetching.
+      return this.purgeTombstoned(target.source, target.address, target.sourceId, {
+        ...(input.sourceTimestamp !== undefined
+          ? { ts: input.sourceTimestamp }
+          : {}),
+      });
     });
   }
 
@@ -1157,8 +1348,10 @@ export class ContentStore implements ContentSink, RetentionGuard {
       this.contentMaster();
       const index = await this.openIndex(target.source, target.address);
       for (const meta of index.meetings) {
+        this.assertMutationAllowed();
         await this.blobs.remove(target.source, target.address, meta.sourceId);
       }
+      this.assertMutationAllowed();
       await this.blobs.removeAll(target.source, target.address);
       logContent(
         `op=purge result=ok source=${target.source} ` +
@@ -1325,6 +1518,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     address: string,
     index: ContentIndex,
   ): Promise<void> {
+    this.assertMutationAllowed();
     await this.blobs.writeIndex(
       source,
       address,
@@ -1339,8 +1533,15 @@ export class ContentStore implements ContentSink, RetentionGuard {
   ): Promise<StoredMeeting | null> {
     const blob = await this.blobs.read(source, address, sourceId);
     if (blob === null) return null;
+    if (blob.expiresAt !== undefined && !isUtcDate(blob.expiresAt)) {
+      throw new Error("content expiry is unreadable");
+    }
     const plaintext = this.unseal(source, address, sourceId, blob);
-    return parseMeeting(plaintext, sourceId);
+    const meeting = parseMeeting(plaintext, sourceId);
+    if (meeting.meta.expiresAt !== blob.expiresAt) {
+      throw new Error("content expiry does not match its envelope");
+    }
+    return meeting;
   }
 
   private async writeMeeting(
@@ -1349,6 +1550,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     meta: ContentMeta,
     content: MeetingContent,
   ): Promise<void> {
+    this.assertMutationAllowed();
     await this.blobs.write(
       source,
       address,
@@ -1359,6 +1561,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         meta.sourceId,
         JSON.stringify({ meta, content }),
         meta.storedAt,
+        meta.expiresAt,
       ),
     );
   }
@@ -1369,20 +1572,21 @@ export class ContentStore implements ContentSink, RetentionGuard {
     scope: string,
     plaintext: string,
     storedAt?: string,
+    expiresAt?: string,
   ): SealedBlob {
-    const aad = envelopeAad(source, address, scope);
+    const aad = envelopeAad(source, address, scope, expiresAt);
     const dek = randomBytes(DEK_BYTES);
     const master = this.contentMaster();
     return {
       ciphertext: seal(dek, Buffer.from(plaintext, "utf8"), aad),
       wrappedDEK: seal(keyEncryptionKey(master, source, address), dek, aad),
       ...(storedAt === undefined ? {} : { storedAt }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
       ...(scope === "index"
         ? { keyFingerprint: contentMasterFingerprint(master) }
         : {}),
       updatedAt: new Date(this.now()).toISOString(),
     };
-
   }
   private unseal(
     source: string,
@@ -1390,7 +1594,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     scope: string,
     blob: SealedBlob,
   ): string {
-    const aad = envelopeAad(source, address, scope);
+    const aad = envelopeAad(source, address, scope, blob.expiresAt);
     const kek = keyEncryptionKey(this.contentMaster(), source, address);
     const dek = open(kek, blob.wrappedDEK, aad);
     return open(dek, blob.ciphertext, aad).toString("utf8");
@@ -1431,6 +1635,7 @@ function parseMeta(raw: unknown): ContentMeta | null {
   if (typeof value.storedAt !== "string" || typeof value.updatedAt !== "string") {
     return null;
   }
+  if (value.expiresAt !== undefined && !isUtcDate(value.expiresAt)) return null;
   const sizeBytes =
     typeof value.sizeBytes === "number" && Number.isFinite(value.sizeBytes)
       ? value.sizeBytes
@@ -1454,6 +1659,7 @@ function parseMeta(raw: unknown): ContentMeta | null {
       : {}),
     sizeBytes,
     storedAt: value.storedAt,
+    ...(value.expiresAt === undefined ? {} : { expiresAt: value.expiresAt as string }),
     updatedAt: value.updatedAt,
     ...(typeof value.reconciledAt === "string"
       ? { reconciledAt: value.reconciledAt }
@@ -1497,7 +1703,8 @@ function parseIndex(plaintext: string, now: number): ContentIndex {
   const meetings: ContentMeta[] = [];
   for (const entry of value.meetings) {
     const meta = parseMeta(entry);
-    if (meta !== null) meetings.push(meta);
+    if (meta === null) throw new Error("content index is unreadable");
+    meetings.push(meta);
   }
   const tombstones: RetentionTombstone[] = [];
   for (const entry of value.tombstones) {
@@ -1648,6 +1855,41 @@ export class InMemoryContentBlobStore implements ContentBlobStore {
   ): Promise<void> {
     this.blobs.delete(contentSlot(source, address, sourceId));
   }
+  async readReplayTombstone(digest: string): Promise<ReplayTombstoneRecord | null> {
+    const raw = this.blobs.get(replayTombstoneSlot(digest));
+    if (raw === undefined) return null;
+    return JSON.parse(raw) as ReplayTombstoneRecord;
+  }
+
+  async writeReplayTombstone(
+    digest: string,
+    marker: ReplayTombstoneRecord,
+  ): Promise<void> {
+    this.blobs.set(replayTombstoneSlot(digest), JSON.stringify(marker));
+  }
+
+  async removeReplayTombstone(digest: string): Promise<void> {
+    this.blobs.delete(replayTombstoneSlot(digest));
+  }
+
+  async listReplayTombstones(): Promise<Array<{
+    digest: string;
+    marker: ReplayTombstoneRecord | null;
+  }>> {
+    const prefix = "replay:";
+    return [...this.blobs.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, raw]) => {
+        try {
+          return {
+            digest: key.slice(prefix.length),
+            marker: JSON.parse(raw) as ReplayTombstoneRecord,
+          };
+        } catch {
+          return { digest: key.slice(prefix.length), marker: null };
+        }
+      });
+  }
   async listContentIds(
     source: string,
     address: string,
@@ -1703,6 +1945,15 @@ function contentSlot(
   sourceId: string,
 ): string {
   return `content:${source} ${address} ${sourceId}`;
+}
+function replayTombstoneSlot(digest: string): string {
+  return `replay:${digest}`;
+}
+function replayTombstoneKvKey(digest: string): string {
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error("Invalid replay tombstone digest");
+  }
+  return `${REPLAY_TOMBSTONE_KEY_PREFIX}/${digest}`;
 }
 
 function keyFailureKey(source: string, address: string): string {
@@ -1877,6 +2128,89 @@ export class KvContentBlobStore implements ContentBlobStore {
       this.deleteKey(contentKey(source, address, sourceId)),
     );
   }
+  async readReplayTombstone(
+    digest: string,
+  ): Promise<ReplayTombstoneRecord | null> {
+    const key = replayTombstoneKvKey(digest);
+    const result = await this.run(() =>
+      withSessionRefresh(this.node, async () => {
+        const value = await this.node.kv.get(key);
+        if (isKvMissingKeyResult(value, key)) return null;
+        return assertKvResult(value);
+      }),
+    );
+    let raw: unknown = result;
+    while (typeof raw === "object" && raw !== null && "data" in raw) {
+      raw = (raw as { data: unknown }).data;
+    }
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === "string") {
+      try {
+        raw = JSON.parse(raw) as unknown;
+      } catch {
+        throw new ContentBlobUnparseableError();
+      }
+    }
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new ContentBlobUnparseableError();
+    }
+    return raw as ReplayTombstoneRecord;
+  }
+
+  writeReplayTombstone(
+    digest: string,
+    marker: ReplayTombstoneRecord,
+  ): Promise<void> {
+    const key = replayTombstoneKvKey(digest);
+    return this.run(() =>
+      withSessionRefresh(this.node, async () => {
+        assertKvResult(await this.node.kv.put(key, marker));
+      }),
+    );
+  }
+
+  removeReplayTombstone(digest: string): Promise<void> {
+    return this.run(() => this.deleteKey(replayTombstoneKvKey(digest)));
+  }
+
+  async listReplayTombstones(): Promise<Array<{
+    digest: string;
+    marker: ReplayTombstoneRecord | null;
+  }>> {
+    const prefix = `${REPLAY_TOMBSTONE_KEY_PREFIX}/`;
+    const kv = (
+      this.node as unknown as {
+        kv?: { list?: (options: unknown) => Promise<unknown> };
+      }
+    ).kv;
+    if (!kv || typeof kv.list !== "function") {
+      throw new Error("Replay tombstone listing is unavailable");
+    }
+    const response = await this.run(() =>
+      withSessionRefresh(this.node, async () =>
+        assertKvResult(await kv.list!({ prefix })),
+      ),
+    );
+    const keys = extractKeys(response).filter((key) => key.startsWith(prefix));
+    const markers: Array<{ digest: string; marker: ReplayTombstoneRecord | null }> = [];
+    for (const key of keys) {
+      const digest = key.slice(prefix.length);
+      if (!/^[a-f0-9]{64}$/.test(digest)) {
+        markers.push({ digest, marker: null });
+        continue;
+      }
+      try {
+        markers.push({
+          digest,
+          marker: await this.readReplayTombstone(digest),
+        });
+      } catch {
+        markers.push({ digest, marker: null });
+      }
+    }
+    return markers;
+  }
+
   async listContentIds(
     source: string,
     address: string,
@@ -1902,12 +2236,20 @@ export class KvContentBlobStore implements ContentBlobStore {
       .filter((sourceId) => !sourceId.includes("/") && isValidMeetingId(sourceId));
     const blobs: Array<{ sourceId: string; storedAt?: string; updatedAt: string }> = [];
     for (const sourceId of ids) {
-      const blob = await this.read(source, address, sourceId);
-      blobs.push({
-        sourceId,
-        ...(blob?.storedAt === undefined ? {} : { storedAt: blob.storedAt }),
-        updatedAt: blob?.updatedAt ?? "",
-      });
+      try {
+        const blob = await this.read(source, address, sourceId);
+        blobs.push({
+          sourceId,
+          ...(blob?.storedAt === undefined ? {} : { storedAt: blob.storedAt }),
+          updatedAt: blob?.updatedAt ?? "",
+        });
+      } catch (error) {
+        if (!(error instanceof ContentBlobUnparseableError)) throw error;
+        warnContentAdapter(
+          `op=content-list result=unparseable_blob source=${source} ` +
+            `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+        );
+      }
     }
     return blobs;
   }
@@ -1952,9 +2294,11 @@ export class KvContentBlobStore implements ContentBlobStore {
       if (isKvMissingKeyResult(r, key)) return null;
       return assertKvResult(r);
     });
+    // The exact production KV_NOT_FOUND result is converted to null above. Preserve that
+    // sentinel through the wrapper before validating a present-value envelope.
+    if (result === null) return null;
     if (
       typeof result !== "object" ||
-      result === null ||
       Array.isArray(result) ||
       !("data" in result)
     ) {
@@ -2004,6 +2348,9 @@ export class KvContentBlobStore implements ContentBlobStore {
       ...(blob.storedAt === undefined
         ? {}
         : { storedAt: typeof blob.storedAt === "string" ? blob.storedAt : "" }),
+      ...(blob.expiresAt === undefined
+        ? {}
+        : { expiresAt: typeof blob.expiresAt === "string" ? blob.expiresAt : "" }),
       ...(blob.keyFingerprint === undefined
         ? {}
         : {

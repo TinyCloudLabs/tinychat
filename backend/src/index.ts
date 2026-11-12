@@ -670,20 +670,6 @@ async function main() {
   // hands the seat over instead of idling out the TTL.
   let ingestSupervisor: IngestInstanceSupervisor | null = null;
   const contentIndexDirectory = createContentIndexDirectory(node);
-  let sharedContentStore: ContentStore | null = null;
-  const getContentStore = (): ContentStore => {
-    if (sharedContentStore === null) {
-      sharedContentStore = new ContentStore(
-        new KvContentBlobStore(node, backendStorageLane),
-        {
-          purgeLedger: connectorControl,
-          isDisabled: async (address: string) =>
-            (await connectorControl.readDisabled(address)) !== null,
-        },
-      );
-    }
-    return sharedContentStore;
-  };
 
   // The connectors webhook MUST be mounted before the JSON body parser and CSRF middleware:
   // the HMAC is computed over the exact bytes Fireflies signed, and Fireflies does not send
@@ -735,20 +721,11 @@ async function main() {
       // every other increment lives inside the handler below. 4-arity, so it only ever sees a
       // parser error, and it re-throws unless a bucket is already tripped.
       createConnectorWebhookParserErrorHandler(connectorWebhookLimiters),
-      // §5.4 trigger 1, W1's version. OPTION C retired the post-ack DRAIN kick and that stays
-      // retired: it ran a full drain pass — config, disabled-marker, queue and purge-ledger
-      // reads — after EVERY delivery and handed the ids to a promise nobody consumed. What is
-      // wired here instead is the ingest NUDGE: for a cohort address (dark flag + operator
-      // allowlist) it tells W3's fetch worker an item just landed; for everyone else it returns
-      // immediately and the browser still picks the id up on its next visit (trigger 3).
-      // The ack waits for the durable enqueue and post-write disconnect-marker check; a raced
-      // delivery is acknowledged only after the marker causes its pending queue to be cleared.
+      // Strictly after the 202 — the ack waits on the durable enqueue and nothing else.
       createConnectorWebhookHandler({
         tokens: connectorWebhooks.tokens,
         queue: connectorWebhooks.queue,
         limiters: connectorWebhookLimiters,
-        discardIfDisconnected: async (_source, address) =>
-          (await connectorWebhooks.control.readDisabled(address)) !== null,
         onDelivery: createIngestOnDelivery({ modes: connectorWebhooks.modes }),
       }),
     );
@@ -844,8 +821,6 @@ async function main() {
         queue: connectorWebhooks.queue,
         control: connectorWebhooks.control,
         limiters: connectorWebhooks.limiters,
-        deleteReconciled: (source: string, address: string) =>
-          getContentStore().deleteReconciled(source, address),
         // W1 — the same ingest-mode service the delivery path reads. For a cohort address the
         // fetch worker is the queue's SOLE consumer, so /drain surfaces nothing and /ack is an
         // idempotent no-op here; every non-cohort address is untouched Option C.
@@ -888,12 +863,12 @@ async function main() {
       // use: one ledger, one rule, two consumers.
       const contentBlobs = new KvContentBlobStore(node, connectorWebhooks.backendStorageLane);
       const contentMaster = currentContentMaster();
+      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
       const contentStore = new ContentStore(contentBlobs, {
         purgeLedger: connectorWebhooks.control,
         master: () => contentMaster,
+        mutationGuard: ingestGuard,
       });
-      sharedContentStore = contentStore;
-      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
       await contentStore.assertContinuity(contentBlobs, process.env, ingestGuard);
       mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
         contentStore.probeIndex(await contentBlobs.findIndex()),
@@ -944,15 +919,9 @@ async function main() {
         createConnectorMeetingsRouter({
           content: contentStore,
           modes: connectorWebhooks.modes,
-          isDisabled: async (address: string) =>
-            (await connectorWebhooks.control.readDisabled(address)) !== null,
-          deleteReconciled: (source: string, address: string) =>
-            contentStore.deleteReconciled(source, address),
         }),
       );
 
-      // W3 + W9 — the fetch worker, behind D4's SINGLE-INSTANCE seat. Two boundaries, both
-      // required: `ConnectorFetchWorker` keeps one worker per PROCESS, and the lease below keeps
       // one worker per DEPLOYMENT, because the queue's mutual exclusion is a per-address
       // in-process mutex over a per-instance storage lane — neither crosses a process boundary, so
       // a second instance is not throughput, it is interleaved read-modify-writes on one array
@@ -973,10 +942,7 @@ async function main() {
             store: credentialStore,
             client: () => firefliesOAuth(),
           }),
-          // Refetch BY ID with the user's own credential; the fetcher never sees a stored link.
           fetcher: new FirefliesMeetingFetcher(),
-          isDisabled: async (address: string) =>
-            (await connectorWebhooks.control.readDisabled(address)) !== null,
           content: contentStore,
           // W4's retention + purge tombstones: a swept or purged id is never re-stored by a
           // replayed delivery.
@@ -1016,12 +982,25 @@ async function main() {
   // enumeration inside each guarded pass so a KV list failure is logged and retried next interval,
   // never a reason to prevent backend startup.
   if (ingestSupervisor === null) {
+    const retentionBlobs = new KvContentBlobStore(node, backendStorageLane);
+    const retentionGuard = new IngestInstanceGuard(
+      new KvInstanceLeaseStore(node),
+    );
+    const retentionContent = new ContentStore(retentionBlobs, {
+      purgeLedger: connectorControl,
+      mutationGuard: retentionGuard,
+    });
+    await retentionContent.assertContinuity(
+      retentionBlobs,
+      process.env,
+      retentionGuard,
+    );
     const retention = new IngestRetentionSweeper({
-      content: getContentStore(),
+      content: retentionContent,
       indexes: contentIndexDirectory,
     });
     const supervisor = new IngestInstanceSupervisor({
-      guard: new IngestInstanceGuard(new KvInstanceLeaseStore(node)),
+      guard: retentionGuard,
       worker: retention,
     });
     ingestSupervisor = supervisor;
@@ -1305,16 +1284,8 @@ async function main() {
         safetyMarginMs,
       );
       if (read.status === "unparseable") {
-        await connectorControl.quarantineLedger(source, address, read.raw);
-        const stamp = new Date().toISOString();
-        await connectorControl.writeLedger(source, address, {
-          purgedThrough: stamp,
-          recentIds: [],
-          recentIdsAddedAt: {},
-          updatedAt: stamp,
-        });
+        throw new Error("purge ledger is unreadable; retention skipped");
       }
-      await connectorControl.clearQuarantinedLedger?.(source, address);
     },
     sweepQueue: ({ source, address }, safetyMarginMs) =>
       connectorQueue.sweep(source, address, safetyMarginMs),

@@ -89,7 +89,6 @@ function createApp(grant: SignedTranscriptGrant) {
     tokens: tokens as Parameters<typeof createConnectorWebhookCompanionRouter>[0]["tokens"],
     queue: new FakeQueue() as Parameters<typeof createConnectorWebhookCompanionRouter>[0]["queue"],
     control,
-    deleteReconciled: async () => ({ removed: 0 }),
     limiters: new ConnectorWebhookLimiters({ ipLimit: 0, tokenSuccessLimit: 0 }),
   }));
   return { app, tokens, control };
