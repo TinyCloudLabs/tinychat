@@ -139,6 +139,8 @@ export interface SandboxEnd {
   reap(): Promise<void>;
   /** No process left in the sandbox's cgroup (or the cgroup is gone). */
   cgroupEmpty(): boolean;
+  /** Records confirmed sandbox exit before save or unmount can fail. */
+  confirmed?(): void;
   /** Saves the state to disk; logs its own failure. */
   save(): Promise<void>;
   unmount(): Promise<void>;
@@ -162,6 +164,7 @@ export async function endSandbox(end: SandboxEnd, botId: string, save: boolean):
     if (save) log("snapshot_skipped", botId, { cause: "teardown_unconfirmed" });
     return false;
   }
+  end.confirmed?.();
   if (save) await end.save();
   await end.unmount();
   return true;
@@ -169,9 +172,13 @@ export async function endSandbox(end: SandboxEnd, botId: string, save: boolean):
 
 /**
  * Runs one state copy process. Returns its failure reason, "timeout" if it ran past `timeoutMs` (it is then
- * killed, and not waited for), or undefined.
+ * killed, then given a bounded wait to exit), or copier_leftover if exit remains unconfirmed.
  */
-export async function runStateCopy(argv: string[], timeoutMs: number): Promise<CopyFailure | "timeout" | undefined> {
+export async function runStateCopy(
+  argv: string[], timeoutMs: number,
+  onLeftover?: (exit: Promise<number>) => void,
+  reapMs = 1000,
+): Promise<CopyFailure | "timeout" | "copier_leftover" | undefined> {
   const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   const finished = Promise.all([proc.exited, new Response(proc.stdout).text()]).then(([code, reason]) =>
     code === 0 ? undefined : (COPY_FAILURES.find(failure => failure === reason) ?? "io"),
@@ -182,9 +189,42 @@ export async function runStateCopy(argv: string[], timeoutMs: number): Promise<C
     resolve("timeout");
   }, timeoutMs);
   try {
-    return await Promise.race([finished, deadline]);
+    const result = await Promise.race([finished, deadline]);
+    if (result === "timeout") {
+      let reapTimer: Timer | undefined;
+      try {
+        const reaped = await Promise.race([
+          proc.exited.then(() => true),
+          new Promise<false>(resolve => { reapTimer = setTimeout(() => resolve(false), reapMs); }),
+        ]);
+        if (!reaped) {
+          onLeftover?.(proc.exited);
+          return "copier_leftover";
+        }
+      } finally {
+        clearTimeout(reapTimer);
+      }
+    }
+    return result;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** An unreaped copier blocks later copies and deletion for its bot until its exit is confirmed. */
+export class StateCopiers {
+  readonly #leftovers = new Map<string, Promise<number>>();
+
+  has(botId: string): boolean { return this.#leftovers.has(botId); }
+
+  run(botId: string, argv: string[], timeoutMs: number, reapMs = 1000): ReturnType<typeof runStateCopy> {
+    if (this.has(botId)) return Promise.resolve("copier_leftover");
+    return runStateCopy(argv, timeoutMs, exit => {
+      this.#leftovers.set(botId, exit);
+      void exit.then(() => {
+        if (this.#leftovers.get(botId) === exit) this.#leftovers.delete(botId);
+      });
+    }, reapMs);
   }
 }
 
@@ -215,6 +255,13 @@ export function mountOf(path: string, mountinfo: string): MountEntry | undefined
 
 const hasFlags = (mount: MountEntry | undefined, flags: string[]) => !!mount && flags.every(flag => mount.options.has(flag));
 
+export function parseMountinfo(info: string): string[] {
+  return info.split("\n").flatMap(line => {
+    const point = line.split(" ")[4];
+    return point ? [point.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)))] : [];
+  });
+}
+
 export class RunscHost implements SandboxLauncher {
   readonly #cfg: SupervisorConfig;
   #baseSpec: OciSpec | undefined;
@@ -222,6 +269,7 @@ export class RunscHost implements SandboxLauncher {
   readonly #leftovers = new Map<string, boolean>();
   /** Per bot, the state copy running or queued; one at a time, never rejecting. */
   readonly #copies = new Map<string, Promise<void>>();
+  readonly #copiers = new StateCopiers();
 
   constructor(cfg: SupervisorConfig) {
     this.#cfg = cfg;
@@ -253,13 +301,18 @@ export class RunscHost implements SandboxLauncher {
     return hasSnapshot(layout.stateSnapshot);
   }
 
-  leftover(layout: BotLayout): boolean {
-    return this.#leftovers.has(layout.botId);
+  leftover(layout: BotLayout, sandboxOnly = false): boolean {
+    return this.#leftovers.has(layout.botId) || (!sandboxOnly && this.#copiers.has(layout.botId));
+  }
+
+  mountPoints(): string[] {
+    return parseMountinfo(readFileSync("/proc/self/mountinfo", "utf8"));
   }
 
   async launch(layout: BotLayout): Promise<Sandbox> {
     if (!this.#baseSpec) throw new Error("sandbox host not initialised");
     // A sandbox whose end was not confirmed still holds its tmpfs; end it first, or refuse to start over it.
+    if (this.#copiers.has(layout.botId)) throw new Error("state copier exit unconfirmed");
     const leftover = this.#leftovers.get(layout.botId);
     if (leftover !== undefined && !(await this.#end(layout, leftover))) throw new Error("earlier sandbox not confirmed stopped");
     const token = randomBytes(32).toString("hex");
@@ -277,7 +330,7 @@ export class RunscHost implements SandboxLauncher {
           return;
         }
         try {
-          const failure = await this.#copy("save", layout.stateMount, layout.stateSnapshot);
+          const failure = await this.#copy("save", layout.stateMount, layout.stateSnapshot, layout.botId);
           if (failure) log("snapshot_failed", layout.botId, { when: "settled", cause: failure });
         } finally {
           if (!teardown && !(await attempt([...this.#runsc, "resume", layout.containerId]))) {
@@ -320,9 +373,10 @@ export class RunscHost implements SandboxLauncher {
         child.stdin.write(line);
         void child.stdin.flush();
       }, child.stdout);
-      // A broken protocol (or closed output) ends the sandbox.
-      void rpc.closed.then(() => destroy());
-      const exited = child.exited.then(() => destroy());
+      // A broken protocol (or closed output) ends the sandbox. Both settle even if the teardown fails; stop()
+      // reports that.
+      void rpc.closed.then(() => destroy()).catch(() => {});
+      const exited = child.exited.then(() => destroy()).catch(() => {});
       try {
         await rpc.ready(READY_TIMEOUT_MS);
         await rpc.request({ type: "set_event_filter", events: ["message_update", "message_end"], messageUpdates: "delta" });
@@ -355,7 +409,7 @@ export class RunscHost implements SandboxLauncher {
           })()),
       };
     } catch (error) {
-      await destroy();
+      await destroy().catch(() => {});
       throw error;
     }
   }
@@ -372,7 +426,7 @@ export class RunscHost implements SandboxLauncher {
     if (mount?.target !== layout.stateMount || mount.type !== "tmpfs" || !hasFlags(mount, ["nosuid", "nodev", "noexec"])) {
       throw new Error("state tmpfs not mounted nosuid,nodev,noexec");
     }
-    const failure = await this.#copy("restore", layout.stateSnapshot, layout.stateMount);
+    const failure = await this.#copy("restore", layout.stateSnapshot, layout.stateMount, layout.botId);
     if (failure) throw new Error(`state restore failed: ${failure}`);
   }
 
@@ -395,12 +449,14 @@ export class RunscHost implements SandboxLauncher {
             return (error as NodeJS.ErrnoException).code === "ENOENT";
           }
         },
+        confirmed: () => this.#leftovers.delete(layout.botId),
         save: () =>
           this.#queue(layout.botId, async () => {
-            const failure = await this.#copy("save", layout.stateMount, layout.stateSnapshot);
+            const failure = await this.#copy("save", layout.stateMount, layout.stateSnapshot, layout.botId);
             if (failure) log("snapshot_failed", layout.botId, { when: "stop", cause: failure });
           }),
         unmount: async () => {
+          if (this.#copiers.has(layout.botId)) throw new Error("state copier exit unconfirmed");
           if (await attempt(["umount", layout.stateMount])) return;
           const lazy = await attempt(["umount", "-l", layout.stateMount]);
           log("unmount_failed", layout.botId, { lazy });
@@ -409,8 +465,7 @@ export class RunscHost implements SandboxLauncher {
       layout.botId,
       save,
     );
-    if (confirmed) this.#leftovers.delete(layout.botId);
-    else this.#leftovers.set(layout.botId, save);
+    if (!confirmed) this.#leftovers.set(layout.botId, save);
     return confirmed;
   }
 
@@ -436,10 +491,10 @@ export class RunscHost implements SandboxLauncher {
    * why it failed, if it did. A restore runs in /bots/restore, so the memory the restored state takes counts toward
    * the bots' total.
    */
-  #copy(command: "save" | "restore", from: string, to: string): Promise<CopyFailure | "timeout" | undefined> {
+  #copy(command: "save" | "restore", from: string, to: string, botId: string): ReturnType<typeof runStateCopy> {
     const argv = [process.execPath, STATE_COPY, command, from, to, String(this.#cfg.limits.stateMb)];
     const procs = join(CGROUP_ROOT, "bots", RESTORE_CGROUP, "cgroup.procs");
-    return runStateCopy(command === "restore" ? ["sh", "-c", 'echo $$ > "$0" && exec "$@"', procs, ...argv] : argv, this.#cfg.stateCopyTimeoutMs);
+    return this.#copiers.run(botId, command === "restore" ? ["sh", "-c", 'echo $$ > "$0" && exec "$@"', procs, ...argv] : argv, this.#cfg.stateCopyTimeoutMs);
   }
 
   /** The gateway's control socket: register (PUT) or drop (DELETE) one bot's egress socket and token. */

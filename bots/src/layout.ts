@@ -17,6 +17,7 @@ export interface BotLayout {
   dataDir: string;
   /** The saved state on disk (a plain directory), copied into the tmpfs at stateMount while the bot runs. */
   stateSnapshot: string;
+  lastUsedFile: string;
   bundleDir: string;
   stateMount: string;
   egressDir: string;
@@ -40,6 +41,7 @@ export function botLayout(botId: string, roots: LayoutRoots): BotLayout {
     containerId: `bot-${botId.slice(0, 32)}`,
     dataDir,
     stateSnapshot: join(dataDir, "state"),
+    lastUsedFile: join(dataDir, "last-used"),
     bundleDir,
     stateMount: join(bundleDir, "state"),
     ...egress,
