@@ -208,7 +208,7 @@ Background and history permissions each need their own justification in the Play
   - `com.apple.developer.healthkit.access` = empty array (no clinical health records);
   - `com.apple.developer.healthkit.background-delivery` = true (required for background delivery
     since iOS 15).
-- `Info.plist` (all builds; harmless without the entitlement):
+- `Info.plist`, Debug builds only (added by the Run Script phase `App/debug-spikes-info-plist.sh`; `ios-build.yml` fails a Release archive that has them):
   - `NSHealthShareUsageDescription`: "TinyCloud Home reads the steps, sleep and heart rate you allow and saves
     a daily summary to your own TinyCloud space. It never uses health data for advertising."
   - `NSHealthUpdateUsageDescription`: "TinyCloud Home's development preview can add sample steps, sleep and
