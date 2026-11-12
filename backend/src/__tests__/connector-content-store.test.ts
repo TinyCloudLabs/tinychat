@@ -354,7 +354,7 @@ describe("W4 content store — caps and overflow policy", () => {
   });
 
   test("[delta-08] past the per-user meeting cap the OLDEST is dropped, counted and logged", async () => {
-    const { store, clock } = harness({ maxUserMeetings: 3 });
+    const { store, clock, blobs } = harness({ maxUserMeetings: 3 });
     const capture = captureLogs();
     try {
       for (let i = 0; i < 4; i += 1) {
@@ -375,6 +375,7 @@ describe("W4 content store — caps and overflow policy", () => {
     expect(ids).not.toContain("mtg-cap-0");
     expect(ids).toContain("mtg-cap-3");
     expect(store.stats().droppedOverflow).toBe(1);
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-cap-0")).toBeNull();
 
     const dropLine = capture.lines.find((line) => line.includes("reason=user_meeting_cap"));
     expect(dropLine).toBeTruthy();
@@ -571,6 +572,35 @@ describe("W4 content store — fail closed", () => {
     await expect(store.list(SOURCE, ADDRESS_A)).rejects.toThrow();
   });
 
+  test("a fingerprint-only mismatch refuses an otherwise valid sealed index", async () => {
+    const { store, blobs } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-fingerprint" }));
+    const original = await blobs.readIndex(SOURCE, ADDRESS_A);
+    expect(original).not.toBeNull();
+    if (original === null) return;
+
+    // Keep the ciphertext and wrapped key intact so only the fingerprint check can reject it.
+    await blobs.writeIndex(SOURCE, ADDRESS_A, {
+      ...original,
+      keyFingerprint: "0".repeat(64),
+    });
+    const storeWithMismatchedFingerprint = new ContentStore(blobs, {
+      now: () => T0,
+      master: () => CONTENT_MASTER,
+    });
+
+    await expect(
+      storeWithMismatchedFingerprint.list(SOURCE, ADDRESS_A),
+    ).rejects.toThrow("content index is unreadable");
+    expect(
+      await storeWithMismatchedFingerprint.sweepRetention({
+        source: SOURCE,
+        address: ADDRESS_A,
+      }),
+    ).toMatchObject({ swept: 0, unreadableIndex: true });
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-fingerprint")).not.toBeNull();
+  });
+
   test("[delta-10] the success arm is a LITERAL {ok:true} with a stored disposition", async () => {
     const { store } = harness();
     const result = await store.upsert(upsertInput({ sourceId: "mtg-shape" }));
@@ -688,6 +718,73 @@ describe("W4 content store — fail closed", () => {
       (await flaky.get(SOURCE, ADDRESS_A, "mtg-retry"))?.meta.reconciledAt,
     ).toBe(new Date(T0).toISOString());
   });
+  test("a failed final index write cannot leave an overwritten reconciled blob deletable", async () => {
+    class FailIndexAfterBlobWrite extends InMemoryContentBlobStore {
+      private armed = false;
+      private wroteBlob = false;
+
+      arm(): void {
+        this.armed = true;
+      }
+
+      override async write(
+        source: string,
+        address: string,
+        sourceId: string,
+        blob: SealedBlob,
+      ): Promise<void> {
+        await super.write(source, address, sourceId, blob);
+        if (this.armed) this.wroteBlob = true;
+      }
+
+      override async writeIndex(
+        source: string,
+        address: string,
+        blob: SealedBlob,
+      ): Promise<void> {
+        if (this.armed && this.wroteBlob) {
+          throw new Error("final index write failed");
+        }
+        await super.writeIndex(source, address, blob);
+      }
+    }
+
+    const blobs = new FailIndexAfterBlobWrite();
+    const store = new ContentStore(blobs, {
+      now: () => T0,
+      master: () => CONTENT_MASTER,
+    });
+    await store.upsert(upsertInput({ sourceId: "mtg-reconcile-failure" }));
+    await store.markReconciled(SOURCE, ADDRESS_A, "mtg-reconcile-failure");
+    blobs.arm();
+
+    const result = await store.upsert(
+      upsertInput({
+        sourceId: "mtg-reconcile-failure",
+        kind: "summary",
+        content: { overview: "new summary awaiting reconciliation" },
+      }),
+    );
+
+    expect(result).toEqual({ ok: false, code: "content_store_failed" });
+    const listed = await store.list(SOURCE, ADDRESS_A);
+    expect(
+      listed.find((meta) => meta.sourceId === "mtg-reconcile-failure")
+        ?.reconciledAt,
+    ).toBeUndefined();
+    expect(
+      (await store.get(SOURCE, ADDRESS_A, "mtg-reconcile-failure"))?.content
+        .summary,
+    ).toEqual({ overview: "new summary awaiting reconciliation" });
+    expect(await store.deleteReconciled(SOURCE, ADDRESS_A)).toEqual({
+      removed: 0,
+    });
+    expect(
+      (await store.get(SOURCE, ADDRESS_A, "mtg-reconcile-failure"))?.content
+        .summary,
+    ).toEqual({ overview: "new summary awaiting reconciliation" });
+  });
+
 
   test("[delta-10] a KV put that RESOLVES {ok:false} is a failure, not a silent success", async () => {
     const node = new FakeNode();
@@ -1311,6 +1408,73 @@ describe("W4 content store — retention", () => {
       await blobs.read(SOURCE, ADDRESS_A, "mtg-purge-unreadable"),
     ).not.toBeNull();
   });
+  test("purge refuses orphan deletion when the content master is unavailable", async () => {
+    const blobs = new InMemoryContentBlobStore();
+    await blobs.write(SOURCE, ADDRESS_A, "mtg-orphan-without-master", {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      storedAt: new Date(T0).toISOString(),
+      updatedAt: new Date(T0).toISOString(),
+    });
+    const store = new ContentStore(blobs, {
+      now: () => T0,
+      master: () => {
+        throw new Error("master unavailable");
+      },
+    });
+
+    await expect(store.purge(SOURCE, ADDRESS_A)).rejects.toThrow(
+      "content master is unavailable",
+    );
+    expect(
+      await blobs.read(SOURCE, ADDRESS_A, "mtg-orphan-without-master"),
+    ).not.toBeNull();
+  });
+
+  test("the tombstone cap evicts oldest markers and retains the newest", async () => {
+    const { store, clock } = harness({ maxUserTombstones: 2 });
+    const internals = store as unknown as {
+      writeIndex(
+        source: string,
+        address: string,
+        index: unknown,
+      ): Promise<void>;
+    };
+    await internals.writeIndex(SOURCE, ADDRESS_A, {
+      meetings: [],
+      tombstones: [0, 1, 2].map((i) => ({
+        sourceId: `mtg-tombstone-${i}`,
+        sweptAt: new Date(T0 + i * 1_000).toISOString(),
+        expiresAt: new Date(T0 + 30 * DAY_MS).toISOString(),
+      })),
+    });
+
+    clock.now = T0 + DAY_MS;
+    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-tombstone-0",
+      }),
+    ).toBe(false);
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-tombstone-1",
+      }),
+    ).toBe(true);
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-tombstone-2",
+      }),
+    ).toBe(true);
+  });
+
   test("[delta-05] a legacy tombstone without an expiry is not kept", async () => {
     const { store } = harness();
     const seedIndex = store as unknown as {
@@ -1852,6 +2016,99 @@ class FakeNode {
     this.inFlight -= 1;
   }
 }
+describe("W4 KV adapter malformed index refusal", () => {
+  const indexKey = `connector-content-index/${SOURCE}/${ADDRESS_A}`;
+
+  test.each([
+    ["invalid JSON", "{"],
+    ["JSON primitive", "42"],
+    ["JSON null", "null"],
+    ["object missing envelope fields", JSON.stringify({ data: true })],
+  ])("a present malformed index (%s) is not treated as absent", async (_name, raw) => {
+    const node = new FakeNode();
+    node.store.set(indexKey, raw);
+    const adapter = new KvContentBlobStore(
+      node as unknown as TinyCloudNode,
+    );
+
+    await expect(adapter.readIndex(SOURCE, ADDRESS_A)).rejects.toThrow(
+      "content blob is unparseable",
+    );
+  });
+
+  test("an invalid KV result shape is not mistaken for a missing index", async () => {
+    const node = new FakeNode();
+    node.overrideGetResult = { malformed: true };
+    const adapter = new KvContentBlobStore(
+      node as unknown as TinyCloudNode,
+    );
+
+    await expect(adapter.readIndex(SOURCE, ADDRESS_A)).rejects.toThrow();
+  });
+
+  test("upsert refuses a malformed index without replacing it", async () => {
+    const node = new FakeNode();
+    node.store.set(indexKey, "{");
+    const store = new ContentStore(
+      new KvContentBlobStore(node as unknown as TinyCloudNode),
+      { now: () => T0, master: () => CONTENT_MASTER },
+    );
+
+    expect(await store.upsert(upsertInput({ sourceId: "mtg-malformed-upsert" }))).toEqual({
+      ok: false,
+      code: "content_store_failed",
+    });
+    expect(node.store.get(indexKey)).toBe("{");
+    expect(node.store.has(`connector-content/${SOURCE}/${ADDRESS_A}/mtg-malformed-upsert`)).toBe(false);
+  });
+
+  test("retention refuses malformed indexes without deleting expired content", async () => {
+    const node = new FakeNode();
+    node.store.set(indexKey, "{");
+    const expiredKey = `connector-content/${SOURCE}/${ADDRESS_A}/mtg-expired-under-malformed-index`;
+    node.store.set(expiredKey, {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      storedAt: new Date(T0 - 15 * DAY_MS).toISOString(),
+      updatedAt: new Date(T0 - 15 * DAY_MS).toISOString(),
+    });
+    const store = new ContentStore(
+      new KvContentBlobStore(node as unknown as TinyCloudNode),
+      { now: () => T0, master: () => CONTENT_MASTER },
+    );
+
+    expect(
+      await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+    ).toMatchObject({ swept: 0, unreadableIndex: true });
+    expect(node.store.get(indexKey)).toBe("{");
+    expect(node.store.has(expiredKey)).toBe(true);
+    expect(node.calls.some((call) => call.op === "delete")).toBe(false);
+  });
+
+  test("purge refuses malformed indexes without deleting any keys", async () => {
+    const node = new FakeNode();
+    node.store.set(indexKey, "{");
+    const contentKey = `connector-content/${SOURCE}/${ADDRESS_A}/mtg-malformed-purge`;
+    node.store.set(contentKey, {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      storedAt: new Date(T0).toISOString(),
+      updatedAt: new Date(T0).toISOString(),
+    });
+    const store = new ContentStore(
+      new KvContentBlobStore(node as unknown as TinyCloudNode),
+      { now: () => T0, master: () => CONTENT_MASTER },
+    );
+
+    await expect(store.purge(SOURCE, ADDRESS_A)).rejects.toThrow(
+      "content index is unreadable",
+    );
+    expect(node.store.get(indexKey)).toBe("{");
+    expect(node.store.has(contentKey)).toBe(true);
+    expect(node.calls.some((call) => call.op === "delete")).toBe(false);
+  });
+});
+
 
 describe("W4 content store — sequential storage (§9.3)", () => {
   test("concurrent upserts still reach the node one call at a time", async () => {
