@@ -85,11 +85,14 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEY_ALIAS || '' }}
           ANDROID_KEY_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEY_PASSWORD || '' }}
           ANDROID_UPLOAD_CERT_SHA256: ${{ github.event_name == 'workflow_dispatch' && vars.ANDROID_UPLOAD_CERT_SHA256 || '' }}
+        run: scripts/release/android-signing.sh check
+
+      - name: Check the Play service account
+        env:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ github.event_name == 'workflow_dispatch' && secrets.PLAY_SERVICE_ACCOUNT_JSON || '' }}
         run: |
-          scripts/release/android-signing.sh check
           if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
-            echo "::error::PLAY_SERVICE_ACCOUNT_JSON is not set in the android-release environment (mobile/README.md, Android release)"
+            echo "::error::the android-release environment is missing PLAY_SERVICE_ACCOUNT_JSON (mobile/README.md, Android release)"
             exit 1
           fi
 
