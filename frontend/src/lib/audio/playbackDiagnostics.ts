@@ -68,6 +68,7 @@ function log(): DiagnosticsEntry[] {
 }
 
 function save() {
+  clearTimeout(persistTimer);
   persistTimer = undefined;
   try {
     storage()?.setItem(LOG_KEY, JSON.stringify(log()));
@@ -119,6 +120,8 @@ export function recordPlaybackDiagnostic(kind: string, data: Record<string, unkn
 function onVisibility() {
   recordPlaybackDiagnostic("visibility", { state: document.visibilityState });
   if (document.visibilityState === "hidden") save();
+  // A suspended page's timers stop: the first tick after it returns measures the time away, not a block.
+  else lastLagTick = clock().mono;
 }
 
 function startNative() {
@@ -251,6 +254,8 @@ export function watchPlaybackDiagnostics(media: DiagnosedMedia): () => void {
   });
   const onEvent = (event: Event) => {
     const type = event.type;
+    // Stops are followed even while off, so the shared lag monitor's count stays right across a toggle.
+    if (type === "pause" || type === "ended" || type === "emptied" || type === "error") setPlaying(false);
     if (!playbackDiagnosticsEnabled()) return;
     recordPlaybackDiagnostic("media", { event: type, ...state(), ...(type === "error" ? { error: media.error?.code ?? null } : {}) });
     if (type === "playing" || type === "seeked" || type === "ratechange") {
@@ -261,7 +266,6 @@ export function watchPlaybackDiagnostics(media: DiagnosedMedia): () => void {
       if (nativeListener) void native.snapshot().then((s) => recordPlaybackDiagnostic("audio_session", { event: "on_playing", ...s }), () => undefined);
     }
     if (type === "pause" || type === "ended" || type === "emptied" || type === "error" || type === "waiting" || type === "seeking") {
-      if (type !== "waiting" && type !== "seeking") setPlaying(false);
       anchor = null;
     }
   };
