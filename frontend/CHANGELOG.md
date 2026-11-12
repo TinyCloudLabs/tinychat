@@ -15,6 +15,14 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.22
+
+### Patch Changes
+
+- 4143792: Remove the transcript-share action from note detail. Transcript sharing returns through the TC-2525 SDK adoption.
+
+  Details: TC-2845, TC-2192
+
 ## 0.14.0-beta.21
 
 ### Minor Changes

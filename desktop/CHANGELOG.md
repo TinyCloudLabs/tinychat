@@ -1,5 +1,13 @@
 # exo-desktop
 
+## 0.14.0-beta.22
+
+### Patch Changes
+
+- 4143792: Remove the transcript-share action from note detail. Transcript sharing returns through the TC-2525 SDK adoption.
+
+  Details: TC-2845, TC-2192
+
 ## 0.14.0-beta.21
 
 No changes in this release.
