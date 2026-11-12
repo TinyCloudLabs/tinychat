@@ -127,6 +127,16 @@ jobs:
       - name: Require pinned Xcode
         run: test -d "$DEVELOPER_DIR"
 
+      # Before the simulator boots: a booting simulator takes most of the runner's 3 CPUs and 7 GB, and vite build
+      # needs about 2 GB of heap, the default V8 limit on this runner (TC-2880).
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages and frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: bun run build:packages && bun run build:frontend
+
       # A first boot takes minutes on the runner; let it run while the app builds.
       - name: Start booting an iOS Simulator
         run: mobile/scripts/ios-simulator-smoke.sh boot "$RUNNER_TEMP/ios-smoke"
@@ -143,12 +153,6 @@ jobs:
           cd mobile/ios/Packages/ExoStt
           xcodebuild -scheme ExoStt -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath "$RUNNER_TEMP/exostt-tests" CODE_SIGNING_ALLOWED=NO test
-
-      - name: Install JS deps
-        run: bun install --frozen-lockfile
-
-      - name: Build workspace packages and frontend
-        run: bun run build:packages && bun run build:frontend
 
       - name: Sync Capacitor
         run: bun run --cwd mobile sync ios
