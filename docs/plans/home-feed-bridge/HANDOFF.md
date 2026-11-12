@@ -4,7 +4,7 @@
 
 ## What is here
 
-- **The branch `bridge-feed`.** Three screen changes to the Home feed. It is level with `main` as of 11-12 and includes #630 and #650. It changes the screen only: no store, schema, manifest or back-end file is touched, and it writes the same records as `main`.
+- **The branch `bridge-feed`.** Three screen changes to the Home feed. It was last merged with `main` at 16:10 UTC on 11-12 (main at 6fdff2f6, which includes #630, #650 and #660). `main` moves fast, so check again. It changes the screen only: no store, schema, manifest or back-end file is touched, and it writes the same records as `main`.
 - **`FEED-SPEC.md`.** The design as numbered rules. Each rule says who decided it, whether it is built, what data it needs, and how it sits against the existing architecture.
 - **`mock/feed.html`.** A tappable phone mock ("Mock 4"): one self-contained file with made-up cards and a simulated agent. Open it in a browser at phone width. It is ahead of the code and shows where the design is going. Four screenshots sit beside it.
 
@@ -15,7 +15,7 @@
 3. **The open card as one piece.** One raised card is open and the rest are one-line rows. Each agent has its own letter mark. Where a card carries it, the agent's platform shows with its mark and name, with details on tap. Times are short.
 4. **A feed lab.** `VITE_FEED_LAB=true` adds the route `/feed-lab`, with made-up cards and a simulated agent, so every state can be tried without signing in. A build without the flag contains none of it.
 
-Checks at ff075800: `cd frontend && bun test src/feed src/home` passes (290 tests) and `tsc` is clean.
+Checks after that merge: `cd frontend && bun test src/feed src/home` passes (290 tests) and `tsc` is clean.
 
 Main files, in `frontend/src/feed/`:
 - new: `AnswerOptions.tsx`, `AnswerSteps.tsx`, `CardReply.tsx`, `CardActions.tsx`, `AgentConversation.tsx`, `AgentMark.tsx`, `ShortTime.tsx`, `cardStatus.ts`, `FeedLab.tsx`, `feedLabSource.ts`;
