@@ -215,6 +215,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
   const [clock, setClock] = useState(Date.now());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [sent, setSent] = useState<SentAnswer | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   // The agents list ("list") or one agent's conversation (its key), shown instead of the cards.
   const [agentView, setAgentView] = useState<string | null>(null);
   const chosenSelector = useRef(false);
@@ -424,6 +425,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
 
   // The Home site shows only the heading and its empty state until the first card arrives.
   const bare = homeSite && !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
+  const filtersOn = [agent, kind, project].filter(Boolean).length + (history ? 1 : 0);
   const selectClass = "min-h-10 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={homeSite ? NAV_LABEL_HOME : "Feed"}>
     <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-6 sm:px-5">
@@ -434,15 +436,16 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
         <select id="home-feed-view" aria-label="Feed view" value={selector} className={selectClass} onChange={(event) => changeSelector(event.target.value as FeedSelector)}>
           <option value="information">Information</option><option value="both">Both</option><option value="needs-action">Needs action</option>
         </select>
-        <button type="button" disabled={savingDefault || snapshot?.settings.defaultSelector === selector} onClick={() => void saveDefault()} className="min-h-10 rounded-lg border border-border px-3 text-xs disabled:opacity-50">{savingDefault ? "Saving default…" : "Use as default"}</button>
+        {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-10 rounded-lg border border-border px-3 text-xs disabled:opacity-50">{savingDefault ? "Saving default…" : "Use as default"}</button>}
         <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="ml-auto min-h-10 rounded-lg border border-border px-3 text-sm">Agents</button>
-        <button type="button" aria-pressed={history} onClick={() => { setHistory(!history); setActive(null); }} className="min-h-10 rounded-lg border border-border px-3 text-sm">History</button>
+        <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-10 rounded-lg border px-3 text-sm ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>
       </div>
-      <div className="mb-5 flex flex-wrap gap-2">
+      {filtersOpen && <div id="home-feed-filters" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
         <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { setAgent(event.target.value); setActive(null); }}><option value="">All agents</option>{[...new Map(entries.map((entry) => [entry.source.sourceId, entry.source.label])).entries()].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>
         <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { setKind(event.target.value); setActive(null); }}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { setProject(event.target.value); setActive(null); }}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
-      </div></>}
+        <button type="button" aria-pressed={history} onClick={() => { setHistory(!history); setActive(null); }} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
+      </div>}</>}
       {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
       {!snapshot && !error && <p className="text-sm text-muted-foreground">Loading your feed…</p>}
       {agentView && snapshot && (openAgent

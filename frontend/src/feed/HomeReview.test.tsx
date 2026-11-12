@@ -147,6 +147,10 @@ async function mount(transport: ReturnType<typeof observedSource>) {
 async function click(transport: ReturnType<typeof observedSource>, element: HTMLElement) {
   await act(async () => element.click()); await transport.settle();
 }
+/** History sits with the filters, behind Filter. */
+async function showHistory(transport: ReturnType<typeof observedSource>, host: HTMLElement) {
+  await click(transport, button(host, "Filter")); await click(transport, button(host, "History"));
+}
 async function enterCode(input: HTMLInputElement, code: string) {
   expect(input.disabled).toBe(false);
   await act(async () => {
@@ -317,7 +321,7 @@ for (const history of ["answer", "claim", "thread", "command"] as const) {
     expect(retained?.state.card).toMatchObject(identity(original));
     expect(retained?.state.response).toBeNull();
     expect(retained?.responses).toEqual([]);
-    const view = await mount(fresh); await click(fresh, button(view.host, "History"));
+    const view = await mount(fresh); await showHistory(fresh, view.host);
     await openCard(fresh, view.host, original.title);
     if (history === "answer") expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Immutable archive-only answer");
     if (history === "claim") expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Immutable archive-only claim decision");
@@ -339,7 +343,7 @@ test("command-only archive history remains visible after mutable owner state res
   expect(loaded.owner?.states[0]?.doneAt).toBeUndefined();
   expect(loaded.owner?.answers).toEqual([]); expect(loaded.owner?.threads).toEqual([]);
   expect(await responseCount(agent.responses)).toBe(0);
-  const view = await mount(fresh); await click(fresh, button(view.host, "History"));
+  const view = await mount(fresh); await showHistory(fresh, view.host);
   await openCard(fresh, view.host, card.title);
   expect(view.host.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);
   expect(await responseCount(agent.responses)).toBe(0);

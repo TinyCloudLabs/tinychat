@@ -36,6 +36,11 @@ async function mount(snapshot: HomeFeedSnapshot, homeSite: boolean) {
   return host;
 }
 const empty: HomeFeedSnapshot = { entries: [], settings: { defaultSelector: "needs-action" } };
+async function openFilters(host: HTMLElement) {
+  const filter = [...host.querySelectorAll("button")].find((node) => node.textContent?.startsWith("Filter"));
+  expect(filter?.getAttribute("aria-expanded")).toBe("false");
+  await act(async () => filter!.click());
+}
 const controls = (host: HTMLElement) => ({
   selects: host.querySelectorAll("select").length,
   buttons: [...host.querySelectorAll("button")].map((node) => node.textContent?.trim()),
@@ -68,17 +73,30 @@ test("the empty Home offers Open Chat and the feed guide", async () => {
   expect(how?.getAttribute("href")).toBe(FEED_SKILL_URL);
 });
 
-test("the view controls return once the feed has a card", async () => {
+test("the view controls return once the feed has a card, with the filters behind one Filter control", async () => {
   const host = await mount({ ...empty, entries: [card()] }, true);
   expect(host.textContent).not.toContain("No cards yet");
   expect(host.querySelector('select[aria-label="Feed view"]')).not.toBeNull();
+  expect(controls(host)).toEqual({ selects: 1, buttons: expect.arrayContaining(["Agents", "Filter"]) });
+  expect(controls(host).buttons).not.toContain("History");
+  await openFilters(host);
+  expect(controls(host).selects).toBe(4);
   expect(controls(host).buttons).toContain("History");
 });
 
 test("a feed with only past cards keeps History reachable", async () => {
   const host = await mount({ ...empty, historicalEntries: [card()] }, true);
+  await openFilters(host);
   expect(controls(host).buttons).toContain("History");
   expect(host.textContent).not.toContain("No cards yet");
+});
+
+test("Filter says how many filters are on", async () => {
+  const host = await mount({ ...empty, entries: [card()] }, true);
+  await openFilters(host);
+  const history = [...host.querySelectorAll("button")].find((node) => node.textContent === "History")!;
+  await act(async () => history.click());
+  expect(controls(host).buttons).toContain("Filter · 1");
 });
 
 test("the plain build keeps its feed heading, controls and empty message", async () => {
