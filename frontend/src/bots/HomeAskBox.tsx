@@ -2,6 +2,7 @@
 // whose status call fails, gets nothing: Home looks as it does today.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
+import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
 import { useEffect, useMemo, useState } from "react";
 
@@ -28,10 +29,12 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   const client = useMemo(() => !tcw ? api : { ...api, listMainMessages: async (signal?: AbortSignal) => {
     const local = await api.listMainMessages(signal);
     if (!(await botHistoryEnabled())) return local;
+    await authorizeBotHistory(tcw);
+    await ensureBotHistoryGrant(tcw);
     const archived = await readBotHistory(tcw, signal);
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];
   } }, [api, tcw]);
-  const chat = useMainChat(client, tcw ? () => ensureBotHistoryGrant(tcw) : undefined);
+  const chat = useMainChat(client, tcw ? async () => { if (await botHistoryEnabled()) { await authorizeBotHistory(tcw); await ensureBotHistoryGrant(tcw); } } : undefined);
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {

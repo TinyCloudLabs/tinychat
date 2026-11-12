@@ -9,14 +9,14 @@ test("Main acknowledges the expiry notice only after opening it, with the deleti
   try {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: "en-US", timezoneId: "UTC" });
     await page.addInitScript(() => { (window as unknown as { nativeFetch: typeof fetch }).nativeFetch = window.fetch.bind(window); localStorage.setItem("xyz.tinycloud.tinychat:session", JSON.stringify({ token: "fixture", expiresAt: Date.now() + 3_600_000, address: "0x" + "22".repeat(20) })); });
-    const acknowledged = Promise.withResolvers<{ id: string; renderedAt: number; deleteAt: number }>();
+    const acknowledged = Promise.withResolvers<{ id: string; renderedAt: number }>();
     let calls = 0;
     await page.route("**/api/bots/history/notice/ack", async route => {
       if (route.request().method() === "OPTIONS") {
         await route.fulfill({ status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "POST", "access-control-allow-headers": "authorization,content-type,x-requested-with" } }); return;
       }
       calls++; acknowledged.resolve(route.request().postDataJSON());
-      await route.fulfill({ status: 204, headers: { "access-control-allow-origin": "*" } });
+      await route.fulfill({ status: 200, headers: { "access-control-allow-origin": "*", "content-type": "application/json" }, body: JSON.stringify({ notice: { ...route.request().postDataJSON(), expiresAt: Date.parse("2026-11-12T00:00:00Z"), firstAttemptAt: Date.now(), deliveredAt: Date.now(), deleteAt: Date.parse("2026-12-12T00:00:00Z") } }) });
     });
     await page.goto(server.url.origin + "/?screen=bots-history-expiry-pending");
     await page.waitForSelector("[data-bots-ask]");
@@ -32,7 +32,9 @@ test("Main acknowledges the expiry notice only after opening it, with the deleti
     await page.waitForSelector("[data-history-expiry-notice]");
     const ack = await acknowledged.promise;
     expect(ack.id).toBe("f".repeat(64));
-    expect(await page.locator("[data-history-expiry-notice]").textContent()).toContain(new Date(ack.deleteAt).toLocaleDateString("en-US", { timeZone: "UTC", dateStyle: "medium" }));
+    expect(Object.hasOwn(ack, "deleteAt")).toBe(false);
+    await page.waitForFunction(() => document.querySelector("[data-history-expiry-notice]")?.textContent?.includes("Dec 12, 2026"));
+    expect(await page.locator("[data-history-expiry-notice]").textContent()).toContain(new Date("2026-12-12T00:00:00Z").toLocaleDateString("en-US", { timeZone: "UTC", dateStyle: "medium" }));
     expect(await page.getByRole("button", { name: "Reconnect TinyCloud", exact: true }).isVisible()).toBe(true);
     expect(calls).toBeGreaterThan(0);
   } finally { await browser.close(); server.stop(true); }

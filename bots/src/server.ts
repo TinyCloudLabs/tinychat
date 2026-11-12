@@ -15,7 +15,7 @@ export interface BotApi {
   historyStage?(staged: StagedHistory): Promise<void>;
   historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
   historyNotice?(): Promise<unknown>;
-  historyNoticeAck?(id: string, renderedAt: number, deleteAt: number): Promise<void>;
+  historyNoticeAck?(id: string, receivedAt: number): Promise<void>;
   historyReceipt?(receipt: unknown): Promise<void>;
 }
 
@@ -96,8 +96,8 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
         if (req.method === "GET") return Response.json({ notice: await bot.historyNotice?.() ?? null });
         if (req.method === "POST") {
           const body = await req.json();
-          await bot.historyNoticeAck?.(body.id, body.renderedAt, body.deleteAt);
-          return new Response(null, { status: 204 });
+          await bot.historyNoticeAck?.(body.id, body.receivedAt);
+          return Response.json({ notice: await bot.historyNotice?.() ?? null });
         }
       } catch { return new Response(null, { status: 503 }); }
     }

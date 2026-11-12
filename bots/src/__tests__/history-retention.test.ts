@@ -23,7 +23,7 @@ function setup(delivered: boolean, renewed = false, beforeRemove?: () => void) {
   writeFileSync(layout.stateSnapshot, "notes");
   // A current last-use marker must not postpone the separately approved permission-expiry deadline.
   writeFileSync(layout.lastUsedFile, new Date().toISOString());
-  if (delivered) history.acknowledgeNotice(history.notice()!.id, expiry, expiry + 30 * day, expiry);
+  if (delivered) history.acknowledgeNotice(history.notice()!.id, expiry, expiry);
   if (renewed) history.permissionActive(Date.now() + day);
   const launcher: SandboxLauncher = { hasState: () => true, leftover: () => false, mountPoints: () => { beforeRemove?.(); return []; }, launch: async () => { throw new Error("not used"); } };
   const manager = new BotManager(launcher, roots, { idleMs: 1000, turnTimeoutMs: 1000, maxTurnBytes: 1000, history: options }, 1);

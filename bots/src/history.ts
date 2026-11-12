@@ -88,13 +88,13 @@ export class HistoryJournal {
     delete this.#state.notice; this.#save();
   }
   notice(): ExpiryNotice | undefined { return this.#state.notice ? { ...this.#state.notice } : undefined; }
-  acknowledgeNotice(id: string, renderedAt: number, deleteAt: number, now = Date.now()) {
+  // Acknowledgment is a client-reported render; only backend receive time controls deletion.
+  acknowledgeNotice(id: string, receivedAt: number, now = Date.now()) {
     const notice = this.#state.notice;
     if (!notice || notice.id !== id) throw new Error("notice_mismatch");
     if (notice.deliveredAt !== undefined) return;
-    if (!Number.isFinite(renderedAt) || renderedAt > now + 60_000 || renderedAt < now - 300_000 || renderedAt < notice.firstAttemptAt
-      || deleteAt !== noticeDeadline(notice, renderedAt)) throw new Error("notice_date_mismatch");
-    notice.deliveredAt = renderedAt; notice.deleteAt = deleteAt;
+    if (!Number.isFinite(receivedAt) || receivedAt > now || receivedAt < notice.firstAttemptAt) throw new Error("notice_date_mismatch");
+    notice.deliveredAt = receivedAt; notice.deleteAt = noticeDeadline(notice, receivedAt);
     this.#save();
   }
   expiryDue(now = Date.now()): boolean {

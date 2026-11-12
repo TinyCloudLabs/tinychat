@@ -1,4 +1,4 @@
-// Narrow an existing threads grant; never initiate an OpenKey flow for history.
+// Background-safe KV delegation renewal: narrow an existing threads grant without opening owner approval.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 import { serializePortableDelegation, toPortableDelegation } from "../lib/agentDelegation";

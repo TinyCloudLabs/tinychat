@@ -334,7 +334,7 @@ export class Bot {
   }
   historyStage(staged: StagedHistory) { return this.#historyOperation(journal => journal.stage(staged)); }
   historyNotice() { return this.#options.history ? this.#historyOperation(journal => journal.notice()) : Promise.resolve(undefined); }
-  historyNoticeAck(id: string, renderedAt: number, deleteAt: number) { return this.#historyOperation(journal => journal.acknowledgeNotice(id, renderedAt, deleteAt)); }
+  historyNoticeAck(id: string, receivedAt: number) { return this.#historyOperation(journal => journal.acknowledgeNotice(id, receivedAt)); }
   historyExpiryDue(now = Date.now()) { return this.#options.history ? this.#journal().expiryDue(now) : false; }
   historyPending() {
     return this.#options.history ? this.#historyOperation(journal => journal.pending()) : Promise.resolve(undefined);

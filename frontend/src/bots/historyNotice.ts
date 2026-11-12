@@ -20,7 +20,8 @@ export function historyNoticeDeadline(notice: HistoryNotice, renderedAt: number)
   const base = Math.max(notice.expiresAt, notice.firstAttemptAt) + 30 * 86_400_000;
   return renderedAt > base ? renderedAt + 30 * 86_400_000 : base;
 }
-export async function acknowledgeHistoryNotice(notice: HistoryNotice, renderedAt: number, deleteAt: number): Promise<void> {
-  const response = await request("POST", "/ack", { id: notice.id, renderedAt, deleteAt });
+export async function acknowledgeHistoryNotice(notice: HistoryNotice, renderedAt: number): Promise<HistoryNotice> {
+  const response = await request("POST", "/ack", { id: notice.id, renderedAt });
   if (!response.ok) throw new Error("history_notice_unavailable");
+  return (await response.json()).notice as HistoryNotice;
 }

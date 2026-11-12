@@ -18,10 +18,12 @@ export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, 
     } catch { res.status(503).json({ error: "history_notice_unavailable" }); }
   });
   router.post("/notice/ack", express.json({ limit: "4kb" }), async (req, res) => {
+    const receivedAt = Date.now();
+    if (Object.hasOwn(req.body ?? {}, "deleteAt")) { res.status(400).json({ error: "invalid_notice_ack" }); return; }
     try {
-      const response = await (config.fetchImpl ?? fetch)(`${config.serviceUrl}/v1/bots/main/history/notice`, { method: "POST", headers: { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": historyOwner(req.user!.address), "content-type": "application/json" }, body: JSON.stringify(req.body), signal: AbortSignal.timeout(10_000) });
+      const response = await (config.fetchImpl ?? fetch)(`${config.serviceUrl}/v1/bots/main/history/notice`, { method: "POST", headers: { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": historyOwner(req.user!.address), "content-type": "application/json" }, body: JSON.stringify({ id: req.body?.id, receivedAt }), signal: AbortSignal.timeout(10_000) });
       if (!response.ok) throw new Error();
-      res.status(204).end();
+      res.json(await response.json());
     } catch { res.status(503).json({ error: "history_notice_unavailable" }); }
   });
   router.get("/status", (_req, res) => res.json({ enabled: true, backendDid: history.node.did }));

@@ -1,5 +1,8 @@
 // Explicit loopback-only network exercise; no production accounts, services, model calls or keys.
 import express from "express";
+import { webSignInManifest } from "../../../frontend/src/lib/homeFeatures";
+import { WEB_APP_MANIFEST } from "../../../frontend/src/lib/webSignInPrefetch";
+import { botHistoryOwnerPermissions } from "../../../frontend/src/bots/historyAuthorization";
 import { once } from "node:events";
 import type { SandboxLauncher } from "../../../bots/src/bot";
 import { createBotsRouter } from "../routes/bots";
@@ -25,15 +28,23 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
   const backendKey = generatePrivateKey();
   const address = privateKeyToAccount(ownerKey).address;
   const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`;
-  const ownerConfig = { privateKey: ownerKey, host, prefix: "applications", autoCreateSpace: true, includeAccountRegistryPermissions: false,
-    manifest: { manifest_version: 1 as const, app_id: "xyz.tinycloud.tinychat", name: "History test", defaults: false as const,
-      permissions: [{ service: "tinycloud.kv", path: "xyz.tinycloud.tinychat/threads/", actions: ["get", "put", "list"] },
-        { service: "tinycloud.encryption", path: network, actions: ["network.create", "decrypt"] }] } };
+  const ownerConfig = { privateKey: ownerKey, host, prefix: "applications", autoCreateSpace: true, autoBootstrapAccount: false, includeAccountRegistryPermissions: false,
+    manifest: webSignInManifest(WEB_APP_MANIFEST, [], address) };
   const owner = new TinyCloudNode(ownerConfig);
   const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "bot-history-network-test", includeAccountRegistryPermissions: false });
   const root = mkdtempSync(join(tmpdir(), "history-network-"));
   try {
-    await owner.signIn(); await owner.hostOwnedSpace("applications"); await owner.createEncryptionNetwork();
+    await owner.signIn(); await owner.hostOwnedSpace("applications");
+    // The exact browser-composed, no-Connectors session starts without decrypt/create.
+    const ownerPermissions = botHistoryOwnerPermissions(address);
+    expect(owner.getVerifiedSessionCapabilities().some(entry => entry.service === "tinycloud.encryption")).toBe(false);
+    const approve = async (client: TinyCloudNode) => {
+      const grants = await client.grantRuntimePermissions(ownerPermissions, { expiry: 3_600_000,
+        signMessage: message => privateKeyToAccount(ownerKey).signMessage({ message }) });
+      expect(grants.length).toBeGreaterThan(0);
+      expect(client.getEffectiveRuntimePermissionEntries().filter(entry => entry.service === "tinycloud.encryption")).toEqual([{ service: "tinycloud.encryption", path: network, actions: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.create"] }]);
+      await client.ensureEncryptionNetwork();
+    };
     await backend.signIn(); await backend.hostOwnedSpace("bot-history-network-test");
     const writer = new BotHistory(backend, backendKey, host!);
     const permissions = [{ service: "tinycloud.kv", path: `${HISTORY_PREFIX}${historyBotId(address)}/`, actions: ["get", "put"] }];
@@ -49,6 +60,10 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     const journal = new HistoryJournal(layout, { host: host!, signerDid: backend.did, policy: "notice-then-expiry-30-days" });
     journal.begin(historyOwner(address), 1000); journal.append({ type: "user", text: "archive round trip" });
     const batch = journal.pending()!;
+    await expect(writer.archive(address, batch, async staged => { journal.stage(staged); })).rejects.toThrow("history_recipient_unavailable");
+    expect(journal.pending()?.challenge).toBe(batch.challenge);
+    expect(journal.notice()).toBeUndefined();
+    await approve(owner);
     const target = `${HISTORY_PREFIX}${historyBotId(address)}/${batch.generation}/${batch.seq}-${batch.challenge}`;
     const nativeFetch = globalThis.fetch.bind(globalThis);
     let networkReads = 0;
@@ -86,6 +101,8 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     await owner.signOut();
     const rotated = new TinyCloudNode(ownerConfig);
     await rotated.signIn();
+    expect(rotated.getVerifiedSessionCapabilities().some(entry => entry.service === "tinycloud.encryption")).toBe(false);
+    await approve(rotated);
     expect(rotated.session!.verificationMethod).not.toBe(oldSession);
     await grantFrom(rotated);
     const reopened = await rotated.encryption.decryptEnvelope(envelope, { proofs: [] });

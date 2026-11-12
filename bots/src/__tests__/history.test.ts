@@ -69,15 +69,15 @@ test("permission expiry never permits deletion before rendered notice; exact day
   journal.permissionExpired(expiry, owner, expiry);
   expect(journal.expiryDue(expiry + 90 * day)).toBe(false);
   const notice = journal.notice()!;
-  expect(() => journal.acknowledgeNotice(notice.id, expiry, expiry + 29 * day, expiry)).toThrow("notice_date_mismatch");
-  journal.acknowledgeNotice(notice.id, expiry, expiry + 30 * day, expiry);
+  expect(() => journal.acknowledgeNotice(notice.id, expiry + 60_000, expiry)).toThrow("notice_date_mismatch");
+  journal.acknowledgeNotice(notice.id, expiry, expiry);
   expect(journal.expiryDue(expiry + 30 * day - 1)).toBe(false);
   expect(journal.expiryDue(expiry + 30 * day)).toBe(true);
   expect(new HistoryJournal(layout, options).expiryDue(expiry + 30 * day)).toBe(true);
   const later = setup().journal;
   later.permissionExpired(expiry, owner, expiry);
   const delayed = expiry + 40 * day;
-  later.acknowledgeNotice(later.notice()!.id, delayed, delayed + 30 * day, delayed);
+  later.acknowledgeNotice(later.notice()!.id, delayed, delayed);
   expect(later.expiryDue(delayed + 30 * day - 1)).toBe(false);
   expect(later.expiryDue(delayed + 30 * day)).toBe(true);
 });
@@ -88,7 +88,7 @@ test("reconnect cancels expiry deletion and an old expiry report cannot undo ren
   const day = 86_400_000;
   journal.permissionExpired(expiry, owner, expiry);
   journal.append({ type: "user", text: "retry me" });
-  journal.acknowledgeNotice(journal.notice()!.id, expiry, expiry + 30 * day, expiry);
+  journal.acknowledgeNotice(journal.notice()!.id, expiry, expiry);
   journal.permissionActive(expiry + 60 * day, expiry + day);
   expect(journal.notice()).toBeUndefined();
   expect(journal.expiryDue(expiry + 90 * day)).toBe(false);

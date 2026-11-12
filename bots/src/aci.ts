@@ -18,15 +18,21 @@ export class BotAci {
       .then(aci => { if (aci.identity.transcript.verdict.verified !== true) throw new Error("aci_identity_unverified"); return aci; })
       .catch(error => { this.#connection = undefined; throw error; });
     const aci = await this.#connection;
-    const response = await aci.fetch(url, init);
-    if (!response.ok) return response;
+    const upstream = new AbortController();
+    const abort = () => upstream.abort(init.signal?.reason);
+    if (init.signal?.aborted) abort();
+    else init.signal?.addEventListener("abort", abort, { once: true });
+    let response: Response;
+    try { response = await aci.fetch(url, { ...init, signal: upstream.signal }); }
+    catch (error) { init.signal?.removeEventListener("abort", abort); throw error; }
+    if (!response.ok) { init.signal?.removeEventListener("abort", abort); return response; }
     const receiptId = response.headers.get("x-receipt-id");
     const record = (verified: boolean) => {
       const receipts = this.#receipts.get(botId) ?? [];
       if (receipts.length >= 64) throw new Error("receipt_capacity");
       receipts.push({ receiptId: receiptId ?? null, verified }); this.#receipts.set(botId, receipts);
     };
-    if (!receiptId || !response.body) { record(false); await response.body?.cancel(); throw new Error("model_receipt_missing"); }
+    if (!receiptId || !response.body) { upstream.abort(); init.signal?.removeEventListener("abort", abort); record(false); await response.body?.cancel(); throw new Error("model_receipt_missing"); }
     // Buffer before handing a complete model response to OMP. This also prevents unverified tool execution.
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
@@ -57,14 +63,14 @@ export class BotAci {
         try { const parsed = JSON.parse(data); return !Object.hasOwn(parsed, "receipt_verification"); } catch { return true; }
       }).join("\n\n");
       return body;
-    } catch (error) { record(false); await reader.cancel().catch(() => {}); throw error; }
-    finally { reader.releaseLock(); }
+    } catch (error) { upstream.abort(error); record(false); await reader.cancel().catch(() => {}); throw error; }
+    finally { reader.releaseLock(); init.signal?.removeEventListener("abort", abort); }
     };
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         void verified().then(text => { controller.enqueue(new TextEncoder().encode(text)); controller.close(); }, error => controller.error(error));
       },
-      cancel(reason) { return reader.cancel(reason); },
+      cancel(reason) { upstream.abort(reason); return reader.cancel(reason); },
     });
     return new Response(stream, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
   }
