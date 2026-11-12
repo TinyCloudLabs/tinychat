@@ -1,6 +1,8 @@
 // The feed lab's feed (FeedLab.tsx): seven made-up cards and a simulated agent, held in
 // memory, in the shapes the real source returns (feedStore.ts, loadTypedFeed.ts).
-// Nothing is read from or written to any space, server or browser storage.
+// Nothing is read from or written to any space, server or browser storage. Each
+// made-up agent says what it runs on (payload.agent), except Backup agent, which
+// says nothing, so a card without a platform can be seen too.
 import type { FeedCard, FeedHandling, FeedResponse, FeedResponseHandling, FeedResponsePayload, FeedSelector, FeedSource, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { compactStamp, emptySitrepOwnerData, mergeSitrepStates, ownerThreadResponseKey, parseSitrepCardPayload, safeSitrepActionSummary, validateSitrepAction, type AskOption, type SamState, type SitrepHeldNote, type ThreadMessage } from "@tinyboilerplate/core/feed/sitrep";
 import { ownerCardKey } from "./feedIdentity";
@@ -30,32 +32,39 @@ function labCards(now: number): LabCard[] {
   const at = (minutes: number) => new Date(now + minutes * 60_000).toISOString();
   const trip = agent("trip", "Trip agent");
   const home = agent("home", "Home agent");
+  const backup = agent("backup", "Backup agent");
   const studio = agent("studio", "Studio agent");
   // One connection that posts for a crew: the card names the crew member it is from.
   const crew = agent("crew", "Studio crew");
+  // What each agent reports about itself, as a card's payload.agent.
+  type About = { agent: { kind: string; model?: string; runsOn?: string } };
+  const codex: About = { agent: { kind: "codex", model: "GPT-5.2-Codex", runsOn: "Your laptop" } };
+  const grok: About = { agent: { kind: "grok", model: "Grok 5", runsOn: "Grok Bot, in xAI's cloud" } };
+  const claude: About = { agent: { kind: "claude", model: "Claude Opus 5.5", runsOn: "The studio's Mac mini" } };
+  const muse: About = { agent: { kind: "muse", runsOn: "WhatsApp" } };
   const kiln = { recipientKey: "lab-kiln", legacyName: "Kiln agent", runtimeTarget: { agentId: "lab-kiln-agent" } };
-  const plain = (cardId: string, urgency: number, minutes: number, card: Pick<FeedCard, "kind" | "needsResponse" | "title" | "body" | "choices">): FeedCard => ({ cardId, revision: 1, issuanceId: "lab-1", urgency, createdAt: at(minutes), ...card });
+  const plain = (cardId: string, urgency: number, minutes: number, card: Pick<FeedCard, "kind" | "needsResponse" | "title" | "body" | "choices" | "payload">): FeedCard => ({ cardId, revision: 1, issuanceId: "lab-1", urgency, createdAt: at(minutes), ...card });
   // A typed card as its agent publishes it: the record in payload.sitrep, its title, body and options on the card.
-  const typed = (cardId: string, urgency: number, minutes: number, record: { kind: string; title: string; body: string; options?: AskOption[] } & Record<string, unknown>): FeedCard => {
+  const typed = (cardId: string, urgency: number, minutes: number, record: { kind: string; title: string; body: string; options?: AskOption[] } & Record<string, unknown>, about: About = claude): FeedCard => {
     const createdAt = at(minutes);
     return {
       cardId, revision: 1, issuanceId: "lab-1", kind: record.kind, needsResponse: true, title: record.title, body: record.body, urgency, createdAt,
       ...(record.options ? { choices: record.options.map(({ id, label }) => ({ id, label })) } : {}),
-      payload: { sitrep: { version: 1, record: { from: studio.label, urgency, importance: 3, links: [], createdAt, updatedAt: createdAt, ...record } } },
+      payload: { ...about, sitrep: { version: 1, record: { from: studio.label, urgency, importance: 3, links: [], createdAt, updatedAt: createdAt, ...record } } },
     };
   };
   return [
     { source: trip, card: plain("lab-train", 5, -4, {
       kind: "question", needsResponse: true, title: "Which train should I hold for Friday?",
       body: "Two trains reach the workshop before it starts at 14:00. Holding a seat is free until Thursday.",
-      choices: [{ id: "direct", label: "08:15 direct" }, { id: "change", label: "09:40, one change" }],
+      choices: [{ id: "direct", label: "08:15 direct" }, { id: "change", label: "09:40, one change" }], payload: codex,
     }) },
     { source: home, card: plain("lab-filter", 4, -35, {
       kind: "question", needsResponse: true, title: "The water filter order renews tomorrow. Keep it?",
       body: "It has renewed every two months since spring. The last filter is still unopened.",
-      choices: [{ id: "renew", label: "Renew" }, { id: "skip", label: "Skip this one" }, { id: "stop", label: "Stop it" }],
+      choices: [{ id: "renew", label: "Renew" }, { id: "skip", label: "Skip this one" }, { id: "stop", label: "Stop it" }], payload: grok,
     }) },
-    { source: home, card: plain("lab-backup", 1, -90, {
+    { source: backup, card: plain("lab-backup", 1, -90, {
       kind: "update", needsResponse: false, title: "Weekly backup finished",
       body: "312 new photos and 18 documents are stored. Nothing needs you.",
     }) },
@@ -114,7 +123,7 @@ function labCards(now: number): LabCard[] {
         ifNoAnswer: "The mugs get celadon on Tuesday.",
         known: [], related: [],
       },
-    }) },
+    }, muse) },
   ];
 }
 

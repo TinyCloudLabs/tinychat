@@ -158,7 +158,8 @@ test("in the lab a reply to the linked agent counts down, is received, and is an
   const pass = (ms: number) => act(async () => { jest.advanceTimersByTime(ms); });
   const glaze = [...host.querySelectorAll<HTMLButtonElement>('[aria-label="Cards in this view"] button')].find((node) => node.textContent?.includes("Which glaze"));
   await act(async () => glaze!.click());
-  expect(host.querySelector('[aria-label="Focused card"] article')?.textContent).toContain("Kiln agent · via Studio crew");
+  expect(host.querySelector('[aria-label="Focused card"] [data-agent-line]')?.textContent).toBe("Kiln agentMuse");
+  expect(host.querySelector('[aria-label="Focused card"] article')?.textContent).toContain("via Studio crew");
   await act(async () => [...host.querySelectorAll<HTMLButtonElement>("fieldset button")].find((node) => node.textContent?.startsWith("Celadon"))!.click());
   expect(host.textContent).toContain(`Sending to Kiln agent in ${ANSWER_UNDO_SECONDS}s`);
   await pass(ANSWER_UNDO_SECONDS * 1_000 + LAB_SAVE_MS);
@@ -183,6 +184,84 @@ test("in the lab a reply to the linked agent counts down, is received, and is an
   expect(thread).toContain("Use the darker celadon please.");
   expect(thread).toContain(labReplyText("Use the darker celadon please."));
   expect(calls).toEqual([]);
+});
+
+test("each made-up agent says what it runs on, except Backup agent, which says nothing", async () => {
+  const { entries } = await createFeedLabSource().load();
+  const platforms = new Map(entries.map((entry) => [parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record.from ?? entry.source.label, (entry.state.card.payload?.agent as { kind?: string } | undefined)?.kind]));
+  expect(Object.fromEntries(platforms)).toEqual({ "Trip agent": "codex", "Home agent": "grok", "Backup agent": undefined, "Studio agent": "claude", "Kiln agent": "muse" });
+});
+
+test("in the lab the open card is one surface: the agent line, question, options, reply and small actions, then the list under headings", async () => {
+  const { host } = await mount(FEED_LAB_PATH);
+  const card = host.querySelector<HTMLElement>('[aria-label="Focused card"] article')!;
+  // The agent line: its mark, its name and its platform, Codex, which has no mark file, so its name alone.
+  expect(card.querySelector("[data-agent-mark]")?.textContent).toBe("T");
+  expect(card.querySelector("[data-agent-line]")?.textContent).toBe("Trip agentCodex");
+  expect(card.querySelector("[data-agent-line] [data-platform-logo]")).toBeNull();
+  for (const part of ["h2", "fieldset", 'textarea[name="answer"]', '[aria-label="Card actions"]']) expect(card.querySelector(part)).not.toBeNull();
+  const actions = card.querySelector('[aria-label="Card actions"]')!;
+  expect([...actions.querySelectorAll("button, summary")].map((node) => node.textContent)).toEqual(["Snooze for 1 hour", "Next card", "Details"]);
+  // Everything else in the view is a list under plain headings with a count, not more cards.
+  const list = host.querySelector('[aria-label="Cards in this view"]')!;
+  expect([...list.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual(["Also needs you · 5"]);
+  expect(list.textContent).not.toContain("Which train");
+  const glaze = [...list.querySelectorAll("button")].find((row) => row.textContent?.includes("Which glaze"))!;
+  expect(glaze.querySelector("[data-agent-mark]")?.textContent).toBe("K");
+  expect(glaze.textContent).toBe("KWhich glaze should the open-day mugs get?Kiln agent · Muse");
+  const letter = [...list.querySelectorAll("button")].find((row) => row.textContent?.includes("spring newsletter"))!;
+  expect(letter.querySelector('[data-platform-logo="claude.svg"][role="img"]')?.getAttribute("aria-label")).toBe("Claude");
+  // The same agent has the same mark in the list and on its card.
+  const colour = (node: Element | null | undefined) => node?.className.match(/\bbg-\S+/)?.[0];
+  const mark = colour(letter.querySelector("[data-agent-mark]"));
+  expect(mark).toBeDefined();
+  await act(async () => letter.click());
+  expect(colour(host.querySelector('[aria-label="Focused card"] [data-agent-mark]'))).toBe(mark);
+  const option = [...host.querySelectorAll<HTMLButtonElement>("fieldset button")].find((node) => node.textContent?.startsWith("Short version"))!;
+  expect(option.textContent).toBe("Short versionSuggestedThree paragraphs and the dates. Ready to send today.");
+  expect([...host.querySelectorAll<HTMLButtonElement>("fieldset button")].filter((node) => node.textContent?.includes("Suggested"))).toHaveLength(1);
+  // Private priority waits under Details.
+  const details = host.querySelector<HTMLDetailsElement>('[aria-label="Focused card"] [aria-label="Card details"]')!;
+  expect(details.open).toBe(false);
+  expect(details.textContent).toContain("Mark private priority");
+  expect([...host.querySelectorAll('[aria-label="Focused card"] [aria-label="Card actions"] > button')].map((node) => node.textContent)).toEqual(["Ask me later", "Next card"]);
+});
+
+test("in the lab an update sits under its own heading, and a card whose agent named no platform has no chip", async () => {
+  const { host } = await mount(FEED_LAB_PATH);
+  const view = host.querySelector<HTMLSelectElement>('[aria-label="Feed view"]')!;
+  await act(async () => { view.value = "both"; view.dispatchEvent(new Event("change", { bubbles: true })); });
+  const list = host.querySelector('[aria-label="Cards in this view"]')!;
+  expect([...list.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual(["Also needs you · 5", "Updates · 1"]);
+  const backup = [...list.querySelectorAll('section[aria-label="Updates"] button')].find((row) => row.textContent?.includes("Weekly backup"))!;
+  expect(backup.textContent).toBe("BWeekly backup finishedBackup agent · Information");
+  await act(async () => (backup as HTMLButtonElement).click());
+  const card = host.querySelector('[aria-label="Focused card"] article')!;
+  expect(card.querySelector("[data-agent-line]")?.textContent).toBe("Backup agent");
+  expect(card.querySelector("[data-platform]")).toBeNull();
+  await act(async () => button(host, "Backup agent").click());
+  expect(card.querySelector('[aria-label="About Backup agent"]')?.textContent).toContain("Backup agent has not said what it is or where it runs.");
+});
+
+test("in the lab tapping an agent's name shows what it is, and the same facts head its page and its row in the Agents list", async () => {
+  const { host } = await mount(FEED_LAB_PATH);
+  const name = button(host, "Trip agent");
+  expect(name.getAttribute("aria-expanded")).toBe("false");
+  await act(async () => name.click());
+  const about = host.querySelector('[aria-label="Focused card"] [aria-label="About Trip agent"]')!;
+  const rows = [...about.querySelectorAll("dl > div")].map((row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")?.textContent]);
+  expect(rows).toEqual([["What it is", "Codex"], ["Model", "GPT-5.2-Codex"], ["Runs on", "Your laptop"], ["It can", "Post cards to your Home and read your answers to them"]]);
+  expect(about.textContent).not.toContain("Disconnect");
+  await act(async () => button(host, "Open conversation").click());
+  const page = host.querySelector('[aria-label="Conversation with Trip agent"]')!;
+  expect(page.querySelector("[data-agent-mark]")?.textContent).toBe("T");
+  expect(page.querySelector('[aria-label="About Trip agent"]')?.textContent).toContain("GPT-5.2-Codex");
+  await act(async () => button(host, "Agents").click());
+  const agents = [...host.querySelectorAll('[aria-label="Your agents"] li')];
+  const studio = agents.find((row) => row.textContent?.includes("Studio agent"))!;
+  expect(studio.querySelector('[data-platform-logo="claude.svg"]')).not.toBeNull();
+  const backup = agents.find((row) => row.textContent?.includes("Backup agent"));
+  expect(backup?.querySelector("[data-platform]") ?? null).toBeNull();
 });
 
 test("in a lab build any other unknown address still goes home", async () => {
