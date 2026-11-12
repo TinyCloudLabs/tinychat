@@ -99,9 +99,10 @@ void installEd25519Polyfill().catch((error: unknown) => {
             {/* An unknown address goes home. A lab build (lib/feedLab.ts) first tries the feed lab's own route. */}
             <Route path="*" element={FeedLabRoutes ? <Suspense fallback={null}><FeedLabRoutes /></Suspense> : <Navigate to="/" replace />} />
           </Routes>
+          {/* Inside the router: the notice's counts link to the Library and the Recording tab. */}
+          {move.kind === "hold" && <OriginMoveHold />}
         </BrowserRouter>
         <PwaPrompts />
-        {move.kind === "hold" && <OriginMoveHold />}
       </RootErrorBoundary>
     </StrictMode>,
   );

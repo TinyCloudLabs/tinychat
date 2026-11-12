@@ -1,7 +1,7 @@
 // Tiny bots, slice 1 (TC-2808): Home for an account with tiny bots on. The real Home feed (empty, as a
 // new test account sees it) under the real navigation, with the ask box on top; then Main's chat over
 // it, mid-reply. Synthetic content; nothing is sent anywhere.
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { AskBox } from "@/bots/AskBox";
 import type { BotsApi } from "@/bots/botsApi";
@@ -68,9 +68,30 @@ function Home({ ask }: { ask: ReactNode }) {
   );
 }
 
+function PendingHistoryNotice() {
+  const [open, setOpen] = useState(false);
+  const expiry = Date.UTC(2026, 10, 12);
+  return <Home ask={<>
+    <AskBox working={false} onSend={() => {}} onOpenMain={() => setOpen(true)} />
+    <MainChat open={open} onOpenChange={setOpen} state={{ history: "loaded", lines: [], turn: null }}
+      onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}} onReconnect={() => {}}
+      notice={{ id: "f".repeat(64), expiresAt: expiry, firstAttemptAt: expiry }} />
+  </>} />;
+}
+
 const BASE = { group: "bots", layout: "pane", platform: "web", path: "/chat/feed", displayTitle: true } as const;
 
 export const botsScreens: HarnessScreen[] = [
+  { ...BASE, id: "bots-history-expiry-pending", readyWhen: "[data-bots-ask]", render: () => <PendingHistoryNotice /> },
+  {
+    ...BASE, id: "bots-history-expiry", readyWhen: "[data-history-expiry-notice]",
+    render: () => <Home ask={<>
+      <AskBox working={false} onSend={() => {}} onOpenMain={() => {}} />
+      <MainChat open onOpenChange={() => {}} state={{ history: "loaded", lines: [], turn: null }}
+        onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}} onReconnect={() => {}}
+        notice={{ id: "fixture", expiresAt: Date.UTC(2026, 10, 12), firstAttemptAt: Date.UTC(2026, 10, 12), deliveredAt: Date.UTC(2026, 10, 12), deleteAt: Date.UTC(2026, 11, 12) }} />
+    </>} />,
+  },
   { ...BASE, id: "bots-home", readyWhen: "[data-bots-ask]", render: () => <Home ask={<HomeAskBox api={ENABLED} />} /> },
   {
     ...BASE,

@@ -2,9 +2,12 @@
 // session has settled and stayed idle. Everything the sandbox says is treated as untrusted input; only checked
 // fields are turned into events, which the server encodes itself.
 
+import { readdirSync } from "node:fs";
+import { HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
-import { botIdFor } from "./owner";
+import { BOT_ID, botIdFor } from "./owner";
+import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type Frame, RpcError } from "./rpc";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "invalid";
@@ -50,9 +53,12 @@ export interface Sandbox {
 export interface SandboxLauncher {
   /** Whether the bot has ever run, i.e. has a session to list. */
   hasState(layout: BotLayout): boolean;
-  /** Whether the bot's last sandbox ended without a confirmed teardown, so it may still be running. */
-  leftover(layout: BotLayout): boolean;
+  /** Unconfirmed sandbox or copier teardown; sandboxOnly counts just sandboxes for running slots. */
+  leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
   launch(layout: BotLayout): Promise<Sandbox>;
+  /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
+  mountPoints?(): string[];
+  provenance?(layout: BotLayout): Promise<unknown>;
 }
 
 /** Repeated while waiting, so idle proxies keep the stream open through slow starts and long turns. */
@@ -65,6 +71,7 @@ export interface BotOptions {
   turnTimeoutMs: number;
   /** Assistant text bytes per turn; past it the agent's turn is aborted and the stream ends with an error. */
   maxTurnBytes: number;
+  history?: HistoryOptions;
 }
 
 /** How many sandboxes may run at once (BOTS_MAX_RUNNING), shared by every bot. */
@@ -165,9 +172,11 @@ export class Bot {
   readonly #launcher: SandboxLauncher;
   readonly #options: BotOptions;
   readonly #running: RunningLimit;
+  #history: HistoryJournal | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<void> | undefined;
+  #deleting: Promise<void> | undefined;
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -183,11 +192,28 @@ export class Bot {
   }
 
   /** Runs one message through Main. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink): Promise<void> {
+  async send(text: string, sink: TurnSink, owner?: string): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
     }
+    if (this.#options.history) {
+      this.#busy = true;
+      await this.#deleting;
+      try {
+        this.#history ??= new HistoryJournal(this.layout, this.#options.history);
+        this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
+        this.#history.append({ type: "user", text, at: new Date().toISOString() });
+        this.#history.startDraft();
+      } catch { this.#busy = false; sink.error("bot_unavailable"); return; }
+    }
+    const output = sink;
+    sink = {
+      status: state => output.status(state),
+      delta: text => { this.#history?.delta(text); output.delta(text); },
+      done: messageId => { this.#history?.finishDraft({ type: "done", messageId }); output.done(messageId); },
+      error: code => { this.#history?.finishDraft({ type: "error", code }); output.error(code); },
+    };
     this.#busy = true;
     this.#clearIdle();
     let state: "starting" | "working" = this.#sandbox ? "working" : "starting";
@@ -197,6 +223,7 @@ export class Bot {
       let sandbox: Sandbox;
       try {
         sandbox = await this.#ensure();
+        this.#markUsed();
         await sandbox.refreshEgress();
       } catch (error) {
         log("start_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
@@ -210,6 +237,10 @@ export class Bot {
       await this.#turn(sandbox, text, sink);
     } finally {
       clearInterval(heartbeat);
+      if (this.#history) {
+        try { this.#history.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
+        catch { this.#history.append({ type: "provenance", verified: false }); }
+      }
       this.#busy = false;
       this.#armIdle();
     }
@@ -217,22 +248,110 @@ export class Bot {
 
   /** The newest messages of Main's session; empty for a bot that has never run (without starting one). */
   async list(): Promise<ListedMessage[]> {
-    if (!this.#sandbox && !this.#launcher.hasState(this.layout)) return [];
+    if (this.#options.history) {
+      await this.#deleting;
+      this.#history ??= new HistoryJournal(this.layout, this.#options.history);
+      if (!this.#history.legacyPending) {
+        const messages = this.#history.messages();
+        if (messages.length) this.#markUsed();
+        return messages;
+      }
+    }
     this.#listing++;
     this.#clearIdle();
     try {
-      return listedMessages(await readMessages(await this.#ensure()));
+      // A bot whose working state is being deleted lists nothing once that is done.
+      await this.#deleting;
+      if (!this.#sandbox && !this.#launcher.hasState(this.layout)) return [];
+      const sandbox = await this.#ensure();
+      this.#markUsed();
+      return listedMessages(await readMessages(sandbox));
     } finally {
       this.#listing--;
       this.#armIdle();
     }
   }
 
-  async stop(): Promise<void> {
+  /** A message or history request is in flight, including one still starting the sandbox. */
+  get inUse(): boolean {
+    return this.#busy || this.#listing > 0;
+  }
+
+  /** Stops the sandbox if one is running or starting. False if its teardown failed (logged as stop_failed). */
+  async stop(): Promise<boolean> {
     this.#clearIdle();
     const sandbox = this.#sandbox ?? (await this.#starting?.catch(() => undefined));
-    if (sandbox) await this.#stop(sandbox);
+    const stopped = sandbox ? await this.#stop(sandbox) : true;
     await this.#stopping;
+    return stopped;
+  }
+
+  /**
+   * The one way a bot's working state is deleted: stops its sandbox, then removes its data directory (state snapshot
+   * and last-use marker) and its run directory. A failed teardown, a path that is not the bot's own directory, a
+   * mount at or under either directory keeps everything and logs
+   * state_delete_skipped instead. A request that arrives meanwhile waits for this, then starts a fresh bot.
+   */
+  deleteWorkingState(reason: string, closing = () => false): Promise<void> {
+    this.#deleting ??= (async () => {
+      let cause: DeleteSkip | undefined;
+      try {
+        const stopped = await this.stop();
+        if (!stopped || this.#launcher.leftover(this.layout)) cause = "teardown_failed";
+        else {
+          const covered = await this.historyCovered();
+          // Signature checks await: closing or a newly appended message can change eligibility meanwhile.
+          cause = closing() ? "closing" : this.#options.history && (!covered || !this.#history?.covered) && !this.#history?.expiryDue() ? "archive_pending"
+            : await removeWorkingState(this.layout, this.#launcher);
+        }
+      } catch {
+        cause = "error";
+      }
+      if (cause) log("state_delete_skipped", this.layout.botId, { reason, cause });
+      else { this.#history = undefined; log("state_deleted", this.layout.botId, { reason }); }
+    })().finally(() => {
+      this.#deleting = undefined;
+    });
+    return this.#deleting;
+  }
+
+  #journal() {
+    if (!this.#options.history) throw new Error("history_disabled");
+    return this.#history ??= new HistoryJournal(this.layout, this.#options.history);
+  }
+  async #historyOperation<T>(run: (journal: HistoryJournal) => T | Promise<T>): Promise<T> {
+    this.#listing++;
+    try {
+      await this.#deleting;
+      return await run(this.#journal());
+    } finally { this.#listing--; }
+  }
+  historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
+    return this.#historyOperation(journal => {
+      if (expiresAt === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!); }
+      else journal.permissionExpired(expiresAt, owner);
+    });
+  }
+  historyStage(staged: StagedHistory) { return this.#historyOperation(journal => journal.stage(staged)); }
+  historyNotice() { return this.#options.history ? this.#historyOperation(journal => journal.notice()) : Promise.resolve(undefined); }
+  historyNoticeAck(id: string, receivedAt: number) { return this.#historyOperation(journal => journal.acknowledgeNotice(id, receivedAt)); }
+  historyExpiryDue(now = Date.now()) { return this.#options.history ? this.#journal().expiryDue(now) : false; }
+  historyPending() {
+    return this.#options.history ? this.#historyOperation(journal => journal.pending()) : Promise.resolve(undefined);
+  }
+  historyReceipt(receipt: unknown) { return this.#historyOperation(journal => journal.accept(receipt)); }
+  async historyCovered(): Promise<boolean> {
+    if (!this.#options.history) return true;
+    this.#history ??= new HistoryJournal(this.layout, this.#options.history);
+    return this.#history.verifyCoverage();
+  }
+
+  #markUsed(): void {
+    try {
+      markUsed(this.layout);
+    } catch (error) {
+      log("mark_used_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
+    }
   }
 
   #turn(sandbox: Sandbox, text: string, sink: TurnSink): Promise<void> {
@@ -304,7 +423,9 @@ export class Bot {
   #ensure(): Promise<Sandbox> {
     if (this.#sandbox) return Promise.resolve(this.#sandbox);
     this.#starting ??= (async () => {
-      // Never launch over a sandbox still being torn down: both would use the same state tmpfs and snapshot.
+      // Never launch over a sandbox still being torn down (both would mount the same state filesystem), nor
+      // before a deletion of the bot's working state has finished.
+      await this.#deleting;
       await this.#stopping;
       // At the cap a start is refused, never squeezed into memory the running bots may need. A leftover's place
       // passes to the next start, which first ends the leftover.
@@ -347,21 +468,26 @@ export class Bot {
 
   /** Gives the bot's place back, unless a leftover of it may still be running. */
   #releasePlace(): void {
-    if (!this.#hasPlace || this.#launcher.leftover(this.layout)) return;
+    if (!this.#hasPlace || this.#launcher.leftover(this.layout, true)) return;
     this.#hasPlace = false;
     this.#running.release();
   }
 
-  async #stop(sandbox: Sandbox): Promise<void> {
+  async #stop(sandbox: Sandbox): Promise<boolean> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
+    let stopped = true;
     this.#stopping = sandbox
       .stop()
-      .catch(error => log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" }))
+      .catch(error => {
+        stopped = false;
+        log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
+      })
       .finally(() => {
         this.#stopping = undefined;
       });
     await this.#stopping;
     log("stopped", this.layout.botId);
+    return stopped;
   }
 
   #clearIdle(): void {
@@ -384,6 +510,8 @@ export class BotManager {
   readonly #launcher: SandboxLauncher;
   readonly #roots: LayoutRoots;
   readonly #options: BotOptions;
+  readonly #deletions = new Set<Promise<void>>();
+  #closing = false;
   readonly #running: RunningLimit;
 
   constructor(launcher: SandboxLauncher, roots: LayoutRoots, options: BotOptions, maxRunning: number) {
@@ -394,7 +522,49 @@ export class BotManager {
   }
 
   forOwner(ownerDid: string): Bot {
-    const botId = botIdFor(ownerDid);
+    return this.#bot(botIdFor(ownerDid));
+  }
+
+  /** Deletes one bot's working state; see Bot.deleteWorkingState. stopAll waits for it to finish. */
+  deleteWorkingState(botId: string, reason: string): Promise<void> {
+    if (this.#closing) return Promise.resolve();
+    const deletion = this.#bot(botId).deleteWorkingState(reason, () => this.#closing);
+    this.#deletions.add(deletion);
+    void deletion.finally(() => this.#deletions.delete(deletion));
+    return deletion;
+  }
+
+  /**
+   * Deletes the working state of every bot directory in the data root last used more than `retentionMs` before
+   * `now` and with no request in flight. Entries that are not directories named by a bot id, symlinks included,
+   * are left alone; so is everything once stopAll has begun. Failures are logged per bot.
+   */
+  async sweepUnused(retentionMs: number, now = Date.now()): Promise<void> {
+    let botIds: string[];
+    try {
+      // Entry types come from lstat: a symlink is never a directory here.
+      botIds = readdirSync(this.#roots.dataRoot, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() && BOT_ID.test(entry.name))
+        .map(entry => entry.name);
+    } catch (error) {
+      console.log(JSON.stringify({ bots: "sweep_failed", error: error instanceof Error ? error.message.slice(0, 300) : "unknown" }));
+      return;
+    }
+    for (const botId of botIds) {
+      if (this.#closing) return;
+      try {
+        const bot = this.#bot(botId);
+        if (bot.historyExpiryDue(now) && !bot.inUse) { await this.deleteWorkingState(botId, "permission_expired"); continue; }
+        const used = lastUsed(botLayout(botId, this.#roots));
+        if (used === undefined || now - used <= retentionMs || this.#bots.get(botId)?.inUse) continue;
+        await this.deleteWorkingState(botId, "unused");
+      } catch (error) {
+        log("sweep_failed", botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
+      }
+    }
+  }
+
+  #bot(botId: string): Bot {
     let bot = this.#bots.get(botId);
     if (!bot) {
       bot = new Bot(botLayout(botId, this.#roots), this.#launcher, this.#options, this.#running);
@@ -403,7 +573,10 @@ export class BotManager {
     return bot;
   }
 
+  /** Lets deletions in progress finish (and starts no more), then stops every sandbox. */
   async stopAll(): Promise<void> {
+    this.#closing = true;
+    await Promise.all(this.#deletions);
     await Promise.all([...this.#bots.values()].map(bot => bot.stop()));
   }
 }

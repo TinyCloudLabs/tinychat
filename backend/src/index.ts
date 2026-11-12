@@ -1,5 +1,7 @@
 import "./types/index.js";
 
+import { mountContentContinuityRoute } from "./routes/content-continuity.js";
+
 import { existsSync, readFileSync } from "fs";
 import { createServer as createHttpsServer } from "https";
 import { dirname, resolve } from "path";
@@ -22,6 +24,8 @@ import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { mcpChatFromEnv } from "./mcp-meetings/config.js";
+import { BotHistory } from "./bot-history.js";
+import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter } from "./routes/bots.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
@@ -99,6 +103,8 @@ import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
 import {
   ContentStore,
+  currentContentMaster,
+  assertNoContentKey,
   KvContentBlobStore,
   validateContentCustodyConfig,
 } from "./services/content-store.js";
@@ -122,7 +128,7 @@ import {
 } from "./services/google-oauth.js";
 import { ConnectorFetchWorker } from "./services/fetch-worker.js";
 import { FirefliesMeetingFetcher } from "./services/fireflies-fetch.js";
-import { backendIngestEnabled, IngestModeService } from "./services/ingest-mode.js";
+import { backendIngestEnabled as ingestFlagEnabled, IngestModeService } from "./services/ingest-mode.js";
 import {
   IngestInstanceGuard,
   IngestInstanceSupervisor,
@@ -288,6 +294,8 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
+  const hasContentMaster = Boolean(process.env.CONNECTOR_CONTENT_MASTER?.trim());
+  const backendIngestEnabled = () => ingestFlagEnabled() && hasContentMaster;
   const localValidation = localValidationFromEnv(process.env);
   const requestIdFirstPartyOrigins = parseRequestIdFirstPartyOrigins(process.env.REQUEST_ID_FIRST_PARTY_ORIGINS);
   // CORS, SIWE domains and Google OAuth returns: FRONTEND_URL plus FRONTEND_ORIGINS (default: both
@@ -478,6 +486,11 @@ async function main() {
     host: TINYCLOUD_HOST,
     localValidation,
   });
+
+  if (!hasContentMaster) {
+    const noKeyBlobs = new KvContentBlobStore(node);
+    await assertNoContentKey(noKeyBlobs);
+  }
 
   // §E.6/E.7 — construct and start the ledger flusher + rehydrator when configured.
   let ledgerFlusher: LedgerFlusher | undefined;
@@ -732,6 +745,9 @@ async function main() {
   // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
   logGlobalBucketRoutes(globalRoutes);
 
+  if (!hasContentMaster) {
+    mountContentContinuityRoute(app, process.env, "", did, async () => ({ ok: false, id: null }));
+  }
   app.get("/health", (_req, res) => {
     // TEMPORARY: aggregate route templates and counts only, our one view of the global bucket
     // until the tinychat log shipper (TC-959) is live. Remove this field then.
@@ -844,9 +860,16 @@ async function main() {
       // disconnect (or a user purge) that writes the watermark also stops a replayed delivery
       // from re-creating rows the user tore down. Same `control` the drain and `POST …/purged`
       // use: one ledger, one rule, two consumers.
-      const contentStore = new ContentStore(
-        new KvContentBlobStore(node, connectorWebhooks.backendStorageLane),
-        { purgeLedger: connectorWebhooks.control },
+      const contentBlobs = new KvContentBlobStore(node, connectorWebhooks.backendStorageLane);
+      const contentMaster = currentContentMaster();
+      const contentStore = new ContentStore(contentBlobs, {
+        purgeLedger: connectorWebhooks.control,
+        master: () => contentMaster,
+      });
+      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
+      await contentStore.assertContinuity(contentBlobs, process.env, ingestGuard);
+      mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
+        contentStore.probeIndex(await contentBlobs.findIndex()),
       );
       const credentialStore = new CredentialStore(
         new KvCredentialRowStore(node, connectorWebhooks.backendStorageLane),
@@ -907,7 +930,7 @@ async function main() {
       // must never resolve to "nobody does". Constraint and its exit:
       // `docs/connector-webhooks-single-instance.md`.
       const supervisor = new IngestInstanceSupervisor({
-        guard: new IngestInstanceGuard(new KvInstanceLeaseStore(node)),
+        guard: ingestGuard,
         worker: new ConnectorFetchWorker({
           queue: connectorWebhooks.queue,
           modes: connectorWebhooks.modes,
@@ -1043,7 +1066,16 @@ async function main() {
   }
 
   // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
-  app.use("/api/bots", createBotsRouter({ config: botsFromEnv(process.env), authMiddleware, paidLimiter: paidChatLimiter }));
+  const botsConfig = botsFromEnv(process.env);
+  if (botsConfig && process.env.BOTS_HISTORY_ENABLED === "true") {
+    const history = new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST);
+    app.use("/api/bots/history", createBotHistoryRouter(history, botsConfig, authMiddleware));
+    const historyDrain = startBotHistoryDrain(history, botsConfig);
+    botsConfig.onTurnFinished = () => { void historyDrain.drain(); };
+    process.once("SIGTERM", historyDrain.stop);
+    process.once("SIGINT", historyDrain.stop);
+  }
+  app.use("/api/bots", createBotsRouter({ config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter }));
 
   // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
   const mcpChat = mcpChatFromEnv(process.env);
@@ -1245,6 +1277,13 @@ async function main() {
       () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
     );
   }
+  // Bun can leave a request that finishes during shutdown on a keep-alive connection.
+  // Retry idle-connection closure after it has left the active-request set.
+  server.on("request", (_req, res) => {
+    res.once("finish", () => {
+      if (shuttingDown) setTimeout(() => server.closeIdleConnections(), 0).unref();
+    });
+  });
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;

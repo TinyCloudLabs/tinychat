@@ -63,6 +63,9 @@ export interface SupervisorConfig {
   turnTimeoutMs: number;
   /** Assistant text bytes streamed per turn before it is cut off. */
   maxTurnBytes: number;
+  /** A bot's working state is deleted once it has gone unused for this many days. */
+  retentionDays: number;
+  history?: { signerDid: string; host: string; policy: "notice-then-expiry-30-days" };
 }
 
 export function supervisorConfig(env: Env): SupervisorConfig {
@@ -111,6 +114,12 @@ export function supervisorConfig(env: Env): SupervisorConfig {
     stateCopyTimeoutMs: int(env, "BOTS_STATE_COPY_TIMEOUT_MS", 60_000, 1000),
     turnTimeoutMs: int(env, "BOTS_TURN_TIMEOUT_MS", 5 * 60_000, 1000),
     maxTurnBytes: int(env, "BOTS_MAX_TURN_BYTES", 256 * 1024, 1024),
+    retentionDays: int(env, "BOTS_RETENTION_DAYS", 30),
+    history: env.BOTS_HISTORY_ENABLED === "true" ? {
+      signerDid: required(env, "BOTS_HISTORY_SIGNER_DID"),
+      host: required(env, "BOTS_HISTORY_NODE_ORIGIN"),
+      policy: (() => { if ((env.BOTS_UNARCHIVED_HISTORY_POLICY ?? "notice-then-expiry-30-days") !== "notice-then-expiry-30-days") throw new Error("BOTS_UNARCHIVED_HISTORY_POLICY must be notice-then-expiry-30-days"); return "notice-then-expiry-30-days" as const; })(),
+    } : undefined,
   };
 }
 

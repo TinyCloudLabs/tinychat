@@ -440,6 +440,7 @@ jobs:
           # bots CVM holds as BOTS_SERVICE_SECRET, and it is a secret, never a variable.
           BOTS_ENABLED: ${{ vars.BOTS_ENABLED || 'false' }}
           BOTS_TEST_ACCOUNTS: ${{ vars.BOTS_TEST_ACCOUNTS }}
+          BOTS_SERVICE_CONNECT_HOST: ${{ vars.BOTS_SERVICE_CONNECT_HOST }}
           BOTS_SERVICE_URL: ${{ vars.BOTS_SERVICE_URL }}
           BOTS_SERVICE_SECRET: ${{ secrets.BOTS_SERVICE_SECRET }}
           # Empty means the backend default (120000).
@@ -589,7 +590,7 @@ jobs:
           # These values are written one per line into the env file, so a line break in any of them would add settings.
           for item in MCP_CHAT_ENABLED MCP_CHAT_TEST_ACCOUNTS MCP_CHAT_URL MCP_CHAT_SERVICE_DID MCP_CHAT_SERVICE_CREDENTIAL \
             MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER MCP_CHAT_GRANT_EXPIRED_ERROR MCP_CHAT_GRANT_REJECTED_ERROR TAVILY_API_KEY \
-            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_POST_TIMEOUT_MS; do
+            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_POST_TIMEOUT_MS; do
             case "${!item-}" in
               *$'\n'*|*$'\r'*) echo "::error title=Invalid deployment config::$item must be a single line"; exit 1 ;;
             esac
@@ -619,6 +620,7 @@ jobs:
             printf '%s\n' "TAVILY_API_KEY=${TAVILY_API_KEY:-}"
             printf '%s\n' "BOTS_ENABLED=${BOTS_ENABLED:-false}"
             printf '%s\n' "BOTS_TEST_ACCOUNTS=${BOTS_TEST_ACCOUNTS:-}"
+            printf '%s\n' "BOTS_SERVICE_CONNECT_HOST=${BOTS_SERVICE_CONNECT_HOST:-}"
             printf '%s\n' "BOTS_SERVICE_URL=${BOTS_SERVICE_URL:-}"
             printf '%s\n' "BOTS_SERVICE_SECRET=${BOTS_SERVICE_SECRET:-}"
             printf '%s\n' "BOTS_POST_TIMEOUT_MS=${BOTS_POST_TIMEOUT_MS:-}"

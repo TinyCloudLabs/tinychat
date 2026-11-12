@@ -48,6 +48,23 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 4. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
    `BOTS_IDLE_MS`. The next message starts it again on the same session.
 
+## Working state
+
+Each bot's working state, its state snapshot, stays on the bots server and is deleted after `BOTS_RETENTION_DAYS` days
+(default 30) without use. Every message and history request records the bot's last use in
+`/data/bots/<bot id>/last-used`, next to the state snapshot and outside anything the sandbox mounts; a bot without that
+file counts from the snapshot's modification time. The supervisor checks every bot directory in `/data/bots` (symlinks
+are skipped) at startup and every 6 hours, and skips a bot with a request in flight.
+
+Deleting goes through one path. It stops the bot's sandbox (unmounting its state snapshot) and then checks that the
+teardown succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories (not symlinks) directly
+under their roots, that nothing is mounted at or under either (`/proc/self/mountinfo`). If all hold, it removes both directories and logs `state_deleted`. Otherwise it removes
+nothing and logs `state_delete_skipped` with a `cause` (`teardown_failed`, `unsafe_path`, `mounted`
+or `error`), and the next sweep tries again. A message that arrives meanwhile waits for the deletion, then starts a
+fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
+
+The supervisor creates data and run roots with mode 0700 and refuses roots that are symlinks, owned by another user, or writable by group or others.
+
 ## Containment
 
 Each sandbox:
@@ -175,6 +192,7 @@ Supervisor (`bots-supervisor`):
 | `BOTS_STATE_COPY_TIMEOUT_MS` | `60000` | a state restore or save still running by then is killed and fails |
 | `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
 | `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |
+| `BOTS_RETENTION_DAYS` | `30` | a bot's working state is deleted after this many days without use |
 | `PORT` | `8080` | |
 
 Gateway (`bots-gateway`):
