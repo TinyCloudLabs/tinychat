@@ -53,10 +53,18 @@ class AndroidReplicaDb private constructor(private val db: SQLiteDatabase) : Rep
             AndroidReplicaDb(db)
         }
 
+        /**
+         * SQLITE_FULL → STORAGE_FULL. A page that fails SQLCipher's HMAC (or any other corruption past page 1) →
+         * CORRUPT, which the core answers by wiping the account: the file is only a copy.
+         */
         private inline fun <T> full(block: () -> T): T = try {
             block()
         } catch (e: SQLiteFullException) {
             throw ReplicaStoreException("STORAGE_FULL", e.message ?: "Disk full")
+        } catch (e: SQLiteDatabaseCorruptException) {
+            throw ReplicaStoreException("CORRUPT", e.message ?: "The replica file is damaged")
+        } catch (e: SQLiteNotADatabaseException) {
+            throw ReplicaStoreException("CORRUPT", e.message ?: "The replica file is damaged")
         }
     }
 

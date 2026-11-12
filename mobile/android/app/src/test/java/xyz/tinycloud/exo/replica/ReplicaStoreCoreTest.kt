@@ -82,14 +82,30 @@ class ReplicaStoreCoreTest {
 
     /** Keys each open was given, by file name. */
     private val keysUsed = mutableListOf<Pair<String, ByteArray>>()
+    /** The key each file was created with, standing in for SQLCipher's encryption of the file. */
+    private val fileKeys = mutableMapOf<String, ByteArray>()
+    /** When true, the next query fails the way SQLCipher reports a page that fails its HMAC. */
+    private var corruptNextQuery = false
 
-    /** Plain SQLite stands in for SQLCipher; a file that isn't SQLite plays the part of "this key can't open it". */
+    /**
+     * Plain SQLite stands in for SQLCipher: a file that isn't SQLite, or one created with another key (or none, like a
+     * plaintext file), plays the part of "this key can't open it".
+     */
     private fun newCore() = ReplicaStoreCore(dir, secrets, { file, key ->
         keysUsed += file.name to key
-        if (file.isFile && file.length() > 0 && !file.readBytes().copyOf(15).contentEquals("SQLite format 3".toByteArray())) {
-            throw ReplicaDbUnreadable()
+        if (file.isFile && file.length() > 0) {
+            val isSqlite = file.readBytes().copyOf(15).contentEquals("SQLite format 3".toByteArray())
+            if (!isSqlite || fileKeys[file.name]?.contentEquals(key) != true) throw ReplicaDbUnreadable()
+        } else {
+            fileKeys[file.name] = key
         }
-        JdbcReplicaDb(file)
+        val db = JdbcReplicaDb(file)
+        object : ReplicaDb by db {
+            override fun query(sql: String, args: List<Any?>): List<List<Any?>> {
+                if (corruptNextQuery) { corruptNextQuery = false; throw ReplicaStoreException("CORRUPT", "page HMAC") }
+                return db.query(sql, args)
+            }
+        }
     }, { 1234L })
 
     @Before fun setUp() {
@@ -308,13 +324,39 @@ class ReplicaStoreCoreTest {
 
     @Test fun databaseKeyIsPerAccountAndStable() {
         core.open("alice", null)
+        core.write(listOf(put("s", "k", "v")))
         core.open("bob", null)
         core.open("alice", null)
         val (aliceFirst, bobKey, aliceAgain) = keysUsed.map { it.second }
         assertEquals(32, aliceFirst.size)
         assertTrue(aliceFirst.contentEquals(aliceAgain))
         assertFalse(aliceFirst.contentEquals(bobKey))
-        assertTrue(aliceFirst.contentEquals(ReplicaStoreCore.databaseKey(secrets.load(ReplicaStoreCore.accountId("alice"))!!)))
+        assertEquals("v", core.get("s", "k"))
+    }
+
+    @Test fun wrongKeyOrPlaintextFileIsRecreated() {
+        core.open("alice", null)
+        core.write(listOf(put("s", "k", "v")))
+        core.close()
+        // A new secret (the old one lost): the file no longer opens.
+        secrets.save(ReplicaStoreCore.accountId("alice"), ByteArray(32) { 7 })
+        assertTrue(core.open("alice", null).created)
+        assertNull(core.get("s", "k"))
+        core.close()
+        // A plaintext SQLite file at the path, as an unencrypted build would have left.
+        fileKeys.remove(file("alice").name)
+        assertTrue(core.open("alice", null).created)
+    }
+
+    @Test fun corruptPageWipesTheAccount() {
+        core.open("alice", null)
+        core.write(listOf(put("s", "k", "v")))
+        corruptNextQuery = true
+        assertEquals("CORRUPT", code { core.estimate() })
+        assertFalse(file("alice").exists())
+        assertNull(secrets.load(ReplicaStoreCore.accountId("alice")))
+        assertEquals("NOT_OPEN", code { core.get("s", "k") })
+        assertTrue(core.open("alice", null).created)
     }
 
     @Test fun fileThisKeyCannotOpenIsRecreated() {

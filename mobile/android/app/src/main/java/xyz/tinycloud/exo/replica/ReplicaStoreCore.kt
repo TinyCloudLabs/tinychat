@@ -97,10 +97,15 @@ class ReplicaStoreCore(
         session = null
     }
 
-    /** Maps anything that isn't already a contract error to IO. */
+    /**
+     * Maps anything that isn't already a contract error to IO. A CORRUPT error (a sealed row or an SQLCipher page that
+     * fails authentication) wipes the open account first: it is only a copy, and a damaged file would otherwise keep
+     * failing until sign-out.
+     */
     private inline fun <T> guard(block: () -> T): T = try {
         block()
     } catch (e: ReplicaStoreException) {
+        if (e.code == "CORRUPT") session?.let { runCatching { wipeLocked(it.account) } }
         throw e
     } catch (e: Exception) {
         throw ReplicaStoreException("IO", e.message ?: e.toString())
@@ -131,8 +136,12 @@ class ReplicaStoreCore(
         // A file this key can't open (damaged, or not ours) or one written by a newer build: it is only a copy of the
         // node's data, so drop it and copy again.
         var db = try {
-            openDb(file, dbKey).also { if (it.userVersion > SCHEMA_VERSION) { it.close(); throw ReplicaDbUnreadable() } }
-        } catch (e: ReplicaDbUnreadable) {
+            openDb(file, dbKey).also { opened ->
+                val newer = try { opened.userVersion > SCHEMA_VERSION } catch (e: Exception) { opened.close(); throw e }
+                if (newer) { opened.close(); throw ReplicaDbUnreadable() }
+            }
+        } catch (e: Exception) {
+            if (e !is ReplicaDbUnreadable && (e as? ReplicaStoreException)?.code != "CORRUPT") throw e
             deleteFiles(id)
             created = true
             openDb(file, dbKey)

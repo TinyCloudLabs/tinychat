@@ -116,7 +116,7 @@ public final class ReplicaStoreCore {
         var db = try SQLiteDB(path: url.path, key: keys.database)
         // A file this key can't open (damaged, or not ours) or one written by a newer build: it is only a copy of
         // the node's data, so drop it and copy again.
-        if try !db.isReadable() || db.userVersion() > Self.schemaVersion {
+        if (try? !db.isReadable() || db.userVersion() > Self.schemaVersion) ?? true {
             db.close()
             deleteFiles(id)
             db = try SQLiteDB(path: url.path, key: keys.database)
@@ -173,14 +173,14 @@ public final class ReplicaStoreCore {
         lock.lock()
         defer { lock.unlock() }
         let open = try requireOpen()
-        return try readingSealed(open) { try getLocked(open, store: store, key: key) }
+        return try wipingIfCorrupt(open) { try getLocked(open, store: store, key: key) }
     }
 
     public func getMany(store: String, keys: [String]) throws -> [String?] {
         lock.lock()
         defer { lock.unlock() }
         let open = try requireOpen()
-        return try readingSealed(open) { try keys.map { try getLocked(open, store: store, key: $0) } }
+        return try wipingIfCorrupt(open) { try keys.map { try getLocked(open, store: store, key: $0) } }
     }
 
     /// Entries whose key starts with `prefix` (UTF-8 bytes), sorted by the key's UTF-8 bytes, then cut to `limit`.
@@ -189,7 +189,7 @@ public final class ReplicaStoreCore {
         defer { lock.unlock() }
         let open = try requireOpen()
         if let limit, limit < 0 { throw ReplicaStoreError("INVALID_ARGUMENT", "limit must be >= 0") }
-        return try readingSealed(open) {
+        return try wipingIfCorrupt(open) {
             var entries: [(key: String, value: String, bytes: [UInt8])] = []
             let wanted = prefix.map { Array($0.utf8) } ?? []
             try open.db.query("SELECT kmac, sealed FROM kv WHERE store = ?", [.text(store)]) { row in
@@ -208,6 +208,10 @@ public final class ReplicaStoreCore {
         lock.lock()
         defer { lock.unlock() }
         let open = try requireOpen()
+        try wipingIfCorrupt(open) { try writeLocked(open, ops) }
+    }
+
+    private func writeLocked(_ open: OpenAccount, _ ops: [ReplicaOp]) throws {
         try open.db.exec("BEGIN IMMEDIATE")
         do {
             let before = open.maxBytes == nil ? 0 : try usedBytesLocked(open)
@@ -246,7 +250,8 @@ public final class ReplicaStoreCore {
     public func estimate() throws -> (usedBytes: Int64, freeBytes: Int64?) {
         lock.lock()
         defer { lock.unlock() }
-        let used = try current.map { try usedBytesLocked($0) } ?? 0
+        guard let open = current else { return (0, freeBytes()) }
+        let used = try wipingIfCorrupt(open) { try usedBytesLocked(open) }
         return (used, freeBytes())
     }
 
@@ -272,8 +277,9 @@ public final class ReplicaStoreCore {
         return value
     }
 
-    /// A row that fails authentication means the file was tampered with or damaged: wipe the account and report it.
-    private func readingSealed<T>(_ open: OpenAccount, _ body: () throws -> T) throws -> T {
+    /// A row or an SQLCipher page that fails authentication means the file was tampered with or damaged: wipe the
+    /// account (it is only a copy) and report it, instead of failing on every call until sign-out.
+    private func wipingIfCorrupt<T>(_ open: OpenAccount, _ body: () throws -> T) throws -> T {
         do {
             return try body()
         } catch let error as ReplicaStoreError where error.code == "CORRUPT" {
@@ -428,7 +434,12 @@ final class SQLiteDB {
     /// Opens and keys the file with SQLCipher: a raw 256-bit key (no passphrase KDF), SQLCipher 4 defaults (HMAC-SHA512
     /// page authentication on). The WAL is encrypted with the same key; the directory's file protection class covers
     /// every file SQLite creates in it.
-    init(path: String, key: Data) throws {
+    convenience init(path: String, key: Data) throws {
+        try self.init(path: path, pragmaKey: "\"x'\(key.map { String(format: "%02x", $0) }.joined())'\"")
+    }
+
+    /// `pragmaKey` is the literal after `PRAGMA key =` (nil: no key, plain SQLite); keying is the first statement.
+    init(path: String, pragmaKey: String?) throws {
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         let code = sqlite3_open_v2(path, &handle, flags, nil)
         guard code == SQLITE_OK else {
@@ -437,18 +448,19 @@ final class SQLiteDB {
             handle = nil
             throw error
         }
-        let hex = key.map { String(format: "%02x", $0) }.joined()
+        guard let pragmaKey else { return }
         do {
-            try exec("PRAGMA key = \"x'\(hex)'\"")
+            try exec("PRAGMA key = \(pragmaKey)")
         } catch {
             close()
             throw error
         }
     }
 
-    /// False when the key does not open the file (SQLITE_NOTADB): another key's file, plaintext or damage.
+    /// False when the key does not open the file (SQLITE_NOTADB: another key's file, plaintext or damage) or the
+    /// first page fails to read.
     func isReadable() -> Bool {
-        sqlite3_exec(handle, "SELECT count(*) FROM sqlite_master", nil, nil, nil) != SQLITE_NOTADB
+        sqlite3_exec(handle, "SELECT count(*) FROM sqlite_master", nil, nil, nil) == SQLITE_OK
     }
 
     deinit { close() }
@@ -500,6 +512,12 @@ final class SQLiteDB {
 
     private static func error(_ handle: OpaquePointer?, _ code: Int32) -> ReplicaStoreError {
         let message = handle.flatMap { sqlite3_errmsg($0) }.map { String(cString: $0) } ?? "sqlite error \(code)"
-        return ReplicaStoreError(code & 0xff == SQLITE_FULL ? "STORAGE_FULL" : "IO", message)
+        let kind: String
+        switch code & 0xff {
+        case SQLITE_FULL: kind = "STORAGE_FULL"
+        case SQLITE_CORRUPT, SQLITE_NOTADB: kind = "CORRUPT"
+        default: kind = "IO"
+        }
+        return ReplicaStoreError(kind, message)
     }
 }

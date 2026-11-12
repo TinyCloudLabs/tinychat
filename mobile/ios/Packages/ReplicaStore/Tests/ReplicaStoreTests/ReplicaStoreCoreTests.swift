@@ -48,10 +48,32 @@ final class ReplicaStoreCoreTests: XCTestCase {
     func testDatabaseKeyIsPerAccountAndStable() throws {
         let core = makeCore()
         try core.open(account: alice)
+        try core.write([.put(store: "s", key: "k", value: "v")])
+        let first = databaseKey(alice)
         try core.open(account: bob)
-        XCTAssertEqual(databaseKey(alice).count, 32)
-        XCTAssertNotEqual(databaseKey(alice), databaseKey(bob))
-        XCTAssertEqual(databaseKey(alice), AccountKeys(secret: secrets.secrets[ReplicaStoreCore.accountId(alice)]!).database)
+        XCTAssertEqual(first.count, 32)
+        XCTAssertNotEqual(first, databaseKey(bob))
+        core.close()
+        // A later process opens alice's file with the same key and reads her data.
+        let later = makeCore()
+        XCTAssertFalse(try later.open(account: alice).created)
+        XCTAssertEqual(databaseKey(alice), first)
+        XCTAssertEqual(try later.get(store: "s", key: "k"), "v")
+    }
+
+    /// The key is used raw: the same hex as a passphrase (PBKDF2-derived) does not open the file.
+    func testKeyIsRawNotAPassphrase() throws {
+        let core = makeCore()
+        try core.open(account: alice)
+        try core.write([.put(store: "s", key: "k", value: "v")])
+        core.close()
+        let hex = databaseKey(alice).map { String(format: "%02x", $0) }.joined()
+        let raw = try SQLiteDB(path: core.databaseURL(account: alice).path, key: databaseKey(alice))
+        XCTAssertTrue(raw.isReadable())
+        raw.close()
+        let passphrase = try SQLiteDB(path: core.databaseURL(account: alice).path, pragmaKey: "'\(hex)'")
+        XCTAssertFalse(passphrase.isReadable())
+        passphrase.close()
     }
 
     func testFileIsEncryptedAsAWhole() throws {
@@ -77,6 +99,46 @@ final class ReplicaStoreCoreTests: XCTestCase {
         XCTAssertNil(try core.get(store: "s", key: "k"))
         try core.write([.put(store: "s", key: "k", value: "again")])
         XCTAssertEqual(try core.get(store: "s", key: "k"), "again")
+    }
+
+    func testWrongKeyOrPlaintextFileIsRecreated() throws {
+        let core = makeCore()
+        try core.open(account: alice)
+        try core.write([.put(store: "s", key: "k", value: "v")])
+        core.close()
+        // The secret changed (the old one lost): the file no longer opens with the new key.
+        secrets.secrets[ReplicaStoreCore.accountId(alice)] = Data(repeating: 7, count: 32)
+        XCTAssertTrue(try core.open(account: alice).created)
+        XCTAssertNil(try core.get(store: "s", key: "k"))
+        core.close()
+        // A plaintext SQLite file at the path, as an unencrypted build would have left.
+        let url = core.databaseURL(account: alice)
+        for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: url.path + suffix) }
+        let plain = try SQLiteDB(path: url.path, pragmaKey: nil)
+        try plain.exec("CREATE TABLE kv(x); INSERT INTO kv VALUES (1);")
+        plain.close()
+        XCTAssertTrue(try core.open(account: alice).created)
+    }
+
+    /// A page past page 1 that fails SQLCipher's HMAC: the account is wiped instead of failing until sign-out.
+    func testCorruptPageWipesTheAccount() throws {
+        let core = makeCore()
+        try core.open(account: alice)
+        try core.write((0..<200).map { .put(store: "s", key: "k\($0)", value: String(repeating: "x", count: 200)) })
+        core.close()
+        let url = core.databaseURL(account: alice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-wal") &&
+                       ((try? Data(contentsOf: URL(fileURLWithPath: url.path + "-wal")).count) ?? 0) > 0,
+                       "closing checkpoints the WAL into the file")
+        var bytes = try Data(contentsOf: url)
+        XCTAssertGreaterThan(bytes.count, 4096 * 3)
+        bytes[4096 * 2 + 200] ^= 0xff
+        try bytes.write(to: url)
+        try core.open(account: alice)
+        XCTAssertThrowsError(try core.list(store: "s")) { XCTAssertEqual(($0 as? ReplicaStoreError)?.code, "CORRUPT") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertNil(secrets.secrets[ReplicaStoreCore.accountId(alice)])
+        XCTAssertTrue(try core.open(account: alice).created)
     }
 
     func testPutGetRoundTrip() throws {
