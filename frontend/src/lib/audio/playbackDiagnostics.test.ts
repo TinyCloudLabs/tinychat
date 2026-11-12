@@ -115,6 +115,26 @@ describe("playback diagnostics", () => {
     expect(localStorage.getItem(PLAYBACK_DIAGNOSTICS_KEY)).toBeNull();
   });
 
+  test("a seek while playing is not logged as drift, and the export header keeps the latest source", () => {
+    setPlaybackDiagnosticsEnabled(true);
+    recordPlaybackDiagnostic("source", { source: "local_file" });
+    const media = fakeMedia();
+    watchPlaybackDiagnostics(media);
+    media.paused = false;
+    media.fire("playing");
+    mono += 500;
+    media.currentTime = 30;
+    media.fire("seeking");
+    media.fire("timeupdate");
+    media.fire("seeked");
+    mono += 1000;
+    media.currentTime = 31;
+    media.fire("timeupdate");
+    expect(entries().filter((entry) => entry.kind === "clock").map((entry) => entry.driftMs)).toEqual([0]);
+    for (let i = 0; i < PLAYBACK_DIAGNOSTICS_MAX_ENTRIES; i++) recordPlaybackDiagnostic("n");
+    expect(JSON.parse(playbackDiagnosticsText().split("\n")[0]!).latestSource).toMatchObject({ kind: "source", source: "local_file" });
+  });
+
   test("sources are described without their path", () => {
     expect(describeAudioSource(new Blob([new Uint8Array(3)], { type: "audio/mp4" }))).toEqual({ source: "blob", bytes: 3, type: "audio/mp4" });
     expect(describeAudioSource("capacitor://localhost/_capacitor_file_/var/mobile/x/voice-notes/abc.m4a"))

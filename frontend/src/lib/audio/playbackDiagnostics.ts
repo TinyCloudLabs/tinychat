@@ -45,6 +45,8 @@ let entries: DiagnosticsEntry[] | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 let nativeListener: Promise<PluginListenerHandle> | null = null;
 const listeners = new Set<() => void>();
+/** The newest session snapshot and source, repeated in the export header in case the cap dropped them. */
+const latest: Record<string, DiagnosticsEntry | undefined> = {};
 
 function storage(): Storage | null {
   try {
@@ -65,15 +67,18 @@ function log(): DiagnosticsEntry[] {
   return entries;
 }
 
+function save() {
+  persistTimer = undefined;
+  try {
+    storage()?.setItem(LOG_KEY, JSON.stringify(log()));
+  } catch {
+    // A full store keeps the log in memory; the export still has it.
+  }
+}
+
+/** At most every 2 s while entries arrive (a debounce would never fire during playback's 4 Hz clock entries). */
 function persist() {
-  clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    try {
-      storage()?.setItem(LOG_KEY, JSON.stringify(log()));
-    } catch {
-      // A full store keeps the log in memory; the export still has it.
-    }
-  }, 2000);
+  if (persistTimer === undefined) persistTimer = setTimeout(save, 2000);
 }
 
 export function playbackDiagnosticsEnabled(): boolean {
@@ -105,11 +110,19 @@ export function recordPlaybackDiagnostic(kind: string, data: Record<string, unkn
   const list = log();
   list.push({ t: now.wall, m: Math.round(now.mono * 10) / 10, kind, ...data });
   if (list.length > PLAYBACK_DIAGNOSTICS_MAX_ENTRIES) list.splice(0, list.length - PLAYBACK_DIAGNOSTICS_MAX_ENTRIES);
+  if (kind === "audio_session" || kind === "source") latest[kind] = list.at(-1)!;
   persist();
   notify();
 }
 
+/** Visibility changes are logged (timers are throttled in the background) and the log is saved before the page hides. */
+function onVisibility() {
+  recordPlaybackDiagnostic("visibility", { state: document.visibilityState });
+  if (document.visibilityState === "hidden") save();
+}
+
 function startNative() {
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
   if (nativeListener) return;
   if (!Capacitor.isPluginAvailable("AudioDiagnostics")) {
     recordPlaybackDiagnostic("audio_session_unavailable", { platform: Capacitor.getPlatform() });
@@ -123,6 +136,7 @@ function startNative() {
 }
 
 function stopNative() {
+  if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
   const handle = nativeListener;
   nativeListener = null;
   if (!handle) return;
@@ -139,13 +153,19 @@ export function setPlaybackDiagnosticsEnabled(on: boolean): void {
     recordPlaybackDiagnostic("diagnostics_off");
     storage()?.removeItem(PLAYBACK_DIAGNOSTICS_KEY);
     stopNative();
+    clearInterval(lagTimer);
+    lagTimer = undefined;
+    playingCount = 0;
+    save();
   }
   notify();
 }
 
 export function clearPlaybackDiagnostics(): void {
   entries = [];
+  for (const key of Object.keys(latest)) delete latest[key];
   clearTimeout(persistTimer);
+  persistTimer = undefined;
   storage()?.removeItem(LOG_KEY);
   notify();
 }
@@ -153,7 +173,8 @@ export function clearPlaybackDiagnostics(): void {
 /** One JSON object per line: a header, then every entry in order. */
 export function playbackDiagnosticsText(header: Record<string, unknown> = {}): string {
   const list = log();
-  return [JSON.stringify({ kind: "header", entries: list.length, exportedAt: clock().wall, ...header }),
+  return [JSON.stringify({ kind: "header", entries: list.length, exportedAt: clock().wall, ...header,
+    latestAudioSession: latest.audio_session ?? null, latestSource: latest.source ?? null }),
     ...list.map((entry) => JSON.stringify(entry))].join("\n");
 }
 
@@ -194,7 +215,10 @@ function lagMonitor(playing: boolean) {
       const mono = clock().mono;
       const blocked = mono - lastLagTick - LAG_TICK_MS;
       lastLagTick = mono;
-      if (blocked >= MAIN_THREAD_BLOCK_MS) recordPlaybackDiagnostic("main_thread_block", { ms: Math.round(blocked) });
+      // A hidden page's timers are throttled: that is not a block.
+      if (blocked >= MAIN_THREAD_BLOCK_MS && globalThis.document?.visibilityState !== "hidden") {
+        recordPlaybackDiagnostic("main_thread_block", { ms: Math.round(blocked) });
+      }
     }, LAG_TICK_MS);
   } else if (playingCount === 0) {
     clearInterval(lagTimer);
@@ -227,6 +251,7 @@ export function watchPlaybackDiagnostics(media: DiagnosedMedia): () => void {
   });
   const onEvent = (event: Event) => {
     const type = event.type;
+    if (!playbackDiagnosticsEnabled()) return;
     recordPlaybackDiagnostic("media", { event: type, ...state(), ...(type === "error" ? { error: media.error?.code ?? null } : {}) });
     if (type === "playing" || type === "seeked" || type === "ratechange") {
       anchor = media.paused ? null : { mono: clock().mono, time: media.currentTime, rate: media.playbackRate };
@@ -235,14 +260,14 @@ export function watchPlaybackDiagnostics(media: DiagnosedMedia): () => void {
       setPlaying(true);
       if (nativeListener) void native.snapshot().then((s) => recordPlaybackDiagnostic("audio_session", { event: "on_playing", ...s }), () => undefined);
     }
-    if (type === "pause" || type === "ended" || type === "emptied" || type === "error" || type === "waiting") {
-      if (type !== "waiting") setPlaying(false);
+    if (type === "pause" || type === "ended" || type === "emptied" || type === "error" || type === "waiting" || type === "seeking") {
+      if (type !== "waiting" && type !== "seeking") setPlaying(false);
       anchor = null;
     }
   };
   /** The media clock against the wall clock since playback last (re)started: negative drift = audio fell behind. */
   const onTimeUpdate = () => {
-    if (!anchor) return;
+    if (!anchor || !playbackDiagnosticsEnabled()) return;
     const elapsedMs = clock().mono - anchor.mono;
     const expected = anchor.time + (elapsedMs / 1000) * anchor.rate;
     recordPlaybackDiagnostic("clock", {
@@ -269,7 +294,9 @@ export function watchPlaybackDiagnostics(media: DiagnosedMedia): () => void {
 export function __resetPlaybackDiagnosticsForTests(next?: () => { wall: number; mono: number }): void {
   clock = next ?? (() => ({ wall: Date.now(), mono: performance.now() }));
   entries = [];
+  for (const key of Object.keys(latest)) delete latest[key];
   clearTimeout(persistTimer);
+  persistTimer = undefined;
   clearInterval(lagTimer);
   lagTimer = undefined;
   playingCount = 0;
