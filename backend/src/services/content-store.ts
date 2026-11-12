@@ -531,50 +531,6 @@ export class ContentStore implements ContentSink, RetentionGuard {
     }
   }
 
-  private async removeExpiredBlobs(
-    source: string,
-    address: string,
-    cutoff: number,
-  ): Promise<number> {
-    let removed = 0;
-    try {
-      for (const blob of await this.blobs.listContentIds(source, address)) {
-        const storedAt = Date.parse(blob.storedAt ?? blob.updatedAt);
-        if (!Number.isFinite(storedAt) || storedAt <= cutoff) {
-          await this.blobs.remove(source, address, blob.sourceId);
-          removed += 1;
-        }
-      }
-    } catch {
-      errorContent(
-        `op=retention result=age_fallback_failed alert=true source=${source} ` +
-          `aid=${hashed(address)}`,
-      );
-    }
-    return removed;
-  }
-  private async removeUnreadableIndexIfExpired(
-    source: string,
-    address: string,
-    cutoff: number,
-  ): Promise<void> {
-    try {
-      const index = await this.blobs.readIndex(source, address);
-      if (index === null) return;
-      const updatedAt = Date.parse(index.updatedAt);
-      if (!Number.isFinite(updatedAt) || updatedAt <= cutoff) {
-        await this.blobs.removeIndex(source, address);
-        await this.clearRetentionFailure(source, address);
-      }
-    } catch {
-      errorContent(
-        `op=retention result=index_age_fallback_failed alert=true source=${source} ` +
-          `aid=${hashed(address)}`,
-      );
-    }
-  }
-
-
   /**
    * The worker's {@link ContentSink}. Upsert identity is `(source, source_id)` SCOPED BY
    * ADDRESS; the two provider kinds merge into one row in either arrival order (delta 6).
@@ -857,13 +813,6 @@ export class ContentStore implements ContentSink, RetentionGuard {
         }
         this.counters.unreadableIndexes += 1;
         await this.noteRetentionFailure(target.source, target.address);
-        const cutoff = this.now() - this.retentionMs;
-        await this.removeExpiredBlobs(target.source, target.address, cutoff);
-        await this.removeUnreadableIndexIfExpired(
-          target.source,
-          target.address,
-          cutoff,
-        );
         throw error;
       }
       await this.clearRetentionFailure(target.source, target.address);
@@ -963,18 +912,8 @@ export class ContentStore implements ContentSink, RetentionGuard {
         }
         this.counters.unreadableIndexes += 1;
         await this.noteRetentionFailure(target.source, target.address);
-        const swept = await this.removeExpiredBlobs(
-          target.source,
-          target.address,
-          cutoff,
-        );
-        await this.removeUnreadableIndexIfExpired(
-          target.source,
-          target.address,
-          cutoff,
-        );
         return {
-          swept,
+          swept: 0,
           bytesFreed: 0,
           tombstones: 0,
           storedAtBackfilled: 0,
@@ -1120,12 +1059,9 @@ export class ContentStore implements ContentSink, RetentionGuard {
   async purge(source: string, address: string): Promise<{ removed: number }> {
     const target = normalizeTarget(source, address);
     return this.lane(target.source, target.address, async () => {
-      // The index names every live row, so the ids come from here — the blob-store port holds
-      // no master and cannot read them out of the ciphertext. An index we cannot open still
-      // tears down: `removeAll` sweeps the tenant's prefix and the index key itself.
-      const index = await this.openIndex(target.source, target.address).catch(
-        () => ({ meetings: [], tombstones: [] }) satisfies ContentIndex,
-      );
+      // An unreadable index cannot establish ownership of the rows, so fail closed before any
+      // deletion. The caller can retry once the index is readable again.
+      const index = await this.openIndex(target.source, target.address);
       for (const meta of index.meetings) {
         await this.blobs.remove(target.source, target.address, meta.sourceId);
       }
