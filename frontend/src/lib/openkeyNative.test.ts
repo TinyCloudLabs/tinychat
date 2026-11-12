@@ -25,6 +25,7 @@ import {
   nativeSessionWasActive,
   isNativeStorageError,
   installNativeSession,
+  nativeRenewalServices,
   resetNativeOpenKeyClientForTests,
   restoreNativeAtBoot,
   secretsAvailable,
