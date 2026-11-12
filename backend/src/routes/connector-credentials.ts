@@ -137,7 +137,9 @@ export function createConnectorCredentialRouter(
     }
     let mode: string;
     try {
-      mode = await options.modes.mode(address);
+      mode = options.modes.eligible
+        ? (await options.modes.eligible(address) ? "backend" : "browser")
+        : await options.modes.mode(address, source);
     } catch {
       res.status(503).json({ error: "unavailable" });
       return null;

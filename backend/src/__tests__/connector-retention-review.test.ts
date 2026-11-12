@@ -86,6 +86,7 @@ test("the real worker refuses a receipt expired before fetch or during provider 
   for (const expireBefore of [true,false]) {
     let now=start+14*day-1, calls=0, stores=0;
     const worker=new ConnectorFetchWorker({
+      modes: { mode: async () => "backend" },
       fetcher: {fetchMeeting:async()=>{calls++;now=start+14*day+1;return {ok:true,content:{sourceId:"inflight",ts:new Date(now).toISOString(),payload:{}}};}},
       content:{upsert:async()=>{stores++;return {ok:true,stored:"created"};}},
     } as any,{now:()=>now,spacingMs:0});

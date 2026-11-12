@@ -94,7 +94,7 @@ export function createIngestOnDelivery(
   return async (input: FetchWorkerNudgeInput): Promise<void> => {
     let mode: string;
     try {
-      mode = await options.modes.mode(input.address);
+      mode = await options.modes.mode(input.address, input.source);
     } catch (error) {
       // FAIL CLOSED means "do not guess", not "do not proceed": the item is already durably
       // queued, so the worker's sweep still collects it. What must not happen is a silent skip.

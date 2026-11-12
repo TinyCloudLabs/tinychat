@@ -587,7 +587,14 @@ async function main() {
         // the queue are shared: the delivery path's "is this address the worker's?" and the
         // companions' "may this browser drain?" must never disagree. Dark by default
         // (CONNECTOR_BACKEND_INGEST_ENABLED); with the flag off it makes no node call at all.
-        const modes = new IngestModeService(node);
+        const credentialRows = new KvCredentialRowStore(node, backendStorageLane);
+        const modes = new IngestModeService(node, {
+          enabled: backendIngestEnabled,
+          hasOAuthCredential: async (source, address) => {
+            const row = await credentialRows.read(source, address);
+            return row?.kind === "oauth" && !row.revokedAt;
+          },
+        });
         return {
           limiters: new ConnectorWebhookLimiters(),
           tokens,

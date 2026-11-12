@@ -196,7 +196,7 @@ export interface RetentionGuard {
 /** The cohort membership the worker sweeps. Satisfied by `IngestModeService`. */
 export interface IngestCohortLookup {
   cohort(): Promise<ReadonlySet<string>>;
-  mode(address: string): Promise<IngestMode>;
+  mode(address: string, source?: string): Promise<IngestMode>;
 }
 
 /** §6.2 restricts credential retrieval to this path; the purpose argument says so out loud. */
@@ -693,6 +693,9 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
     if (gate !== undefined && gate > this.now()) return;
     if (gate !== undefined) this.gates.delete(key);
 
+    // Cohort eligibility alone cannot claim browser-owned pending IDs.
+    if (await this.deps.modes.mode(target.address, target.source) !== "backend") return;
+
     let due: PendingItem[];
     try {
       due = await this.deps.queue.due(target.source, target.address);
@@ -728,6 +731,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       return;
     }
     if (secret === null) {
+      if (await this.deps.modes.mode(target.address, target.source) !== "backend") return;
       this.holdLane(key, "credential_missing", target);
       return;
     }
@@ -867,6 +871,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
         this.counters.peakUpstreamConcurrency = this.inFlightUpstream;
       }
       if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };
+      if (await this.deps.modes.mode(target.address, target.source) !== "backend") return { stopLane: true };
       this.lastCallAt.set(key, this.now());
       result = await this.fetchWithTimeout(target.source, item, secret);
     } finally {
@@ -963,6 +968,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
     };
 
     if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };
+    if (await this.deps.modes.mode(target.address, target.source) !== "backend") return { stopLane: true };
     let stored: unknown;
     try {
       stored = await this.deps.content.upsert(upsert);
