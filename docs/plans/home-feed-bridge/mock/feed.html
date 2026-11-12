@@ -1,0 +1,1377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<title>Home feed · Mock 4</title>
+<style>
+/* Home's zinc palette (frontend/src/index.css), light first, dark from the phone's setting. */
+:root {
+  --bg: #ffffff; --fg: #09090b; --fg2: #3f3f46; --muted: #63636c; --s2: #f4f4f5; --line: #e4e4e7; --line2: #d4d4d8;
+  --raised: #ffffff; --raised-line: #c9c9d1; --raised-shadow: 0 1px 2px rgb(0 0 0 / .05), 0 12px 28px -12px rgb(0 0 0 / .28);
+  --primary: #18181b; --on-primary: #fafafa; --selected: rgb(24 24 27 / .07); --ring: #18181b;
+  --need-bg: #fef3c7; --need-fg: #8a3a06; --need-text: #a4480a; --need-dot: #d97706;
+  --done-bg: #dcfce7; --done-fg: #166534; --done-text: #15803d; --new: #2563eb;
+  /* One colour per project, everywhere: Bridge, Home feed, Website, Personal. */
+  --p0b: #dbeafe; --p0f: #1e40af; --p1b: #cffafe; --p1f: #155e75; --p2b: #fae8ff; --p2f: #86198f; --p3b: #ffe4e6; --p3f: #9f1239;
+  --scrim: rgb(9 9 11 / .45);
+  --serif: "Literata Variable", Literata, Georgia, "Times New Roman", serif;
+  --sans: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --quick: 150ms; --fast: 220ms; --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #09090b; --fg: #fafafa; --fg2: #d4d4d8; --muted: #a1a1aa; --s2: #222228; --line: #27272a; --line2: #3f3f46;
+    --raised: #16161b; --raised-line: #45454f; --raised-shadow: 0 14px 34px -10px rgb(0 0 0 / .7);
+    --primary: #fafafa; --on-primary: #18181b; --selected: rgb(250 250 250 / .09); --ring: #d4d4d8;
+    --need-bg: #2f2a12; --need-fg: #f0d98a; --need-text: #f5c451; --need-dot: #f5c451;
+    --done-bg: #10301c; --done-fg: #86e0a6; --done-text: #6fd894; --new: #60a5fa;
+    --p0b: rgb(59 130 246 / .18); --p0f: #a5c8ff; --p1b: rgb(6 182 212 / .16); --p1f: #7fe3f3; --p2b: rgb(217 70 239 / .16); --p2f: #f2b5fb; --p3b: rgb(244 63 94 / .16); --p3f: #fdb0bb;
+    --scrim: rgb(0 0 0 / .6);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden; overflow-wrap: break-word; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; text-align: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
+button:disabled { cursor: default; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+#app { max-width: 480px; margin: 0 auto; padding: 10px 16px calc(32px + env(safe-area-inset-bottom)); }
+.ic { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 0 16px; border: 1px solid var(--line2); border-radius: 12px; background: var(--bg); font-weight: 500; font-size: 15.5px; white-space: nowrap; transition: background var(--quick); }
+.btn:active { background: var(--s2); }
+.btn:disabled { opacity: .45; }
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+.btn.wide { width: 100%; }
+.btn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--need-dot); }
+.msgbtn { background: transparent; color: var(--fg2); font-size: 15px; padding: 0 14px 0 12px; }
+.msgbtn .ic { width: 17px; height: 17px; }
+.link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 8px; border-radius: 10px; font-size: 15px; color: var(--fg2); text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 4px; }
+.link:active { background: var(--s2); }
+.link[aria-expanded="true"] { color: var(--fg); text-decoration-color: currentColor; }
+.link:disabled { opacity: .4; }
+
+/* Header */
+.mocklabel { margin: 0; font-size: 12.5px; color: var(--muted); }
+.titlerow { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; }
+.h1 { flex: 1; margin: 0; font: 650 34px/1.1 var(--serif); letter-spacing: -.01em; }
+.count { margin: 0; color: var(--muted); font-size: 15.5px; }
+.count b { color: var(--fg); font-weight: 600; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 4px; }
+.seg { display: inline-flex; padding: 2px; border: 1px solid var(--line2); border-radius: 13px; background: var(--bg); }
+.seg button { min-height: 44px; min-width: 62px; padding: 0 12px; border-radius: 11px; font-size: 15px; font-weight: 500; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--s2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line2); }
+
+/* Section headings */
+.sec { display: flex; align-items: baseline; justify-content: space-between; margin: 26px 2px 4px; font-size: 12.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.sec b { font-weight: 650; color: var(--fg); }
+.proj { margin: 14px 2px 0; padding-bottom: 2px; font-size: 13px; font-weight: 600; color: var(--fg2); display: flex; align-items: center; gap: 8px; }
+.proj::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.empty { margin: 8px 2px 4px; color: var(--muted); font-size: 15px; }
+
+/* Agent mark and platform chip */
+.av { display: inline-grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 50%; color: #fff; font-weight: 650; font-size: 15px; line-height: 1; user-select: none; }
+.av.sm { width: 30px; height: 30px; font-size: 13px; }
+.av.lg { width: 48px; height: 48px; font-size: 19px; }
+.plat { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; border: 1px solid var(--line2); border-radius: 999px; padding: 1px 8px 1px 6px; font-size: 12px; font-weight: 500; line-height: 18px; color: var(--fg); white-space: nowrap; vertical-align: middle; }
+.plat.txt { padding: 1px 8px; color: var(--fg2); }
+.plat .pm { display: inline-flex; width: 13px; height: 13px; flex: none; }
+.plat .pm svg { width: 100%; height: 100%; display: block; fill: currentColor; }
+
+/* Context: project tag, kind, fact chips */
+.ctx { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; font-size: 12.5px; color: var(--fg2); }
+.ptag { display: inline-flex; align-items: center; padding: 0 8px; border-radius: 6px; font-size: 12px; font-weight: 650; line-height: 20px; white-space: nowrap; }
+.ptag.p0 { background: var(--p0b); color: var(--p0f); } .ptag.p1 { background: var(--p1b); color: var(--p1f); }
+.ptag.p2 { background: var(--p2b); color: var(--p2f); } .ptag.p3 { background: var(--p3b); color: var(--p3f); }
+.kind { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; white-space: nowrap; }
+.kind .ic { width: 14px; height: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.fchip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border: 1px solid var(--line2); border-radius: 999px; font-size: 12.5px; font-weight: 500; line-height: 20px; color: var(--fg); white-space: nowrap; }
+.fchip .ic { width: 13px; height: 13px; color: var(--need-text); }
+.ctx .fchip { padding: 0 8px; font-size: 12px; line-height: 18px; }
+.follows { margin: 10px 0 0; font-size: 13.5px; color: var(--muted); }
+
+/* Previews of the thing being decided */
+.pv { margin-top: 12px; }
+.pv-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 12px; background: var(--s2); border-radius: 12px; font-size: 14px; font-weight: 500; }
+.pv-facts span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.pv-facts .ic { color: var(--done-text); stroke-width: 2.6; }
+.pv-thumbs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0; }
+.pv-thumbs figure { margin: 0; min-width: 0; }
+.pv-thumbs svg { display: block; width: 100%; height: auto; border-radius: 10px; background: var(--s2); color: var(--muted); }
+.pv-thumbs figcaption { margin-top: 4px; font-size: 13.5px; font-weight: 600; }
+.pv-draft { display: block; width: 100%; padding: 8px 12px; border-left: 3px solid var(--line2); border-radius: 4px 12px 12px 4px; background: var(--s2); text-align: left; }
+.pv-draft .to { display: block; font-size: 12.5px; font-weight: 650; color: var(--muted); }
+.pv-draft .tx { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; font-size: 14.5px; color: var(--fg); }
+.pv-draft[aria-expanded="true"] .tx { display: block; }
+.pv-amount { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.pv-amount b { font: 650 30px/1.15 var(--serif); }
+.pv-amount span { font-size: 14px; color: var(--fg2); }
+.pv-progress .track { height: 6px; border-radius: 3px; background: var(--s2); overflow: hidden; }
+.pv-progress .fill { display: block; height: 100%; border-radius: 3px; }
+.pv-progress span { display: block; margin-top: 6px; font-size: 13.5px; font-weight: 500; color: var(--fg2); }
+.pv-time { display: flex; align-items: center; gap: 10px; font: 650 24px/1.2 var(--serif); }
+.pv-time s { color: var(--muted); font-weight: 500; }
+.pv-time .ic { width: 18px; height: 18px; color: var(--muted); }
+
+/* Status words */
+.chip { flex: none; border-radius: 999px; padding: 3px 10px; font-size: 12.5px; font-weight: 600; white-space: nowrap; line-height: 18px; }
+.chip.need { background: var(--need-bg); color: var(--need-fg); }
+.chip.wait, .chip.off { border: 1px solid var(--line2); color: var(--fg2); padding: 2px 9px; }
+.chip.done { background: var(--done-bg); color: var(--done-fg); }
+.chip.later { background: var(--s2); color: var(--muted); }
+.st { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.st::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; box-sizing: border-box; }
+.st.need { color: var(--need-text); } .st.need::before { background: var(--need-dot); }
+.st.wait, .st.off { color: var(--fg2); } .st.wait::before { border: 1.5px solid var(--muted); }
+.st.off::before { border: 1.5px dashed var(--muted); }
+.st.done { color: var(--done-text); } .st.done::before { background: var(--done-text); }
+.st.later { color: var(--muted); } .st.later::before { background: var(--line2); }
+.st.inl { margin-left: 2px; }
+.newdot { display: inline-block; width: 9px; height: 9px; margin-right: 7px; border-radius: 50%; background: var(--new); vertical-align: 1px; }
+
+/* Rows */
+.row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 60px; padding: 10px 2px; border-top: 1px solid var(--line); text-align: left; border-radius: 0; transition: background var(--quick); }
+.row:active { background: var(--s2); }
+.row .t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.row .ctx { margin-bottom: 1px; }
+.row .t1 { display: block; font-size: 15.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .t2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 13px; color: var(--muted); }
+.row .t2 b { color: var(--fg2); font-weight: 600; }
+.row .t3 { font-size: 13.5px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.row.quiet .t1 { color: var(--muted); font-weight: 500; }
+.row .tm { flex: none; align-self: flex-start; font-size: 12.5px; color: var(--muted); padding-top: 2px; }
+.row.ctxrow .av { align-self: flex-start; margin-top: 24px; }
+.it:has(> .card) + .it > .row, .it:has(> .proj) + .it > .row, .it:has(> .sec) + .it > .row, .row.first { border-top-color: transparent; }
+.it { scroll-margin-top: 8px; }
+.it.sticky { position: sticky; top: 0; z-index: 5; }
+.it.tl { margin-top: 10px; display: flex; flex-direction: column; }
+
+/* The open card: one raised surface */
+.card { position: relative; margin: 10px 0 14px; padding: 16px; background: var(--raised); border: 1.5px solid var(--raised-line); border-radius: 20px; box-shadow: var(--raised-shadow); scroll-margin-top: 12px; }
+.card.focus { min-height: calc(100vh - 250px); min-height: calc(100svh - 250px); margin-top: 6px; }
+.ctop { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 12px; }
+.ch { display: flex; align-items: flex-start; gap: 8px; }
+.agentbtn { display: flex; align-items: center; gap: 10px; flex: 0 1 auto; min-width: 0; min-height: 44px; margin: -4px; padding: 4px; border-radius: 12px; text-align: left; transition: background var(--quick); }
+.agentbtn:active { background: var(--s2); }
+.who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.who .n { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; }
+.who .n b { font-size: 16px; font-weight: 650; }
+.who .r { font-size: 13px; color: var(--muted); }
+.ttl { font: 650 22px/1.25 var(--serif); margin: 14px 0 6px; letter-spacing: -.005em; }
+.ttl + .chips { margin-top: 2px; }
+.body { margin: 0 0 4px; color: var(--fg2); font-size: 15.5px; }
+.quote { margin: 10px 0 0; padding: 10px 12px; border-left: 3px solid var(--line2); background: var(--s2); border-radius: 4px 12px 12px 4px; font-size: 15px; color: var(--fg); }
+.sugg { margin: 12px 0 0; padding: 10px 12px; background: var(--s2); border-radius: 12px; font-size: 14.5px; color: var(--fg2); }
+.sugg b { color: var(--fg); font-weight: 600; }
+.due { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 14.5px; color: var(--fg); }
+.due .ic { width: 17px; height: 17px; margin-top: 2px; color: var(--need-text); }
+.note-box { margin: 0 0 12px; padding: 10px 12px; border: 1px dashed var(--line2); border-radius: 12px; font-size: 14.5px; color: var(--fg2); }
+.note-box b { color: var(--fg); font-weight: 600; }
+.lbl { margin: 16px 0 0; font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+/* Options look like choices */
+.opt { position: relative; display: flex; align-items: flex-start; gap: 12px; width: 100%; min-height: 52px; margin-top: 8px; padding: 12px; background: var(--s2); border: 1.5px solid transparent; border-radius: 12px; text-align: left; overflow: hidden; transition: opacity var(--fast), background var(--quick), border-color var(--quick); }
+button.opt:active { border-color: var(--line2); }
+.opt .rd { flex: none; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; border: 2px solid var(--muted); display: grid; place-items: center; }
+.opt .rd.on { border-color: var(--primary); }
+.opt .rd.on::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--primary); }
+.opt .ot { flex: 1; min-width: 0; }
+.opt .ol { font-weight: 600; font-size: 16px; }
+.opt .od { display: block; margin-top: 2px; font-size: 14.5px; color: var(--muted); }
+.opt .tag { display: inline-block; margin-left: 6px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 999px; background: var(--raised); font-size: 12px; font-weight: 500; color: var(--fg2); vertical-align: 2px; line-height: 18px; }
+.opt .thumb { flex: none; width: 58px; height: 35px; color: var(--muted); }
+.opt.on { border-color: var(--primary); background: var(--selected); align-items: center; }
+.opt.on .od { color: var(--fg); font-weight: 500; }
+.opt.dim { opacity: .4; }
+.opt.ro { background: transparent; border: 1px dashed var(--line2); min-height: 0; padding: 10px 12px; }
+.opt.ro .ol { font-weight: 500; color: var(--fg2); }
+.undo { flex: none; min-height: 44px; padding: 0 16px; border: 1px solid var(--line2); border-radius: 10px; background: var(--raised); font-weight: 600; font-size: 15px; }
+.undo:active { background: var(--s2); }
+.bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--primary); transform-origin: left center; animation: drain 4s linear forwards; }
+@keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+/* Writing: one button, then one line */
+.reply { margin-top: 16px; }
+.rbox { display: flex; align-items: flex-end; gap: 8px; }
+textarea { flex: 1; min-width: 0; min-height: 48px; max-height: 168px; resize: none; padding: 12px; font: 16px/1.4 var(--sans); color: var(--fg); background: var(--bg); border: 1px solid var(--line2); border-radius: 12px; }
+textarea:focus-visible { outline: 2px solid var(--ring); outline-offset: 0; }
+textarea:disabled { opacity: .5; }
+.send { min-height: 48px; }
+.sending { position: relative; padding: 10px 12px; border: 1.5px solid var(--primary); background: var(--selected); border-radius: 12px; overflow: hidden; }
+.sending .stext { display: block; font-size: 15px; }
+.sending .srow { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; font-size: 14px; font-weight: 500; }
+
+/* Small actions and panels */
+.foot { display: flex; flex-wrap: wrap; gap: 2px; margin: 14px -8px 0; padding-top: 6px; border-top: 1px solid var(--line); }
+.panel { margin-top: 8px; padding: 12px; background: var(--s2); border-radius: 12px; font-size: 14.5px; }
+.panel .pl { display: block; margin: 0 0 6px; font-weight: 600; font-size: 14.5px; }
+.panel .pl.gap { margin-top: 12px; }
+.panel textarea { width: 100%; background: var(--raised); }
+.picks { display: flex; flex-wrap: wrap; gap: 8px; }
+.pick { min-height: 44px; padding: 0 14px; border: 1px solid var(--line2); border-radius: 12px; background: var(--raised); font-size: 15px; font-weight: 500; }
+.pick:active { background: var(--bg); }
+.pick[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+.kv { margin: 0; }
+.kv > div { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 8px 0; border-top: 1px solid var(--line2); }
+.kv > div:first-child { border-top: 0; padding-top: 0; }
+.kv dt { flex: none; color: var(--muted); }
+.kv dd { margin: 0; min-width: 0; text-align: right; }
+.det .kv > div { display: grid; grid-template-columns: 118px 1fr; gap: 10px; }
+.det .kv dd { text-align: left; }
+.ev { margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line2); }
+.ev ul { margin: 0; padding-left: 18px; }
+.ev li { margin: 2px 0; }
+
+/* Folded card: what you did, and the steps */
+.fs { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; }
+.fs .ck { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; margin-top: 1px; }
+.fs .ck svg, .steps .ok i svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 3.2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.fs b { display: block; font-size: 17px; font-weight: 650; }
+.fs .fsub { display: block; font-size: 14px; color: var(--muted); margin-top: 1px; }
+.steps { list-style: none; margin: 12px 0 0; padding: 0 0 0 32px; font-size: 15px; }
+.steps.mini { padding: 0; margin: 4px 0 0; font-size: 13px; }
+.steps li { display: flex; align-items: center; gap: 9px; padding: 3px 0; color: var(--muted); }
+.steps li.ok { color: var(--fg); font-weight: 500; }
+.steps i { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--muted); display: grid; place-items: center; }
+.steps.mini i { width: 15px; height: 15px; }
+.steps .ok i { border: 0; background: var(--primary); color: var(--on-primary); animation: pop var(--fast) var(--ease); }
+.steps.mini .ok i svg { width: 10px; height: 10px; }
+.steps time { margin-left: auto; font-size: 13px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+.steps.mini time { margin-left: 0; }
+@keyframes pop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.orig { margin-top: 8px; }
+.orig ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.orig li { padding: 6px 0; border-top: 1px solid var(--line2); color: var(--muted); }
+.orig li.chosen { color: var(--fg); font-weight: 600; }
+.orig li span { display: block; font-weight: 400; font-size: 13.5px; color: var(--muted); }
+
+/* Messages */
+.thread { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.msg { max-width: 88%; }
+.msg.me { align-self: flex-end; text-align: right; }
+.bub { display: inline-block; text-align: left; padding: 9px 12px; border-radius: 16px; font-size: 15px; background: var(--raised); border: 1px solid var(--line2); white-space: pre-wrap; }
+.msg.me .bub { background: var(--s2); border-color: transparent; }
+.card .msg.me .bub { background: var(--selected); }
+.meta { margin-top: 3px; font-size: 12.5px; color: var(--muted); }
+.msg.me .steps.mini { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; }
+
+/* Agent page and agents list */
+.abar { display: flex; align-items: center; gap: 10px; margin: -10px -16px 0; padding: 8px 16px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.abar .nm { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; }
+.abar .nm span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ahead { margin: 18px 0 6px; }
+.ahead .agentbtn { margin: -6px; padding: 6px; }
+.ahead .h { display: block; margin: 0; font: 650 26px/1.15 var(--serif); }
+.ahead .r { font-size: 14px; color: var(--muted); }
+.ahead .facts { margin: 10px 0 0; font-size: 14px; color: var(--fg2); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.tagm { display: inline-block; padding: 0 8px; border-radius: 999px; background: var(--s2); font-size: 12px; font-weight: 600; color: var(--fg2); line-height: 20px; }
+.cref { display: block; width: 100%; min-height: 44px; padding: 9px 12px; border: 1px dashed var(--line2); border-radius: 12px; text-align: left; }
+.cref:active { background: var(--s2); }
+.cref .cl { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.cref .ct { display: block; font-weight: 550; margin-top: 2px; }
+.page-title { font: 650 28px/1.15 var(--serif); margin: 18px 0 10px; }
+.arow { align-items: flex-start; }
+.arow .av { margin-top: 2px; }
+
+/* Focus */
+.fbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 14px 2px 0; }
+.fbar .pos { font-size: 15px; color: var(--muted); }
+.fbar .pos b { color: var(--fg); font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.strip { display: flex; align-items: flex-start; gap: 10px; width: 100%; min-height: 56px; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line2); border-radius: 14px; text-align: left; }
+.strip:active { background: var(--s2); }
+.strip .t { flex: 1; min-width: 0; }
+.strip .t1 { display: block; font-weight: 600; font-size: 14.5px; }
+.strip .t2 { display: block; font-size: 13.5px; color: var(--muted); }
+.fend .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+/* Bottom */
+.endnote { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--line); }
+.endnote h3 { margin: 22px 0 6px; font-size: 14px; font-weight: 650; color: var(--fg2); }
+.endnote .lead4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--fg); }
+.endnote ol { margin: 0; padding-left: 20px; color: var(--muted); font-size: 13.5px; }
+.endnote li { margin: 4px 0; }
+
+/* Sheet */
+.scrim { position: fixed; inset: 0; z-index: 20; background: var(--scrim); animation: fade var(--fast) ease-out; }
+.sheet { position: fixed; z-index: 21; left: 0; right: 0; bottom: 0; max-width: 480px; max-height: 88vh; margin: 0 auto; overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px calc(18px + env(safe-area-inset-bottom)); background: var(--raised); border-radius: 22px 22px 0 0; box-shadow: 0 -10px 40px rgb(0 0 0 / .25); animation: up 250ms var(--ease); }
+.grab { width: 38px; height: 5px; margin: 0 auto 8px; border-radius: 3px; background: var(--line2); }
+.sh-head { display: flex; align-items: center; gap: 12px; }
+.sh-head .who { flex: 1; }
+.sh-head h2 { margin: 0; font: 650 22px/1.2 var(--serif); }
+.sheet .kv { margin: 14px 0 16px; font-size: 15px; }
+.sheet .kv > div { border-top-color: var(--line); }
+.switchrow { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; margin-top: 12px; padding: 8px 0; text-align: left; }
+.switchrow .t { flex: 1; font-weight: 600; }
+.sw { flex: none; width: 50px; height: 30px; border-radius: 15px; background: var(--line2); position: relative; transition: background var(--fast); }
+.sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / .3); transition: transform var(--fast) var(--ease); }
+[aria-checked="true"] .sw { background: var(--done-text); }
+[aria-checked="true"] .sw::after { transform: translateX(20px); }
+@keyframes up { from { transform: translateY(48px); } to { transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+#toast { position: fixed; z-index: 30; left: 16px; right: 16px; width: fit-content; max-width: 448px; margin: 0 auto; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateY(12px); padding: 10px 16px; border-radius: 12px; background: var(--primary); color: var(--on-primary); font-size: 14.5px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity var(--fast), transform var(--fast) var(--ease); }
+#toast.on { opacity: 1; transform: none; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+  .bar { display: none; }
+}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<div id="sheetroot"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script>
+"use strict";
+/* =====================================================================
+   Content. Edit here: agents, cards, earlier messages, timings.
+   ===================================================================== */
+const BUILT = "2026-11-12 13:15 UTC";
+const TIMING = { countSeconds: 4, receivedMs: 1500, doneMs: 6000, nextOpenMs: 2500, answerMs: 4000 };
+const MAIN_AGENT = "nimbus";
+const PROJECTS = ["Bridge", "Home feed", "Website", "Personal"]; // each keeps its colour (--p0 .. --p3) everywhere
+const REMIND_TIMES = ["In an hour", "Tonight", "Tomorrow morning"];
+
+/* Official marks, copied unchanged: Claude and Gemini from home-feed/frontend/public/platforms (Simple Icons, CC0;
+   see SOURCES.txt there), Codex and Grok have no official file here: name only. */
+const PLATFORMS = {
+  claudecode: { name: "Claude", maker: "Anthropic", colour: "#D97757", svg: `<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Claude</title><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>` },
+  codex: { name: "Codex", maker: "OpenAI", colour: "", svg: "" },
+  gemini: { name: "Gemini", maker: "Google", colour: "#8E75B2", svg: `<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Google Gemini</title><path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/></svg>` },
+  grok: { name: "Grok", maker: "xAI", colour: "", svg: "" },
+};
+
+/* The kind of decision, with an icon drawn for this mock (not a logo). */
+const KINDS = {
+  ship: { label: "Ship", icon: `<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>` },
+  design: { label: "Design", icon: `<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/>` },
+  message: { label: "Message", icon: `<path d="M4 5h16v11H10l-6 4z"/>` },
+  money: { label: "Money", icon: `<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>` },
+  access: { label: "Access", icon: `<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>` },
+  plan: { label: "Plan", icon: `<path d="M10 6h10M10 12h10M10 18h10M4 6h2M4 12h2M4 18h2"/>` },
+};
+
+/* ack: its answer to a message on a card that is not waiting on you; ask: its answer to a question. */
+const AGENTS = [
+  { id: "sprocket", name: "Sprocket", role: "Bridge engineering", platform: "claudecode", model: "Claude Opus 5.5", runsOn: "Your Bridge server", connected: "28 Oct", ends: "28 Jan", colour: "#0369a1",
+    ack: "Got it. I'll work that in and tell you here.", ask: "Good question. I'll check and tell you here." },
+  { id: "willow", name: "Willow", role: "Bridge design", platform: "claudecode", model: "Claude Opus 5.5", runsOn: "Your Bridge server", connected: "28 Oct", ends: "28 Jan", colour: "#6d28d9",
+    ack: "Noted. I'll show you the change on the test copy.", ask: "Let me look and come back to you." },
+  { id: "nimbus", name: "Nimbus", role: "Coordinator", platform: "claudecode", model: "Claude Opus 5.5", runsOn: "Your Bridge server", connected: "20 Oct", ends: "20 Jan", colour: "#0f766e", main: true,
+    ack: "On it. I'll tell you here when it's done.", ask: "Good question. I'll find out and tell you here." },
+  { id: "jingle", name: "Jingle", role: "Liaison", platform: "claudecode", model: "Claude Opus 5.5", runsOn: "Your Bridge server", connected: "30 Oct", ends: "30 Jan", colour: "#b45309",
+    ack: "Got it. I'll change the draft and show you again.", ask: "I'll check and tell you here." },
+  { id: "ledger", name: "Ledger", role: "Household payments", platform: "codex", model: "GPT-5 Codex", runsOn: "Your laptop", connected: "2 Nov", ends: "2 Feb", colour: "#047857",
+    ack: "Understood. I'll do that and confirm here.", ask: "I'll look it up and tell you here." },
+  { id: "scout", name: "Scout", role: "Website research", platform: "gemini", model: "Gemini 3 Pro", runsOn: "Google's servers", connected: "6 Nov", ends: "6 Dec", colour: "#be123c",
+    ack: "OK.", ask: "Sure. Both are on the test site." },
+  { id: "tally", name: "Tally", role: "Subscriptions", platform: "grok", model: "Grok 4", runsOn: "xAI's servers", connected: "10 Oct", ends: "10 Nov", colour: "#4338ca", ended: true,
+    ack: "", ask: "" },
+];
+const DECIDED = { got: "Got it. Doing it your way.", done: "Done, the way you asked." }; // when a message is the decision
+
+/* kind "ask": a question with options. kind "update": nothing to answer (status "waiting" or "done").
+   type: the kind of decision (KINDS). ago: minutes before the page opened. chips: at most three, deadline first.
+   preview: what is being decided (facts, thumbs, draft, amount, progress, time). follows: what came before.
+   got / done on an option: the agent's line when it receives the answer and when it is done.
+   ask on a card: the agent's answer when you message it a question. The order here is the order in "Needs you". */
+const CARDS = [
+  { id: "ship", kind: "ask", type: "ship", agent: "sprocket", project: "Bridge", ago: 12, ref: "BR-0412",
+    title: "Ship the card-link fix tonight?",
+    body: "The fix makes a link in a card open that card. It passed its checks. Shipping restarts the Bridge once, for about 30 seconds.",
+    chips: ["By 22:00", "30 s restart"],
+    preview: { facts: ["Checks passed", "Tried on the test copy", "Rollback ready"] },
+    follows: { text: "you asked for working card links", ago: 2900 },
+    suggest: { option: "tonight", reason: "Nobody is on the Bridge after 22:00, so the restart interrupts no one." },
+    deadline: "Answer by 22:00 tonight. After that, Sprocket waits until morning.",
+    options: [
+      { id: "tonight", label: "Ship tonight", detail: "Live in about 2 minutes. The Bridge restarts once.", got: "Shipping now. I'll tell you when it's live.", done: "Live. Card links open the right card now." },
+      { id: "morning", label: "Wait until morning", detail: "Ships at 08:00. Card links stay broken until then.", got: "Holding it until 08:00.", done: "Scheduled for 08:00. Nothing changes tonight." },
+    ],
+    evidence: ["212 checks passed, none failed", "Tried on the test copy at 18:40: each link opened its card", "Changes 3 files, all in the card view"],
+    ask: "The restart is about 30 seconds and nobody is on now. I'd still ship tonight." },
+  { id: "photo", kind: "ask", type: "design", agent: "scout", project: "Website", ago: 26, ref: "WEB-0093",
+    title: "New hero photo?",
+    chips: [],
+    preview: { thumbs: [{ label: "Current", draw: "heroOld" }, { label: "New", draw: "heroNew" }] },
+    options: [
+      { id: "yes", label: "Yes", got: "OK, swapping it.", done: "The new photo is up." },
+      { id: "no", label: "No", got: "OK.", done: "Kept the current photo." },
+    ],
+    ask: "The new one. It's brighter and loads faster." },
+  { id: "note", kind: "ask", type: "message", agent: "jingle", project: "Home feed", ago: 48, ref: "HF-0031",
+    title: "Send this note to the Home team?",
+    body: "I wrote it from this morning's notes. It goes to the team channel, from you:",
+    quote: "Hi all, the feed lab is ready to try. Three changes: one-tap answers with Undo, one reply box per card, and each agent's name and platform on its cards. Could you try it before Friday and reply in this thread?",
+    chips: ["Before Friday", "From you"],
+    preview: { draft: { to: "the Home team" } },
+    follows: { text: "you asked to share the feed lab", ago: 1500 },
+    options: [
+      { id: "send", label: "Send as written", detail: "Posted in the team channel now, from you.", got: "Sending it now.", done: "Sent. I'll bring their replies here." },
+      { id: "hold", label: "Hold it", detail: "Nothing is sent.", got: "Holding it.", done: "Saved as a draft. Nothing was sent." },
+    ],
+    ask: "It goes to the whole team channel, about twelve people. Still send it?" },
+  { id: "header", kind: "ask", type: "design", agent: "willow", project: "Bridge", ago: 75, ref: "BR-0415",
+    title: "Which header for the Bridge?",
+    body: "Both are on the test copy. Pick one and I'll finish it today.",
+    chips: ["On the test copy"],
+    preview: { thumbs: [{ label: "Quiet header", draw: "quiet" }, { label: "Busy header", draw: "busy" }] },
+    follows: { text: "you asked for a calmer header", ago: 300 },
+    suggest: { option: "quiet", reason: "Your eye lands on what needs you first; the runs stay one tap away." },
+    options: [
+      { id: "quiet", label: "Quiet header", detail: "Name and status only. Runs move one tap down.", thumb: "quiet", got: "Finishing the quiet header.", done: "The quiet header is on the test copy." },
+      { id: "busy", label: "Busy header", detail: "Name, status and the three latest runs, always shown.", thumb: "busy", got: "Finishing the busy header.", done: "The busy header is on the test copy." },
+    ],
+    ask: "The quiet one loads a little faster. Both are on the test copy." },
+  { id: "storage", kind: "ask", type: "money", agent: "tally", project: "Personal", ago: 2890, ref: "PER-0207",
+    title: "Renew the 2 TB storage plan?",
+    body: "It renews on 15 Nov for $99.99 a year. You used 0.8 TB this year.",
+    chips: ["By 15 Nov", "0.8 of 2 TB used"],
+    preview: { amount: { value: "$99.99", note: "a year · renews 15 Nov" } },
+    follows: { text: "you chose the 2 TB plan", ago: 525600 },
+    suggest: { option: "small", reason: "You never used more than 0.8 TB, so 1 TB is enough." },
+    deadline: "It renews by itself on 15 Nov.",
+    options: [
+      { id: "keep", label: "Keep 2 TB", detail: "$99.99 is paid on 15 Nov." },
+      { id: "small", label: "Switch to 1 TB", detail: "$49.99 a year from 15 Nov. Your files fit." },
+      { id: "end", label: "Let it end", detail: "Nothing is paid. Files stay readable until 15 Dec." },
+    ],
+    ask: "Ledger can switch it today. Should I ask it to?", got: "Got it. I'll pass this to Ledger.", done: "Ledger has it. Done." },
+  { id: "plan", kind: "update", status: "waiting", type: "plan", agent: "nimbus", project: "Bridge", ago: 25, ref: "BR-0409",
+    title: "Writing tomorrow's plan",
+    body: "So far: the card-link fix, the Bridge header and the storage renewal. Ready by 18:00.",
+    chips: ["Ready 18:00"],
+    preview: { progress: { done: 3, of: 5, label: "steps done" } },
+    follows: { text: "you asked for a daily plan", ago: 5800 } },
+  { id: "bill", kind: "update", status: "done", type: "money", agent: "ledger", project: "Personal", ago: 55, ref: "PER-0210",
+    title: "Electricity bill paid: $84.20",
+    body: "Paid today from the household account. The receipt is in your files.",
+    chips: ["Receipt saved"],
+    preview: { amount: { value: "$84.20", note: "paid today" } } },
+  { id: "review", kind: "ask", type: "plan", agent: "nimbus", project: "Home feed", ago: 140, ref: "HF-0028",
+    title: "Move the feed review to 15:00?",
+    body: "Two of the crew are busy at 11:00.",
+    chips: ["Today"],
+    preview: { time: { from: "11:00", to: "15:00" } },
+    options: [
+      { id: "yes", label: "Yes, 15:00", detail: "Nimbus moves it and tells the crew.", got: "Moving it now.", done: "Moved. The review is at 15:00." },
+      { id: "no", label: "Keep 11:00", detail: "Two of the crew miss it.", got: "Keeping 11:00.", done: "Kept at 11:00." },
+    ],
+    answered: { option: "yes", ago: 128 } },
+];
+
+/* Earlier lines in each agent's conversation. kind "card": an older card that is no longer in the feed. */
+const HISTORY = [
+  { agent: "sprocket", ago: 1385, kind: "card", title: "Restart the test copy?" },
+  { agent: "sprocket", ago: 1380, who: "me", kind: "choice", text: "Restart now" },
+  { agent: "sprocket", ago: 1379, who: "agent", text: "Restarted. The test copy is back." },
+  { agent: "willow", ago: 300, who: "me", text: "Can the Bridge header be calmer? It's a lot at night." },
+  { agent: "willow", ago: 296, who: "agent", text: "Yes. I'll draw two versions and ask you." },
+  { agent: "nimbus", ago: 480, who: "agent", text: "Morning. Five cards need you today. The card-link fix has a deadline." },
+  { agent: "jingle", ago: 50, who: "agent", text: "I drafted the note to the Home team. It's in your feed." },
+  { agent: "ledger", ago: 2900, who: "agent", text: "The phone plan renewed at the same price." },
+  { agent: "tally", ago: 4400, who: "agent", text: "October's subscriptions are sorted: 9 active, none doubled." },
+  { agent: "tally", ago: 3000, who: "agent", text: "My access ends on 10 Nov." },
+];
+
+/* What this mock had to decide for itself. Shown at the bottom of the page. */
+const MOCK_LINE = "Mock 4: no explaining text; one button, Message <agent>; the card shows whose turn it is.";
+const INVENTED = [
+  "A message ending in “?” is a question: the agent answers and the card comes back to “Needs you” with a dot. Any other message on a card that needs you is taken as the decision.",
+  "On a card that is already answered, on an update, and on an agent's page, a message just gets the agent's answer; nobody's turn changes.",
+  "Tally's options cannot be tapped. On Tally's page, “Message Nimbus instead” opens Nimbus's page.",
+  "A message about a card shows on the page of the agent it went to, under that card.",
+  "Context: project colours, kind icons, chips, previews and “Follows” lines are made up. Tapping the draft shows all of it. Plain shows the Mock 3 text instead.",
+  "A card opens where its row is; the row you tap stays under your thumb.",
+  "After an answer, a message or “Remind me later”, the next card opens 2.5 s later. Typing in the folded card stops it.",
+  "A card waiting on an agent stays where it was, as a row, outside the count; when it is done it moves to “Done”.",
+  "Opening another card while one is counting sends the first at once, as the real build does.",
+  "Focus: “Skip” moves on without answering; the count is your place in this pass; a strip on top follows your last answer.",
+  "Filter also picks one project. With grouping on, the next card comes from the same project first.",
+  "Each agent keeps a letter in its own colour beside the platform mark, as in the real build.",
+  "Agents' lines are canned; models and “runs on” are made up.",
+];
+
+/* =====================================================================
+   Small helpers
+   ===================================================================== */
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pad = (n) => String(n).padStart(2, "0");
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const clock = (ms) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const sameDay = (a, b) => a.toDateString() === b.toDateString();
+function stamp(ms) {
+  const d = new Date(ms), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  if (sameDay(d, now)) return clock(ms);
+  if (sameDay(d, y)) return `Yesterday ${clock(ms)}`;
+  return `${d.getDate()} ${MON[d.getMonth()]} ${clock(ms)}`;
+}
+function day(ms) {
+  const d = new Date(ms), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  if (sameDay(d, now)) return "Today";
+  if (sameDay(d, y)) return "Yesterday";
+  return `${d.getDate()}\u00a0${MON[d.getMonth()]}${d.getFullYear() !== now.getFullYear() ? "\u00a0" + d.getFullYear() : ""}`;
+}
+function rel(ms) {
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return "now";
+  if (m < 60) return `${m} min`;
+  if (m < 1440) return `${Math.floor(m / 60)} h`;
+  const days = Math.floor(m / 1440);
+  return days === 1 ? "Yesterday" : `${days} days`;
+}
+const firstLine = (s) => String(s).split("\n")[0];
+const agentOf = (id) => AGENTS.find((a) => a.id === id);
+const cardOf = (id) => CARDS.find((c) => c.id === id);
+const mainAgent = () => agentOf(MAIN_AGENT);
+/** Who you write to about this agent's cards: the agent, or your main agent when the agent is disconnected. */
+const writeTo = (agentId) => { const a = agentOf(agentId); return a.ended ? mainAgent() : a; };
+const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const icon = (path) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${path}</svg>`;
+const ICON_CHECK = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
+const P_CHECK = `<path d="M5 12.5l4.5 4.5L19 7.5"/>`;
+const P_CLOCK = `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`;
+const P_ARROW = `<path d="M4 12h15M14 7l5 5-5 5"/>`;
+const FRAME = `<rect x="1" y="1" width="118" height="70" rx="7" fill="none" stroke="currentColor" stroke-width="1.5"/>`;
+const DRAW = {
+  quiet: `${FRAME}<rect x="12" y="13" width="44" height="8" rx="4" fill="currentColor"/><rect x="84" y="13" width="24" height="8" rx="4" fill="currentColor" opacity=".45"/><rect x="12" y="34" width="96" height="26" rx="5" fill="currentColor" opacity=".12"/>`,
+  busy: `${FRAME}<rect x="12" y="13" width="44" height="8" rx="4" fill="currentColor"/><rect x="84" y="13" width="24" height="8" rx="4" fill="currentColor" opacity=".45"/><rect x="12" y="30" width="96" height="5" rx="2.5" fill="currentColor" opacity=".55"/><rect x="12" y="40" width="80" height="5" rx="2.5" fill="currentColor" opacity=".55"/><rect x="12" y="50" width="88" height="5" rx="2.5" fill="currentColor" opacity=".55"/>`,
+  heroOld: `${FRAME}<rect x="12" y="12" width="46" height="7" rx="3.5" fill="currentColor"/><path d="M4 66 L38 38 L58 54 L78 40 L116 66 Z" fill="currentColor" opacity=".3"/><circle cx="92" cy="22" r="7" fill="currentColor" opacity=".45"/>`,
+  heroNew: `${FRAME}<rect x="3" y="48" width="114" height="21" rx="5" fill="currentColor" opacity=".18"/><circle cx="36" cy="38" r="16" fill="currentColor" opacity=".45"/><rect x="66" y="22" width="42" height="7" rx="3.5" fill="currentColor"/><rect x="66" y="33" width="28" height="5" rx="2.5" fill="currentColor" opacity=".5"/>`,
+};
+const drawing = (name, cls = "") => `<svg ${cls ? `class="${cls}" ` : ""}viewBox="0 0 120 72" aria-hidden="true">${DRAW[name]}</svg>`;
+
+/* =====================================================================
+   State
+   ===================================================================== */
+let S;
+const timers = new Set();
+function later(ms, fn) { const t = setTimeout(() => { timers.delete(t); fn(); }, ms); timers.add(t); return t; }
+function every(ms, fn) { const t = setInterval(fn, ms); timers.add(t); return t; }
+function stopTimer(t) { clearTimeout(t); clearInterval(t); timers.delete(t); }
+
+function init() {
+  for (const t of timers) { clearTimeout(t); clearInterval(t); }
+  timers.clear();
+  const T0 = Date.now(), ago = (m) => T0 - m * 60000;
+  S = {
+    view: "feed", agentId: null, history: [], mode: "list", ctx: S ? S.ctx : true, group: false, project: "all",
+    openId: "ship", sheet: null, cards: {}, events: [], drafts: {}, pend: {}, compose: new Set(), seq: 0, laterSeq: 0,
+    focus: { queue: [], pos: 0, last: null, answered: 0 }, enter: new Set(),
+  };
+  for (const c of CARDS) {
+    const st = S.cards[c.id] = { posted: ago(c.ago), phase: c.kind === "update" ? "update" : "ask", chosen: null, msg: null, steps: {}, later: null, remind: false, details: false, showCard: false, fresh: false, draftOpen: false };
+    if (c.answered) {
+      const o = c.options.find((x) => x.id === c.answered.option), t = ago(c.answered.ago);
+      Object.assign(st, { phase: "done", chosen: o.id, steps: { sent: t, received: t + 20000, done: t + 60000 } });
+      addEvent({ agent: c.agent, who: "me", kind: "choice", text: o.label, card: c.id, at: t });
+      addEvent({ agent: c.agent, who: "agent", by: c.agent, text: o.got, card: c.id, at: t + 20000 });
+      addEvent({ agent: c.agent, who: "agent", by: c.agent, text: o.done, card: c.id, at: t + 60000 });
+    }
+  }
+  for (const h of HISTORY) addEvent({ agent: h.agent, who: h.who || "agent", by: h.agent, kind: h.kind || "msg", text: h.text, title: h.title, at: ago(h.ago), old: true });
+}
+function addEvent(e) { const ev = { id: ++S.seq, kind: "msg", card: null, ...e }; S.events.push(ev); return ev; }
+
+/* =====================================================================
+   What is where
+   ===================================================================== */
+const shown = (c) => S.project === "all" || c.project === S.project;
+const byProject = (list) => S.group ? [...list].sort((a, b) => PROJECTS.indexOf(a.project) - PROJECTS.indexOf(b.project)) : list;
+const askable = (id) => S.cards[id].phase === "ask" && !S.cards[id].later;
+function needsList() {
+  const inNeeds = CARDS.filter((c) => c.kind === "ask" && shown(c) && (S.cards[c.id].phase === "ask" || S.cards[c.id].phase === "waiting"));
+  return {
+    active: byProject(inNeeds.filter((c) => !S.cards[c.id].later)),
+    later: inNeeds.filter((c) => S.cards[c.id].later).sort((a, b) => S.cards[a.id].later.seq - S.cards[b.id].later.seq),
+  };
+}
+const updatesList = () => byProject(CARDS.filter((c) => c.kind === "update" && shown(c)));
+const doneList = () => byProject(CARDS.filter((c) => c.kind === "ask" && shown(c) && S.cards[c.id].phase === "done").sort((a, b) => S.cards[b.id].steps.done - S.cards[a.id].steps.done));
+const needCount = () => CARDS.filter((c) => c.kind === "ask" && askable(c.id)).length;
+const laterCount = () => CARDS.filter((c) => c.kind === "ask" && S.cards[c.id].phase === "ask" && S.cards[c.id].later).length;
+function nextAfter(id) {
+  const order = needsList().active.map((c) => c.id), i = order.indexOf(id);
+  const ring = i < 0 ? order : order.slice(i + 1).concat(order.slice(0, i));
+  return ring.find((x) => x !== id && askable(x)) || null;
+}
+const cardThread = (id) => S.events.filter((e) => e.card === id && e.kind === "msg").sort((a, b) => a.at - b.at || a.id - b.id);
+function lineOf(e) { return e.who === "me" ? `You: ${firstLine(e.text)}` : `${agentOf(e.by).name}: ${firstLine(e.text)}`; }
+function latestLine(id) { const t = cardThread(id); return t.length ? lineOf(t[t.length - 1]) : ""; }
+function agentTimeline(agentId) {
+  const items = S.events.filter((e) => e.agent === agentId).map((e) => ({ ...e, type: e.kind === "card" ? "oldcard" : e.kind }));
+  for (const c of CARDS) if (c.agent === agentId) items.push({ type: "card", card: c.id, at: S.cards[c.id].posted, id: 0 });
+  // A message about another agent's card sits under that card.
+  const foreign = new Map();
+  for (const e of items) if (e.card && cardOf(e.card).agent !== agentId && !foreign.has(e.card)) foreign.set(e.card, e.at);
+  for (const [card, at] of foreign) items.push({ type: "card", card, at: at - 1, id: 0 });
+  return items.sort((a, b) => a.at - b.at || a.id - b.id);
+}
+function statusOf(c) {
+  const st = S.cards[c.id];
+  if (c.kind === "update") return c.status === "waiting" ? { w: `Waiting on ${agentOf(c.agent).name}`, t: "wait" } : { w: "Done", t: "done" };
+  if (st.phase === "ask") return st.later ? { w: "Later", t: "later" } : agentOf(c.agent).ended ? { w: "Disconnected", t: "off" } : { w: "Needs you", t: "need" };
+  if (st.phase === "waiting") return { w: `Waiting on ${writeTo(c.agent).name}`, t: "wait" };
+  return { w: "Done", t: "done" };
+}
+
+/* =====================================================================
+   Pieces of HTML
+   ===================================================================== */
+const av = (a, size = "") => `<span class="av ${size}" style="background:${a.colour}" aria-hidden="true">${esc(a.name[0])}</span>`;
+function platChip(a) {
+  const p = PLATFORMS[a.platform];
+  if (!p.svg) return `<span class="plat txt">${esc(p.name)}</span>`;
+  return `<span class="plat"><span class="pm" aria-hidden="true"${p.colour ? ` style="color:${p.colour}"` : ""}>${p.svg}</span>${esc(p.name)}</span>`;
+}
+const chip = (s) => `<span class="chip ${s.t}">${esc(s.w)}</span>`;
+const stWord = (s) => `<span class="st ${s.t}">${esc(s.w)}</span>`;
+const ptag = (project) => `<span class="ptag p${PROJECTS.indexOf(project)}">${esc(project)}</span>`;
+const fchip = (text, i) => `<span class="fchip">${i === 0 && /^(By|Before) /.test(text) ? icon(P_CLOCK) : ""}${esc(text)}</span>`;
+/** Context line: the project, the kind of decision, and (on rows) one fact. */
+function ctxLine(c, rowChip) {
+  const k = KINDS[c.type];
+  return `<span class="ctx" data-m="ctx">${ptag(c.project)}<span class="kind">${icon(k.icon)}${k.label}</span>${rowChip && c.chips && c.chips[0] ? fchip(c.chips[0], 0) : ""}</span>`;
+}
+function previewHTML(c) {
+  const p = c.preview, st = S.cards[c.id];
+  if (!p) return "";
+  let inner = "";
+  if (p.facts) inner = `<div class="pv-facts">${p.facts.map((f) => `<span>${icon(P_CHECK)}${esc(f)}</span>`).join("")}</div>`;
+  else if (p.thumbs) inner = `<div class="pv-thumbs">${p.thumbs.map((t) => `<figure>${drawing(t.draw)}<figcaption>${esc(t.label)}</figcaption></figure>`).join("")}</div>`;
+  else if (p.draft) inner = `<button class="pv-draft" data-act="draft" data-id="${c.id}" aria-expanded="${!!st.draftOpen}"><span class="to">To: ${esc(p.draft.to)}</span><span class="tx">${esc(c.quote)}</span></button>`;
+  else if (p.amount) inner = `<div class="pv-amount"><b>${esc(p.amount.value)}</b><span>${esc(p.amount.note)}</span></div>`;
+  else if (p.progress) inner = `<div class="pv-progress"><div class="track"><span class="fill" style="width:${Math.round((p.progress.done / p.progress.of) * 100)}%;background:var(--p${PROJECTS.indexOf(c.project)}f)"></span></div><span>${p.progress.done} of ${p.progress.of} ${esc(p.progress.label)}</span></div>`;
+  else if (p.time) inner = `<div class="pv-time"><s>${esc(p.time.from)}</s>${icon(P_ARROW)}<span>${esc(p.time.to)}</span></div>`;
+  return `<div class="pv" data-m="pv">${inner}</div>`;
+}
+const chipsHTML = (c) => c.chips && c.chips.length ? `<div class="chips" data-m="chips">${c.chips.slice(0, 3).map(fchip).join("")}</div>` : "";
+const followsHTML = (c) => c.follows ? `<p class="follows" data-m="follows">Follows: ${esc(c.follows.text)} · ${day(Date.now() - c.follows.ago * 60000)}</p>` : "";
+
+function headHTML() {
+  const n = needCount(), l = laterCount(), filtered = S.group || S.project !== "all";
+  const count = n ? `<b>${n}</b> need${n === 1 ? "s" : ""} you` : "Nothing needs you";
+  return `<header>
+    <p class="mocklabel">Mock 4 · ${esc(BUILT)} · made-up content</p>
+    <div class="titlerow"><h1 class="h1">Home</h1>
+      <button class="btn" data-act="filter">${filtered ? `<span class="dot" aria-hidden="true"></span>` : ""}Filter${filtered ? `<span class="sr"> (on)</span>` : ""}</button>
+      <button class="btn" data-act="agents">Agents</button></div>
+    <p class="count">${count}${l ? ` · ${l} later` : ""}</p>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="View">
+        <button data-act="mode" data-m="list" aria-pressed="${S.mode === "list"}">List</button>
+        <button data-act="mode" data-m="focus" aria-pressed="${S.mode === "focus"}">Focus</button>
+      </div>
+      <div class="seg" role="group" aria-label="Cards">
+        <button data-act="ctx" data-v="plain" aria-pressed="${!S.ctx}">Plain</button>
+        <button data-act="ctx" data-v="context" aria-pressed="${S.ctx}">Context</button>
+      </div>
+    </div>
+  </header>`;
+}
+const secHTML = (label, n) => `<h2 class="sec"><span>${esc(label)}</span>${n != null ? `<b>${n}</b>` : ""}</h2>`;
+
+function rowHTML(c) {
+  const a = agentOf(c.agent), st = S.cards[c.id], s = statusOf(c);
+  return `<button class="row${st.later ? " quiet" : ""}${S.ctx ? " ctxrow" : ""}" data-act="open" data-id="${c.id}">
+    ${av(a, "sm")}
+    <span class="t">${S.ctx ? ctxLine(c, true) : ""}<span class="t1">${st.fresh ? `<span class="newdot" aria-hidden="true"></span><span class="sr">New. </span>` : ""}${esc(c.title)}</span>
+      <span class="t2"><b>${esc(a.name)}</b>${platChip(a)}${st.later ? `<span>· ${esc(st.later.when)}</span>` : ""}${stWord(s)}</span>
+      ${st.fresh ? `<span class="t3">${esc(latestLine(c.id))}</span>` : ""}</span>
+  </button>`;
+}
+function foldRowHTML(c) {
+  const a = agentOf(c.agent), st = S.cards[c.id], o = st.chosen && c.options.find((x) => x.id === st.chosen);
+  const mine = st.msg && S.events.find((e) => e.id === st.msg);
+  const line = st.phase === "waiting" && mine ? `You: ${firstLine(mine.text)}` : latestLine(c.id);
+  return `<button class="row${S.ctx ? " ctxrow" : ""}" data-act="open" data-id="${c.id}">
+    ${av(a, "sm")}
+    <span class="t">${S.ctx ? ctxLine(c, true) : ""}<span class="t1">${o ? `You chose ${esc(o.label)}` : esc(c.title)}</span>
+      <span class="t2"><b>${esc(a.name)}</b>${platChip(a)}${stWord(statusOf(c))}</span>
+      <span class="t3">${esc(line)}</span></span>
+  </button>`;
+}
+function cardHead(c) {
+  const a = agentOf(c.agent), st = S.cards[c.id];
+  return `<div class="ctop" data-m="ctop">${S.ctx ? ctxLine(c, false) : ""}${chip(statusOf(c))}</div>
+  <div class="ch" data-m="ch">
+    <button class="agentbtn" data-act="agent" data-id="${a.id}">${av(a)}<span class="who">
+      <span class="n"><b>${esc(a.name)}</b>${platChip(a)}</span>
+      <span class="r">${esc(a.role)} · ${rel(st.posted)}</span></span></button>
+  </div>`;
+}
+/** Title, then either the Context treatment or the Plain (Mock 3) text. */
+function framing(c) {
+  if (S.ctx) return `<h2 class="ttl">${esc(c.title)}</h2>${chipsHTML(c)}${previewHTML(c)}${followsHTML(c)}`;
+  return `<h2 class="ttl">${esc(c.title)}</h2>${c.body ? `<p class="body">${esc(c.body)}</p>` : ""}${c.quote ? `<blockquote class="quote">${esc(c.quote)}</blockquote>` : ""}`;
+}
+function askCardHTML(c, focus) {
+  const a = agentOf(c.agent), st = S.cards[c.id], p = S.pend["card:" + c.id];
+  return `<article class="card${focus ? " focus" : ""}" aria-label="${esc(c.title)}">
+    ${cardHead(c)}
+    ${st.later ? `<div class="note-box" data-m="laternote"><b>Later · ${esc(st.later.when)}</b>${st.later.note ? ` · Note to self: “${esc(st.later.note)}”` : ""}</div>` : ""}
+    ${framing(c)}
+    ${c.suggest ? `<p class="sugg" data-m="sugg"><b>${esc(a.name)} suggests: ${esc(c.options.find((o) => o.id === c.suggest.option).label)}.</b> ${esc(c.suggest.reason)}</p>` : ""}
+    ${c.deadline && !S.ctx ? `<p class="due" data-m="due">${icon(P_CLOCK)}<span>${esc(c.deadline)}</span></p>` : ""}
+    ${optionsHTML(c, p)}
+    ${threadHTML(c.id)}
+    ${composerHTML("card:" + c.id, c.agent, p && p.kind === "choice")}
+    <div class="foot" data-m="foot">
+      <button class="link" data-act="remind" data-id="${c.id}" aria-expanded="${st.remind}"${p ? " disabled" : ""}>Remind me later</button>
+      <button class="link" data-act="details" data-id="${c.id}" aria-expanded="${st.details}">Details</button>
+    </div>
+    ${st.remind ? remindHTML(c) : ""}
+    ${st.details ? detailsHTML(c) : ""}
+  </article>`;
+}
+function optionsHTML(c, p) {
+  if (agentOf(c.agent).ended) {
+    return `<div class="opts" data-m="opts"><p class="lbl">Options</p>${c.options.map((o) => `<div class="opt ro" data-m="o-${o.id}"><span class="ot"><span class="ol">${esc(o.label)}</span>${o.detail ? `<span class="od">${esc(o.detail)}</span>` : ""}</span></div>`).join("")}</div>`;
+  }
+  const counting = p && p.kind === "choice";
+  const items = c.options.map((o) => {
+    const sug = c.suggest && c.suggest.option === o.id ? `<span class="tag">Suggested</span>` : "";
+    if (counting && p.option === o.id) {
+      return `<div class="opt on" data-m="o-${o.id}"><span class="rd on" aria-hidden="true"></span><span class="ot"><span class="ol">${esc(o.label)}</span>
+        <span class="od" data-count="card:${c.id}">${countText("card:" + c.id)}</span></span>
+        <button class="undo" data-act="undo" data-k="card:${c.id}">Undo</button>${barHTML()}</div>`;
+    }
+    return `<button class="opt${p ? " dim" : ""}" data-m="o-${o.id}" data-act="choose" data-id="${c.id}" data-opt="${o.id}"${p ? " disabled" : ""}>
+      <span class="rd" aria-hidden="true"></span><span class="ot"><span class="ol">${esc(o.label)}</span>${sug}${o.detail ? `<span class="od">${esc(o.detail)}</span>` : ""}</span>${o.thumb && !S.ctx ? drawing(o.thumb, "thumb") : ""}</button>`;
+  }).join("");
+  return `<div class="opts" role="group" aria-label="Choose one" data-m="opts"><p class="lbl">Choose one</p>${items}</div>`;
+}
+const barHTML = () => `<span class="bar" data-m="bar" aria-hidden="true" style="animation-duration:${TIMING.countSeconds}s"></span>`;
+function stepsHTML(steps, receiver, mini, withDone) {
+  const li = (ok, label, at, waitWord) => `<li class="${ok ? "ok" : ""}"><i>${ok ? ICON_CHECK : ""}</i><span>${esc(label)}${ok ? "" : `<span class="sr">, not yet</span>`}</span>${at ? `<time>${clock(at)}</time>` : waitWord ? `<time>${waitWord}</time>` : ""}</li>`;
+  return `<ol class="steps${mini ? " mini" : ""}" aria-label="Steps">
+    ${li(true, "Sent", mini ? null : steps.sent)}
+    ${li(!!steps.received, `${receiver} received it`, mini ? null : steps.received)}
+    ${withDone ? li(!!steps.done, "Done", steps.done, "waiting") : ""}
+  </ol>`;
+}
+function msgHTML(e, hideSteps) {
+  if (e.who === "me") {
+    const to = agentOf(e.to || e.agent);
+    return `<div class="msg me" data-m="e${e.id}"><span class="bub">${esc(e.text)}</span>
+      ${e.steps && !hideSteps ? stepsHTML(e.steps, to.name, true, false) : `<div class="meta">${stamp(e.at)}</div>`}</div>`;
+  }
+  return `<div class="msg" data-m="e${e.id}"><span class="bub">${esc(e.text)}</span><div class="meta">${esc(agentOf(e.by).name)} · ${stamp(e.at)}</div></div>`;
+}
+function threadHTML(cardId) {
+  const t = cardThread(cardId), st = S.cards[cardId];
+  return t.length ? `<div class="thread" data-m="thread">${t.map((e) => msgHTML(e, st && st.msg === e.id && st.phase !== "ask")).join("")}</div>` : "";
+}
+/**
+ * The one way to write: a quiet "Message <agent>" button that opens one line in place. key: "card:<id>" or
+ * "agent:<id>". For a disconnected agent it reads "Message <main agent> instead"; on that agent's own page it opens
+ * the main agent's page.
+ */
+function composerHTML(key, agentId, locked, onPage) {
+  const a = agentOf(agentId), to = writeTo(agentId), p = S.pend[key];
+  const label = a.ended ? `Message ${to.name} instead` : `Message ${a.name}`;
+  const id = "ta-" + key.replace(":", "-");
+  if (p && p.kind === "reply") {
+    return `<div class="reply" data-m="reply"><div class="sending" data-m="sending"><span class="stext">${esc(p.text)}</span>
+        <span class="srow"><span data-count="${key}">${countText(key)}</span><button class="undo" data-act="undo" data-k="${key}">Undo</button></span>${barHTML()}</div></div>`;
+  }
+  if (!S.compose.has(key)) {
+    const act = onPage && a.ended ? `data-act="gomsg" data-id="${to.id}"` : `data-act="compose" data-k="${key}"`;
+    return `<div class="reply" data-m="reply"><button class="btn msgbtn" data-m="msgbtn" ${act}${locked ? " disabled" : ""}>${icon(KINDS.message.icon)}${esc(label)}</button></div>`;
+  }
+  return `<div class="reply" data-m="reply"><div class="rbox" data-m="rbox"><textarea id="${id}" data-m="ta" data-draft="${key}" rows="1" aria-label="Message ${esc(to.name)}" placeholder="Message ${esc(to.name)}"${locked ? " disabled" : ""}></textarea>
+    <button class="btn primary send" data-m="send" data-act="send" data-k="${key}"${locked ? " data-locked" : ""}>Send</button></div></div>`;
+}
+function remindHTML(c) {
+  return `<div class="panel" data-m="remind">
+    <label class="pl" for="note-${c.id}">Note to self</label>
+    <textarea id="note-${c.id}" data-m="note" data-draft="note:${c.id}" rows="2"></textarea>
+    <span class="pl gap">Ask me again</span>
+    <div class="picks">${REMIND_TIMES.map((w) => `<button class="pick" data-act="remindAt" data-id="${c.id}" data-when="${esc(w)}">${esc(w)}</button>`).join("")}</div>
+  </div>`;
+}
+function detailsHTML(c) {
+  const a = agentOf(c.agent), st = S.cards[c.id];
+  return `<div class="panel det" data-m="details"><dl class="kv">
+      <div><dt>Posted by</dt><dd>${esc(a.name)} (${esc(PLATFORMS[a.platform].name)}) · ${stamp(st.posted)}</dd></div>
+      <div><dt>Project</dt><dd>${esc(c.project)}</dd></div>
+      <div><dt>Card reference</dt><dd>${esc(c.ref)}</dd></div>
+      ${a.ended ? `<div><dt>${esc(a.name)}</dt><dd>Disconnected ${esc(a.ends)}</dd></div>` : `<div><dt>Messages go to</dt><dd>${esc(a.name)}</dd></div>`}
+    </dl>
+    ${c.evidence ? `<div class="ev"><span class="pl">What ${esc(a.name)} checked</span><ul>${c.evidence.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+  </div>`;
+}
+function foldCardHTML(c) {
+  const st = S.cards[c.id], o = st.chosen && c.options.find((x) => x.id === st.chosen), to = writeTo(c.agent);
+  const head = o ? `<b>You chose ${esc(o.label)}</b><span class="fsub">Sent to ${esc(to.name)} · ${esc(c.title)}</span>` : `<b>You messaged ${esc(to.name)}</b><span class="fsub">${esc(c.title)}</span>`;
+  return `<article class="card" aria-label="${esc(c.title)}">
+    ${cardHead(c)}
+    <div class="fs" data-m="fs"><span class="ck" aria-hidden="true">${ICON_CHECK}</span><span>${head}</span></div>
+    <div data-m="steps">${stepsHTML(st.steps, to.name, false, true)}</div>
+    ${threadHTML(c.id)}
+    ${composerHTML("card:" + c.id, c.agent, false)}
+    <div class="foot" data-m="foot">
+      <button class="link" data-act="showcard" data-id="${c.id}" aria-expanded="${st.showCard}">Show card</button>
+      <button class="link" data-act="conv" data-id="${to.id}">Open conversation</button>
+      <button class="link" data-act="details" data-id="${c.id}" aria-expanded="${st.details}">Details</button>
+    </div>
+    ${st.showCard ? `<div class="panel orig" data-m="orig">${c.body ? `<span>${esc(c.body)}</span>` : `<span>${esc(c.title)}</span>`}<ul>${c.options.map((x) => `<li class="${x.id === st.chosen ? "chosen" : ""}">${x.id === st.chosen ? "✓ " : ""}${esc(x.label)}${x.detail ? `<span>${esc(x.detail)}</span>` : ""}</li>`).join("")}</ul></div>` : ""}
+    ${st.details ? detailsHTML(c) : ""}
+  </article>`;
+}
+function updateCardHTML(c) {
+  const st = S.cards[c.id];
+  return `<article class="card" aria-label="${esc(c.title)}">
+    ${cardHead(c)}
+    ${framing(c)}
+    ${threadHTML(c.id)}
+    ${composerHTML("card:" + c.id, c.agent, false)}
+    <div class="foot" data-m="foot"><button class="link" data-act="details" data-id="${c.id}" aria-expanded="${st.details}">Details</button></div>
+    ${st.details ? detailsHTML(c) : ""}
+  </article>`;
+}
+function cardItem(c) {
+  const st = S.cards[c.id], open = S.openId === c.id;
+  let html;
+  if (st.phase === "update") html = open ? updateCardHTML(c) : rowHTML(c);
+  else if (st.phase === "ask") html = open ? askCardHTML(c, false) : rowHTML(c);
+  else html = open ? foldCardHTML(c) : foldRowHTML(c);
+  return { key: "c-" + c.id, html };
+}
+
+/* =====================================================================
+   Views: each returns a list of keyed items
+   ===================================================================== */
+function feedItems() {
+  const it = [{ key: "head", html: headHTML() }];
+  if (S.mode === "focus") return it.concat(focusItems(), endItems());
+  const { active, later: lat } = needsList();
+  it.push({ key: "s-needs", html: secHTML("Needs you", needCount()) });
+  if (!active.length && !lat.length) it.push({ key: "e-needs", html: `<p class="empty">Nothing needs you right now.</p>` });
+  pushCards(it, "needs", active);
+  if (lat.length) { it.push({ key: "p-later", html: `<h3 class="proj">Later</h3>` }); lat.forEach((c) => it.push(cardItem(c))); }
+  const ups = updatesList();
+  it.push({ key: "s-updates", html: secHTML("Updates", ups.length) });
+  if (!ups.length) it.push({ key: "e-updates", html: `<p class="empty">No updates.</p>` });
+  pushCards(it, "updates", ups);
+  const done = doneList();
+  it.push({ key: "s-done", html: secHTML("Done", done.length) });
+  if (!done.length) it.push({ key: "e-done", html: `<p class="empty">Nothing done yet.</p>` });
+  pushCards(it, "done", done);
+  return it.concat(endItems());
+}
+function pushCards(it, sec, list) {
+  let last = null;
+  for (const c of list) {
+    if (S.group && c.project !== last) { it.push({ key: `p-${sec}-${c.project}`, html: `<h3 class="proj">${esc(c.project)}</h3>` }); last = c.project; }
+    it.push(cardItem(c));
+  }
+}
+function endItems() {
+  return [{ key: "end", html: `<footer class="endnote">
+    <button class="btn wide" data-act="startOver">Start over</button>
+    <h3>Invented for this mock</h3>
+    <p class="lead4">${esc(MOCK_LINE)}</p>
+    <ol>${INVENTED.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>
+  </footer>` }];
+}
+
+/* Focus: one card per screen. */
+function buildQueue() {
+  const ids = needsList().active.filter((c) => askable(c.id)).map((c) => c.id);
+  const at = ids.indexOf(S.openId);
+  S.focus = { queue: ids, pos: Math.max(at, 0), last: S.focus.last, answered: 0 };
+  syncFocusOpen();
+}
+function syncFocusOpen() {
+  const f = S.focus;
+  while (f.pos < f.queue.length && !askable(f.queue[f.pos])) f.pos++;
+  if (f.pos < f.queue.length) { S.openId = f.queue[f.pos]; S.cards[S.openId].fresh = false; }
+}
+function focusItems() {
+  const f = S.focus, it = [];
+  if (f.last) it.push({ key: "f-last", html: lastStripHTML(f.last) });
+  const id = f.queue[f.pos];
+  if (id && askable(id)) {
+    const c = cardOf(id);
+    it.push({ key: "f-bar", html: `<div class="fbar"><span class="pos"><b>${f.pos + 1} of ${f.queue.length}</b> · ${esc(c.project)}</span><button class="btn" data-act="skip">Skip</button></div>` });
+    it.push({ key: "f-" + id, html: askCardHTML(c, true) });
+  } else {
+    const left = needCount() + laterCount();
+    it.push({ key: "f-end", html: `<div class="card fend"><h2 class="ttl">That's all for this pass.</h2>
+      <p class="body">You answered ${f.answered}. ${left ? `${left} still need${left === 1 ? "s" : ""} you.` : "Nothing else needs you."}</p>
+      <div class="acts">${needCount() ? `<button class="btn" data-act="again">Go through again</button>` : ""}<button class="btn primary" data-act="mode" data-m="list">Back to the list</button></div></div>` });
+  }
+  return it;
+}
+function lastStripHTML(id) {
+  const c = cardOf(id), st = S.cards[id], o = st.chosen && c.options.find((x) => x.id === st.chosen), to = writeTo(c.agent);
+  const step = st.phase === "ask" ? `${to.name} answered` : st.steps.done ? "Done" : st.steps.received ? `${to.name} received it` : "Sent";
+  const t = cardThread(id), last = t[t.length - 1];
+  const line = last && last.who === "agent" ? ` · ${firstLine(last.text)}` : "";
+  return `<button class="strip" data-act="conv" data-id="${to.id}"><span class="fs" style="margin:0"><span class="ck" aria-hidden="true">${ICON_CHECK}</span></span>
+    <span class="t"><span class="t1">${o ? `You chose ${esc(o.label)} · sent to ${esc(to.name)}` : `You messaged ${esc(to.name)}`}</span><span class="t2">${esc(step + line)}</span></span></button>`;
+}
+
+/* Agents list. */
+function agentsItems() {
+  const it = [{ key: "ag-bar", wrap: "sticky", html: `<div class="abar"><button class="btn" data-act="back">‹ Feed</button></div>` },
+    { key: "ag-title", html: `<h1 class="page-title">Your agents</h1>` }];
+  const rows = AGENTS.map((a) => {
+    const tl = agentTimeline(a.id), e = tl[tl.length - 1];
+    const need = CARDS.filter((c) => c.agent === a.id && c.kind === "ask" && askable(c.id)).length;
+    let line = "";
+    if (e) line = e.type === "card" ? `Card · ${cardOf(e.card).title}` : e.type === "oldcard" ? `Card · ${e.title}` : e.type === "choice" ? `You chose ${e.text}` : e.who === "me" ? `You: ${firstLine(e.text)}` : (e.by && e.by !== a.id ? `${agentOf(e.by).name}: ` : "") + firstLine(e.text);
+    return { a, e, need, line };
+  }).sort((x, y) => (y.e ? y.e.at : 0) - (x.e ? x.e.at : 0));
+  rows.forEach(({ a, e, need, line }, i) => it.push({ key: "ag-" + a.id, html: `<button class="row arow${i === 0 ? " first" : ""}" data-act="conv" data-id="${a.id}">
+    ${av(a)}<span class="t"><span class="t2" style="font-size:15.5px;color:var(--fg)"><b style="color:var(--fg)">${esc(a.name)}</b><span style="color:var(--muted);font-size:14px">· ${esc(a.role)}</span></span>
+    <span class="t2">${platChip(a)}${a.main ? `<span class="tagm">Main agent</span>` : ""}${a.ended ? `<span class="tagm">Disconnected</span>` : ""}${need && !a.ended ? `<span class="st need inl">Needs you: ${need}</span>` : ""}</span>
+    <span class="t3">${esc(line)}</span></span><span class="tm">${e ? rel(e.at) : ""}</span></button>` }));
+  return it;
+}
+
+/* One agent: everything between you and it, in time order. */
+function agentItems(id) {
+  const a = agentOf(id), it = [];
+  it.push({ key: "a-bar", wrap: "sticky", html: `<div class="abar"><button class="btn" data-act="back">‹ Back</button><span class="nm">${av(a, "sm")}<span>${esc(a.name)}</span></span></div>` });
+  it.push({ key: "a-head", html: `<section class="ahead"><button class="agentbtn" data-act="agent" data-id="${a.id}">${av(a, "lg")}<span class="who"><span class="h" role="heading" aria-level="1">${esc(a.name)}</span><span class="r">${esc(a.role)}</span></span></button>
+    <p class="facts">${platChip(a)}<span>${esc(a.model)} · ${esc(a.runsOn)}</span>${a.main ? `<span class="tagm">Main agent</span>` : ""}${a.ended ? `<span class="tagm">Disconnected</span>` : ""}</p></section>` });
+  for (const e of agentTimeline(id)) {
+    if (e.type === "card") {
+      const c = cardOf(e.card);
+      it.push({ key: "r-" + c.id, html: `<button class="cref" data-act="cardref" data-id="${c.id}"><span class="cl"><span>${S.ctx ? `${ptag(c.project)} ` : ""}Card · ${stamp(e.at)}</span>${chip(statusOf(c))}</span><span class="ct">${esc(c.title)}</span></button>` });
+    } else if (e.type === "oldcard") {
+      it.push({ key: "e" + e.id, html: `<div class="cref"><span class="cl"><span>Card · ${stamp(e.at)}</span><span class="chip done">Done</span></span><span class="ct">${esc(e.title)}</span></div>` });
+    } else if (e.type === "choice") {
+      const st = e.card ? S.cards[e.card] : null;
+      const step = !st ? "Done" : st.steps.done ? "Done" : st.steps.received ? `${writeTo(a.id).name} received it` : "Sent";
+      it.push({ key: "e" + e.id, html: `<div class="msg me"><span class="bub">You chose ${esc(e.text)}</span><div class="meta">${stamp(e.at)} · ${esc(step)}</div></div>` });
+    } else {
+      it.push({ key: "e" + e.id, html: msgHTML(e) });
+    }
+  }
+  it.push({ key: "a-reply", html: `<div class="areply">${composerHTML("agent:" + id, id, false, true)}</div>` });
+  return it.map((x, i) => (i > 1 && i < it.length - 1 ? { ...x, wrap: "tl" } : x));
+}
+
+/* Sheets: an agent's facts, or the filter. */
+function sheetHTML() {
+  if (!S.sheet) return "";
+  if (S.sheet.type === "agent") {
+    const a = agentOf(S.sheet.id), p = PLATFORMS[a.platform];
+    return `<div class="scrim" data-act="closeSheet"></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-t"><div class="grab"></div>
+      <div class="sh-head">${av(a, "lg")}<span class="who"><h2 id="sh-t">${esc(a.name)}</h2><span style="color:var(--muted);font-size:14px">${esc(a.role)}</span>${a.main ? `<span><span class="tagm">Main agent</span></span>` : ""}${a.ended ? `<span><span class="tagm">Disconnected</span></span>` : ""}</span><button class="btn" data-act="closeSheet">Close</button></div>
+      <dl class="kv">
+        <div><dt>What it is</dt><dd>${platChip(a)} <span style="color:var(--muted)">by ${esc(p.maker)}</span></dd></div>
+        <div><dt>Model</dt><dd>${esc(a.model)}</dd></div>
+        <div><dt>Runs on</dt><dd>${esc(a.runsOn)}</dd></div>
+        <div><dt>Connected</dt><dd>${esc(a.connected)}</dd></div>
+        <div><dt>It can</dt><dd>${a.ended ? "Nothing" : "Post cards to your Home and read your answers to them"}</dd></div>
+        <div><dt>${a.ended ? "Access ended" : "Access ends"}</dt><dd>${esc(a.ends)}</dd></div>
+      </dl>
+      <button class="btn primary wide" data-act="conv" data-id="${a.id}">Open conversation</button>
+    </div>`;
+  }
+  return `<div class="scrim" data-act="closeSheet"></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sh-t"><div class="grab"></div>
+      <div class="sh-head"><span class="who"><h2 id="sh-t">Filter</h2></span><button class="btn" data-act="closeSheet">Close</button></div>
+      <button class="switchrow" role="switch" aria-checked="${S.group}" data-act="group"><span class="t">Group by project</span><span class="sw" aria-hidden="true"></span></button>
+      <p style="font-weight:600;margin:14px 0 8px">Show</p>
+      <div class="picks">${["all", ...PROJECTS].map((p) => `<button class="pick" data-act="project" data-p="${esc(p)}" aria-pressed="${S.project === p}">${p === "all" ? "All projects" : esc(p)}</button>`).join("")}</div>
+      <div style="margin-top:18px"><button class="btn primary wide" data-act="closeSheet">Done</button></div>
+    </div>`;
+}
+
+/* =====================================================================
+   Rendering: keyed items, patched in place so typing is never interrupted
+   ===================================================================== */
+const mKey = (n) => (n.nodeType === 1 ? n.getAttribute("data-m") : null);
+/** Make live node a look like b, keeping every node that can stay (above all, a text box being typed in). */
+function morph(a, b) {
+  if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName || mKey(a) !== mKey(b)) { a.replaceWith(b); return b; }
+  if (a.nodeType !== 1) { if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue; return a; }
+  for (const at of [...a.attributes]) if (!b.hasAttribute(at.name)) a.removeAttribute(at.name);
+  for (const at of [...b.attributes]) if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+  if (a.nodeName === "TEXTAREA") return a;
+  const old = [...a.childNodes], used = new Set(), plan = [];
+  let ptr = 0;
+  for (const nb of [...b.childNodes]) {
+    const k = mKey(nb);
+    let m = null;
+    if (k) m = old.find((n) => !used.has(n) && mKey(n) === k) || null;
+    else {
+      while (ptr < old.length && (used.has(old[ptr]) || mKey(old[ptr]))) ptr++;
+      if (ptr < old.length && old[ptr].nodeName === nb.nodeName) m = old[ptr++];
+    }
+    if (m) used.add(m);
+    plan.push([m, nb]);
+  }
+  for (const n of old) if (!used.has(n)) n.remove();
+  plan.forEach(([m, nb], i) => {
+    const node = m ? morph(m, nb) : nb;
+    if (a.childNodes[i] !== node) a.insertBefore(node, a.childNodes[i] || null);
+  });
+  return a;
+}
+function fromHTML(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+function wrapItem(it) {
+  const el = document.createElement("div");
+  el.className = "it" + (it.wrap ? " " + it.wrap : "");
+  el.dataset.key = it.key;
+  el.appendChild(fromHTML(it.html) || document.createTextNode(""));
+  return el;
+}
+function patch(root, items) {
+  const keep = new Set(items.map((x) => x.key));
+  for (const el of [...root.children]) if (!keep.has(el.dataset.key)) el.remove();
+  const live = new Map([...root.children].map((el) => [el.dataset.key, el]));
+  items.forEach((it, i) => {
+    let el = live.get(it.key);
+    if (!el) { el = wrapItem(it); el._html = it.html; }
+    else if (el._html !== it.html) { morph(el.firstElementChild, fromHTML(it.html)); el._html = it.html; }
+    if (root.children[i] !== el) root.insertBefore(el, root.children[i] || null);
+  });
+}
+/** After each patch: put drafts back into new text boxes, and set each Send button. */
+function settle(root) {
+  root.querySelectorAll("textarea[data-draft]").forEach((t) => {
+    if (!t._ready) { t.value = S.drafts[t.dataset.draft] || ""; t._ready = true; grow(t); }
+  });
+  root.querySelectorAll("button.send").forEach((b) => {
+    const t = b.parentElement.querySelector("textarea");
+    b.disabled = b.hasAttribute("data-locked") || !t || !t.value.trim();
+  });
+}
+function grow(t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight + 2, 168) + "px"; }
+const itemEl = (key) => $(`#app > [data-key="${CSS.escape(key)}"]`);
+function topOf(key) { const el = key && itemEl(key); return el ? el.getBoundingClientRect().top : null; }
+function firstVisibleKey() {
+  for (const el of $("#app").children) { const r = el.getBoundingClientRect(); if (r.bottom > 4) return el.dataset.key; }
+  return null;
+}
+function inView(el) { const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight; }
+function items() {
+  if (S.view === "agents") return agentsItems();
+  if (S.view === "agent") return agentItems(S.agentId);
+  return feedItems();
+}
+/**
+ * Draw the current view. Unless told otherwise, whatever is on screen stays where it is: the open card if it is in
+ * view, else the first thing on screen. opts.anchor: a key to hold still, or false for none.
+ */
+function render(opts = {}) {
+  const root = $("#app");
+  let key = opts.anchor;
+  if (key === undefined) {
+    const oc = S.openId && (itemEl("c-" + S.openId) || itemEl("f-" + S.openId));
+    key = oc && inView(oc) ? oc.dataset.key : firstVisibleKey();
+  }
+  const before = key ? topOf(key) : null;
+  patch(root, items());
+  settle(root);
+  if (before != null) { const after = topOf(key); if (after != null && Math.abs(after - before) > 0.5) window.scrollBy(0, after - before); }
+  for (const k of S.enter) {
+    const el = itemEl(k);
+    if (el && !reduceMotion()) el.animate(k.startsWith("f-") ? [{ opacity: 0, transform: "translateX(28px)" }, { opacity: 1, transform: "none" }] : [{ opacity: 0.2, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], { duration: 220, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
+  }
+  S.enter.clear();
+  renderSheet();
+}
+let sheetShown = "";
+function renderSheet() {
+  const html = sheetHTML(), root = $("#sheetroot");
+  if (html === sheetShown) return;
+  const was = !!sheetShown;
+  sheetShown = html;
+  root.innerHTML = html;
+  document.body.style.overflow = html ? "hidden" : "";
+  if (html && !was) { const b = root.querySelector(".sheet .btn"); if (b) b.focus({ preventScroll: true }); }
+}
+function scrollToKey(key, block = "start") {
+  const el = itemEl(key);
+  if (!el) return;
+  const card = el.querySelector(".card") || el;
+  const r = card.getBoundingClientRect();
+  if (block === "start" || r.top < 0 || r.top > innerHeight * 0.45) card.scrollIntoView({ block: "start", behavior: reduceMotion() ? "auto" : "smooth" });
+}
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("on");
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => t.classList.remove("on"), 2400);
+}
+function focusComposer(key) {
+  const t = document.querySelector(`textarea[data-draft="${CSS.escape(key)}"]`);
+  if (t) t.focus();
+}
+
+/* =====================================================================
+   Answering and writing: one tap or one Send, 4 seconds with Undo, then sent
+   ===================================================================== */
+function countText(key) {
+  const p = S.pend[key];
+  const to = key.startsWith("card:") ? writeTo(cardOf(key.slice(5)).agent) : agentOf(key.slice(6));
+  return `Sending to ${to.name} in ${p ? p.left : TIMING.countSeconds}s`;
+}
+function startCount(key, pend) {
+  if (S.pend[key]) return;
+  S.pend[key] = { ...pend, left: TIMING.countSeconds };
+  S.pend[key].timer = every(1000, () => tick(key));
+  render();
+}
+function tick(key) {
+  const p = S.pend[key];
+  if (!p) return;
+  p.left -= 1;
+  if (p.left <= 0) { commit(key); return; }
+  document.querySelectorAll(`[data-count="${key}"]`).forEach((el) => { el.textContent = countText(key); });
+}
+function undo(key) {
+  const p = S.pend[key];
+  if (!p) return;
+  stopTimer(p.timer);
+  delete S.pend[key];
+  if (p.kind === "reply") S.drafts[key] = p.text;
+  render();
+  toast("Not sent");
+}
+/** Send now. Used when the count ends, and when a counting card is closed or left (as the real build does). */
+function commit(key, quiet) {
+  const p = S.pend[key];
+  if (!p) return;
+  stopTimer(p.timer);
+  delete S.pend[key];
+  if (p.kind === "choice") commitChoice(p.card, p.option, quiet);
+  else { S.compose.delete(key); sendMessage(key, p.text, quiet); }
+  if (!quiet) render();
+}
+function flushAll(exceptKey) { for (const k of Object.keys(S.pend)) if (k !== exceptKey) commit(k, true); }
+
+/** After an answer or a turn-taking message: in Focus the next card slides in; in the list it opens 2.5 s later. */
+function moveOn(id) {
+  if (S.view === "feed" && S.mode === "focus") {
+    S.focus.last = id;
+    S.focus.answered += 1;
+    advanceFocus(false);
+  } else if (S.openId === id) {
+    later(TIMING.nextOpenMs, () => autoNext(id));
+  }
+}
+function commitChoice(id, optionId, quiet) {
+  const c = cardOf(id), st = S.cards[id], o = c.options.find((x) => x.id === optionId), to = writeTo(c.agent), t = Date.now();
+  Object.assign(st, { phase: "waiting", chosen: o.id, msg: null, steps: { sent: t }, later: null, remind: false, details: false, showCard: false, fresh: false });
+  addEvent({ agent: to.id, who: "me", kind: "choice", text: o.label, card: id, at: t });
+  later(TIMING.receivedMs, () => {
+    st.steps.received = Date.now();
+    addEvent({ agent: to.id, who: "agent", by: to.id, text: o.got, card: id, at: Date.now() });
+    render();
+  });
+  later(TIMING.receivedMs + TIMING.doneMs, () => {
+    st.steps.done = Date.now();
+    st.phase = "done";
+    addEvent({ agent: to.id, who: "agent", by: to.id, text: o.done, card: id, at: Date.now() });
+    render();
+  });
+  if (!quiet) moveOn(id);
+}
+/**
+ * A message. On a card that needs you, it hands the turn to the agent: the card waits on it and leaves the count.
+ * The agent then reads it: a question gets an answer and the card comes back to you with a dot; anything else is
+ * taken as the decision: received, then Done. Elsewhere a message just gets the agent's answer.
+ */
+function sendMessage(key, text, quiet) {
+  const cardId = key.startsWith("card:") ? key.slice(5) : null, c = cardId && cardOf(cardId);
+  const to = c ? writeTo(c.agent) : agentOf(key.slice(6)), t = Date.now();
+  const st = c && S.cards[c.id], turn = !!st && st.phase === "ask", question = /\?\s*$/.test(text);
+  const ev = addEvent({ agent: to.id, who: "me", text, card: cardId, at: t, to: to.id, steps: { sent: t } });
+  const say = (line) => addEvent({ agent: to.id, who: "agent", by: to.id, text: line, card: cardId, at: Date.now() });
+  if (turn) Object.assign(st, { phase: "waiting", chosen: null, msg: ev.id, steps: ev.steps, later: null, remind: false, details: false, showCard: false, fresh: false });
+  later(TIMING.receivedMs, () => {
+    ev.steps.received = Date.now();
+    if (turn && !question) say((c && c.got) || DECIDED.got);
+    render();
+  });
+  if (turn && !question) {
+    later(TIMING.receivedMs + TIMING.doneMs, () => { ev.steps.done = Date.now(); st.phase = "done"; say((c && c.done) || DECIDED.done); render(); });
+  } else {
+    later(TIMING.answerMs, () => {
+      say(question ? (c && c.ask) || to.ask : to.ack);
+      if (turn && st.phase === "waiting" && st.msg === ev.id) Object.assign(st, { phase: "ask", msg: null, steps: {}, fresh: S.openId !== cardId || S.mode === "focus" });
+      render();
+    });
+  }
+  if (turn && !quiet) moveOn(cardId);
+}
+function autoNext(id) {
+  if (S.view !== "feed" || S.mode !== "list" || S.openId !== id || S.sheet) return;
+  if ((S.drafts["card:" + id] || "").trim() || S.pend["card:" + id] || S.compose.has("card:" + id)) return;
+  const n = nextAfter(id);
+  if (!n) return;
+  openNext(n, id);
+}
+function openNext(n, fromId) {
+  S.openId = n;
+  S.cards[n].fresh = false;
+  S.enter.add("c-" + n);
+  render();
+  // Keep the row just left in sight above the next card, so its progress can be seen.
+  const prev = fromId && itemEl("c-" + fromId);
+  scrollToKey(prev && prev.nextElementSibling === itemEl("c-" + n) ? "c-" + fromId : "c-" + n);
+}
+
+/* =====================================================================
+   Other actions
+   ===================================================================== */
+function closeEmptyComposers(exceptKey) {
+  for (const k of [...S.compose]) if (k !== exceptKey && !(S.drafts[k] || "").trim()) S.compose.delete(k);
+}
+function openCard(id) {
+  if (S.openId === id) return;
+  flushAll();
+  closeEmptyComposers();
+  S.openId = id;
+  S.cards[id].fresh = false;
+  S.enter.add("c-" + id);
+  render({ anchor: "c-" + id });
+  scrollToKey("c-" + id, "if-needed");
+}
+function advanceFocus(skip) {
+  const f = S.focus;
+  f.pos += 1;
+  closeEmptyComposers();
+  syncFocusOpen();
+  const id = f.queue[f.pos];
+  S.enter.add(id && askable(id) ? "f-" + id : "f-end");
+  render({ anchor: false });
+  const bar = itemEl(f.last && !skip ? "f-last" : "f-bar") || itemEl("f-end");
+  if (bar && bar.getBoundingClientRect().top < 0) bar.scrollIntoView({ block: "start", behavior: reduceMotion() ? "auto" : "smooth" });
+}
+function remindAt(id, when) {
+  const st = S.cards[id], n = nextAfter(id);
+  st.later = { when, note: (S.drafts["note:" + id] || "").trim(), seq: ++S.laterSeq };
+  st.remind = false;
+  toast(`Later · ${when}`);
+  if (S.mode === "focus") { advanceFocus(true); return; }
+  closeEmptyComposers();
+  S.openId = n;
+  if (n) { S.cards[n].fresh = false; S.enter.add("c-" + n); }
+  render({ anchor: n ? "c-" + id : undefined });
+  if (n) scrollToKey("c-" + n);
+}
+function go(view, agentId) {
+  flushAll();
+  closeEmptyComposers(view === "agent" ? "agent:" + agentId : undefined);
+  S.history.push({ view: S.view, agentId: S.agentId, y: scrollY });
+  S.sheet = null;
+  S.view = view;
+  S.agentId = agentId || null;
+  render({ anchor: false });
+  window.scrollTo(0, view === "agent" ? document.documentElement.scrollHeight : 0);
+}
+function back() {
+  flushAll();
+  closeEmptyComposers();
+  const b = S.history.pop() || { view: "feed", y: 0 };
+  S.view = b.view;
+  S.agentId = b.agentId;
+  render({ anchor: false });
+  window.scrollTo(0, b.y);
+}
+function setMode(m) {
+  if (S.view !== "feed") { S.view = "feed"; S.history = []; }
+  if (m === S.mode) { render(); return; }
+  flushAll();
+  closeEmptyComposers();
+  S.mode = m;
+  if (m === "focus") { S.focus.last = null; buildQueue(); }
+  render({ anchor: false });
+  if (m === "focus") window.scrollTo(0, 0);
+  else if (S.openId) scrollToKey("c-" + S.openId);
+}
+function cardRef(id) {
+  flushAll();
+  closeEmptyComposers();
+  S.view = "feed"; S.history = []; S.mode = "list"; S.sheet = null;
+  if (!shown(cardOf(id))) S.project = "all";
+  S.openId = id;
+  S.cards[id].fresh = false;
+  S.enter.add("c-" + id);
+  render({ anchor: false });
+  scrollToKey("c-" + id);
+}
+function startOver() {
+  init();
+  sheetShown = "x";
+  $("#app").innerHTML = "";
+  $("#toast").classList.remove("on");
+  render({ anchor: false });
+  window.scrollTo(0, 0);
+}
+
+const ACTIONS = {
+  open: (d) => openCard(d.id),
+  choose: (d) => startCount("card:" + d.id, { kind: "choice", card: d.id, option: d.opt }),
+  undo: (d) => undo(d.k),
+  compose: (d) => { S.compose.add(d.k); render(); focusComposer(d.k); },
+  gomsg: (d) => { S.compose.add("agent:" + d.id); go("agent", d.id); focusComposer("agent:" + d.id); },
+  send: (d) => {
+    const text = (S.drafts[d.k] || "").trim();
+    if (!text) return;
+    S.drafts[d.k] = "";
+    startCount(d.k, { kind: "reply", text });
+  },
+  remind: (d) => { const st = S.cards[d.id]; st.remind = !st.remind; render(); if (st.remind) { const t = document.getElementById("note-" + d.id); if (t) t.focus({ preventScroll: true }); } },
+  remindAt: (d) => remindAt(d.id, d.when),
+  details: (d) => { S.cards[d.id].details = !S.cards[d.id].details; render(); },
+  showcard: (d) => { S.cards[d.id].showCard = !S.cards[d.id].showCard; render(); },
+  draft: (d) => { S.cards[d.id].draftOpen = !S.cards[d.id].draftOpen; render(); },
+  agent: (d) => { S.sheet = { type: "agent", id: d.id }; render(); },
+  conv: (d) => { if (S.view === "agent" && S.agentId === d.id) { S.sheet = null; render(); } else go("agent", d.id); },
+  agents: () => go("agents"),
+  back: () => back(),
+  filter: () => { S.sheet = { type: "filter" }; render(); },
+  closeSheet: () => { S.sheet = null; render(); },
+  group: () => { S.group = !S.group; if (S.mode === "focus") buildQueue(); render({ anchor: false }); },
+  project: (d) => { S.project = d.p; if (S.mode === "focus") buildQueue(); render({ anchor: false }); },
+  mode: (d) => setMode(d.m),
+  ctx: (d) => { S.ctx = d.v === "context"; render(); },
+  skip: () => advanceFocus(true),
+  again: () => { S.focus.last = null; S.openId = null; buildQueue(); render({ anchor: false }); },
+  cardref: (d) => cardRef(d.id),
+  startOver: () => startOver(),
+};
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-act]");
+  if (!el || el.disabled) return;
+  const fn = ACTIONS[el.dataset.act];
+  if (fn) { e.preventDefault(); fn(el.dataset); }
+});
+document.addEventListener("input", (e) => {
+  const t = e.target;
+  if (!t.matches || !t.matches("textarea[data-draft]")) return;
+  S.drafts[t.dataset.draft] = t.value;
+  grow(t);
+  const b = t.parentElement.querySelector("button.send");
+  if (b) b.disabled = b.hasAttribute("data-locked") || !t.value.trim();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet) { S.sheet = null; render(); } });
+setInterval(() => { if (!Object.keys(S.pend).length) render(); }, 60000); // keep "12 min" honest
+
+init();
+render({ anchor: false });
+</script>
+</body>
+</html>
