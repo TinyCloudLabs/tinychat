@@ -1829,9 +1829,9 @@ export function createConnectorWebhookCompanionRouter(
    * collaborator, or with the flag dark, this is a pure `false` that costs the node nothing.
    * It REJECTS on an unreadable cohort; every caller lets that reach its 503 arm.
    */
-  async function backendIngest(address: string): Promise<boolean> {
+  async function backendIngest(address: string, source: string): Promise<boolean> {
     if (!options.modes) return false;
-    return (await options.modes.mode(address)) === "backend";
+    return (await options.modes.mode(address, source)) === "backend";
   }
 
   /** A body-supplied source is validated against the registry before any KV call. */
@@ -1935,7 +1935,7 @@ export function createConnectorWebhookCompanionRouter(
     // owns must not have ids handed to the browser from ANY of the three routes that reach this
     // helper. Told, not silenced: the reason rides back as a card state (W5 gives the cohort its
     // own meetings view; until then the card says "this is not yours to drain", not "empty").
-    if (await backendIngest(address)) return surfaceNothing("backend_ingest");
+    if (await backendIngest(address, config.source)) return surfaceNothing("backend_ingest");
 
     // §6.2: the ledger is an AUTHORIZATION input and FAILS CLOSED. An unparseable value read as
     // an empty ledger means "nothing was ever purged" — the most dangerous available reading.
@@ -2229,7 +2229,7 @@ export function createConnectorWebhookCompanionRouter(
       // W1: a cohort address's queue belongs to the fetch worker. No drain pass runs — not even
       // a read-only one — because a second consumer is the double-drain race §5.3 excludes, and
       // the ids go nowhere (`pendingPayload` applies the same gate).
-      if (await backendIngest(user.address)) {
+      if (await backendIngest(user.address, config.source)) {
         logWebhook(
           `op=drain result=backend_ingest source=${config.source} ` +
             `aid=${hashedField(user.address)}`,
@@ -2407,7 +2407,7 @@ export function createConnectorWebhookCompanionRouter(
       // the queue removal that used to be `/drain`+`/ack`'s job. A browser ack here would delete
       // an item the worker has not fetched yet, so it is accepted as an IDEMPOTENT NO-OP — a 4xx
       // would only make a stale client retry forever, and the browser has nothing to settle.
-      if (await backendIngest(user.address)) {
+      if (await backendIngest(user.address, config.source)) {
         logWebhook(
           `op=ack result=backend_ingest source=${config.source} ` +
             `aid=${hashedField(user.address)} submitted=${acks.length}`,

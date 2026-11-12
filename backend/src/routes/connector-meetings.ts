@@ -168,7 +168,7 @@ export function createConnectorMeetingsRouter(
     }
     let mode: string;
     try {
-      mode = await options.modes.mode(address);
+      mode = await options.modes.mode(address, rawSource);
     } catch {
       // Fail closed: an unreadable cohort is an outage, not "this user is not enrolled".
       warnMeetings(`op=cohort result=unavailable aid=${hashedField(address)}`);
