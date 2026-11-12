@@ -143,6 +143,13 @@ jobs:
           cd mobile/ios/Packages/ExoStt
           xcodebuild -scheme ExoStt -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath "$RUNNER_TEMP/exostt-tests" CODE_SIGNING_ALLOWED=NO test
+      # TC-2862: the native replica store (sealed SQLite, account binding, wipe) on the iOS Simulator.
+      - name: Test ReplicaStore
+        run: |
+          simulator_id=$(awk '{print $2}' "$RUNNER_TEMP/ios-smoke/device.txt")
+          cd mobile/ios/Packages/ReplicaStore
+          xcodebuild -scheme ReplicaStore -destination "platform=iOS Simulator,id=$simulator_id" \
+            -derivedDataPath "$RUNNER_TEMP/replicastore-tests" CODE_SIGNING_ALLOWED=NO test
 
       - name: Install JS deps
         run: bun install --frozen-lockfile

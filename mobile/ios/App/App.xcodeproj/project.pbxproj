@@ -15,6 +15,8 @@
 		E0A1C0DE0000000000000025 /* CaptureLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */; };
 		E0A1C0DE0000000000000201 /* OnDeviceSttPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000202 /* OnDeviceSttPlugin.swift */; };
 		E0A1C0DE0000000000000203 /* ExoStt in Frameworks */ = {isa = PBXBuildFile; productRef = E0A1C0DE0000000000000204 /* ExoStt */; };
+		E0A1C0DE0000000000002861 /* ReplicaStorePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000002862 /* ReplicaStorePlugin.swift */; };
+		E0A1C0DE0000000000002863 /* ReplicaStore in Frameworks */ = {isa = PBXBuildFile; productRef = E0A1C0DE0000000000002864 /* ReplicaStore */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
 		504EC3081FED79650016851F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504EC3071FED79650016851F /* AppDelegate.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
@@ -85,6 +87,7 @@
 		E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLifecycleHooks.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLiveActivity.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000202 /* OnDeviceSttPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceSttPlugin.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000002862 /* ReplicaStorePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaStorePlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoBridgeViewController.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000301 /* ExoDevLogPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoDevLogPlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000F01 /* WebViewRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewRecovery.swift; sourceTree = "<group>"; };
@@ -104,6 +107,7 @@
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
 				E0A1C0DE0000000000000021 /* ExoCapture in Frameworks */,
 				E0A1C0DE0000000000000203 /* ExoStt in Frameworks */,
+				E0A1C0DE0000000000002863 /* ReplicaStore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -151,6 +155,7 @@
 				E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */,
 				E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */,
 				E0A1C0DE0000000000000202 /* OnDeviceSttPlugin.swift */,
+				E0A1C0DE0000000000002862 /* ReplicaStorePlugin.swift */,
 				E0A1C0DE0000000000000007 /* HealthPlugin.swift */,
 				E0A1C0DE0000000000000010 /* LocationRecorder.swift */,
 				E0A1C0DE0000000000000012 /* LocationPlugin.swift */,
@@ -210,6 +215,7 @@
 				4D22ABE82AF431CB00220026 /* CapApp-SPM */,
 				E0A1C0DE0000000000000020 /* ExoCapture */,
 				E0A1C0DE0000000000000204 /* ExoStt */,
+				E0A1C0DE0000000000002864 /* ReplicaStore */,
 			);
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
@@ -265,6 +271,7 @@
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
 				E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */,
 				E0A1C0DE0000000000000205 /* XCLocalSwiftPackageReference "ExoStt" */,
+				E0A1C0DE0000000000002865 /* XCLocalSwiftPackageReference "ReplicaStore" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
 			projectDirPath = "";
@@ -351,6 +358,7 @@
 				E0A1C0DE0000000000000023 /* AppLifecycleHooks.swift in Sources */,
 				E0A1C0DE0000000000000025 /* CaptureLiveActivity.swift in Sources */,
 				E0A1C0DE0000000000000201 /* OnDeviceSttPlugin.swift in Sources */,
+				E0A1C0DE0000000000002861 /* ReplicaStorePlugin.swift in Sources */,
 				E0A1C0DE0000000000000008 /* HealthPlugin.swift in Sources */,
 				E0A1C0DE0000000000000011 /* LocationRecorder.swift in Sources */,
 				E0A1C0DE0000000000000013 /* LocationPlugin.swift in Sources */,
@@ -640,6 +648,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../Packages/ExoStt;
 		};
+		E0A1C0DE0000000000002865 /* XCLocalSwiftPackageReference "ReplicaStore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Packages/ReplicaStore;
+		};
 		D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "CapApp-SPM";
@@ -656,6 +668,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E0A1C0DE0000000000000205 /* XCLocalSwiftPackageReference "ExoStt" */;
 			productName = ExoStt;
+		};
+		E0A1C0DE0000000000002864 /* ReplicaStore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E0A1C0DE0000000000002865 /* XCLocalSwiftPackageReference "ReplicaStore" */;
+			productName = ReplicaStore;
 		};
 		4D22ABE82AF431CB00220026 /* CapApp-SPM */ = {
 			isa = XCSwiftPackageProductDependency;

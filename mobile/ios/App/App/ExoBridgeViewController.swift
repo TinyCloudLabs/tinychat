@@ -3,6 +3,7 @@ import Capacitor
 import CaptureCore
 import Darwin
 import ExoCapture
+import ReplicaStore
 import UIKit
 #if DEBUG
 import os
@@ -20,6 +21,8 @@ class ExoBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())
         bridge?.registerPluginInstance(AppLockPlugin())
+        // TC-2862 native replica storage (flagged off in the web app until the SDK adapter lands).
+        bridge?.registerPluginInstance(ReplicaStorePlugin())
         #if EXO_HEALTH
         // Health spike (TC-525): Debug builds only (see HealthPlugin.swift).
         bridge?.registerPluginInstance(HealthPlugin())
@@ -175,6 +178,69 @@ class ExoBridgeViewController: CAPBridgeViewController {
             self.startHealthProbe()
             #endif
             if ProcessInfo.processInfo.environment["EXO_LOCATION_SMOKE"] == "1" { self.runLocationProbe() }
+            if let phase = ProcessInfo.processInfo.environment["EXO_REPLICA_SMOKE"] { self.runReplicaProbe(phase) }
+        }
+    }
+
+    /// TC-2862: with `EXO_REPLICA_SMOKE=write|read|wipe`, drive the TinyCloudReplicaStore plugin over the bridge and
+    /// log one `EXO_REPLICA_SMOKE {json}` line with what JS saw plus the replica directory and Keychain items.
+    /// `write` starts clean and stores two entries; `read`, after an app restart, reads them back; `wipe` runs the
+    /// sign-out wipe (`wipe(account)` then `wipeAll()`, as frontend/src/lib/replication/nativeReplicaStore.ts does).
+    private static let replicaProbeScript = """
+        const cap = window.Capacitor;
+        const call = (method, args) => Promise.race([
+          cap.nativePromise("TinyCloudReplicaStore", method, args || {}),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(method + " timed out")), 8000)),
+        ]);
+        const account = "did:pkh:eip155:1:0x00000000000000000000000000000000000a11ce";
+        const out = { phase, available: !!(cap.isPluginAvailable && cap.isPluginAvailable("TinyCloudReplicaStore")) };
+        const readBack = async () => {
+          out.value = (await call("get", { store: "entries", key: "smoke/a" })).value;
+          out.keys = (await call("list", { store: "entries", prefix: "smoke/" })).entries.map((e) => e.key);
+        };
+        try {
+          if (phase === "write") {
+            await call("wipeAll");
+            out.open = await call("open", { account });
+            await call("write", { ops: [
+              { op: "put", store: "entries", key: "smoke/a", value: "aGVsbG8gcmVwbGljYQ==" },
+              { op: "put", store: "entries", key: "smoke/b", value: "c2Vjb25k" },
+            ] });
+            await readBack();
+          } else if (phase === "read") {
+            out.open = await call("open", { account });
+            await readBack();
+            out.estimate = await call("estimate");
+          } else if (phase === "wipe") {
+            await call("wipe", { account });
+            await call("wipeAll");
+            out.afterWipe = await call("get", { store: "entries", key: "smoke/a" }).then(() => "resolved", (e) => e.code);
+          }
+        } catch (error) {
+          out.error = String((error && error.message) || error);
+          out.code = (error && error.code) || null;
+        }
+        return JSON.stringify(out);
+        """
+
+    private func runReplicaProbe(_ phase: String) {
+        webView?.callAsyncJavaScript(Self.replicaProbeScript, arguments: ["phase": phase], in: nil, in: .page) { result in
+            var object: [String: Any]
+            switch result {
+            case .success(let value):
+                object = (value as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }
+                    as? [String: Any] ?? ["error": "non-string result"]
+            case .failure(let error):
+                object = ["error": error.localizedDescription]
+            }
+            let directory = try? ReplicaStoreCore.defaultDirectory()
+            object["files"] = directory.flatMap { try? FileManager.default.contentsOfDirectory(atPath: $0.path) }?.sorted() ?? []
+            object["keychainItems"] = KeychainSecretStore().count()
+            let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let line = data.map { String(decoding: $0, as: UTF8.self) } ?? Self.smokeProbeError("unencodable")
+            print("EXO_REPLICA_SMOKE \(line)")
+            fflush(stdout)
+            Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_REPLICA_SMOKE \(line, privacy: .public)")
         }
     }
 
