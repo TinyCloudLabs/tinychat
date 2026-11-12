@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Release gate for a signed Exo Android build: exits 1 unless the APK and the AAB are signed with the expected upload
-# key (never the debug key), the APK is xyz.tinycloud.exo at the expected versionName/versionCode with a launcher icon,
+# key (never the debug key), the APK is xyz.tinycloud.home at the expected versionName/versionCode with a launcher icon,
 # not debuggable and requesting no location permission, and both bundle the production web app (assets/public) with
 # no dev-server URL in capacitor.config.json. Never let an unsigned, debug or live-reload build through.
 # Usage: verify-android-release.sh <app-release.apk> <app-release.aab> <versionName> <versionCode> <cert SHA-256>
@@ -16,6 +16,8 @@ aab=${2:?$usage}
 version_name=${3:?$usage}
 version_code=${4:?$usage}
 expected_cert=${5:?$usage}
+# The Play package (applicationId) and Capacitor appId: permanent once the first AAB is uploaded to Play.
+package=xyz.tinycloud.home
 
 fail() {
   echo "::error::$1"
@@ -65,8 +67,8 @@ pass "APK signed with the upload certificate"
 
 # --- APK identity and version.
 badging=$("$tools/aapt2" dump badging "$apk" 2>&1) || fail "aapt2 cannot read $apk:"$'\n'"$badging"
-require "APK is xyz.tinycloud.exo $version_name ($version_code)" "$badging" \
-  "package: name='xyz.tinycloud.exo' versionCode='$version_code' versionName='$version_name'" "application-label:'TinyCloud Home'" "application-icon-"
+require "APK is $package $version_name ($version_code)" "$badging" \
+  "package: name='$package' versionCode='$version_code' versionName='$version_name'" "application-label:'TinyCloud Home'" "application-icon-"
 if grep -q '^application-debuggable' <<<"$badging"; then fail "APK is debuggable"; fi
 pass "APK is not debuggable"
 # The TC-524 location spike declares its permissions in the debug manifest only. A release asking for location
@@ -82,10 +84,10 @@ check_web_app() {
   unzip -l "$archive" "${prefix}public/index.html" >/dev/null 2>&1 || fail "$label does not bundle the web app (${prefix}public/index.html)"
   config=$(unzip -p "$archive" "${prefix}capacitor.config.json") || fail "$label has no ${prefix}capacitor.config.json"
   node -e '
-    const config = JSON.parse(process.argv[1]);
-    if (config.appId !== "xyz.tinycloud.exo") throw new Error(`appId is ${config.appId}`);
+    const [config, appId] = [JSON.parse(process.argv[1]), process.argv[2]];
+    if (config.appId !== appId) throw new Error(`appId is ${config.appId}, expected ${appId}`);
     if (config.server?.url) throw new Error(`server.url is ${config.server.url} (a live-reload build)`);
-  ' "$config" || fail "$label: capacitor.config.json is not a release config:"$'\n'"$config"
+  ' "$config" "$package" || fail "$label: capacitor.config.json is not a release config:"$'\n'"$config"
   pass "$label bundles the web app and loads no dev server"
 }
 check_web_app APK "$apk" assets/

@@ -29,7 +29,7 @@ name: Mobile release (Android)
 #
 # TODO(play, once the Play Console app exists and its first AAB was uploaded by hand): upload the verified AAB to the
 # internal testing track from the sign job, after "Verify the signed AAB and APK", with a pinned
-# r0adkll/upload-google-play (packageName xyz.tinycloud.exo, track internal, status draft until the first review) and a
+# r0adkll/upload-google-play (packageName xyz.tinycloud.home, track internal, status draft until the first review) and a
 # PLAY_SERVICE_ACCOUNT_JSON secret in the android-release environment. Until then, upload the artifact's .aab in Play
 # Console by hand.
 
