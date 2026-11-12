@@ -32,6 +32,7 @@ const uploadResumerApi = await import("@/capture/upload/UploadResumer");
 const voiceNotesApi = await import("../src/lib/voiceNotes/nativeVoiceNotes");
 const storageDialogApi = await import("../src/chat/StorageFullDialog");
 const replicationSwitchApi = await import("../src/lib/replication/replicationSwitch");
+const replicationFlagApi = await import("../src/lib/replication/replicationFlag");
 const { REPLICATION_COPY_KEY } = await import("../src/lib/replication/replicationCopyMarker");
 const { REPLICA_PURGE_FAILED_WARNING } = await import("../src/lib/replication/replicationSignOut");
 
@@ -51,6 +52,7 @@ const deletedVoiceNoteIds: string[] = [];
 let clearAppSession: (() => void) | null = null;
 let cleanedClients = 0;
 const removeCopyCalls: unknown[][] = [];
+let bindPaused = false;
 let removeCopyOutcome: Promise<{ status: string; code?: string }> | { status: string; code?: string } = { status: "purged" };
 let restoreCalls = 0;
 let restorePause = false;
@@ -156,6 +158,7 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
   captureEngineAvailable: () => captureEngineInstalled,
   subscribeCaptureCapabilities: () => () => undefined,
 }));
+mock.module("../src/lib/replication/replicationFlag", () => ({ ...replicationFlagApi, isReplicationBindPaused: () => bindPaused }));
 mock.module("../src/lib/replication/replicationSwitch", () => ({
   ...replicationSwitchApi,
   removeLocalCopyNow: async (...args: unknown[]) => { removeCopyCalls.push(args); return removeCopyOutcome; },
@@ -283,6 +286,7 @@ beforeEach(() => {
   clearAppSession = null;
   restoreCalls = 0;
   removeCopyCalls.length = 0;
+  bindPaused = false;
   removeCopyOutcome = { status: "purged" };
   restorePause = false;
   releaseRestore = null;
@@ -422,15 +426,9 @@ test("TC-2883 a production sign-out with binding paused erases the copy this cli
   window.localStorage.setItem(REPLICATION_COPY_KEY, `did:pkh:eip155:1:${loginAddress}`);
   let failRemoval!: () => void;
   removeCopyOutcome = new Promise((resolve) => { failRemoval = () => resolve({ status: "failed", code: "DELETE_BLOCKED" }); });
-  const savedProd = import.meta.env.PROD;
-  import.meta.env.PROD = true; // production build: isReplicationBindPaused()
-  try {
-    await click("Test sign out");
-    await settle();
-  } finally {
-    if (savedProd === undefined) delete import.meta.env.PROD;
-    else import.meta.env.PROD = savedProd;
-  }
+  bindPaused = true; // a production build
+  await click("Test sign out");
+  await settle();
   expect(removeCopyCalls).toHaveLength(1);
   expect(host!.textContent).toContain("Sign in");
   expect(host!.textContent).not.toContain(REPLICA_PURGE_FAILED_WARNING);
@@ -439,7 +437,7 @@ test("TC-2883 a production sign-out with binding paused erases the copy this cli
   expect(host!.textContent).toContain(REPLICA_PURGE_FAILED_WARNING);
 });
 
-test("TC-2883 a dev-build sign-out leaves an unbound copy to the next page load", async () => {
+test("TC-2883 with binding not paused (dev builds), sign-out leaves an unbound copy to the next page load", async () => {
   await mount("web");
   await click("Sign in");
   await settle();

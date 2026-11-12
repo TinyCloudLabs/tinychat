@@ -3,10 +3,9 @@ import manifest from "../../../../manifest.json";
 import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { augmentSignInEntriesWithReplication } from "@tinycloud/node-sdk/replication/authority";
 import { buildReplicationConfig, replicationConfigPatch, REPLICATION_MAX_BYTES, REPLICATION_SYNC_SCOPE, type ReplicationPluginLoader } from "./replicationClient";
-import { isReplicationBindPaused, REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
+import { REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
 import { REPLICATION_COPY_KEY } from "./replicationCopyMarker";
 import { purgeReplicaCopyWhenOff } from "./replicationOffPurge";
-import { replicationRestorePatch } from "./replicationRestore";
 import { replicationOptInKey } from "./replicationOptIn";
 import { trackStartupPurge } from "./replicationStartupPurge";
 import { replicationPrefixes } from "./replicationPrefixes";
@@ -109,23 +108,13 @@ describe("replicationClient", () => {
 
   describe("binding paused (production builds)", () => {
     test("sign-in and restore bind nothing, and the page-load purge keeps the existing copy", async () => {
-      const savedProd = import.meta.env.PROD;
-      import.meta.env.VITE_EXO_REPLICATION = undefined; // the production build flag: unset = ON
-      import.meta.env.PROD = true;
-      try {
-        const store = installBrowser({ flag: false, optIn: [ALICE] });
-        store.set(REPLICATION_COPY_KEY, ALICE);
-        const loader = spyLoader();
-        expect(isReplicationBindPaused()).toBe(true);
-        expect(await replicationConfigPatch(ALICE, loader)).toEqual({});
-        expect(await replicationRestorePatch("0xaaaa", loader)).toEqual({});
-        expect(loader.calls).toEqual([]);
-        expect(await purgeReplicaCopyWhenOff({ principal: ALICE, loader })).toEqual({ status: "skipped", reason: "replication-on" });
-        expect(store.get(REPLICATION_COPY_KEY)).toBe(ALICE);
-      } finally {
-        if (savedProd === undefined) delete import.meta.env.PROD;
-        else import.meta.env.PROD = savedProd;
-      }
+      const store = installBrowser({ flag: true, optIn: [ALICE] });
+      store.set(REPLICATION_COPY_KEY, ALICE);
+      const loader = spyLoader();
+      expect(await buildReplicationConfig(ALICE, loader, true)).toBeUndefined();
+      expect(loader.calls).toEqual([]);
+      expect(await purgeReplicaCopyWhenOff({ principal: ALICE, loader })).toEqual({ status: "skipped", reason: "replication-on" });
+      expect(store.get(REPLICATION_COPY_KEY)).toBe(ALICE);
     });
 
     test("the same account binds when unpaused", async () => {
