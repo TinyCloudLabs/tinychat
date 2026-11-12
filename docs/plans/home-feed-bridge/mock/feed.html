@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:,">
-<title>Home feed · Mock 4</title>
+<title>Home feed · Mock 5</title>
 <style>
 /* Home's zinc palette (frontend/src/index.css), light first, dark from the phone's setting. */
 :root {
@@ -50,7 +50,7 @@ button:disabled { cursor: default; }
 .btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .btn.wide { width: 100%; }
 .btn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--need-dot); }
-.msgbtn { background: transparent; color: var(--fg2); font-size: 15px; padding: 0 14px 0 12px; }
+.msgbtn { max-width: 100%; background: transparent; color: var(--fg2); font-size: 15px; padding: 10px 14px 10px 12px; white-space: normal; text-align: left; line-height: 1.3; }
 .msgbtn .ic { width: 17px; height: 17px; }
 .link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 8px; border-radius: 10px; font-size: 15px; color: var(--fg2); text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 4px; }
 .link:active { background: var(--s2); }
@@ -134,6 +134,8 @@ button:disabled { cursor: default; }
 .st.done { color: var(--done-text); } .st.done::before { background: var(--done-text); }
 .st.later { color: var(--muted); } .st.later::before { background: var(--line2); }
 .st.inl { margin-left: 2px; }
+.cc { display: inline-flex; align-items: center; gap: 3px; font-size: 12.5px; font-weight: 600; color: var(--fg2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cc .ic { width: 14px; height: 14px; }
 .newdot { display: inline-block; width: 9px; height: 9px; margin-right: 7px; border-radius: 50%; background: var(--new); vertical-align: 1px; }
 
 /* Rows */
@@ -335,7 +337,7 @@ textarea:disabled { opacity: .5; }
 /* =====================================================================
    Content. Edit here: agents, cards, earlier messages, timings.
    ===================================================================== */
-const BUILT = "2026-11-12 13:15 UTC";
+const BUILT = "2026-11-12 16:54 UTC";
 const TIMING = { countSeconds: 4, receivedMs: 1500, doneMs: 6000, nextOpenMs: 2500, answerMs: 4000 };
 const MAIN_AGENT = "nimbus";
 const PROJECTS = ["Bridge", "Home feed", "Website", "Personal"]; // each keeps its colour (--p0 .. --p3) everywhere
@@ -360,30 +362,29 @@ const KINDS = {
   plan: { label: "Plan", icon: `<path d="M10 6h10M10 12h10M10 18h10M4 6h2M4 12h2M4 18h2"/>` },
 };
 
-/* ack: its answer to a message on a card that is not waiting on you; ask: its answer to a question. */
+/* reply: its canned reply to a comment, when the card has no reply of its own. */
 const AGENTS = [
   { id: "sprocket", name: "Sprocket", role: "Bridge engineering", platform: "claudecode", model: "Claude Opus 5.5", runsOn: "Your Bridge server", connected: "28 Oct", ends: "28 Jan", colour: "#0369a1",
-    ack: "Got it. I'll work that in and tell you here.", ask: "Good question. I'll check and tell you here." },
+    reply: "Thanks. I'll keep that in mind." },
   { id: "willow", name: "Willow", role: "Bridge design", platform: "claudecode", model: "Claude Opus 5.5", runsOn: "Your Bridge server", connected: "28 Oct", ends: "28 Jan", colour: "#6d28d9",
-    ack: "Noted. I'll show you the change on the test copy.", ask: "Let me look and come back to you." },
+    reply: "Noted. I'll show you the change on the test copy." },
   { id: "nimbus", name: "Nimbus", role: "Coordinator", platform: "claudecode", model: "Claude Opus 5.5", runsOn: "Your Bridge server", connected: "20 Oct", ends: "20 Jan", colour: "#0f766e", main: true,
-    ack: "On it. I'll tell you here when it's done.", ask: "Good question. I'll find out and tell you here." },
+    reply: "Noted. I'll pass it on and tell you here." },
   { id: "jingle", name: "Jingle", role: "Liaison", platform: "claudecode", model: "Claude Opus 5.5", runsOn: "Your Bridge server", connected: "30 Oct", ends: "30 Jan", colour: "#b45309",
-    ack: "Got it. I'll change the draft and show you again.", ask: "I'll check and tell you here." },
+    reply: "Thanks. I'll keep it in mind for the draft." },
   { id: "ledger", name: "Ledger", role: "Household payments", platform: "codex", model: "GPT-5 Codex", runsOn: "Your laptop", connected: "2 Nov", ends: "2 Feb", colour: "#047857",
-    ack: "Understood. I'll do that and confirm here.", ask: "I'll look it up and tell you here." },
+    reply: "Understood. Noted for next time." },
   { id: "scout", name: "Scout", role: "Website research", platform: "gemini", model: "Gemini 3 Pro", runsOn: "Google's servers", connected: "6 Nov", ends: "6 Dec", colour: "#be123c",
-    ack: "OK.", ask: "Sure. Both are on the test site." },
+    reply: "Noted. Both photos are on the test site." },
   { id: "tally", name: "Tally", role: "Subscriptions", platform: "grok", model: "Grok 4", runsOn: "xAI's servers", connected: "10 Oct", ends: "10 Nov", colour: "#4338ca", ended: true,
-    ack: "", ask: "" },
+    reply: "" },
 ];
-const DECIDED = { got: "Got it. Doing it your way.", done: "Done, the way you asked." }; // when a message is the decision
 
 /* kind "ask": a question with options. kind "update": nothing to answer (status "waiting" or "done").
    type: the kind of decision (KINDS). ago: minutes before the page opened. chips: at most three, deadline first.
    preview: what is being decided (facts, thumbs, draft, amount, progress, time). follows: what came before.
    got / done on an option: the agent's line when it receives the answer and when it is done.
-   ask on a card: the agent's answer when you message it a question. The order here is the order in "Needs you". */
+   reply on a card: the agent's reply to a comment on it. The order here is the order in "Needs you". */
 const CARDS = [
   { id: "ship", kind: "ask", type: "ship", agent: "sprocket", project: "Bridge", ago: 12, ref: "BR-0412",
     title: "Ship the card-link fix tonight?",
@@ -398,7 +399,7 @@ const CARDS = [
       { id: "morning", label: "Wait until morning", detail: "Ships at 08:00. Card links stay broken until then.", got: "Holding it until 08:00.", done: "Scheduled for 08:00. Nothing changes tonight." },
     ],
     evidence: ["212 checks passed, none failed", "Tried on the test copy at 18:40: each link opened its card", "Changes 3 files, all in the card view"],
-    ask: "The restart is about 30 seconds and nobody is on now. I'd still ship tonight." },
+    reply: "Noted. The restart is about 30 seconds and nobody is on now." },
   { id: "photo", kind: "ask", type: "design", agent: "scout", project: "Website", ago: 26, ref: "WEB-0093",
     title: "New hero photo?",
     chips: [],
@@ -407,7 +408,7 @@ const CARDS = [
       { id: "yes", label: "Yes", got: "OK, swapping it.", done: "The new photo is up." },
       { id: "no", label: "No", got: "OK.", done: "Kept the current photo." },
     ],
-    ask: "The new one. It's brighter and loads faster." },
+    reply: "Noted. The new one is brighter and loads faster." },
   { id: "note", kind: "ask", type: "message", agent: "jingle", project: "Home feed", ago: 48, ref: "HF-0031",
     title: "Send this note to the Home team?",
     body: "I wrote it from this morning's notes. It goes to the team channel, from you:",
@@ -419,7 +420,7 @@ const CARDS = [
       { id: "send", label: "Send as written", detail: "Posted in the team channel now, from you.", got: "Sending it now.", done: "Sent. I'll bring their replies here." },
       { id: "hold", label: "Hold it", detail: "Nothing is sent.", got: "Holding it.", done: "Saved as a draft. Nothing was sent." },
     ],
-    ask: "It goes to the whole team channel, about twelve people. Still send it?" },
+    reply: "Noted. It goes to the whole team channel, about twelve people." },
   { id: "header", kind: "ask", type: "design", agent: "willow", project: "Bridge", ago: 75, ref: "BR-0415",
     title: "Which header for the Bridge?",
     body: "Both are on the test copy. Pick one and I'll finish it today.",
@@ -431,7 +432,7 @@ const CARDS = [
       { id: "quiet", label: "Quiet header", detail: "Name and status only. Runs move one tap down.", thumb: "quiet", got: "Finishing the quiet header.", done: "The quiet header is on the test copy." },
       { id: "busy", label: "Busy header", detail: "Name, status and the three latest runs, always shown.", thumb: "busy", got: "Finishing the busy header.", done: "The busy header is on the test copy." },
     ],
-    ask: "The quiet one loads a little faster. Both are on the test copy." },
+    reply: "Noted. The quiet one loads a little faster." },
   { id: "storage", kind: "ask", type: "money", agent: "tally", project: "Personal", ago: 2890, ref: "PER-0207",
     title: "Renew the 2 TB storage plan?",
     body: "It renews on 15 Nov for $99.99 a year. You used 0.8 TB this year.",
@@ -445,7 +446,7 @@ const CARDS = [
       { id: "small", label: "Switch to 1 TB", detail: "$49.99 a year from 15 Nov. Your files fit." },
       { id: "end", label: "Let it end", detail: "Nothing is paid. Files stay readable until 15 Dec." },
     ],
-    ask: "Ledger can switch it today. Should I ask it to?", got: "Got it. I'll pass this to Ledger.", done: "Ledger has it. Done." },
+    reply: "Noted. Ledger can look at it; Tally can't act any more." },
   { id: "plan", kind: "update", status: "waiting", type: "plan", agent: "nimbus", project: "Bridge", ago: 25, ref: "BR-0409",
     title: "Writing tomorrow's plan",
     body: "So far: the card-link fix, the Bridge header and the storage renewal. Ready by 18:00.",
@@ -484,15 +485,16 @@ const HISTORY = [
 ];
 
 /* What this mock had to decide for itself. Shown at the bottom of the page. */
-const MOCK_LINE = "Mock 4: no explaining text; one button, Message <agent>; the card shows whose turn it is.";
+const MOCK_LINE = "Mock 5: the writing control reads “Leave a comment for <agent>”; a comment does not answer or move a card.";
 const INVENTED = [
-  "A message ending in “?” is a question: the agent answers and the card comes back to “Needs you” with a dot. Any other message on a card that needs you is taken as the decision.",
-  "On a card that is already answered, on an update, and on an agent's page, a message just gets the agent's answer; nobody's turn changes.",
-  "Tally's options cannot be tapped. On Tally's page, “Message Nimbus instead” opens Nimbus's page.",
-  "A message about a card shows on the page of the agent it went to, under that card.",
+  "A comment stays with the card: it shows under the options with “Sent”, then “<agent> received it”; the agent's canned reply follows 4 s later. The options stay live, the count does not change and nobody's turn changes.",
+  "If the card is closed when the reply arrives, its row gets a dot and shows the reply.",
+  "A row's speech-bubble number counts your comments and the agent's replies to them, not the lines that follow an answer.",
+  "Tally's options cannot be tapped and a comment does not answer, so Tally's card stays in “Needs you”. A comment on it goes to Nimbus. On Tally's page, “Leave a comment for Nimbus instead” opens Nimbus's page.",
+  "A comment about a card shows on the page of the agent it went to, under that card.",
   "Context: project colours, kind icons, chips, previews and “Follows” lines are made up. Tapping the draft shows all of it. Plain shows the Mock 3 text instead.",
   "A card opens where its row is; the row you tap stays under your thumb.",
-  "After an answer, a message or “Remind me later”, the next card opens 2.5 s later. Typing in the folded card stops it.",
+  "After an answer or “Remind me later”, the next card opens 2.5 s later. Typing in the folded card stops it.",
   "A card waiting on an agent stays where it was, as a row, outside the count; when it is done it moves to “Done”.",
   "Opening another card while one is counting sends the first at once, as the real build does.",
   "Focus: “Skip” moves on without answering; the count is your place in this pass; a strip on top follows your last answer.",
@@ -570,7 +572,7 @@ function init() {
     focus: { queue: [], pos: 0, last: null, answered: 0 }, enter: new Set(),
   };
   for (const c of CARDS) {
-    const st = S.cards[c.id] = { posted: ago(c.ago), phase: c.kind === "update" ? "update" : "ask", chosen: null, msg: null, steps: {}, later: null, remind: false, details: false, showCard: false, fresh: false, draftOpen: false };
+    const st = S.cards[c.id] = { posted: ago(c.ago), phase: c.kind === "update" ? "update" : "ask", chosen: null, steps: {}, later: null, remind: false, details: false, showCard: false, fresh: false, draftOpen: false };
     if (c.answered) {
       const o = c.options.find((x) => x.id === c.answered.option), t = ago(c.answered.ago);
       Object.assign(st, { phase: "done", chosen: o.id, steps: { sent: t, received: t + 20000, done: t + 60000 } });
@@ -606,6 +608,12 @@ function nextAfter(id) {
   return ring.find((x) => x !== id && askable(x)) || null;
 }
 const cardThread = (id) => S.events.filter((e) => e.card === id && e.kind === "msg").sort((a, b) => a.at - b.at || a.id - b.id);
+/** Comments on a card: yours, and the agent's replies to them. */
+const commentCount = (id) => cardThread(id).filter((e) => e.cmt).length;
+function ccHTML(id) {
+  const n = commentCount(id);
+  return n ? `<span class="cc">${icon(KINDS.message.icon)}<span aria-hidden="true">${n}</span><span class="sr">${n} comment${n === 1 ? "" : "s"}</span></span>` : "";
+}
 function lineOf(e) { return e.who === "me" ? `You: ${firstLine(e.text)}` : `${agentOf(e.by).name}: ${firstLine(e.text)}`; }
 function latestLine(id) { const t = cardThread(id); return t.length ? lineOf(t[t.length - 1]) : ""; }
 function agentTimeline(agentId) {
@@ -662,7 +670,7 @@ function headHTML() {
   const n = needCount(), l = laterCount(), filtered = S.group || S.project !== "all";
   const count = n ? `<b>${n}</b> need${n === 1 ? "s" : ""} you` : "Nothing needs you";
   return `<header>
-    <p class="mocklabel">Mock 4 · ${esc(BUILT)} · made-up content</p>
+    <p class="mocklabel">Mock 5 · ${esc(BUILT)} · made-up content</p>
     <div class="titlerow"><h1 class="h1">Home</h1>
       <button class="btn" data-act="filter">${filtered ? `<span class="dot" aria-hidden="true"></span>` : ""}Filter${filtered ? `<span class="sr"> (on)</span>` : ""}</button>
       <button class="btn" data-act="agents">Agents</button></div>
@@ -686,18 +694,17 @@ function rowHTML(c) {
   return `<button class="row${st.later ? " quiet" : ""}${S.ctx ? " ctxrow" : ""}" data-act="open" data-id="${c.id}">
     ${av(a, "sm")}
     <span class="t">${S.ctx ? ctxLine(c, true) : ""}<span class="t1">${st.fresh ? `<span class="newdot" aria-hidden="true"></span><span class="sr">New. </span>` : ""}${esc(c.title)}</span>
-      <span class="t2"><b>${esc(a.name)}</b>${platChip(a)}${st.later ? `<span>· ${esc(st.later.when)}</span>` : ""}${stWord(s)}</span>
+      <span class="t2"><b>${esc(a.name)}</b>${platChip(a)}${st.later ? `<span>· ${esc(st.later.when)}</span>` : ""}${ccHTML(c.id)}${stWord(s)}</span>
       ${st.fresh ? `<span class="t3">${esc(latestLine(c.id))}</span>` : ""}</span>
   </button>`;
 }
 function foldRowHTML(c) {
   const a = agentOf(c.agent), st = S.cards[c.id], o = st.chosen && c.options.find((x) => x.id === st.chosen);
-  const mine = st.msg && S.events.find((e) => e.id === st.msg);
-  const line = st.phase === "waiting" && mine ? `You: ${firstLine(mine.text)}` : latestLine(c.id);
+  const line = latestLine(c.id);
   return `<button class="row${S.ctx ? " ctxrow" : ""}" data-act="open" data-id="${c.id}">
     ${av(a, "sm")}
     <span class="t">${S.ctx ? ctxLine(c, true) : ""}<span class="t1">${o ? `You chose ${esc(o.label)}` : esc(c.title)}</span>
-      <span class="t2"><b>${esc(a.name)}</b>${platChip(a)}${stWord(statusOf(c))}</span>
+      <span class="t2"><b>${esc(a.name)}</b>${platChip(a)}${ccHTML(c.id)}${stWord(statusOf(c))}</span>
       <span class="t3">${esc(line)}</span></span>
   </button>`;
 }
@@ -716,7 +723,7 @@ function framing(c) {
   return `<h2 class="ttl">${esc(c.title)}</h2>${c.body ? `<p class="body">${esc(c.body)}</p>` : ""}${c.quote ? `<blockquote class="quote">${esc(c.quote)}</blockquote>` : ""}`;
 }
 function askCardHTML(c, focus) {
-  const a = agentOf(c.agent), st = S.cards[c.id], p = S.pend["card:" + c.id];
+  const a = agentOf(c.agent), st = S.cards[c.id], p = S.pend["pick:" + c.id];
   return `<article class="card${focus ? " focus" : ""}" aria-label="${esc(c.title)}">
     ${cardHead(c)}
     ${st.later ? `<div class="note-box" data-m="laternote"><b>Later · ${esc(st.later.when)}</b>${st.later.note ? ` · Note to self: “${esc(st.later.note)}”` : ""}</div>` : ""}
@@ -725,7 +732,7 @@ function askCardHTML(c, focus) {
     ${c.deadline && !S.ctx ? `<p class="due" data-m="due">${icon(P_CLOCK)}<span>${esc(c.deadline)}</span></p>` : ""}
     ${optionsHTML(c, p)}
     ${threadHTML(c.id)}
-    ${composerHTML("card:" + c.id, c.agent, p && p.kind === "choice")}
+    ${composerHTML("card:" + c.id, c.agent, !!p)}
     <div class="foot" data-m="foot">
       <button class="link" data-act="remind" data-id="${c.id}" aria-expanded="${st.remind}"${p ? " disabled" : ""}>Remind me later</button>
       <button class="link" data-act="details" data-id="${c.id}" aria-expanded="${st.details}">Details</button>
@@ -743,8 +750,8 @@ function optionsHTML(c, p) {
     const sug = c.suggest && c.suggest.option === o.id ? `<span class="tag">Suggested</span>` : "";
     if (counting && p.option === o.id) {
       return `<div class="opt on" data-m="o-${o.id}"><span class="rd on" aria-hidden="true"></span><span class="ot"><span class="ol">${esc(o.label)}</span>
-        <span class="od" data-count="card:${c.id}">${countText("card:" + c.id)}</span></span>
-        <button class="undo" data-act="undo" data-k="card:${c.id}">Undo</button>${barHTML()}</div>`;
+        <span class="od" data-count="pick:${c.id}">${countText("pick:" + c.id)}</span></span>
+        <button class="undo" data-act="undo" data-k="pick:${c.id}">Undo</button>${barHTML()}</div>`;
     }
     return `<button class="opt${p ? " dim" : ""}" data-m="o-${o.id}" data-act="choose" data-id="${c.id}" data-opt="${o.id}"${p ? " disabled" : ""}>
       <span class="rd" aria-hidden="true"></span><span class="ot"><span class="ol">${esc(o.label)}</span>${sug}${o.detail ? `<span class="od">${esc(o.detail)}</span>` : ""}</span>${o.thumb && !S.ctx ? drawing(o.thumb, "thumb") : ""}</button>`;
@@ -760,26 +767,26 @@ function stepsHTML(steps, receiver, mini, withDone) {
     ${withDone ? li(!!steps.done, "Done", steps.done, "waiting") : ""}
   </ol>`;
 }
-function msgHTML(e, hideSteps) {
+function msgHTML(e) {
   if (e.who === "me") {
     const to = agentOf(e.to || e.agent);
     return `<div class="msg me" data-m="e${e.id}"><span class="bub">${esc(e.text)}</span>
-      ${e.steps && !hideSteps ? stepsHTML(e.steps, to.name, true, false) : `<div class="meta">${stamp(e.at)}</div>`}</div>`;
+      ${e.steps ? stepsHTML(e.steps, to.name, true, false) : `<div class="meta">${stamp(e.at)}</div>`}</div>`;
   }
   return `<div class="msg" data-m="e${e.id}"><span class="bub">${esc(e.text)}</span><div class="meta">${esc(agentOf(e.by).name)} · ${stamp(e.at)}</div></div>`;
 }
 function threadHTML(cardId) {
-  const t = cardThread(cardId), st = S.cards[cardId];
-  return t.length ? `<div class="thread" data-m="thread">${t.map((e) => msgHTML(e, st && st.msg === e.id && st.phase !== "ask")).join("")}</div>` : "";
+  const t = cardThread(cardId);
+  return t.length ? `<div class="thread" data-m="thread">${t.map((e) => msgHTML(e)).join("")}</div>` : "";
 }
 /**
- * The one way to write: a quiet "Message <agent>" button that opens one line in place. key: "card:<id>" or
- * "agent:<id>". For a disconnected agent it reads "Message <main agent> instead"; on that agent's own page it opens
- * the main agent's page.
+ * The one way to write: a quiet "Leave a comment for <agent>" button that opens one line in place. key: "card:<id>"
+ * or "agent:<id>". For a disconnected agent it reads "Leave a comment for <main agent> instead"; on that agent's own
+ * page it opens the main agent's page. A comment never answers or moves a card.
  */
 function composerHTML(key, agentId, locked, onPage) {
   const a = agentOf(agentId), to = writeTo(agentId), p = S.pend[key];
-  const label = a.ended ? `Message ${to.name} instead` : `Message ${a.name}`;
+  const label = a.ended ? `Leave a comment for ${to.name} instead` : `Leave a comment for ${a.name}`;
   const id = "ta-" + key.replace(":", "-");
   if (p && p.kind === "reply") {
     return `<div class="reply" data-m="reply"><div class="sending" data-m="sending"><span class="stext">${esc(p.text)}</span>
@@ -789,7 +796,7 @@ function composerHTML(key, agentId, locked, onPage) {
     const act = onPage && a.ended ? `data-act="gomsg" data-id="${to.id}"` : `data-act="compose" data-k="${key}"`;
     return `<div class="reply" data-m="reply"><button class="btn msgbtn" data-m="msgbtn" ${act}${locked ? " disabled" : ""}>${icon(KINDS.message.icon)}${esc(label)}</button></div>`;
   }
-  return `<div class="reply" data-m="reply"><div class="rbox" data-m="rbox"><textarea id="${id}" data-m="ta" data-draft="${key}" rows="1" aria-label="Message ${esc(to.name)}" placeholder="Message ${esc(to.name)}"${locked ? " disabled" : ""}></textarea>
+  return `<div class="reply" data-m="reply"><div class="rbox" data-m="rbox"><textarea id="${id}" data-m="ta" data-draft="${key}" rows="1" aria-label="Leave a comment for ${esc(to.name)}" placeholder="Leave a comment for ${esc(to.name)}"${locked ? " disabled" : ""}></textarea>
     <button class="btn primary send" data-m="send" data-act="send" data-k="${key}"${locked ? " data-locked" : ""}>Send</button></div></div>`;
 }
 function remindHTML(c) {
@@ -806,14 +813,14 @@ function detailsHTML(c) {
       <div><dt>Posted by</dt><dd>${esc(a.name)} (${esc(PLATFORMS[a.platform].name)}) · ${stamp(st.posted)}</dd></div>
       <div><dt>Project</dt><dd>${esc(c.project)}</dd></div>
       <div><dt>Card reference</dt><dd>${esc(c.ref)}</dd></div>
-      ${a.ended ? `<div><dt>${esc(a.name)}</dt><dd>Disconnected ${esc(a.ends)}</dd></div>` : `<div><dt>Messages go to</dt><dd>${esc(a.name)}</dd></div>`}
+      ${a.ended ? `<div><dt>${esc(a.name)}</dt><dd>Disconnected ${esc(a.ends)}</dd></div>` : `<div><dt>Comments go to</dt><dd>${esc(a.name)}</dd></div>`}
     </dl>
     ${c.evidence ? `<div class="ev"><span class="pl">What ${esc(a.name)} checked</span><ul>${c.evidence.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
   </div>`;
 }
 function foldCardHTML(c) {
   const st = S.cards[c.id], o = st.chosen && c.options.find((x) => x.id === st.chosen), to = writeTo(c.agent);
-  const head = o ? `<b>You chose ${esc(o.label)}</b><span class="fsub">Sent to ${esc(to.name)} · ${esc(c.title)}</span>` : `<b>You messaged ${esc(to.name)}</b><span class="fsub">${esc(c.title)}</span>`;
+  const head = `<b>You chose ${esc(o.label)}</b><span class="fsub">Sent to ${esc(to.name)} · ${esc(c.title)}</span>`;
   return `<article class="card" aria-label="${esc(c.title)}">
     ${cardHead(c)}
     <div class="fs" data-m="fs"><span class="ck" aria-hidden="true">${ICON_CHECK}</span><span>${head}</span></div>
@@ -916,11 +923,11 @@ function focusItems() {
 }
 function lastStripHTML(id) {
   const c = cardOf(id), st = S.cards[id], o = st.chosen && c.options.find((x) => x.id === st.chosen), to = writeTo(c.agent);
-  const step = st.phase === "ask" ? `${to.name} answered` : st.steps.done ? "Done" : st.steps.received ? `${to.name} received it` : "Sent";
+  const step = st.steps.done ? "Done" : st.steps.received ? `${to.name} received it` : "Sent";
   const t = cardThread(id), last = t[t.length - 1];
   const line = last && last.who === "agent" ? ` · ${firstLine(last.text)}` : "";
   return `<button class="strip" data-act="conv" data-id="${to.id}"><span class="fs" style="margin:0"><span class="ck" aria-hidden="true">${ICON_CHECK}</span></span>
-    <span class="t"><span class="t1">${o ? `You chose ${esc(o.label)} · sent to ${esc(to.name)}` : `You messaged ${esc(to.name)}`}</span><span class="t2">${esc(step + line)}</span></span></button>`;
+    <span class="t"><span class="t1">You chose ${esc(o.label)} · sent to ${esc(to.name)}</span><span class="t2">${esc(step + line)}</span></span></button>`;
 }
 
 /* Agents list. */
@@ -1123,7 +1130,7 @@ function focusComposer(key) {
    ===================================================================== */
 function countText(key) {
   const p = S.pend[key];
-  const to = key.startsWith("card:") ? writeTo(cardOf(key.slice(5)).agent) : agentOf(key.slice(6));
+  const to = key.startsWith("agent:") ? agentOf(key.slice(6)) : writeTo(cardOf(key.slice(5)).agent);
   return `Sending to ${to.name} in ${p ? p.left : TIMING.countSeconds}s`;
 }
 function startCount(key, pend) {
@@ -1155,12 +1162,12 @@ function commit(key, quiet) {
   stopTimer(p.timer);
   delete S.pend[key];
   if (p.kind === "choice") commitChoice(p.card, p.option, quiet);
-  else { S.compose.delete(key); sendMessage(key, p.text, quiet); }
+  else { S.compose.delete(key); sendMessage(key, p.text); }
   if (!quiet) render();
 }
 function flushAll(exceptKey) { for (const k of Object.keys(S.pend)) if (k !== exceptKey) commit(k, true); }
 
-/** After an answer or a turn-taking message: in Focus the next card slides in; in the list it opens 2.5 s later. */
+/** After an answer: in Focus the next card slides in; in the list it opens 2.5 s later. */
 function moveOn(id) {
   if (S.view === "feed" && S.mode === "focus") {
     S.focus.last = id;
@@ -1172,7 +1179,7 @@ function moveOn(id) {
 }
 function commitChoice(id, optionId, quiet) {
   const c = cardOf(id), st = S.cards[id], o = c.options.find((x) => x.id === optionId), to = writeTo(c.agent), t = Date.now();
-  Object.assign(st, { phase: "waiting", chosen: o.id, msg: null, steps: { sent: t }, later: null, remind: false, details: false, showCard: false, fresh: false });
+  Object.assign(st, { phase: "waiting", chosen: o.id, steps: { sent: t }, later: null, remind: false, details: false, showCard: false, fresh: false });
   addEvent({ agent: to.id, who: "me", kind: "choice", text: o.label, card: id, at: t });
   later(TIMING.receivedMs, () => {
     st.steps.received = Date.now();
@@ -1188,36 +1195,26 @@ function commitChoice(id, optionId, quiet) {
   if (!quiet) moveOn(id);
 }
 /**
- * A message. On a card that needs you, it hands the turn to the agent: the card waits on it and leaves the count.
- * The agent then reads it: a question gets an answer and the card comes back to you with a dot; anything else is
- * taken as the decision: received, then Done. Elsewhere a message just gets the agent's answer.
+ * A comment. It goes to the agent (or the main agent for a disconnected one) and stays in the conversation: it never
+ * answers the card, moves it, or changes the count. The agent receives it, then replies a few seconds later.
  */
-function sendMessage(key, text, quiet) {
+function sendMessage(key, text) {
   const cardId = key.startsWith("card:") ? key.slice(5) : null, c = cardId && cardOf(cardId);
   const to = c ? writeTo(c.agent) : agentOf(key.slice(6)), t = Date.now();
-  const st = c && S.cards[c.id], turn = !!st && st.phase === "ask", question = /\?\s*$/.test(text);
-  const ev = addEvent({ agent: to.id, who: "me", text, card: cardId, at: t, to: to.id, steps: { sent: t } });
-  const say = (line) => addEvent({ agent: to.id, who: "agent", by: to.id, text: line, card: cardId, at: Date.now() });
-  if (turn) Object.assign(st, { phase: "waiting", chosen: null, msg: ev.id, steps: ev.steps, later: null, remind: false, details: false, showCard: false, fresh: false });
-  later(TIMING.receivedMs, () => {
-    ev.steps.received = Date.now();
-    if (turn && !question) say((c && c.got) || DECIDED.got);
+  const ev = addEvent({ agent: to.id, who: "me", text, card: cardId, at: t, to: to.id, steps: { sent: t }, cmt: true });
+  later(TIMING.receivedMs, () => { ev.steps.received = Date.now(); render(); });
+  later(TIMING.answerMs, () => {
+    addEvent({ agent: to.id, who: "agent", by: to.id, text: (c && c.reply) || to.reply, card: cardId, at: Date.now(), cmt: true });
+    if (c) {
+      const away = S.view !== "feed" || S.openId !== cardId || (S.mode === "focus" && S.focus.queue[S.focus.pos] !== cardId);
+      if (away) S.cards[cardId].fresh = true;
+    }
     render();
   });
-  if (turn && !question) {
-    later(TIMING.receivedMs + TIMING.doneMs, () => { ev.steps.done = Date.now(); st.phase = "done"; say((c && c.done) || DECIDED.done); render(); });
-  } else {
-    later(TIMING.answerMs, () => {
-      say(question ? (c && c.ask) || to.ask : to.ack);
-      if (turn && st.phase === "waiting" && st.msg === ev.id) Object.assign(st, { phase: "ask", msg: null, steps: {}, fresh: S.openId !== cardId || S.mode === "focus" });
-      render();
-    });
-  }
-  if (turn && !quiet) moveOn(cardId);
 }
 function autoNext(id) {
   if (S.view !== "feed" || S.mode !== "list" || S.openId !== id || S.sheet) return;
-  if ((S.drafts["card:" + id] || "").trim() || S.pend["card:" + id] || S.compose.has("card:" + id)) return;
+  if ((S.drafts["card:" + id] || "").trim() || S.pend["card:" + id] || S.pend["pick:" + id] || S.compose.has("card:" + id)) return;
   const n = nextAfter(id);
   if (!n) return;
   openNext(n, id);
@@ -1323,7 +1320,7 @@ function startOver() {
 
 const ACTIONS = {
   open: (d) => openCard(d.id),
-  choose: (d) => startCount("card:" + d.id, { kind: "choice", card: d.id, option: d.opt }),
+  choose: (d) => startCount("pick:" + d.id, { kind: "choice", card: d.id, option: d.opt }),
   undo: (d) => undo(d.k),
   compose: (d) => { S.compose.add(d.k); render(); focusComposer(d.k); },
   gomsg: (d) => { S.compose.add("agent:" + d.id); go("agent", d.id); focusComposer("agent:" + d.id); },

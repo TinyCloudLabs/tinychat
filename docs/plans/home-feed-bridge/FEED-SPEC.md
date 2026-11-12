@@ -63,7 +63,7 @@ For each part: what it does, then where its data comes from.
 - 4.10 **Details**, closed [D3]: who posted, routing, ids, private priority and history.
 - 4.11 Nothing else is on the card. "Accept recommendation" goes, since tapping "Suggested" does the same. "Drop question" becomes "Not needed" in the foot, with the count and Undo. **PROPOSED**: one way to answer.
 - 4.12 Approvals keep a deliberate button. **PROPOSED**: access approvals say "Approve on OpenKey".
-- 4.13 **Context line, the thing shown, fact chips** [D9] (Mock 4). The project in its own colour and the kind of decision (ship, design, message, money, access, plan). A small preview of the thing being decided: two thumbnails, the first lines of a draft, the amount, a strip of checked facts. At most three chips, and one on a row. **PROPOSED** form. Data: project, kind, deadline, cost and links exist; previews such as thumbnails need one optional display field.
+- 4.13 **Context line, the thing shown, fact chips** [D9] (Mock 5). The project in its own colour and the kind of decision (ship, design, message, money, access, plan). A small preview of the thing being decided: two thumbnails, the first lines of a draft, the amount, a strip of checked facts. At most three chips, and one on a row. **PROPOSED** form. Data: project, kind, deadline, cost and links exist; previews such as thumbnails need one optional display field.
 
 ## 5. Answering
 
@@ -83,7 +83,7 @@ For each part: what it does, then where its data comes from.
 
 ## 6. Replying
 
-- 6.9 **Changing: one quiet control, "Leave a comment for <agent>"** [D8]. It opens one line and Send, with no always-visible box and no caption under it. The name says both things the caption used to say: it is a comment, and it is for that agent. Hunter chose this wording on 11-12 over "Message <agent>", which Mock 4 shows. Mock 4 also tried a status that follows whose turn it is ("Waiting on <agent>" after he writes). That is not decided, and a comment does not answer a card. The rules below describe the branch as built.
+- 6.9 **Changing: one quiet control, "Leave a comment for <agent>"** [D8]. It opens one line and Send, with no always-visible box and no caption under it. The name says both things the caption used to say: it is a comment, and it is for that agent. Hunter chose this wording on 11-12, and Mock 5 shows it. A comment does not answer a card or move it. (Mock 4 tried "Message <agent>" and a status that followed whose turn it was. Both were dropped.) The rules below describe the branch as built.
 
 - 6.1 There is one box per card: "Reply to <agent>". He never picks a recipient [D2].
 - 6.2 On an open question it sits under the options ("Write instead of choosing, or as well"). After the answer, it takes replies [D2].
@@ -210,7 +210,7 @@ When a card falls short:
 | 4.10 | D3 | built c8264d0a; priority moved 63b9f570 | has | screen only |
 | 4.11 | PROPOSED | proposed | has | screen only |
 | 4.12 | Home; PROPOSED (OpenKey line) | main; proposed | has | fits |
-| 4.13 | D9; PROPOSED (form) | mock (Mock 4) | has; previews: field | extends, small |
+| 4.13 | D9; PROPOSED (form) | mock (Mock 5) | has; previews: field | extends, small |
 | 5.1 | D1 | built 46f6a49e, a7c53400 | has | fits |
 | 5.2 | D1 | built 46f6a49e | has | screen only |
 | 5.3 | D1 | built 46f6a49e | has | fits (nothing written before the count ends) |
@@ -235,7 +235,7 @@ When a card falls short:
 | 6.6 | C2 | built c8264d0a, 2da228cc | has | fits |
 | 6.7 | Home | main | has | fits |
 | 6.8 | PROPOSED | proposed | has | fits (ADR item 16: the format takes a message on any card) |
-| 6.9 | D8 | mock (Mock 4 shows the earlier wording) | has | fits (the same message record) |
+| 6.9 | D8 | mock (Mock 5) | has | fits (the same message record) |
 | 7.1 | Home; PROPOSED (plain cards) | main (typed cards) | has | fits |
 | 7.2 | D2 | built c8264d0a | has | fits |
 | 7.3 | D2 | built c8264d0a | has | fits for private notes; departs, small: held notes are no longer written (ADR items 4, 9) |

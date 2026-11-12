@@ -6,7 +6,7 @@
 
 - **The branch `bridge-feed`.** Three screen changes to the Home feed. It was last merged with `main` at 16:10 UTC on 11-12 (main at 6fdff2f6, which includes #630, #650 and #660). `main` moves fast, so check again. It changes the screen only: no store, schema, manifest or back-end file is touched, and it writes the same records as `main`.
 - **`FEED-SPEC.md`.** The design as numbered rules. Each rule says who decided it, whether it is built, what data it needs, and how it sits against the existing architecture.
-- **`mock/feed.html`.** A tappable phone mock ("Mock 4"): one self-contained file with made-up cards and a simulated agent. Open it in a browser at phone width. It is ahead of the code and shows where the design is going. Four screenshots sit beside it.
+- **`mock/feed.html`.** A tappable phone mock ("Mock 5"): one self-contained file with made-up cards and a simulated agent. Open it in a browser at phone width. It is ahead of the code and shows where the design is going. Four screenshots sit beside it.
 
 ## What the branch does today
 
@@ -39,10 +39,9 @@ He also asked that the work stay close to the underlying architecture: one ident
 
 ## Where the mock is ahead of the code
 
-All of this is in Mock 4 and none of it is built. Hunter had not finished reacting to it when this was written.
+All of this is in Mock 5 and none of it is built. Hunter had not finished reacting to it when this was written.
 
-- **One quiet control to write.** It opens one line, with no always-visible box and no caption. Mock 4 labels it "Message <agent>". Hunter has since chosen "Leave a comment for <agent>", so read the mock's label that way.
-- **Tried in the mock, not decided: the card shows whose turn it is.** After the person writes, the card reads "Waiting on <agent>" and leaves "Needs you" until the agent replies or finishes. With the comment wording this may not survive, because a comment does not answer a card.
+- **One quiet control to write.** It opens one line, with no always-visible box and no caption. The mock now reads "Leave a comment for <agent>". A comment does not answer or move the card.
 - **Context at a glance.** A project tag, the kind of decision, the thing itself shown (the first lines of a draft, an amount, a strip of checked facts) and up to three chips. A Plain / Context switch compares the two. Our own read is that the Context card overshoots: keep the tag, the kind and the thing shown, and drop chips that repeat it.
 - **A List / Focus switch.** Focus shows one card per screen.
 - **A disconnected agent's card** offers to write to another agent instead, as a choice the person taps. Nothing is redirected for them.
@@ -78,7 +77,7 @@ Proposed things, not built, and where they would stand:
 
 ## Known gaps on the branch
 
-- The open card is still busy next to the mock: a tall text box, a sentence explaining the count, a "Send answer" button and three more buttons. D8 removes the sentence, and Mock 4 shows the target.
+- The open card is still busy next to the mock: a tall text box, a sentence explaining the count, a "Send answer" button and three more buttons. D8 removes the sentence, and Mock 5 shows the target.
 - The last step says "Completed". The spec says "Done".
 - Closing the page during the count can lose the answer. #610's outbox fixes this.
 - Platform marks exist for five platforms only (`frontend/public/platforms/SOURCES.txt`). The others show their name. Each owner's brand rules need a check before Home shows any mark in public.
