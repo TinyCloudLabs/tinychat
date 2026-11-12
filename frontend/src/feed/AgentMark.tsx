@@ -100,6 +100,6 @@ export function AgentDetails({ name, via, profile, onOpen }: { name: string; via
       <dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 break-words text-right">{value}</dd>
     </div>)}</dl>
     {!profile && <p className="text-xs text-muted-foreground">{name} has not said what it is or where it runs.</p>}
-    {onOpen && <button type="button" onClick={onOpen} className="min-h-10 rounded-lg border border-border bg-background px-3">Open conversation</button>}
+    {onOpen && <button type="button" onClick={onOpen} className="min-h-11 rounded-lg border border-border bg-background px-3 fine:min-h-10">Open conversation</button>}
   </section>;
 }

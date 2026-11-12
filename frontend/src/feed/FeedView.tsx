@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { HomeAskBox } from "@/bots/HomeAskBox";
 import { AgentDetails, AgentMark, PlatformName, type AgentProfile } from "./AgentMark";
+import { StatusMark } from "./CompactCard";
 import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
@@ -76,16 +77,18 @@ export function FeedCardView({ card, sample = true, readBody, status, onAuthor, 
         {agent ? <AgentMark agentKey={agent.key} name={card.author.name} /> : avatar && <img src={avatar} alt="" className="size-9 shrink-0 rounded-full bg-muted object-cover" />}
         <div className="min-w-[6rem] flex-1">
           <p data-agent-line className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-            {onAuthor ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="min-h-6 break-words text-left font-semibold underline decoration-border underline-offset-4">{card.author.name}</button> : <span className="break-words font-semibold">{card.author.name}</span>}
+            {/* The name is 24px tall; its ::after stretches the tap target to 44px without moving the line (critique #8). */}
+            {onAuthor ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="relative min-h-6 break-words text-left font-semibold underline decoration-border underline-offset-4 after:absolute after:-inset-x-1 after:-inset-y-2.5 fine:after:hidden">{card.author.name}</button> : <span className="break-words font-semibold">{card.author.name}</span>}
             {platform && <PlatformName platform={platform} chip />}
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">{card.author.via && <>via {card.author.via} · </>}<ShortTime at={card.at} /></p>
         </div>
         {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
-        {status && <span data-status className="shrink-0 rounded-full border border-border px-2 py-1 text-xs font-medium">{status}</span>}
+        {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}
+        {status && status !== "Information" && <span data-status className="flex min-h-6 shrink-0 items-center"><StatusMark status={status} /></span>}
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
-      {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-xl font-semibold leading-tight">{card.title}</h2>}
+      {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-title-2">{card.title}</h2>}
       <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>
       {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
       {card.render === "thread" && card.replies?.map((reply, index) => (
@@ -94,7 +97,7 @@ export function FeedCardView({ card, sample = true, readBody, status, onAuthor, 
         </div>
       ))}
       {card.render === "article" && <div className="mt-4 min-w-0 border-t border-border pt-4">
-        {card.title && <h2 className="font-display text-xl font-semibold leading-tight break-words">{card.title}</h2>}
+        {card.title && <h2 className="break-words font-display text-title-2">{card.title}</h2>}
         {card.body && (sample || readBody) && <ArticleBody body={card.body} readBody={readBody ?? readArticleBody} />}
       </div>}
       {card.render === "link" && card.url && <div className="mt-3 min-w-0">
