@@ -1,6 +1,7 @@
 import { CheckIcon, XIcon } from "lucide-react";
 import type { FeedResponseHandling } from "@tinycloud/sdk-services/feed";
 import type { HomeFeedEntry } from "./feedStoreTypes";
+import { ShortTime } from "./ShortTime";
 
 /** The agent's receipt and outcome for one response: a typed card's own record of it, else the card's latest. */
 export function answerHandling(entry: HomeFeedEntry, responseId: string): FeedResponseHandling {
@@ -29,7 +30,7 @@ export function AnswerSteps({ sent, acknowledgement, outcome, agent, final = tru
         ? <span aria-hidden className="size-4 shrink-0 rounded-full border-[1.5px] border-muted-foreground" />
         : <span className={`flex size-4 shrink-0 items-center justify-center rounded-full motion-safe:animate-in motion-safe:zoom-in-50 motion-safe:duration-500 ${step.state === "failed" ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground"}`}>{step.state === "failed" ? <XIcon aria-hidden className="size-3" strokeWidth={3} /> : <CheckIcon aria-hidden className="size-3" strokeWidth={3} />}</span>}
       <span className={step.state === "failed" ? "font-medium text-destructive" : step.state === "done" ? "font-medium" : ""}>{step.label}{step.state === "upcoming" && <span className="sr-only">, not yet</span>}</span>
-      {step.at && <time dateTime={step.at} className="ml-auto text-xs text-muted-foreground">{new Date(step.at).toLocaleString()}</time>}
+      {step.at && <ShortTime at={step.at} className="ml-auto text-xs text-muted-foreground" />}
     </li>)}
   </ol>;
 }

@@ -3,6 +3,7 @@ import { ownerThreadResponseKey, parseThreadKey, publisherThreadReceipts, recent
 import { AnswerSteps } from "./AnswerSteps";
 import { cardAuthor, type ReplyRoute } from "./CardReply";
 import type { HomeFeedEntry } from "./feedStoreTypes";
+import { ShortTime } from "./ShortTime";
 
 interface Props {
   entry: HomeFeedEntry;
@@ -90,7 +91,7 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, route,
           const route = entry.threadRoutes?.[ownerThreadResponseKey(message)];
           const routed = route?.kind === "publisher" || route?.kind === "recipients";
           return <li key={messageKey(message)} className={`space-y-1 rounded-lg p-2 ${message.side === "sam" ? "bg-muted/40" : ""}`}>
-            <p className="text-xs text-muted-foreground">{message.side === "sam" ? `You to ${messageRecipient(entry, record, message)}` : message.from} · <time dateTime={message.at}>{new Date(message.at).toLocaleString()}</time></p>
+            <p className="text-xs text-muted-foreground">{message.side === "sam" ? `You to ${messageRecipient(entry, record, message)}` : message.from} · <ShortTime at={message.at} /></p>
             <p className="whitespace-pre-wrap break-words">{message.text}</p>
             {message.side === "sam" && header && <div className="text-xs"><AnswerSteps sent={header.createdAt} acknowledgement={handling?.acknowledgement ?? null} outcome={handling?.outcome ?? null} agent={messageRecipient(entry, record, message)} final={false} /></div>}
             {message.side === "sam" && route?.kind === "held" && <p className="text-xs text-muted-foreground">Not sent: {route.unresolved.join(" / ")} had no link you approved.</p>}
@@ -105,7 +106,7 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, route,
     {reply ?? ("reason" in route && <p role="status" className="text-sm text-muted-foreground">{route.reason}</p>)}
     {!!heldNotes.length && <details className="rounded-xl border border-border p-3">
       <summary className="min-h-8 cursor-pointer font-medium">Held notes ({heldNotes.length})</summary>
-      <ul className="mt-2 space-y-2">{heldNotes.map((note) => <li key={note.eventId} className="space-y-1 rounded-lg bg-muted/30 p-3"><p className="whitespace-pre-wrap break-words">{note.text}</p><p className="text-xs text-muted-foreground">Not sent · meant for {note.intendedRecipient} · {new Date(note.at).toLocaleString()}</p></li>)}</ul>
+      <ul className="mt-2 space-y-2">{heldNotes.map((note) => <li key={note.eventId} className="space-y-1 rounded-lg bg-muted/30 p-3"><p className="whitespace-pre-wrap break-words">{note.text}</p><p className="text-xs text-muted-foreground">Not sent · meant for {note.intendedRecipient} · <ShortTime at={note.at} /></p></li>)}</ul>
     </details>}
     {wiring && <details className="rounded-xl border border-border p-3 text-xs">
       <summary className="min-h-8 cursor-pointer text-sm font-medium">Delivery details</summary>
@@ -130,7 +131,7 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, route,
         })}
         {plainMessages.map((message) => {
           const handling = entry.responseHandling?.[message.responseId];
-          return <div key={message.responseId} aria-label="Other saved card message" className="space-y-1"><p className="whitespace-pre-wrap">{message.text}</p><p>Message saved · {new Date(message.createdAt).toLocaleString()}{handling?.acknowledgement && " · Publisher received"}{handling?.outcome && ` · Publisher outcome ${handling.outcome.phase}`}</p><p className="text-muted-foreground">Not a decision on this card.</p></div>;
+          return <div key={message.responseId} aria-label="Other saved card message" className="space-y-1"><p className="whitespace-pre-wrap">{message.text}</p><p>Message saved · <ShortTime at={message.createdAt} />{handling?.acknowledgement && " · Publisher received"}{handling?.outcome && ` · Publisher outcome ${handling.outcome.phase}`}</p><p className="text-muted-foreground">Not a decision on this card.</p></div>;
         })}
         {!!messages.length && <p className="text-muted-foreground">Send again saves a new message; the first one may still arrive.</p>}
       </div>
