@@ -80,7 +80,17 @@ class ReplicaStoreCoreTest {
     private lateinit var secrets: MemorySecretStore
     private lateinit var core: ReplicaStoreCore
 
-    private fun newCore() = ReplicaStoreCore(dir, secrets, { JdbcReplicaDb(it) }, { 1234L })
+    /** Keys each open was given, by file name. */
+    private val keysUsed = mutableListOf<Pair<String, ByteArray>>()
+
+    /** Plain SQLite stands in for SQLCipher; a file that isn't SQLite plays the part of "this key can't open it". */
+    private fun newCore() = ReplicaStoreCore(dir, secrets, { file, key ->
+        keysUsed += file.name to key
+        if (file.isFile && file.length() > 0 && !file.readBytes().copyOf(15).contentEquals("SQLite format 3".toByteArray())) {
+            throw ReplicaDbUnreadable()
+        }
+        JdbcReplicaDb(file)
+    }, { 1234L })
 
     @Before fun setUp() {
         root = Files.createTempDirectory("replica-test").toFile()
@@ -294,6 +304,29 @@ class ReplicaStoreCoreTest {
         assertEquals("INVALID_ARGUMENT", code { core.wipe("") })
         core.open("alice", null)
         assertEquals("INVALID_ARGUMENT", code { core.list("s", null, -1) })
+    }
+
+    @Test fun databaseKeyIsPerAccountAndStable() {
+        core.open("alice", null)
+        core.open("bob", null)
+        core.open("alice", null)
+        val (aliceFirst, bobKey, aliceAgain) = keysUsed.map { it.second }
+        assertEquals(32, aliceFirst.size)
+        assertTrue(aliceFirst.contentEquals(aliceAgain))
+        assertFalse(aliceFirst.contentEquals(bobKey))
+        assertTrue(aliceFirst.contentEquals(ReplicaStoreCore.databaseKey(secrets.load(ReplicaStoreCore.accountId("alice"))!!)))
+    }
+
+    @Test fun fileThisKeyCannotOpenIsRecreated() {
+        core.open("alice", null)
+        core.write(listOf(put("s", "k", "v")))
+        core.close()
+        listOf("-wal", "-shm").forEach { File(file("alice").path + it).delete() }
+        file("alice").writeBytes(ByteArray(8192) { 0x5a })
+        assertTrue(core.open("alice", null).created)
+        assertNull(core.get("s", "k"))
+        core.write(listOf(put("s", "k", "again")))
+        assertEquals("again", core.get("s", "k"))
     }
 
     @Test fun missingMarkerClearsOrphanSecrets() {

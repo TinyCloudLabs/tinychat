@@ -11,11 +11,14 @@ import { appPlatform, type AppPlatform } from "../platform";
  * wipe (`wipeNativeReplicaOnSignOut`) runs whenever the plugin exists, flag or not, so no build strands a copy.
  *
  * Native contract (iOS and Android are identical):
- * - One SQLite file and one 256-bit secret per account (file named by SHA-256 of the account, never the account).
+ * - One SQLCipher file and one 256-bit secret per account (file named by SHA-256 of the account, never the account).
+ *   The file is encrypted whole with a raw key derived from the secret (HMAC page authentication, temp_store=MEMORY).
  *   iOS: Application Support, excluded from backup, readable after first unlock, secret in the Keychain
- *   (AfterFirstUnlockThisDeviceOnly). Android: noBackupFilesDir, secret wrapped by an Android Keystore key.
- * - Rows are sealed: lookup column HMAC-SHA256(store ‖ 0 ‖ key), value AES-256-GCM(key ‖ value) bound to the store
- *   and row. A row that fails authentication rejects `CORRUPT` after wiping that account (it is only a copy).
+ *   (AfterFirstUnlockThisDeviceOnly, not synchronizable). Android: noBackupFilesDir, secret wrapped by a
+ *   non-exportable Keystore key (StrongBox where available, no user authentication, so background sync works).
+ * - Rows are also sealed: lookup column HMAC-SHA256(store ‖ 0 ‖ key), value AES-256-GCM(key ‖ value) bound to the
+ *   store and row. A row that fails authentication rejects `CORRUPT` after wiping that account (it is only a copy),
+ *   and a file the key can't open is recreated.
  * - One open account at a time; opening another closes the first. `wipe` deletes an account's files and secret
  *   (crypto-shred); `wipeAll` every account's. Values cross the bridge as base64 strings.
  * - `list` sorts by the key's UTF-8 bytes (the node feed's order) after a byte-prefix match, then applies `limit`.

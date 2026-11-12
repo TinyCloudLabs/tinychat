@@ -27,7 +27,8 @@ data class Estimate(val usedBytes: Long, val freeBytes: Long?)
 class ReplicaStoreCore(
     private val dir: File,
     private val secrets: SecretStore,
-    private val openDb: (File) -> ReplicaDb,
+    /** Opens [File] keyed with the raw 32-byte SQLCipher key; throws [ReplicaDbUnreadable] if the key can't open it. */
+    private val openDb: (File, ByteArray) -> ReplicaDb,
     private val freeBytes: () -> Long?,
 ) {
     companion object {
@@ -58,6 +59,9 @@ class ReplicaStoreCore(
             }
             return out
         }
+
+        /** SQLCipher's raw page key (D-S5), the same HKDF derivation as iOS. */
+        fun databaseKey(secret: ByteArray): ByteArray = hkdf(secret, ByteArray(0), "tc-replica/v1/db".toByteArray(), 32)
 
         fun compareUtf8(a: String, b: String): Int {
             val x = a.toByteArray()
@@ -117,20 +121,23 @@ class ReplicaStoreCore(
         val id = accountId(account)
         val file = dbFile(id)
         var secret = secrets.load(id)
-        if (secret == null) deleteFiles(id)
-        var created = !file.exists()
-        var db = openDb(file)
-        if (db.userVersion > SCHEMA_VERSION) {
-            // Written by a newer build: unreadable here, so start this account over.
-            db.close()
+        if (secret == null) {
+            // A file without its secret can never be read again: start over.
             deleteFiles(id)
-            secrets.delete(id)
-            secret = null
+            secret = ByteArray(32).also { random.nextBytes(it); secrets.save(id, it) }
+        }
+        val dbKey = databaseKey(secret)
+        var created = !file.exists()
+        // A file this key can't open (damaged, or not ours) or one written by a newer build: it is only a copy of the
+        // node's data, so drop it and copy again.
+        var db = try {
+            openDb(file, dbKey).also { if (it.userVersion > SCHEMA_VERSION) { it.close(); throw ReplicaDbUnreadable() } }
+        } catch (e: ReplicaDbUnreadable) {
+            deleteFiles(id)
             created = true
-            db = openDb(file)
+            openDb(file, dbKey)
         }
         try {
-            if (secret == null) secret = ByteArray(32).also { random.nextBytes(it); secrets.save(id, it) }
             if (db.userVersion == 0) {
                 db.exec("CREATE TABLE IF NOT EXISTS kv(store TEXT NOT NULL, kmac BLOB NOT NULL, sealed BLOB NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(store, kmac)) WITHOUT ROWID")
                 db.userVersion = SCHEMA_VERSION

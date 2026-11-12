@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import SQLite3
+import SQLCipher
 
 /// TC-2862: the device's local copy of TinyCloud data (S1: key-value stores), kept outside the WebView so iOS can't
 /// evict it. One SQLite file and one secret per account; every row is sealed (AES-256-GCM, HMAC-opaque keys), the
@@ -111,17 +111,19 @@ public final class ReplicaStoreCore {
             secret = Data(bytes)
             try secrets.save(id, secret!)
         }
+        let keys = AccountKeys(secret: secret!)
         var created = !FileManager.default.fileExists(atPath: url.path)
-        var db = try SQLiteDB(path: url.path)
-        if try db.userVersion() > Self.schemaVersion {
-            // Written by a newer build. It is only a copy of the node's data: drop it and copy again.
+        var db = try SQLiteDB(path: url.path, key: keys.database)
+        // A file this key can't open (damaged, or not ours) or one written by a newer build: it is only a copy of
+        // the node's data, so drop it and copy again.
+        if try !db.isReadable() || db.userVersion() > Self.schemaVersion {
             db.close()
             deleteFiles(id)
-            db = try SQLiteDB(path: url.path)
+            db = try SQLiteDB(path: url.path, key: keys.database)
             created = true
         }
         do {
-            try db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+            try db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;")
             if try db.userVersion() == 0 {
                 try db.exec("""
                     CREATE TABLE IF NOT EXISTS kv(store TEXT NOT NULL, kmac BLOB NOT NULL, sealed BLOB NOT NULL,
@@ -133,7 +135,7 @@ public final class ReplicaStoreCore {
             db.close()
             throw error
         }
-        current = OpenAccount(account: account, id: id, db: db, keys: AccountKeys(secret: secret!), maxBytes: maxBytes)
+        current = OpenAccount(account: account, id: id, db: db, keys: keys, maxBytes: maxBytes)
         return (Self.schemaVersion, created)
     }
 
@@ -338,6 +340,8 @@ struct AccountKeys {
     static let label = Data("tc-replica/v1".utf8)
     let enc: SymmetricKey
     let mac: SymmetricKey
+    /// SQLCipher's raw page key (D-S5): whole-file encryption under the row sealing.
+    let database: Data
 
     init(secret: Data) {
         let ikm = SymmetricKey(data: secret)
@@ -345,6 +349,8 @@ struct AccountKeys {
                                      outputByteCount: 32)
         mac = HKDF<SHA256>.deriveKey(inputKeyMaterial: ikm, salt: Data(), info: Data("tc-replica/v1/mac".utf8),
                                      outputByteCount: 32)
+        database = HKDF<SHA256>.deriveKey(inputKeyMaterial: ikm, salt: Data(), info: Data("tc-replica/v1/db".utf8),
+                                          outputByteCount: 32).withUnsafeBytes { Data($0) }
     }
 
     /// The lookup column: HMAC(store ‖ 0 ‖ key). The key itself is stored only inside the sealed row.
@@ -419,11 +425,11 @@ final class SQLiteDB {
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     private var handle: OpaquePointer?
 
-    init(path: String) throws {
-        var flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-        #if os(iOS)
-        flags |= SQLITE_OPEN_FILEPROTECTION_COMPLETEUNTILFIRSTUSERAUTHENTICATION
-        #endif
+    /// Opens and keys the file with SQLCipher: a raw 256-bit key (no passphrase KDF), SQLCipher 4 defaults (HMAC-SHA512
+    /// page authentication on). The WAL is encrypted with the same key; the directory's file protection class covers
+    /// every file SQLite creates in it.
+    init(path: String, key: Data) throws {
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         let code = sqlite3_open_v2(path, &handle, flags, nil)
         guard code == SQLITE_OK else {
             let error = Self.error(handle, code)
@@ -431,6 +437,18 @@ final class SQLiteDB {
             handle = nil
             throw error
         }
+        let hex = key.map { String(format: "%02x", $0) }.joined()
+        do {
+            try exec("PRAGMA key = \"x'\(hex)'\"")
+        } catch {
+            close()
+            throw error
+        }
+    }
+
+    /// False when the key does not open the file (SQLITE_NOTADB): another key's file, plaintext or damage.
+    func isReadable() -> Bool {
+        sqlite3_exec(handle, "SELECT count(*) FROM sqlite_master", nil, nil, nil) != SQLITE_NOTADB
     }
 
     deinit { close() }

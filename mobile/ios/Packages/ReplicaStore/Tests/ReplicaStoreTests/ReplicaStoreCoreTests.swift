@@ -41,6 +41,44 @@ final class ReplicaStoreCoreTests: XCTestCase {
         ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).sorted()
     }
 
+    private func databaseKey(_ account: String) -> Data {
+        AccountKeys(secret: secrets.secrets[ReplicaStoreCore.accountId(account)]!).database
+    }
+
+    func testDatabaseKeyIsPerAccountAndStable() throws {
+        let core = makeCore()
+        try core.open(account: alice)
+        try core.open(account: bob)
+        XCTAssertEqual(databaseKey(alice).count, 32)
+        XCTAssertNotEqual(databaseKey(alice), databaseKey(bob))
+        XCTAssertEqual(databaseKey(alice), AccountKeys(secret: secrets.secrets[ReplicaStoreCore.accountId(alice)]!).database)
+    }
+
+    func testFileIsEncryptedAsAWhole() throws {
+        let core = makeCore()
+        try core.open(account: alice)
+        try core.write([.put(store: "s", key: "k", value: "v")])
+        core.close()
+        let raw = try Data(contentsOf: core.databaseURL(account: alice))
+        XCTAssertNil(raw.range(of: Data("SQLite format 3".utf8)), "no plaintext SQLite header")
+        XCTAssertNil(raw.range(of: Data("CREATE TABLE".utf8)), "schema is not readable")
+    }
+
+    func testFileThisKeyCannotOpenIsRecreated() throws {
+        let core = makeCore()
+        try core.open(account: alice)
+        try core.write([.put(store: "s", key: "k", value: "v")])
+        core.close()
+        for suffix in ["-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: core.databaseURL(account: alice).path + suffix)
+        }
+        try Data(repeating: 0x5a, count: 8192).write(to: core.databaseURL(account: alice))
+        XCTAssertTrue(try core.open(account: alice).created)
+        XCTAssertNil(try core.get(store: "s", key: "k"))
+        try core.write([.put(store: "s", key: "k", value: "again")])
+        XCTAssertEqual(try core.get(store: "s", key: "k"), "again")
+    }
+
     func testPutGetRoundTrip() throws {
         let core = makeCore()
         let opened = try core.open(account: alice)
@@ -173,7 +211,7 @@ final class ReplicaStoreCoreTests: XCTestCase {
         try core.open(account: alice)
         try core.write([.put(store: "s", key: "k", value: "v")])
         core.close()
-        let db = try SQLiteDB(path: core.databaseURL(account: alice).path)
+        let db = try SQLiteDB(path: core.databaseURL(account: alice).path, key: databaseKey(alice))
         try db.exec("UPDATE kv SET sealed = zeroblob(64)")
         db.close()
         try core.open(account: alice)
@@ -188,7 +226,7 @@ final class ReplicaStoreCoreTests: XCTestCase {
         try core.write([.put(store: "s", key: "a", value: "1"), .put(store: "s", key: "b", value: "2")])
         core.close()
         let keys = AccountKeys(secret: secrets.secrets[ReplicaStoreCore.accountId(alice)]!)
-        let db = try SQLiteDB(path: core.databaseURL(account: alice).path)
+        let db = try SQLiteDB(path: core.databaseURL(account: alice).path, key: databaseKey(alice))
         // Copy a's sealed row over b's: AAD binds the row to its kmac, so this must fail.
         try db.run("UPDATE kv SET sealed = (SELECT sealed FROM kv WHERE kmac = ?) WHERE kmac = ?",
                    [.blob(keys.kmac(store: "s", key: "a")), .blob(keys.kmac(store: "s", key: "b"))])
@@ -266,7 +304,7 @@ final class ReplicaStoreCoreTests: XCTestCase {
         try core.open(account: alice)
         try core.write([.put(store: "s", key: "k", value: "v")])
         core.close()
-        let db = try SQLiteDB(path: core.databaseURL(account: alice).path)
+        let db = try SQLiteDB(path: core.databaseURL(account: alice).path, key: databaseKey(alice))
         try db.exec("PRAGMA user_version=99")
         db.close()
         XCTAssertTrue(try core.open(account: alice).created)

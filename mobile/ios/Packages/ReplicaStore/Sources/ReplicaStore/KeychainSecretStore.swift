@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// Account secrets in the Keychain: readable after the first unlock (background sync runs while locked), never
-/// backed up or moved to another device (`ThisDeviceOnly`).
+/// backed up, synced to iCloud Keychain or moved to another device (`ThisDeviceOnly`, not synchronizable; D-S9).
 public struct KeychainSecretStore: SecretStore {
     public static let service = "xyz.tinycloud.replica"
 
@@ -24,6 +24,7 @@ public struct KeychainSecretStore: SecretStore {
         var item = baseQuery(id)
         item[kSecValueData as String] = secret
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        item[kSecAttrSynchronizable as String] = false
         let status = SecItemAdd(item as CFDictionary, nil)
         guard status == errSecSuccess else { throw Self.error("save", status) }
     }

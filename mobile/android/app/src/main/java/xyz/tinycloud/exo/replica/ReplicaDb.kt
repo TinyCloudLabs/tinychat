@@ -1,14 +1,15 @@
 package xyz.tinycloud.exo.replica
 
 import android.database.Cursor
-import android.database.sqlite.SQLiteCursor
-import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteDatabaseCorruptException
 import android.database.sqlite.SQLiteFullException
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteNotADatabaseException
 import java.io.File
 
 /**
  * The slice of SQLite that [ReplicaStoreCore] needs. Bind args and result cells are `ByteArray`, `String`, `Long` or
- * null, so the core runs unchanged over Android's SQLite and over sqlite-jdbc in JVM tests.
+ * null, so the core runs unchanged over SQLCipher and over sqlite-jdbc in JVM tests.
  */
 interface ReplicaDb {
     fun exec(sql: String, args: List<Any?> = emptyList())
@@ -19,13 +20,36 @@ interface ReplicaDb {
     fun close()
 }
 
-/** [ReplicaDb] over `android.database.sqlite`, WAL with synchronous=FULL. SQLITE_FULL surfaces as STORAGE_FULL. */
+/** The opener's answer when [key] does not open the file: another key's file, plaintext or damage. */
+class ReplicaDbUnreadable : Exception("the replica file cannot be opened with this key")
+
+/**
+ * [ReplicaDb] over SQLCipher (D-S5): whole-file encryption with a raw 256-bit key (no passphrase KDF), SQLCipher 4
+ * defaults (HMAC page authentication on), WAL with synchronous=FULL, temp_store=MEMORY. SQLITE_FULL surfaces as
+ * STORAGE_FULL.
+ */
 class AndroidReplicaDb private constructor(private val db: SQLiteDatabase) : ReplicaDb {
     companion object {
-        fun open(file: File): ReplicaDb = full {
-            val db = SQLiteDatabase.openDatabase(file.path, null,
-                SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY or SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING)
-            db.execSQL("PRAGMA synchronous=FULL")
+        init {
+            System.loadLibrary("sqlcipher")
+        }
+
+        /** Throws [ReplicaDbUnreadable] when [key] does not open an existing file. */
+        fun open(file: File, key: ByteArray): ReplicaDb = full {
+            // `x'<hex>'` is SQLCipher's raw-key form: the bytes are the page key, no PBKDF2.
+            val raw = "x'${key.joinToString("") { "%02x".format(it) }}'".toByteArray()
+            // The default corruption handler would delete just the main file; the core deletes all of them instead.
+            val db = try {
+                SQLiteDatabase.openDatabase(file.path, raw, null,
+                    SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY or SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING,
+                    { _, _ -> }, null)
+            } catch (e: SQLiteNotADatabaseException) {
+                throw ReplicaDbUnreadable()
+            } catch (e: SQLiteDatabaseCorruptException) {
+                throw ReplicaDbUnreadable()
+            }
+            db.rawQuery("PRAGMA synchronous=FULL").use { it.moveToFirst() }
+            db.rawQuery("PRAGMA temp_store=MEMORY").use { it.moveToFirst() }
             AndroidReplicaDb(db)
         }
 
@@ -39,21 +63,7 @@ class AndroidReplicaDb private constructor(private val db: SQLiteDatabase) : Rep
     override fun exec(sql: String, args: List<Any?>) = full { db.execSQL(sql, args.toTypedArray()) }
 
     override fun query(sql: String, args: List<Any?>): List<List<Any?>> = full {
-        // rawQuery binds strings only; the factory binds blobs and longs on the compiled query.
-        val factory = SQLiteDatabase.CursorFactory { _, driver, table, query ->
-            args.forEachIndexed { i, arg ->
-                when (arg) {
-                    null -> query.bindNull(i + 1)
-                    is ByteArray -> query.bindBlob(i + 1, arg)
-                    is String -> query.bindString(i + 1, arg)
-                    is Long -> query.bindLong(i + 1, arg)
-                    is Int -> query.bindLong(i + 1, arg.toLong())
-                    else -> throw IllegalArgumentException("Unsupported bind arg ${arg::class}")
-                }
-            }
-            SQLiteCursor(driver, table, query)
-        }
-        db.rawQueryWithFactory(factory, sql, null, "").use { cursor ->
+        db.rawQuery(sql, *args.map { if (it is Int) it.toLong() else it }.toTypedArray()).use { cursor ->
             val rows = ArrayList<List<Any?>>()
             while (cursor.moveToNext()) {
                 rows += (0 until cursor.columnCount).map { c ->

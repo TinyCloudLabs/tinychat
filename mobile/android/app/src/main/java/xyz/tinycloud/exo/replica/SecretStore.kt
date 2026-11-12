@@ -1,6 +1,8 @@
 package xyz.tinycloud.exo.replica
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.io.File
@@ -22,7 +24,7 @@ interface SecretStore {
  * Secrets wrapped with an AES-256-GCM Android Keystore key ([ALIAS]); each wrapped blob (nonce12 ‖ ct ‖ tag) lives in
  * `noBackupFilesDir/tinycloud-replica-keys/<id>.key`, so neither the blob nor the key survives a backup or reinstall.
  */
-class KeystoreSecretStore(context: Context) : SecretStore {
+class KeystoreSecretStore(private val context: Context) : SecretStore {
     companion object {
         const val ALIAS = "tinycloud_replica_master"
         private const val PROVIDER = "AndroidKeyStore"
@@ -32,15 +34,33 @@ class KeystoreSecretStore(context: Context) : SecretStore {
 
     private fun keyStore() = KeyStore.getInstance(PROVIDER).apply { load(null) }
 
+    /**
+     * The non-exportable AES-256-GCM wrapping key (D-S9): StrongBox where the device has it, the TEE otherwise, and
+     * never user-authentication-bound, since background sync must run while the device is locked.
+     */
     private fun masterKey(create: Boolean): SecretKey? {
         (keyStore().getKey(ALIAS, null) as? SecretKey)?.let { return it }
         if (!create) return null
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, PROVIDER)
-        generator.init(KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+        val strongBox = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            context.packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
+        if (strongBox) {
+            try {
+                return generate(strongBox = true)
+            } catch (e: java.security.ProviderException) {
+                // StrongBoxUnavailableException (API 28+): advertised but not usable for this key; use the TEE.
+            }
+        }
+        return generate(strongBox = false)
+    }
+
+    private fun generate(strongBox: Boolean): SecretKey {
+        val spec = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
-            .build())
+        if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) spec.setIsStrongBoxBacked(true)
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, PROVIDER)
+        generator.init(spec.build())
         return generator.generateKey()
     }
 
