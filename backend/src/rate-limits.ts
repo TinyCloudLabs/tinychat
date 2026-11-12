@@ -263,6 +263,7 @@ const MUTATION_BUCKETS: Partial<Record<Bucket, Bucket>> = {
  */
 export function bucketFor(method: string, rawPath: string): Bucket {
   if (isUnlimitedPath(rawPath.toLowerCase())) return "none";
+  if (rawPath === "/api/ops/content-continuity") return "credentialCount";
   const path = collapseSlashes(rawPath.toLowerCase());
   if (method === "POST" && PAID_CHAT_PATHS.some((p) => withoutTrailingSlash(path) === p)) return "paidChat";
   for (const [mounts, bucket] of PREFIX_BUCKETS) {
