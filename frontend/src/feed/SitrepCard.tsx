@@ -98,7 +98,7 @@ function TypedAnswerStatus({ entry, owner, answer, record, now, focusOnMount = f
     <p>{lead}{acknowledgement && ` ${agent} got it.`}{outcome && (outcome.phase === "succeeded" ? ` ${agent} finished it.` : ` ${agent} couldn't finish it.`)}</p>
     {answer.action !== "code" && answer.text && <p className="whitespace-pre-wrap">{answer.text}</p>}
     {typeof outcome?.detail?.message === "string" && <p className="whitespace-pre-wrap">{outcome.detail.message}</p>}
-    {header && <AnswerSteps sent={header.createdAt} acknowledgement={acknowledgement} outcome={outcome} agent={agent} now={now} />}
+    {header && <AnswerSteps sent={header.createdAt} acknowledgement={acknowledgement} outcome={outcome} now={now} />}
   </AnsweredPanel>;
 }
 

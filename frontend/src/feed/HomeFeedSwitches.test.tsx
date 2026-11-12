@@ -257,10 +257,10 @@ test("an answer's steps tick as the agent's receipts arrive: Sent, received, the
   await act(async () => option(host, "Hold").click());
   await clock!.advance(5000);
   const steps = () => [...host.querySelectorAll('ol[aria-label="Answer steps"] li')].map((node) => `${node.textContent}:${node.getAttribute("data-state")}`);
-  expect(steps()).toEqual([expect.stringMatching(/^Sent.*:done$/), "Test agent received it, not yet:upcoming", "Done, not yet:upcoming"]);
+  expect(steps()).toEqual([expect.stringMatching(/^Sent.*:done$/), "Received, not yet:upcoming", "Done, not yet:upcoming"]);
   store.durable.entries[0]!.state.acknowledgement = handling(store.responses[0]!, "acknowledged");
   await act(async () => store.notify());
-  expect(steps()[1]).toMatch(/^Test agent received it.*:done$/);
+  expect(steps()[1]).toMatch(/^Received.*:done$/);
   store.durable.entries[0]!.state.outcome = handling(store.responses[0]!, "failed");
   await act(async () => store.notify());
   expect(steps()[2]).toMatch(/^Failed.*:failed$/);

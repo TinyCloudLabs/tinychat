@@ -74,12 +74,12 @@ export function AgentDetails({ name, via, profile, onOpen }: { name: string; via
   if (profile?.model) rows.push(["Model", profile.model]);
   if (profile?.runsOn) rows.push(["Runs on", profile.runsOn]);
   if (via) rows.push(["Posts through", via]);
-  rows.push(["It can", via ? `Reach you on cards ${via} posts, and read your answers to them` : "Post cards to your Home and read your answers to them"]);
+  rows.push(["It can", via ? `Reach you through ${via}'s cards and read your answers to them` : "Post cards to your Home and read your answers to them"]);
   return <section aria-label={`About ${name}`} className="mt-3 space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm leading-[1.45]">
     <dl>{rows.map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0">
       <dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 break-words text-right">{value}</dd>
     </div>)}</dl>
-    {!profile && <p className="text-[13px] text-muted-foreground">{name} has not said what it is or where it runs.</p>}
+    {!profile && <p className="text-[13px] text-muted-foreground">{name} hasn't said what it is or where it runs.</p>}
     {onOpen && <button type="button" onClick={onOpen} className="inline-flex h-11 items-center rounded-full bg-background px-5 text-[13.5px] font-bold shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground">Open conversation</button>}
   </section>;
 }

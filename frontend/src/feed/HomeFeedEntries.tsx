@@ -108,7 +108,7 @@ function ResponseStatus({ entry, now, focusOnMount }: { entry: HomeFeedEntry; no
     <p>{label ? <>You chose <b className="font-semibold">{label}</b>.</> : "You answered."}{received && ` ${agent} got it.`}{result && (result.phase === "succeeded" ? ` ${agent} finished it.` : ` ${agent} couldn't finish it.`)}</p>
     {response.text && <p className="whitespace-pre-wrap">{response.text}</p>}
     {typeof detail === "string" && <p className="whitespace-pre-wrap">{detail}</p>}
-    <AnswerSteps sent={response.createdAt} acknowledgement={received} outcome={result} agent={agent} now={now} />
+    <AnswerSteps sent={response.createdAt} acknowledgement={received} outcome={result} now={now} />
   </AnsweredPanel>;
 }
 

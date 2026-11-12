@@ -1,16 +1,16 @@
-// A saved answer's steps (from Hunter's bridge-feed design): Sent, then "<agent> received it", then Done or Failed,
+// A saved answer's steps (from Hunter's bridge-feed design): Sent, then Received, then Done or Failed,
 // each ticked with its time as the agent's receipts arrive, in the feed's own time words. They sit under the
 // answer's own sentence.
 import { CheckIcon, XIcon } from "lucide-react";
 import type { FeedResponseHandling } from "@tinycloud/sdk-services/feed";
 import { cardTime } from "./cardKit";
 
-export function AnswerSteps({ sent, acknowledgement, outcome, agent, now }: { sent: string; agent: string; now: number } & FeedResponseHandling) {
+export function AnswerSteps({ sent, acknowledgement, outcome, now }: { sent: string; now: number } & FeedResponseHandling) {
   const failed = outcome?.phase === "failed";
   const steps = [
     { key: "sent", label: "Sent", state: "done", at: sent },
     // An outcome comes from the agent, so it also shows the answer was received.
-    { key: "received", label: `${agent} received it`, state: acknowledgement || outcome ? "done" : "upcoming", at: acknowledgement?.createdAt },
+    { key: "received", label: "Received", state: acknowledgement || outcome ? "done" : "upcoming", at: acknowledgement?.createdAt },
     { key: "outcome", label: failed ? "Failed" : "Done", state: !outcome ? "upcoming" : failed ? "failed" : "done", at: outcome?.createdAt },
   ];
   return <ol aria-label="Answer steps" className="mt-1.5 space-y-1 text-[13px] leading-[18px]">
