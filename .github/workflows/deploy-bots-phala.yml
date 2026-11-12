@@ -323,6 +323,11 @@ jobs:
           BOTS_BOT_DAILY_TOKENS: ${{ vars.BOTS_BOT_DAILY_TOKENS }}
           BOTS_GLOBAL_DAILY_TOKENS: ${{ vars.BOTS_GLOBAL_DAILY_TOKENS }}
           BOTS_BODY_TIMEOUT_MS: ${{ vars.BOTS_BODY_TIMEOUT_MS }}
+          # Owner-history variables; off until explicitly enabled in production-bots.
+          BOTS_HISTORY_ENABLED: ${{ vars.BOTS_HISTORY_ENABLED || 'false' }}
+          BOTS_HISTORY_SIGNER_DID: ${{ vars.BOTS_HISTORY_SIGNER_DID }}
+          BOTS_HISTORY_NODE_ORIGIN: ${{ vars.BOTS_HISTORY_NODE_ORIGIN }}
+          BOTS_UNARCHIVED_HISTORY_POLICY: ${{ vars.BOTS_UNARCHIVED_HISTORY_POLICY }}
         run: |
           set +x
           set -euo pipefail
@@ -331,10 +336,12 @@ jobs:
           # shellcheck disable=SC2034
           REDPILL_API_KEY="$BOTS_REDPILL_API_KEY"
           required=(BOTS_SERVICE_SECRET REDPILL_API_KEY CLOUDFLARE_API_TOKEN CERTBOT_EMAIL BOTS_INGRESS_DOMAIN PHALA_GATEWAY_CNAME)
+          # Include empty history values so allowed_envs sync registers the names while history is off.
           optional=(BOTS_TEST_ACCOUNTS BOTS_MODEL BOTS_IDLE_MS BOTS_SANDBOX_MEMORY_MB BOTS_SANDBOX_CPUS BOTS_SANDBOX_PIDS
             BOTS_SANDBOX_OVERLAY_MB BOTS_SANDBOX_TMP_MB BOTS_STATE_MB BOTS_TOTAL_MEMORY_MB BOTS_TOTAL_PIDS BOTS_MAX_RUNNING
             BOTS_STATE_COPY_TIMEOUT_MS BOTS_TURN_TIMEOUT_MS BOTS_MAX_TURN_BYTES BOTS_MODELS BOTS_MAX_TOKENS BOTS_BOT_DAILY_TOKENS
-            BOTS_GLOBAL_DAILY_TOKENS BOTS_BODY_TIMEOUT_MS)
+            BOTS_GLOBAL_DAILY_TOKENS BOTS_BODY_TIMEOUT_MS
+            BOTS_HISTORY_ENABLED BOTS_HISTORY_SIGNER_DID BOTS_HISTORY_NODE_ORIGIN BOTS_UNARCHIVED_HISTORY_POLICY)
           # These values are written one per line into the env file, so a line break in any of them would add settings.
           for item in "${required[@]}" "${optional[@]}"; do
             case "${!item-}" in
