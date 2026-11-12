@@ -827,15 +827,15 @@ export class ContentStore implements ContentSink, RetentionGuard {
         }
 
         const sourceTimestamp = input.ts === undefined ? NaN : Date.parse(input.ts);
-        if (!Number.isFinite(sourceTimestamp) || sourceTimestamp > this.now() + 5 * 60_000) {
-          warnContent(`op=upsert result=meeting_time_invalid mid=${hashed(sourceId)} aid=${hashed(address)}`);
-          return { ok: false, code: "meeting_time_invalid" };
-        }
         if (this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
           return { ok: false, code: MEETING_TOO_OLD };
         }
         const prior = index.meetings.find((m) => m.sourceId === sourceId);
         const existing = await this.readMeeting(source, address, sourceId);
+        if (!Number.isFinite(sourceTimestamp) || sourceTimestamp > this.now() + 5 * 60_000) {
+          warnContent(`op=upsert result=meeting_time_invalid mid=${hashed(sourceId)} aid=${hashed(address)}`);
+          if (existing === null) return { ok: false, code: "meeting_time_invalid" };
+        }
         if (prior !== undefined && existing === null) {
           if (prior.expiresAt === undefined || !isUtcDate(prior.expiresAt)) {
             throw new Error("missing content has no authenticated expiry");

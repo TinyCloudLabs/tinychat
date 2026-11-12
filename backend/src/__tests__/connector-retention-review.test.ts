@@ -102,3 +102,23 @@ test("truncated listings without a cursor fail closed", async () => {
   await expect(createContentIndexDirectory(node as any)()).rejects.toThrow("cursor");
   await expect(new KvContentBlobStore(node as any).listReplayTombstones()).rejects.toThrow("cursor");
 });
+
+test("provider-date refusal applies to creation while updates keep immutable storage and expiry", async () => {
+  let now=start;
+  const blobs=new InMemoryContentBlobStore();
+  const store=new ContentStore(blobs,{master:()=>master,now:()=>now});
+  const input={source,address,sourceId:"existing",kind:"summary" as const,content:{text:"first"},ts:new Date(now).toISOString(),receivedAt:new Date(now).toISOString(),fetchedAt:new Date(now).toISOString()};
+  expect(await store.upsert(input)).toEqual({ok:true,stored:"created"});
+  const original=(await store.get(source,address,"existing"))!.meta;
+  now+=day;
+  for(const ts of [undefined,"invalid",new Date(now+5*60_000+1).toISOString()]) {
+    const update={...input,ts,content:{text:"updated"},receivedAt:new Date(now).toISOString(),fetchedAt:new Date(now).toISOString()};
+    expect(await store.upsert(update)).toEqual({ok:true,stored:"merged"});
+    const stored=(await store.get(source,address,"existing"))!;
+    expect(stored.content.summary).toEqual({text:"updated"});
+    expect(stored.meta.storedAt).toBe(original.storedAt);
+    expect(stored.meta.expiresAt).toBe(original.expiresAt);
+    expect(await store.upsert({...update,sourceId:"new-undated"})).toEqual({ok:false,code:"meeting_time_invalid"});
+    expect(await blobs.read(source,address,"new-undated")).toBeNull();
+  }
+});
