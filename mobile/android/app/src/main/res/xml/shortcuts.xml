@@ -4,7 +4,8 @@
         android:icon="@drawable/ic_capture_shortcut"
         android:shortcutShortLabel="@string/capture_shortcut_label"
         android:shortcutLongLabel="@string/capture_shortcut_long">
-        <intent android:action="xyz.tinycloud.exo.capture.RECORD" android:targetPackage="xyz.tinycloud.exo"
+        <!-- targetPackage is the applicationId; the action and targetClass keep the xyz.tinycloud.exo namespace. -->
+        <intent android:action="xyz.tinycloud.exo.capture.RECORD" android:targetPackage="xyz.tinycloud.home"
             android:targetClass="xyz.tinycloud.exo.MainActivity" />
     </shortcut>
 </shortcuts>

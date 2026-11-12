@@ -41,7 +41,7 @@ live stream on the Mac. Its rotated predecessor is
 
 ## Android debug build
 
-Android Debug keeps the `xyz.tinycloud.exo` application ID. Logging is enabled
+Android Debug uses the same `xyz.tinycloud.home` application ID as release. Logging is enabled
 by `BuildConfig.DEBUG`.
 
 ```sh

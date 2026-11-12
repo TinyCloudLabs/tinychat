@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { readHomeFeatures, rememberHomeFeature } from "./homeFeatures";
+import { readHomeFeatures } from "./homeFeatures";
 import { rememberExistingWebConnectors } from "./rememberWebConnectors";
 
 const ADDRESS = "0x00000000000000000000000000000000000000a1";
@@ -26,9 +26,10 @@ function fixture(covered: boolean, state: "connected" | "disconnected" | "empty"
 
 test("a covering old web session with a connected source remembers Connectors in the shared record", async () => {
   const { store, tcw, reads } = fixture(true, "connected");
-  rememberHomeFeature(store, ADDRESS, "recording");
+  // A flag left by the old Home site's Recording ask is ignored, not an obstacle.
+  store.setItem(`xyz.tinycloud.tinychat:home-features:${ADDRESS}`, JSON.stringify(["recording"]));
   await rememberExistingWebConnectors(store, tcw, ADDRESS);
-  expect(readHomeFeatures(store, ADDRESS)).toEqual(["recording", "connectors"]);
+  expect(readHomeFeatures(store, ADDRESS)).toEqual(["connectors"]);
   expect(reads).toHaveLength(1);
   expect(reads[0][0]).toStartWith("SELECT connector_id");
   expect(reads[0][1]).toEqual(["fireflies"]);

@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { navItems } from "./navItems";
 import { HOME_DESTINATION, HOME_PATH } from "./routes";
 
-describe("navigation on the Home site", () => {
+describe("navigation", () => {
   test("leads with Home (the feed), then Chat, Apps, Recording, Connectors", () => {
-    const items = navItems(0, true);
+    const items = navItems(0);
     expect(items.map((item) => [item.id, item.label])).toEqual([
       ["feed", "Home"],
       ["chat", "Chat"],
@@ -15,12 +15,8 @@ describe("navigation on the Home site", () => {
     expect(items[0]!.href).toBe("/chat/feed");
   });
 
-  test("keeps the existing order and the Feed label elsewhere", () => {
-    expect(navItems(0, false).map((item) => item.label)).toEqual(["Recording", "Chat", "Apps", "Feed", "Connectors"]);
-  });
-
-  test("keeps the Connectors badge on the Home site", () => {
-    expect(navItems(3, true).find((item) => item.id === "connectors")!.badge).toBe(3);
+  test("keeps the Connectors badge", () => {
+    expect(navItems(3).find((item) => item.id === "connectors")!.badge).toBe(3);
   });
 });
 

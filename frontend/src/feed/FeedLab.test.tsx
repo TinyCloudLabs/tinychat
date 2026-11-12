@@ -119,7 +119,8 @@ test("the lab shows the real feed at its own address, Reset restores the cards, 
   const stored = () => JSON.stringify([{ ...window.localStorage }, { ...window.sessionStorage }]);
   const before = stored();
   expect(host.textContent).toContain("Feed lab");
-  expect(host.querySelector('main[aria-label="Feed"]')).not.toBeNull();
+  // One build (main #630): the real feed is always headed Home, so the lab shows it the same way.
+  expect(host.querySelector('main[aria-label="Home"]')).not.toBeNull();
   expect(focusedTitle(host)).toBe("Which train should I hold for Friday?");
   await act(async () => button(host, "Snooze for 1 hour").click());
   expect(focusedTitle(host)).toBe("The water filter order renews tomorrow. Keep it?");

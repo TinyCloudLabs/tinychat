@@ -8,7 +8,9 @@ import type { CapacitorConfig } from "@capacitor/cli";
 const devServerUrl = process.env.EXO_DEV_SERVER_URL;
 
 const config: CapacitorConfig = {
-  appId: "xyz.tinycloud.exo",
+  // The Android applicationId and the iOS bundle id. The app's private-use
+  // URL scheme stays xyz.tinycloud.exo (registered with OpenKey and the backend).
+  appId: "xyz.tinycloud.home",
   appName: "TinyCloud Home",
   webDir: "../frontend/dist",
   // Capacitor logs raw bridge arguments/results, including OpenKey session

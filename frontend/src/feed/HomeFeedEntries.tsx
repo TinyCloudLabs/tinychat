@@ -18,7 +18,6 @@ import { SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, partPending, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
-import { HOME_SITE } from "@/lib/homeSite";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { PATHS } from "@/shell/routes";
 import { FEED_SKILL_URL } from "./strings";
@@ -204,7 +203,7 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
 }
 
 /** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
-export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source: HomeFeedSource; homeSite?: boolean; ask?: ReactNode }) {
+export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
   const [selector, setSelector] = useState<FeedSelector>("needs-action");
   const [active, setActive] = useState<HomeFeedEntry | null>(null);
@@ -445,13 +444,13 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
     finally { setViewBusy(false); }
   }
 
-  // The Home site shows only the heading and its empty state until the first card arrives.
-  const bare = homeSite && !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
+  // Home shows only the heading and its empty state until the first card arrives.
+  const bare = !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
   const filtersOn = [agent, kind, project].filter(Boolean).length + (history ? 1 : 0);
   const selectClass = "min-h-10 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-  return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={homeSite ? NAV_LABEL_HOME : "Feed"}>
+  return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={NAV_LABEL_HOME}>
     <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-6 sm:px-5">
-      <header className="mb-6"><h1 className="font-display text-3xl font-semibold tracking-tight">{homeSite ? NAV_LABEL_HOME : "Feed"}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
+      <header className="mb-6"><h1 className="font-display text-3xl font-semibold tracking-tight">{NAV_LABEL_HOME}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
       {ask}
       {!bare && <><div className="mb-4 flex flex-wrap items-center gap-2">
         <label className="sr-only" htmlFor="home-feed-view">Feed view</label>
