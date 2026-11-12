@@ -13,6 +13,7 @@ import type { FeedResponse, NewFeedResponse } from "@tinycloud/sdk-services/feed
 import { Button } from "@/components/ui/button";
 import { sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AgentMark, PlatformName, type Platform } from "./AgentMark";
+import { CompactCard, StatusMark } from "./CompactCard";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
 import { ShortTime } from "./ShortTime";
 
@@ -29,10 +30,22 @@ export function labPageOf(entry: HomeFeedEntry): LabPage | undefined {
   return page && typeof page.image === "string" && Array.isArray(page.questions) ? page as LabPage : undefined;
 }
 
-/** Answers you have tapped on a page and not sent yet, kept while the lab is open, so leaving the page loses none. */
+/** Answers you have tapped on a page, sent or not, kept while the lab is open, so leaving the page loses none. */
 const drafts = new Map<string, Record<string, PageAnswer>>();
+const draftKey = (entry: HomeFeedEntry) => `${entry.source.sourceId}:${entry.state.card.cardId}`;
 
 const answered = (answer?: PageAnswer) => !!answer && (answer.choices.length > 0 || !!answer.note.trim());
+
+/**
+ * Where a post stands, for its card (Sam, 11-12): "Done" once its answers are sent with every question answered,
+ * "1 of 2 answered" while only some are, and otherwise what the feed says of any card (`fallback`).
+ */
+export function postStatus(entry: HomeFeedEntry, page: LabPage, fallback: string): string {
+  const answers = drafts.get(draftKey(entry)) ?? {};
+  const count = page.questions.filter((question) => answered(answers[question.id])).length;
+  if (entry.state.response && count === page.questions.length) return "Done";
+  return count > 0 && count < page.questions.length ? `${count} of ${page.questions.length} answered` : fallback;
+}
 
 /** What the agent gets: each answered question, its choices and note, one per line. */
 function pageSummary(page: LabPage, answers: Record<string, PageAnswer>): string {
@@ -45,8 +58,8 @@ function pageSummary(page: LabPage, answers: Record<string, PageAnswer>): string
 }
 
 /**
- * A post in the feed, short or full: the feed's header row (mark, agent, platform, time, where it stands), the
- * title, the blurb and the page's image. The whole card opens the page.
+ * A post in the feed. Compact: the feed's compact card with a thumbnail of the page. Full: the header row, title,
+ * blurb and the page's image, with how many questions it asks. Either way the whole card opens the page.
  */
 export function PostPreview({ entry, page, author, agentKey, platform, status, full, onOpen }: {
   entry: HomeFeedEntry; page: LabPage; author: string; agentKey: string; platform?: Platform; status?: string; full: boolean; onOpen: () => void;
@@ -54,23 +67,25 @@ export function PostPreview({ entry, page, author, agentKey, platform, status, f
   const card = entry.state.card;
   const blurb = typeof card.payload?.summary === "string" ? card.payload.summary : card.body;
   const films = page.questions.some((question) => question.media?.some((media) => media.type === "video"));
+  if (!full) return <CompactCard agentKey={agentKey} author={author} platform={platform} createdAt={card.createdAt} status={status} title={card.title} description={blurb}
+    thumb={{ src: page.image, video: films }} onOpen={onOpen} opensPage />;
   return <button type="button" onClick={onOpen} aria-haspopup="dialog"
-    className={`block w-full min-w-0 rounded-2xl border border-border bg-card text-left text-card-foreground active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${full ? "p-4 shadow-sm sm:p-5" : "p-3"}`}>
+    className="block w-full min-w-0 rounded-2xl border border-border bg-card p-4 text-left text-card-foreground shadow-sm active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-5">
     <span className="flex min-w-0 items-start gap-3">
-      <AgentMark agentKey={agentKey} name={author} small={!full} />
+      <AgentMark agentKey={agentKey} name={author} />
       <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground"><span className="font-semibold text-foreground">{author}</span>{platform && <PlatformName platform={platform} />}<ShortTime at={card.createdAt} />
-          {status && <span className="ml-auto shrink-0 rounded-full border border-border px-2 py-0.5 font-medium text-foreground">{status}</span>}</span>
-        <span className={`mt-1 block break-words font-semibold leading-snug ${full ? "font-display text-xl" : "text-[15px]"}`}>{card.title}</span>
-        {blurb && <span className={`mt-0.5 block break-words text-sm text-muted-foreground ${full ? "" : "line-clamp-2"}`}>{blurb}</span>}
+        <span className="flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground"><span className="max-w-[58%] shrink-0 truncate font-semibold text-foreground">{author}</span>{platform && <PlatformName platform={platform} logoOnly />}<ShortTime at={card.createdAt} className="shrink-0 before:mr-1.5 before:content-['·']" />
+          <span className="ml-auto flex shrink-0 items-center"><StatusMark status={status} /></span></span>
+        <span className="mt-1 block break-words font-display text-xl font-semibold leading-snug">{card.title}</span>
+        {blurb && <span className="mt-0.5 block break-words text-sm text-muted-foreground">{blurb}</span>}
       </span>
     </span>
     {/* The one thing a post adds: a look at the page. */}
-    <span className={`relative mt-3 block overflow-hidden rounded-xl border border-border bg-muted ${full ? "" : "ml-11"}`}>
+    <span className="relative mt-3 block overflow-hidden rounded-xl border border-border bg-muted">
       <img src={page.image} alt={page.imageAlt} loading="lazy" className="block aspect-video w-full object-cover" />
       {films && <span aria-hidden className="absolute bottom-2 left-2 flex size-8 items-center justify-center rounded-full bg-background/90 text-foreground shadow-sm"><PlayIcon className="size-4" /></span>}
     </span>
-    {full && <span className="mt-3 flex items-center justify-between gap-3 text-sm"><span className="text-muted-foreground">{page.questions.length === 1 ? "1 question" : `${page.questions.length} questions`}</span><span className="font-medium underline decoration-border underline-offset-4">Answer</span></span>}
+    <span className="mt-3 flex items-center justify-between gap-3 text-sm"><span className="text-muted-foreground">{page.questions.length === 1 ? "1 question" : `${page.questions.length} questions`}</span><span className="font-medium underline decoration-border underline-offset-4">Answer</span></span>
   </button>;
 }
 
@@ -127,7 +142,7 @@ export function PostPage({ entry, page, source, author, card, status, footer, on
   entry: HomeFeedEntry; page: LabPage; source: HomeFeedSource; author: string; card: (children: ReactNode) => ReactNode; status: ReactNode; footer: ReactNode;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; onClose: () => void;
 }) {
-  const key = `${entry.source.sourceId}:${entry.state.card.cardId}`;
+  const key = draftKey(entry);
   const [answers, setAnswers] = useState<Record<string, PageAnswer>>(() => drafts.get(key) ?? {});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

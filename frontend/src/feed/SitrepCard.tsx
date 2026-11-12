@@ -7,7 +7,7 @@ import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
-import { CardActions, CardDetails } from "./CardActions";
+import { CardDetails } from "./CardActions";
 import { CardConversation, typedConversation } from "./CardConversation";
 import { shortTime } from "./ShortTime";
 
@@ -34,8 +34,6 @@ interface Props {
   onNavigate: (entry: HomeFeedEntry) => void;
   /** The card's reference line, kept with the other wiring under Details. */
   reference?: ReactNode;
-  /** The page's own actions for the card ("Next card"), at its foot with the card's. */
-  actions?: ReactNode;
 }
 type AskAnswer = { action: "answer" | "drop" | "accept-default"; choice?: string };
 
@@ -159,20 +157,6 @@ export function SitrepCard(props: Props) {
 
   return <div className="mt-4 space-y-4 text-sm" aria-label={`${record.kind} details`}>
     {pinned && <p className="text-xs text-muted-foreground">Priority · {pinned.reason}</p>}
-    {/* The card's actions sit at its top (Sam, 11-12): Ask me later, and the page's own ("Next card"). */}
-    <CardActions>
-      <button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>
-      {props.actions}
-    </CardActions>
-    {/* A note to yourself goes with a reminder: it is saved with the time you pick and only you see it. */}
-    {later && <section aria-label="Ask me later" className="space-y-3 rounded-xl border border-border p-3">
-      <p className="font-medium">Ask me again</p>
-      <div className="flex flex-wrap gap-2">{snoozePresets(now).slice(0, 3).map((preset) => <button key={preset.id} type="button" className={buttonClass} disabled={busy} onClick={() => void perform(async () => {
-        if (selfNote.trim()) await savePrivate({ notes: [{ id: id(), at: new Date().toISOString(), text: selfNote.trim() }] }, `private-note:${selfNote}`);
-        await source.snooze(entry, preset.until); setSelfNote(""); setLater(false); onOwnerSaved();
-      })}>{preset.label}</button>)}</div>
-      <label className="block font-medium">Add a note to yourself<span className="block text-xs font-normal text-muted-foreground">Only you see this. It is not sent to any agent.</span><textarea aria-label="Note to yourself" value={selfNote} disabled={busy} onInput={(event) => setSelfNote(event.currentTarget.value)} className={`${inputClass} min-h-16`} /></label>
-    </section>}
     {/* A note saved with Ask me later is here when the card comes back. */}
     {!!state?.notes?.length && <section aria-label="Notes to yourself" className="space-y-1 rounded-xl border border-dashed border-border p-3">
       <p className="text-xs font-medium text-muted-foreground">Your {state.notes.length > 1 ? "notes" : "note"} · only you see {state.notes.length > 1 ? "them" : "it"}</p>
@@ -268,9 +252,9 @@ export function SitrepCard(props: Props) {
       {note.unresolvedRecipients.map((recipient) => <p key={recipient} className="text-xs">Held / unrouted · {recipient} · owner archive only; not sent</p>)}
     </div>)}</details>}
     {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className="text-xs text-muted-foreground">{response.reason}. Saved transport record preserved; no question decision inferred.</p>)}
-    {/* The card's foot is one control, Details: who posted it, its history and its wiring, in a pop-up. */}
+    {/* The card's foot (Sam, 11-12): Ask me later beside Details (who posted it, its history, its wiring). */}
     <div className="border-t border-border pt-3">
-      <CardDetails>
+      <CardDetails actions={<button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}>
         <p>{record.kind} · {record.status} · {record.id}</p>
         <p>Posted by {entry.source.label} · {entry.source.agentDid}{record.from !== entry.source.label && ` · from ${record.from}`}</p>
         {record.owner && <p>Agent working on this: {record.owner}</p>}
@@ -283,6 +267,16 @@ export function SitrepCard(props: Props) {
     {(!!answers.length || !!state?.snoozes?.length) && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-medium">Typed card history</summary><ol className="mt-2 space-y-2">{answers.map((answer, index) => <li key={`${answer.at}:${index}`}>{answer.action === "code" ? "Approval code saved privately" : `${answer.action}${answer.choice ? ` · ${answer.choice}` : ""}${answer.text ? ` · ${answer.text}` : ""}`} · {stamp(answer.at)}{record.kind === "approval" && answer.issuedAt && <span> · Issuance {answer.issuedAt}</span>}</li>)}{state?.snoozes?.map((snooze) => <li key={`${snooze.at}:${snooze.until}`}>Snoozed at {stamp(snooze.at)} until {stamp(snooze.until)}</li>)}</ol></details>}
       </CardDetails>
     </div>
+    {/* Ask me later's times open under the foot. A note to yourself goes with a reminder: it is saved with the
+        time you pick and only you see it. */}
+    {later && <section aria-label="Ask me later" className="space-y-3 rounded-xl border border-border p-3">
+      <p className="font-medium">Ask me again</p>
+      <div className="flex flex-wrap gap-2">{snoozePresets(now).slice(0, 3).map((preset) => <button key={preset.id} type="button" className={buttonClass} disabled={busy} onClick={() => void perform(async () => {
+        if (selfNote.trim()) await savePrivate({ notes: [{ id: id(), at: new Date().toISOString(), text: selfNote.trim() }] }, `private-note:${selfNote}`);
+        await source.snooze(entry, preset.until); setSelfNote(""); setLater(false); onOwnerSaved();
+      })}>{preset.label}</button>)}</div>
+      <label className="block font-medium">Add a note to yourself<span className="block text-xs font-normal text-muted-foreground">Only you see this. It is not sent to any agent.</span><textarea aria-label="Note to yourself" value={selfNote} disabled={busy} onInput={(event) => setSelfNote(event.currentTarget.value)} className={`${inputClass} min-h-16`} /></label>
+    </section>}
     {error && !(chosen && !closed && visibleQuestion) && <p role="alert" className="text-destructive">{error}</p>}{notice && <p role="status" className="text-muted-foreground">{notice}</p>}
   </div>;
 }

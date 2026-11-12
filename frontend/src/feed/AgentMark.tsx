@@ -73,12 +73,13 @@ function PlatformLogo({ platform, logo }: { platform: Platform; logo: string }) 
 
 /**
  * The platform: its mark and name. A screen reader hears the name once, from the mark when there is one.
- * `chip` draws it as the card's chip; otherwise it sits inline in a line of text.
+ * `chip` draws it as the card's chip; otherwise it sits inline in a line of text. `logoOnly` (the compact card)
+ * shows just the mark when there is one, its name as the tooltip.
  */
-export function PlatformName({ platform, chip = false }: { platform: Platform; chip?: boolean }) {
-  return <span data-platform={platform.name} className={`inline-flex min-w-0 items-center gap-1.5 ${chip ? "max-w-full shrink-0 rounded-full border border-border px-2 py-0.5 text-xs font-medium" : ""}`}>
+export function PlatformName({ platform, chip = false, logoOnly = false }: { platform: Platform; chip?: boolean; logoOnly?: boolean }) {
+  return <span data-platform={platform.name} title={logoOnly && platform.logo ? platform.name : undefined} className={`inline-flex min-w-0 items-center gap-1.5 ${chip ? "max-w-full shrink-0 rounded-full border border-border px-2 py-0.5 text-xs font-medium" : ""}`}>
     {platform.logo && <PlatformLogo platform={platform} logo={platform.logo} />}
-    <span aria-hidden={platform.logo ? true : undefined} className="truncate">{platform.name}</span>
+    {!(logoOnly && platform.logo) && <span aria-hidden={platform.logo ? true : undefined} className="truncate">{platform.name}</span>}
   </span>;
 }
 

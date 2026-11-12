@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { CheckIcon, ChevronRightIcon } from "lucide-react";
+import { ArrowDownIcon, CheckIcon, ChevronRightIcon, ChevronUpIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { AnswerOptions, answerSummary, OWN_OPTION, OwnAnswerBox, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
 import { AgentConversation, AgentList, agentKey, agentThreads } from "./AgentConversation";
-import { agentProfile, AgentMark, PlatformName } from "./AgentMark";
+import { agentProfile, AgentMark } from "./AgentMark";
 import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { CardConversation, plainConversation, typedConversation } from "./CardConversation";
-import { actionClass, CardActions, CardDetails } from "./CardActions";
+import { actionClass, CardDetails } from "./CardActions";
+import { flushSync } from "react-dom";
 import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
-import { labPageOf, PostPage, PostPreview } from "./PostPage";
+import { labPageOf, PostPage, PostPreview, postStatus } from "./PostPage";
+import { CompactCard, StatusMark } from "./CompactCard";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { ShortTime, shortTime } from "./ShortTime";
@@ -22,18 +24,33 @@ import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, gro
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { PATHS } from "@/shell/routes";
 import { FEED_SKILL_URL } from "./strings";
-import { Button } from "@/components/ui/button";
 import { FeedViewSlider } from "./FeedViewSlider";
 
-/** How long ago an answer went, for the pill over earlier answers: "Sent 3 hrs ago", "Sent 1 day ago". */
+/** How long ago an answer went, after the pill's "Sent" tag: "3 hrs ago", "1 day ago"; nothing in its first minute. */
 export function sentAgo(at: string, now: number): string {
   const minutes = Math.max(0, Math.floor((now - Date.parse(at)) / 60_000));
-  if (minutes < 1) return "Sent";
-  if (minutes < 60) return `Sent ${minutes} min ago`;
+  if (minutes < 1) return "";
+  if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Sent ${hours} ${hours === 1 ? "hr" : "hrs"} ago`;
+  if (hours < 24) return `${hours} ${hours === 1 ? "hr" : "hrs"} ago`;
   const days = Math.floor(hours / 24);
-  return `Sent ${days} ${days === 1 ? "day" : "days"} ago`;
+  return `${days} ${days === 1 ? "day" : "days"} ago`;
+}
+
+/**
+ * A labelled on/off switch, as Settings draws it: a 44px target on touch around a 44x24 track. Its off state has
+ * an edge, so it reads against the page (design critique #5).
+ */
+function LabSwitch({ label, checked, disabled = false, onChange }: { label: string; checked: boolean; disabled?: boolean; onChange: (on: boolean) => void }) {
+  return <label className={`flex min-h-10 items-center gap-2 text-sm ${disabled ? "opacity-50" : ""}`}>
+    <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}
+      className="-my-2.5 flex h-11 w-12 shrink-0 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:h-6 fine:w-11">
+      <span aria-hidden className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? "bg-primary" : "bg-input ring-1 ring-inset ring-foreground/15"}`}>
+        <span className={`absolute top-1 size-4 rounded-full bg-background shadow-sm transition-transform ${checked ? "left-6" : "left-1"}`} />
+      </span>
+    </button>
+    {label}
+  </label>;
 }
 
 function keyOf(entry: HomeFeedEntry): string {
@@ -245,22 +262,22 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // open, big card after big card ("full").
   const [size, setSize] = useState<"compact" | "full">("compact");
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  // Feed lab (Sam, 11-12): an optional grid of tiles, "nice for looking at stuff"; not the default.
+  const [grid, setGrid] = useState(false);
   // Feed lab: the post whose page is open over the feed.
   const [pageKey, setPageKey] = useState<string | null>(null);
   const scrollTo = useRef<string | null>(null);
-  // Feed lab: cards you answered earlier, oldest answer first, shown above the feed once you pull down at its top.
+  // Feed lab: cards you answered earlier, oldest answer first, shown above the feed. Only a deliberate act loads
+  // them (Sam, 11-12: "a pull down or button click, not just scrollable without intent"): a pull at the top on
+  // touch, or the "Show earlier answers" button. Scrolling or a wheel at the top never does.
   const [earlier, setEarlier] = useState<HomeFeedEntry[]>([]);
   const [pull, setPull] = useState(0);
   const mainRef = useRef<HTMLElement>(null);
-  const topSentinel = useRef<HTMLDivElement>(null);
   const bottomSentinel = useRef<HTMLDivElement>(null);
   const pullStart = useRef<number | null>(null);
-  const wheelPull = useRef(0);
   const earlierRef = useRef(earlier);
   earlierRef.current = earlier;
   const loading = useRef({ earlier: false, more: false });
-  // The page's height before older cards went in above, so what is on screen stays put.
-  const anchor = useRef<number | null>(null);
   // While you look at earlier answers (the feed's heading is pushed down the screen): when the top one in view was
   // sent, for the floating pill. Null at the current feed.
   const headerRef = useRef<HTMLElement>(null);
@@ -273,13 +290,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const inView = [...root.querySelectorAll<HTMLElement>("[data-sent-at]")].find((node) => node.getBoundingClientRect().bottom > top + 56);
     setHistoryAt(inView?.dataset.sentAt ?? null);
   }, []);
-  /** Loads the next page of earlier answers above the ones shown. `keep` holds what is on screen in place. */
-  const loadEarlier = useCallback(async (keep: boolean) => {
+  /** Loads the next page of earlier answers above the ones shown; the page stays at its top, where they land. */
+  const loadEarlier = useCallback(async () => {
     if (!source.loadAnswered || loading.current.earlier) return;
     loading.current.earlier = true;
     try {
       const page = await source.loadAnswered(earlierRef.current[0]?.state.response?.createdAt, 5);
-      if (keep && mainRef.current) anchor.current = mainRef.current.scrollHeight;
       setEarlier((current) => [...[...page].reverse(), ...current]);
     } finally { loading.current.earlier = false; }
   }, [source]);
@@ -288,26 +304,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     loading.current.more = true;
     try { await source.loadMore(); } finally { loading.current.more = false; }
   }, [source]);
-  useLayoutEffect(() => {
-    const node = mainRef.current;
-    if (!node || anchor.current === null) return;
-    node.scrollTop += node.scrollHeight - anchor.current;
-    anchor.current = null;
-  }, [earlier]);
   useEffect(() => { measureHistory(); }, [earlier, size, measureHistory]);
-  // Once earlier answers show, reaching the top of them loads the next page; reaching the end of the feed adds cards.
+  // Reaching the end of the feed adds cards (downward only; earlier answers never load by scrolling).
   useEffect(() => {
-    const root = mainRef.current;
-    if (!root || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver((seen) => {
-      for (const item of seen) {
-        if (!item.isIntersecting) continue;
-        if (item.target === topSentinel.current) void loadEarlier(true);
-        if (item.target === bottomSentinel.current) void loadMore();
-      }
-    }, { root, rootMargin: "200px 0px" });
-    if (topSentinel.current) observer.observe(topSentinel.current);
-    if (bottomSentinel.current) observer.observe(bottomSentinel.current);
+    const root = mainRef.current, node = bottomSentinel.current;
+    if (!root || !node || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((seen) => { if (seen.some((item) => item.isIntersecting)) void loadMore(); }, { root, rootMargin: "200px 0px" });
+    observer.observe(node);
     return () => observer.disconnect();
   });
   // A short list leaves the end in view after a page lands: keep adding until the feed fills the screen.
@@ -516,17 +519,33 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   function compactCard(entry: HomeFeedEntry) {
     const context = contextFor(entry);
     const author = cardAuthor(entry, context?.record).name;
-    const platform = agentProfile(entry.state.card.payload)?.platform;
     const unsupported = (entry.state.card.payload?.sitrep !== undefined || entry.state.card.payload?.sitrepThread !== undefined) && !context;
-    const summary = typeof entry.state.card.payload?.summary === "string" ? entry.state.card.payload.summary : entry.state.card.body;
-    return <button type="button" aria-expanded={false} onClick={() => openCard(entry)}
-      className="flex w-full min-w-0 items-start gap-3 rounded-2xl border border-border bg-card p-3 text-left text-card-foreground active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-      <AgentMark agentKey={agentKey(entry, context?.record)} name={author} small />
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground"><span className="font-semibold text-foreground">{author}</span>{platform && <PlatformName platform={platform} />}<ShortTime at={entry.state.card.createdAt} />
-          {!unsupported && <span className="ml-auto shrink-0 rounded-full border border-border px-2 py-0.5 font-medium text-foreground">{cardStatus(entry, context?.projection, clock, author)}</span>}</span>
-        <span className="mt-1 block break-words text-[15px] font-semibold leading-snug">{entry.state.card.title}</span>
-        {summary && <span className="mt-0.5 line-clamp-2 block break-words text-sm text-muted-foreground">{summary}</span>}
+    return <CompactCard agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt}
+      status={unsupported ? undefined : cardStatus(entry, context?.projection, clock, author)} title={entry.state.card.title} description={describe(entry)} onOpen={() => openCard(entry)} />;
+  }
+  /** A card's one or two lines: what you chose once you have answered it, else its short description or body. */
+  function describe(entry: HomeFeedEntry) {
+    const response = entry.state.response;
+    if (response && !needsAttention(entry, clock, contextFor(entry)?.projection)) {
+      const label = response.choiceId ? entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label : undefined;
+      if (label || response.text) return answerSummary(label, response.text);
+    }
+    return typeof entry.state.card.payload?.summary === "string" ? entry.state.card.payload.summary : entry.state.card.body;
+  }
+  /** A tile in the grid: the post's image, or the card's words on a plain panel; its title; where it stands. */
+  function gridTile(entry: HomeFeedEntry) {
+    const context = contextFor(entry);
+    const author = cardAuthor(entry, context?.record).name;
+    const page = labPageOf(entry);
+    const plain = cardStatus(entry, context?.projection, clock, author);
+    const status = page ? postStatus(entry, page, plain) : plain;
+    return <button type="button" onClick={() => page ? setPageKey(keyOf(entry)) : openCard(entry)} {...(page ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false })}
+      className="flex h-full w-full min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-card text-left text-card-foreground transition-transform duration-150 ease-smooth active:scale-[.985] fine:hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:active:scale-100">
+      {page ? <img src={page.image} alt="" loading="lazy" className="block aspect-[4/3] w-full bg-muted object-cover" />
+        : <span className="flex aspect-[4/3] w-full flex-col gap-2 bg-surface-2 p-3"><AgentMark agentKey={agentKey(entry, context?.record)} name={author} small /><span className="line-clamp-4 text-xs leading-4 text-muted-foreground">{describe(entry)}</span></span>}
+      <span className="flex flex-1 flex-col gap-1.5 p-2.5">
+        <span className={`line-clamp-2 break-words text-sm leading-[18px] ${status === "Needs you" ? "font-semibold" : "font-medium"}`}>{entry.state.card.title}</span>
+        <span className="mt-auto flex min-w-0 items-center justify-between gap-2 text-meta text-muted-foreground"><span className="truncate">{author}</span><StatusMark status={status} /></span>
       </span>
     </button>;
   }
@@ -541,7 +560,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const onAnswered = answeredFor(entry);
     const reference = referenceFor(entry);
     const later = laterKey === key;
-    const fewer = size === "compact" && <button type="button" aria-expanded onClick={() => setOpened((current) => { const next = new Set(current); next.delete(key); return next; })} className="inline-flex min-h-10 items-center rounded-lg px-1 text-sm text-muted-foreground underline decoration-border underline-offset-4">Show less</button>;
+    const fewer = (size === "compact" || grid) && <button type="button" aria-expanded onClick={() => setOpened((current) => { const next = new Set(current); next.delete(key); return next; })} className="inline-flex min-h-10 items-center rounded-lg px-1 text-sm text-muted-foreground underline decoration-border underline-offset-4">Show less</button>;
     return <div className="min-w-0">
       {fold && <AnswerFold key={fold.response.responseId} entry={entry} sent={fold} agent={author} typed={context} source={source} onSaved={onSaved} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
       <div hidden={!!fold && !fold.open}>
@@ -550,14 +569,14 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} />
             : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-3"><CardDetails>{reference}</CardDetails></div></div>
             : <div className="mt-4 space-y-4">
-              {/* The card's actions sit at its top (Sam, 11-12): Ask me later with its times. */}
-              {needsAttention(entry, clock) && <CardActions><button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={actionClass}>Ask me later</button></CardActions>}
+              <AnswerForm key={key} entry={entry} source={source} onSaved={onSaved} onAnswered={onAnswered} />
+              <PlainThread entry={entry} source={source} onSaved={onSaved} />
+              {/* The card's foot (Sam, 11-12): Ask me later beside Details; its times open under it. */}
+              <div className="border-t border-border pt-3"><CardDetails actions={needsAttention(entry, clock) && <button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={actionClass}>Ask me later</button>}>
+                <p>Posted by {entry.source.label} · {entry.source.agentDid}</p><p>{entry.state.card.kind}</p><CardHistory entry={entry} />{reference}</CardDetails></div>
               {later && needsAttention(entry, clock) && <section aria-label="Ask me later" className="space-y-2 rounded-xl border border-border p-3 text-sm"><p className="font-medium">Ask me again</p>
                 <div className="flex flex-wrap gap-2">{snoozePresets(clock).slice(0, 3).map((preset) => <button key={preset.id} type="button" disabled={viewBusy} onClick={() => void snooze(entry, preset.until)} className={actionClass}>{preset.label}</button>)}</div>
               </section>}
-              <AnswerForm key={key} entry={entry} source={source} onSaved={onSaved} onAnswered={onAnswered} />
-              <PlainThread entry={entry} source={source} onSaved={onSaved} />
-              <div className="border-t border-border pt-3"><CardDetails><p>Posted by {entry.source.label} · {entry.source.agentDid}</p><p>{entry.state.card.kind}</p><CardHistory entry={entry} />{reference}</CardDetails></div>
             </div>}
           {fewer && <div className="mt-2 flex justify-end">{fewer}</div>}
         </FeedCardView>
@@ -568,11 +587,48 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   function postCard(entry: HomeFeedEntry) {
     const context = contextFor(entry);
     const author = cardAuthor(entry, context?.record).name;
-    return <PostPreview entry={entry} page={labPageOf(entry)!} author={author} agentKey={agentKey(entry, context?.record)} platform={agentProfile(entry.state.card.payload)?.platform}
-      status={cardStatus(entry, context?.projection, clock, author)} full={size === "full"} onOpen={() => setPageKey(keyOf(entry))} />;
+    const page = labPageOf(entry)!;
+    return <PostPreview entry={entry} page={page} author={author} agentKey={agentKey(entry, context?.record)} platform={agentProfile(entry.state.card.payload)?.platform}
+      status={postStatus(entry, page, cardStatus(entry, context?.projection, clock, author))} full={size === "full"} onOpen={() => setPageKey(keyOf(entry))} />;
   }
-  /** A card in the list, short or open. `answered`: one of the answers above the feed, marked with when it was sent. */
-  const cardItem = (entry: HomeFeedEntry, answered = false) => <li key={keyOf(entry)} data-card-key={keyOf(entry)} data-sent-at={answered ? entry.state.response?.createdAt : undefined} className="min-w-0 scroll-mt-4">{labPageOf(entry) ? postCard(entry) : isOpen(entry) ? fullCard(entry) : compactCard(entry)}</li>;
+  /**
+   * A card in the list, short or open, or a tile in the grid (a card opened from the grid spans its row).
+   * `answered`: one of the answers above the feed, marked with when it was sent.
+   */
+  const cardItem = (entry: HomeFeedEntry, answered = false) => {
+    const key = keyOf(entry);
+    const page = labPageOf(entry);
+    const wide = grid && !page && opened.has(key);
+    return <li key={key} data-card-key={key} data-sent-at={answered ? entry.state.response?.createdAt : undefined} className={`min-w-0 scroll-mt-4 ${wide ? "col-span-full" : ""}`}>
+      {grid && !wide ? gridTile(entry) : page ? postCard(entry) : isOpen(entry) ? fullCard(entry) : compactCard(entry)}</li>;
+  };
+  const listClass = grid ? "grid grid-cols-2 gap-3 sm:grid-cols-3" : size === "compact" ? "space-y-2" : "space-y-4";
+  /**
+   * Changes how the list is drawn (full cards, grid) without losing your place (Sam, 11-12: "jarring, randomly
+   * places in the page"): the card at the top of the screen, or an open one in view, stays where it was. Cards on
+   * screen morph to their new size while their content crossfades (View Transitions, about 250 ms); cards off
+   * screen just change. No motion when the person asks for less, or where the browser has no View Transitions.
+   */
+  function relayout(change: () => void) {
+    const root = mainRef.current;
+    if (!root) { change(); return; }
+    const top = root.getBoundingClientRect().top;
+    const bottom = top + root.clientHeight;
+    const cards = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")];
+    const visible = cards.filter((node) => { const box = node.getBoundingClientRect(); return box.bottom > top && box.top < bottom; });
+    const held = visible.find((node) => opened.has(node.dataset.cardKey ?? "")) ?? visible.find((node) => node.getBoundingClientRect().bottom > top + 1);
+    const heldKey = held?.dataset.cardKey;
+    const offset = held ? held.getBoundingClientRect().top - top : 0;
+    const apply = () => {
+      flushSync(change);
+      const after = heldKey ? [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => node.dataset.cardKey === heldKey) : undefined;
+      if (after) root.scrollTop += after.getBoundingClientRect().top - top - offset;
+    };
+    const transition = (document as Document & { startViewTransition?: (update: () => void) => { finished: Promise<void> } }).startViewTransition;
+    if (!transition || matchMedia("(prefers-reduced-motion: reduce)").matches) { apply(); return; }
+    visible.forEach((node, index) => { node.style.setProperty("view-transition-name", `lab-card-${index}`); });
+    transition.call(document, apply).finished.finally(() => visible.forEach((node) => node.style.removeProperty("view-transition-name")));
+  }
   const pageEntry = pageKey ? [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].find((entry) => keyOf(entry) === pageKey) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
 
@@ -589,54 +645,52 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const bare = !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
   const filtersOn = [agent, kind, project].filter(Boolean).length + (history ? 1 : 0);
   const selectClass = "min-h-10 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-  // No browser scroll anchoring: it would hold the end of the list in view as cards land, loading more forever,
-  // and it would move twice with the earlier answers, which keep their place by hand (`anchor`).
+  // No browser scroll anchoring: it would hold the end of the list in view as cards land, loading more forever.
   return <main ref={mainRef} onScroll={measureHistory} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
     onTouchStart={(event) => { pullStart.current = (mainRef.current?.scrollTop ?? 1) <= 0 && source.loadAnswered ? event.touches[0]!.clientY : null; }}
     onTouchMove={(event) => { if (pullStart.current !== null) setPull(Math.max(0, Math.min((event.touches[0]!.clientY - pullStart.current) / 2, 80))); }}
-    onTouchEnd={() => { if (pull >= PULL_PX) void loadEarlier(false); pullStart.current = null; setPull(0); }}
-    onWheel={(event) => {
-      if ((mainRef.current?.scrollTop ?? 1) > 0 || event.deltaY >= 0) { wheelPull.current = 0; return; }
-      wheelPull.current -= event.deltaY;
-      if (wheelPull.current > 200) { wheelPull.current = 0; void loadEarlier(false); }
-    }}>
+    onTouchEnd={() => { if (pull >= PULL_PX) void loadEarlier(); pullStart.current = null; setPull(0); }}>
     {/* Feed lab: pull down at the top for the cards you answered earlier (or use the button, without touch). */}
     {source.loadAnswered && <div aria-hidden style={{ height: pull }} className="flex items-end justify-center overflow-hidden text-xs text-muted-foreground">{pull >= PULL_PX ? "Release for earlier answers" : "Pull for earlier answers"}</div>}
     <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5">
-      {/* Feed lab (Sam, 11-12): in earlier answers, a pill floats at the top with when the ones in view were sent. */}
+      {/* Feed lab (Sam, 11-12): in earlier answers, a pill floats at the top with when the ones in view were sent.
+          Its look is uiverse.io "quiet-rat-82" by ahkamboh (MIT), in the app's styling. */}
       {historyAt && <div className="pointer-events-none sticky top-2 z-20 flex h-0 justify-center">
-        <span className="h-fit rounded-full border border-border bg-background px-3 py-1 text-xs font-medium shadow-sm">{sentAgo(historyAt, clock)}</span>
+        <span className="inline-flex h-fit items-center whitespace-nowrap rounded-full bg-zinc-900 p-1.5 pr-3.5 leading-none text-zinc-100 shadow-lg shadow-black/15 dark:bg-zinc-800 dark:shadow-black/50 dark:ring-1 dark:ring-white/10">
+          <span className="mr-2.5 rounded-full bg-zinc-700 px-2 py-1 text-[11px] font-bold uppercase tracking-wide dark:bg-zinc-600">Sent</span>
+          {sentAgo(historyAt, clock) && <span className="text-sm font-semibold"> {sentAgo(historyAt, clock)}</span>}
+        </span>
       </div>}
-      {source.loadAnswered && <button type="button" onClick={() => void loadEarlier(false)} className="sr-only focus:not-sr-only focus:mb-3 focus:inline-flex focus:min-h-10 focus:items-center focus:rounded-lg focus:border focus:border-border focus:px-3 focus:text-sm">Show earlier answers</button>}
+      {source.loadAnswered && <div className="mb-4 flex justify-center">
+        <button type="button" onClick={() => void loadEarlier()} className="inline-flex min-h-10 items-center gap-1.5 rounded-full border border-border px-4 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <ChevronUpIcon aria-hidden className="size-4" />Show earlier answers</button>
+      </div>}
       {!!earlier.length && <section aria-label="Answered earlier" className="mb-6">
-        <div ref={topSentinel} className="h-px" />
-        <h2 className="mb-1 px-1 text-sm font-medium text-muted-foreground">Answered earlier</h2>
-        <ul className={size === "compact" ? "space-y-2" : "space-y-4"}>{earlier.map((loaded) => cardItem(snapshot?.historicalEntries?.find((candidate) => keyOf(candidate) === keyOf(loaded)) ?? loaded, true))}</ul>
+        <h2 className="mb-2 px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground">Answered earlier</h2>
+        <ul className={listClass}>{earlier.map((loaded) => cardItem(snapshot?.historicalEntries?.find((candidate) => keyOf(candidate) === keyOf(loaded)) ?? loaded, true))}</ul>
       </section>}
       <header ref={headerRef} className="mb-6 scroll-mt-4"><h1 className="font-display text-3xl font-semibold tracking-tight">{NAV_LABEL_HOME}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
       {ask}
-      {!bare && <><FeedViewSlider value={selector} onValueChange={changeSelector} className="mb-3" />
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        {/* Feed lab (Sam, 11-12): a toggle between every card short, like a list of posts, and every card open. */}
-        <label className="flex min-h-10 items-center gap-2 text-sm">
-          {/* A 44 px target on touch around the 44x24 track, as in Settings. */}
-          <button type="button" role="switch" aria-checked={size === "full"} onClick={() => { setSize(size === "full" ? "compact" : "full"); setOpened(new Set()); }}
-            className="-my-2.5 flex h-11 w-12 shrink-0 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:h-6 fine:w-11">
-            <span aria-hidden className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${size === "full" ? "bg-primary" : "bg-muted"}`}>
-              <span className={`absolute top-1 size-4 rounded-full bg-background transition-transform ${size === "full" ? "left-6" : "left-1"}`} />
-            </span>
-          </button>
-          Full cards
-        </label>
-        {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-10 rounded-lg border border-border px-3 text-xs disabled:opacity-50">{savingDefault ? "Saving default…" : "Use as default"}</button>}
-        <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="ml-auto min-h-10 rounded-lg border border-border px-3 text-sm">Agents</button>
-        <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-10 rounded-lg border px-3 text-sm ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>
+      {/* While Agents is open the view controls do nothing, so they step aside (design critique #5). */}
+      {!bare && <>{!agentView && <FeedViewSlider value={selector} onValueChange={changeSelector} className="mb-3" />}
+      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/* Feed lab (Sam, 11-12): a toggle between every card short, like a list of posts, and every card open;
+            and an optional grid of tiles. Both keep your place and morph the cards on screen (relayout). */}
+        {!agentView && <>
+          <LabSwitch label="Full cards" checked={size === "full"} disabled={grid} onChange={(on) => relayout(() => { setSize(on ? "full" : "compact"); setOpened(new Set()); })} />
+          <LabSwitch label="Grid" checked={grid} onChange={(on) => relayout(() => { setGrid(on); setOpened(new Set()); })} />
+        </>}
+        <span className="ml-auto flex items-center gap-2">
+          <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
+          {!agentView && <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-10 rounded-lg border px-3 text-sm ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>}
+        </span>
       </div>
       {filtersOpen && <div id="home-feed-filters" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
         <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">All agents</option>{[...new Map(entries.map((entry) => [entry.source.sourceId, entry.source.label])).entries()].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>
         <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => setKind(event.target.value)}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => setProject(event.target.value)}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <button type="button" aria-pressed={history} onClick={() => setHistory(!history)} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
+        {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">{savingDefault ? "Saving default…" : "Use as default"}</button>}
       </div>}</>}
       {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
       {!snapshot && !error && <p className="text-sm text-muted-foreground">Loading your feed…</p>}
@@ -656,16 +710,16 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
       {!!filtered.length && <div className="mb-4 space-y-6">
         {sections.map(([heading, rows]) => !!rows.length && <section key={heading} aria-label={heading}>
-          {heading && <h2 className="mb-2 px-1 text-sm font-medium text-muted-foreground">{heading} · {rows.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0)}</h2>}
-          <ul className={size === "compact" ? "space-y-2" : "space-y-4"}>{rows.map((row) => {
+          {heading && <h2 className="mb-2 flex items-baseline justify-between px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>{heading}</span><span className="tabular-nums">{rows.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0)}</span></h2>}
+          <ul className={listClass}>{rows.map((row) => {
             if (row.kind === "card") return cardItem(row.item);
             const first = row.items[0]; const record = first && contextFor(first)?.record; const name = record && cardGroup(record);
             if (!first || !name) throw new Error("Invalid grouped Home card");
             const open = expandedGroups.has(row.name);
             const pinned = groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[name], row.items.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); }));
-            return <li key={row.name}><section aria-label={`Card group ${name}`} className="py-1">
+            return <li key={row.name} className="col-span-full"><section aria-label={`Card group ${name}`} className="py-1">
               <div className="flex flex-wrap items-center gap-2"><button type="button" className="flex min-h-12 grow items-center gap-2 px-1 text-left text-sm font-medium" aria-expanded={open} onClick={() => setExpandedGroups((previous) => { const next = new Set(previous); if (next.has(row.name)) next.delete(row.name); else next.add(row.name); return next; })}><ChevronRightIcon aria-hidden className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />{name} · {row.items.length} cards</button><button type="button" disabled={viewBusy} aria-pressed={pinned} className="min-h-10 rounded-lg border border-border px-2 text-xs disabled:opacity-50" onClick={() => void saveGroup(first, name, !pinned)}>{pinned ? "Clear private group priority" : "Mark private group priority"}</button></div>
-              {open && <ul className={`pl-3 ${size === "compact" ? "space-y-2" : "space-y-4"}`}>{row.items.map((entry) => cardItem(entry))}</ul>}
+              {open && <ul className={`pl-3 ${listClass}`}>{row.items.map((entry) => cardItem(entry))}</ul>}
             </section></li>;
           })}</ul>
         </section>)}
@@ -673,9 +727,14 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {/* Feed lab: the end of the list loads more cards, so the feed never stops short. */}
       {source.loadMore && !!filtered.length && <div ref={bottomSentinel} aria-hidden className="h-8" />}
       </>}
-      {/* Feed lab (Sam, 11-12): from earlier answers, one tap back to now. */}
+      {/* Feed lab (Sam, 11-12): from earlier answers, one tap back to now. Its look is uiverse.io
+          "selfish-dolphin-96" by ParasSalunke (MIT), in the app's styling: dark on light, light on dark. */}
       {historyAt && <div className="sticky bottom-4 z-20 flex h-0 items-end justify-center">
-        <Button type="button" onClick={() => headerRef.current?.scrollIntoView({ block: "start" })} className="min-h-11 rounded-full shadow-lg">Go to current</Button>
+        <button type="button" onClick={() => headerRef.current?.scrollIntoView({ block: "start" })}
+          className="group relative inline-block rounded-xl bg-zinc-800 p-px font-semibold leading-6 text-white shadow-2xl shadow-zinc-900/40 transition-transform duration-300 ease-in-out hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 motion-reduce:transition-none dark:bg-zinc-300 dark:text-zinc-900 dark:shadow-black/60 dark:focus-visible:ring-zinc-100 dark:focus-visible:ring-offset-background">
+          <span aria-hidden className="absolute inset-0 rounded-xl bg-zinc-500 opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+          <span className="relative z-10 flex min-h-11 items-center gap-2 rounded-xl bg-zinc-950 px-4 text-sm dark:bg-zinc-50">Go to current<ArrowDownIcon aria-hidden className="size-4 transition-transform duration-500 group-hover:translate-y-0.5" /></span>
+        </button>
       </div>}
     </div>
     {pageEntry && pageOpen && (() => {
