@@ -349,6 +349,8 @@ export interface AcknowledgeResult {
 }
 
 export interface ConnectorQueueOptions {
+  /** Checked inside the same owner lock as clear, immediately before a batch can write. */
+  isDisabled?: (address: string) => Promise<boolean>;
   maxItems?: number;
   maxDeadItems?: number;
   ttlMs?: number;
@@ -428,11 +430,13 @@ export class ConnectorQueue {
    * when no shared lane is injected, e.g. tests / standalone use).
    */
   private readonly storageLane: BackendStorageLane;
+  private readonly isDisabled: ConnectorQueueOptions["isDisabled"];
 
   constructor(
     private readonly node: TinyCloudNode,
     options: ConnectorQueueOptions = {},
   ) {
+    this.isDisabled = options.isDisabled;
     this.maxItems = options.maxItems ?? PENDING_CAP;
     this.maxDeadItems = options.maxDeadItems ?? DEAD_CAP;
     this.ttlMs = options.ttlMs ?? QUEUE_TTL_MS;
@@ -908,6 +912,12 @@ export class ConnectorQueue {
         `op=flush-superseded source=${source} dropped=${batch.entries.length} ` +
           `aid=${hashed(normalizeWebhookAddress(address))}`,
       );
+      return batch.entries.map(() => ({ status: "dropped", depth: 0 }));
+    }
+    // clear() holds this same owner lock. A flush already past this check finishes before
+    // clear deletes it; any later flush sees the durable disabled marker and writes nothing.
+    if (await this.isDisabled?.(normalizeWebhookAddress(address))) {
+      logQueueWarn(`op=flush-disabled source=${source} dropped=${batch.entries.length} aid=${hashed(address)}`);
       return batch.entries.map(() => ({ status: "dropped", depth: 0 }));
     }
     return this.flush(source, address, batch.entries);
