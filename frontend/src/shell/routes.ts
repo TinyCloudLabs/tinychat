@@ -50,6 +50,11 @@ export function notePath(id: string): string {
   return `${PATHS.library}/${encodeURIComponent(id)}`;
 }
 
+/** The Library's query that shows only this account's recordings whose audio is only in this browser. */
+export const LOCAL_AUDIO_FILTER = { param: "show", value: "local-audio" } as const;
+/** The Library filtered to that list (the tinycloud.chat notice links here). */
+export const LOCAL_AUDIO_LIBRARY_PATH = `${PATHS.library}?${LOCAL_AUDIO_FILTER.param}=${LOCAL_AUDIO_FILTER.value}`;
+
 /**
  * Retired addresses and where they live now. Each one holds its address until
  * sign-in settles, then forwards with `replace` (App), so Back never bounces
