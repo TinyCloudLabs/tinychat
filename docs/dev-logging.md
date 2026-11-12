@@ -250,3 +250,28 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   (5) add a case to `log-shipper/vector.tests.yaml`. Native Vector fixtures and the sink-facing
   `request-record.test.ts` cases verify the emitted keys and rejection of private extras; CI also validates the pinned image.
 - **Delivery is best effort.** UDP and the sink buffer can drop lines under load or while the shipper restarts.
+
+## Playback diagnostics (TC-2857)
+
+An opt-in log of how note audio plays on a device, for a user to export when playback sounds choppy. It is off by
+default and works in release builds. To turn it on: Settings → tap the build line at the bottom seven times →
+**Playback diagnostics** → switch on. Open the note, play it, then **Share log** (or **Copy log**). Turning the switch
+off stops recording; **Clear** deletes the log. The log stays on the device (localStorage, the newest 5,000 entries)
+until it is shared.
+
+Each line is a JSON object with `t` (wall ms) and `m` (`performance.now()` ms). The first line is a header with the
+build. Entries (`frontend/src/lib/audio/playbackDiagnostics.ts`):
+
+- `audio_session`: iOS only (`AudioDiagnosticsPlugin.swift`). The session's category, mode, options, input and output
+  ports, sample rate, IO buffer and output latency, thermal state, Low Power Mode and app state, as a snapshot when
+  turned on and when a player starts playing, and on every route change (with its reason and previous route),
+  interruption, media-services loss or reset, secondary-audio hint, thermal change and Low Power Mode change.
+- `source`: what the player was given: `blob` with its size and type, `local_file` (the phone's copy), or a URL scheme.
+  No path.
+- `media`: each `<audio>` event (`play`, `playing`, `waiting`, `stalled`, `suspend`, `seeking`, `pause`, `ended`,
+  `error`, …) with `currentTime`, `readyState`, `networkState`, `playbackRate`, `paused` and the buffered ranges.
+- `clock`: on each `timeupdate`, the media time against the wall time since playback last started; a negative
+  `driftMs` means the audio fell behind real time.
+- `main_thread_block`: the web view's main thread was blocked for at least 100 ms while a note played.
+
+Android records the web side only (`audio_session_unavailable`).

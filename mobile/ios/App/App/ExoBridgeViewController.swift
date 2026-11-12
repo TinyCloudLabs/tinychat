@@ -20,6 +20,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())
         bridge?.registerPluginInstance(AppLockPlugin())
+        bridge?.registerPluginInstance(AudioDiagnosticsPlugin())
         #if EXO_HEALTH
         // Health spike (TC-525): Debug builds only (see HealthPlugin.swift).
         bridge?.registerPluginInstance(HealthPlugin())
