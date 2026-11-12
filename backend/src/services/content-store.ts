@@ -455,6 +455,14 @@ class ContentIndexUnreadableError extends Error {
   }
 }
 
+class ContentBlobUnparseableError extends Error {
+  constructor() {
+    super("content blob is unparseable");
+    this.name = "ContentBlobUnparseableError";
+  }
+}
+
+
 class ContentMasterUnavailableError extends Error {
   constructor() {
     super("content master is unavailable");
@@ -737,6 +745,19 @@ export class ContentStore implements ContentSink, RetentionGuard {
 
         const others = index.meetings.filter((m) => m.sourceId !== sourceId);
         const { kept, evicted } = this.enforceCaps(source, address, others, meta);
+
+        // When overwriting a reconciled row, revoke its cleanup eligibility durably before
+        // replacing the blob. If a later write fails, sync-off cleanup retains the new blob.
+        if (prior?.reconciledAt !== undefined) {
+          const unreconciledPrior = { ...prior };
+          delete unreconciledPrior.reconciledAt;
+          await this.writeIndex(source, address, {
+            meetings: index.meetings.map((entry) =>
+              entry.sourceId === sourceId ? unreconciledPrior : entry,
+            ),
+            tombstones: index.tombstones,
+          });
+        }
 
         // Both writes are result-checked and both must resolve before a success exists.
         await this.writeMeeting(source, address, meta, content);
@@ -1131,8 +1152,9 @@ export class ContentStore implements ContentSink, RetentionGuard {
   async purge(source: string, address: string): Promise<{ removed: number }> {
     const target = normalizeTarget(source, address);
     return this.lane(target.source, target.address, async () => {
-      // An unreadable index cannot establish ownership of the rows, so fail closed before any
-      // deletion. The caller can retry once the index is readable again.
+      // Even when no index exists, purge may remove orphaned ciphertext. Require the key first
+      // so an unavailable master cannot turn an unverified archive into a successful purge.
+      this.contentMaster();
       const index = await this.openIndex(target.source, target.address);
       for (const meta of index.meetings) {
         await this.blobs.remove(target.source, target.address, meta.sourceId);
@@ -1261,7 +1283,15 @@ export class ContentStore implements ContentSink, RetentionGuard {
     source: string,
     address: string,
   ): Promise<ContentIndex> {
-    const blob = await this.blobs.readIndex(source, address);
+    let blob: SealedBlob | null;
+    try {
+      blob = await this.blobs.readIndex(source, address);
+    } catch (error) {
+      if (error instanceof ContentBlobUnparseableError) {
+        throw new ContentIndexUnreadableError();
+      }
+      throw error;
+    }
     if (blob === null) return { meetings: [], tombstones: [] };
     let index: ContentIndex;
     try {
@@ -1922,30 +1952,51 @@ export class KvContentBlobStore implements ContentBlobStore {
       if (isKvMissingKeyResult(r, key)) return null;
       return assertKvResult(r);
     });
-    const response = (result as { data?: unknown } | null)?.data as
-      | { data?: unknown }
-      | null
-      | undefined;
-    if (response === null || response === undefined) return null;
-    const raw = (response as { data?: unknown }).data ?? response;
-    const value =
-      typeof raw === "string"
-        ? (() => {
-            try {
-              return JSON.parse(raw) as unknown;
-            } catch {
-              throw new Error("content blob is unparseable");
-            }
-          })()
-        : raw;
-    if (typeof value !== "object" || value === null) throw new Error("content blob is unparseable");
+    if (
+      typeof result !== "object" ||
+      result === null ||
+      Array.isArray(result) ||
+      !("data" in result)
+    ) {
+      throw new ContentBlobUnparseableError();
+    }
+    const response = (result as { data?: unknown }).data;
+    // The SDK also represents a missing key as a successful get with data:null.
+    if (response === null) return null;
+    if (response === undefined) {
+      throw new ContentBlobUnparseableError();
+    }
+    const raw =
+      typeof response === "object" &&
+      response !== null &&
+      "data" in response
+        ? (response as { data?: unknown }).data
+        : response;
+    if (raw === null || raw === undefined) {
+      throw new ContentBlobUnparseableError();
+    }
+    let value: unknown = raw;
+    if (typeof raw === "string") {
+      try {
+        value = JSON.parse(raw) as unknown;
+      } catch {
+        throw new ContentBlobUnparseableError();
+      }
+    }
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value)
+    ) {
+      throw new ContentBlobUnparseableError();
+    }
     const blob = value as Record<string, unknown>;
     if (
       typeof blob.ciphertext !== "string" ||
       typeof blob.wrappedDEK !== "string"
     ) {
       // Present but unreadable. Never "absent" — see the class comment.
-      throw new Error("content blob is unparseable");
+      throw new ContentBlobUnparseableError();
     }
     return {
       ciphertext: blob.ciphertext,
