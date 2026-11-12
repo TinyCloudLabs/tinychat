@@ -32,7 +32,7 @@ Also `frontend/src/lib/feedLab.ts`, `frontend/src/lib/basePath.ts`, and `fronten
 - **D5.** An agent is shown by a short name the person gave or approved, plus a few words on what it does.
 - **D6.** Open cards must not blur together: one open card as one piece, the others as rows.
 - **D7.** The card shows which agent is acting and on which platform, with the platform's own mark.
-- **D8.** No explaining text under a control. If a control needs a sentence, it is the wrong control. "Comment" is the wrong word for a message to an agent.
+- **D8.** No explaining text under a control. If a control needs a sentence, it is the wrong control. The comment control names who it is for: "Leave a comment for <agent>".
 - **D9.** A card sets the scene at a glance. It should be a little richer than a bare question.
 
 He also asked that the work stay close to the underlying architecture: one identity per agent, grants the person approves, records in the person's own space, and messages only to approved destinations.
@@ -41,11 +41,11 @@ He also asked that the work stay close to the underlying architecture: one ident
 
 All of this is in Mock 4 and none of it is built. Hunter had not finished reacting to it when this was written.
 
-- **One button, "Message <agent>".** It opens one line. There is no always-visible box and no separate "answer in your own words".
-- **The card shows whose turn it is.** After the person sends a message, the card reads "Waiting on <agent>" and leaves "Needs you" until the agent replies or finishes. The agent decides what the words meant. It is the same message record as today; only the status on screen is new.
+- **One quiet control to write.** It opens one line, with no always-visible box and no caption. Mock 4 labels it "Message <agent>". Hunter has since chosen "Leave a comment for <agent>", so read the mock's label that way.
+- **Tried in the mock, not decided: the card shows whose turn it is.** After the person writes, the card reads "Waiting on <agent>" and leaves "Needs you" until the agent replies or finishes. With the comment wording this may not survive, because a comment does not answer a card.
 - **Context at a glance.** A project tag, the kind of decision, the thing itself shown (the first lines of a draft, an amount, a strip of checked facts) and up to three chips. A Plain / Context switch compares the two. Our own read is that the Context card overshoots: keep the tag, the kind and the thing shown, and drop chips that repeat it.
 - **A List / Focus switch.** Focus shows one card per screen.
-- **A disconnected agent's card** offers "Message <another agent> instead" as a choice the person taps. Nothing is redirected for them.
+- **A disconnected agent's card** offers to write to another agent instead, as a choice the person taps. Nothing is redirected for them.
 
 ## This branch and the draft #610
 
@@ -55,7 +55,7 @@ Our recommendation is to make #610 the base and add this branch's parts on top. 
 
 - **Take from #610:** the count with its Undo pill, the outbox that keeps an answer when the page closes, the re-check when a card changed during the count, held notes, the comment data path, and its tests.
 - **Add from this branch:** one open card with rows; agent marks, platform and details; the agent's page and the Agents list; the receipt steps; the feed lab.
-- **Change in both, under D8:** no caption under the composer, and the control is called "Message <agent>".
+- **Change in both, under D8:** no caption under the composer, and the control reads "Leave a comment for <agent>".
 
 Section 17 of the spec has the two side by side.
 
@@ -90,7 +90,7 @@ Proposed things, not built, and where they would stand:
 ## Suggested next steps
 
 1. Choose the base: #610 plus this branch's additions (our recommendation), or this branch plus #610's outbox and held notes.
-2. Rebuild the card under D8 and Mock 4: no captions, "Message <agent>", and the turn status.
+2. Rebuild the card under D8: no captions, and "Leave a comment for <agent>".
 3. Settle how much context a card shows at a glance (D9), then which fields carry it.
 4. Put held notes back and fix the crew label.
 5. Agent facts: the registry for what the person approved, `payload.agent` for what the agent reports, and a line in the guide.

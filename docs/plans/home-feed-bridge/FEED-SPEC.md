@@ -83,7 +83,7 @@ For each part: what it does, then where its data comes from.
 
 ## 6. Replying
 
-- 6.9 **Changing (Mock 4): one button, "Message <agent>", and turns** [D8]. One quiet button opens one line and Send. There is no always-visible box, no "answer in your own words" and no "comment". When he sends a message on a card that needs him, the card reads "Waiting on <agent>" and leaves "Needs you" until the agent replies or finishes. The agent decides what his words meant. In the records it is the same message as before; only the status on screen is new. **PROPOSED** form. The rules below describe the branch as built, and will be rewritten once he has tried Mock 4.
+- 6.9 **Changing: one quiet control, "Leave a comment for <agent>"** [D8]. It opens one line and Send, with no always-visible box and no caption under it. The name says both things the caption used to say: it is a comment, and it is for that agent. Hunter chose this wording on 11-12 over "Message <agent>", which Mock 4 shows. Mock 4 also tried a status that follows whose turn it is ("Waiting on <agent>" after he writes). That is not decided, and a comment does not answer a card. The rules below describe the branch as built.
 
 - 6.1 There is one box per card: "Reply to <agent>". He never picks a recipient [D2].
 - 6.2 On an open question it sits under the options ("Write instead of choosing, or as well"). After the answer, it takes replies [D2].
@@ -235,7 +235,7 @@ When a card falls short:
 | 6.6 | C2 | built c8264d0a, 2da228cc | has | fits |
 | 6.7 | Home | main | has | fits |
 | 6.8 | PROPOSED | proposed | has | fits (ADR item 16: the format takes a message on any card) |
-| 6.9 | D8; PROPOSED (form) | mock (Mock 4) | has | fits (the same message record; the status is screen only) |
+| 6.9 | D8 | mock (Mock 4 shows the earlier wording) | has | fits (the same message record) |
 | 7.1 | Home; PROPOSED (plain cards) | main (typed cards) | has | fits |
 | 7.2 | D2 | built c8264d0a | has | fits |
 | 7.3 | D2 | built c8264d0a | has | fits for private notes; departs, small: held notes are no longer written (ADR items 4, 9) |
@@ -350,7 +350,7 @@ This section covers each rule that needs data or behaviour beyond what Home's fe
 | 11-12 | D6: the open card is one raised surface. Options look like choices. Other cards are one-line rows |
 | 11-12 | D7: the platform's official mark and name on the card and each row, and agent details on tap |
 | 11-12 | Stay close to the underlying architecture. Each rule is checked against it (sections 13 and 15) |
-| 11-12 | D8: no explaining text under a control. "Comment" is the wrong word; the control says what it does and who gets it (form in 6.9) |
+| 11-12 | D8: no explaining text under a control. The comment control names who it is for: "Leave a comment for <agent>" (6.9) |
 | 11-12 | D9: a card gives context at a glance (form in 4.13) |
 
 ## 17. The draft redesign #610
