@@ -54,9 +54,9 @@ export function HistoryTimeline({ items, className }: { items: HistoryItem[]; cl
  * marked current, unless it failed.
  */
 export function historyFromEntry(entry: HomeFeedEntry): HistoryItem[] {
-  const agent = entry.source.label || "Agent";
   const items: HistoryItem[] = [{ key: "posted", at: entry.state.card.createdAt, title: "Posted" }];
-  if (entry.view.seenAt) items.push({ key: "seen", at: entry.view.seenAt, title: "Seen" });
+  // You opened the card (Monica: your action, worded like "You answered").
+  if (entry.view.seenAt) items.push({ key: "seen", at: entry.view.seenAt, title: "You opened it" });
 
   const responses = entry.responses ?? (entry.state.response ? [entry.state.response] : []);
   for (const response of responses) {
@@ -66,7 +66,7 @@ export function historyFromEntry(entry: HomeFeedEntry): HistoryItem[] {
     items.push({ key: `response-${response.responseId}`, at: response.createdAt, title, ...(said ? { detail: said } : {}) });
 
     const { acknowledgement, outcome } = answerHandling(entry, response.responseId);
-    if (acknowledgement) items.push({ key: `received-${response.responseId}`, at: acknowledgement.createdAt, title: `${agent} received it` });
+    if (acknowledgement) items.push({ key: `received-${response.responseId}`, at: acknowledgement.createdAt, title: "Received" });
     if (outcome) {
       const message = outcome.detail?.message;
       items.push({

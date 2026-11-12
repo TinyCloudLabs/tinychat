@@ -14,7 +14,8 @@ export interface Platform {
   colour?: string;
 }
 /** What an agent says it is: its platform (`kind`), its model and where it runs, each as the agent reports it. */
-export interface AgentProfile { platform?: Platform; model?: string; runsOn?: string }
+/** `job`: what the agent is working on, as it says (payload.agent.job; Hunter and Sam, 11-12). */
+export interface AgentProfile { platform?: Platform; model?: string; runsOn?: string; job?: string }
 
 // The platforms on agents.tinycloud.xyz, by the `kind` an agent reports. Those without a mark file show their name.
 const PLATFORMS: Record<string, Platform> = {
@@ -43,9 +44,9 @@ export function agentProfile(payload: Record<string, unknown> | undefined): Agen
   const agent = payload?.agent;
   if (!agent || typeof agent !== "object" || Array.isArray(agent)) return undefined;
   const fields = agent as Record<string, unknown>;
-  const kind = reported(fields.kind), model = reported(fields.model), runsOn = reported(fields.runsOn);
-  if (!kind && !model && !runsOn) return undefined;
-  return { ...(kind ? { platform: platformOf(kind) } : {}), ...(model ? { model } : {}), ...(runsOn ? { runsOn } : {}) };
+  const kind = reported(fields.kind), model = reported(fields.model), runsOn = reported(fields.runsOn), job = reported(fields.job);
+  if (!kind && !model && !runsOn && !job) return undefined;
+  return { ...(kind ? { platform: platformOf(kind) } : {}), ...(model ? { model } : {}), ...(runsOn ? { runsOn } : {}), ...(job ? { job } : {}) };
 }
 
 // White letters on each of these pass 4.5:1, and each stands out on the light and the dark background.
@@ -94,6 +95,7 @@ export function PlatformName({ platform, chip = false, logoOnly = false }: { pla
  */
 export function AgentDetails({ name, via, profile, onOpen }: { name: string; via?: string; profile?: AgentProfile; onOpen?: () => void }) {
   const rows: [string, ReactNode][] = [];
+  if (profile?.job) rows.push(["Working on", profile.job]);
   if (profile?.platform) rows.push(["What it is", <PlatformName platform={profile.platform} />]);
   if (profile?.model) rows.push(["Model", profile.model]);
   if (profile?.runsOn) rows.push(["Runs on", profile.runsOn]);

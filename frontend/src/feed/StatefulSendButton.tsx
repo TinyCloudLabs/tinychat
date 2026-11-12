@@ -12,7 +12,7 @@ const STATUS: Record<SendState, string> = {
   idle: "",
   sending: "Sending…",
   sent: "Sent",
-  error: "Couldn't send. Press the button to try again.",
+  error: "Couldn't send. Choose Retry to try again.",
 };
 
 export function StatefulSendButton({ onSend, disabled = false, label = "Send", className, state, keepSent = false, sentFor = 1500 }: {
