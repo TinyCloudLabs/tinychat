@@ -51,9 +51,13 @@ export default defineConfig(({ command, mode }) => {
     if (!valid)
       throw new Error("VITE_EXO_PTX_UPLOAD_ORIGIN must be a bare HTTPS origin for production builds");
   }
+  // Feed lab builds (VITE_FEED_LAB=true, holden/feed-lab only) must never show a stale build: no service worker.
+  const feedLab = loadEnv(mode, rootDir, "VITE_").VITE_FEED_LAB === "true";
   return ({
   define: {
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
+    // The feed lab's footer stamp: when this build was made.
+    __FEED_LAB_BUILT_AT__: JSON.stringify(new Date().toISOString()),
   },
   // The client-side TEE verifier (@redpill-ai/verifier + @peculiar/x509) is
   // Node-oriented and uses `Buffer` for base64↔bytes and ASN.1/cert parsing.
@@ -86,6 +90,9 @@ export default defineConfig(({ command, mode }) => {
     // register it, and an update waits for the user's "Reload" instead of swapping the shell under them.
     VitePWA({
       registerType: "prompt",
+      // A lab build ships a sw.js that unregisters itself and reloads, so a browser still holding an older lab
+      // build's cached shell drops it on its next visit (main.tsx registers nothing in a lab build).
+      selfDestroying: feedLab,
       injectRegister: false,
       // `vite dev` serves no worker unless VITE_PWA_DEV=true (src/lib/pwa.ts checks the same flag).
       devOptions: { enabled: process.env.VITE_PWA_DEV === "true" },

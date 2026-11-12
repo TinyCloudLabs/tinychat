@@ -61,3 +61,6 @@ interface ImportMeta {
 declare const __EXO_BUILD_INFO__:
   | { version?: string; commit?: string; build?: string; channel?: string }
   | undefined;
+
+/** Feed lab builds: when the build was made (ISO), for the lab's footer stamp. */
+declare const __FEED_LAB_BUILT_AT__: string | undefined;

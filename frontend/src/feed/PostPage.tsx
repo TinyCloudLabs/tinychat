@@ -70,7 +70,7 @@ export function PostPreview({ entry, page, author, agentKey, platform, status, f
       <img src={page.image} alt={page.imageAlt} loading="lazy" className="block aspect-video w-full object-cover" />
       {films && <span aria-hidden className="absolute bottom-2 left-2 flex size-8 items-center justify-center rounded-full bg-background/90 text-foreground shadow-sm"><PlayIcon className="size-4" /></span>}
     </span>
-    {full && <span className="mt-3 flex items-center justify-between gap-3 text-sm"><span className="text-muted-foreground">{page.questions.length === 1 ? "1 question" : `${page.questions.length} questions`}</span><span className="font-medium underline decoration-border underline-offset-4">Open page</span></span>}
+    {full && <span className="mt-3 flex items-center justify-between gap-3 text-sm"><span className="text-muted-foreground">{page.questions.length === 1 ? "1 question" : `${page.questions.length} questions`}</span><span className="font-medium underline decoration-border underline-offset-4">Answer</span></span>}
   </button>;
 }
 

@@ -14,7 +14,7 @@ import { decideOriginMove, isLegacyOrigin, type OriginMoveDecision } from "./lib
 import { LandingRoute, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { BASE_PATH } from "./lib/basePath";
-import { FeedLabRoutes } from "./lib/feedLab";
+import { FEED_LAB, FeedLabRoutes } from "./lib/feedLab";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
@@ -57,7 +57,8 @@ initTheme();
 
 // Installable web app: registers the service worker on the web only — never in
 // the Capacitor or Tauri shells, and not under `vite dev` unless VITE_PWA_DEV.
-setupPwa({
+// A feed lab build registers none, so a lab page is always the deployed build.
+if (!FEED_LAB) setupPwa({
   hasServiceWorker: "serviceWorker" in navigator,
   isCapacitorNative: nativeShell,
   isTauri: "__TAURI_INTERNALS__" in window,

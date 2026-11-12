@@ -35,7 +35,16 @@ export function FeedLab() {
       <Link to="/" className="inline-flex min-h-10 items-center underline underline-offset-2">Close</Link>
     </header>
     <div className="min-h-0 flex-1"><HomeFeedEntries key={lab.run} source={lab.source} /></div>
+    {/* Which build this is, so anyone can tell they are looking at the latest. */}
+    <footer className="border-t border-border px-3 py-1 text-[11px] text-muted-foreground"><code>{buildStamp()}</code></footer>
   </div>;
+}
+
+/** "Build 311daa1 · 2026-11-12 22:20 UTC": the commit and time this build was made. */
+function buildStamp() {
+  const commit = (typeof __EXO_BUILD_INFO__ === "object" && __EXO_BUILD_INFO__?.commit?.slice(0, 7)) || "unknown";
+  const at = typeof __FEED_LAB_BUILT_AT__ === "string" ? `${__FEED_LAB_BUILT_AT__.slice(0, 10)} ${__FEED_LAB_BUILT_AT__.slice(11, 16)} UTC` : "unknown time";
+  return `Build ${commit} · ${at}`;
 }
 
 /** What main.tsx mounts for an address the app does not know, in a lab build: the lab at its own, home for the rest. */

@@ -25,14 +25,15 @@ import { FEED_SKILL_URL } from "./strings";
 import { Button } from "@/components/ui/button";
 import { FeedViewSlider } from "./FeedViewSlider";
 
-/** How long ago an answer went, for the pill over earlier answers: "Sent 3 hrs ago", "Sent 1d ago". */
+/** How long ago an answer went, for the pill over earlier answers: "Sent 3 hrs ago", "Sent 1 day ago". */
 export function sentAgo(at: string, now: number): string {
   const minutes = Math.max(0, Math.floor((now - Date.parse(at)) / 60_000));
-  if (minutes < 1) return "Sent just now";
+  if (minutes < 1) return "Sent";
   if (minutes < 60) return `Sent ${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `Sent ${hours} ${hours === 1 ? "hr" : "hrs"} ago`;
-  return `Sent ${Math.floor(hours / 24)}d ago`;
+  const days = Math.floor(hours / 24);
+  return `Sent ${days} ${days === 1 ? "day" : "days"} ago`;
 }
 
 function keyOf(entry: HomeFeedEntry): string {
