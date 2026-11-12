@@ -50,11 +50,10 @@ test("renewed permission cancels the expiry sweep and keeps uncopied records for
 test("a late staging operation waits for retention and cannot recreate deleted history", async () => {
   let stage: Promise<void> | undefined;
   let error: string | undefined;
-  let late: () => void;
   const { manager, layout } = setup(true, false, () => queueMicrotask(() => late()));
   const bot = manager.forOwner(owner);
   const batch = (await bot.historyPending())!;
-  late = () => { stage = bot.historyStage({ seq: batch.seq, challenge: batch.challenge,
+  const late = () => { stage = bot.historyStage({ seq: batch.seq, challenge: batch.challenge,
     batchHash: createHash("sha256").update(JSON.stringify(batch)).digest("hex"), envelope: { fixture: true } }).catch(e => { error = e.message; }); };
   await manager.deleteWorkingState(botIdFor(owner), "permission_expired");
   await stage;
