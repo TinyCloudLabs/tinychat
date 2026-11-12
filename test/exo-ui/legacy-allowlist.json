@@ -278,5 +278,19 @@
     "check": "touch-target",
     "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
     "removeIn": "#610"
+  },
+  {
+    "screen": "bots-history-expiry",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
+    "removeIn": "#610"
+  },
+  {
+    "screen": "bots-history-expiry-pending",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
+    "removeIn": "#610"
   }
 ]
