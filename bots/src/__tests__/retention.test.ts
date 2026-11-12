@@ -19,7 +19,7 @@ import { botIdFor } from "../owner";
 import type { Frame } from "../rpc";
 import { rootProblem, removeWorkingState } from "../retention";
 import { chmodSync } from "node:fs";
-import { parseMountinfo, runStateCopy, StateCopiers } from "../sandbox";
+import { parseMountinfo, runStateCopy, StateCopiers, endSandbox } from "../sandbox";
 
 const tmp = mkdtempSync(join(tmpdir(), "bots-test-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -286,6 +286,24 @@ describe("working state retention", () => {
     }
   });
 
+  test("a symlink marker pointing to a valid old timestamp keeps state and logs refusal", async () => {
+    const { manager, layout } = host();
+    const old = Date.now() - RETENTION - DAY;
+    existing(layout(OWNER), null, old);
+    const target = join(tmp, "old-marker");
+    writeFileSync(target, new Date(old).toISOString());
+    symlinkSync(target, layout(OWNER).lastUsedFile);
+    const spy = spyOn(console, "log");
+    try {
+      await manager.sweepUnused(RETENTION);
+      expect(readFileSync(layout(OWNER).stateSnapshot, "utf8")).toBe("old notes");
+      expect(lstatSync(layout(OWNER).lastUsedFile).isSymbolicLink()).toBe(true);
+      expect(spy.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({
+        bots: "sweep_failed", bot: botIdFor(OWNER).slice(0, 12), error: "invalid last-used marker",
+      });
+    } finally { spy.mockRestore(); }
+  });
+
   test("an unconfirmed launcher leftover keeps state even without a live sandbox handle", async () => {
     const { fake, manager, layout } = host();
     existing(layout(OWNER), Date.now() - RETENTION - DAY);
@@ -315,10 +333,21 @@ describe("working state retention", () => {
       kill: () => {},
     }) as never);
     const stop = sandbox.stop.bind(sandbox);
+    // Retry after an earlier unconfirmed sandbox teardown retained this bot's running place.
+    fake.leftover = true;
     sandbox.stop = async () => {
-      const failure = await fake.copiers.run(botIdFor(OWNER), ["copier"], 1, 10);
-      await stop();
-      if (failure === "copier_leftover") throw new Error("state copier exit unconfirmed");
+      try {
+        await endSandbox({
+          status: async () => "absent",
+          kill: async () => true,
+          remove: async () => true,
+          reap: async () => {},
+          cgroupEmpty: () => true,
+          confirmed: () => { fake.leftover = false; },
+          save: async () => { await fake.copiers.run(botIdFor(OWNER), ["copier"], 1, 10); },
+          unmount: async () => { if (fake.copiers.has(botIdFor(OWNER))) throw new Error("state copier exit unconfirmed"); },
+        }, botIdFor(OWNER), true);
+      } finally { await stop(); }
     };
     try {
       const events = await stateEvents(() => manager.sweepUnused(RETENTION, Date.now() + RETENTION + DAY));
@@ -329,7 +358,15 @@ describe("working state retention", () => {
       expect(await fake.copiers.run(botIdFor(OWNER), ["another copier"], 1, 10)).toBe("copier_leftover");
       expect(spawn).toHaveBeenCalledTimes(1);
       expect(await stateEvents(() => manager.deleteWorkingState(botIdFor(OWNER), "unused"))).toEqual([skipped("teardown_failed")]);
-      expect((await converse(manager.forOwner(OTHER), fake.next)).at(-1)?.[0]).toBe("done");
+      const next = fake.next;
+      const other = recorder();
+      const replying = manager.forOwner(OTHER).send("hi", other.sink);
+      await Promise.race([replying, next.prompted.promise]);
+      if (Bun.peek.status(next.prompted.promise) === "fulfilled") {
+        next.emit({ type: "prompt_result", id: await next.prompted.promise, status: "completed", sessionSettled: true });
+      }
+      await replying;
+      expect(other.events.at(-1)?.[0]).toBe("done");
       exit.resolve(137);
       await exit.promise;
       expect(fake.copiers.has(botIdFor(OWNER))).toBe(false);
@@ -399,6 +436,45 @@ test("a timed-out copier holds teardown until its exit is confirmed", async () =
   } finally {
     exit.resolve(137);
     await copying;
+    spawn.mockRestore();
+  }
+});
+
+test("sandbox confirmation clears a prior leftover before copier cleanup fails", async () => {
+  let sandboxLeftover = true;
+  const copies = new StateCopiers();
+  const exit = Promise.withResolvers<number>();
+  const spawn = spyOn(Bun, "spawn").mockImplementation(() => ({
+    exited: exit.promise,
+    stdout: new ReadableStream({ start(controller) { controller.close(); } }),
+    kill: () => {},
+  }) as never);
+  const stages: string[] = [];
+  const end = {
+    status: async () => "absent" as const,
+    kill: async () => true,
+    remove: async () => true,
+    reap: async () => {},
+    cgroupEmpty: () => false,
+    confirmed: () => { sandboxLeftover = false; stages.push("confirmed"); },
+    save: async () => { stages.push("save"); await copies.run("bot", ["copier"], 1, 10); },
+    unmount: async () => { if (copies.has("bot")) throw new Error("copier leftover"); },
+  };
+  try {
+    expect(await endSandbox(end, "bot", true)).toBe(false);
+    expect(sandboxLeftover).toBe(true);
+    expect(stages).toEqual([]);
+    end.cgroupEmpty = () => true;
+    await expect(endSandbox(end, "bot", true)).rejects.toThrow("copier leftover");
+    expect(stages).toEqual(["confirmed", "save"]);
+    expect(sandboxLeftover).toBe(false);
+    expect(copies.has("bot")).toBe(true);
+    exit.resolve(137);
+    await exit.promise;
+    expect(copies.has("bot")).toBe(false);
+    expect(sandboxLeftover).toBe(false);
+  } finally {
+    exit.resolve(137);
     spawn.mockRestore();
   }
 });

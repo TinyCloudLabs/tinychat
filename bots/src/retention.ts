@@ -36,7 +36,9 @@ export function markUsed(layout: BotLayout, at = Date.now()): void {
 
 /** Uses snapshot mtime only when the marker is missing. An invalid marker refuses the sweep with an error. */
 export function lastUsed(layout: BotLayout): number | undefined {
-  if (lstatSync(layout.lastUsedFile, { throwIfNoEntry: false })) {
+  const marker = lstatSync(layout.lastUsedFile, { throwIfNoEntry: false });
+  if (marker) {
+    if (!marker.isFile()) throw new Error("invalid last-used marker");
     const at = Date.parse(readFileSync(layout.lastUsedFile, "utf8"));
     if (!Number.isFinite(at)) throw new Error("invalid last-used marker");
     return at;

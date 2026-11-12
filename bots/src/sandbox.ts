@@ -139,6 +139,8 @@ export interface SandboxEnd {
   reap(): Promise<void>;
   /** No process left in the sandbox's cgroup (or the cgroup is gone). */
   cgroupEmpty(): boolean;
+  /** Records confirmed sandbox exit before save or unmount can fail. */
+  confirmed?(): void;
   /** Saves the state to disk; logs its own failure. */
   save(): Promise<void>;
   unmount(): Promise<void>;
@@ -162,6 +164,7 @@ export async function endSandbox(end: SandboxEnd, botId: string, save: boolean):
     if (save) log("snapshot_skipped", botId, { cause: "teardown_unconfirmed" });
     return false;
   }
+  end.confirmed?.();
   if (save) await end.save();
   await end.unmount();
   return true;
@@ -446,6 +449,7 @@ export class RunscHost implements SandboxLauncher {
             return (error as NodeJS.ErrnoException).code === "ENOENT";
           }
         },
+        confirmed: () => this.#leftovers.delete(layout.botId),
         save: () =>
           this.#queue(layout.botId, async () => {
             const failure = await this.#copy("save", layout.stateMount, layout.stateSnapshot, layout.botId);
@@ -461,8 +465,7 @@ export class RunscHost implements SandboxLauncher {
       layout.botId,
       save,
     );
-    if (confirmed) this.#leftovers.delete(layout.botId);
-    else this.#leftovers.set(layout.botId, save);
+    if (!confirmed) this.#leftovers.set(layout.botId, save);
     return confirmed;
   }
 
