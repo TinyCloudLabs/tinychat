@@ -4,6 +4,7 @@
 // node. Home mounts only when the test asks, so the outbox can be read first.
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { FeedDatabase } from "@tinycloud/sdk-services/feed";
 import { FeedViewEntries } from "@/feed/FeedView";
@@ -52,7 +53,7 @@ const api = {
   mount() {
     const host = document.createElement("div");
     document.body.append(host);
-    createRoot(host).render(createElement(FeedViewEntries, { realEntries: [], source: createHomeFeedSource(tcw) }));
+    createRoot(host).render(createElement(MemoryRouter, null, createElement(FeedViewEntries, { realEntries: [], source: createHomeFeedSource(tcw) })));
   },
 };
 
