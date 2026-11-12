@@ -339,9 +339,10 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       const away = hiddenAt === undefined ? 0 : Date.now() - hiddenAt;
       hiddenAt = undefined;
       // A stream that outlived a short absence missed nothing, and one that
-      // broke reconnects and checks. After a long one, start a new stream: its
-      // ready runs the single freshness check.
-      connect(away > FRESH_MS);
+      // broke reconnects and checks. After a long one, or once the stream has
+      // failed for good, start a new stream: its ready runs the single
+      // freshness check.
+      connect(away > FRESH_MS || streamError !== undefined);
     }
   }
 
