@@ -58,6 +58,9 @@ jobs:
       - name: Build the frontend (tsc and vite)
         run: bun run build:frontend
 
+      - name: Entry chunk size budget
+        run: bun frontend/scripts/entry-size-check.ts
+
       - name: Frontend tests
         run: bun run --cwd frontend test
 
