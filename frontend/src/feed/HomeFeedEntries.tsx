@@ -4,6 +4,7 @@ import { CheckIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { ANSWER_UNDO_HINT, AnswerOptions, answerSummary, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
+import { AgentConversation, AgentList, agentKey, agentThreads } from "./AgentConversation";
 import { cardAuthor, ReplyBox, replyRoute, usePostReply } from "./CardReply";
 import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
@@ -214,6 +215,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
   const [clock, setClock] = useState(Date.now());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [sent, setSent] = useState<SentAnswer | null>(null);
+  // The agents list ("list") or one agent's conversation (its key), shown instead of the cards.
+  const [agentView, setAgentView] = useState<string | null>(null);
   const chosenSelector = useRef(false);
   const hasDefault = useRef(false);
   const refreshRef = useRef<() => void>(() => {});
@@ -231,7 +234,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
     committed.current.clear();
     activeRef.current = null;
     setSnapshot(null); setActive(null); setError(null);
-    setExpandedGroups(new Set()); setSent(null);
+    setExpandedGroups(new Set()); setSent(null); setAgentView(null);
     const refresh = async () => {
       if (running) { dirty = true; return; }
       running = true;
@@ -354,6 +357,9 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
   const onAnswered = (response: FeedResponse, summary: string) => setSent({ key: focusedKey!, response, summary, open: false });
   const reference = focused && <p className="text-xs text-muted-foreground" aria-label="Card reference"><code className="select-all break-all" title={homeFeedKey(focused)}>{humanFeedReference(focused, entries)}</code></p>;
   const focusedAuthor = focused ? cardAuthor(focused, focusedContext?.record).name : "";
+  // Everything between the person and each agent, from every card the page has loaded.
+  const agents = agentView ? agentThreads([...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()], contextFor, source, (entry) => needsAttention(entry, clock, contextFor(entry)?.projection)) : [];
+  const openAgent = agentView && agentView !== "list" ? agents.find((agent) => agent.key === agentView) : undefined;
   const focusedIndex = filtered.findIndex((entry) => keyOf(entry) === focusedKey);
   const nextEntry = filtered.length ? filtered[(focusedIndex + 1) % filtered.length] : undefined;
   useEffect(() => { if (focused && activeKey !== focusedKey) setActive(focused); }, [focusedKey, activeKey]);
@@ -429,7 +435,8 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
           <option value="information">Information</option><option value="both">Both</option><option value="needs-action">Needs action</option>
         </select>
         <button type="button" disabled={savingDefault || snapshot?.settings.defaultSelector === selector} onClick={() => void saveDefault()} className="min-h-10 rounded-lg border border-border px-3 text-xs disabled:opacity-50">{savingDefault ? "Saving default…" : "Use as default"}</button>
-        <button type="button" aria-pressed={history} onClick={() => { setHistory(!history); setActive(null); }} className="ml-auto min-h-10 rounded-lg border border-border px-3 text-sm">History</button>
+        <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="ml-auto min-h-10 rounded-lg border border-border px-3 text-sm">Agents</button>
+        <button type="button" aria-pressed={history} onClick={() => { setHistory(!history); setActive(null); }} className="min-h-10 rounded-lg border border-border px-3 text-sm">History</button>
       </div>
       <div className="mb-5 flex flex-wrap gap-2">
         <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { setAgent(event.target.value); setActive(null); }}><option value="">All agents</option>{[...new Map(entries.map((entry) => [entry.source.sourceId, entry.source.label])).entries()].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>
@@ -438,6 +445,10 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
       </div></>}
       {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
       {!snapshot && !error && <p className="text-sm text-muted-foreground">Loading your feed…</p>}
+      {agentView && snapshot && (openAgent
+        ? <AgentConversation key={openAgent.key} agent={openAgent} source={source} onSaved={onSaved} onBack={() => setAgentView("list")} onOpenCard={(entry) => { setAgentView(null); setActive(entry); }} />
+        : <AgentList agents={agents} now={clock} onOpen={setAgentView} />)}
+      {!agentView && <>
       {snapshot && !filtered.length && !focused && (bare
         ? <section aria-label={HOME_EMPTY_TITLE} className="rounded-xl border border-border bg-card p-6 text-sm">
           <h2 className="font-display text-lg font-semibold">{HOME_EMPTY_TITLE}</h2>
@@ -451,7 +462,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
       {focused && <section aria-label="Focused card" className="mb-5 min-w-0">
         {fold && <AnswerFold key={fold.response.responseId} entry={focused} sent={fold} agent={focusedAuthor} typed={focusedContext} source={source} onSaved={onSaved} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
         <div hidden={!!fold && !fold.open}>
-          <FeedCardView card={cardView(focused, focusedContext)} sample={false} readBody={source.readBody} status={focusedUnsupported ? undefined : cardStatus(focused, focusedContext?.projection, clock, focusedAuthor)} />
+          <FeedCardView card={cardView(focused, focusedContext)} sample={false} readBody={source.readBody} status={focusedUnsupported ? undefined : cardStatus(focused, focusedContext?.projection, clock, focusedAuthor)} onAuthor={() => setAgentView(agentKey(focused, focusedContext?.record))} />
           <ReportLink entry={focused} />
           {focusedContext ? <SitrepCard key={focusedKey!} entry={focused} record={focusedContext.record} records={focusedContext.records} entries={focusedContext.entries} owner={focusedContext.owner} projection={focusedContext.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={setActive} reference={reference} /> : focusedUnsupported ? <><p role="status" className="mt-4 rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p>{reference}</> : <><AnswerForm key={focusedKey!} entry={focused} source={source} onSaved={onSaved} onAnswered={onAnswered} /><CardHistory entry={focused} />
             <details className="mt-4 rounded-xl border border-border p-3 text-xs" aria-label="Card details"><summary className="min-h-8 cursor-pointer text-sm font-medium">Details</summary><div className="mt-2 space-y-2 break-words"><p>Posted by {focused.source.label} · {focused.source.agentDid}</p><p>{focused.state.card.kind}</p>{reference}</div></details></>}
@@ -474,6 +485,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
           </section>;
         })}
       </nav>}
+      </>}
     </div>
   </main>;
 }

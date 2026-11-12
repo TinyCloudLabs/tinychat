@@ -756,3 +756,45 @@ test("a typed card from a crew member shows that name as its author and the post
   expect(view.host.querySelector('textarea[name="answer"]')?.getAttribute("aria-label")).toBe("Reply to CrewMember");
   expect(view.host.querySelector('[aria-label="Cards in this view"]')?.textContent).toContain("CrewMember · Needs you");
 });
+
+test("tapping the agent's name opens everything between you and it in time order, with one reply box", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const message = (side: "sam" | "officer", minute: number, text: string) => ({ side, kind: "ask", id: "ask-synthetic", messageId: `20261029T11${minute}00000Z-${String(minute).padStart(32, "0")}`, at: `2026-10-29T11:${minute}:00.000Z`, text, ...(side === "officer" ? { from: "SyntheticOfficer" } : {}) });
+  fixture.owner.answers.push({ sourceKey: "owner-response/a", card: { kind: "ask", id: "ask-synthetic" }, value: { askId: "ask-synthetic", action: "answer", choice: "careful", text: "", at: "2026-10-29T11:10:00.000Z" } });
+  fixture.owner.threads.push(message("officer", 30, "Starting the careful run now."), message("sam", 20, "Tell me when it starts."));
+  const view = await mount(fixture.source);
+  const author = [...view.host.querySelectorAll<HTMLButtonElement>('[aria-label="Focused card"] article button')].find((node) => node.textContent === "SyntheticOfficer");
+  await act(async () => author!.click());
+  const conversation = view.host.querySelector('[aria-label="Conversation with SyntheticOfficer"]');
+  expect(view.host.querySelector('[aria-label="Focused card"]')).toBeNull();
+  const lines = [...conversation!.querySelectorAll('[aria-label="Everything in time order"] > li')].map((line) => line.textContent);
+  expect(lines).toHaveLength(4);
+  ["Choose the synthetic approach", "You chose Careful option", "Tell me when it starts.", "Starting the careful run now."].forEach((text, index) => expect(lines[index]).toContain(text));
+  expect(conversation!.querySelectorAll("textarea")).toHaveLength(1);
+  expect(conversation!.textContent).toContain("About: Choose the synthetic approach");
+  await enter(view.host, "Reply to SyntheticOfficer", "Thanks, carry on.");
+  await act(async () => button(view.host, "Send").click());
+  await wait();
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { kind: "ask", id: "ask-synthetic", text: "Thanks, carry on." } });
+  expect(fixture.owner.answers).toHaveLength(1);
+  await act(async () => button(view.host, "Agents").click());
+  const list = view.host.querySelector('[aria-label="Your agents"]');
+  expect(list?.textContent).toContain("SyntheticOfficer");
+  expect(list?.textContent).toContain("You: Thanks, carry on.");
+  await act(async () => [...list!.querySelectorAll("button")].find((node) => node.textContent?.includes("SyntheticOfficer"))!.click());
+  await act(async () => [...view.host.querySelectorAll<HTMLButtonElement>('[aria-label="Everything in time order"] button')].find((node) => node.textContent?.includes("Choose the synthetic approach"))!.click());
+  expect(view.host.querySelector('[aria-label="Focused card"] h2')?.textContent).toBe("Choose the synthetic approach");
+});
+
+test("an agent whose cards take no replies gets no box, and one plain line says so", async () => {
+  const fixture = typedFixture({ ...syntheticRecord("ask"), status: "closed" });
+  delete fixture.source.sendMessage;
+  const view = await mount(fixture.source);
+  await viewSelector(view.host, "both");
+  expect(view.host.querySelector('textarea[name="reply"]')).toBeNull();
+  await act(async () => button(view.host, "Agents").click());
+  await act(async () => [...view.host.querySelectorAll<HTMLButtonElement>('[aria-label="Your agents"] button')][0]!.click());
+  expect(view.host.querySelector('[aria-label="Conversation with SyntheticOfficer"] textarea')).toBeNull();
+  expect(view.host.querySelector('[aria-label="Conversation with SyntheticOfficer"] [role="status"]')?.textContent).toBe("You can’t reply to SyntheticOfficer here: none of its cards takes replies.");
+});

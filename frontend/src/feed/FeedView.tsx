@@ -52,12 +52,14 @@ function CardImage({ image, alt }: { image?: string; alt: string }) {
   return <img className="mt-4 max-h-80 w-full rounded-xl border border-border bg-muted object-cover" src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-export function FeedCardView({ card, sample = true, readBody, status }: {
+export function FeedCardView({ card, sample = true, readBody, status, onAuthor }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
   /** The card's one status word ("Needs you", "Done"). */
   status?: string;
+  /** Tapping the author's name opens everything between the person and that agent. */
+  onAuthor?: () => void;
 }): JSX.Element {
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
   return (
@@ -65,7 +67,7 @@ export function FeedCardView({ card, sample = true, readBody, status }: {
       <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
         {avatar && <img src={avatar} alt="" className="size-9 shrink-0 rounded-full bg-muted object-cover" />}
         <div className="min-w-[6rem] flex-1">
-          <p className="break-words font-semibold">{card.author.name}{card.author.via && <span className="font-normal text-muted-foreground"> · via {card.author.via}</span>}</p>
+          <p className="break-words font-semibold">{onAuthor ? <button type="button" onClick={onAuthor} className="min-h-6 text-left font-semibold underline decoration-border underline-offset-4">{card.author.name}</button> : card.author.name}{card.author.via && <span className="font-normal text-muted-foreground"> · via {card.author.via}</span>}</p>
           <time dateTime={card.at} className="text-xs text-muted-foreground">{new Date(card.at).toLocaleDateString()}</time>
         </div>
         {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
