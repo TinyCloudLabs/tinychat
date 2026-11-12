@@ -57,7 +57,7 @@ import {
 } from "@/lib/voiceNotes/recorderSaves";
 import { transcribeSavedNote, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
-import { adoptNote, deleteNote, loadNote, parseMomentLines, saveNote, type RecordingMoment } from "@/lib/voiceNotes/recordingNotes";
+import { adoptNote, deleteNote, loadNote, parseMomentLines, recordingNoteOwner, saveNote, type RecordingMoment } from "@/lib/voiceNotes/recordingNotes";
 import { readRecordingNoteFromSpace, recordingNoteSyncError, reportRecordingNoteSyncError,
   subscribeRecordingNoteSync, syncRecordingNote, type NoteSyncErrorCode } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
@@ -301,21 +301,26 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (noteAttached && noteId === id && version === noteLoadVersion) beginNoteLoad(id);
     });
   }
+  let noteOwner: string | null | undefined;
+  let liveNoteOwner: string | null | undefined;
   function beginNoteLoad(id: string): void {
     const version = ++noteLoadVersion;
     void (async () => {
-      let stored = await noteLoader(id);
+      const liveRecording = state.phase !== "idle" && state.recordingId === id;
+      const owner = await recordingNoteOwner(id, liveRecording && liveNoteOwner !== undefined ? liveNoteOwner : noteAccount?.did ?? null);
+      let stored = await noteLoader(id, owner, liveRecording);
       if (!stored && noteClient && state.phase === "idle" && state.outcome === "saved") {
         checkNoteAccount();
         const remote = await readRecordingNoteFromSpace(noteClient, id);
         checkNoteAccount();
         if (version !== noteLoadVersion || noteId !== id) return;
-        if (remote) stored = await adoptNote(remote);
+        if (remote) stored = await adoptNote(remote, owner);
       }
       if (version !== noteLoadVersion || noteId !== id) return;
       clearNoteRetry();
       noteRetryAttempts = 0;
       noteLoadError = null;
+      noteOwner = owner;
       note = stored ? { md: stored.md, moments: stored.moments } : null;
       noteStatus = "ready";
       notify();
@@ -362,6 +367,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return true;
   };
   const acceptNativeOptions = (status: CaptureStatus | MicStateEvent) => {
+    if (status.id && "owner" in status) liveNoteOwner = status.owner ?? null;
     if (closed || !status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
     nativeOptions = status.options;
     if (refreshChoice()) notify();
@@ -745,7 +751,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       note = { md, moments: parseMomentLines(md) };
       notify();
       try {
-        const saved = await saveNote(id, md);
+        const saved = await saveNote(id, md, { owner: noteOwner });
         if (noteId === id && version === noteLoadVersion) {
           note = { md: saved.md, moments: saved.moments };
           notify();
@@ -1218,7 +1224,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           return;
         }
       } else {
-        try { await deleteNote(id); }
+        try { await deleteNote(id, noteOwner); }
         catch (caught) {
           send({ type: "DISCARD_FAILED", id: shown, error: `Could not delete the recording note: ${messageOf(caught)}`, committed: true });
           return;

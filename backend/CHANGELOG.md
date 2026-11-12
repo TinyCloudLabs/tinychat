@@ -1,5 +1,39 @@
 # @tinychat/backend
 
+## 0.8.0-beta.8
+
+### Patch Changes
+
+- f4853a8: Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
+
+  Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
+
+  Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
+
+  Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
+  Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
+  Details: TC-2192
+
+## 0.8.0-beta.7
+
+### Patch Changes
+
+- 36f006a: Backend deploys pass the tiny bots settings (BOTS_ENABLED, BOTS_TEST_ACCOUNTS, BOTS_SERVICE_URL, BOTS_SERVICE_SECRET, BOTS_POST_TIMEOUT_MS) to the backend CVM; BOTS_ENABLED defaults to false. A new workflow, deploy-bots-phala.yml, deploys the bots service to its own CVM. Details: TC-2808
+
+## 0.8.0-beta.6
+
+### Minor Changes
+
+- 033a30f: Tiny bots, slice 1 (TC-2808), off by default. For accounts on `BOTS_TEST_ACCOUNTS` with `BOTS_ENABLED=true`, Home shows a "What do you want done?" box that sends to Main, the owner's main bot, and opens Main's chat with the reply streaming in. The backend adds `/api/bots/status` and `/api/bots/main/messages`, which forward to the new bots service (`bots/`). Everyone else sees no change.
+
+## 0.8.0-beta.5
+
+### Patch Changes
+
+- ae08fc0: Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196
+
 ## 0.8.0-beta.4
 
 ### Patch Changes

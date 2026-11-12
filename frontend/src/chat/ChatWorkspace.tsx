@@ -49,7 +49,7 @@ export function ChatWorkspace(props: {
   billingStatus: BillingStatus | null;
 }) {
   const {
-    agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
+    agentEnabledRef, activeThreadIdRef, privateAccessRef, waitForInitialProbe, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
   // Off the Home site, always; on it, once Connectors is permitted (before that its session has no meeting storage,
@@ -82,6 +82,7 @@ export function ChatWorkspace(props: {
       activeThreadIdRef,
       agentEnabledRef,
       privateAccessRef,
+      waitForInitialProbe,
       onAgentDelegationError: onDelegationError,
       meetingRetriever,
       meetingMessageRegistry,
@@ -144,6 +145,7 @@ export function ChatWorkspace(props: {
       props.onMemoryUpdated,
       props.contextTokensFor,
       onDelegationError,
+      waitForInitialProbe,
       meetingRetriever,
       meetingMessageRegistry,
       // activeThreadIdRef and agentEnabledRef are stable refs — omitted intentionally.

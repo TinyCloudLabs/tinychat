@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { HomeAskBox } from "@/bots/HomeAskBox";
 import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
@@ -160,13 +161,13 @@ function SampleFeedEntries({ realEntries }: { realEntries: unknown }): JSX.Eleme
   </main>;
 }
 
-export function FeedViewEntries({ realEntries, source }: { realEntries: unknown; source?: HomeFeedSource }): JSX.Element {
-  return source ? <HomeFeedEntries source={source} /> : <SampleFeedEntries realEntries={realEntries} />;
+export function FeedViewEntries({ realEntries, source, ask }: { realEntries: unknown; source?: HomeFeedSource; ask?: ReactNode }): JSX.Element {
+  return source ? <HomeFeedEntries source={source} ask={ask} /> : <SampleFeedEntries realEntries={realEntries} />;
 }
 
 export function FeedView({ tcw }: { tcw: TinyCloudWeb | null }): JSX.Element {
   const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
   return source
-    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} />
+    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} ask={<HomeAskBox />} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
 }

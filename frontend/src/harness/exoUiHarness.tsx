@@ -32,7 +32,7 @@ import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { speakerNameScreens } from "./screens/speakerNames";
 import { wordFixesScreens } from "./screens/wordFixes";
-import { localScreens } from "./screens/local";
+import { localScreens, accountDataScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
 import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
 import { micRecoveryScreens } from "./screens/micRecovery";
@@ -52,6 +52,7 @@ import { savedNoteScreens } from "./screens/savedNote";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
 import { homeScreens } from "./screens/home";
+import { botsScreens } from "./screens/bots";
 import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
 
@@ -68,6 +69,7 @@ const SCREENS: HarnessScreen[] = [
   ...legacyScreens,
   ...shellScreens,
   ...homeScreens,
+  ...botsScreens,
   ...sheetsScreens,
   ...recorderScreens,
   recorderFinalHaloScreen,
@@ -89,6 +91,7 @@ const SCREENS: HarnessScreen[] = [
   ...combineScreens,
   ...savedNoteScreens,
   ...localScreens,
+  ...accountDataScreens,
   ...meetingSourcesScreens,
   ...meetingSourcesGmeetScreens,
   ...micRecoveryScreens,

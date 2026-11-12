@@ -62,7 +62,7 @@ async function run(bodyState: "present" | "unavailable") {
   const config: AgentChatConfig = {
     agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test",
     redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true,
-    fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true,
+    redpillFetch: fetchImpl, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true,
     streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30_000, drainGraceMs: 100 },
   };
   const result = await orchestrateToolCalling({ config, model: "test-model", messages: [{ role: "user", content: question }], entityId: "entity", roomId: "room",

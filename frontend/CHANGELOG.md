@@ -16,6 +16,62 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.22
+
+### Patch Changes
+
+- 4143792: Remove the transcript-share action from note detail. Transcript sharing returns through the TC-2525 SDK adoption.
+
+  Details: TC-2845, TC-2192
+
+## 0.14.0-beta.21
+
+### Minor Changes
+
+- e5f9e06: Share links you open or create are now kept in your TinyCloud space (`xyz.tinycloud.tinychat/threads/shared-with-me/`, inside the existing `threads/` grant), so they follow your account to other devices and to the new Home address (TC-2830). The browser keeps only a per-account copy, which is cleared at sign-out. The first account to sign in on a browser takes over that browser's old list, once. A link opened while signed out is saved only if you then sign in on that same page.
+
+## 0.14.0-beta.20
+
+### Patch Changes
+
+- f4853a8: Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
+
+  Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
+
+  Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
+
+  Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
+  Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
+  Details: TC-2192
+
+## 0.14.0-beta.19
+
+### Patch Changes
+
+- 8a1d52e: Wait for restored private-agent access to settle before routing the first chat send.
+
+## 0.14.0-beta.18
+
+### Minor Changes
+
+- 033a30f: Tiny bots, slice 1 (TC-2808), off by default. For accounts on `BOTS_TEST_ACCOUNTS` with `BOTS_ENABLED=true`, Home shows a "What do you want done?" box that sends to Main, the owner's main bot, and opens Main's chat with the reply streaming in. The backend adds `/api/bots/status` and `/api/bots/main/messages`, which forward to the new bots service (`bots/`). Everyone else sees no change.
+
+## 0.14.0-beta.17
+
+### Patch Changes
+
+- 609603c: On web and desktop, voice notes that aren't saved yet stay on the device for your account when you sign out, or you can delete them. Notes recorded while signed out wait until you save each one to an account.
+
+  Details: TC-2785
+
+## 0.14.0-beta.16
+
+### Patch Changes
+
+- ae08fc0: Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196
+
 ## 0.14.0-beta.15
 
 ### Patch Changes

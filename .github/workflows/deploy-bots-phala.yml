@@ -1,0 +1,444 @@
+name: Deploy bots to Phala Cloud
+
+# Deploys the tiny bots service (bots/, TC-2808) to its own Phala CVM. It runs only from main and deploys `ref`, a
+# full commit SHA on main:
+#   gh workflow run deploy-bots-phala.yml --ref main -f ref=<full main SHA>
+# Redeploy or roll back by running it again with an earlier SHA; the bot-data and bot-budget volumes are kept.
+# It builds and pushes the bots image and the ingress image (infra/phala-ingress), writes both pushed digests into a
+# copy of bots/docker-compose.phala.yml, deploys that copy with a complete encrypted env file, syncs the CVM's
+# allowed_envs, checks the CVM OS image before and after, and probes https://<BOTS_INGRESS_DOMAIN>/healthz.
+# Configuration lives in the production-bots environment (see "Deploying" in bots/README.md). The backend reaches
+# this service through the BOTS_* settings that deploy-backend-phala.yml passes to the backend CVM.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full 40-character SHA of the commit on main to build and deploy
+        type: string
+        required: true
+
+concurrency:
+  group: tinychat-bots-phala-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Fixed, not configurable: bots/docker-compose.phala.yml names these repositories next to the digest placeholders.
+  BOTS_IMAGE: ghcr.io/tinycloudlabs/tinychat-bots
+  INGRESS_IMAGE: ghcr.io/tinycloudlabs/tinychat-backend
+  # The same production dstack OS image as the backend CVM (deploy-backend-phala.yml).
+  PHALA_OS_IMAGE: dstack-0.5.12
+  PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: production-bots
+      url: https://${{ vars.BOTS_INGRESS_DOMAIN }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DEPLOY_SHA: ${{ inputs.ref }}
+      # The bots CVM only. This never falls back to the backend's PHALA_CVM_ID.
+      BOTS_PHALA_CVM_ID: ${{ vars.BOTS_PHALA_CVM_ID }}
+      BOTS_INGRESS_DOMAIN: ${{ vars.BOTS_INGRESS_DOMAIN }}
+    steps:
+      - name: Require this workflow from main and a full commit SHA
+        env:
+          EXPECTED: ${{ github.repository }}/.github/workflows/deploy-bots-phala.yml@refs/heads/main
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
+            echo "::error::Deploy bots runs only from main (got $GITHUB_REF, $WORKFLOW_REF). Use: gh workflow run deploy-bots-phala.yml --ref main -f ref=<full main SHA>"
+            exit 1
+          fi
+          if ! [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ref must be a full commit SHA, got '$DEPLOY_SHA'"
+            exit 1
+          fi
+          {
+            echo "ENV_FILE=$RUNNER_TEMP/phala-bots.env"
+            echo "RENDERED_COMPOSE=$RUNNER_TEMP/bots-docker-compose.phala.yml"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the deploy commit on main
+        run: |
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+          if ! git merge-base --is-ancestor "$DEPLOY_SHA" refs/remotes/origin/main; then
+            echo "::error::$DEPLOY_SHA is not on main; deploy a commit that main contains"
+            exit 1
+          fi
+
+      # Keep guard policy at the workflow revision even for old application refs.
+      - name: Check out trusted OS guard
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .os-guard
+          sparse-checkout: |
+            /.github/scripts/phala-os-guard.sh
+            /.github/scripts/test-phala-os-guard.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Summarize deployment target
+        run: |
+          {
+            echo "## Phala bots deployment"
+            echo
+            echo "- Commit: \`${DEPLOY_SHA}\`"
+            echo "- CVM ID: \`${BOTS_PHALA_CVM_ID}\`"
+            echo "- Ingress domain: \`${BOTS_INGRESS_DOMAIN}\`"
+            echo "- Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Deploy tooling (the phala CLI and @phala/cloud for the allowed_envs sync) installs from the committed lockfile in
+      # .github/deploy-tools, exactly as deploy-backend-phala.yml does: `npm ci` verifies every package's integrity hash,
+      # --ignore-scripts runs no package code, and this happens before any step references a secret.
+      - name: Install deploy tools
+        run: |
+          tools="$RUNNER_TEMP/deploy-tools"
+          mkdir -p "$tools"
+          cp .github/deploy-tools/package.json .github/deploy-tools/package-lock.json .github/scripts/phala-sync-allowed-envs.mjs "$tools/"
+          (cd "$tools" && npm ci --ignore-scripts --no-audit --no-fund)
+          echo "$tools/node_modules/.bin" >> "$GITHUB_PATH"
+          "$tools/node_modules/.bin/phala" --version || true
+
+      - name: Check deployment configuration
+        env:
+          BOTS_SERVICE_SECRET: ${{ secrets.BOTS_SERVICE_SECRET }}
+          BOTS_REDPILL_API_KEY: ${{ secrets.BOTS_REDPILL_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+        run: |
+          missing=()
+          for item in \
+            BOTS_PHALA_CVM_ID \
+            BOTS_INGRESS_DOMAIN \
+            BOTS_SERVICE_SECRET \
+            BOTS_REDPILL_API_KEY \
+            CLOUDFLARE_API_TOKEN \
+            CERTBOT_EMAIL; do
+            if [ -z "${!item}" ]; then
+              missing+=("$item")
+              echo "::error title=Missing deployment config::$item is not configured"
+            fi
+          done
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            {
+              echo "### Missing deployment configuration"
+              echo
+              printf -- "- \`%s\`\n" "${missing[@]}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "All required deployment config is present."
+
+      - name: Validate Phala access
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          if [ -z "$PHALA_CLOUD_API_KEY" ]; then
+            echo "::error title=Missing deployment config::PHALA_CLOUD_API_KEY is not configured"
+            exit 1
+          fi
+          if ! RAW="$(phala whoami --json)"; then
+            echo "::error title=Phala authentication failed::The configured API key could not access its workspace"
+            echo "$RAW" | jq '{success, error, details}'
+            exit 1
+          fi
+          echo "$RAW" | jq '{success, username, workspace, profile}'
+
+      # Bots always requires the exact pinned production OS; no transition override.
+      - name: Test the OS image guard
+        run: bash .os-guard/.github/scripts/test-phala-os-guard.sh
+
+      - name: Require a permitted OS image on the CVM
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          if ! RAW="$(phala cvms get "$BOTS_PHALA_CVM_ID" --json)"; then
+            echo "::error title=Could not resolve Phala CVM::The configured bots CVM could not be read"
+            echo "$RAW" | jq '{success, error, details}'
+            exit 1
+          fi
+          echo "$RAW" | jq '{id, name, status, app_id, instance_type, gateway, updated_at, created_at}'
+          bash .os-guard/.github/scripts/phala-os-guard.sh <<<"$RAW"
+
+      # The ingress needs the CVM's own gateway (GATEWAY_DOMAIN in the compose), read from the CVM like the backend does.
+      - name: Resolve Phala gateway CNAME
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          RAW="$(phala cvms get "$BOTS_PHALA_CVM_ID" --json)"
+          PHALA_GATEWAY_CNAME="$(jq -r '.gateway.cname // empty' <<<"$RAW")"
+          PHALA_APP_ID="$(jq -r '.app_id // empty' <<<"$RAW")"
+          if [ -z "$PHALA_GATEWAY_CNAME" ]; then
+            echo "::error title=Missing Phala gateway CNAME::Could not resolve .gateway.cname for CVM ${BOTS_PHALA_CVM_ID}"
+            jq '{id, name, status, app_id, gateway}' <<<"$RAW"
+            exit 1
+          fi
+          echo "PHALA_GATEWAY_CNAME=$PHALA_GATEWAY_CNAME" >> "$GITHUB_ENV"
+          {
+            echo
+            echo "### Phala gateway"
+            echo
+            echo "- Gateway CNAME: \`$PHALA_GATEWAY_CNAME\`"
+            echo "- App ID: \`$PHALA_APP_ID\`"
+            echo "- DNS: \`${BOTS_INGRESS_DOMAIN}\` CNAME \`$PHALA_GATEWAY_CNAME\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build and push bots image
+        id: bots-build
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: bots
+          file: bots/Dockerfile
+          platforms: linux/amd64
+          push: true
+          cache-from: type=gha,scope=tinychat-bots
+          cache-to: type=gha,mode=max,scope=tinychat-bots
+          tags: |
+            ${{ env.BOTS_IMAGE }}:${{ inputs.ref }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.ref }}
+            org.opencontainers.image.description=TinyChat bots
+
+      # Its own tag, so the backend's ingress-<sha> tag for the same commit is never overwritten.
+      - name: Build and push ingress image
+        id: ingress-build
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: infra/phala-ingress
+          file: infra/phala-ingress/Dockerfile
+          platforms: linux/amd64
+          push: true
+          cache-from: type=gha,scope=tinychat-ingress
+          cache-to: type=gha,mode=max,scope=tinychat-ingress
+          tags: |
+            ${{ env.INGRESS_IMAGE }}:ingress-bots-${{ inputs.ref }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.ref }}
+            org.opencontainers.image.description=TinyChat Phala ingress
+
+      # The digests go into the compose file itself, never an env var or a mutable tag, so the compose hash in the
+      # CVM's attestation covers exactly what runs.
+      - name: Render the digest-pinned compose
+        env:
+          BOTS_DIGEST: ${{ steps.bots-build.outputs.digest }}
+          INGRESS_DIGEST: ${{ steps.ingress-build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for item in BOTS_DIGEST INGRESS_DIGEST; do
+            if ! [[ "${!item}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error title=Invalid image digest::$item is not sha256:<64 hex>, got '${!item}'"
+              exit 1
+            fi
+          done
+          sed -e "s|sha256:BOTS_IMAGE_DIGEST|${BOTS_DIGEST}|g" -e "s|sha256:INGRESS_IMAGE_DIGEST|${INGRESS_DIGEST}|g" \
+            bots/docker-compose.phala.yml > "$RENDERED_COMPOSE"
+          if grep -nE 'sha256:(BOTS|INGRESS)_IMAGE_DIGEST' "$RENDERED_COMPOSE"; then
+            echo "::error title=Unrendered compose::A digest placeholder is left in the rendered compose"
+            exit 1
+          fi
+          # Every service runs one of the two pushed images, by digest.
+          count=0
+          while IFS= read -r image; do
+            case "$image" in
+              "${BOTS_IMAGE}@${BOTS_DIGEST}" | "${INGRESS_IMAGE}@${INGRESS_DIGEST}") count=$((count + 1)) ;;
+              *)
+                echo "::error title=Unpinned compose image::The rendered compose runs '$image', not a pushed digest"
+                exit 1
+                ;;
+            esac
+          done < <(yq '.services[].image' "$RENDERED_COMPOSE")
+          [ "$count" -gt 0 ] || { echo "::error title=Empty compose::The rendered compose has no services"; exit 1; }
+          compose_sha256="$(sha256sum "$RENDERED_COMPOSE" | cut -d' ' -f1)"
+          {
+            echo
+            echo "### Images"
+            echo
+            echo "- Bots: \`${BOTS_IMAGE}:${DEPLOY_SHA}\`, digest \`${BOTS_DIGEST}\`"
+            echo "- Ingress: \`${INGRESS_IMAGE}:ingress-bots-${DEPLOY_SHA}\`, digest \`${INGRESS_DIGEST}\`"
+            echo "- Rendered compose sha256: \`${compose_sha256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The complete env set of the bots CVM: each value goes only to the service that needs it (see the compose).
+      # The limit overrides are optional; an empty value keeps the compose default.
+      - name: Deploy to Phala Cloud
+        id: deploy
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          BOTS_SERVICE_SECRET: ${{ secrets.BOTS_SERVICE_SECRET }}
+          # A dedicated RedPill key with its own provider-side budget, written as the gateway's REDPILL_API_KEY. Its own
+          # secret name, so it never resolves to the main chat REDPILL_API_KEY.
+          BOTS_REDPILL_API_KEY: ${{ secrets.BOTS_REDPILL_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+          # Same list as the backend's BOTS_TEST_ACCOUNTS. Empty admits nobody.
+          BOTS_TEST_ACCOUNTS: ${{ vars.BOTS_TEST_ACCOUNTS }}
+          BOTS_MODEL: ${{ vars.BOTS_MODEL }}
+          BOTS_IDLE_MS: ${{ vars.BOTS_IDLE_MS }}
+          BOTS_SANDBOX_MEMORY_MB: ${{ vars.BOTS_SANDBOX_MEMORY_MB }}
+          BOTS_SANDBOX_CPUS: ${{ vars.BOTS_SANDBOX_CPUS }}
+          BOTS_SANDBOX_PIDS: ${{ vars.BOTS_SANDBOX_PIDS }}
+          BOTS_SANDBOX_OVERLAY_MB: ${{ vars.BOTS_SANDBOX_OVERLAY_MB }}
+          BOTS_SANDBOX_TMP_MB: ${{ vars.BOTS_SANDBOX_TMP_MB }}
+          BOTS_STATE_MB: ${{ vars.BOTS_STATE_MB }}
+          BOTS_TOTAL_MEMORY_MB: ${{ vars.BOTS_TOTAL_MEMORY_MB }}
+          BOTS_TOTAL_PIDS: ${{ vars.BOTS_TOTAL_PIDS }}
+          BOTS_MAX_RUNNING: ${{ vars.BOTS_MAX_RUNNING }}
+          BOTS_STATE_COPY_TIMEOUT_MS: ${{ vars.BOTS_STATE_COPY_TIMEOUT_MS }}
+          BOTS_TURN_TIMEOUT_MS: ${{ vars.BOTS_TURN_TIMEOUT_MS }}
+          BOTS_MAX_TURN_BYTES: ${{ vars.BOTS_MAX_TURN_BYTES }}
+          BOTS_MODELS: ${{ vars.BOTS_MODELS }}
+          BOTS_MAX_TOKENS: ${{ vars.BOTS_MAX_TOKENS }}
+          BOTS_BOT_DAILY_TOKENS: ${{ vars.BOTS_BOT_DAILY_TOKENS }}
+          BOTS_GLOBAL_DAILY_TOKENS: ${{ vars.BOTS_GLOBAL_DAILY_TOKENS }}
+          BOTS_BODY_TIMEOUT_MS: ${{ vars.BOTS_BODY_TIMEOUT_MS }}
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          # The gateway's name for the dedicated key; read below through ${!item}.
+          # shellcheck disable=SC2034
+          REDPILL_API_KEY="$BOTS_REDPILL_API_KEY"
+          required=(BOTS_SERVICE_SECRET REDPILL_API_KEY CLOUDFLARE_API_TOKEN CERTBOT_EMAIL BOTS_INGRESS_DOMAIN PHALA_GATEWAY_CNAME)
+          optional=(BOTS_TEST_ACCOUNTS BOTS_MODEL BOTS_IDLE_MS BOTS_SANDBOX_MEMORY_MB BOTS_SANDBOX_CPUS BOTS_SANDBOX_PIDS
+            BOTS_SANDBOX_OVERLAY_MB BOTS_SANDBOX_TMP_MB BOTS_STATE_MB BOTS_TOTAL_MEMORY_MB BOTS_TOTAL_PIDS BOTS_MAX_RUNNING
+            BOTS_STATE_COPY_TIMEOUT_MS BOTS_TURN_TIMEOUT_MS BOTS_MAX_TURN_BYTES BOTS_MODELS BOTS_MAX_TOKENS BOTS_BOT_DAILY_TOKENS
+            BOTS_GLOBAL_DAILY_TOKENS BOTS_BODY_TIMEOUT_MS)
+          # These values are written one per line into the env file, so a line break in any of them would add settings.
+          for item in "${required[@]}" "${optional[@]}"; do
+            case "${!item-}" in
+              *$'\n'*|*$'\r'*) echo "::error title=Invalid deployment config::$item must be a single line"; exit 1 ;;
+            esac
+          done
+          for item in "${required[@]}"; do
+            if [ -z "${!item-}" ]; then
+              echo "::error title=Missing deployment config::$item is not configured"
+              exit 1
+            fi
+          done
+          for item in "${required[@]}" "${optional[@]}"; do
+            printf '%s=%s\n' "$item" "${!item-}"
+          done > "$ENV_FILE"
+
+          echo "::group::Deploy environment keys"
+          awk -F= '/^[A-Z0-9_]+=/ {print $1"=<set>"}' "$ENV_FILE"
+          echo "::endgroup::"
+          {
+            echo
+            echo "### Encrypted env names"
+            echo
+            awk -F= '/^[A-Z0-9_]+=/ {print "- `" $1 "`"}' "$ENV_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Submitting Phala deploy for CVM ${BOTS_PHALA_CVM_ID}..."
+          phala deploy \
+            --cvm-id "$BOTS_PHALA_CVM_ID" \
+            --compose "$RENDERED_COMPOSE" \
+            --env "$ENV_FILE" \
+            --wait \
+            --no-public-logs \
+            --no-public-sysinfo
+
+      # Fail closed if the deploy left the CVM on a different OS image (same rule as the check before the deploy).
+      - name: Verify the OS image after deploy
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          if ! RAW="$(phala cvms get "$BOTS_PHALA_CVM_ID" --json)"; then
+            echo "::error title=Could not resolve Phala CVM::The configured bots CVM could not be read after deploy"
+            echo "$RAW" | jq '{success, error, details}'
+            exit 1
+          fi
+          bash .os-guard/.github/scripts/phala-os-guard.sh <<<"$RAW"
+          echo "- OS image: \`$(jq -r '.os.name' <<<"$RAW")\` (\`$(jq -r '.os.os_image_hash' <<<"$RAW")\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      # `phala deploy` updates the encrypted env but not the CVM's allowed_envs whitelist, so sync it to the env file.
+      - name: Sync CVM allowed_envs
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          cd "$RUNNER_TEMP/deploy-tools"
+          PHALA_CVM_ID="$BOTS_PHALA_CVM_ID" node phala-sync-allowed-envs.mjs
+
+      - name: Wait for CVM to report running
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          echo "Waiting for CVM to be running (up to 15 minutes)..."
+          for i in {1..90}; do
+            RAW=$(phala cvms get "$BOTS_PHALA_CVM_ID" --json)
+            STATUS=$(echo "$RAW" | jq -r '.status // "unknown"')
+            UPDATED_AT=$(echo "$RAW" | jq -r '.updated_at // "unknown"')
+            echo "Attempt $i/90: status='$STATUS' updated_at='$UPDATED_AT'"
+            if [ "$STATUS" = "running" ]; then
+              echo "CVM is running."
+              exit 0
+            fi
+            if [ "$STATUS" = "failed" ] || [ "$STATUS" = "error" ]; then
+              echo "::error title=Phala CVM failed::CVM deployment failed with status '$STATUS'"
+              echo "$RAW" | jq '{id, name, status, app_id, instance_type, updated_at, created_at}'
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::error title=Phala CVM timeout::Timed out waiting for CVM to become running"
+          exit 1
+
+      # The first deploy to a new domain also waits for the ingress to obtain its certificate, hence the longer backoff.
+      - name: Verify /healthz
+        run: |
+          url="https://${BOTS_INGRESS_DOMAIN}/healthz"
+          echo "Probing $url (expect ok)"
+          for i in {1..30}; do
+            rc=0
+            body="$(curl -fsS --connect-timeout 5 --max-time 15 "$url")" || rc=$?
+            echo "Attempt $i/30: curl_exit=$rc body=${body:0:100}"
+            if [ "$rc" = 0 ] && [ "$body" = ok ]; then
+              echo "- \`${url}\`: \`ok\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            delay=$((i * 5))
+            [ "$delay" -le 30 ] || delay=30
+            sleep "$delay"
+          done
+          echo "::error title=Bots health probe failed::$url did not answer ok"
+          echo "::group::Verbose curl diagnostics"
+          curl -v --max-time 20 "$url" || true
+          echo "::endgroup::"
+          exit 1
+
+      - name: Remove the env file
+        if: always()
+        run: rm -f "$ENV_FILE" "$RENDERED_COMPOSE"

@@ -54,7 +54,7 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
   const compact = useSizeClass().size === "compact";
   const platform = useContext(PlatformContext);
   const navigate = useNavigate();
-  const { notes, error: notesError, refresh, remove } = useLocalNotes(did, offline || error !== null);
+  const { notes, accountDid, error: notesError, refresh, remove } = useLocalNotes(did, offline || error !== null);
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const status = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const enqueued = useRef(new Set<string>());
@@ -77,7 +77,8 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
     const handle = OnDeviceStt.addListener("transcribed", () => { void refresh(); });
     return () => { void handle.then((listener) => listener.remove()); };
   }, [refresh]);
-  const currentNotes = useMemo(() => notes.filter((note) => !note.ownerUnknown), [notes]);
+  const currentNotes = useMemo(() => notes.filter((note) => !note.ownerUnknown && !!accountDid && note.owner === accountDid), [notes, accountDid]);
+  const unownedNotes = useMemo(() => notes.filter((note) => !note.ownerUnknown && !note.owner), [notes]);
   const earlierNotes = useMemo(() => notes.filter((note) => note.ownerUnknown), [notes]);
   const items = useMemo(() => currentNotes.map((note) => onPhoneItem(note)), [currentNotes]);
   const activityItems = useMemo(() => notes.map((note) => onPhoneItem(note)), [notes]);
@@ -138,6 +139,7 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
                   <LibraryRow key={item.id} item={item} now={new Date()} grouped={false} activityView={activityViews.get(item.sourceId)} platform={platform} />)}</ul>
                   : <p className="soft-empty">Your recordings will appear here.</p>}
               </section>
+              {platform === "ios" || platform === "android" ? null : <EarlierVersionNotes signedOutNotes notes={unownedNotes} did={did} onChange={refresh} onDelete={remove} />}
               <EarlierVersionNotes notes={earlierNotes} did={did} onChange={refresh} onDelete={remove} />
             </div>
           </div>

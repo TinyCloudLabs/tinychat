@@ -272,21 +272,31 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 `changed-verified`, or `changed-unverified` (the CVM may run the new image but a
 later check failed; web is not deployed).
 
-The workflow also refuses to run unless the backend CVM is on the production OS
-image pinned in `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`), or on
-a dev image whose hash is listed in `.github/scripts/phala-dev-os-allowlist.txt`
-(today only `dstack-dev-0.5.12`) and that passes a fresh check in the same job:
-`download.dstack.org` serves `mr_<hash>.tar.gz`, and `sha256sum sha256sum.txt` of
-the extracted archive equals `<hash>`, and every file it lists matches
-(`sha256sum -c`). An unknown dev hash, a missing field, a
-failed fetch or a hash mismatch fails closed. The allowlist is changed only by a
-reviewed PR. The logic is `.github/scripts/phala-os-guard.sh`, tested by
-`.github/scripts/test-phala-os-guard.sh` (which the deploy runs first). The check
-runs on `phala cvms get` before building anything and again after `phala deploy`.
-It reads the script from the deployed ref's checkout, so a rollback to a ref that
-predates it fails closed.
-CI never changes the OS; if the check fails, set it by hand and re-run:
-`phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
+The backend workflow requires the exact production OS name/hash pinned in
+`PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`) and `is_dev=false`.
+Dev images fail closed by default. Missing/malformed metadata or a different
+name/hash also fails closed.
+
+**TC-2843 transition exception:** a separately authorized manual dispatch of
+`deploy-production.yml` may explicitly set
+`allow_current_dev_os_until_tc2843=true` (default **false**). Only
+`dstack-dev-0.5.12`, hash
+`e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b`,
+with `is_dev=true` is permitted. Push, schedule and originating workflow-call
+events cannot enable this exception: the guard refuses the override unless
+`github.event_name` is `workflow_dispatch`. The reusable backend workflow
+forwards the dispatch choice; it does not provide an independent non-manual escape.
+Accepted dev checks print a warning and append a **TC-2843** warning with the
+exact tuple to the run summary. The OS-move PR (or first deploy after the move)
+must remove this input and exception in the same change.
+
+Both backend and bots run `.github/scripts/phala-os-guard.sh` and its self-tests
+from a separate sparse checkout at `github.workflow_sha`, not the application
+target ref. Checks run before building and after `phala deploy`, so rolling back
+application code cannot restore an older dev-permitting guard. Bots has no
+transition input and always requires the production tuple.
+CI never changes the OS. An OS move requires its own reviewed, separately
+authorized operation; do not treat a failed guard as permission to move it.
 `phala deploy --image/--no-dev-os` is ignored for an existing CVM.
 
 Production deploys go only through this workflow; the repository has no local
@@ -327,7 +337,7 @@ Repository **variables** (all optional — defaults shown):
 | `TINYCHAT_BACKEND_URL` | `https://api.tinycloud.chat` |
 | `TINYCHAT_FRONTEND_URL` | `https://tinycloud.chat` |
 | `TINYCHAT_BACKEND_IMAGE` / `TINYCHAT_INGRESS_IMAGE` | `ghcr.io/tinycloudlabs/tinychat-backend` |
-| `REDPILL_BASE_URL` | `https://api.redpill.ai/v1` |
+| `REDPILL_BASE_URL` | `https://tee.redpill.ai/v1` |
 | `REDPILL_DEFAULT_MODEL` | `z-ai/glm-5.2` (must stay an offered model — a non-offered value warns and falls back at runtime; `backend/src/routes/chat.ts` ST11) |
 | `CONNECTOR_WEBHOOKS_ENABLED` | `false` (ships dark: route unmounted, maintenance timer off, section hidden) |
 | `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` | _(empty — the minted callback host falls back to the request's `Host` header, with the scheme forced to `https`)_. Set it to `https://api.tinycloud.chat` before enabling the flag: this is the origin of the URL users paste into their provider dashboard, and a wrong host mints a webhook that silently never delivers. Origin only — `https`, no path, no trailing slash — or the companion router refuses to build. |
@@ -340,6 +350,11 @@ Repository **variables** (all optional — defaults shown):
 | `ELIZA_SERVICE_URL` | _(required — no default; the workflow's config check fails fast if unset)_ — Eliza agent service URL (agent triad) |
 | `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
 | `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
+| `BOTS_ENABLED` | `false` (only literal `true` turns on tiny bots: the Home Main bot chat at `/api/bots`). Off unless `BOTS_SERVICE_URL`, `BOTS_SERVICE_SECRET` and a non-empty `BOTS_TEST_ACCOUNTS` are also set. |
+| `BOTS_TEST_ACCOUNTS` | _(empty — comma-separated account addresses, trimmed and lowercased; the single entry `*` admits every account; an empty list admits nobody)_ |
+| `BOTS_SERVICE_URL` | _(empty)_ — internal URL of the bots service; never exposed to browsers. |
+| `BOTS_SERVICE_SECRET` | _(empty — repo **secret**)_ — bearer the backend sends to the bots service; never returned to clients. |
+| `BOTS_POST_TIMEOUT_MS` | `120000` — overall bound on one Main bot message turn; when it fires the backend aborts the bots service request and sends a `bot_unavailable` error event. |
 | `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
 | `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_. For turns served by MCP chat (`MCP_CHAT_ENABLED`), a `*` entry admits every MCP account; the eliza-service path never honors `*`, and an empty list admits nobody on either path. |
 | `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_. On the eliza-service path an empty list admits no model; for turns served by MCP chat an empty list admits every offered model. |

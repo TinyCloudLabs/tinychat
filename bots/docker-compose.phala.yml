@@ -1,0 +1,131 @@
+# TinyCloud bots service (TC-2808), its own Phala CVM. See bots/README.md for what each env var does and what a
+# deploy needs.
+#
+# Images are pinned by digest. A deploy replaces BOTS_IMAGE_DIGEST and INGRESS_IMAGE_DIGEST with the pushed digests,
+# written literally into this file (never an env var, never a mutable tag), so the compose hash in the CVM's
+# attestation covers exactly what runs.
+#
+# TLS ends inside this CVM (the TC-1012 / dstack-ingress pattern): only dstack-ingress publishes a port; the
+# supervisor has no published port and no outbound network. Only the gateway can reach the internet, and only the
+# gateway holds REDPILL_API_KEY.
+services:
+  bots-supervisor:
+    image: ghcr.io/tinycloudlabs/tinychat-bots@sha256:BOTS_IMAGE_DIGEST
+    platform: linux/amd64
+    # runsc builds the sandboxes with this capability set (the smallest that passed the local smoke,
+    # test/smoke.sh): namespaces and mounts
+    # (SYS_ADMIN, SYS_CHROOT), user namespace mapping (SETUID, SETGID, SETFCAP), the gofer's file access
+    # (DAC_OVERRIDE, FOWNER, FSETID, CHOWN) and stopping sandboxes (KILL). runsc's own syscalls (clone with new
+    # namespaces, pivot_root, mount) need seccomp and AppArmor unconfined. The supervisor remounts its own cgroup2
+    # namespace read-write to give each sandbox, and all of them together, memory, CPU and pids limits; it also
+    # mounts each running bot's state tmpfs and remounts the bot-data volume nosuid,nodev (SYS_ADMIN).
+    cap_drop: [ALL]
+    cap_add: [SYS_ADMIN, SYS_CHROOT, SETUID, SETGID, SETFCAP, DAC_OVERRIDE, FOWNER, FSETID, CHOWN, KILL]
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    # Its own cgroup namespace; the supervisor refuses to start unless /proc/self/cgroup reads "0::/".
+    cgroup: private
+    # Everything in this container, sandboxes included, so many bots cannot starve the gateway or the ingress.
+    # Keep it above BOTS_TOTAL_MEMORY_MB (the cap on the sandboxes and their state) plus about 1 GiB.
+    mem_limit: 7g
+    # Lets running bots close their sessions and save their state (up to BOTS_STATE_COPY_TIMEOUT_MS) before the
+    # container goes.
+    stop_grace_period: 90s
+    networks: [bots-internal]
+    environment:
+      PORT: "8080"
+      # Unique 256-bit secret shared with the backend only (openssl rand -hex 32).
+      BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET}
+      # Same list as the backend's BOTS_TEST_ACCOUNTS; the service enforces it too. Empty admits nobody.
+      BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
+      BOTS_MODEL: ${BOTS_MODEL:-z-ai/glm-5.2}
+      BOTS_IDLE_MS: ${BOTS_IDLE_MS:-600000}
+      BOTS_SANDBOX_MEMORY_MB: ${BOTS_SANDBOX_MEMORY_MB:-1536}
+      BOTS_SANDBOX_CPUS: ${BOTS_SANDBOX_CPUS:-1}
+      BOTS_SANDBOX_PIDS: ${BOTS_SANDBOX_PIDS:-256}
+      BOTS_SANDBOX_OVERLAY_MB: ${BOTS_SANDBOX_OVERLAY_MB:-512}
+      BOTS_SANDBOX_TMP_MB: ${BOTS_SANDBOX_TMP_MB:-256}
+      BOTS_STATE_MB: ${BOTS_STATE_MB:-256}
+      # All running sandboxes together (parent cgroup); below mem_limit above.
+      BOTS_TOTAL_MEMORY_MB: ${BOTS_TOTAL_MEMORY_MB:-6144}
+      BOTS_TOTAL_PIDS: ${BOTS_TOTAL_PIDS:-2048}
+      # Sandboxes running at once; empty: BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB), 3 by default.
+      BOTS_MAX_RUNNING: ${BOTS_MAX_RUNNING:-}
+      BOTS_STATE_COPY_TIMEOUT_MS: ${BOTS_STATE_COPY_TIMEOUT_MS:-60000}
+      BOTS_TURN_TIMEOUT_MS: ${BOTS_TURN_TIMEOUT_MS:-300000}
+      BOTS_MAX_TURN_BYTES: ${BOTS_MAX_TURN_BYTES:-262144}
+    volumes:
+      - bot-data:/data
+      - bot-egress:/egress
+    restart: unless-stopped
+
+  bots-gateway:
+    image: ghcr.io/tinycloudlabs/tinychat-bots@sha256:BOTS_IMAGE_DIGEST
+    platform: linux/amd64
+    command: ["bun", "src/gateway-main.ts"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=16m
+    mem_limit: 512m
+    networks: [egress]
+    environment:
+      # A dedicated RedPill key with its own provider-side budget; never the main chat key.
+      REDPILL_API_KEY: ${REDPILL_API_KEY}
+      BOTS_MODEL: ${BOTS_MODEL:-z-ai/glm-5.2}
+      BOTS_MODELS: ${BOTS_MODELS:-}
+      BOTS_MAX_TOKENS: ${BOTS_MAX_TOKENS:-8192}
+      BOTS_BOT_DAILY_TOKENS: ${BOTS_BOT_DAILY_TOKENS:-2000000}
+      BOTS_GLOBAL_DAILY_TOKENS: ${BOTS_GLOBAL_DAILY_TOKENS:-20000000}
+      BOTS_BODY_TIMEOUT_MS: ${BOTS_BODY_TIMEOUT_MS:-30000}
+    volumes:
+      - bot-egress:/egress
+      # Budget counters survive restarts here; an unreadable file stops the gateway rather than resetting them.
+      - bot-budget:/var/lib/bots-gateway
+    restart: unless-stopped
+
+  dstack-ingress:
+    # The backend's ingress image (infra/phala-ingress), pinned by digest.
+    image: ghcr.io/tinycloudlabs/tinychat-backend@sha256:INGRESS_IMAGE_DIGEST
+    ports:
+      - "443:443"
+    depends_on:
+      - bots-supervisor
+    networks: [bots-internal, egress]
+    environment:
+      DOMAIN: ${BOTS_INGRESS_DOMAIN}
+      TARGET_ENDPOINT: http://bots-supervisor:8080
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      GATEWAY_DOMAIN: ${PHALA_GATEWAY_CNAME}
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL}
+      SET_CAA: "true"
+      DNS_PROVIDER: cloudflare
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      - cert-data:/etc/letsencrypt
+    restart: unless-stopped
+
+volumes:
+  # Per-bot saved state (one directory per bot, under /data/bots/<sha256(owner DID)>, each at most about
+  # 2 x BOTS_STATE_MB).
+  bot-data:
+  # The gateway's daily token counters (one small JSON file).
+  bot-budget:
+  # Egress sockets, shared by the supervisor and the gateway; nothing on it needs to survive a restart.
+  bot-egress:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=65532,gid=65532,mode=0711,size=16m"
+  cert-data:
+
+networks:
+  # The supervisor's only network: reachable from the ingress, no route out.
+  bots-internal:
+    internal: true
+  egress:
+    driver: bridge
