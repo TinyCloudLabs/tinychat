@@ -12,12 +12,12 @@ import { TabBar } from "./TabBar";
 const back = (path: string) => decideBack({ overlay: false, screen: screenFor(path), size: "compact", historyIdx: 0, homeDestination: HOME_DESTINATION, homePath: HOME_PATH });
 
 describe("navigation model", () => {
-  test("Recording, Chat, Apps, Feed, then Connectors, each to its own root", () => {
+  test("Home (the feed), Chat, Apps, Recording, then Connectors, each to its own root", () => {
     expect(navItems(0).map((item) => [item.label, item.href])).toEqual([
-      ["Recording", PATHS.capture],
+      ["Home", PATHS.feed],
       ["Chat", PATHS.chat],
       ["Apps", PATHS.apps],
-      ["Feed", PATHS.feed],
+      ["Recording", PATHS.capture],
       ["Connectors", PATHS.connectors],
     ]);
   });

@@ -8,6 +8,7 @@ import { requestNonce, verifySession } from "../../../packages/client/src/auth.j
 import { SessionStore } from "../../../packages/client/src/tokens.js";
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { createAuthRouter } from "../routes/auth.js";
+import { frontendOriginsFromEnv } from "../cors-origins.js";
 
 const NOW = Date.parse("2026-10-08T12:00:00.000Z");
 const SECOND = 1_000;
@@ -38,11 +39,15 @@ afterEach(async () => {
   }
 });
 
-async function startAuthServer(frontendUrl = "http://localhost:5186", nonceStore = createNonceStore()) {
+async function startAuthServer(
+  frontendUrl = "http://localhost:5186",
+  nonceStore = createNonceStore(),
+  env: NodeJS.ProcessEnv = {},
+) {
   const app = express();
   app.use(express.json());
   app.use(createCsrfMiddleware());
-  app.use("/api/auth", createAuthRouter({ nonceStore, privateKey: KEY, frontendUrl }));
+  app.use("/api/auth", createAuthRouter({ nonceStore, privateKey: KEY, frontendOrigins: frontendOriginsFromEnv(frontendUrl, env) }));
   app.get("/whoami", createAuthMiddleware(KEY), (req, res) => res.json(req.user));
   const server = await new Promise<Server>((resolve) => {
     const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
@@ -264,6 +269,41 @@ describe("HTTP SIWE sessions", () => {
     const mismatchedNonce = await requestNonce(base, account.address);
     const mismatched = await signMessage(mismatchedNonce, { domain: "home.tinycloud.xyz", uri: "https://tinycloud.chat" });
     expect((await postVerify(base, mismatched)).status).toBe(400);
+  });
+
+  test.each(["https://tinycloud.chat", "https://home.tinycloud.xyz"])(
+    "with FRONTEND_URL=%s both web domains sign in and a foreign domain does not",
+    async (frontendUrl) => {
+      setSystemTime(NOW);
+      const base = await startAuthServer(frontendUrl);
+      for (const domain of ["tinycloud.chat", "home.tinycloud.xyz"]) {
+        const nonce = await requestNonce(base, account.address);
+        const signed = await signMessage(nonce, { domain, uri: `https://${domain}` });
+        expect((await postVerify(base, signed)).status).toBe(200);
+      }
+      for (const domain of ["evil.example", "tinycloud.chat.evil.example", "evil-tinycloud.chat"]) {
+        const nonce = await requestNonce(base, account.address);
+        const foreign = await signMessage(nonce, { domain, uri: `https://${domain}` });
+        const response = await postVerify(base, foreign);
+        expect(response.status).toBe(400);
+        expect(response.body).toMatchObject({ error: "invalid_origin" });
+      }
+    },
+  );
+
+  test("an explicit FRONTEND_ORIGINS list replaces the default web domains", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://home.tinycloud.xyz", createNonceStore(), {
+      FRONTEND_ORIGINS: "https://home.tinycloud.xyz",
+    });
+    const home = await signMessage(await requestNonce(base, account.address), {
+      domain: "home.tinycloud.xyz", uri: "https://home.tinycloud.xyz",
+    });
+    expect((await postVerify(base, home)).status).toBe(200);
+    const chat = await signMessage(await requestNonce(base, account.address), {
+      domain: "tinycloud.chat", uri: "https://tinycloud.chat",
+    });
+    expect((await postVerify(base, chat)).status).toBe(400);
   });
 
   test("accepts native OpenKey DID sessions but rejects a web URI on the native domain", async () => {

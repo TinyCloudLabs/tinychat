@@ -5,12 +5,15 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import {
   appCorsOptions,
+  DEFAULT_FRONTEND_ORIGINS,
   EXO_ANDROID_ORIGIN,
   EXO_DESKTOP_ORIGIN,
   EXO_DESKTOP_WINDOWS_ORIGIN,
   EXO_IOS_ORIGIN,
+  frontendOriginsFromEnv,
   HOME_WEB_ORIGIN,
   LOCAL_WEB_ORIGINS,
+  TINYCHAT_WEB_ORIGIN,
 } from "../cors-origins.js";
 
 const WEB_ORIGIN = "https://tinycloud.chat";
@@ -18,21 +21,99 @@ const WEB_ORIGIN = "https://tinycloud.chat";
 let server: Server;
 let baseUrl: string;
 
-beforeAll(async () => {
+async function listen(origins: readonly string[]): Promise<{ server: Server; baseUrl: string }> {
   const app = express();
-  app.use(cors(appCorsOptions(WEB_ORIGIN)));
+  app.use(cors(appCorsOptions(origins)));
   app.get("/health", (_req, res) => res.json({ ok: true }));
+  const listener = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => listener.once("listening", resolve));
+  return { server: listener, baseUrl: `http://127.0.0.1:${(listener.address() as AddressInfo).port}` };
+}
 
-  server = app.listen(0, "127.0.0.1");
-  await new Promise<void>((resolve) => server.once("listening", resolve));
-  const address = server.address() as AddressInfo;
-  baseUrl = `http://127.0.0.1:${address.port}`;
+async function close(listener: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    listener.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+beforeAll(async () => {
+  ({ server, baseUrl } = await listen(frontendOriginsFromEnv(WEB_ORIGIN, {})));
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
+  await close(server);
+});
+
+describe("frontend origin allowlist", () => {
+  test("defaults to both production web origins plus FRONTEND_URL", () => {
+    expect(DEFAULT_FRONTEND_ORIGINS).toEqual([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN]);
+    expect(frontendOriginsFromEnv("https://tinycloud.chat", {})).toEqual([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN]);
+    expect(frontendOriginsFromEnv("https://home.tinycloud.xyz/", {})).toEqual([HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN]);
+    expect(frontendOriginsFromEnv("http://localhost:5186", { FRONTEND_ORIGINS: " " }))
+      .toEqual(["http://localhost:5186", TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN]);
   });
+
+  test("an explicit list replaces the default and always keeps FRONTEND_URL", () => {
+    expect(frontendOriginsFromEnv("https://home.tinycloud.xyz", { FRONTEND_ORIGINS: "HTTPS://Staging.Example:443, http://127.0.0.1:8080/" }))
+      .toEqual([HOME_WEB_ORIGIN, "https://staging.example", "http://127.0.0.1:8080"]);
+  });
+
+  test.each(["*", "tinycloud.chat", "https://tinycloud.chat/path", "https://tinycloud.chat/?x", "https://user:pw@tinycloud.chat", "ftp://tinycloud.chat", "https://tinycloud.chat,"])(
+    "refuses FRONTEND_ORIGINS=%s",
+    (value) => {
+      expect(() => frontendOriginsFromEnv(WEB_ORIGIN, { FRONTEND_ORIGINS: value })).toThrow(
+        "FRONTEND_ORIGINS must contain only comma-separated HTTP(S) origins",
+      );
+    },
+  );
+
+  test.each(["*", "tinycloud.chat", "ftp://tinycloud.chat"])("refuses FRONTEND_URL=%s", (value) => {
+    expect(() => frontendOriginsFromEnv(value, {})).toThrow("FRONTEND_URL must be an HTTP(S) URL");
+  });
+});
+
+describe.each([WEB_ORIGIN, HOME_WEB_ORIGIN])("CORS with FRONTEND_URL=%s and the default allowlist", (frontendUrl) => {
+  let origins: { server: Server; baseUrl: string };
+  beforeAll(async () => {
+    origins = await listen(frontendOriginsFromEnv(frontendUrl, {}));
+  });
+  afterAll(async () => {
+    await close(origins.server);
+  });
+
+  test.each([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN])("allows the preflight from %s", async (origin) => {
+    const response = await fetch(`${origins.baseUrl}/health`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: origin,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type,x-requested-with",
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+  });
+
+  test.each(["https://attacker.example", "https://tinycloud.chat.evil.example", "http://tinycloud.chat"])(
+    "refuses the preflight from %s",
+    async (origin) => {
+      const response = await fetch(`${origins.baseUrl}/health`, {
+        method: "OPTIONS",
+        headers: { Origin: origin, "Access-Control-Request-Method": "POST" },
+      });
+      expect(response.headers.has("access-control-allow-origin")).toBe(false);
+    },
+  );
+});
+
+test("an explicit allowlist without tinycloud.chat refuses it", async () => {
+  const narrow = await listen(frontendOriginsFromEnv(HOME_WEB_ORIGIN, { FRONTEND_ORIGINS: HOME_WEB_ORIGIN }));
+  try {
+    const response = await fetch(`${narrow.baseUrl}/health`, { headers: { Origin: TINYCHAT_WEB_ORIGIN } });
+    expect(response.headers.has("access-control-allow-origin")).toBe(false);
+  } finally {
+    await close(narrow.server);
+  }
 });
 
 describe("app CORS origins", () => {

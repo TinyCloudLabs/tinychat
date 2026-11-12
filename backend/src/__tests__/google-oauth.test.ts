@@ -21,7 +21,7 @@ import {
   type GoogleOAuthPort,
   type GoogleTokenPayload,
 } from "../services/google-oauth.js";
-import { HOME_WEB_ORIGIN } from "../cors-origins.js";
+import { frontendOriginsFromEnv, HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN } from "../cors-origins.js";
 import {
   createGoogleOAuthRouter,
   encodeForScript,
@@ -867,6 +867,92 @@ describe("Home site return", () => {
     expect(untagged).not.toContain(HOME_WEB_ORIGIN);
     const tab = await callback(`tab.${Buffer.from("/connectors").toString("base64url")}.${NONCE}`);
     expect(new URL(tab.headers.get("location")!).origin).toBe(APP_ORIGIN);
+  });
+});
+
+describe("both web origins (FRONTEND_URL on either site)", () => {
+  const NONCE = "abcdefghijklmnopqrstuvwx";
+  const tabState = (tag: "tab" | "hometab", path: string) => `${tag}.${Buffer.from(path).toString("base64url")}.${NONCE}`;
+
+  async function withRouter(
+    frontendUrl: string,
+    env: NodeJS.ProcessEnv,
+    run: (flow: {
+      start: (state: string) => Promise<Response>;
+      callback: (state: string, extra?: Record<string, string>) => Promise<Response>;
+    }) => Promise<void>,
+  ): Promise<void> {
+    const app = express();
+    app.use("/oauth", createGoogleOAuthRouter({
+      oauth: new FakeOAuthPort(), config: TEST_CONFIG, appOrigin: frontendUrl,
+      frontendOrigins: frontendOriginsFromEnv(frontendUrl, env),
+    }));
+    const listener = app.listen(0);
+    await new Promise<void>((resolve) => listener.once("listening", resolve));
+    const url = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/oauth`;
+    try {
+      await run({
+        start: (state) => fetch(`${url}/start?${new URLSearchParams({ state, challenge: CHALLENGE })}`, { redirect: "manual" }),
+        callback: (state, extra = { code: "fake-code" }) =>
+          fetch(`${url}/callback?${new URLSearchParams({ state, ...extra })}`, { redirect: "manual" }),
+      });
+    } finally {
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+    }
+  }
+
+  for (const frontendUrl of [TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN]) {
+    test(`with FRONTEND_URL=${frontendUrl}, a tinycloud.chat flow returns to tinycloud.chat`, async () => {
+      await withRouter(frontendUrl, {}, async ({ start, callback }) => {
+        expect((await start(NONCE)).status).toBe(302);
+        const popup = await callback(NONCE);
+        expect(popup.status).toBe(200);
+        const html = await popup.text();
+        expect(html).toContain(`postMessage(payload, "${TINYCHAT_WEB_ORIGIN}")`);
+        expect(html).not.toContain(HOME_WEB_ORIGIN);
+        const state = tabState("tab", "/chat/connectors");
+        expect((await start(state)).status).toBe(302);
+        const tab = new URL((await callback(state)).headers.get("location")!);
+        expect(tab.origin).toBe(TINYCHAT_WEB_ORIGIN);
+        expect(tab.pathname).toBe("/chat/connectors");
+        expect(tab.searchParams.get("google_oauth_code")).toBe("fake-code");
+      });
+    });
+
+    test(`with FRONTEND_URL=${frontendUrl}, a home.tinycloud.xyz flow returns to home.tinycloud.xyz`, async () => {
+      await withRouter(frontendUrl, {}, async ({ start, callback }) => {
+        expect((await start(`home.${NONCE}`)).status).toBe(302);
+        const html = await (await callback(`home.${NONCE}`)).text();
+        expect(html).toContain(`postMessage(payload, "${HOME_WEB_ORIGIN}")`);
+        expect(html).not.toContain(TINYCHAT_WEB_ORIGIN);
+        const state = tabState("hometab", "/chat/connectors");
+        expect((await start(state)).status).toBe(302);
+        expect(new URL((await callback(state)).headers.get("location")!).origin).toBe(HOME_WEB_ORIGIN);
+      });
+    });
+  }
+
+  test("an origin left out of FRONTEND_ORIGINS gets no flow and no code", async () => {
+    await withRouter(HOME_WEB_ORIGIN, { FRONTEND_ORIGINS: HOME_WEB_ORIGIN }, async ({ start, callback }) => {
+      for (const state of [NONCE, tabState("tab", "/chat")]) {
+        expect((await start(state)).status).toBe(400);
+        const returned = await callback(state);
+        expect(returned.status).toBe(400);
+        expect(returned.headers.get("location")).toBeNull();
+        expect(await returned.text()).not.toContain("postMessage");
+      }
+      expect((await start(`home.${NONCE}`)).status).toBe(302);
+    });
+    await withRouter(TINYCHAT_WEB_ORIGIN, { FRONTEND_ORIGINS: TINYCHAT_WEB_ORIGIN }, async ({ start, callback }) => {
+      for (const state of [`home.${NONCE}`, tabState("hometab", "/chat")]) {
+        expect((await start(state)).status).toBe(400);
+        const returned = await callback(state);
+        expect(returned.status).toBe(400);
+        expect(returned.headers.get("location")).toBeNull();
+        expect(await returned.text()).not.toContain("postMessage");
+      }
+      expect((await start(NONCE)).status).toBe(302);
+    });
   });
 });
 

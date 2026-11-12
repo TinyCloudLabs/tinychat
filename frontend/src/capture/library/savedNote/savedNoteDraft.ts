@@ -1,4 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
+import { deferOriginMove } from "@/lib/originMove";
 import {
   discardChanges,
   keepEditing,
@@ -15,6 +16,17 @@ import {
 // between the page and the sheet keeps what was typed until the user saves or discards it.
 const edits = new Map<string, EditFields>();
 const listeners = new Set<() => void>();
+// An open edit lives only in this page until Save: a held tinycloud.chat page must not move under it.
+let releaseOriginMove: (() => void) | null = null;
+
+function deferOriginMoveWhileEditing(): void {
+  if (edits.size > 0) {
+    releaseOriginMove ??= deferOriginMove();
+    return;
+  }
+  releaseOriginMove?.();
+  releaseOriginMove = null;
+}
 
 const subscribe = (listener: () => void) => {
   listeners.add(listener);
@@ -27,6 +39,7 @@ function set(id: string, next: EditFields): void {
     return;
   if (next.draft === null && next.confirming === null) edits.delete(id);
   else edits.set(id, next);
+  deferOriginMoveWhileEditing();
   for (const listener of [...listeners]) listener();
 }
 
@@ -40,6 +53,7 @@ export const readSavedNoteDraft = (id: string): EditFields =>
 export function clearSavedNoteDrafts(): void {
   if (edits.size === 0) return;
   edits.clear();
+  deferOriginMoveWhileEditing();
   for (const listener of [...listeners]) listener();
 }
 

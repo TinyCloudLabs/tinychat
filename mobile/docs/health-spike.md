@@ -1,6 +1,6 @@
 # Health spike: HealthKit and Health Connect (TC-525)
 
-What it takes for TinyCloud Home (Capacitor 8, app id `xyz.tinycloud.exo`) to read health data into the user's
+What it takes for TinyCloud Home (Capacitor 8, app id `xyz.tinycloud.home`) to read health data into the user's
 own TinyCloud space: steps first, then sleep and heart rate, on iOS (HealthKit) and Android (Health
 Connect). October 2026. Spike branch `spike/tc-525-health`, not for merge as is.
 
@@ -569,7 +569,7 @@ Android 14+, so nothing to install). Build as in [Try it](#try-it) with `VITE_EX
    per day; times later today are skipped). Running it twice must not double the numbers on the next read.
 6. **Read.** **Read last 7 days**: 7 rows, oldest first, steps between 2,700 and 10,500 a day for the
    allowed type, "—" for types not allowed, "Not read (not allowed): …" listing them, "Recorded by:
-   xyz.tinycloud.exo". With all three allowed: sleep between 6 h 40 and 9 h per night and heart rate
+   xyz.tinycloud.home". With all three allowed: sleep between 6 h 40 and 9 h per night and heart rate
    "avg (min–max) bpm".
 7. **Save.** **Save to my space**: "Saved N days … under
    `xyz.tinycloud.tinychat/connectors/exo-health/health_connect/daily/`". Optional: confirm one key

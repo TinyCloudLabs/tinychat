@@ -1,4 +1,3 @@
-import { HOME_SITE } from "./homeSite";
 import { isStorageFullError, reportStorageError, storageSaveMessage, storageScopeFor, trackStorageWrites } from "./storageStatus";
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getSettingsByPrefix, getThread, rewriteThreadMessages, setSetting, type StoredMessageItem } from "./threadStore";
@@ -80,12 +79,8 @@ const accountStates = new WeakMap<TinyCloudWeb, Promise<CanvasAccountState>>();
  * database. Shared by the thread list, Settings and every turn. The thread
  * list awaits it beside listThreads, so a failure surfaces there; a failed
  * read is forgotten so the next call retries.
- *
- * The Home site's sign-in has no Canvas database, so there Canvas is off and no chat is promoted, whatever
- * the synced setting says; nothing is read.
  */
-export function loadCanvasState(tcw: TinyCloudWeb, homeSite: boolean = HOME_SITE): Promise<CanvasAccountState> {
-  if (homeSite) return Promise.resolve({ enabled: false, promoted: new Set() });
+export function loadCanvasState(tcw: TinyCloudWeb): Promise<CanvasAccountState> {
   let state = accountStates.get(tcw);
   if (!state) {
     const pending = getSettingsByPrefix(tcw, CANVAS_SETTING_PREFIX).then((settings) => ({
