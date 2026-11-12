@@ -96,9 +96,10 @@ void installEd25519Polyfill().catch((error: unknown) => {
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          {/* Inside the router: the notice's counts link to the Library and the Recording tab. */}
+          {move.kind === "hold" && <OriginMoveHold />}
         </BrowserRouter>
         <PwaPrompts />
-        {move.kind === "hold" && <OriginMoveHold />}
       </RootErrorBoundary>
     </StrictMode>,
   );
