@@ -198,7 +198,7 @@
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
 				B5A3EEA2B69C037E99CD2E49 /* Embed App Extensions */,
-				E0A1C0DE000000000000000C /* Location spike Info.plist (Debug only) */,
+				E0A1C0DE000000000000000C /* Health and location spikes Info.plist (Debug only) */,
 			);
 			buildRules = (
 			);
@@ -302,7 +302,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		E0A1C0DE000000000000000C /* Location spike Info.plist (Debug only) */ = {
+		E0A1C0DE000000000000000C /* Health and location spikes Info.plist (Debug only) */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -311,17 +311,17 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/location-spike-info-plist.sh",
+				"$(SRCROOT)/debug-spikes-info-plist.sh",
 				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
-			name = "Location spike Info.plist (Debug only)";
+			name = "Health and location spikes Info.plist (Debug only)";
 			outputFileListPaths = (
 			);
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"${SRCROOT}/location-spike-info-plist.sh\"\n";
+			shellScript = "/bin/sh \"${SRCROOT}/debug-spikes-info-plist.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
