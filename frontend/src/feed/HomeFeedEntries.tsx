@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { ANSWER_UNDO_HINT, AnswerOptions, answerSummary, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
 import { AgentConversation, AgentList, agentKey, agentThreads } from "./AgentConversation";
+import { agentProfile, AgentMark, PlatformName } from "./AgentMark";
 import { cardAuthor, ReplyBox, replyRoute, usePostReply } from "./CardReply";
+import { actionClass, CardActions, CardDetails } from "./CardActions";
 import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { cardThread, messageRecipient } from "./HomeCardThread";
+import { ShortTime, shortTime } from "./ShortTime";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
@@ -70,12 +73,12 @@ function CardHistory({ entry }: { entry: HomeFeedEntry }) {
     <summary className="min-h-8 cursor-pointer font-medium">Card history</summary>
     <ol className="mt-2 space-y-3">
       {responses.map((response) => <li key={response.responseId} className="break-words">
-        <p className="text-xs text-muted-foreground">{response.kind === "message" ? "Message saved" : response.kind === "followup" ? "Follow-up saved" : "Answer saved"} · <time dateTime={response.createdAt}>{new Date(response.createdAt).toLocaleString()}</time></p>
+        <p className="text-xs text-muted-foreground">{response.kind === "message" ? "Message saved" : response.kind === "followup" ? "Follow-up saved" : "Answer saved"} · <ShortTime at={response.createdAt} /></p>
         {response.choiceId && <p>{entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? response.choiceId}</p>}
         {response.text && <p className="whitespace-pre-wrap">{response.text}</p>}
         {response.supersedesResponseId && <p className="text-xs text-muted-foreground">Follows response {response.supersedesResponseId}</p>}
       </li>)}
-      {snoozes.map((event) => <li key={`snooze-${event.sequence}`} className="text-xs text-muted-foreground">Snoozed at {new Date(event.createdAt).toLocaleString()}{event.snoozedUntil && ` until ${new Date(event.snoozedUntil).toLocaleString()}`}</li>)}
+      {snoozes.map((event) => <li key={`snooze-${event.sequence}`} className="text-xs text-muted-foreground">Snoozed at {shortTime(event.createdAt)}{event.snoozedUntil && ` until ${shortTime(event.snoozedUntil)}`}</li>)}
     </ol>
   </details>;
 }
@@ -116,7 +119,7 @@ function AnswerFold({ entry, sent, agent, typed, source, onSaved, onToggle }: { 
     {!sent.open && <AnswerSteps sent={sent.response.createdAt} {...handling} agent={agent} />}
     {!sent.open && typeof detail === "string" && <p className="whitespace-pre-wrap break-words">{detail}</p>}
     {!sent.open && latest && typed && <div aria-label="Latest in the conversation" className="space-y-1 rounded-lg bg-muted/40 p-3">
-      <p className="text-xs text-muted-foreground">{latest.message.side === "sam" ? `You to ${messageRecipient(entry, typed.record, latest.message)}` : latest.message.from} · <time dateTime={latest.message.at}>{new Date(latest.message.at).toLocaleString()}</time></p>
+      <p className="text-xs text-muted-foreground">{latest.message.side === "sam" ? `You to ${messageRecipient(entry, typed.record, latest.message)}` : latest.message.from} · <ShortTime at={latest.message.at} /></p>
       <p className="line-clamp-3 whitespace-pre-wrap break-words">{latest.message.text}</p>
       {latest.header && latestHandling && <div className="text-xs"><AnswerSteps sent={latest.header.createdAt} {...latestHandling} agent={messageRecipient(entry, typed.record, latest.message)} final={false} /></div>}
     </div>}
@@ -361,9 +364,18 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
   // Everything between the person and each agent, from every card the page has loaded.
   const agents = agentView ? agentThreads([...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()], contextFor, source, (entry) => needsAttention(entry, clock, contextFor(entry)?.projection)) : [];
   const openAgent = agentView && agentView !== "list" ? agents.find((agent) => agent.key === agentView) : undefined;
+  // The list under the open card: every other card in this view, in the page's order and groups, under two plain
+  // headings, the cards that need the person and the rest. A group keeps all its cards, the open one marked.
+  const listed = navigation.filter((row) => row.kind === "group" || keyOf(row.item) !== focusedKey);
+  const rowNeedsYou = (row: (typeof listed)[number]) => (row.kind === "card" ? [row.item] : row.items).some((entry) => needsAttention(entry, clock, contextFor(entry)?.projection));
+  const sections: [string, typeof listed][] = [
+    [focused && needsAttention(focused, clock, focusedContext?.projection) ? "Also needs you" : "Needs you", listed.filter(rowNeedsYou)],
+    ["Updates", listed.filter((row) => !rowNeedsYou(row))],
+  ];
   const focusedIndex = filtered.findIndex((entry) => keyOf(entry) === focusedKey);
   const nextEntry = filtered.length ? filtered[(focusedIndex + 1) % filtered.length] : undefined;
   useEffect(() => { if (focused && activeKey !== focusedKey) setActive(focused); }, [focusedKey, activeKey]);
+  const nextCard = nextEntry && keyOf(nextEntry) !== focusedKey ? <button type="button" onClick={() => setActive(nextEntry)} className={actionClass}>Next card</button> : null;
   useEffect(() => {
     if (!focused || focused.view.seenAt) return;
     let alive = true;
@@ -408,10 +420,20 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
     finally { setViewBusy(false); }
   }
 
+  // A row in the list under the open card: the agent's mark, the title on one line, and under it who sent it, on
+  // which platform, and where the card stands when that is not already the heading.
   function navigationCard(entry: HomeFeedEntry) {
     const context = contextFor(entry);
     const author = cardAuthor(entry, context?.record).name;
-    return <button type="button" key={keyOf(entry)} aria-current={focusedKey === keyOf(entry) ? "true" : undefined} onClick={() => setActive(entry)} className="min-h-11 w-full rounded-xl border border-border bg-card px-3 py-2 text-left text-sm aria-[current=true]:border-primary"><span className="font-medium">{entry.state.card.title}</span><span className="ml-2 text-xs text-muted-foreground">{author} · {cardStatus(entry, context?.projection, clock, author)}</span></button>;
+    const platform = agentProfile(entry.state.card.payload)?.platform;
+    const status = cardStatus(entry, context?.projection, clock, author);
+    return <button type="button" aria-current={focusedKey === keyOf(entry) ? "true" : undefined} onClick={() => setActive(entry)} className="flex min-h-14 w-full min-w-0 items-center gap-3 px-1 py-2 text-left text-sm active:bg-muted aria-[current=true]:bg-selected">
+      <AgentMark agentKey={agentKey(entry, context?.record)} name={author} small />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium">{entry.state.card.title}</span>
+        <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground"><span className="truncate">{author}</span>{platform && <>{" · "}<PlatformName platform={platform} /></>}{status !== "Needs you" && <span className="shrink-0">{" · "}{status}</span>}</span>
+      </span>
+    </button>;
   }
 
   async function saveGroup(entry: HomeFeedEntry, group: string, on: boolean) {
@@ -462,31 +484,36 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
           </div>
         </section>
         : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
-      {focused && <section aria-label="Focused card" className="mb-5 min-w-0">
+      {focused && <section aria-label="Focused card" className="mb-8 min-w-0">
         {fold && <AnswerFold key={fold.response.responseId} entry={focused} sent={fold} agent={focusedAuthor} typed={focusedContext} source={source} onSaved={onSaved} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
         <div hidden={!!fold && !fold.open}>
-          <FeedCardView card={cardView(focused, focusedContext)} sample={false} readBody={source.readBody} status={focusedUnsupported ? undefined : cardStatus(focused, focusedContext?.projection, clock, focusedAuthor)} onAuthor={() => setAgentView(agentKey(focused, focusedContext?.record))} />
-          <ReportLink entry={focused} />
-          {focusedContext ? <SitrepCard key={focusedKey!} entry={focused} record={focusedContext.record} records={focusedContext.records} entries={focusedContext.entries} owner={focusedContext.owner} projection={focusedContext.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={setActive} reference={reference} /> : focusedUnsupported ? <><p role="status" className="mt-4 rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p>{reference}</> : <><AnswerForm key={focusedKey!} entry={focused} source={source} onSaved={onSaved} onAnswered={onAnswered} /><CardHistory entry={focused} />
-            <details className="mt-4 rounded-xl border border-border p-3 text-xs" aria-label="Card details"><summary className="min-h-8 cursor-pointer text-sm font-medium">Details</summary><div className="mt-2 space-y-2 break-words"><p>Posted by {focused.source.label} · {focused.source.agentDid}</p><p>{focused.state.card.kind}</p>{reference}</div></details></>}
+          <FeedCardView card={cardView(focused, focusedContext)} sample={false} readBody={source.readBody} status={focusedUnsupported ? undefined : cardStatus(focused, focusedContext?.projection, clock, focusedAuthor)} onAuthor={() => setAgentView(agentKey(focused, focusedContext?.record))} agent={{ key: agentKey(focused, focusedContext?.record), profile: agentProfile(focused.state.card.payload) }}>
+            <ReportLink entry={focused} />
+            {focusedContext ? <SitrepCard key={focusedKey!} entry={focused} record={focusedContext.record} records={focusedContext.records} entries={focusedContext.entries} owner={focusedContext.owner} projection={focusedContext.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={setActive} reference={reference} actions={nextCard} /> : focusedUnsupported ? <><p role="status" className="mt-4 rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><CardActions>{nextCard}<CardDetails>{reference}</CardDetails></CardActions></> : <><AnswerForm key={focusedKey!} entry={focused} source={source} onSaved={onSaved} onAnswered={onAnswered} /><CardHistory entry={focused} />
+              <CardActions>
+                {needsAttention(focused, clock) && <button type="button" disabled={viewBusy} onClick={() => void snooze()} className={actionClass}>Snooze for 1 hour</button>}
+                {nextCard}
+                <CardDetails><p>Posted by {focused.source.label} · {focused.source.agentDid}</p><p>{focused.state.card.kind}</p>{reference}</CardDetails>
+              </CardActions></>}
+          </FeedCardView>
         </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {!focusedContext && !focusedUnsupported && needsAttention(focused, clock) && <button type="button" disabled={viewBusy} onClick={() => void snooze()} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">Snooze for 1 hour</button>}
-          {nextEntry && keyOf(nextEntry) !== focusedKey && <button type="button" onClick={() => { if (nextEntry) setActive(nextEntry); }} className="min-h-10 rounded-lg border border-border px-3 text-sm">Next card</button>}
-        </div>
+        {fold && !fold.open && nextCard && <div className="flex flex-wrap gap-2">{nextCard}</div>}
       </section>}
-      {!!filtered.length && <nav aria-label="Cards in this view" className="mb-4 grid max-h-72 gap-2 overflow-y-auto">
-        {navigation.map((row) => {
-          if (row.kind === "card") return navigationCard(row.item);
-          const first = row.items[0]; const record = first && contextFor(first)?.record; const name = record && cardGroup(record);
-          if (!first || !name) throw new Error("Invalid grouped Home card");
-          const open = expandedGroups.has(row.name);
-          const pinned = groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[name], row.items.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); }));
-          return <section key={row.name} aria-label={`Card group ${name}`} className="space-y-2 rounded-xl border border-border p-2">
-            <div className="flex flex-wrap items-center gap-2"><button type="button" className="min-h-10 grow px-2 text-left text-sm font-medium" aria-expanded={open} onClick={() => setExpandedGroups((previous) => { const next = new Set(previous); if (next.has(row.name)) next.delete(row.name); else next.add(row.name); return next; })}>{name} · {row.items.length} cards</button><button type="button" disabled={viewBusy} aria-pressed={pinned} className="min-h-10 rounded-lg border border-border px-2 text-xs disabled:opacity-50" onClick={() => void saveGroup(first, name, !pinned)}>{pinned ? "Clear private group priority" : "Mark private group priority"}</button></div>
-            {open && <div className="grid gap-2 pl-2">{row.items.map(navigationCard)}</div>}
-          </section>;
-        })}
+      {!!listed.length && <nav aria-label="Cards in this view" className="mb-4 space-y-6">
+        {sections.map(([heading, rows]) => !!rows.length && <section key={heading} aria-label={heading}>
+          <h2 className="mb-1 px-1 text-sm font-medium text-muted-foreground">{heading} · {rows.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.filter((entry) => keyOf(entry) !== focusedKey).length), 0)}</h2>
+          <ul className="divide-y divide-border border-y border-border">{rows.map((row) => {
+            if (row.kind === "card") return <li key={keyOf(row.item)}>{navigationCard(row.item)}</li>;
+            const first = row.items[0]; const record = first && contextFor(first)?.record; const name = record && cardGroup(record);
+            if (!first || !name) throw new Error("Invalid grouped Home card");
+            const open = expandedGroups.has(row.name);
+            const pinned = groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[name], row.items.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); }));
+            return <li key={row.name}><section aria-label={`Card group ${name}`} className="py-1">
+              <div className="flex flex-wrap items-center gap-2"><button type="button" className="flex min-h-12 grow items-center gap-2 px-1 text-left text-sm font-medium" aria-expanded={open} onClick={() => setExpandedGroups((previous) => { const next = new Set(previous); if (next.has(row.name)) next.delete(row.name); else next.add(row.name); return next; })}><ChevronRightIcon aria-hidden className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />{name} · {row.items.length} cards</button><button type="button" disabled={viewBusy} aria-pressed={pinned} className="min-h-10 rounded-lg border border-border px-2 text-xs disabled:opacity-50" onClick={() => void saveGroup(first, name, !pinned)}>{pinned ? "Clear private group priority" : "Mark private group priority"}</button></div>
+              {open && <ul className="divide-y divide-border pl-6">{row.items.map((entry) => <li key={keyOf(entry)}>{navigationCard(entry)}</li>)}</ul>}
+            </section></li>;
+          })}</ul>
+        </section>)}
       </nav>}
       </>}
     </div>

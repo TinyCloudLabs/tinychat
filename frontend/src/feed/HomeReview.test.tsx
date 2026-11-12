@@ -165,6 +165,8 @@ function codeInput(host: ParentNode): HTMLInputElement {
   return input;
 }
 async function openCard(transport: ReturnType<typeof observedSource>, host: HTMLElement, title: string) {
+  // The open card is not repeated in the list under it.
+  if (host.querySelector('[aria-label="Focused card"] h2')?.textContent === title) return;
   const card = [...host.querySelectorAll<HTMLButtonElement>('[aria-label="Cards in this view"] button')].find((candidate) => candidate.textContent?.includes(title));
   if (!card) throw new Error(`Published card is not visible in navigation: ${title}`);
   await click(transport, card);

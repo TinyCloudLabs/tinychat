@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { HomeAskBox } from "@/bots/HomeAskBox";
+import { AgentDetails, AgentMark, PlatformName, type AgentProfile } from "./AgentMark";
 import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
+import { ShortTime } from "./ShortTime";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
 
 // These keys belong to the bundled sample only. A real card's media key is never a web URL.
@@ -52,27 +54,37 @@ function CardImage({ image, alt }: { image?: string; alt: string }) {
   return <img className="mt-4 max-h-80 w-full rounded-xl border border-border bg-muted object-cover" src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-export function FeedCardView({ card, sample = true, readBody, status, onAuthor }: {
+export function FeedCardView({ card, sample = true, readBody, status, onAuthor, agent, children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
   /** The card's one status word ("Needs you", "Done"). */
   status?: string;
-  /** Tapping the author's name opens everything between the person and that agent. */
+  /** Opens everything between the person and the card's agent. */
   onAuthor?: () => void;
+  /** The acting agent: its mark and, when it reported one, its platform. Tapping its name shows what it is. */
+  agent?: { key: string; profile?: AgentProfile };
+  /** The rest of an open card (its options, reply and actions), inside the same surface. */
+  children?: ReactNode;
 }): JSX.Element {
+  const [about, setAbout] = useState(false);
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
+  const platform = agent?.profile?.platform;
   return (
-    <article className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-4 text-card-foreground shadow-sm sm:p-5" aria-label={`${card.render} by ${card.author.name}`}>
-      <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
-        {avatar && <img src={avatar} alt="" className="size-9 shrink-0 rounded-full bg-muted object-cover" />}
+    <article className={`min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
+      <div className="flex min-w-0 items-start gap-3 text-sm">
+        {agent ? <AgentMark agentKey={agent.key} name={card.author.name} /> : avatar && <img src={avatar} alt="" className="size-9 shrink-0 rounded-full bg-muted object-cover" />}
         <div className="min-w-[6rem] flex-1">
-          <p className="break-words font-semibold">{onAuthor ? <button type="button" onClick={onAuthor} className="min-h-6 text-left font-semibold underline decoration-border underline-offset-4">{card.author.name}</button> : card.author.name}{card.author.via && <span className="font-normal text-muted-foreground"> · via {card.author.via}</span>}</p>
-          <time dateTime={card.at} className="text-xs text-muted-foreground">{new Date(card.at).toLocaleDateString()}</time>
+          <p data-agent-line className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {onAuthor ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="min-h-6 break-words text-left font-semibold underline decoration-border underline-offset-4">{card.author.name}</button> : <span className="break-words font-semibold">{card.author.name}</span>}
+            {platform && <PlatformName platform={platform} chip />}
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{card.author.via && <>via {card.author.via} · </>}<ShortTime at={card.at} /></p>
         </div>
         {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
         {status && <span data-status className="shrink-0 rounded-full border border-border px-2 py-1 text-xs font-medium">{status}</span>}
       </div>
+      {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
       {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-xl font-semibold leading-tight">{card.title}</h2>}
       <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>
       {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
@@ -93,6 +105,7 @@ export function FeedCardView({ card, sample = true, readBody, status, onAuthor }
       {card.source && <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">Source: {card.source.url
         ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</a>
         : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
+      {children}
     </article>
   );
 }

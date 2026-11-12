@@ -58,12 +58,14 @@ export function useUndoWindow(send: () => void) {
 export interface AnswerOption { id: string; label: string; detail?: string; cost?: string }
 
 /**
- * A question's options as buttons. The chosen one stays pressed; while its answer
- * waits or is sent (`seconds`, `sending`) it reads as the wait, with Undo and a
- * line that runs out, and the others dim.
+ * A question's options as choices: filled rows, each with a round marker, its label and detail, and "Suggested" on
+ * the one its agent recommends. The chosen one stays pressed; while its answer waits or is sent (`seconds`,
+ * `sending`) it reads as the wait, with Undo and a line that runs out, and the others dim.
  */
-export function AnswerOptions({ options, chosen, seconds, sending, to, onChoose, onUndo }: {
+export function AnswerOptions({ options, suggested, chosen, seconds, sending, to, onChoose, onUndo }: {
   options: readonly AnswerOption[];
+  /** The option the agent recommends. */
+  suggested?: string;
   /** The agent the answer goes to, named while it waits. */
   to?: string;
   chosen?: string;
@@ -73,19 +75,20 @@ export function AnswerOptions({ options, chosen, seconds, sending, to, onChoose,
   onUndo: () => void;
 }) {
   const waiting = seconds !== null || sending;
-  return <fieldset className="space-y-2 text-sm"><legend className="font-medium">Choose an option</legend>
+  return <fieldset className="space-y-2 text-sm"><legend className="mb-2 text-xs font-medium text-muted-foreground">Choose an option</legend>
     {options.map((option) => {
       const pressed = chosen === option.id;
-      return <div key={option.id} className={`relative rounded-lg border ${pressed ? "border-primary bg-primary/10" : "border-border"} ${waiting && !pressed ? "opacity-50" : ""}`}>
-        <button type="button" aria-pressed={pressed} disabled={waiting && !pressed} onClick={() => onChoose(option)} className="block min-h-12 w-full rounded-lg px-3 py-2 text-left active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-          <span className={`block ${pressed && waiting ? "opacity-0" : ""}`}>
-            <span className="font-medium">{option.label}</span>
-            {option.detail && <span className="mt-1 block text-muted-foreground">{option.detail}</span>}
+      return <div key={option.id} className={`relative rounded-xl border ${pressed ? "border-primary bg-selected" : "border-transparent bg-surface-2"} ${waiting && !pressed ? "opacity-50" : ""}`}>
+        <button type="button" aria-pressed={pressed} disabled={waiting && !pressed} onClick={() => onChoose(option)} className="flex min-h-12 w-full items-start gap-3 rounded-xl px-3 py-3 text-left active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          <span aria-hidden className={`mt-0.5 flex size-[1.125rem] shrink-0 items-center justify-center rounded-full border-2 ${pressed ? "border-primary" : "border-muted-foreground"} ${pressed && waiting ? "opacity-0" : ""}`}>{pressed && <span className="size-2 rounded-full bg-primary" />}</span>
+          <span className={`min-w-0 flex-1 ${pressed && waiting ? "opacity-0" : ""}`}>
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="min-w-0 break-words font-medium">{option.label}</span>{suggested === option.id && <span className="shrink-0 rounded-full border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground">Suggested</span>}</span>
+            {option.detail && <span className="mt-0.5 block break-words text-muted-foreground">{option.detail}</span>}
             {option.cost && <span className="mt-1 block text-xs">Cost: {option.cost}</span>}
           </span>
         </button>
         {/* The wait lies over the option, which keeps its size: nothing moves while Undo is on offer. */}
-        {pressed && waiting && <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden rounded-lg px-3">
+        {pressed && waiting && <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden rounded-xl px-3">
           <span aria-hidden className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
           <span className="tnum min-w-0 shrink text-right text-xs">{sendingLabel(seconds, "Sending", to)}</span>
           {seconds !== null && <button type="button" onClick={onUndo} className="pointer-events-auto min-h-10 shrink-0 rounded-lg border border-border bg-background px-3 font-medium">Undo</button>}

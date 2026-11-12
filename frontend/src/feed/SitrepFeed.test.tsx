@@ -220,7 +220,7 @@ test("a blocker clear is a request for that hold/reference, not an answered ques
   expect(fixture.entry.state.card.payload?.sitrep).toMatchObject({ record: { status: "active" } });
 });
 
-test("a note to yourself is offered only inside Ask me later, saved with the reminder, and is not an answer", async () => {
+test("a note to yourself is offered only inside Ask me later, saved with the reminder, shown when the card comes back, and is not an answer", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
   expect(view.host.querySelector('[aria-label="Private note"]')).toBeNull();
@@ -236,11 +236,11 @@ test("a note to yourself is offered only inside Ask me later, saved with the rem
   await view.unmount();
   const reopened = await mount(fixture.source);
   expect(reopened.host.querySelector('textarea[name="answer"]') !== null).toBe(true);
-  const details = reopened.host.querySelector<HTMLDetailsElement>('[aria-label="Card details"]');
-  expect(details?.open).toBe(false);
-  expect(details?.textContent).toContain("Notes to yourself");
-  expect(details?.textContent).toContain("Check the review first.");
-  expect(face(reopened.host)).not.toContain("Check the review first.");
+  // The note is on the card's face when it comes back, not under Details.
+  const note = reopened.host.querySelector('[aria-label="Focused card"] [aria-label="Notes to yourself"]');
+  expect(note?.textContent).toContain("Your note · only you see it");
+  expect(note?.textContent).toContain("Check the review first.");
+  expect(reopened.host.querySelector('[aria-label="Card details"]')?.textContent).not.toContain("Check the review first.");
 });
 
 test("unconfirmed thread delivery stays historical until an explicit resend creates a new immutable message", async () => {
@@ -752,9 +752,9 @@ test("the card face says who is asking and what it needs in plain words; ids and
 test("a typed card from a crew member shows that name as its author and the posting agent as via", async () => {
   const fixture = typedFixture({ ...syntheticRecord("ask"), from: "CrewMember" });
   const view = await mount(fixture.source);
-  expect(view.host.querySelector('[aria-label="Focused card"] article p')?.textContent).toBe("CrewMember · via SyntheticOfficer");
+  expect(view.host.querySelector('[aria-label="Focused card"] [data-agent-line]')?.textContent).toBe("CrewMember");
+  expect(view.host.querySelector('[aria-label="Focused card"] [data-agent-line] + p')?.textContent).toMatch(/^via SyntheticOfficer · /);
   expect(view.host.querySelector('textarea[name="answer"]')?.getAttribute("aria-label")).toBe("Reply to CrewMember");
-  expect(view.host.querySelector('[aria-label="Cards in this view"]')?.textContent).toContain("CrewMember · Needs you");
 });
 
 test("tapping the agent's name opens everything between you and it in time order, with one reply box", async () => {
@@ -766,6 +766,8 @@ test("tapping the agent's name opens everything between you and it in time order
   const view = await mount(fixture.source);
   const author = [...view.host.querySelectorAll<HTMLButtonElement>('[aria-label="Focused card"] article button')].find((node) => node.textContent === "SyntheticOfficer");
   await act(async () => author!.click());
+  expect(author?.getAttribute("aria-expanded")).toBe("true");
+  await act(async () => button(view.host, "Open conversation").click());
   const conversation = view.host.querySelector('[aria-label="Conversation with SyntheticOfficer"]');
   expect(view.host.querySelector('[aria-label="Focused card"]')).toBeNull();
   const lines = [...conversation!.querySelectorAll('[aria-label="Everything in time order"] > li')].map((line) => line.textContent);
