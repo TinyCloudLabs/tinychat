@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.14
+
+### Patch Changes
+
+- fc73a24: Remove reconciled server copies when Fireflies sync is disabled, preserving unreadable or unreconciled copies for retention cleanup.
+
 ## 0.8.0-beta.13
 
 ### Patch Changes
