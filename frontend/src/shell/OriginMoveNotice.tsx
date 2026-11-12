@@ -54,7 +54,7 @@ export function originMoveNoticeLines(work: LocalRecordingWork): NoticePart[][] 
     lines.push([
       { text: recordings(otherAccount), to: PATHS.capture },
       otherAccount === 1
-        ? " in this browser belongs to another TinyCloud account. Sign in to that account here to save them."
+        ? " in this browser belongs to another TinyCloud account. Sign in to that account here to save it."
         : " in this browser belong to another TinyCloud account. Sign in to that account here to save them.",
     ]);
   }

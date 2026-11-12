@@ -47,7 +47,7 @@ function useLocalAudioFilter(all: Library["all"], countWork: () => Promise<Local
   if (!on) return undefined;
   return {
     label: LOCAL_AUDIO_FILTER_LABEL,
-    empty: "No recordings here have audio only in this browser.",
+    empty: "No recordings have audio only in this browser.",
     ids,
     onClear: () => {
       setOn(false);
