@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.13
+
+### Patch Changes
+
+- 20484c4: Delete server-held Fireflies meeting IDs within 14 days and enforce authenticated content expiry and bounded replay protection.
+
 ## 0.8.0-beta.12
 
 ### Minor Changes
