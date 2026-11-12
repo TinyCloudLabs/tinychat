@@ -19,7 +19,7 @@ import { botIdFor } from "../owner";
 import type { Frame } from "../rpc";
 import { rootProblem, removeWorkingState } from "../retention";
 import { chmodSync } from "node:fs";
-import { parseMountinfo } from "../sandbox";
+import { parseMountinfo, runStateCopy } from "../sandbox";
 
 const tmp = mkdtempSync(join(tmpdir(), "bots-test-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -81,9 +81,9 @@ describe("working state retention", () => {
   /** A manager over temp roots whose launches act on disk like RunscHost: the first creates the state image. */
   function host() {
     const dirs = roots();
-    const fake = { launches: 0, next: new FakeSandbox(), hold: Promise.resolve(), mounts: [] as string[] };
+    const fake = { launches: 0, next: new FakeSandbox(), hold: Promise.resolve(), mounts: [] as string[], leftover: false };
     const launcher: SandboxLauncher = {
-      leftover: () => false,
+      leftover: () => fake.leftover,
       hasState: layout => existsSync(layout.stateSnapshot),
       launch: async layout => {
         await fake.hold;
@@ -270,6 +270,40 @@ describe("working state retention", () => {
     await sweeping;
   });
 
+  test("an invalid present marker keeps old state and logs the refused sweep", async () => {
+    const { manager, layout } = host();
+    existing(layout(OWNER), null, Date.now() - RETENTION - DAY);
+    writeFileSync(layout(OWNER).lastUsedFile, "invalid");
+    const spy = spyOn(console, "log");
+    try {
+      await manager.sweepUnused(RETENTION);
+      expect(readFileSync(layout(OWNER).stateSnapshot, "utf8")).toBe("old notes");
+      expect(spy.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({
+        bots: "sweep_failed", bot: botIdFor(OWNER).slice(0, 12), error: "invalid last-used marker",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("an unconfirmed launcher leftover keeps state even without a live sandbox handle", async () => {
+    const { fake, manager, layout } = host();
+    existing(layout(OWNER), Date.now() - RETENTION - DAY);
+    mkdirSync(layout(OWNER).stateMount, { recursive: true });
+    fake.leftover = true;
+    expect(await stateEvents(() => manager.sweepUnused(RETENTION))).toEqual([skipped("teardown_failed")]);
+    expect(readFileSync(layout(OWNER).stateSnapshot, "utf8")).toBe("old notes");
+    expect(existsSync(layout(OWNER).stateMount)).toBe(true);
+  });
+
+  test("a mount under a sibling with the same path prefix does not block this bot", async () => {
+    const { fake, manager, layout } = host();
+    existing(layout(OWNER), Date.now() - RETENTION - DAY);
+    fake.mounts = [layout(OWNER).dataDir + "-sibling/state"];
+    await manager.sweepUnused(RETENTION);
+    expect(existsSync(layout(OWNER).dataDir)).toBe(false);
+  });
+
   test("mount points come from mountinfo field 5 with octal escapes decoded", () => {
     const mountinfo = [
       "36 35 98:0 / /data rw,noatime master:1 - ext4 /dev/vda1 rw",
@@ -297,4 +331,37 @@ test("crafted traversal layout is refused", async () => {
   const layout = botLayout("c".repeat(64), dirs);
   layout.botId = "..";
   expect(await removeWorkingState(layout, {mountPoints: () => []})).toBe("unsafe_path");
+});
+
+test("a real directory belonging to a different bot is refused", async () => {
+  const dirs = roots();
+  const layout = botLayout("c".repeat(64), dirs);
+  layout.dataDir = join(dirs.dataRoot, "d".repeat(64));
+  mkdirSync(layout.dataDir, { recursive: true });
+  writeFileSync(join(layout.dataDir, "notes"), "keep");
+  expect(await removeWorkingState(layout, { mountPoints: () => [] })).toBe("unsafe_path");
+  expect(readFileSync(join(layout.dataDir, "notes"), "utf8")).toBe("keep");
+});
+
+test("a timed-out copier holds teardown until its exit is confirmed", async () => {
+  const exit = Promise.withResolvers<number>();
+  const killed = Promise.withResolvers<void>();
+  const spawn = spyOn(Bun, "spawn").mockImplementation(() => ({
+    exited: exit.promise,
+    stdout: new ReadableStream({ start(controller) { controller.close(); } }),
+    kill: () => killed.resolve(),
+  }) as never);
+  let returned = false;
+  const copying = runStateCopy(["copier"], 1).then(result => { returned = true; return result; });
+  try {
+    await killed.promise;
+    await Bun.sleep(10);
+    expect(returned).toBe(false);
+    exit.resolve(137);
+    expect(await copying).toBe("timeout");
+  } finally {
+    exit.resolve(137);
+    await copying;
+    spawn.mockRestore();
+  }
 });

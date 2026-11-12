@@ -169,7 +169,7 @@ export async function endSandbox(end: SandboxEnd, botId: string, save: boolean):
 
 /**
  * Runs one state copy process. Returns its failure reason, "timeout" if it ran past `timeoutMs` (it is then
- * killed, and not waited for), or undefined.
+ * killed and its exit confirmed before returning), or undefined.
  */
 export async function runStateCopy(argv: string[], timeoutMs: number): Promise<CopyFailure | "timeout" | undefined> {
   const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
@@ -182,7 +182,9 @@ export async function runStateCopy(argv: string[], timeoutMs: number): Promise<C
     resolve("timeout");
   }, timeoutMs);
   try {
-    return await Promise.race([finished, deadline]);
+    const result = await Promise.race([finished, deadline]);
+    if (result === "timeout") await proc.exited;
+    return result;
   } finally {
     clearTimeout(timer);
   }

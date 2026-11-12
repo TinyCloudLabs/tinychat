@@ -3,7 +3,6 @@
 
 import {
   closeSync,
-  existsSync,
   fsyncSync,
   lstatSync,
   openSync,
@@ -35,11 +34,12 @@ export function markUsed(layout: BotLayout, at = Date.now()): void {
   renameSync(fresh, layout.lastUsedFile);
 }
 
-/** When the bot was last used: its marker, else its state snapshot's mtime; undefined for a bot with neither. */
+/** Uses snapshot mtime only when the marker is missing. An invalid marker refuses the sweep with an error. */
 export function lastUsed(layout: BotLayout): number | undefined {
-  if (existsSync(layout.lastUsedFile)) {
+  if (lstatSync(layout.lastUsedFile, { throwIfNoEntry: false })) {
     const at = Date.parse(readFileSync(layout.lastUsedFile, "utf8"));
-    if (Number.isFinite(at)) return at;
+    if (!Number.isFinite(at)) throw new Error("invalid last-used marker");
+    return at;
   }
   return statSync(layout.stateSnapshot, { throwIfNoEntry: false })?.mtimeMs;
 }
