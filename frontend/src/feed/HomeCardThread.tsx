@@ -107,8 +107,8 @@ export function ThreadView({ items, now, open, composing, input, helper, busy, c
         <button type="submit" className={buttonClass} disabled={closed || busy || !text.trim()}>Send</button>
       </div>
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[13px] text-muted-foreground">{helper}</p>
-        <button type="button" className={`${quietClass} shrink-0`} onClick={onClose}>Cancel</button>
+        {helper && <p className="text-[13px] text-muted-foreground">{helper}</p>}
+        <button type="button" className={`${quietClass} ml-auto shrink-0`} onClick={onClose}>Cancel</button>
       </div>
     </form>}
   </section>;
@@ -122,12 +122,10 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, open, 
   const [localClock, setLocalClock] = useState(now);
   const clock = Math.max(now, localClock);
   const agent = entry.source.label;
-  const messages = recentThread(owner.threads.filter((message) => message.kind === record.kind && message.id === record.id));
+  const messages = typedThreadMessages(record, owner);
   const legacyClaims = owner.deliveries.flatMap((delivery) => { const deadline = claimDeadline(delivery.originalReceipt); return deadline && deadline > clock ? [deadline] : []; });
   const liveClaims = messages.flatMap((message) => receiptsFor(message).reported.flatMap((receipt) => { const deadline = Date.parse(receipt.at) + 120_000; return receipt.state === "claimed" && deadline > clock ? [deadline] : []; }));
   const nextClaim = Math.min(...legacyClaims, ...liveClaims);
-  const linked = new Set([...Object.values(owner.threadResponses ?? {}), ...(owner.outboundNotes ?? []).map((note) => note.responseId)]);
-  const plainMessages = entry.responses?.filter((response) => response.kind === "message" && !linked.has(response.responseId)) ?? [];
   useEffect(() => {
     if (!Number.isFinite(nextClaim)) return;
     const timer = window.setTimeout(() => setLocalClock(Date.now()), Math.min(Math.max(0, nextClaim - Date.now() + 1), 2_147_483_647));
@@ -167,19 +165,34 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, open, 
     </>;
   }
 
-  const items: ThreadItem[] = [
-    ...messages.map((message) => {
+  return <ThreadView items={typedCommentItems(entry, record, owner, ownStatus)} now={clock} open={open} composing={composing} input={input} helper={helper} busy={busy} closed={closed} onSend={onSend} onClose={onClose} />;
+}
+
+function typedThreadMessages(record: BoardRecord, owner: SitrepOwnerData): ThreadMessage[] {
+  return recentThread(owner.threads.filter((message) => message.kind === record.kind && message.id === record.id));
+}
+
+/**
+ * A typed card's comments as items, oldest first: its thread messages, card messages not linked to
+ * a thread, and held notes. `ownStatus` adds the receipt line under each of the owner's thread
+ * messages (the card's own thread passes it; the agent page shows the words only).
+ */
+export function typedCommentItems(entry: HomeFeedEntry, record: BoardRecord, owner: SitrepOwnerData, ownStatus?: (message: ThreadMessage) => ReactNode): ThreadItem[] {
+  const agent = entry.source.label;
+  const linked = new Set([...Object.values(owner.threadResponses ?? {}), ...(owner.outboundNotes ?? []).map((note) => note.responseId)]);
+  const plainMessages = entry.responses?.filter((response) => response.kind === "message" && !linked.has(response.responseId)) ?? [];
+  return [
+    ...typedThreadMessages(record, owner).map((message) => {
       const origin = owner.threadOrigins?.[ownerThreadResponseKey(message)];
       // Only output this card's registered agent published carries its name; archived
       // officer messages keep the display name they were written with.
       const speaker = message.side === "sam" ? "You" : origin?.kind === "agent-output" && origin.sourceId === entry.source.sourceId ? agent : message.from;
       return { key: `thread:${message.side}:${message.messageId}`, id: message.messageId, at: message.at, speaker: message.side === "sam" ? COMMENT_COPY.you : speaker, text: message.text, mine: message.side === "sam",
-        ...(message.side === "officer" && message.replyTo ? { replyTo: message.replyTo } : {}), ...(message.side === "sam" ? { status: ownStatus(message) } : {}) };
+        ...(message.side === "officer" && message.replyTo ? { replyTo: message.replyTo } : {}), ...(message.side === "sam" && ownStatus ? { status: ownStatus(message) } : {}) };
     }),
     ...plainMessages.map((message) => ({ key: `message:${message.responseId}`, id: message.responseId, at: message.createdAt, speaker: COMMENT_COPY.you, text: message.text ?? "", mine: true,
       status: entry.responseHandling?.[message.responseId]?.acknowledgement ? <span>{agent} got it</span> : undefined })),
     ...(owner.heldNotes ?? []).map((note) => ({ key: `held:${note.eventId}`, id: note.eventId, at: note.at, speaker: COMMENT_COPY.you, text: note.text, mine: true,
       status: <span>Kept private, not sent: {note.intendedRecipient} isn't connected.</span> })),
   ];
-  return <ThreadView items={items} now={clock} open={open} composing={composing} input={input} helper={helper} busy={busy} closed={closed} onSend={onSend} onClose={onClose} />;
 }

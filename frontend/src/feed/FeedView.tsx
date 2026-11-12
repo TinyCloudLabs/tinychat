@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type R
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { HomeAskBox } from "@/bots/HomeAskBox";
 import { CardBody, cardClass, CardTextContext, cardTime, chipClass, COMMENT_COPY, focusRing, quietClass } from "./cardKit";
+import { AgentDetails, AgentMark, PlatformChip, type AgentProfile } from "./AgentMark";
 import { MessageCircleIcon } from "lucide-react";
 import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
@@ -63,7 +64,7 @@ const INTERACTIVE = "a, button, input, textarea, select, label, summary, details
  * With `onToggle`, tapping the title or any non-interactive part of the card
  * expands it in place.
  */
-export function FeedCardView({ card, sample = true, readBody, now, chip, comments = 0, onOpenComments, expanded = true, clampTitle = false, compact = false, onToggle, onEngage, heading = "h2", children }: {
+export function FeedCardView({ card, sample = true, readBody, now, chip, comments = 0, onOpenComments, expanded = true, clampTitle = false, compact = false, onToggle, onEngage, heading = "h2", agent, onOpenAgent, raised = false, children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
@@ -80,6 +81,12 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
   onToggle?: () => void;
   onEngage?: () => void;
   heading?: "h2" | "h3";
+  /** The acting agent: its own mark, the agent it posts through, and its platform when it reported one. */
+  agent?: { key: string; via?: string; profile?: AgentProfile };
+  /** Opens everything between the owner and this agent. With it, tapping the agent's name shows what it is. */
+  onOpenAgent?: () => void;
+  /** The one open card of the open-card layout: raised above the rows. */
+  raised?: boolean;
   children?: ReactNode;
 }): JSX.Element {
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
@@ -89,6 +96,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
   const body = useRef<HTMLDivElement>(null);
   const article = useRef<HTMLElement>(null);
   const toComments = useRef(false);
+  const [about, setAbout] = useState(false);
   useEffect(() => {
     if (!expanded || !toComments.current) return;
     toComments.current = false;
@@ -105,7 +113,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
     return () => window.removeEventListener("resize", measure);
   }, [full, compact, card.lead.text]);
   return (
-    <article ref={article} className={`${cardClass} ${onToggle ? "cursor-pointer" : ""}`} aria-label={card.title ?? `${card.render} by ${card.author.name}`}
+    <article ref={article} className={`${cardClass} ${raised ? "shadow-float" : ""} ${onToggle ? "cursor-pointer" : ""}`} aria-label={card.title ?? `${card.render} by ${card.author.name}`}
       onFocusCapture={onEngage} onPointerDownCapture={onEngage} onClickCapture={onEngage}
       onClick={onToggle ? (event) => {
         const target = event.target as Element;
@@ -116,8 +124,12 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
       <div className="flex min-h-7 min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-[18px]">
         {avatar
           ? <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />
-          : <span aria-hidden className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-[12.5px] font-semibold">{card.author.name.trim().charAt(0).toUpperCase() || "?"}</span>}
-        <span className="min-w-0 break-words"><span className="font-semibold">{card.author.name}</span>{when && <span className="whitespace-nowrap tabular-nums text-muted-foreground"> · <time dateTime={card.at}>{when}</time></span>}</span>
+          : agent ? <AgentMark agentKey={agent.key} name={card.author.name} />
+            : <span aria-hidden className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-[12.5px] font-semibold">{card.author.name.trim().charAt(0).toUpperCase() || "?"}</span>}
+        <span className="min-w-0 break-words">{agent && onOpenAgent
+          ? <button type="button" aria-expanded={about} onClick={() => setAbout(!about)} className={`-my-[13px] inline-flex min-h-11 items-center rounded-sm font-semibold underline decoration-border underline-offset-4 ${focusRing}`}>{card.author.name}</button>
+          : <span className="font-semibold">{card.author.name}</span>}{agent?.via && <span className="text-muted-foreground"> · via {agent.via}</span>}{when && <span className="whitespace-nowrap tabular-nums text-muted-foreground"> · <time dateTime={card.at}>{when}</time></span>}</span>
+        {agent?.profile?.platform && <PlatformChip name={agent.profile.platform} />}
         {sample && <span className={`ml-auto ${chipClass}`}>{FEED_STRINGS.provenance}</span>}
         {(chip || (!expanded && comments > 0 && onOpenComments)) && <span className="ml-auto flex shrink-0 items-center gap-2">
           {!expanded && comments > 0 && onOpenComments && <button type="button" aria-label={COMMENT_COPY.count(comments)} onClick={() => { toComments.current = true; onOpenComments(); }}
@@ -127,6 +139,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
           {chip}
         </span>}
       </div>
+      {agent && onOpenAgent && about && <AgentDetails name={card.author.name} via={agent.via} profile={agent.profile} onOpen={onOpenAgent} />}
       {card.title && <Heading className="mt-2.5 break-words text-[17px] font-semibold leading-[1.3] [text-wrap:balance]">
         {onToggle
           ? <button type="button" aria-expanded={expanded} onClick={onToggle} className={`w-full rounded-sm text-left ${clampTitle && !expanded ? "line-clamp-2" : ""} ${focusRing}`}>{card.title}</button>

@@ -43,6 +43,11 @@ interface ImportMetaEnv {
    * prototype, and only debug builds of the app have the location permissions it needs.
    */
   readonly VITE_EXO_LOCATION_SPIKE?: string;
+  /** The Home feed's design switches' defaults (src/feed/feedFlags.ts): "open-card", "agents", "4", "hidden". Unset = the approved feed. */
+  readonly VITE_FEED_LAYOUT?: string;
+  readonly VITE_FEED_NAV?: string;
+  readonly VITE_FEED_UNDO?: string;
+  readonly VITE_FEED_CAPTIONS?: string;
   /** "true" registers the PWA service worker under `vite dev` too (src/lib/pwa.ts); off by default. */
   readonly VITE_PWA_DEV?: string;
 }

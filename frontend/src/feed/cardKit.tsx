@@ -8,6 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
+import { useFeedFlags, type FeedCaptions } from "./feedFlags";
 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 
@@ -152,7 +153,7 @@ export function AnsweredPanel({ children, focusOnMount = false }: { children: Re
   // Focus moves here for screen readers only: the panel is not operable (tabIndex -1), so it never shows a ring.
   return <div ref={ref} role="status" aria-label="Your answer" tabIndex={-1} className="mt-3.5 flex items-start gap-2.5 rounded-xl bg-muted px-3 py-2.5 text-sm leading-[1.45] outline-none">
     <CheckIcon aria-hidden className="mt-px size-[18px] shrink-0" />
-    <div className="min-w-0 space-y-1 break-words">{children}</div>
+    <div className="min-w-0 flex-1 space-y-1 break-words">{children}</div>
   </div>;
 }
 
@@ -180,24 +181,27 @@ export const COMMENT_COPY = {
   count: (n: number) => `${n} ${n === 1 ? "comment" : "comments"}. Open comments`,
   earlier: (n: number) => `Show ${n} earlier ${n === 1 ? "comment" : "comments"}`,
   you: "You",
+  /** The button, with the feed's captions switch off (Hunter's D8): it names who gets the comment. */
+  leaveFor: (who: string) => `Leave a comment for ${who}`,
 } as const;
 
 /**
  * The comment composer's button, input and helper line: who a comment reaches. `approved` is
  * who actually receives it (the publishing agent, or the owner-approved recipients); `held`
  * recipients aren't connected, keep it privately, and are never counted as seeing it.
+ * `captions: "hidden"` (the feed's D8 switch) drops the explaining line, keeps the held line,
+ * and names the recipient on the button instead.
  */
-export function commentCopy({ approved, held = [] }: { approved: readonly string[]; held?: readonly string[] }): { button: string; input: string; helper: string } {
+export function commentCopy({ approved, held = [], captions = "shown" }: { approved: readonly string[]; held?: readonly string[]; captions?: FeedCaptions }): { button: string; input: string; helper: string } {
   const heldLine = held.length ? ` ${names(held)} ${held.length === 1 ? "isn't" : "aren't"} connected, so ${held.length === 1 ? "it doesn't" : "they don't"} get it.` : "";
   const who = approved.length >= 3 ? "the agents on this card" : names(approved);
+  const input = approved.length ? COMMENT_COPY.input(who) : COMMENT_COPY.inputNoRecipient;
+  if (captions === "hidden") return { button: approved.length ? COMMENT_COPY.leaveFor(who) : COMMENT_COPY.button, input, helper: heldLine.trim() };
   const sees = !approved.length ? "Only you see this."
     : approved.length >= 3 ? `Only the ${approved.length} agents on this card see this.`
       : `Only ${names(approved)} ${approved.length === 1 ? "sees" : "see"} this.`;
-  return { button: COMMENT_COPY.button, input: approved.length ? COMMENT_COPY.input(who) : COMMENT_COPY.inputNoRecipient, helper: `${COMMENT_COPY.notAnAnswer} ${sees}${heldLine}` };
+  return { button: COMMENT_COPY.button, input, helper: `${COMMENT_COPY.notAnAnswer} ${sees}${heldLine}` };
 }
-
-/** Seconds an answer waits, undoable, before it is sent. */
-export const UNDO_SECONDS = 5;
 
 /** What a card says about an answer that was waiting to be sent when the page closed. */
 export const HELD_ANSWER_COPY = {
@@ -238,7 +242,7 @@ export function NotSent({ label, changed = false }: { label: string; changed?: b
 export const PendingSendContext = createContext<Set<() => void> | null>(null);
 
 /**
- * An answer that waits UNDO_SECONDS before it is sent. `start` shows it at once;
+ * An answer that waits the feed's undo seconds (5, or 4 with the undo switch) before it is sent. `start` shows it at once;
  * `undo` drops it unsent; at 0 (or when the card unmounts, the view changes or the page
  * closes) `send` runs exactly once, unless the card's issuance was replaced meanwhile
  * (`guard.stale` at that moment): then nothing is written and `guard.onRefused` runs.
@@ -251,6 +255,7 @@ export function usePendingSend(guard: { stale: boolean; onRefused: (label: strin
   const latest = useRef(guard);
   latest.current = guard;
   const registry = useContext(PendingSendContext);
+  const { undoSeconds } = useFeedFlags();
   const stop = useCallback(() => { for (const timer of timers.current) window.clearTimeout(timer); timers.current = []; }, []);
   const flush = useCallback(() => {
     const armed = send.current;
@@ -267,12 +272,12 @@ export function usePendingSend(guard: { stale: boolean; onRefused: (label: strin
   const start = useCallback((label: string, run: () => void) => {
     flush();
     send.current = { label, run };
-    setPending({ label, seconds: UNDO_SECONDS });
-    for (let elapsed = 1; elapsed < UNDO_SECONDS; elapsed++) {
-      timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: UNDO_SECONDS - elapsed }), elapsed * 1000));
+    setPending({ label, seconds: undoSeconds });
+    for (let elapsed = 1; elapsed < undoSeconds; elapsed++) {
+      timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: undoSeconds - elapsed }), elapsed * 1000));
     }
-    timers.current.push(window.setTimeout(flush, UNDO_SECONDS * 1000));
-  }, [flush]);
+    timers.current.push(window.setTimeout(flush, undoSeconds * 1000));
+  }, [flush, undoSeconds]);
   useEffect(() => {
     registry?.add(flush);
     // Closing the page mid-countdown sends at once; the write holds the answer until it lands.
@@ -288,6 +293,7 @@ export function usePendingSend(guard: { stale: boolean; onRefused: (label: strin
  * anywhere else on the card, or Escape inside the card undoes it.
  */
 export function PendingAnswer({ label, seconds, children, onUndo }: { label: string; seconds: number; children: ReactNode; onUndo: () => void }) {
+  const { undoSeconds } = useFeedFlags();
   const pill = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     pill.current?.focus();
@@ -304,7 +310,7 @@ export function PendingAnswer({ label, seconds, children, onUndo }: { label: str
       <button ref={pill} type="button" aria-label={`Undo, ${seconds} ${seconds === 1 ? "second" : "seconds"} left`} onClick={(event) => { event.stopPropagation(); onUndo(); }}
         className={`relative z-20 inline-flex h-11 shrink-0 items-center rounded-full bg-foreground px-4 text-[13.5px] font-bold tabular-nums text-background ${focusRing}`}>Undo · {seconds}</button>
     </div>
-    <p role="status" className="sr-only">Sending {label} in {UNDO_SECONDS} seconds. Undo available.</p>
+    <p role="status" className="sr-only">Sending {label} in {undoSeconds} seconds. Undo available.</p>
   </>;
 }
 

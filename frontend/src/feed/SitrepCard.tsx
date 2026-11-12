@@ -7,6 +7,8 @@ import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
 import { HomeCardThread } from "./HomeCardThread";
+import { AnswerSteps } from "./AnswerSteps";
+import { useFeedFlags } from "./feedFlags";
 
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
 function stamp(at: string) { return cardTime(at, Date.now()); }
@@ -80,10 +82,10 @@ function answerReceipt(entry: HomeFeedEntry, owner: SitrepOwnerData, answer: Ans
   return { header, acknowledgement, outcome };
 }
 
-/** The saved answer in words: the option's label (never its id); "got it" only once the agent acknowledged. */
-function TypedAnswerStatus({ entry, owner, answer, record, focusOnMount = false }: { entry: HomeFeedEntry; owner: SitrepOwnerData; answer?: Answer; record: BoardRecord; focusOnMount?: boolean }) {
+/** The saved answer in words: the option's label (never its id); "got it" only once the agent acknowledged. Its steps follow when this device holds its record. */
+function TypedAnswerStatus({ entry, owner, answer, record, now, focusOnMount = false }: { entry: HomeFeedEntry; owner: SitrepOwnerData; answer?: Answer; record: BoardRecord; now: number; focusOnMount?: boolean }) {
   if (!answer) return null;
-  const { acknowledgement, outcome } = answerReceipt(entry, owner, answer);
+  const { header, acknowledgement, outcome } = answerReceipt(entry, owner, answer);
   const agent = entry.source.label;
   const choice = answer.choice && record.kind === "ask" ? record.options.find((option) => option.id === answer.choice) : undefined;
   const label = choice && optionText(choice.label);
@@ -96,6 +98,7 @@ function TypedAnswerStatus({ entry, owner, answer, record, focusOnMount = false 
     <p>{lead}{acknowledgement && ` ${agent} got it.`}{outcome && (outcome.phase === "succeeded" ? ` ${agent} finished it.` : ` ${agent} couldn't finish it.`)}</p>
     {answer.action !== "code" && answer.text && <p className="whitespace-pre-wrap">{answer.text}</p>}
     {typeof outcome?.detail?.message === "string" && <p className="whitespace-pre-wrap">{outcome.detail.message}</p>}
+    {header && <AnswerSteps sent={header.createdAt} acknowledgement={acknowledgement} outcome={outcome} agent={agent} now={now} />}
   </AnsweredPanel>;
 }
 
@@ -111,6 +114,7 @@ export function SitrepCard(props: Props) {
   const [confirmDrop, setConfirmDrop] = useState(false);
   const [composing, setComposing] = useState(false);
   const countdown = usePendingSend({ stale, onRefused });
+  const { captions } = useFeedFlags();
   const [reason, setReason] = useState("");
   const [claimNote, setClaimNote] = useState("");
   const [followup, setFollowup] = useState(false);
@@ -254,7 +258,7 @@ export function SitrepCard(props: Props) {
   const steer = record.kind === "ask" && record.mode === "proceeding" ? steerState(record, now, answers) : undefined;
   const optionLabel = (optionId?: string) => { const option = record.kind === "ask" ? record.options.find((candidate) => candidate.id === optionId) : undefined; return option && optionText(option.label); };
 
-  const audience = route ? commentCopy({ approved: destinations.map((recipient) => recipient.legacyName), held: unresolved }) : commentCopy({ approved: [agent] });
+  const audience = route ? commentCopy({ approved: destinations.map((recipient) => recipient.legacyName), held: unresolved, captions }) : commentCopy({ approved: [agent], captions });
   const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} composing={composing && !closed} input={audience.input} helper={audience.helper}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} onClose={() => setComposing(false)} />;
 
@@ -266,7 +270,7 @@ export function SitrepCard(props: Props) {
       {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
         {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>}
       </PendingAnswer>}
-      {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
+      {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} now={now} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
       {!countdown.pending && asking && !!options.length && <OptionButtons options={options} suggested={record.recommend} saving={tapped} disabled={busy || stale} onChoose={(choice) => { if (!stale) countdown.start(optionLabel(choice) ?? "", () => void tap("answer", choice)); }} />}
       {!countdown.pending && asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => countdown.start(optionLabel(record.default) ?? "its plan", () => void tap("accept-default", record.default!))}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
@@ -283,7 +287,7 @@ export function SitrepCard(props: Props) {
       })}</section>)}
     </>}
 
-    {record.kind === "approval" && <><TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} /><ApprovalActions entry={entry} approval={record} source={source} owner={owner} now={now} expanded={expanded} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} inactive={projection.attention === "not-needed"} /></>}
+    {record.kind === "approval" && <><TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} now={now} /><ApprovalActions entry={entry} approval={record} source={source} owner={owner} now={now} expanded={expanded} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} inactive={projection.attention === "not-needed"} /></>}
     {record.kind === "task" && <div className="mt-3.5 space-y-2">
       <fieldset disabled={busy || closed || !entry.state.card.needsResponse}><legend className="sr-only">{entry.state.card.needsResponse ? "Your steps (private)" : "Steps"}</legend>
         {record.steps.map((step) => <label key={step.id} className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5 accent-foreground" checked={!!state?.steps[step.id]} onChange={(event) => { const checked = event.currentTarget.checked; void perform(() => savePrivate({ steps: { [step.id]: checked ? new Date().toISOString() : null } }, `tick:${step.id}:${checked}`)); }} /><span className={state?.steps[step.id] ? "text-muted-foreground line-through" : ""}>{step.text}</span></label>)}
@@ -475,7 +479,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   const action = visibleForm && !approval.codeExpected;
   return <div className="mt-3.5 space-y-3" onFocusCapture={() => { engagedOnce.current = true; }}>
     {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
-    {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
+    {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} now={now} />}
     {approval.warning && <p className="text-sm font-medium text-warning">{approval.warning}</p>}
     {!expanded && approval.permissions && scoped && <p className="line-clamp-2 text-sm">Allows {approval.permissions}</p>}
     <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
