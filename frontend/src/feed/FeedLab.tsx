@@ -5,6 +5,7 @@
 // only in a build made with VITE_FEED_LAB=true. Not a product surface.
 import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
+import { UploadIcon } from "lucide-react";
 import { FEED_LAB_PATH } from "@/lib/feedLab";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import { createFeedLabJsonSource } from "./feedLabJsonSource";
@@ -79,11 +80,12 @@ export function FeedLab() {
 
   const active = !lab ? "Loading test feed…" : lab.exportedAt === undefined ? "Made-up cards" : `Test feed · ${exportStamp(lab.exportedAt)}`;
   return <div className="flex h-dvh flex-col bg-background text-foreground">
-    <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-sm">
-      <p className="min-w-0 flex-1"><span className="font-medium">Feed lab · {active}</span><span className="block text-xs text-muted-foreground">{lab?.exportedAt === undefined ? "A simulated agent answers. Nothing leaves this page." : "Cards from a test feed's export. Nothing you do here is sent."}</span></p>
-      <button type="button" onClick={() => setPasting(!pasting)} aria-expanded={pasting} className={buttonClass}>Load JSON</button>
-      <button type="button" onClick={reset} className={buttonClass}>Reset</button>
-      <Link to="/" className="inline-flex min-h-11 items-center underline underline-offset-2 fine:min-h-10">Close</Link>
+    {/* One line at a phone's width (design round 6): the subtitle shows from 640px, Load JSON is an icon. */}
+    <header className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-sm">
+      <p className="min-w-0 flex-1"><span className="block truncate font-medium">Feed lab · {active}</span><span className="hidden text-xs text-muted-foreground sm:block">{lab?.exportedAt === undefined ? "A simulated agent answers. Nothing leaves this page." : "Cards from a test feed's export. Nothing you do here is sent."}</span></p>
+      <button type="button" onClick={() => setPasting(!pasting)} aria-expanded={pasting} aria-label="Load JSON" title="Load JSON" className="flex size-11 shrink-0 items-center justify-center rounded-lg border border-border fine:size-9"><UploadIcon aria-hidden className="size-4" /></button>
+      <button type="button" onClick={reset} className={`${buttonClass} shrink-0`}>Reset</button>
+      <Link to="/" className="inline-flex min-h-11 shrink-0 items-center underline underline-offset-2 fine:min-h-10">Close</Link>
     </header>
     {pasting && <div className="flex flex-col gap-2 border-b border-border px-3 py-2 text-sm">
       <textarea value={pasted} onChange={(event) => setPasted(event.target.value)} aria-label="Feed export JSON" placeholder="Paste a test feed's export JSON" rows={6} className="w-full rounded-lg border border-border bg-background p-2 font-mono text-xs" />
@@ -92,7 +94,7 @@ export function FeedLab() {
         <button type="button" onClick={() => { setPasting(false); setPasted(""); }} className={buttonClass}>Cancel</button>
       </div>
     </div>}
-    {error && <p role="alert" className="border-b border-border px-3 py-1 text-xs text-destructive">Couldn't load that feed: {error}</p>}
+    {error && <p role="alert" className="border-b border-border px-3 py-1 text-xs text-destructive">Couldn't load that feed: {error}. Check the export and paste it again.</p>}
     <div className="min-h-0 flex-1">{lab && <HomeFeedEntries key={lab.run} source={lab.source} />}</div>
     {/* Which build this is, so anyone can tell they are looking at the latest. */}
     <footer className="border-t border-border px-3 py-1 text-[11px] text-muted-foreground"><code>{buildStamp()}</code></footer>

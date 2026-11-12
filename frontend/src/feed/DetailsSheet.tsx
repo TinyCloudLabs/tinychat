@@ -40,7 +40,8 @@ export function DetailsSheet({ open, onOpenChange, children }: {
           </Dialog.Close>
         </div>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain break-words px-4 pb-4 pt-1 text-sm">{children}</div>
-        <div className="flex shrink-0 justify-end border-t border-border px-4 py-3">
+        {/* On a phone the grabber, the X, the scrim and Escape are enough (design round 6); from 640px a footer Close. */}
+        <div className="hidden shrink-0 justify-end border-t border-border px-4 py-3 sm:flex">
           <Dialog.Close className="min-h-11 rounded-lg border border-border px-4 text-sm transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:bg-surface-2 fine:min-h-10">Close</Dialog.Close>
         </div>
       </Dialog.Content>

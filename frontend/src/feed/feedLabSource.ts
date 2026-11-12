@@ -29,6 +29,34 @@ function agent(token: string, label: string): FeedSource {
   return { sourceId: `lab-${token}`, agentDid: `did:key:feed-lab-${token}`, label, output: database("output"), responses: database("responses") };
 }
 
+/** A one-page brief an agent attaches to a card (lab-only `payload.brief`, Sam 23:30Z); it opens in the app. */
+const ROOM_BRIEF = { title: "Choosing the pottery workshop room", markdown: `## Background
+The pottery workshop runs for four evenings next month, Tuesdays from 18:30 to 21:00. Two rooms are free on all four dates, and each is holding the booking for us.
+
+## Why now
+Both holds lapse in two days. **Fourteen people** have signed up, already more than the loft seats, and sign-ups stay open for another week.
+
+## If you don't answer
+No room is booked. The dates stay provisional, and I won't confirm places to the people who signed up.
+
+## The options
+| | The loft | The hall |
+|---|---|---|
+| Seats | 12 | 30 |
+| Cost | 40 per evening | 65 per evening |
+| Access | Two flights of stairs | Step-free |
+| Light | North windows, good for glazing | Overhead lights |
+| Catch | Already too small | The choir has it until 18:00 |
+
+Waiting a week means asking again once sign-ups close, but both holds lapse before then.
+
+## Recommendation
+Book **the hall**. It fits everyone who has signed up with room to grow, and it is step-free, which two people asked about. The choir leaves at 18:00, so there are 30 minutes to set up. Over four evenings it costs 100 more than the loft.
+
+- The wheels and the kiln cart fit through its double doors.
+- Its tables can take clay, so no covers are needed.` };
+const withRoomBrief = (card: FeedCard): FeedCard => ({ ...card, payload: { ...card.payload, brief: ROOM_BRIEF } });
+
 function labCards(now: number): LabCard[] {
   const at = (minutes: number) => new Date(now + minutes * 60_000).toISOString();
   const trip = agent("trip", "Trip agent");
@@ -58,16 +86,23 @@ function labCards(now: number): LabCard[] {
     { source: trip, card: plain("lab-train", 5, -4, {
       kind: "question", needsResponse: true, title: "Which train should I hold for Friday?",
       body: "Two trains reach the workshop before it starts at 14:00. Holding a seat is free until Thursday.",
-      choices: [{ id: "direct", label: "08:15 direct" }, { id: "change", label: "09:40, one change" }], payload: codex,
+      // Lab-only fields (Sam, 23:30Z): priority 0 (highest) to 5, a deadline, a "relevant until".
+      choices: [{ id: "direct", label: "08:15 direct" }, { id: "change", label: "09:40, one change" }], payload: { ...codex, priority: 1, deadline: at(3 * 24 * 60) },
     }) },
     { source: home, card: plain("lab-filter", 4, -35, {
       kind: "question", needsResponse: true, title: "The water filter order renews tomorrow. Keep it?",
       body: "It has renewed every two months since spring. The last filter is still unopened.",
-      choices: [{ id: "renew", label: "Renew" }, { id: "skip", label: "Skip this one" }, { id: "stop", label: "Stop it" }], payload: grok,
+      choices: [{ id: "renew", label: "Renew" }, { id: "skip", label: "Skip this one" }, { id: "stop", label: "Stop it" }], payload: { ...grok, priority: 2, expiresAt: at(20 * 60) },
+    }) },
+    // Past its "relevant until": not in the feed, only in History, marked expired.
+    { source: home, card: plain("lab-expired-parcel", 3, -300, {
+      kind: "question", needsResponse: true, title: "Can a neighbour sign for the parcel at 14:00?",
+      body: "The courier asked before the 14:00 slot. That slot has passed.",
+      choices: [{ id: "yes", label: "Yes, ask next door" }, { id: "no", label: "No, redeliver" }], payload: { ...grok, priority: 3, expiresAt: at(-30) },
     }) },
     { source: backup, card: plain("lab-backup", 1, -90, {
       kind: "update", needsResponse: false, title: "Weekly backup finished",
-      body: "312 new photos and 18 documents are stored. Nothing needs you.",
+      body: "312 new photos and 18 documents are stored. Nothing needs you.", payload: { priority: 5 },
     }) },
     { source: studio, card: typed("lab-letter", 3, -20, {
       kind: "ask", id: "newsletter-version", title: "Which version of the spring newsletter goes out?", body: "Both drafts are finished and checked.",
@@ -83,7 +118,7 @@ function labCards(now: number): LabCard[] {
         known: ["The last three newsletters were short, and about half the list opened them."], related: [],
       },
     }) },
-    { source: studio, card: typed("lab-room", 3, -50, {
+    { source: studio, card: withRoomBrief(typed("lab-room", 3, -50, {
       kind: "ask", id: "workshop-room", title: "Which room should I book for the pottery workshop?", body: "Fourteen people have signed up so far.",
       askedAt: at(-50), status: "open", expiresAt: "never", recommend: "hall", deadline: at(2 * 24 * 60),
       options: [
@@ -97,7 +132,7 @@ function labCards(now: number): LabCard[] {
         ifNoAnswer: "No room is booked and the workshop dates stay provisional.",
         known: ["Sign-ups close in one week."], related: [],
       },
-    }) },
+    })) },
     { source: studio, card: typed("lab-prices", 2, -10, {
       kind: "approval", id: "price-list-go", title: "Publish the spring price list", body: "Two prices changed; the rest are as they were.",
       approvalType: "go", approvalKind: "publish", codeExpected: false, issuedAt: at(-10), expiresAt: at(3 * 24 * 60), status: "open",
@@ -251,13 +286,15 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
   {
     const filter = cards.find((labCard) => labCard.card.cardId === "lab-filter")!;
     const at = (minutes: number) => new Date(now + minutes * 60_000).toISOString();
-    const comment = (text: string, minutes: number) => {
+    // `acknowledged: false`: the agent never confirmed it got the comment, so it shows "Not confirmed" and "Send again".
+    const comment = (text: string, minutes: number, acknowledged = true) => {
       const response: FeedResponse = { responseId: crypto.randomUUID(), cardId: filter.card.cardId, revision: filter.card.revision, issuanceId: filter.card.issuanceId, kind: "message", text, createdAt: at(minutes), sequence: saved.length + 1 };
       saved.push({ response });
-      handling.set(response.responseId, { acknowledgement: { cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId, handlingId: crypto.randomUUID(), phase: "acknowledged", createdAt: at(minutes + 0.5) }, outcome: null });
+      if (acknowledged) handling.set(response.responseId, { acknowledgement: { cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId, handlingId: crypto.randomUUID(), phase: "acknowledged", createdAt: at(minutes + 0.5) }, outcome: null });
       return response.responseId;
     };
     const wait = comment("Can it wait until the next order on the 3rd?", -32);
+    comment("Could you also cancel last month's spare?", -29, false);
     const left = comment("How many filters do we have left?", -27);
     // The first comment's second reply comes after the second comment, so it quotes the comment it answers.
     plainReplies.set(ownerCardKey(filter.source.sourceId, filter.card), [

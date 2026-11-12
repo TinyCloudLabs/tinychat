@@ -17,8 +17,8 @@ export const answerSummary = (label?: string, text?: string) => label ? `You cho
 /**
  * The undo window. `start` counts ANSWER_UNDO_SECONDS down and then calls `send`;
  * `undo` stops the count, so nothing is saved. A card that goes away while it
- * counts sends at once: an answer is never dropped silently. `status` is the
- * line a screen reader hears.
+ * counts sends at once, and so does a page that is closed or hidden: an answer
+ * is never dropped silently. `status` is the line a screen reader hears.
  */
 export function useUndoWindow(send: () => void) {
   const [seconds, setSeconds] = useState<number | null>(null);
@@ -31,6 +31,23 @@ export function useUndoWindow(send: () => void) {
     timer.current = undefined;
     setSeconds(null);
   }
+  // A closed or hidden page may never run the rest of the count (mobile browsers freeze or discard it), so the
+  // answer goes now, as it does on unmount. `pagehide` covers closing and navigating away; `visibilitychange` to
+  // hidden covers switching apps, which on a phone is often the last event a page gets.
+  useEffect(() => {
+    function flush() {
+      if (!timer.current) return;
+      stop(); setStatus("Sending…");
+      latest.current();
+    }
+    const hidden = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, []);
   useEffect(() => () => {
     if (!timer.current) return;
     clearInterval(timer.current);
@@ -66,12 +83,10 @@ export const OWN_OPTION: AnswerOption = { id: "lab-your-own-option", label: "You
  * the one its agent recommends. The chosen one stays pressed; while its answer waits or is sent (`seconds`,
  * `sending`) it reads as the wait, with Undo and a line that runs out, and the others dim.
  */
-export function AnswerOptions({ options: given, suggested, chosen, seconds, sending, to, own, onChoose, onUndo }: {
+export function AnswerOptions({ options: given, suggested, chosen, seconds, sending, own, onChoose, onUndo }: {
   options: readonly AnswerOption[];
   /** The option the agent recommends. */
   suggested?: string;
-  /** The agent the answer goes to, named while it waits. */
-  to?: string;
   chosen?: string;
   /** "Your own answer" as the last entry; `open` shows `box` (the text and Send) under it. */
   own?: { open: boolean; box: ReactNode };
@@ -95,9 +110,11 @@ export function AnswerOptions({ options: given, suggested, chosen, seconds, send
           </span>
         </button>
         {/* The wait lies over the option, which keeps its size: nothing moves while Undo is on offer. */}
+        {/* The wait lies over the option, which keeps its size: nothing moves while Undo is on offer. The label never
+            shortens; the countdown does (design round 6). A screen reader hears the full status from the hold. */}
         {pressed && waiting && <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden rounded-xl px-3">
-          <span aria-hidden className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-          <span className="tnum min-w-0 shrink text-right text-xs">{sendingLabel(seconds, "Sending", to)}</span>
+          <span aria-hidden className="shrink-0 font-medium">{option.label}</span>
+          <span aria-hidden className="tnum min-w-0 flex-1 truncate text-right text-xs">{seconds === null ? "Sending…" : `Sending · ${seconds}s`}</span>
           {seconds !== null && <button type="button" onClick={onUndo} className="pointer-events-auto min-h-10 shrink-0 rounded-lg border border-border bg-background px-3 font-medium">Undo</button>}
           {seconds !== null && <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-primary motion-safe:animate-out motion-safe:slide-out-to-left motion-safe:ease-linear motion-safe:fill-mode-forwards motion-reduce:hidden" style={{ animationDuration: `${ANSWER_UNDO_SECONDS}s` }} />}
         </div>}
@@ -114,9 +131,12 @@ export function OwnAnswerBox({ text, disabled, onText, onSend, state = "idle", o
   text: string; disabled: boolean; onText: (text: string) => void; onSend: () => void;
   state?: SendState; onRetry?: () => void;
 }) {
+  // While the answer waits out its undo window, the option row above is the only status, so Send steps aside; it
+  // comes back to show the save itself (sending, or "Couldn't send · Retry").
+  const holding = disabled && state === "idle";
   return <div className="space-y-2 rounded-xl border border-border p-3">
     <textarea autoFocus rows={3} aria-label={OWN_OPTION.label} value={text} disabled={disabled} onInput={(event) => onText(event.currentTarget.value)}
       className="block min-h-20 w-full resize-y rounded-lg border border-border bg-background p-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" />
-    <StatefulSendButton state={state} disabled={disabled || !text.trim()} onSend={state === "error" ? (onRetry ?? onSend) : onSend} />
+    {!holding && <StatefulSendButton state={state} disabled={disabled || !text.trim()} onSend={state === "error" ? (onRetry ?? onSend) : onSend} />}
   </div>;
 }

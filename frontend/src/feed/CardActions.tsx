@@ -7,16 +7,18 @@ import { DetailsSheet } from "./DetailsSheet";
 
 /** The class of a small action on a card. */
 export const actionClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
+/** The class of a quiet action in the card's foot (Ask me later, Details): text that lights up when touched. */
+export const footActionClass = "inline-flex min-h-11 items-center rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground disabled:opacity-50 fine:min-h-9";
 
 /**
- * The card's foot: its small `actions`, then "Details", which opens the card's facts (`children`) in a pop-up, and at
- * the far end `end` ("Show less" on a card opened from the list).
+ * The card's foot, one row: its quiet `actions` and "Details" (which opens the card's facts, `children`, in a pop-up)
+ * on the left, and `end` ("Next card") on the right.
  */
 export function CardDetails({ children, actions, end }: { children: ReactNode; actions?: ReactNode; end?: ReactNode }) {
   const [open, setOpen] = useState(false);
-  return <div aria-label="Card actions" className="flex flex-wrap items-center gap-2 text-sm">
+  return <div aria-label="Card actions" className="flex flex-wrap items-center gap-1 text-sm">
     {actions}
-    <button type="button" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)} className="inline-flex min-h-11 items-center rounded-lg px-1 text-sm text-muted-foreground underline decoration-border underline-offset-4">Details</button>
+    <button type="button" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)} className={footActionClass}>Details</button>
     {end && <span className="ml-auto">{end}</span>}
     <DetailsSheet open={open} onOpenChange={setOpen}>{children}</DetailsSheet>
   </div>;

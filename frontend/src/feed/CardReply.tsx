@@ -58,11 +58,12 @@ export function replyDraft(entry: HomeFeedEntry, record: BoardRecord, text: stri
 
 /** Sends a reply. A retry of the same words reuses the draft, so a lost save cannot become a second message. */
 export function usePostReply(entry: HomeFeedEntry, record: BoardRecord, source: HomeFeedSource, onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void) {
-  const pending = useRef<{ text: string; draft: ReturnType<typeof replyDraft> } | undefined>(undefined);
-  return async (text: string, delivery?: SitrepMessageDelivery) => {
+  const pending = useRef<{ text: string; resendOf?: string; draft: ReturnType<typeof replyDraft> } | undefined>(undefined);
+  // `resendOf`: "Send again" names the comment it repeats, so the agent and the thread can tell the copy apart.
+  return async (text: string, delivery?: SitrepMessageDelivery, resendOf?: string) => {
     if (!source.sendMessage) throw new Error("No agent can receive a reply here");
-    const draft = pending.current?.text === text ? pending.current.draft : replyDraft(entry, record, text, delivery);
-    pending.current = { text, draft };
+    const draft = pending.current?.text === text && pending.current.resendOf === resendOf ? pending.current.draft : replyDraft(entry, record, text, delivery, resendOf);
+    pending.current = { text, resendOf, draft };
     const result = await source.sendMessage(entry, draft.header, draft.payload);
     pending.current = undefined;
     onSaved(entry, result);

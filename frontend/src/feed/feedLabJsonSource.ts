@@ -1,10 +1,11 @@
 // The feed lab's other feed (FeedLab.tsx): real rows exported from a test feed with the CLI, held in memory, in the
 // shapes the real source returns (feedStore.ts, loadTypedFeed.ts). The export is read once; what you do here (answers,
 // comments, seen, snoozed) stays in memory and is never sent. No agent replies: the rows are what the agents published.
-import { feedCardSchema, feedHandlingSchema, newFeedMessageSchema, newFeedResponseSchema, type FeedCard, type FeedResponse, type FeedResponseHandling, type FeedResponsePayload, type FeedSelector, type FeedSource, type NewFeedMessage, type NewFeedResponse } from "@tinycloud/sdk-services/feed";
+import { feedCardSchema, feedHandlingSchema, newFeedMessageSchema, newFeedResponseSchema, type FeedCard, type FeedCardIdentity, type FeedResponse, type FeedResponseHandling, type FeedResponsePayload, type FeedSelector, type FeedSource, type NewFeedMessage, type NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { emptySitrepOwnerData, mergeSitrepStates, ownerThreadResponseKey, parseSitrepCardPayload, safeSitrepActionSummary, validateSitrepAction, type SamState, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
 import { ownerCardKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource, HomeFeedViewEvent } from "./feedStoreTypes";
+import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { addCanonicalOwnerEvent, combineOwnerData } from "./sitrepOwnerStore";
 
 type Row = Record<string, unknown>;
@@ -54,23 +55,39 @@ export function createFeedLabJsonSource(data: unknown): HomeFeedSource & { stop(
     return row.agent;
   };
 
-  // The latest revision of each card, from `cards` and every published revision. The schema drops `agent` and `sequence`.
-  const latest = new Map<string, { token: string; card: FeedCard }>();
+  // Every revision of each card, from `cards` and `revisions`. The schema drops `agent` and `sequence`.
+  const revisions = new Map<string, { token: string; cards: Map<number, FeedCard> }>();
   for (const field of ["cards", "revisions"]) {
     rowsOf(data, field).forEach((row, index) => {
       const where = `${field}[${index}]`;
       const token = tokenOf(row, where);
       const card = parsed(feedCardSchema, row, where);
       const key = JSON.stringify([token, card.cardId]);
-      const known = latest.get(key);
-      if (!known || card.revision > known.card.revision) latest.set(key, { token, card });
+      const known = revisions.get(key) ?? revisions.set(key, { token, cards: new Map() }).get(key)!;
+      known.cards.set(card.revision, card);
     });
   }
 
-  // Responses and handling are bound to the revision they were made on. An agent answers a comment by publishing the
-  // card again (revision + 1, the reply appended), so a card's answers, comments and receipts are those of every
-  // revision of the same issuance: grouped by agent, cardId and issuanceId, not revision.
-  const groupOf = (token: string, identity: { cardId: string; issuanceId: string }) => JSON.stringify([token, identity.cardId, identity.issuanceId]);
+  // Responses and handling are bound to the exact revision and issuance they were made on. An agent answers a comment
+  // by publishing the card again (revision + 1, a new issuance, the reply appended), so, as main's Home feed does, a
+  // run of reply-only revisions (replyOnlyRevision.ts) is one card: each revision maps to the first of its run, and
+  // the latest revision gets every answer, comment and receipt of the run. Any other change, or a typed card, starts
+  // a new run, so a re-issued request starts unanswered.
+  const runOf = new Map<string, string>();
+  const latest: { token: string; card: FeedCard }[] = [];
+  for (const { token, cards } of revisions.values()) {
+    const source = sources.get(token)!;
+    const ordered = [...cards.values()].sort((a, b) => a.revision - b.revision);
+    let run = ""; let previous: FeedCard | undefined;
+    for (const card of ordered) {
+      const typed = card.payload?.sitrep !== undefined || card.payload?.sitrepThread !== undefined;
+      if (!previous || typed || !isReplyOnlyRevision(storedRevisionEntry(source, previous), storedRevisionEntry(source, card))) run = ownerCardKey(token, card);
+      runOf.set(ownerCardKey(token, card), run);
+      previous = card;
+    }
+    latest.push({ token, card: ordered.at(-1)! });
+  }
+  const groupOf = (token: string, identity: FeedCardIdentity) => runOf.get(ownerCardKey(token, identity)) ?? ownerCardKey(token, identity);
   const saved: { group: string; response: FeedResponse; payload?: FeedResponsePayload }[] = [];
   const nextSequence = new Map<string, number>();
   rowsOf(data, "responses")
@@ -167,7 +184,7 @@ export function createFeedLabJsonSource(data: unknown): HomeFeedSource & { stop(
   return {
     exportedAt,
     async load(focused) {
-      const entries = [...latest.values()].map(entryOf);
+      const entries = latest.map(entryOf);
       const focusedEntry = focused ? entries.find((entry) => keyOf(entry) === keyOf(focused)) : undefined;
       const snapshot: HomeFeedSnapshot = { entries, historicalEntries: [], settings: { defaultSelector }, sitrep: combineOwnerData(entries.flatMap((entry) => entry.owner ? [entry.owner] : [])), relatedEntries: [], ...(focusedEntry ? { focusedEntry } : {}) };
       return structuredClone(snapshot);

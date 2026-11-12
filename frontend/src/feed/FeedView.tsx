@@ -55,7 +55,7 @@ function CardImage({ image, alt }: { image?: string; alt: string }) {
   return <img className="mt-4 max-h-80 w-full rounded-xl border border-border bg-muted object-cover" src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-export function FeedCardView({ card, sample = true, readBody, status, onAuthor, agent, children }: {
+export function FeedCardView({ card, sample = true, readBody, status, onAuthor, agent, collapse, plain = false, children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
@@ -65,6 +65,10 @@ export function FeedCardView({ card, sample = true, readBody, status, onAuthor, 
   onAuthor?: () => void;
   /** The acting agent: its mark and, when it reported one, its platform. Tapping its name shows what it is. */
   agent?: { key: string; profile?: AgentProfile };
+  /** A card opened in place from a list: its "Show less" control, at the top right beside the status. */
+  collapse?: ReactNode;
+  /** On a page of its own (a post's page): no card surface around it, so it isn't a card within a card. */
+  plain?: boolean;
   /** The rest of an open card (its options, reply and actions), inside the same surface. */
   children?: ReactNode;
 }): JSX.Element {
@@ -72,7 +76,7 @@ export function FeedCardView({ card, sample = true, readBody, status, onAuthor, 
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
   const platform = agent?.profile?.platform;
   return (
-    <article className={`min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
+    <article className={plain ? "min-w-0 text-foreground" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
       <div className="flex min-w-0 items-start gap-3 text-sm">
         {agent ? <AgentMark agentKey={agent.key} name={card.author.name} /> : avatar && <img src={avatar} alt="" className="size-9 shrink-0 rounded-full bg-muted object-cover" />}
         <div className="min-w-[6rem] flex-1">
@@ -86,6 +90,7 @@ export function FeedCardView({ card, sample = true, readBody, status, onAuthor, 
         {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
         {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}
         {status && status !== "Information" && <span data-status className="flex min-h-6 shrink-0 items-center"><StatusMark status={status} /></span>}
+        {collapse && <span className="-my-1.5 -mr-1.5 shrink-0">{collapse}</span>}
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
       {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-title-2">{card.title}</h2>}

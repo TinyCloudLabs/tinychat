@@ -8,7 +8,7 @@ import { AgentConversation, AgentList, agentKey, agentThreads } from "./AgentCon
 import { agentProfile, AgentMark } from "./AgentMark";
 import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { CardConversation, plainConversation, typedConversation } from "./CardConversation";
-import { actionClass, CardDetails } from "./CardActions";
+import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
 import { PostTile, postMorphId } from "./PostTile";
@@ -16,7 +16,7 @@ import { labPageOf, PostPage, PostPreview, postStatus } from "./PostPage";
 import { CompactCard, StatusMark } from "./CompactCard";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
-import { shortTime } from "./ShortTime";
+import { ShortTime, shortTime } from "./ShortTime";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
@@ -28,6 +28,7 @@ import { FeedViewSlider } from "./FeedViewSlider";
 import { FloatingHeader } from "./FloatingHeader";
 import { MorphConfig, MorphItem, useAnchoredToggle } from "./densityMorph";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
+import { BriefButton, briefOf } from "./BriefSheet";
 
 /** How long ago an answer went, after the pill's "Sent" tag: "3 hrs ago", "1 day ago"; nothing in its first minute. */
 export function sentAgo(at: string, now: number): string {
@@ -71,6 +72,21 @@ function projectOf(entry: HomeFeedEntry): string {
   const project = entry.state.card.payload?.project;
   return typeof project === "string" ? project : "";
 }
+const isoField = (value: unknown) => typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : undefined;
+/**
+ * Feed lab (Sam, 23:30Z): a card's timing and priority, each optional and set by its agent. `expiresAt` ("relevant
+ * until"): past it, the card leaves the feed for History, marked expired. `deadline`: when an answer is due.
+ * `priority`: 0 (highest) to 5. Plain cards carry them in `payload`; typed cards' records carry deadline and expiry.
+ * Kept as two separate times for now (Sam wondered whether they are one); the merge notes flag it.
+ */
+function cardTiming(entry: HomeFeedEntry, context?: TypedCardContext): { deadline?: string; expiresAt?: string; priority?: number } {
+  const payload = entry.state.card.payload ?? {};
+  const record = context?.record as { deadline?: unknown; expiresAt?: unknown } | undefined;
+  const priority = typeof payload.priority === "number" && Number.isInteger(payload.priority) && payload.priority >= 0 && payload.priority <= 5 ? payload.priority : undefined;
+  const deadline = isoField(payload.deadline) ?? isoField(record?.deadline);
+  const expiresAt = isoField(payload.expiresAt) ?? isoField(record?.expiresAt);
+  return { ...(deadline ? { deadline } : {}), ...(expiresAt ? { expiresAt } : {}), ...(priority !== undefined ? { priority } : {}) };
+}
 function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
   const card = entry.state.card;
   const payload = card.payload ?? {};
@@ -80,7 +96,9 @@ function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
   return {
     key: keyOf(entry), at: card.createdAt, author: cardAuthor(entry, context?.record), render,
     title: card.title, lead: { text: card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
-    ...(Array.isArray(payload.replies) ? { replies: payload.replies.filter((reply): reply is { text: string } => !!reply && typeof reply === "object" && "text" in reply && typeof reply.text === "string") } : {}),
+    // A reply that answers one of your comments (it has `replyTo`) shows in the card's conversation, under that
+    // comment, not again as a quote in the card's body.
+    ...(Array.isArray(payload.replies) ? { replies: payload.replies.filter((reply): reply is { text: string } => !!reply && typeof reply === "object" && "text" in reply && typeof reply.text === "string" && !("replyTo" in reply && reply.replyTo)) } : {}),
     ...(typeof payload.body === "string" ? { body: payload.body } : {}),
     ...(typeof payload.url === "string" ? { url: payload.url } : {}),
     ...(sourceRecord && typeof sourceRecord.label === "string" ? { source: {
@@ -145,7 +163,7 @@ function AnswerFold({ entry, sent, agent, typed, source, onSaved, onToggle }: { 
 function TypedThread({ entry, typed, source, onSaved }: { entry: HomeFeedEntry; typed: TypedCardContext; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void }) {
   const route = replyRoute(entry, typed.record, source);
   const post = usePostReply(entry, typed.record, source, onSaved);
-  return <CardConversation lines={typedConversation(entry, typed.record, typed.owner)} to={route.to} reason={"reason" in route ? route.reason : undefined} onSend={(text) => post(text, "delivery" in route ? route.delivery : undefined)} />;
+  return <CardConversation lines={typedConversation(entry, typed.record, typed.owner)} to={route.to} reason={"reason" in route ? route.reason : undefined} onSend={(text) => post(text, "delivery" in route ? route.delivery : undefined)} onResend={(line) => post(line.text, "delivery" in route ? route.delivery : undefined, line.id)} />;
 }
 /** A plain card's conversation: a comment is a card message to the agent that posted it. */
 function PlainThread({ entry, source, onSaved }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void }) {
@@ -155,7 +173,7 @@ function PlainThread({ entry, source, onSaved }: { entry: HomeFeedEntry; source:
     const result = await source.sendMessage(entry, { responseId: crypto.randomUUID(), cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, kind: "message", text, createdAt: new Date().toISOString() });
     onSaved(entry, result);
   }
-  return <CardConversation lines={plainConversation(entry)} to={source.sendMessage ? entry.source.label : undefined} onSend={send} />;
+  return <CardConversation lines={plainConversation(entry)} to={source.sendMessage ? entry.source.label : undefined} onSend={send} onResend={(line) => send(line.text)} />;
 }
 
 function AnswerForm({ entry, source, onSaved, onAnswered }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; onAnswered: (response: FeedResponse, summary: string) => void }) {
@@ -212,7 +230,7 @@ function AnswerForm({ entry, source, onSaved, onAnswered }: { entry: HomeFeedEnt
     <ResponseStatus entry={entry} />
     {saved && !followup ? <button type="button" className="min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setFollowup(true)}>Add follow-up</button> : <div className="space-y-3">
       {saved && <p className="text-xs text-muted-foreground">A follow-up does not cancel an action already received by the agent.</p>}
-      <AnswerOptions options={entry.state.card.choices ?? []} chosen={choice} seconds={hold.seconds} sending={saving} to={entry.source.label} onChoose={(option) => choose(option.id)} onUndo={undo}
+      <AnswerOptions options={entry.state.card.choices ?? []} chosen={choice} seconds={hold.seconds} sending={saving} onChoose={(option) => choose(option.id)} onUndo={undo}
         own={{ open: ownOpen, box: <OwnAnswerBox text={text} disabled={waiting} onText={editText} onSend={sendOwn} state={saving && choice === OWN_OPTION.id ? "sending" : error && choice === OWN_OPTION.id ? "error" : "idle"} onRetry={() => void save()} /> }} />
       {/* A failed own answer says so on its Send button; a failed tap on an option says so here. */}
       {error && choice !== OWN_OPTION.id && <div role="alert" className="text-sm text-destructive"><p>{error}</p><button type="button" disabled={waiting} onClick={() => void save()} className="mt-1 min-h-9 underline">Try again</button></div>}
@@ -242,6 +260,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [history, setHistory] = useState(false);
   // Feed lab (Sam, 22:58Z): snoozed cards leave every view until their time; the Filter's "Snoozed" lists them.
   const [snoozedOnly, setSnoozedOnly] = useState(false);
+  // Feed lab (Sam, 23:30Z): show only cards at or above a priority (0 highest), and an order other than the view's.
+  const [priorityMax, setPriorityMax] = useState("");
+  const [sortBy, setSortBy] = useState<"" | "priority" | "due" | "expires">("");
   // A short note after an action, with a way to take it back ("Back at 15:00 · Undo").
   const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
   useEffect(() => {
@@ -491,8 +512,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     // A snoozed card is out of every view until its time comes, except the Filter's "Snoozed" list.
     const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > clock;
     if (snoozedOnly) return snoozed;
-    if (history) return entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || Date.parse(entry.view.snoozedUntil ?? "") > clock;
-    if (snoozed) return false;
+    // A card past its "relevant until" leaves the feed for history, where it shows as expired (Sam, 23:30Z).
+    const timing = cardTiming(entry, contextFor(entry));
+    const expired = !!timing.expiresAt && Date.parse(timing.expiresAt) <= clock;
+    if (priorityMax && (timing.priority ?? 9) > Number(priorityMax)) return false;
+    if (history) return expired || entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || Date.parse(entry.view.snoozedUntil ?? "") > clock;
+    if (snoozed || expired) return false;
     const typed = contextFor(entry);
     const unsupported = card.payload?.sitrep !== undefined || card.payload?.sitrepThread !== undefined;
     if (selector === "needs-action" && typed?.projection.foldedInto) {
@@ -525,7 +550,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     if (filtered.length <= loadedFrom.current) setEnded(true);
     loadedFrom.current = null;
   }, [filtered.length, snapshot]);
-  useEffect(() => { autoLoads.current = 0; loadedFrom.current = null; setEnded(false); }, [selector, agent, kind, project, history, snoozedOnly]);
+  useEffect(() => { autoLoads.current = 0; loadedFrom.current = null; setEnded(false); }, [selector, agent, kind, project, history, snoozedOnly, priorityMax, sortBy]);
   /** Opens a card in place (in the compact view) and brings it into view. */
   function openCard(entry: HomeFeedEntry) {
     const key = keyOf(entry);
@@ -556,9 +581,16 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // mix as they came, and the end of the list keeps reaching all three.
   const rowNeedsYou = (row: (typeof navigation)[number]) => (row.kind === "card" ? [row.item] : row.items).some((entry) => sent?.key === keyOf(entry) || needsAttention(entry, clock, contextFor(entry)?.projection));
   const newest = (row: (typeof navigation)[number]) => Math.max(...(row.kind === "card" ? [row.item] : row.items).map((entry) => Date.parse(entry.state.card.createdAt)));
+  // The Filter's order, when chosen (Sam, 23:30Z): highest priority, soonest due, or soonest to expire first; cards
+  // without that field go last, and ties keep the view's order.
+  const sortValue = (row: (typeof navigation)[number]) => Math.min(...(row.kind === "card" ? [row.item] : row.items).map((entry) => {
+    const timing = cardTiming(entry, contextFor(entry));
+    return sortBy === "priority" ? timing.priority ?? 9 : sortBy === "due" ? Date.parse(timing.deadline ?? "") || Infinity : Date.parse(timing.expiresAt ?? "") || Infinity;
+  }));
+  const ordered = (rows: typeof navigation) => sortBy ? [...rows].sort((first, second) => sortValue(first) - sortValue(second)) : rows;
   const sections: [string, typeof navigation][] = selector === "needs-action"
-    ? [["Needs you", navigation.filter(rowNeedsYou)], ["Updates", navigation.filter((row) => !rowNeedsYou(row))]]
-    : [["", [...navigation].sort((first, second) => newest(second) - newest(first))]];
+    ? [["Needs you", ordered(navigation.filter(rowNeedsYou))], ["Updates", ordered(navigation.filter((row) => !rowNeedsYou(row)))]]
+    : [["", ordered([...navigation].sort((first, second) => newest(second) - newest(first)))]];
   // A card counts as seen once it shows open: every card in the full view, the ones you open in the compact view.
   const seenAsked = useRef(new Set<string>());
   const seenNow = (size === "full" ? filtered : filtered.filter((entry) => opened.has(keyOf(entry)) || keyOf(entry) === pageKey)).filter((entry) => !entry.view.seenAt && !seenAsked.current.has(keyOf(entry)));
@@ -622,8 +654,14 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const context = contextFor(entry);
     const author = cardAuthor(entry, context?.record).name;
     const unsupported = (entry.state.card.payload?.sitrep !== undefined || entry.state.card.payload?.sitrepThread !== undefined) && !context;
-    return <CompactCard agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt}
-      status={unsupported ? undefined : cardStatus(entry, context?.projection, clock, author)} title={entry.state.card.title} description={describe(entry)} onOpen={() => openCard(entry)} />;
+    const timing = cardTiming(entry, context);
+    return <CompactCard agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt} priority={timing.priority}
+      status={unsupported ? undefined : statusOf(entry, author)} title={entry.state.card.title} description={(timing.deadline && needsAttention(entry, clock, context?.projection) ? `Due ${shortTime(timing.deadline, clock)} · ` : "") + describe(entry)} onOpen={() => openCard(entry)} />;
+  }
+  /** A card's status word, or "Expired" once it is past its "relevant until" (it then shows only in History). */
+  function statusOf(entry: HomeFeedEntry, author: string) {
+    const expiresAt = cardTiming(entry, contextFor(entry)).expiresAt;
+    return expiresAt && Date.parse(expiresAt) <= clock ? "Expired" : cardStatus(entry, contextFor(entry)?.projection, clock, author);
   }
   /** A card's one or two lines: what you chose once you have answered it, else its short description or body. */
   function describe(entry: HomeFeedEntry) {
@@ -637,22 +675,24 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     }
     return typeof entry.state.card.payload?.summary === "string" ? entry.state.card.payload.summary : entry.state.card.body;
   }
-  /** A tile in the grid: the post's image, or the card's words on a plain panel; its title; where it stands. */
+  /**
+   * A tile in the grid. A post: its image (PostTile). Any other card: the post tile's order without a picture (design
+   * round 6): its agent line, the title, its words, and where it stands at the foot.
+   */
   function gridTile(entry: HomeFeedEntry) {
     const context = contextFor(entry);
     const author = cardAuthor(entry, context?.record).name;
     const page = labPageOf(entry);
-    const plain = cardStatus(entry, context?.projection, clock, author);
+    const plain = statusOf(entry, author);
     const status = page ? postStatus(entry, page, plain) : plain;
     // A post's tile morphs straight into its page (PostTile.tsx, Sam 22:44Z).
     if (page) return <PostTile entry={entry} page={page} author={author} agentKey={agentKey(entry, context?.record)} status={status} onOpen={() => setPageKey(keyOf(entry))} />;
     return <button type="button" onClick={() => openCard(entry)} aria-expanded={false}
-      className="flex h-full w-full min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-card text-left text-card-foreground transition-transform duration-150 ease-smooth active:scale-[.985] fine:hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:active:scale-100">
-      <span className="flex aspect-[4/3] w-full flex-col gap-2 bg-surface-2 p-3"><AgentMark agentKey={agentKey(entry, context?.record)} name={author} small /><span className="line-clamp-4 text-xs leading-4 text-muted-foreground">{describe(entry)}</span></span>
-      <span className="flex flex-1 flex-col gap-1.5 p-2.5">
-        <span className={`line-clamp-2 break-words text-sm leading-[18px] ${status === "Needs you" ? "font-semibold" : "font-medium"}`}>{entry.state.card.title}</span>
-        <span className="mt-auto flex min-w-0 items-center justify-between gap-2 text-meta text-muted-foreground"><span className="truncate">{author}</span><StatusMark status={status} /></span>
-      </span>
+      className="flex h-full w-full min-w-0 flex-col gap-2 rounded-2xl border border-border bg-card p-3 text-left text-card-foreground transition-transform duration-150 ease-smooth active:scale-[.985] fine:hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:active:scale-100">
+      <span className="flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground"><AgentMark agentKey={agentKey(entry, context?.record)} name={author} small /><span className="min-w-0 truncate font-semibold text-foreground">{author}</span></span>
+      <span className="line-clamp-3 break-words text-sm font-semibold leading-[18px]">{entry.state.card.title}</span>
+      <span className="line-clamp-3 break-words text-xs leading-4 text-muted-foreground">{describe(entry)}</span>
+      <span className="mt-auto flex min-w-0 items-center justify-between gap-2 pt-1 text-meta text-muted-foreground"><ShortTime at={entry.state.card.createdAt} className="truncate" /><StatusMark status={status} /></span>
     </button>;
   }
 
@@ -666,26 +706,43 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const onAnswered = answeredFor(entry);
     const reference = referenceFor(entry);
     const later = laterKey === key;
-    const fewer = (size === "compact" || grid) && <button type="button" aria-expanded onClick={() => setOpened((current) => { const next = new Set(current); next.delete(key); return next; })} className="inline-flex min-h-10 items-center rounded-lg px-1 text-sm text-muted-foreground underline decoration-border underline-offset-4">Show less</button>;
-    // "Next card" (recycled from the one-open-card feed, Sam 22:52Z): the next card in this view that needs you.
+    // Opened in place from a list: fold it back from the top right, beside its status (design round 6).
+    const fewer = (size === "compact" || grid) && <button type="button" aria-expanded aria-label="Show less" onClick={() => setOpened((current) => { const next = new Set(current); next.delete(key); return next; })} className="flex size-9 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><ChevronUpIcon aria-hidden className="size-4" /></button>;
+    // "Next card" (recycled from the one-open-card feed, Sam 22:52Z): the next card in this view that needs you, as a
+    // dark pill at the right of the card's foot, like the slider and "Go to current".
     const nextEntry = filtered.slice(filtered.findIndex((candidate) => keyOf(candidate) === key) + 1).find((candidate) => !labPageOf(candidate) && needsAttention(candidate, clock, contextFor(candidate)?.projection));
-    const nextCard = nextEntry && <button type="button" onClick={() => goNext(entry, nextEntry)} className={`${actionClass} inline-flex items-center gap-1`}>Next card<ArrowDownIcon aria-hidden className="size-4" /></button>;
+    const nextCard = nextEntry && <button type="button" onClick={() => goNext(entry, nextEntry)} className="inline-flex min-h-11 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 text-sm font-semibold text-background transition-transform active:scale-[.97] motion-reduce:transform-none fine:min-h-9">Next card<ArrowDownIcon aria-hidden className="size-4" /></button>;
     // A snoozed card opened early, from the Snoozed list, can come back now.
-    const wake = Date.parse(entry.view.snoozedUntil ?? "") > clock && <button type="button" onClick={() => void unsnooze(entry)} className={actionClass}>Bring back now</button>;
+    const wake = Date.parse(entry.view.snoozedUntil ?? "") > clock && <button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button>;
+    const facts = <dl className="space-y-0">{[
+      ["Agent", entry.source.label],
+      ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
+      ["Type", entry.state.card.kind.charAt(0).toUpperCase() + entry.state.card.kind.slice(1)],
+      ["Reference", <code className="block truncate select-all text-xs" title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</code>],
+    ].map(([term, value]) => <div key={String(term)} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>;
     return <div className="min-w-0">
       {fold && <AnswerFold key={fold.response.responseId} entry={entry} sent={fold} agent={author} typed={context} source={source} onSaved={onSaved} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
       {fold && !fold.open && nextCard && <div className="-mt-1 mb-3 flex justify-end">{nextCard}</div>}
       <div hidden={!!fold && !fold.open}>
-        <FeedCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} status={unsupported ? undefined : cardStatus(entry, context?.projection, clock, author)} onAuthor={() => setAgentView(agentKey(entry, context?.record))} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}>
+        <FeedCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} status={unsupported ? undefined : statusOf(entry, author)} onAuthor={() => setAgentView(agentKey(entry, context?.record))} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }} collapse={fewer || undefined}>
+          {/* The agent's one-page brief, read in the app beside the decision (Sam, 23:30Z). */}
+          {briefOf(entry.state.card.payload) && <BriefButton brief={briefOf(entry.state.card.payload)!} className="mb-3" />}
           <ReportLink entry={entry} />
-          {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} end={fewer || undefined} next={wake || nextCard || undefined} onSnoozed={(until) => snoozed(entry, until)} />
-            : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-3"><CardDetails end={fewer || undefined} actions={nextCard || undefined}>{reference}</CardDetails></div></div>
+          {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} end={nextCard || undefined} extra={wake || undefined} onSnoozed={(until) => snoozed(entry, until)} />
+            : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-2"><CardDetails end={nextCard || undefined}>{facts}</CardDetails></div></div>
             : <div className="mt-4 space-y-4">
+              {/* When it's due, how long it stays relevant, and its priority, when its agent set them (Sam, 23:30Z). */}
+              {(() => {
+                const timing = cardTiming(entry, context);
+                const parts = [timing.deadline && `Due ${shortTime(timing.deadline, clock)}`, timing.expiresAt && `Relevant until ${shortTime(timing.expiresAt, clock)}`, timing.priority !== undefined && `Priority P${timing.priority}`].filter(Boolean);
+                return parts.length ? <p className="text-xs text-muted-foreground">{parts.join(" · ")}</p> : null;
+              })()}
               <AnswerForm key={key} entry={entry} source={source} onSaved={onSaved} onAnswered={onAnswered} />
               <PlainThread entry={entry} source={source} onSaved={onSaved} />
-              {/* The card's foot (Sam, 11-12): Ask me later beside Details; its times open under it. */}
-              <div className="border-t border-border pt-3"><CardDetails end={fewer || undefined} actions={<>{wake || needsAttention(entry, clock) && <button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={actionClass}>Ask me later</button>}{nextCard}</>}>
-                <p>Posted by {entry.source.label} · {entry.source.agentDid}</p><p>{entry.state.card.kind}</p><CardHistory entry={entry} />{reference}</CardDetails></div>
+              {/* The card's foot, one row (Sam 11-12; design round 6): Ask me later and Details quiet on the left, Next
+                  card on the right; Ask me later's times open under it. */}
+              <div className="border-t border-border pt-2"><CardDetails end={nextCard || undefined} actions={wake || (needsAttention(entry, clock) && <button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={footActionClass}>Ask me later</button>)}>
+                {facts}<CardHistory entry={entry} /></CardDetails></div>
               {later && needsAttention(entry, clock) && <section aria-label="Ask me later" className="space-y-2 rounded-xl border border-border p-3 text-sm"><p className="font-medium">Ask me again</p>
                 <div className="flex flex-wrap gap-2">{snoozePresets(clock).slice(0, 3).map((preset) => <button key={preset.id} type="button" disabled={viewBusy} onClick={() => void snooze(entry, preset.until)} className={actionClass}>{preset.label}</button>)}</div>
               </section>}
@@ -705,7 +762,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const author = cardAuthor(entry, context?.record).name;
     const page = labPageOf(entry)!;
     return <PostPreview entry={entry} page={page} author={author} agentKey={agentKey(entry, context?.record)} platform={agentProfile(entry.state.card.payload)?.platform}
-      status={postStatus(entry, page, cardStatus(entry, context?.projection, clock, author))} full={size === "full"} onOpen={() => setPageKey(keyOf(entry))} />;
+      status={postStatus(entry, page, statusOf(entry, author))} full={size === "full"} onOpen={() => setPageKey(keyOf(entry))} />;
   }
   /**
    * A card in the list, short or open, or a tile in the grid (a card opened from the grid spans its row).
@@ -736,7 +793,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
 
   // Home shows only the heading and its empty state until the first card arrives.
   const bare = !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
-  const filtersOn = [agent, kind, project].filter(Boolean).length + (history ? 1 : 0) + (snoozedOnly ? 1 : 0);
+  const filtersOn = [agent, kind, project, priorityMax, sortBy].filter(Boolean).length + (history ? 1 : 0) + (snoozedOnly ? 1 : 0);
   const selectClass = "min-h-10 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   // No browser scroll anchoring: it would hold the end of the list in view as cards land, loading more forever.
   return <main ref={mainRef} onScroll={measureHistory} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
@@ -758,7 +815,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       </div>}
       {/* Outside history, one deliberate control opens it; inside, reaching its top loads more. */}
       {source.loadAnswered && !earlier.length && <div className="mb-4 flex justify-center">
-        <button type="button" onClick={() => void loadEarlier()} className="inline-flex min-h-10 items-center gap-1.5 rounded-full border border-border px-4 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <button type="button" onClick={() => void loadEarlier()} className="inline-flex min-h-11 items-center gap-1 px-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <ChevronUpIcon aria-hidden className="size-4" />Show earlier answers</button>
       </div>}
       {!!earlier.length && <section aria-label="Answered earlier" className="mb-6">
@@ -769,9 +826,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {/* Feed lab (Sam, 11-12, Aceternity floating navbar as inspiration): Home and the slider stay in reach, hiding as
           you scroll down and coming back as you scroll up. */}
       <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-3 pt-2 sm:-mx-5 sm:px-5">
+        {/* Stuck over the cards, the header comes back as the slider alone (FloatingHeader slides "Home" up out of view
+            and keeps its height, so nothing below jumps). */}
         <header ref={headerRef} className="scroll-mt-4"><h1 className="font-display text-3xl font-semibold tracking-tight">{NAV_LABEL_HOME}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
         {/* While Agents is open the view controls do nothing, so they step aside (design critique #5). */}
-        {!bare && !agentView && <FeedViewSlider value={selector} onValueChange={changeSelector} className="mt-3" />}
+        {!bare && !agentView && <div data-float-keep className="mt-3"><FeedViewSlider value={selector} onValueChange={changeSelector} /></div>}
       </FloatingHeader>
       {ask}
       {!bare && <>
@@ -793,6 +852,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => setProject(event.target.value)}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <button type="button" aria-pressed={history} onClick={() => setHistory(!history)} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
         <button type="button" aria-pressed={snoozedOnly} onClick={() => setSnoozedOnly(!snoozedOnly)} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">Snoozed</button>
+        <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => setPriorityMax(event.target.value)}>
+          <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
+        </select>
+        <select aria-label="Order" className={selectClass} value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
+          <option value="">Usual order</option><option value="priority">Priority first</option><option value="due">Due first</option><option value="expires">Expires first</option>
+        </select>
         {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10">{savingDefault ? "Saving default…" : "Use as default"}</button>}
       </div>}</>}
       {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
@@ -851,7 +916,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     {pageEntry && pageOpen && (() => {
       const author = cardAuthor(pageEntry).name;
       return <PostPage key={pageKey} entry={pageEntry} page={pageOpen} source={source} author={author} onSaved={onSaved} onClose={() => setPageKey(null)} morphFrom={grid ? postMorphId(pageEntry) : undefined}
-        card={(children, options) => <FeedCardView card={options?.showTitle === false ? { ...cardView(pageEntry), title: "" } : cardView(pageEntry)} sample={false} readBody={source.readBody} status={cardStatus(pageEntry, undefined, clock, author)} onAuthor={() => { setPageKey(null); setAgentView(agentKey(pageEntry)); }} agent={{ key: agentKey(pageEntry), profile: agentProfile(pageEntry.state.card.payload) }}>{children}</FeedCardView>}
+        card={(children, options) => <FeedCardView plain card={options?.showTitle === false ? { ...cardView(pageEntry), title: "" } : cardView(pageEntry)} sample={false} readBody={source.readBody} status={cardStatus(pageEntry, undefined, clock, author)} onAuthor={() => { setPageKey(null); setAgentView(agentKey(pageEntry)); }} agent={{ key: agentKey(pageEntry), profile: agentProfile(pageEntry.state.card.payload) }}>{children}</FeedCardView>}
         status={pageEntry.state.response ? <ResponseStatus entry={pageEntry} agent={author} /> : null}
         footer={<PlainThread entry={pageEntry} source={source} onSaved={onSaved} />} />;
     })()}

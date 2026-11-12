@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepOwnerData, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { AnswerOptions, answerSummary, OWN_OPTION, OwnAnswerBox, sendingLabel, useUndoWindow } from "./AnswerOptions";
@@ -7,7 +7,7 @@ import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
-import { CardDetails } from "./CardActions";
+import { CardDetails, footActionClass } from "./CardActions";
 import { CardConversation, typedConversation } from "./CardConversation";
 import { HistoryTimeline } from "./HistoryTimeline";
 import { shortTime } from "./ShortTime";
@@ -35,10 +35,10 @@ interface Props {
   onNavigate: (entry: HomeFeedEntry) => void;
   /** The card's reference line, kept with the other wiring under Details. */
   reference?: ReactNode;
-  /** At the far end of the card's foot: "Show less" on a card opened from the list. */
+  /** At the right of the card's foot: the page's "Next card". */
   end?: ReactNode;
-  /** Beside Ask me later: the page's "Next card". */
-  next?: ReactNode;
+  /** In place of Ask me later: "Bring back now" on a snoozed card opened from the Snoozed list. */
+  extra?: ReactNode;
   /** After Ask me later: the card has gone until `until`; the page says when it comes back, with Undo. */
   onSnoozed?: (until: string) => void;
 }
@@ -76,7 +76,13 @@ export function SitrepCard(props: Props) {
   const pending = useRef<{ key: string; header: NewFeedResponse | NewFeedMessage; payload: FeedResponsePayload } | undefined>(undefined);
   const privatePending = useRef<{ key: string; event: HomeFeedOwnerEvent } | undefined>(undefined);
   const busyRef = useRef(false);
-  const hold = useUndoWindow(() => { if (chosen) void perform(() => askAnswer(chosen)); });
+  // A tapped command that is not an ask's answer (task done, a claim decision, a blocker clear, a hold lift): it
+  // waits out the same undo window, and `run` does the write when the window ends.
+  const [held, setHeld] = useState<{ key: string; run: () => Promise<unknown> }>();
+  const hold = useUndoWindow(() => {
+    if (chosen) void perform(() => askAnswer(chosen));
+    else if (held) void perform(held.run).then(() => setHeld(undefined));
+  });
   // Every other action on the card waits while an answer can still be undone.
   const busy = saving || hold.seconds !== null;
   const closed = isClosed(record);
@@ -141,10 +147,19 @@ export function SitrepCard(props: Props) {
   // One tap chooses: the answer waits out the undo window, then is saved with any typed answer.
   function holdAnswer(answer: AskAnswer) {
     if (busy) return;
-    setChosen(answer); hold.start();
+    setHeld(undefined); setChosen(answer); hold.start();
   }
-  function undoAnswer() { hold.undo(); setChosen(undefined); }
+  function undoAnswer() { hold.undo(); setChosen(undefined); setHeld(undefined); }
   const sendingAs = (action: AskAnswer["action"]) => busy && chosen?.action === action && !chosen.choice ? sendingLabel(hold.seconds, action === "drop" ? "Dropping" : undefined, action === "drop" ? undefined : author) : undefined;
+  // A command button taps like an option: it reads "Sending to {agent} in 4s" with Undo beside it, then writes.
+  // `run` makes its timestamps when the window ends, so a command is stamped when it is written, not at the tap.
+  function heldButton(key: string, label: string, run: () => Promise<unknown>, options: { disabled?: boolean; pressed?: boolean } = {}) {
+    const mine = held?.key === key;
+    return <Fragment key={key}>
+      <button type="button" className={buttonClass} aria-pressed={options.pressed} disabled={busy || options.disabled} onClick={() => { if (busy) return; setChosen(undefined); setHeld({ key, run }); hold.start(); }}>{mine && busy ? sendingLabel(hold.seconds, undefined, author) : label}</button>
+      {mine && hold.seconds !== null && <button type="button" className={buttonClass} onClick={undoAnswer}>Undo</button>}
+    </Fragment>;
+  }
   async function command(patch: Partial<SamState>, key: string) {
     const matching = owner.commands?.filter((event) => patch.doneAt ? !!event.state.doneAt : patch.lift ? !!event.state.lift : patch.clears?.some((request) => event.state.clears?.some((prior) => prior.ref === request.ref))).at(-1);
     const event = matching ?? await savePrivate(patch, key);
@@ -181,12 +196,11 @@ export function SitrepCard(props: Props) {
       <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} />
       {entry.state.card.needsResponse && !closed && !visibleQuestion && <button type="button" className={buttonClass} onClick={() => setFollowup(true)}>Add follow-up</button>}
       {!closed && visibleQuestion && <div className="space-y-3" onFocusCapture={() => setEngaged(true)}>
-        <AnswerOptions options={record.options} suggested={record.recommend} chosen={chosen?.choice ?? (chosen?.action === "answer" ? OWN_OPTION.id : undefined)} seconds={hold.seconds} sending={saving} to={author} onUndo={undoAnswer}
+        <AnswerOptions options={record.options} suggested={record.recommend} chosen={chosen?.choice ?? (chosen?.action === "answer" ? OWN_OPTION.id : undefined)} seconds={hold.seconds} sending={saving} onUndo={undoAnswer}
           onChoose={(option) => option.id === OWN_OPTION.id ? setOwnOpen(!ownOpen) : holdAnswer({ action: "answer", choice: option.id })}
           own={{ open: ownOpen, box: <OwnAnswerBox text={text} disabled={busy} onText={setText} onSend={() => { if (text.trim()) holdAnswer({ action: "answer" }); }} /> }} />
         {error && chosen && !busy && <div role="alert" className="text-destructive"><p>{error}</p><button type="button" className="mt-1 min-h-9 underline" onClick={() => void perform(() => askAnswer(chosen))}>Try again</button></div>}
         <div className="flex flex-wrap gap-2">{record.mode === "proceeding" && record.default && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.default })}>Fine, go ahead</button>}{record.recommend && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.recommend })}>Accept recommendation</button>}<button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "drop" })}>{sendingAs("drop") ?? "Drop question"}</button>{hold.seconds !== null && chosen?.action !== "answer" && <button type="button" className={buttonClass} onClick={undoAnswer}>Undo</button>}</div>
-        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
       </div>}
       {projection.parts.map((part) => <section key={part.view.approval.id} className="space-y-3 rounded-xl border border-border p-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });
@@ -203,7 +217,7 @@ export function SitrepCard(props: Props) {
         {record.steps.map((step) => <label key={step.id} className="flex min-h-10 items-center gap-3"><input type="checkbox" checked={!!state?.steps[step.id]} onChange={(event) => { const checked = event.currentTarget.checked; void perform(() => savePrivate({ steps: { [step.id]: checked ? new Date().toISOString() : null } }, `tick:${step.id}:${checked}`)); }} />{step.text}</label>)}
       </fieldset>
       {record.chatLink && safeUrl(record.chatLink) && <a href={record.chatLink} target="_blank" rel="noopener noreferrer" className="underline">Open task context</a>}
-      {entry.state.card.needsResponse && <button type="button" className={buttonClass} disabled={busy || closed} onClick={() => void perform(() => { const at = new Date().toISOString(); return command({ doneAt: at, dismissedAt: at }, "task-done"); })}>{state?.doneAt ? "Ensure completion request is saved" : "Mark task done and tell owner"}</button>}
+      {entry.state.card.needsResponse && <div className="flex flex-wrap gap-2">{heldButton("task-done", state?.doneAt ? "Ensure completion request is saved" : "Mark task done and tell owner", () => { const at = new Date().toISOString(); return command({ doneAt: at, dismissedAt: at }, "task-done"); }, { disabled: closed })}</div>}
     </div>}
     {record.kind === "incident" && <dl className="space-y-2"><div><dt className="font-medium">Impact · {record.severity ?? "Unrated"}</dt><dd>{record.impact}</dd></div><div><dt className="font-medium">Started</dt><dd>{stamp(record.startedAt)}{record.resolvedAt && ` · Resolved ${stamp(record.resolvedAt)}`}</dd></div></dl>}
     {record.kind === "incident" && <button type="button" className={buttonClass} disabled={busy || !!state?.dismissedAt} onClick={() => void perform(() => savePrivate({ dismissedAt: new Date().toISOString() }, "incident-read"))}>{state?.dismissedAt ? "Incident acknowledged privately" : "Mark incident acknowledged (private)"}</button>}
@@ -218,28 +232,28 @@ export function SitrepCard(props: Props) {
       <p aria-live="polite">{claims.length ? `Current decision: ${claims.at(-1)!.value.choice}` : "Not decided yet"}</p>
       {claims.map((decision) => <p key={decision.sourceKey}>Decision saved: {decision.value.choice} · {stamp(decision.value.at)}{decision.value.note && ` · ${decision.value.note}`}</p>)}
       {entry.state.card.needsResponse && <>
-        <label className="block">Decision note (optional)<textarea aria-label="Claim decision note" maxLength={4000} value={claimNote} onInput={(event) => setClaimNote(event.currentTarget.value)} className={inputClass} /></label>
-        <div className="flex flex-wrap gap-2">{(["keep", "remove", "ignore"] as const).map((value) => <button key={value} type="button" className={buttonClass} aria-pressed={claims.at(-1)?.value.choice === value} disabled={busy} onClick={() => void perform(async () => {
+        <label className="block">Decision note (optional)<textarea aria-label="Claim decision note" maxLength={4000} value={claimNote} disabled={busy} onInput={(event) => setClaimNote(event.currentTarget.value)} className={inputClass} /></label>
+        <div className="flex flex-wrap gap-2">{(["keep", "remove", "ignore"] as const).map((value) => heldButton(`claim:${value}`, value === "keep" ? "Keep claim" : value === "remove" ? "Remove claim" : "Ignore claim", async () => {
           const at = nextClaimDecisionAt(owner, record.id, Date.now());
           await send("sitrep.claim", { choice: value, ...(claimNote.trim() ? { note: claimNote.trim() } : {}), at }, `claim:${value}:${claimNote}`);
           setClaimNote("");
-        })}>{value === "keep" ? "Keep claim" : value === "remove" ? "Remove claim" : "Ignore claim"}</button>)}</div>
+        }, { pressed: claims.at(-1)?.value.choice === value }))}</div>
       </>}
     </div>}
     {record.kind === "hold" && <div className="space-y-3">
       <p><strong>Held: </strong>{record.what}</p><p><strong>Cause: </strong>{record.cause}</p><p><strong>Exit: </strong>{record.exit}</p>{record.samWords && <blockquote>{record.samWords}</blockquote>}
       <p>Released by {record.releasedBy}{record.expectedRelease && ` · Expected ${record.expectedRelease}`} · {record.unblockedByMode === "any" ? "Any blocker may clear it" : "All blockers must clear"}</p>
-      {entry.state.card.needsResponse && <label className="block">Request reason (optional)<input aria-label="Hold request reason" value={reason} onInput={(event) => setReason(event.currentTarget.value)} className={inputClass} /></label>}
+      {entry.state.card.needsResponse && <label className="block">Request reason (optional)<input aria-label="Hold request reason" value={reason} disabled={busy} onInput={(event) => setReason(event.currentTarget.value)} className={inputClass} /></label>}
       {record.unblockedBy.map((ref) => <div key={ref} className="flex flex-wrap items-center gap-2">
         <span>{ref}{record.clearedRefs?.some((cleared) => cleared.ref === ref) && " · Cleared by owner"}{state?.clears?.some((clear) => clear.ref === ref) && " · Clear requested"}</span>
-        {entry.state.card.needsResponse && <button type="button" className={buttonClass} disabled={busy || closed || !!record.clearedRefs?.some((cleared) => cleared.ref === ref)} onClick={() => void perform(() => command({ clears: [{ id: id(), ref, at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) }] }, `clear:${ref}:${reason}`))}>Mark blocker cleared</button>}
+        {entry.state.card.needsResponse && heldButton(`clear:${ref}`, "Mark blocker cleared", () => command({ clears: [{ id: id(), ref, at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) }] }, `clear:${ref}:${reason}`), { disabled: closed || !!record.clearedRefs?.some((cleared) => cleared.ref === ref) })}
       </div>)}
-      {entry.state.card.needsResponse && <button type="button" className={buttonClass} disabled={busy || closed} onClick={() => void perform(() => command({ lift: { at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) } }, `lift:${reason}`))}>Request hold lift</button>}
+      {entry.state.card.needsResponse && <div className="flex flex-wrap gap-2">{heldButton("lift", "Request hold lift", () => command({ lift: { at: new Date().toISOString(), ...(reason.trim() ? { reason: reason.trim() } : {}) } }, `lift:${reason}`), { disabled: closed })}</div>}
       {record.liftedAt && <p>Lifted {stamp(record.liftedAt)} · {record.liftReason}</p>}
     </div>}
     {record.kind === "progress" && <div className="space-y-3"><p>{prose(record.ticket)} · {record.owner} · {record.currentStep + 1}/{record.steps.length}</p><ol className="list-decimal space-y-2 pl-5">{record.steps.map((step, index) => <li key={`${index}:${step.name}`} aria-current={index === record.currentStep ? "step" : undefined}>{step.name} · {step.state}</li>)}</ol>{record.note && <p>{record.note}</p>}{record.eta && <p>ETA {stamp(record.eta)}</p>}<p className="text-xs text-muted-foreground">Updated by {record.updatedBy ?? record.owner} at {stamp(record.updatedAt)}. Owner and appointed live updaters manage this progress; viewing it does not grant edit authority.</p>{!!record.updaters?.length && <details><summary>Appointed updater identities</summary><ul>{record.updaters.map((updater) => <li key={updater} className="break-all">{updater}</li>)}</ul></details>}</div>}
 
-    <CardConversation lines={typedConversation(entry, record, owner)} to={route.to} reason={"reason" in route ? route.reason : undefined} disabled={busy} onSend={(value) => postReply(value, "delivery" in route ? route.delivery : undefined)} />
+    <CardConversation lines={typedConversation(entry, record, owner)} to={route.to} reason={"reason" in route ? route.reason : undefined} disabled={busy} onSend={(value) => postReply(value, "delivery" in route ? route.delivery : undefined)} onResend={(line) => postReply(line.text, "delivery" in route ? route.delivery : undefined, line.id)} />
     {owner.commands?.map((command) => { const handling = entry.responseHandling?.[command.eventId]; return <div key={command.eventId} role="status" className="rounded-xl border border-border p-3 text-xs"><p>Owner command saved{handling?.acknowledgement && " · Publisher received"}{handling?.outcome && ` · Publisher reported ${handling.outcome.phase}`}</p>{!handling && <p>Receipt not reported. Saving again preserves this command identity; it does not prove delivery or repeat its effect.</p>}</div>; })}
     {!!entry.historicalCommands?.length && <section aria-label="Historical owner commands" className="space-y-2 rounded-xl border border-border p-3">
       <h3 className="font-medium">Historical owner commands</h3>
@@ -259,11 +273,16 @@ export function SitrepCard(props: Props) {
       {note.unresolvedRecipients.map((recipient) => <p key={recipient} className="text-xs">Held / unrouted · {recipient} · owner archive only; not sent</p>)}
     </div>)}</details>}
     {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className="text-xs text-muted-foreground">{response.reason}. Saved transport record preserved; no question decision inferred.</p>)}
-    {/* The card's foot (Sam, 11-12): Ask me later beside Details (who posted it, its history, its wiring). */}
-    <div className="border-t border-border pt-3">
-      <CardDetails end={props.end} actions={<><button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>{props.next}</>}>
-        <p>{record.kind} · {record.status} · {record.id}</p>
-        <p>Posted by {entry.source.label} · {entry.source.agentDid}{record.from !== entry.source.label && ` · from ${record.from}`}</p>
+    {/* The card's foot, one row (Sam 11-12; design round 6): Ask me later and Details quiet on the left, Next card on
+        the right. Details holds who posted it, its history and its wiring. */}
+    <div className="border-t border-border pt-2">
+      <CardDetails end={props.end} actions={props.extra ?? <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}>
+        <dl>{([
+          ["Agent", record.from !== entry.source.label ? `${record.from} (through ${entry.source.label})` : entry.source.label],
+          ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
+          ["Type", `${record.kind.charAt(0).toUpperCase()}${record.kind.slice(1)} · ${record.status}`],
+          ["Reference", <code className="block truncate select-all text-xs">{record.id}</code>],
+        ] as [string, ReactNode][]).map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>
         {record.owner && <p>Agent working on this: {record.owner}</p>}
         {"detail" in route && <p>{route.detail}</p>}
         {record.kind === "task" && <p>Marking the task done asks {entry.source.label} to complete it; it is done when the agent reports so.</p>}
@@ -292,6 +311,7 @@ export function SitrepCard(props: Props) {
       <label className="block font-medium">Add a note to yourself<span className="block text-xs font-normal text-muted-foreground">Only you see this. It is not sent to any agent.</span><textarea aria-label="Note to yourself" value={selfNote} disabled={busy} onInput={(event) => setSelfNote(event.currentTarget.value)} className={`${inputClass} min-h-16`} /></label>
     </section>}
     {error && !(chosen && !closed && visibleQuestion) && <p role="alert" className="text-destructive">{error}</p>}{notice && <p role="status" className="text-muted-foreground">{notice}</p>}
+    <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
   </div>;
 }
 
@@ -299,16 +319,24 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   const [binding, setBinding] = useState(() => ({ entry: incomingEntry, approval: incomingApproval }));
   const { entry, approval } = binding;
   const [code, setCode] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
+  // Why a held go or code was not written when its undo window ended: the approval expired or closed meanwhile.
+  const [notSent, setNotSent] = useState<string>();
   const pending = useRef<{ key: string; header: NewFeedResponse; payload: FeedResponsePayload } | undefined>(undefined);
+  // The go, a code or "I completed this step" waits out the undo window like any answer, then `submit` writes it.
+  const hold = useUndoWindow(() => void submit());
+  const waiting = hold.seconds !== null;
   const engagedOnce = useRef(entry.state.response !== null);
   const key = homeFeedKey(entry); const incomingKey = homeFeedKey(incomingEntry);
-  const engaged = engagedOnce.current || busy || pending.current !== undefined;
+  const engaged = engagedOnce.current || busy || waiting || pending.current !== undefined;
   const superseded = key !== incomingKey || entry.currentIssuance === false;
   const own = entry.owner ?? contextOwner;
   const answer = projectSitrepCard(approval, [approval], own, Date.now()).answer;
-  const expired = approval.status === "expired" || Boolean(approval.expiresAt && Date.parse(approval.expiresAt) <= Date.now());
-  const disabled = busy || inactive || superseded || expired || approval.status !== "open";
-  const visibleForm = entry.state.card.needsResponse && ((!inactive && !answer) || busy || code.length > 0);
+  // Read on render and again when a held answer is written: the approval can expire inside the undo window.
+  const expiredAt = (at: number) => approval.status === "expired" || Boolean(approval.expiresAt && Date.parse(approval.expiresAt) <= at);
+  const expired = expiredAt(Date.now());
+  const disabled = busy || waiting || inactive || superseded || expired || approval.status !== "open";
+  const visibleForm = entry.state.card.needsResponse && ((!inactive && !answer) || busy || waiting || code.length > 0);
+  const author = cardAuthor(entry, approval).name;
 
   useEffect(() => {
     if (incomingKey === key || !engaged) setBinding({ entry: incomingEntry, approval: incomingApproval });
@@ -348,8 +376,17 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     finally { setBusy(false); }
   }
   const validCode = /^\S{4,}$/.test(code) && code.length <= 12000;
-  async function submit() {
+  function holdApproval() {
     if (disabled || (approval.codeExpected && !validCode)) return;
+    engagedOnce.current = true;
+    setError(undefined); setNotSent(undefined);
+    hold.start();
+  }
+  async function submit() {
+    // The undo window has ended. A go that expired or closed while it waited is not written, and the card says so.
+    if (expiredAt(Date.now())) { setNotSent("This approval expired before it was sent. Nothing was sent."); return; }
+    if (inactive || superseded || approval.status !== "open") { setNotSent("This approval closed before it was sent. Nothing was sent."); return; }
+    if (busy || (approval.codeExpected && !validCode)) return;
     engagedOnce.current = true;
     setBusy(true); setError(undefined);
     try {
@@ -376,7 +413,12 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
     {approval.url && safeUrl(approval.url) && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center underline underline-offset-2">Open approval · {new URL(approval.url).hostname}</a>}
     {visibleForm && approval.codeExpected && <label className="block font-medium">Approval code<input aria-label="Approval code" type="password" autoComplete="off" value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className="mt-1 block text-xs text-muted-foreground">Exact code, without spaces. Stored in the private payload for the intended agent; never the answer text.</span></label>}
-    {visibleForm && <button type="button" disabled={disabled || (approval.codeExpected && !validCode)} className={primaryClass} onClick={() => void submit()}>{busy ? "Saving approval…" : approval.approvalType === "go" ? "Give the go" : approval.codeExpected ? "Save code" : "I completed this step"}</button>}
+    {visibleForm && <div className="flex flex-wrap items-center gap-2">
+      <button type="button" disabled={disabled || (approval.codeExpected && !validCode)} className={primaryClass} onClick={holdApproval}>{waiting ? sendingLabel(hold.seconds, undefined, author) : busy ? "Saving approval…" : approval.approvalType === "go" ? "Give the go" : approval.codeExpected ? "Save code" : "I completed this step"}</button>
+      {waiting && <button type="button" onClick={hold.undo} className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium fine:min-h-10">Undo</button>}
+    </div>}
+    {notSent && <p role="status" className="text-muted-foreground">{notSent}</p>}
     {error && <p role="alert" className="text-destructive">{error}</p>}
+    <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
   </div>;
 }

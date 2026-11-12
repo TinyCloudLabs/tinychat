@@ -19,8 +19,10 @@ export function StatusMark({ status }: { status?: string }) {
   return <span className={quiet}>{status}</span>;
 }
 
-export function CompactCard({ agentKey, author, platform, createdAt, status, title, description, thumb, onOpen, opensPage = false }: {
+export function CompactCard({ agentKey, author, platform, createdAt, priority, status, title, description, thumb, onOpen, opensPage = false }: {
   agentKey: string; author: string; platform?: Platform; createdAt: string;
+  /** The agent's priority, 0 (highest) to 5 (Sam, 23:30Z), shown as "P0"…"P5". */
+  priority?: number;
   /** cardStatus's word (or a post's progress); undefined shows none. */
   status?: string;
   title: string; description?: string;
@@ -37,6 +39,7 @@ export function CompactCard({ agentKey, author, platform, createdAt, status, tit
     <span className="row-span-3 -mt-1"><AgentMark agentKey={agentKey} name={author} small /></span>
     <span className="col-span-2 flex h-5 min-w-0 items-center gap-1.5 text-meta text-muted-foreground">
       <span className="max-w-[58%] shrink-0 truncate font-semibold text-foreground">{author}</span>
+      {priority !== undefined && <span className="shrink-0 rounded border border-border px-1 text-[11px] font-semibold leading-4 tabular-nums text-foreground" title={`Priority ${priority} of 0 to 5, 0 highest`}>P{priority}</span>}
       {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
       <ShortTime at={createdAt} className="shrink-0 tabular-nums before:mr-1.5 before:content-['·']" />
       <span className="ml-auto flex shrink-0 items-center"><StatusMark status={status} /></span>

@@ -1,11 +1,14 @@
 // The conversation at the foot of every card (feed lab, Sam 11-12): it reads like a chat. Your comments sit on the
 // right in the feed's accent; the agent's replies sit on the left in grey, with its name and the time. Under each
-// of your comments, one word moves on in place: "Sent", then "Received", then "Replied". The agent can answer a
-// particular comment (iMessage's inline reply): its reply carries that comment above it as a small outlined
-// "ghost", joined by a curved line, and the comment gets an "N Replies" link; either opens the comment with all its
-// replies on their own. You only post plain comments; there is no reply-to for you (Sam, 22:31Z). A comment never
-// answers or moves the card. One quiet control opens the comment box, and it stays open so you can go again.
-import { useState } from "react";
+// of your comments, one word moves on in place: "Sent", then "Received", then "Replied". "Received" means the agent
+// confirmed it got the comment, not just that it was saved (Sam, 11-12); a comment still unconfirmed after
+// UNCONFIRMED_AFTER_MS says "Not confirmed" under itself, whichever comment it is, with "Send again" (sitrep's
+// Resend, gap analysis #5). The agent can answer a particular comment (iMessage's inline reply): its reply carries
+// that comment above it as a small outlined "ghost", joined by a curved line, and the comment gets an "N Replies"
+// link; either opens the comment with all its replies on their own. You only post plain comments; there is no
+// reply-to for you (Sam, 22:31Z). A comment never answers or moves the card. One quiet control opens the comment
+// box, and it stays open so you can go again.
+import { useEffect, useRef, useState } from "react";
 import { ArrowUpIcon } from "lucide-react";
 import { StatefulSendButton } from "./StatefulSendButton";
 import type { BoardRecord, SitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
@@ -22,8 +25,11 @@ export interface ConversationLine {
   at: string;
   /** Who wrote it (the agent's lines) or who it went to (yours). */
   who: string;
-  /** Yours: whether the agent recorded that it received it. */
+  /** Yours: whether the agent confirmed it got it (an acknowledgement), not merely that it was saved. */
   received?: boolean;
+  /** Yours, when sent: the id it was saved under (a plain card's `responseId`, a typed card's thread `messageId`), so
+   * "Send again" can name the original. */
+  id?: string;
   /** Yours, when no agent could take it: kept privately and not sent. */
   held?: boolean;
   /** The agent's lines: the `key` of your comment this one answers. In the real feed this is a new reply-to
@@ -35,7 +41,7 @@ export interface ConversationLine {
 export function plainConversation(entry: HomeFeedEntry): ConversationLine[] {
   const agent = entry.source.label;
   const mine = (entry.responses ?? []).flatMap((response) => response.kind === "message" && response.text ? [{
-    key: `me:${response.responseId}`, mine: true, text: response.text, at: response.createdAt, who: agent,
+    key: `me:${response.responseId}`, id: response.responseId, mine: true, text: response.text, at: response.createdAt, who: agent,
     received: !!answerHandling(entry, response.responseId).acknowledgement,
   }] : []);
   const replies: unknown[] = Array.isArray(entry.state.card.payload?.replies) ? entry.state.card.payload.replies : [];
@@ -49,7 +55,7 @@ export function plainConversation(entry: HomeFeedEntry): ConversationLine[] {
 /** A typed card's conversation: the thread both ways, and words kept privately because no agent could take them. */
 export function typedConversation(entry: HomeFeedEntry, record: BoardRecord, owner: SitrepOwnerData): ConversationLine[] {
   const thread = cardThread(entry, record, owner).map(({ message, header }) => message.side === "sam"
-    ? { key: `me:${message.messageId}`, mine: true, text: message.text, at: message.at, who: messageRecipient(entry, record, message), received: !!(header && answerHandling(entry, header.responseId).acknowledgement) }
+    ? { key: `me:${message.messageId}`, id: message.messageId, mine: true, text: message.text, at: message.at, who: messageRecipient(entry, record, message), received: !!(header && answerHandling(entry, header.responseId).acknowledgement) }
     : { key: `agent:${message.messageId}`, mine: false, text: message.text, at: message.at, who: message.from, ...(message.replyTo ? { replyTo: `me:${message.replyTo}` } : {}) });
   const held = (owner.heldNotes ?? []).map((note) => ({ key: `held:${note.eventId}`, mine: true, text: note.text, at: note.at, who: note.intendedRecipient, held: true }));
   return [...thread, ...held].sort((a, b) => a.at.localeCompare(b.at));
@@ -58,6 +64,33 @@ export function typedConversation(entry: HomeFeedEntry, record: BoardRecord, own
 /** Where your latest comment stands, as one word that moves on in place. */
 function commentStatus(line: ConversationLine, replies: number) {
   return replies ? "Replied" : line.received ? "Received" : "Sent";
+}
+
+/** How long a comment may go unconfirmed before it says so and offers "Send again". A delivery to a running agent
+ * is confirmed within seconds; thirty is long enough not to cry wolf on a slow one. */
+export const UNCONFIRMED_AFTER_MS = 30_000;
+
+/** Your comments still waiting for the agent to confirm them: not received, not answered (a reply proves it got
+ * there), not held, and not sent again since. A later comment of yours with the same words is the copy sent again,
+ * and it carries the status from then on, so this holds across reloads without remembering anything. */
+function awaitingConfirmation(lines: readonly ConversationLine[]) {
+  return lines.filter((line, index) => line.mine && !line.held && !line.received
+    && !lines.some((other) => other.replyTo === line.key)
+    && !lines.slice(index + 1).some((later) => later.mine && !later.held && later.text === line.text));
+}
+
+/** The time, moved on just as the next waiting comment passes the threshold, so "Not confirmed" appears without a
+ * reload. Nothing runs while no comment is waiting. */
+function useConfirmationClock(waiting: readonly ConversationLine[]) {
+  const [now, setNow] = useState(Date.now);
+  const next = Math.min(Infinity, ...waiting.map((line) => Date.parse(line.at) + UNCONFIRMED_AFTER_MS).filter((due) => due > now));
+  // `now` is a dependency too: a timer that fires a moment early re-arms instead of stopping.
+  useEffect(() => {
+    if (next === Infinity) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, next - Date.now()) + 1);
+    return () => clearTimeout(timer);
+  }, [next, now]);
+  return now;
 }
 const belowLabel = (count: number) => count === 1 ? "1 reply below" : `${count} replies below`;
 
@@ -96,14 +129,17 @@ function chatItems(lines: readonly ConversationLine[]): Item[] {
 
 /**
  * The thread, then the comment control. `to` is who a comment goes to; with none (`reason` says why), there is no
- * control. `onSend` saves a comment and settles when it is saved; it throws when it is not.
+ * control. `onSend` saves a comment and settles when it is saved; it throws when it is not. `onResend` sends an
+ * unconfirmed comment again, as a new comment with the same words; without it (or without `to`) an unconfirmed
+ * comment only says so.
  */
-export function CardConversation({ lines, to, reason, disabled = false, onSend }: {
+export function CardConversation({ lines, to, reason, disabled = false, onSend, onResend }: {
   lines: readonly ConversationLine[];
   to?: string;
   reason?: string;
   disabled?: boolean;
   onSend: (text: string) => Promise<unknown>;
+  onResend?: (line: ConversationLine) => Promise<unknown>;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -112,6 +148,10 @@ export function CardConversation({ lines, to, reason, disabled = false, onSend }
   const [saving, setSaving] = useState(false);
   // The comment whose replies are open on their own.
   const [thread, setThread] = useState<string | null>(null);
+  // Each "Send again" in flight, done, or failed, by comment. "sent" lasts only until the copy shows in `lines`,
+  // which makes the original no longer wait. The ref stops a double tap sending twice before the state lands.
+  const [resends, setResends] = useState<Record<string, "sending" | "sent" | "error">>({});
+  const resending = useRef(new Set<string>());
   async function send() {
     const value = text.trim();
     if (!value) return;
@@ -119,12 +159,24 @@ export function CardConversation({ lines, to, reason, disabled = false, onSend }
     try { await onSend(value); setText(""); }
     finally { setSaving(false); }
   }
+  async function resend(line: ConversationLine) {
+    if (!onResend || resending.current.has(line.key)) return;
+    resending.current.add(line.key);
+    setResends((all) => ({ ...all, [line.key]: "sending" }));
+    try { await onResend(line); setResends((all) => ({ ...all, [line.key]: "sent" })); }
+    catch { setResends((all) => ({ ...all, [line.key]: "error" })); }
+    finally { resending.current.delete(line.key); }
+  }
   const repliesTo = (key: string) => lines.filter((line) => line.replyTo === key);
   const original = (key?: string) => key ? lines.find((line) => line.key === key) : undefined;
   const opened = original(thread ?? undefined);
   const items = chatItems(lines);
-  // One status line, under your latest comment only (the design agent, applied at Sam's word, 22:52Z).
+  // One status line, under your latest comment only (the design agent, applied at Sam's word, 22:52Z), except
+  // that an unconfirmed comment says so under itself wherever it is.
   const latestMine = [...lines].reverse().find((line) => line.mine && !line.held)?.key;
+  const waiting = awaitingConfirmation(lines);
+  const now = useConfirmationClock(waiting);
+  const unconfirmed = new Set(waiting.filter((line) => now - Date.parse(line.at) >= UNCONFIRMED_AFTER_MS).map((line) => line.key));
   return <section aria-label="Comments" className="mt-4 space-y-3 border-t border-border pt-3 text-sm">
     {!!items.length && <ol>
       {items.map((item, index) => {
@@ -136,15 +188,31 @@ export function CardConversation({ lines, to, reason, disabled = false, onSend }
           // Replies that are not directly under this comment get a quiet pointer to them.
           const next = items[index + 1];
           const below = count - (next?.kind === "theirs" && next.replyTo === line.key ? next.lines.length : 0);
+          const resent = resends[line.key];
+          // Held comments never wait or count as latest, so they have no word here.
+          const word = unconfirmed.has(line.key) ? resent === "sent" ? "Sent again" : "Not confirmed"
+            : line.key === latestMine ? commentStatus(line, count) : undefined;
+          const canResend = unconfirmed.has(line.key) && !!onResend && !!to && resent !== "sent";
           return <li key={line.key} data-mine className={`flex flex-col items-end ${gap}`}>
             <MineBubble line={line} tail={items[index + 1]?.kind !== "mine"} />
             {line.held
               ? <p className="mt-1 text-xs text-muted-foreground">Not sent · saved until {line.who} can get it</p>
-              : (line.key === latestMine || below > 0) && <p className="mt-1 flex flex-wrap items-center justify-end gap-x-1.5 text-xs text-muted-foreground">
-                {line.key === latestMine && <span>{commentStatus(line, count)}</span>}
-                {line.key === latestMine && below > 0 && <span aria-hidden>·</span>}
+              : (word || below > 0) && <p className="mt-1 flex flex-wrap items-center justify-end gap-x-1.5 text-xs text-muted-foreground">
+                {word && <span>{word}</span>}
+                {/* Sending again cannot take back the first copy, which may still get through. */}
+                {canResend && <><span aria-hidden>·</span><span>may arrive twice if sent again</span></>}
+                {word && below > 0 && <span aria-hidden>·</span>}
                 {below > 0 && <button type="button" onClick={() => setThread(line.key)} className="min-h-6 font-medium text-foreground underline decoration-border underline-offset-2">{belowLabel(below)}</button>}
               </p>}
+            {/* aria-disabled while sending, so focus stays on the button (as StatefulSendButton does). */}
+            {canResend && <button type="button" onClick={() => void resend(line)} disabled={disabled}
+              aria-disabled={resent === "sending" || undefined} aria-busy={resent === "sending" || undefined}
+              className="mt-1 inline-flex min-h-11 items-center gap-2 rounded-full border border-border px-3.5 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 aria-disabled:cursor-default fine:min-h-10 fine:hover:bg-muted">
+              {resent === "sending"
+                ? <><span aria-hidden className="size-3 rounded-full border-2 border-current border-r-transparent animate-spin [animation-duration:0.8s] motion-reduce:animate-none" />Sending…</>
+                : "Send again"}
+            </button>}
+            {canResend && resent === "error" && <p role="alert" className="mt-1 text-xs text-destructive">Couldn't send it again. Try once more.</p>}
           </li>;
         }
         // A reply right under the comment it answers needs no quote; one further down quotes it as a ghost.

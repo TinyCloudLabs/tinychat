@@ -13,8 +13,15 @@ const THRESHOLD_PX = 8;
 
 export function FloatingHeader({ scrollRef, children, className }: { scrollRef: RefObject<HTMLElement | null>; children: ReactNode; className?: string }) {
   const headerRef = useRef<HTMLDivElement>(null);
+  // Where the header sits in the page; once that spot is scrolled away, the header is stuck over the cards.
+  const spotRef = useRef<HTMLDivElement>(null);
   const [hiddenByScroll, setHiddenByScroll] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  // Stuck over the cards, it comes back slimmer (design round 6): it slides up so the part marked `data-float-keep`
+  // (the slider) sits at the top and the rest (the title) is out of view. Its height never changes, so the cards
+  // below never jump.
+  const [stuck, setStuck] = useState(false);
+  const [keepAt, setKeepAt] = useState(0);
   const [focusInside, setFocusInside] = useState(false);
 
   useEffect(() => {
@@ -28,6 +35,10 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
       const delta = top - last;
       last = top;
       setScrolled(top > 0);
+      const spot = spotRef.current;
+      setStuck(!!spot && spot.getBoundingClientRect().top < scroller.getBoundingClientRect().top - 1);
+      const keep = headerRef.current?.querySelector<HTMLElement>("[data-float-keep]");
+      setKeepAt(keep ? Math.max(0, keep.offsetTop - 8) : 0);
       // Near the top there's room for the header without covering anything, so it always shows. This also covers
       // iOS rubber-banding, where scrollTop briefly goes negative.
       if (top < (headerRef.current?.offsetHeight ?? 0)) {
@@ -49,17 +60,22 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
   // A tap on the slider also focuses it, but that must not pin the header for the rest of the scroll.
   const hidden = hiddenByScroll && !focusInside;
 
-  return <div ref={headerRef} data-hidden={hidden || undefined}
-    onFocus={(event) => setFocusInside((event.target as HTMLElement).matches(":focus-visible"))}
-    onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusInside(false); }}
-    className={cn(
-      "sticky top-0 z-10 border-b bg-background/90 backdrop-blur-md transition-[transform,border-color,box-shadow] duration-200 ease-smooth motion-reduce:transition-none",
-      // The hairline and soft shadow only appear once cards are passing under the header; at rest it sits flat on
-      // the page.
-      scrolled ? "border-border shadow-[0_1px_8px_-4px_rgb(0_0_0/0.12)] dark:shadow-[0_1px_8px_-4px_rgb(0_0_0/0.5)]" : "border-transparent",
-      hidden ? "-translate-y-full" : "translate-y-0",
-      className,
-    )}>
-    {children}
-  </div>;
+  return <>
+    <div ref={spotRef} aria-hidden className="h-0" />
+    <div ref={headerRef} data-hidden={hidden || undefined} data-stuck={stuck || undefined}
+      style={!hidden && stuck && keepAt ? { transform: `translateY(-${keepAt}px)` } : undefined}
+      onFocus={(event) => setFocusInside((event.target as HTMLElement).matches(":focus-visible"))}
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusInside(false); }}
+      className={cn(
+        // Opaque (design round 6): with a translucent blur, card text showed through under "Home" in dark WebKit.
+        "group sticky top-0 z-10 border-b bg-background transition-[transform,border-color,box-shadow] duration-200 ease-smooth motion-reduce:transition-none",
+        // The hairline and soft shadow only appear once cards are passing under the header; at rest it sits flat on
+        // the page.
+        scrolled ? "border-border shadow-[0_1px_8px_-4px_rgb(0_0_0/0.12)] dark:shadow-[0_1px_8px_-4px_rgb(0_0_0/0.5)]" : "border-transparent",
+        hidden ? "-translate-y-full" : "translate-y-0",
+        className,
+      )}>
+      {children}
+    </div>
+  </>;
 }
