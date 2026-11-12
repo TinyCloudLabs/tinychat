@@ -70,7 +70,7 @@ test("the network answer replaces the device copy, and a late local read never o
   const feed = source(network.promise, null);
   feed.cached = () => local.promise;
   const host = await mount(feed);
-  expect(host.textContent).toContain("Loading your feed");
+  expect(host.querySelector('ul[aria-label="Loading your feed"]')).not.toBeNull();
 
   await act(async () => network.resolve(snapshot([card("c2", "Fresh from the node")])));
   await act(async () => local.resolve(snapshot([card("c1", "Saved on this device")])));

@@ -1,4 +1,5 @@
 import type {
+  FeedCard,
   FeedCardState,
   FeedOwnerSettings,
   FeedOwnerView,
@@ -51,6 +52,12 @@ export interface HomeFeedEntry {
   currentIssuance?: boolean;
   historicalCommands?: HomeHistoricalCommand[];
   threadRoutes?: Record<string, HomeThreadRoute>;
+  /**
+   * A plain card's earlier revisions in the agent's output, oldest first (listFeedCardHistory).
+   * An agent's replies arrive as new revisions, so these time each reply and link a reply-only
+   * revision to the one it follows, including revisions that never loaded as entries.
+   */
+  earlierRevisions?: FeedCard[];
 }
 
 export interface HomeFeedSnapshot {
@@ -63,12 +70,38 @@ export interface HomeFeedSnapshot {
   sitrep?: SitrepOwnerData;
 }
 
+/** What happened to an answer held in the page-close outbox when Home came back. */
+export interface HeldAnswerOutcome {
+  sourceId: string;
+  cardId: string;
+  /**
+   * "sent": sent now, with its original responseId. Not sent: "replaced", a newer revision changed
+   * the request; "closed", the agent closed, ended or expired it; "refused", the feed rejected it.
+   * (An answer the owner already replaced with a newer one is cleared without an outcome.)
+   */
+  outcome: "sent" | "replaced" | "closed" | "refused";
+  /** The chosen option's label on the answered revision; absent for an answer in words. */
+  choiceLabel?: string;
+  /** "replaced": the answered revision, which stays on screen with the refusal until the owner moves on. */
+  answered?: HomeFeedEntry;
+}
+
+export interface HomeFeedSaveOptions {
+  /**
+   * Hold the answer in the page-close outbox first, synchronously, until the write is confirmed
+   * or refused: a page that closes before it lands sends it at the next launch.
+   */
+  hold?: boolean;
+}
+
 /** Owner-session persistence boundary; notifications invalidate durable reads. */
 export interface HomeFeedSource {
   load(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot>;
-  /** The device's last loaded feed for this account, shown while `load` refreshes it; null when none. */
+  /** Load the server snapshot before the initial local cache read, so a prior miss cannot mask a new answer. */
   cached?: () => Promise<HomeFeedSnapshot | null>;
-  saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload): Promise<FeedResponse>;
+  saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload, options?: HomeFeedSaveOptions): Promise<FeedResponse>;
+  holdsAnswer?(entry: HomeFeedEntry, responseId: string): boolean;
+  flushHeldAnswers?(): Promise<HeldAnswerOutcome[]>;
   sendMessage?: (entry: HomeFeedEntry, message: HomeFeedMessageDraft, payload?: FeedResponsePayload) => Promise<FeedResponse>;
   saveOwnerState?: (entry: HomeFeedEntry, event: HomeFeedOwnerEvent) => Promise<void>;
   saveHeldNote?: (entry: HomeFeedEntry, note: SitrepHeldNote) => Promise<void>;
