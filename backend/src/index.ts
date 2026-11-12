@@ -106,6 +106,7 @@ import {
   currentContentMaster,
   assertNoContentKey,
   KvContentBlobStore,
+  createContentIndexDirectory,
   validateContentCustodyConfig,
 } from "./services/content-store.js";
 import {
@@ -139,7 +140,8 @@ import { IngestRetentionSweeper } from "./services/ingest-retention.js";
 import { IngestObservabilityReporter } from "./services/ingest-observability.js";
 import {
   ConnectorDrainWorker,
-  createWebhookConfigDirectory,
+  createWebhookQueueDirectory,
+  createWebhookPurgeLedgerDirectory,
   drainIntervalFromEnv,
   startConnectorQueueMaintenanceTimer,
 } from "./services/connector-drain.js";
@@ -410,6 +412,15 @@ async function main() {
     }
   }
 
+  // W4 — retained indexes still need their content-envelope master after ingest is disabled,
+  // so maintenance can decrypt and remove every server-held meeting at its retention boundary.
+  const contentCustody = validateContentCustodyConfig(process.env);
+  if (hasContentMaster && !contentCustody.ok) {
+    console.error(contentCustody.error);
+    process.exit(1);
+    return;
+  }
+
   // W2 — the credential-custody master (backend-ingest plan §6.2). Gated on the DARK ingest flag,
   // so a deployment that never enables backend ingestion needs none of this; armed, it gets the
   // same refuse-boot-on-weak-master posture WEBHOOK_HMAC_MASTER has, because from that moment the
@@ -418,15 +429,6 @@ async function main() {
     const custody = validateCredentialCustodyConfig(process.env);
     if (!custody.ok) {
       console.error(custody.error);
-      process.exit(1);
-      return;
-    }
-    // W4 — the content-envelope master (backend-ingest plan §8.1 W4 / DECISIONS D3). Same gate,
-    // same reason, one invariant further: armed, the backend also holds a copy of the meeting
-    // itself. It must SURVIVE redeploys — a deploy that drops it orphans every stored meeting.
-    const contentCustody = validateContentCustodyConfig(process.env);
-    if (!contentCustody.ok) {
-      console.error(contentCustody.error);
       process.exit(1);
       return;
     }
@@ -565,6 +567,10 @@ async function main() {
       }
     : undefined;
 
+  // Share these stores with the optional routes, but keep retention maintenance alive even when
+  // the connector webhook feature is disabled.
+  const connectorQueue = new ConnectorQueue(node, { storageLane: backendStorageLane });
+  const connectorControl = new ConnectorControlStore(node);
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
   // authenticated companions further down (§3.6/§4.4): the companions' teardown must evict the
   // very token cache the public route reads, and `GET …/webhooks/pending` must see the queue
@@ -572,8 +578,8 @@ async function main() {
   const connectorWebhooks = connectorWebhooksEnabled()
     ? (() => {
         const tokens = new WebhookTokenService(node);
-        const queue = new ConnectorQueue(node, { storageLane: backendStorageLane });
-        const control = new ConnectorControlStore(node);
+        const queue = connectorQueue;
+        const control = connectorControl;
         // W1 — ONE ingest-mode service for both mounts, for the same reason the token cache and
         // the queue are shared: the delivery path's "is this address the worker's?" and the
         // companions' "may this browser drain?" must never disagree. Dark by default
@@ -663,6 +669,7 @@ async function main() {
   // below only when the dark flag is armed; `shutdown` releases its lease so a rolling deploy
   // hands the seat over instead of idling out the TTL.
   let ingestSupervisor: IngestInstanceSupervisor | null = null;
+  const contentIndexDirectory = createContentIndexDirectory(node);
 
   // The connectors webhook MUST be mounted before the JSON body parser and CSRF middleware:
   // the HMAC is computed over the exact bytes Fireflies signed, and Fireflies does not send
@@ -714,12 +721,6 @@ async function main() {
       // every other increment lives inside the handler below. 4-arity, so it only ever sees a
       // parser error, and it re-throws unless a bucket is already tripped.
       createConnectorWebhookParserErrorHandler(connectorWebhookLimiters),
-      // §5.4 trigger 1, W1's version. OPTION C retired the post-ack DRAIN kick and that stays
-      // retired: it ran a full drain pass — config, disabled-marker, queue and purge-ledger
-      // reads — after EVERY delivery and handed the ids to a promise nobody consumed. What is
-      // wired here instead is the ingest NUDGE: for a cohort address (dark flag + operator
-      // allowlist) it tells W3's fetch worker an item just landed; for everyone else it returns
-      // immediately and the browser still picks the id up on its next visit (trigger 3).
       // Strictly after the 202 — the ack waits on the durable enqueue and nothing else.
       createConnectorWebhookHandler({
         tokens: connectorWebhooks.tokens,
@@ -862,11 +863,12 @@ async function main() {
       // use: one ledger, one rule, two consumers.
       const contentBlobs = new KvContentBlobStore(node, connectorWebhooks.backendStorageLane);
       const contentMaster = currentContentMaster();
+      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
       const contentStore = new ContentStore(contentBlobs, {
         purgeLedger: connectorWebhooks.control,
         master: () => contentMaster,
+        mutationGuard: ingestGuard,
       });
-      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
       await contentStore.assertContinuity(contentBlobs, process.env, ingestGuard);
       mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
         contentStore.probeIndex(await contentBlobs.findIndex()),
@@ -920,8 +922,6 @@ async function main() {
         }),
       );
 
-      // W3 + W9 — the fetch worker, behind D4's SINGLE-INSTANCE seat. Two boundaries, both
-      // required: `ConnectorFetchWorker` keeps one worker per PROCESS, and the lease below keeps
       // one worker per DEPLOYMENT, because the queue's mutual exclusion is a per-address
       // in-process mutex over a per-instance storage lane — neither crosses a process boundary, so
       // a second instance is not throughput, it is interleaved read-modify-writes on one array
@@ -942,19 +942,15 @@ async function main() {
             store: credentialStore,
             client: () => firefliesOAuth(),
           }),
-          // Refetch BY ID with the user's own credential; the fetcher never sees a stored link.
           fetcher: new FirefliesMeetingFetcher(),
           content: contentStore,
           // W4's retention + purge tombstones: a swept or purged id is never re-stored by a
           // replayed delivery.
           retention: contentStore,
         }),
-        // W4/D2a — the retention window is enforced by the instance that HOLDS the seat, so the
-        // 90-day bound is a running sweep rather than a documented intention.
         retention: new IngestRetentionSweeper({
           content: contentStore,
-          cohort: () => connectorWebhooks.modes.cohort(),
-          sources: [DEFAULT_CONNECTOR_SOURCE],
+          indexes: contentIndexDirectory,
         }),
       });
       ingestSupervisor = supervisor;
@@ -981,6 +977,34 @@ async function main() {
         { enabled: () => supervisor.guard.isHolder() },
       ).start();
     }
+  }
+  // Retention runs independently of ingest flags and cohort membership. The sweeper owns index
+  // enumeration inside each guarded pass so a KV list failure is logged and retried next interval,
+  // never a reason to prevent backend startup.
+  if (ingestSupervisor === null && hasContentMaster) {
+    const retentionBlobs = new KvContentBlobStore(node, backendStorageLane);
+    const retentionGuard = new IngestInstanceGuard(
+      new KvInstanceLeaseStore(node),
+    );
+    const retentionContent = new ContentStore(retentionBlobs, {
+      purgeLedger: connectorControl,
+      mutationGuard: retentionGuard,
+    });
+    await retentionContent.assertContinuity(
+      retentionBlobs,
+      process.env,
+      retentionGuard,
+    );
+    const retention = new IngestRetentionSweeper({
+      content: retentionContent,
+      indexes: contentIndexDirectory,
+    });
+    const supervisor = new IngestInstanceSupervisor({
+      guard: retentionGuard,
+      worker: retention,
+    });
+    ingestSupervisor = supervisor;
+    ingestSupervisor.start();
   }
 
   let calendarAutojoin: CalendarAutojoinConnection | undefined;
@@ -1247,25 +1271,26 @@ async function main() {
         console.log(`TinyChat backend ready: http://localhost:${PORT}`);
       });
 
-  // §5.4 trigger 2, RE-SCOPED under Option C — bounded queue maintenance, never a background
-  // drain. Started ONLY when the flag is on, `unref()`'d inside so it never hangs a test or a
-  // shutdown. A timed drain would have surfaced ids to nobody; the TTL / dead-letter sweep is
-  // the part that still earns its cost, because an abandoned connector's queue is otherwise
-  // swept only when a delivery or a user visit happens to touch it — and the 14-day TTL is a
-  // retention promise. `sweep` reports counts only, so nothing is surfaced here.
-  const connectorQueueMaintenance = connectorWebhooks
-    ? startConnectorQueueMaintenanceTimer({
-        listAddresses: createWebhookConfigDirectory(node),
-        intervalMs: drainIntervalFromEnv(process.env),
-        sweep: async (address) => {
-          // Sequential, one address at a time (§9.3). The config read supplies the source the
-          // queue key needs; a config that is gone took its queue with it (§4.8 teardown).
-          const config = await connectorWebhooks.tokens.config(address);
-          if (config === null) return;
-          await connectorWebhooks.queue.sweep(config.source, address);
-        },
-      })
-    : null;
+  // Queue and purge-ledger retention is not an ingestion feature: disconnected records must
+  // expire even while webhook routes are disabled. This timer only deletes expired state and
+  // reports counts; it never drains or surfaces meeting IDs.
+  const connectorQueueMaintenance = startConnectorQueueMaintenanceTimer({
+    listQueueEntries: createWebhookQueueDirectory(node),
+    listLedgerAddresses: createWebhookPurgeLedgerDirectory(node),
+    sweepLedger: async ({ source, address }, safetyMarginMs) => {
+      const read = await connectorControl.readLedger(
+        source,
+        address,
+        safetyMarginMs,
+      );
+      if (read.status === "unparseable") {
+        throw new Error("purge ledger is unreadable; retention skipped");
+      }
+    },
+    sweepQueue: ({ source, address }, safetyMarginMs) =>
+      connectorQueue.sweep(source, address, safetyMarginMs),
+    intervalMs: drainIntervalFromEnv(process.env),
+  });
 
   calendarAutojoinWorker?.start();
   transcriptWorker?.start();

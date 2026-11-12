@@ -1,6 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 
 import type {
@@ -13,6 +11,7 @@ import {
   ContentStore,
   InMemoryContentBlobStore,
   KvContentBlobStore,
+  createContentIndexDirectory,
   MAX_MEETING_CONTENT_BYTES,
   MAX_USER_CONTENT_BYTES,
   MAX_USER_MEETINGS,
@@ -33,6 +32,7 @@ import {
   type RetentionSweepTarget,
 } from "../services/ingest-retention.js";
 import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
+// test-ruling: TC-2778 (Naomi: 14-day meeting-ID retention)
 
 /**
  * W4 — the SERVER CONTENT STORE (backend-ingest plan §8.1 W4; §8.2 delta items 6, 8, 10;
@@ -51,8 +51,8 @@ import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
  *    with a hashed id and no content.
  *  - `[delta-10]` — *write-result checking / fail-closed.* A rejected Result, a throw, or a shape
  *    that is not the success shape are the same thing: NOT stored, and never reported stored.
- *  - `[delta-05]` (the retention half W3's guard consumes) — the sweep records swept ids as
- *    retention tombstones, so a provider replay cannot silently re-store aged-out content.
+ *  - `[delta-05]` — rows and their retention markers expire at 14 days. A provider replay after
+ *    the boundary may create one new row; the browser deduplicates against the user's own space.
  */
 
 const ORIGINAL_ENV = { ...process.env };
@@ -127,6 +127,37 @@ function harness(
   });
   return { store, blobs, clock };
 }
+test("archive upsert refuses writes when the continuity lease is not held", async () => {
+  const blobs = new InMemoryContentBlobStore();
+  const options = Object.assign(
+    { now: () => T0, master: () => CONTENT_MASTER },
+    { mutationGuard: { isHolder: () => false } },
+  );
+  const store = new ContentStore(blobs, options);
+
+  const result = await store.upsert(upsertInput({ sourceId: "guarded-meeting" }));
+
+  expect(result).toEqual({ ok: false, code: "content_store_failed" });
+  expect(await blobs.readIndex(SOURCE, ADDRESS_A)).toBeNull();
+  expect(await blobs.listContentIds(SOURCE, ADDRESS_A)).toEqual([]);
+});
+test("archive purge rechecks the continuity lease before deleting stored meetings", async () => {
+  let holder = true;
+  const blobs = new InMemoryContentBlobStore();
+  const options = Object.assign(
+    { now: () => T0, master: () => CONTENT_MASTER },
+    { mutationGuard: { isHolder: () => holder } },
+  );
+  const store = new ContentStore(blobs, options);
+  await store.upsert(upsertInput({ sourceId: "guarded-purge" }));
+
+  holder = false;
+  await expect(store.purge(SOURCE, ADDRESS_A)).rejects.toThrow(
+    "content continuity lease is not held",
+  );
+
+  expect(await store.get(SOURCE, ADDRESS_A, "guarded-purge")).not.toBeNull();
+});
 
 function upsertInput(
   overrides: Partial<ContentUpsertInput> & { sourceId: string },
@@ -354,7 +385,7 @@ describe("W4 content store — caps and overflow policy", () => {
   });
 
   test("[delta-08] past the per-user meeting cap the OLDEST is dropped, counted and logged", async () => {
-    const { store, clock } = harness({ maxUserMeetings: 3 });
+    const { store, clock, blobs } = harness({ maxUserMeetings: 3 });
     const capture = captureLogs();
     try {
       for (let i = 0; i < 4; i += 1) {
@@ -375,6 +406,7 @@ describe("W4 content store — caps and overflow policy", () => {
     expect(ids).not.toContain("mtg-cap-0");
     expect(ids).toContain("mtg-cap-3");
     expect(store.stats().droppedOverflow).toBe(1);
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-cap-0")).toBeNull();
 
     const dropLine = capture.lines.find((line) => line.includes("reason=user_meeting_cap"));
     expect(dropLine).toBeTruthy();
@@ -383,12 +415,9 @@ describe("W4 content store — caps and overflow policy", () => {
   });
 
   test("[delta-08] overflow eviction is deliberately NON-permanent: an evicted id carries no tombstone", async () => {
-    // On the record rather than emergent (docs/connector-webhooks-purge-tombstone.md §4). The two
-    // PERMANENT markers are the D2a retention sweep and the §6.2 purge ledger — both say "the user
-    // no longer has this". A cap eviction says only "this did not fit today", so a later delivery
-    // for the same meeting is allowed to re-store it, and it may in turn evict the current oldest.
-    // The cost is a churn loop under indefinite replay; the alternative (tombstone the evicted id)
-    // would permanently deny a heavy user a meeting they could otherwise re-sync after pruning.
+    // Retention markers expire with their rows at 14 days; the purge ledger has its own bounded
+    // clock. A cap eviction says only "this did not fit today", so a later delivery for the same
+    // meeting may re-store it and evict the current oldest.
     const { store, clock } = harness({ maxUserMeetings: 2 });
     for (let i = 0; i < 3; i += 1) {
       clock.now = T0 + i * 1_000;
@@ -501,6 +530,9 @@ describe("W4 content store — fail closed", () => {
       if (this.failOn === "writeIndex") throw new Error("substrate write failed");
       return this.inner.writeIndex(source, address, blob);
     }
+    removeIndex(source: string, address: string): Promise<void> {
+      return this.inner.removeIndex(source, address);
+    }
 
     read(
       source: string,
@@ -571,6 +603,35 @@ describe("W4 content store — fail closed", () => {
     await expect(store.list(SOURCE, ADDRESS_A)).rejects.toThrow();
   });
 
+  test("a fingerprint-only mismatch refuses an otherwise valid sealed index", async () => {
+    const { store, blobs } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-fingerprint" }));
+    const original = await blobs.readIndex(SOURCE, ADDRESS_A);
+    expect(original).not.toBeNull();
+    if (original === null) return;
+
+    // Keep the ciphertext and wrapped key intact so only the fingerprint check can reject it.
+    await blobs.writeIndex(SOURCE, ADDRESS_A, {
+      ...original,
+      keyFingerprint: "0".repeat(64),
+    });
+    const storeWithMismatchedFingerprint = new ContentStore(blobs, {
+      now: () => T0,
+      master: () => CONTENT_MASTER,
+    });
+
+    await expect(
+      storeWithMismatchedFingerprint.list(SOURCE, ADDRESS_A),
+    ).rejects.toThrow("content index is unreadable");
+    expect(
+      await storeWithMismatchedFingerprint.sweepRetention({
+        source: SOURCE,
+        address: ADDRESS_A,
+      }),
+    ).toMatchObject({ swept: 0, unreadableIndex: true });
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-fingerprint")).not.toBeNull();
+  });
+
   test("[delta-10] the success arm is a LITERAL {ok:true} with a stored disposition", async () => {
     const { store } = harness();
     const result = await store.upsert(upsertInput({ sourceId: "mtg-shape" }));
@@ -628,6 +689,26 @@ describe("W4 content store — fail closed", () => {
       writeIndex(source: string, address: string, blob: SealedBlob) {
         return this.delegate.writeIndex(source, address, blob);
       }
+      removeIndex(source: string, address: string) {
+        return this.delegate.removeIndex(source, address);
+      }
+      readKeyFailureSince(source: string, address: string) {
+        return this.delegate.readKeyFailureSince(source, address);
+      }
+      writeKeyFailureSince(
+        source: string,
+        address: string,
+        firstFailureAt: string,
+      ) {
+        return this.delegate.writeKeyFailureSince(
+          source,
+          address,
+          firstFailureAt,
+        );
+      }
+      clearKeyFailureSince(source: string, address: string) {
+        return this.delegate.clearKeyFailureSince(source, address);
+      }
       read(source: string, address: string, sourceId: string) {
         return this.delegate.read(source, address, sourceId);
       }
@@ -668,6 +749,66 @@ describe("W4 content store — fail closed", () => {
       (await flaky.get(SOURCE, ADDRESS_A, "mtg-retry"))?.meta.reconciledAt,
     ).toBe(new Date(T0).toISOString());
   });
+  test("a failed final index write cannot leave an overwritten reconciled blob deletable", async () => {
+    class FailIndexAfterBlobWrite extends InMemoryContentBlobStore {
+      private armed = false;
+      private wroteBlob = false;
+
+      arm(): void {
+        this.armed = true;
+      }
+
+      override async write(
+        source: string,
+        address: string,
+        sourceId: string,
+        blob: SealedBlob,
+      ): Promise<void> {
+        await super.write(source, address, sourceId, blob);
+        if (this.armed) this.wroteBlob = true;
+      }
+
+      override async writeIndex(
+        source: string,
+        address: string,
+        blob: SealedBlob,
+      ): Promise<void> {
+        if (this.armed && this.wroteBlob) {
+          throw new Error("final index write failed");
+        }
+        await super.writeIndex(source, address, blob);
+      }
+    }
+
+    const blobs = new FailIndexAfterBlobWrite();
+    const store = new ContentStore(blobs, {
+      now: () => T0,
+      master: () => CONTENT_MASTER,
+    });
+    await store.upsert(upsertInput({ sourceId: "mtg-reconcile-failure" }));
+    await store.markReconciled(SOURCE, ADDRESS_A, "mtg-reconcile-failure");
+    blobs.arm();
+
+    const result = await store.upsert(
+      upsertInput({
+        sourceId: "mtg-reconcile-failure",
+        kind: "summary",
+        content: { overview: "new summary awaiting reconciliation" },
+      }),
+    );
+
+    expect(result).toEqual({ ok: false, code: "content_store_failed" });
+    const listed = await store.list(SOURCE, ADDRESS_A);
+    expect(
+      listed.find((meta) => meta.sourceId === "mtg-reconcile-failure")
+        ?.reconciledAt,
+    ).toBeUndefined();
+    expect(
+      (await store.get(SOURCE, ADDRESS_A, "mtg-reconcile-failure"))?.content
+        .summary,
+    ).toEqual({ overview: "new summary awaiting reconciliation" });
+  });
+
 
   test("[delta-10] a KV put that RESOLVES {ok:false} is a failure, not a silent success", async () => {
     const node = new FakeNode();
@@ -680,6 +821,20 @@ describe("W4 content store — fail closed", () => {
     const result = await store.upsert(upsertInput({ sourceId: "mtg-kv" }));
     expect(result.ok).toBe(false);
     expect(node.store.size).toBe(0);
+  });
+  test("the KV adapter persists and clears the first-failure alert marker", async () => {
+    const node = new FakeNode();
+    const blobs = new KvContentBlobStore(node as unknown as TinyCloudNode);
+    const failedAt = new Date(T0).toISOString();
+
+    await blobs.writeKeyFailureSince(SOURCE, ADDRESS_A, failedAt);
+    expect(
+      node.store.get(`connector-content-key-failure/${SOURCE}/${ADDRESS_A}`),
+    ).toEqual({ firstFailureAt: failedAt });
+    expect(await blobs.readKeyFailureSince(SOURCE, ADDRESS_A)).toBe(failedAt);
+
+    await blobs.clearKeyFailureSince(SOURCE, ADDRESS_A);
+    expect(await blobs.readKeyFailureSince(SOURCE, ADDRESS_A)).toBeNull();
   });
 
   test("[delta-10] a KV read that resolves {ok:false} never reads as an empty archive", async () => {
@@ -715,31 +870,27 @@ describe("W4 content store — fail closed", () => {
 // ── delta 5 (W4's half): retention sweep + retention tombstones ──────
 
 describe("W4 content store — retention", () => {
-  test("the retention window is the recorded D2a value", () => {
-    expect(RETENTION_WINDOW_DAYS).toBe(90);
+  test("the retention window is 14 days", () => {
+    expect(RETENTION_WINDOW_DAYS).toBe(14);
   });
 
-  test("[delta-05] the sweep drops aged-out content and records a retention tombstone", async () => {
+
+  test("[delta-05] storedAt expires content even when provider time is future", async () => {
     const { store, clock } = harness();
 
-    // Store the row 100 days ago (storedAt in the past), then advance the clock to now.
-    // Age reference is `storedAt`-clamped, so an item's own storage stamp is what carries it
-    // past the window — the provider ts is a hint, never the sole input (audit W4/D2a).
-    clock.now = T0 - 100 * DAY_MS;
+    clock.now = T0 - 15 * DAY_MS;
     await store.upsert(
       upsertInput({
         sourceId: "mtg-old",
-        ts: new Date(T0 - 100 * DAY_MS).toISOString(),
+        ts: new Date(T0 + 100 * DAY_MS).toISOString(),
       }),
     );
     clock.now = T0 + 1_000;
     const swept = await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
 
     expect(swept.swept).toBe(1);
-    // The content is gone…
     expect(await store.get(SOURCE, ADDRESS_A, "mtg-old")).toBeNull();
     expect((await store.list(SOURCE, ADDRESS_A)).length).toBe(0);
-    // …and the id is remembered as a tombstone, so a replay cannot silently resurrect it.
     expect(
       await store.tombstoned({
         source: SOURCE,
@@ -750,30 +901,6 @@ describe("W4 content store — retention", () => {
     ).toBe(true);
   });
 
-  test("[delta-05] a replayed delivery for a swept meeting is REFUSED by the store", async () => {
-    const { store, clock } = harness();
-
-    clock.now = T0 - 100 * DAY_MS;
-    await store.upsert(
-      upsertInput({
-        sourceId: "mtg-old",
-        ts: new Date(T0 - 100 * DAY_MS).toISOString(),
-      }),
-    );
-    clock.now = T0 + 1_000;
-    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
-
-    const replay = await store.upsert(
-      upsertInput({
-        sourceId: "mtg-old",
-        ts: new Date(T0 - 100 * DAY_MS).toISOString(),
-      }),
-    );
-
-    expect(replay).toEqual({ ok: false, code: "retention_tombstoned" });
-    expect(await store.get(SOURCE, ADDRESS_A, "mtg-old")).toBeNull();
-    expect(store.stats().tombstoneRefusals).toBe(1);
-  });
 
   test("[delta-05] content INSIDE the window survives the sweep, reconciled or not", async () => {
     const { store, clock } = harness();
@@ -812,36 +939,6 @@ describe("W4 content store — retention", () => {
     expect(await store.get(SOURCE, ADDRESS_A, "mtg-nots")).toBeNull();
   });
 
-  test("[delta-05] a back-dated provider ts does not tombstone a freshly-stored meeting on the next sweep", async () => {
-    // A genuine upload of an old recording arrives NEW today with `ts` far in the past. The
-    // provider ts is attacker-influenced surface (a re-uploaded file, a broken clock at the
-    // source); using it verbatim as the age reference sweeps the row on the very next pass and
-    // tombstones the id so it can never be re-stored. The clamp says: never age past what the
-    // backend itself observed — `storedAt`.
-    const { store, clock } = harness();
-
-    await store.upsert(
-      upsertInput({
-        sourceId: "mtg-old-upload",
-        ts: new Date(T0 - 100 * 365 * DAY_MS).toISOString(),
-      }),
-    );
-    clock.now = T0 + 1_000;
-    const swept = await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
-
-    expect(swept.swept).toBe(0);
-    expect((await store.list(SOURCE, ADDRESS_A)).length).toBe(1);
-
-    // And the second half of the meeting still merges — the id must not have been tombstoned.
-    const merge = await store.upsert(
-      upsertInput({
-        sourceId: "mtg-old-upload",
-        kind: "summary",
-        content: { overview: SUMMARY_TEXT },
-      }),
-    );
-    expect(merge).toEqual({ ok: true, stored: "merged" });
-  });
 
   test("[delta-05] a future-dated provider ts still ages out — the window is a bound, not a suggestion", async () => {
     // The opposite half of the clamp: without it, `ts` far in the future never crosses the
@@ -860,6 +957,235 @@ describe("W4 content store — retention", () => {
 
     expect(swept.swept).toBe(1);
     expect(await store.get(SOURCE, ADDRESS_A, "mtg-future")).toBeNull();
+  });
+
+
+  test("a recently merged blob is removed at the original 14-day expiry", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-merged-blob" }));
+
+    clock.now = T0 + 10 * DAY_MS;
+    await store.upsert(
+      upsertInput({
+        sourceId: "mtg-merged-blob",
+        kind: "summary",
+        content: { overview: SUMMARY_TEXT },
+      }),
+    );
+
+    clock.now = T0 + 15 * DAY_MS + 2 * 60 * 60_000;
+    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(await store.list(SOURCE, ADDRESS_A)).toEqual([]);
+    expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-merged-blob")).toBeNull();
+  });
+
+
+  test("an unreadable index younger than its cutoff is retained", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-aged-blob-young-index" }));
+    clock.now = T0 + 13 * DAY_MS;
+    await store.upsert(upsertInput({ sourceId: "mtg-young-blob-young-index" }));
+
+    const index = await blobs.readIndex(SOURCE, ADDRESS_A);
+    expect(index).not.toBeNull();
+    if (index !== null) {
+      await blobs.writeIndex(SOURCE, ADDRESS_A, {
+        ...index,
+        updatedAt: new Date(T0 + 13 * DAY_MS).toISOString(),
+      });
+    }
+    const wrongKeyStore = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => CREDENTIAL_MASTER,
+    });
+    clock.now = T0 + 15 * DAY_MS;
+    await wrongKeyStore.sweepRetention({
+      source: SOURCE,
+      address: ADDRESS_A,
+    });
+
+    expect(
+      await blobs.read(SOURCE, ADDRESS_A, "mtg-aged-blob-young-index"),
+    ).not.toBeNull();
+    expect(
+      await blobs.read(SOURCE, ADDRESS_A, "mtg-young-blob-young-index"),
+    ).not.toBeNull();
+    expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
+  });
+
+  test("an unreadable index past its cutoff retains its index and every blob", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-index-old" }));
+    await blobs.write(SOURCE, ADDRESS_A, "mtg-young-blob-old-index", {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      storedAt: new Date(T0 + 13 * DAY_MS).toISOString(),
+      updatedAt: new Date(T0 + 13 * DAY_MS).toISOString(),
+    });
+    const index = await blobs.readIndex(SOURCE, ADDRESS_A);
+    expect(index).not.toBeNull();
+    if (index !== null) {
+      await blobs.writeIndex(SOURCE, ADDRESS_A, {
+        ...index,
+        updatedAt: new Date(T0).toISOString(),
+      });
+    }
+    const wrongKeyStore = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => CREDENTIAL_MASTER,
+    });
+    clock.now = T0 + 15 * DAY_MS;
+
+    await wrongKeyStore.sweepRetention({
+      source: SOURCE,
+      address: ADDRESS_A,
+    });
+
+    expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
+    expect(
+      await blobs.read(SOURCE, ADDRESS_A, "mtg-index-old"),
+    ).not.toBeNull();
+    expect(
+      await blobs.read(SOURCE, ADDRESS_A, "mtg-young-blob-old-index"),
+    ).not.toBeNull();
+  });
+  test("a missing content master refuses retention deletion", async () => {
+    const blobs = new InMemoryContentBlobStore();
+    const clock = { now: T0 };
+    let unavailable = false;
+    const store = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => {
+        if (unavailable) throw new Error("master unavailable");
+        return CONTENT_MASTER;
+      },
+    });
+    await store.upsert(upsertInput({ sourceId: "mtg-master-old" }));
+    clock.now = T0 + 13 * DAY_MS;
+    await store.upsert(upsertInput({ sourceId: "mtg-master-young" }));
+
+    const logs = captureLogs();
+    try {
+      unavailable = true;
+      clock.now = T0 + 15 * DAY_MS;
+      expect(
+        await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+      ).toMatchObject({ swept: 0, unreadableIndex: true });
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-master-old")).not.toBeNull();
+      expect(await blobs.read(SOURCE, ADDRESS_A, "mtg-master-young")).not.toBeNull();
+      expect(
+        logs.lines.filter((line) => line.includes("first_failure=true")),
+      ).toHaveLength(1);
+      expect(logs.lines.some((line) => line.includes("alert=true"))).toBe(true);
+      expect(logs.lines.join(" ")).not.toContain(ADDRESS_A);
+    } finally {
+      logs.restore();
+    }
+  });
+  test("purge refuses to delete when the content index is unreadable", async () => {
+    const { store, blobs, clock } = harness();
+    await store.upsert(upsertInput({ sourceId: "mtg-purge-unreadable" }));
+    const wrongKeyStore = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => CREDENTIAL_MASTER,
+    });
+
+    await expect(
+      wrongKeyStore.purge(SOURCE, ADDRESS_A),
+    ).rejects.toThrow("content index is unreadable");
+    expect(await blobs.readIndex(SOURCE, ADDRESS_A)).not.toBeNull();
+    expect(
+      await blobs.read(SOURCE, ADDRESS_A, "mtg-purge-unreadable"),
+    ).not.toBeNull();
+  });
+  test("purge refuses orphan deletion when the content master is unavailable", async () => {
+    const blobs = new InMemoryContentBlobStore();
+    await blobs.write(SOURCE, ADDRESS_A, "mtg-orphan-without-master", {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      storedAt: new Date(T0).toISOString(),
+      updatedAt: new Date(T0).toISOString(),
+    });
+    const store = new ContentStore(blobs, {
+      now: () => T0,
+      master: () => {
+        throw new Error("master unavailable");
+      },
+    });
+
+    await expect(store.purge(SOURCE, ADDRESS_A)).rejects.toThrow(
+      "content master is unavailable",
+    );
+    expect(
+      await blobs.read(SOURCE, ADDRESS_A, "mtg-orphan-without-master"),
+    ).not.toBeNull();
+  });
+
+  test("the tombstone cap evicts oldest markers and retains the newest", async () => {
+    const { store, clock } = harness({ maxUserTombstones: 2 });
+    const internals = store as unknown as {
+      writeIndex(
+        source: string,
+        address: string,
+        index: unknown,
+      ): Promise<void>;
+    };
+    await internals.writeIndex(SOURCE, ADDRESS_A, {
+      meetings: [],
+      tombstones: [0, 1, 2].map((i) => ({
+        sourceId: `mtg-tombstone-${i}`,
+        sweptAt: new Date(T0 + i * 1_000).toISOString(),
+        expiresAt: new Date(T0 + 30 * DAY_MS).toISOString(),
+      })),
+    });
+
+    clock.now = T0 + DAY_MS;
+    await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
+
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-tombstone-0",
+      }),
+    ).toBe(false);
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-tombstone-1",
+      }),
+    ).toBe(true);
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-tombstone-2",
+      }),
+    ).toBe(true);
+  });
+
+  test("[delta-05] a legacy tombstone without an expiry is not kept", async () => {
+    const { store } = harness();
+    const seedIndex = store as unknown as {
+      writeIndex(source: string, address: string, index: unknown): Promise<void>;
+    };
+    await seedIndex.writeIndex(SOURCE, ADDRESS_A, {
+      meetings: [],
+      tombstones: [{
+        sourceId: "mtg-legacy-tombstone",
+        sweptAt: new Date(T0).toISOString(),
+      }],
+    });
+
+    expect(
+      await store.tombstoned({
+        source: SOURCE,
+        address: ADDRESS_A,
+        meetingId: "mtg-legacy-tombstone",
+      }),
+    ).toBe(false);
   });
 
   test("[delta-05] the sweep touches ONLY the address it was asked for", async () => {
@@ -896,40 +1222,6 @@ describe("W4 content store — retention", () => {
     expect(dump).not.toContain(TRANSCRIPT_TEXT.slice(0, 24));
   });
 
-  test("[delta-05] tombstones are themselves bounded, and the eviction is logged", async () => {
-    const { store, clock } = harness({ maxUserTombstones: 2 });
-    const old = T0 - 100 * DAY_MS;
-
-    for (let i = 0; i < 3; i += 1) {
-      clock.now = old + i;
-      await store.upsert(
-        upsertInput({
-          sourceId: `mtg-t${i}`,
-          ts: new Date(old + i * 1_000).toISOString(),
-        }),
-      );
-    }
-    clock.now = T0 + 10_000;
-    const capture = captureLogs();
-    try {
-      await store.sweepRetention({ source: SOURCE, address: ADDRESS_A });
-    } finally {
-      capture.restore();
-    }
-
-    // No silent caps: the oldest tombstone falls off, and the operator is told.
-    expect(
-      await store.tombstoned({
-        source: SOURCE,
-        address: ADDRESS_A,
-        meetingId: "mtg-t2",
-        kind: "transcript",
-      }),
-    ).toBe(true);
-    expect(
-      capture.lines.some((line) => line.includes("reason=tombstone_cap")),
-    ).toBe(true);
-  });
 
   test("[delta-05] purge removes every row, index and tombstone for one address only", async () => {
     const { store } = harness();
@@ -947,17 +1239,15 @@ describe("W4 content store — retention", () => {
 // ── delta 5: the sweep RUNS — the D2a window is enforced, not just implemented ──
 
 /**
- * A sweep nothing calls is a retention policy that does not exist: without this, the only bound on
- * a cohort address's server-side archive is W4's overflow cap, which is a churn policy, not the
- * D2a time bound, and the retention tombstones delta 5 leans on are never produced outside this
- * suite. The sweeper belongs to the instance that HOLDS the D4 lease for the same reason the fetch
- * worker does: two processes sweeping one tenant's index is the interleaved read-modify-write W9
- * exists to prevent.
+ * A sweep nothing calls is not a retention policy. The directory must include every persisted
+ * index, even after an account leaves the active ingest cohort, and a single lease serializes
+ * writes across processes.
  */
 describe("W4 retention sweep — wired to the lease-holding instance", () => {
   interface SweepCall {
     source: string;
     address: string;
+    safetyMarginMs?: number;
   }
 
   function sweepRecorder(options: { throwOn?: string } = {}): {
@@ -973,13 +1263,18 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
       maxInflight: () => peak,
       target: {
         async sweepRetention(input) {
-          calls.push({ source: input.source, address: input.address });
+          calls.push({
+            source: input.source,
+            address: input.address,
+            ...(input.safetyMarginMs === undefined
+              ? {}
+              : { safetyMarginMs: input.safetyMarginMs }),
+          });
           inflight += 1;
           peak = Math.max(peak, inflight);
           try {
-            // A real node call is not instantaneous; yield so an accidental Promise.all shows up
-            // as overlap rather than as a lucky serialization.
-            await new Promise((resolve) => setTimeout(resolve, 1));
+            // Yield once so Promise.all would overlap, without waiting on wall-clock time.
+            await Promise.resolve();
             if (options.throwOn === input.address) {
               throw new Error("substrate unavailable");
             }
@@ -988,66 +1283,152 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
             inflight -= 1;
           }
         },
+        async sweepExpiredReplayTombstones() {
+          return 0;
+        },
       },
     };
   }
 
-  test("[delta-05] the sweeper sweeps every cohort address, one node call at a time", async () => {
+  const indexes = (...addresses: string[]) =>
+    async () => addresses.map((address) => ({ source: SOURCE, address }));
+
+  test("[delta-05] the sweeper visits every stored index one node call at a time", async () => {
     const recorder = sweepRecorder();
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
-      cohort: async () => new Set([ADDRESS_A, ADDRESS_B]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A, ADDRESS_B),
     });
 
     const result = await sweeper.sweepOnce();
 
     expect(result).toEqual({ addresses: 2, swept: 2, errors: 0 });
     expect(recorder.calls).toEqual([
-      { source: SOURCE, address: ADDRESS_A },
-      { source: SOURCE, address: ADDRESS_B },
+      { source: SOURCE, address: ADDRESS_A, safetyMarginMs: 5 * 60_000 },
+      { source: SOURCE, address: ADDRESS_B, safetyMarginMs: 5 * 60_000 },
     ]);
-    // §9.3: TinyCloud drops concurrent responses on one space — never Promise.all across tenants.
     expect(recorder.maxInflight()).toBe(1);
   });
 
-  test("[delta-05] an unreadable cohort sweeps NOTHING rather than guessing the tenant list", async () => {
+  test("the first successful pass logs one deploy summary with counts and hashed tenants", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    const sweeper = new IngestRetentionSweeper({
+      content: {
+        async sweepRetention({ address }: { address: string }) {
+          if (address === ADDRESS_B) throw new Error("one index failed");
+          return {
+            swept: 1,
+            bytesFreed: 10,
+            tombstones: 0,
+            storedAtBackfilled: 2,
+            unreadableIndex: true,
+          };
+        },
+        async sweepExpiredReplayTombstones() {
+          return 0;
+        },
+      },
+      indexes: indexes(ADDRESS_A, ADDRESS_B),
+    });
+
+    try {
+      await sweeper.sweepOnce();
+      await sweeper.sweepOnce();
+      const summaries = log.mock.calls
+        .map(([line]) => String(line))
+        .filter((line) => line.includes("op=deploy-retention-summary"));
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toContain(
+        "tenants_swept=2 stored_at_backfilled=2 unreadable_indexes=1",
+      );
+      expect(summaries[0]).toContain("errors=1");
+      expect(summaries[0]).toContain("tenant_hashes=");
+      expect(summaries[0]).not.toContain(ADDRESS_A);
+      expect(summaries[0]).not.toContain(ADDRESS_B);
+    } finally {
+      log.mockRestore();
+    }
+  });
+  test("the configured sweep interval is passed as the retention safety margin", async () => {
     const recorder = sweepRecorder();
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
-      cohort: async () => {
-        throw new Error("cohort unavailable");
-      },
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
+      intervalMs: 1_234,
     });
 
-    const result = await sweeper.sweepOnce();
+    await sweeper.sweepOnce();
 
-    expect(result).toEqual({ addresses: 0, swept: 0, errors: 1 });
-    expect(recorder.calls).toEqual([]);
+    expect(recorder.calls).toEqual([
+      { source: SOURCE, address: ADDRESS_A, safetyMarginMs: 1_234 },
+    ]);
   });
 
-  test("[delta-05] one tenant's failed sweep does not cost the others theirs", async () => {
+  test("[delta-05] a failed directory listing is retried on the next retention pass", async () => {
+    const recorder = sweepRecorder();
+    let attempts = 0;
+    const sweeper = new IngestRetentionSweeper({
+      content: recorder.target,
+      indexes: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("index listing unavailable");
+        return [{ source: SOURCE, address: ADDRESS_A }];
+      },
+    });
+
+    expect(await sweeper.sweepOnce()).toEqual({ addresses: 0, swept: 0, errors: 1 });
+    expect(await sweeper.sweepOnce()).toEqual({ addresses: 1, swept: 1, errors: 0 });
+    expect(recorder.calls).toEqual([
+      { source: SOURCE, address: ADDRESS_A, safetyMarginMs: 5 * 60_000 },
+    ]);
+  });
+  test("expired replay markers are swept even when the index directory is unavailable", async () => {
+    const recorder = sweepRecorder();
+    let markerSweeps = 0;
+    const sweeper = new IngestRetentionSweeper({
+      content: {
+        ...recorder.target,
+        async sweepExpiredReplayTombstones() {
+          markerSweeps += 1;
+          return 2;
+        },
+      },
+      indexes: async () => {
+        throw new Error("index listing unavailable");
+      },
+    });
+
+    expect(await sweeper.sweepOnce()).toEqual({
+      addresses: 0,
+      swept: 0,
+      errors: 1,
+    });
+    expect(markerSweeps).toBe(1);
+  });
+
+
+  test("[delta-05] one index failure does not cost other indexes their sweep", async () => {
     const recorder = sweepRecorder({ throwOn: ADDRESS_A });
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
-      cohort: async () => new Set([ADDRESS_A, ADDRESS_B]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A, ADDRESS_B),
     });
 
     const result = await sweeper.sweepOnce();
 
     expect(result.errors).toBe(1);
     expect(result.swept).toBe(1);
-    expect(recorder.calls.map((c) => c.address)).toEqual([ADDRESS_A, ADDRESS_B]);
+    expect(recorder.calls.map((call) => call.address)).toEqual([
+      ADDRESS_A,
+      ADDRESS_B,
+    ]);
   });
 
-  test("[delta-05] the sweep never names a tenant or a meeting in its log line", async () => {
+  test("[delta-05] sweep logs never name a tenant or meeting", async () => {
     const recorder = sweepRecorder();
     const sweeper = new IngestRetentionSweeper({
       content: recorder.target,
-      cohort: async () => new Set([ADDRESS_A]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
     });
 
     const capture = captureLogs();
@@ -1062,7 +1443,7 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
     expect(emitted).not.toContain(ADDRESS_A);
   });
 
-  test("[delta-05] the supervisor runs the sweep on the lease HOLDER and never on a refused instance", async () => {
+  test("[delta-05] the supervisor runs retention on the lease holder only", async () => {
     const lease = new Map<string, InstanceLeaseRecord>();
     const leaseStore = (): InstanceLeaseStore => ({
       read: async () => lease.get("k") ?? null,
@@ -1073,41 +1454,25 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
         lease.delete("k");
       },
     });
-    const fakeWorker = () => {
-      let running = false;
-      return {
-        start: () => {
-          running = true;
-        },
-        stop: () => {
-          running = false;
-        },
-        isRunning: () => running,
-      };
-    };
 
     const holderSweeper = new IngestRetentionSweeper({
       content: sweepRecorder().target,
-      cohort: async () => new Set([ADDRESS_A]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
     });
     const holder = new IngestInstanceSupervisor({
       guard: new IngestInstanceGuard(leaseStore(), { instanceId: "inst-one" }),
-      worker: fakeWorker(),
-      retention: holderSweeper,
+      worker: holderSweeper,
     });
     expect(await holder.tick()).toBe("holder");
     expect(holderSweeper.isRunning()).toBe(true);
 
     const refusedSweeper = new IngestRetentionSweeper({
       content: sweepRecorder().target,
-      cohort: async () => new Set([ADDRESS_A]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
     });
     const refused = new IngestInstanceSupervisor({
       guard: new IngestInstanceGuard(leaseStore(), { instanceId: "inst-two" }),
-      worker: fakeWorker(),
-      retention: refusedSweeper,
+      worker: refusedSweeper,
     });
     expect(await refused.tick()).toBe("inert");
     expect(refusedSweeper.isRunning()).toBe(false);
@@ -1116,40 +1481,62 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
     expect(holderSweeper.isRunning()).toBe(false);
   });
 
-  test("[delta-05] a held sweep pass really deletes aged-out content from the wired store", async () => {
+  test("[delta-05] with ingest off, a user outside cohort still has old content swept", async () => {
     const { store, clock } = harness();
-    clock.now = T0 - 100 * DAY_MS;
+    clock.now = T0 - 15 * DAY_MS;
+    await store.upsert(
+      upsertInput({
+        address: ADDRESS_B,
+        sourceId: "mtg-out-of-cohort",
+      }),
+    );
+    clock.now = T0;
+
+    const node = new FakeNode();
+    node.store.set(`connector-content-index/${SOURCE}/${ADDRESS_A}`, {});
+    node.store.set(`connector-content-index/${SOURCE}/${ADDRESS_B}`, {});
+    const directory = createContentIndexDirectory(node as unknown as TinyCloudNode);
+    const activeCohort = new Set([ADDRESS_A]);
+    const existingIndexes = await directory();
+    expect(activeCohort.has(ADDRESS_B)).toBe(false);
+    const sweeper = new IngestRetentionSweeper({
+      content: store,
+      indexes: async () => existingIndexes,
+    });
+    const result = await sweeper.sweepOnce();
+
+    expect(result.addresses).toBe(2);
+    expect(result.swept).toBe(1);
+    expect(await store.get(SOURCE, ADDRESS_B, "mtg-out-of-cohort")).toBeNull();
+  });
+
+  test("[delta-05] a held sweep pass deletes aged-out content from the store", async () => {
+    const { store, clock } = harness();
+    clock.now = T0 - 15 * DAY_MS;
     await store.upsert(
       upsertInput({
         sourceId: "mtg-old",
-        ts: new Date(T0 - 100 * DAY_MS).toISOString(),
       }),
     );
-    clock.now = T0 + 1_000;
+    clock.now = T0;
 
     const sweeper = new IngestRetentionSweeper({
       content: store,
-      cohort: async () => new Set([ADDRESS_A]),
-      sources: [SOURCE],
+      indexes: indexes(ADDRESS_A),
     });
     const result = await sweeper.sweepOnce();
 
     expect(result.swept).toBe(1);
     expect(await store.get(SOURCE, ADDRESS_A, "mtg-old")).toBeNull();
   });
+  test("[delta-05] the startup directory includes addresses with orphan blobs and no index", async () => {
+    const node = new FakeNode();
+    const orphanAddress = "0x3333330000000000000000000000000000003333";
+    node.store.set(`connector-content/${SOURCE}/${orphanAddress}/mtg-orphan`, {});
 
-  test("[delta-05] index.ts hands the content store's sweep to the lease-holding supervisor", () => {
-    const source = readFileSync(
-      resolve(import.meta.dir, "..", "index.ts"),
-      "utf8",
-    );
-    // The sweeper is constructed INSIDE the supervisor's options — the same seat the fetch worker
-    // takes — so a flag-armed instance that refused the lease sweeps nothing.
-    expect(source).toContain("new IngestRetentionSweeper({");
-    expect(source).toMatch(
-      /new IngestInstanceSupervisor\(\{[\s\S]{0,3000}retention: new IngestRetentionSweeper\(\{/,
-    );
-    expect(source).toMatch(/content: contentStore/);
+    const directory = createContentIndexDirectory(node as unknown as TinyCloudNode);
+
+    expect(await directory()).toContainEqual({ source: SOURCE, address: orphanAddress });
   });
 });
 
@@ -1285,14 +1672,37 @@ class FakeNode {
   overridePutResult: unknown | null = null;
   overrideDeleteResult: unknown | null = null;
   overrideGetResult: unknown | null = null;
+  overrideGetResultForKey: ((key: string) => unknown) | null = null;
 
   readonly kv = {
     get: async (key: string): Promise<unknown> => {
       await this.enter("get", key);
       try {
+        if (this.overrideGetResultForKey !== null) {
+          const result = this.overrideGetResultForKey(key);
+          if (result !== undefined) return result;
+        }
         if (this.overrideGetResult !== null) return this.overrideGetResult;
         if (!this.store.has(key)) return { data: null };
         return { data: { data: this.store.get(key) } };
+      } finally {
+        this.exit();
+      }
+    },
+    list: async (options: unknown): Promise<unknown> => {
+      const prefix =
+        typeof options === "object" && options !== null && "prefix" in options
+          ? String((options as { prefix: unknown }).prefix)
+          : "";
+      await this.enter("list", prefix);
+      try {
+        return {
+          data: {
+            keys: [...this.store.keys()]
+              .filter((key) => key.startsWith(prefix))
+              .map((key) => ({ key })),
+          },
+        };
       } finally {
         this.exit();
       }
@@ -1325,13 +1735,216 @@ class FakeNode {
     this.calls.push({ op, key });
     this.inFlight += 1;
     this.maxConcurrent = Math.max(this.maxConcurrent, this.inFlight);
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    await Promise.resolve();
   }
 
   private exit(): void {
     this.inFlight -= 1;
   }
 }
+describe("W4 KV adapter malformed index refusal", () => {
+  const indexKey = `connector-content-index/${SOURCE}/${ADDRESS_A}`;
+
+  test("production KV_NOT_FOUND results are absent for new index and content keys", async () => {
+    const node = new FakeNode();
+    node.overrideGetResultForKey = (key) => ({
+      ok: false,
+      error: {
+        code: "KV_NOT_FOUND",
+        service: "kv",
+        message: `Key not found: ${key}`,
+      },
+    });
+    const adapter = new KvContentBlobStore(
+      node as unknown as TinyCloudNode,
+    );
+    const store = new ContentStore(adapter, {
+      now: () => T0,
+      master: () => CONTENT_MASTER,
+    });
+
+    expect(await adapter.readIndex(SOURCE, ADDRESS_A)).toBeNull();
+    expect(await adapter.read(SOURCE, ADDRESS_A, "mtg-first-store")).toBeNull();
+    expect(await store.list(SOURCE, ADDRESS_A)).toEqual([]);
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-first-store")).toBeNull();
+    expect(
+      await store.upsert(upsertInput({ sourceId: "mtg-first-store" })),
+    ).toEqual({ ok: true, stored: "created" });
+    expect(node.store.has(indexKey)).toBe(true);
+    expect(
+      node.store.has(
+        `connector-content/${SOURCE}/${ADDRESS_A}/mtg-first-store`,
+      ),
+    ).toBe(true);
+  });
+  test("listContentIds propagates KV read failures instead of skipping them", async () => {
+    const node = new FakeNode();
+    const sourceId = "mtg-transient-kv-error";
+    const key = `connector-content/${SOURCE}/${ADDRESS_A}/${sourceId}`;
+    node.store.set(key, { ciphertext: "c", wrappedDEK: "k" });
+    node.overrideGetResultForKey = (requestedKey) =>
+      requestedKey === key
+        ? {
+            ok: false,
+            error: {
+              code: "KV_UNAVAILABLE",
+              service: "kv",
+              message: "KV temporarily unavailable",
+            },
+          }
+        : undefined;
+    const adapter = new KvContentBlobStore(
+      node as unknown as TinyCloudNode,
+    );
+
+    await expect(
+      adapter.listContentIds(SOURCE, ADDRESS_A),
+    ).rejects.toThrow();
+  });
+
+  test("malformed orphan content does not stop a retention sweep from deleting later expired blobs", async () => {
+    const node = new FakeNode();
+    const clock = { now: T0 };
+    const store = new ContentStore(
+      new KvContentBlobStore(node as unknown as TinyCloudNode),
+      { now: () => clock.now, master: () => CONTENT_MASTER },
+    );
+    await store.upsert(
+      upsertInput({ sourceId: "mtg-valid-content" }),
+    );
+
+    clock.now = T0 - 15 * DAY_MS;
+    const expiredId = "mtg-expired-after-malformed";
+    expect(
+      await store.upsert(
+        upsertInput({
+          sourceId: expiredId,
+          ts: new Date(clock.now).toISOString(),
+        }),
+      ),
+    ).toEqual({ ok: true, stored: "created" });
+    clock.now = T0;
+
+    const malformedId = "mtg-malformed-orphan";
+    const malformedKey =
+      `connector-content/${SOURCE}/${ADDRESS_A}/${malformedId}`;
+    node.store.set(malformedKey, "{");
+    const logs = captureLogs();
+    try {
+      expect(
+        await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+      ).toMatchObject({ swept: 1 });
+      expect(
+        node.store.has(
+          `connector-content/${SOURCE}/${ADDRESS_A}/${expiredId}`,
+        ),
+      ).toBe(false);
+      expect(
+        node.store.has(
+          `connector-content/${SOURCE}/${ADDRESS_A}/mtg-valid-content`,
+        ),
+      ).toBe(true);
+      expect(node.store.has(malformedKey)).toBe(true);
+      expect(logs.lines.some((line) => line.includes("unparseable_blob"))).toBe(
+        true,
+      );
+      expect(logs.lines.join(" ")).not.toContain(malformedId);
+    } finally {
+      logs.restore();
+    }
+  });
+
+
+  test.each([
+    ["invalid JSON", "{"],
+    ["JSON primitive", "42"],
+    ["JSON null", "null"],
+    ["object missing envelope fields", JSON.stringify({ data: true })],
+  ])("a present malformed index (%s) is not treated as absent", async (_name, raw) => {
+    const node = new FakeNode();
+    node.store.set(indexKey, raw);
+    const adapter = new KvContentBlobStore(
+      node as unknown as TinyCloudNode,
+    );
+
+    await expect(adapter.readIndex(SOURCE, ADDRESS_A)).rejects.toThrow(
+      "content blob is unparseable",
+    );
+  });
+
+  test("an invalid KV result shape is not mistaken for a missing index", async () => {
+    const node = new FakeNode();
+    node.overrideGetResult = { malformed: true };
+    const adapter = new KvContentBlobStore(
+      node as unknown as TinyCloudNode,
+    );
+
+    await expect(adapter.readIndex(SOURCE, ADDRESS_A)).rejects.toThrow();
+  });
+
+  test("upsert refuses a malformed index without replacing it", async () => {
+    const node = new FakeNode();
+    node.store.set(indexKey, "{");
+    const store = new ContentStore(
+      new KvContentBlobStore(node as unknown as TinyCloudNode),
+      { now: () => T0, master: () => CONTENT_MASTER },
+    );
+
+    expect(await store.upsert(upsertInput({ sourceId: "mtg-malformed-upsert" }))).toEqual({
+      ok: false,
+      code: "content_store_failed",
+    });
+    expect(node.store.get(indexKey)).toBe("{");
+    expect(node.store.has(`connector-content/${SOURCE}/${ADDRESS_A}/mtg-malformed-upsert`)).toBe(false);
+  });
+
+  test("retention refuses malformed indexes without deleting expired content", async () => {
+    const node = new FakeNode();
+    node.store.set(indexKey, "{");
+    const expiredKey = `connector-content/${SOURCE}/${ADDRESS_A}/mtg-expired-under-malformed-index`;
+    node.store.set(expiredKey, {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      storedAt: new Date(T0 - 15 * DAY_MS).toISOString(),
+      updatedAt: new Date(T0 - 15 * DAY_MS).toISOString(),
+    });
+    const store = new ContentStore(
+      new KvContentBlobStore(node as unknown as TinyCloudNode),
+      { now: () => T0, master: () => CONTENT_MASTER },
+    );
+
+    expect(
+      await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+    ).toMatchObject({ swept: 0, unreadableIndex: true });
+    expect(node.store.get(indexKey)).toBe("{");
+    expect(node.store.has(expiredKey)).toBe(true);
+    expect(node.calls.some((call) => call.op === "delete")).toBe(false);
+  });
+
+  test("purge refuses malformed indexes without deleting any keys", async () => {
+    const node = new FakeNode();
+    node.store.set(indexKey, "{");
+    const contentKey = `connector-content/${SOURCE}/${ADDRESS_A}/mtg-malformed-purge`;
+    node.store.set(contentKey, {
+      ciphertext: "ciphertext",
+      wrappedDEK: "wrapped-key",
+      storedAt: new Date(T0).toISOString(),
+      updatedAt: new Date(T0).toISOString(),
+    });
+    const store = new ContentStore(
+      new KvContentBlobStore(node as unknown as TinyCloudNode),
+      { now: () => T0, master: () => CONTENT_MASTER },
+    );
+
+    await expect(store.purge(SOURCE, ADDRESS_A)).rejects.toThrow(
+      "content index is unreadable",
+    );
+    expect(node.store.get(indexKey)).toBe("{");
+    expect(node.store.has(contentKey)).toBe(true);
+    expect(node.calls.some((call) => call.op === "delete")).toBe(false);
+  });
+});
+
 
 describe("W4 content store — sequential storage (§9.3)", () => {
   test("concurrent upserts still reach the node one call at a time", async () => {
@@ -1352,3 +1965,273 @@ describe("W4 content store — sequential storage (§9.3)", () => {
     expect((await store.list(SOURCE, ADDRESS_A)).length).toBe(3);
   });
 });
+describe("W4 content store — immutable expiry and replay protection", () => {
+  test("expiry is fixed at first server storage and merges cannot extend it", async () => {
+    const { store, clock } = harness();
+    const id = "mtg-immutable-expiry";
+    expect(
+      await store.upsert(
+        upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+      ),
+    ).toEqual({ ok: true, stored: "created" });
+
+    const first = await store.get(SOURCE, ADDRESS_A, id);
+    expect(first?.meta.expiresAt).toBe("2026-08-23");
+
+    clock.now += 10 * DAY_MS;
+    expect(
+      await store.upsert(
+        upsertInput({
+          sourceId: id,
+          kind: "summary",
+          ts: new Date(clock.now).toISOString(),
+          content: { overview: SUMMARY_TEXT },
+        }),
+      ),
+    ).toEqual({ ok: true, stored: "merged" });
+
+    const merged = await store.get(SOURCE, ADDRESS_A, id);
+    expect(merged?.meta.storedAt).toBe(first?.meta.storedAt);
+    expect(merged?.meta.expiresAt).toBe(first?.meta.expiresAt);
+  });
+
+  test("refuses a provider meeting older than the retention window", async () => {
+    const { store } = harness();
+    expect(
+      await store.upsert(
+        upsertInput({
+          sourceId: "mtg-too-old",
+          ts: new Date(T0 - 15 * DAY_MS).toISOString(),
+        }),
+      ),
+    ).toEqual({ ok: false, code: "meeting_too_old" });
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-too-old")).toBeNull();
+  });
+
+  test("age-sweeps valid expired content while the index is unreadable and tombstones replays", async () => {
+    const { store, blobs, clock } = harness();
+    const id = "mtg-expired-unreadable-index";
+    await store.upsert(
+      upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+    );
+    clock.now = T0 + 15 * DAY_MS + 2 * 60 * 60_000;
+
+    await blobs.writeIndex(SOURCE, ADDRESS_A, {
+      ciphertext: "corrupt",
+      wrappedDEK: "corrupt",
+      updatedAt: new Date(clock.now).toISOString(),
+    });
+    const retentionStore = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => CONTENT_MASTER,
+    });
+    expect(
+      await retentionStore.sweepRetention({
+        source: SOURCE,
+        address: ADDRESS_A,
+      }),
+    ).toMatchObject({ swept: 1, unreadableIndex: true });
+    expect(await store.get(SOURCE, ADDRESS_A, id)).toBeNull();
+    expect(await blobs.listReplayTombstones()).toHaveLength(1);
+
+    await blobs.removeIndex(SOURCE, ADDRESS_A);
+    expect(
+      await store.upsert(
+        upsertInput({ sourceId: id, ts: new Date(clock.now).toISOString() }),
+      ),
+    ).toEqual({ ok: false, code: "retention_tombstoned" });
+    expect(await blobs.read(SOURCE, ADDRESS_A, id)).toBeNull();
+  });
+
+  test("the age sweep deletes at midnight on the expiry day", async () => {
+    const { store, clock } = harness();
+    const id = "mtg-expiry-grace-boundary";
+    await store.upsert(
+      upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+    );
+
+    clock.now = Date.parse("2026-08-22T23:59:59.999Z");
+    expect(
+      (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A })).swept,
+    ).toBe(0);
+    clock.now += 1;
+    expect(
+      (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A })).swept,
+    ).toBe(1);
+  });
+
+  test("missing blobs read as absent and the next readable sweep prunes the index entry", async () => {
+    const { store, blobs, clock } = harness();
+    const id = "mtg-missing-blob-expiry";
+    await store.upsert(
+      upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+    );
+    await blobs.remove(SOURCE, ADDRESS_A, id);
+    expect(await store.get(SOURCE, ADDRESS_A, id)).toBeNull();
+    expect(await blobs.read(SOURCE, ADDRESS_A, id)).toBeNull();
+    clock.now = Date.parse("2026-08-25T02:00:00.000Z");
+
+    expect(
+      await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+    ).toMatchObject({ swept: 1 });
+    expect(await store.list(SOURCE, ADDRESS_A)).toEqual([]);
+    expect(await blobs.listReplayTombstones()).toHaveLength(1);
+  });
+
+  test("missing, malformed and far-future expiry metadata refuse deletion and log", async () => {
+    const cases = [
+      ["missing", (sealed: SealedBlob): SealedBlob => {
+        const { expiresAt: _expiresAt, ...rest } = sealed;
+        return rest;
+      }],
+      ["malformed", (sealed: SealedBlob): SealedBlob => ({
+        ...sealed,
+        expiresAt: "2026-02-30",
+      })],
+      ["aad-mismatch", (sealed: SealedBlob): SealedBlob => ({
+        ...sealed,
+        expiresAt: "2026-08-25",
+      })],
+      ["far-future", (sealed: SealedBlob): SealedBlob => ({
+        ...sealed,
+        expiresAt: "2099-01-01",
+      })],
+    ] as const;
+    const logs = captureLogs();
+
+    try {
+      for (const [label, tamper] of cases) {
+        const { store, blobs, clock } = harness();
+        const id = `mtg-${label}-expiry`;
+        await store.upsert(
+          upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+        );
+        const sealed = await blobs.read(SOURCE, ADDRESS_A, id);
+        expect(sealed).not.toBeNull();
+        await blobs.write(SOURCE, ADDRESS_A, id, tamper(sealed!));
+        clock.now = Date.parse("2026-08-25T02:00:00.000Z");
+
+        expect(
+          await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }),
+        ).toMatchObject({ swept: 0 });
+        expect(await blobs.read(SOURCE, ADDRESS_A, id)).not.toBeNull();
+        expect(logs.lines.some((line) => line.includes("expiry_unreadable"))).toBe(
+          true,
+        );
+        expect(logs.lines.join(" ")).not.toContain(id);
+      }
+    } finally {
+      logs.restore();
+    }
+  });
+
+  test("a replay after the deletion marker expires cannot restart retention", async () => {
+    const { store, clock } = harness();
+    const id = "mtg-old-replay";
+    await store.upsert(
+      upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+    );
+    clock.now = T0 + 15 * DAY_MS + 2 * 60 * 60_000;
+    expect(
+      (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }))
+        .swept,
+    ).toBe(1);
+
+    clock.now += 15 * DAY_MS;
+    expect(
+      await store.upsert(
+        upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+      ),
+    ).toEqual({ ok: false, code: "meeting_too_old" });
+    expect(await store.get(SOURCE, ADDRESS_A, id)).toBeNull();
+  });
+  test("missing provider time uses the marker alone and logs without content", async () => {
+    const { store, blobs, clock } = harness();
+    const id = "mtg-no-time-replay";
+    const logs = captureLogs();
+    try {
+      expect(await store.upsert(upsertInput({ sourceId: id }))).toMatchObject({
+        ok: true,
+        stored: "created",
+      });
+      expect(logs.lines.some((line) => line.includes("meeting_time_missing"))).toBe(true);
+      expect(logs.lines.join(" ")).not.toContain(id);
+      expect(logs.lines.join(" ")).not.toContain(ADDRESS_A);
+
+      clock.now = T0 + 15 * DAY_MS;
+      expect(
+        (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }))
+          .swept,
+      ).toBe(1);
+      const markers = await blobs.listReplayTombstones();
+      expect(markers).toHaveLength(1);
+      expect(markers[0]?.digest).toMatch(/^[a-f0-9]{64}$/);
+      expect(markers[0]?.marker?.expiresAt).toBe(
+        new Date(clock.now + 14 * DAY_MS).toISOString(),
+      );
+
+      await blobs.removeIndex(SOURCE, ADDRESS_A);
+      expect(
+        await store.upsert(upsertInput({ sourceId: id })),
+      ).toMatchObject({ ok: false, code: "retention_tombstoned" });
+
+      clock.now += 14 * DAY_MS - 1;
+      expect(await store.sweepExpiredReplayTombstones()).toBe(0);
+      clock.now += 1;
+      expect(await store.sweepExpiredReplayTombstones()).toBe(1);
+      expect(await blobs.listReplayTombstones()).toEqual([]);
+
+      expect(await store.upsert(upsertInput({ sourceId: id }))).toMatchObject({
+        ok: true,
+        stored: "created",
+      });
+    } finally {
+      logs.restore();
+    }
+  });
+
+  test("expiry metadata is authenticated by the content envelope", async () => {
+    const { store, blobs } = harness();
+    const id = "mtg-expiry-aad";
+    await store.upsert(upsertInput({ sourceId: id }));
+    const sealed = await blobs.read(SOURCE, ADDRESS_A, id);
+    expect(sealed?.expiresAt).toBe("2026-08-23");
+    await blobs.write(SOURCE, ADDRESS_A, id, {
+      ...sealed!,
+      expiresAt: "2026-08-25",
+    });
+
+    await expect(store.get(SOURCE, ADDRESS_A, id)).rejects.toThrow();
+  });
+  test("expired replay markers are removed by retention even after all content indexes disappear", async () => {
+    const { store, blobs, clock } = harness();
+    const id = "mtg-marker-expiry";
+    await store.upsert(upsertInput({ sourceId: id }));
+    clock.now = T0 + 15 * DAY_MS;
+    expect(
+      (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A })).swept,
+    ).toBe(1);
+    await blobs.removeIndex(SOURCE, ADDRESS_A);
+
+    clock.now += 14 * DAY_MS;
+    expect(await store.sweepExpiredReplayTombstones()).toBe(1);
+    expect(await blobs.listReplayTombstones()).toEqual([]);
+  });
+});
+
+for (const time of ["00:00:00.001", "23:59:59.999"]) {
+  test(`day-only expiry leaves scheduling slack for first store at ${time}`, async () => {
+    const { store, blobs, clock } = harness();
+    clock.now = Date.parse(`2026-08-10T${time}Z`);
+    const first = clock.now;
+    const id = "expiry-day-boundary";
+    expect((await store.upsert(upsertInput({ sourceId: id, ts: new Date(first).toISOString() }))).ok).toBe(true);
+    expect((await blobs.read(SOURCE, ADDRESS_A, id))?.expiresAt).toBe("2026-08-23");
+    clock.now = Date.parse("2026-08-22T23:59:59.999Z");
+    expect((await store.sweepRetention({source: SOURCE, address: ADDRESS_A})).swept).toBe(0);
+    clock.now += 1;
+    expect((await store.sweepRetention({source: SOURCE, address: ADDRESS_A})).swept).toBe(1);
+    clock.now = first + 14 * DAY_MS;
+    expect(await blobs.read(SOURCE, ADDRESS_A, id)).toBeNull();
+  });
+}

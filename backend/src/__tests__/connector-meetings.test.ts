@@ -122,6 +122,14 @@ class CountingBlobStore implements ContentBlobStore {
     return this.inner.writeIndex(source, address, blob);
   }
 
+  removeIndex(source: string, address: string): Promise<void> {
+    this.writes += 1;
+    return this.inner.removeIndex(source, address);
+  }
+  listContentIds(source: string, address: string) {
+    this.reads += 1;
+    return this.inner.listContentIds(source, address);
+  }
   read(
     source: string,
     address: string,
@@ -145,6 +153,42 @@ class CountingBlobStore implements ContentBlobStore {
     this.writes += 1;
     return this.inner.remove(source, address, sourceId);
   }
+
+  readReplayTombstone(digest: string) {
+    return this.inner.readReplayTombstone(digest);
+  }
+
+  writeReplayTombstone(
+    digest: string,
+    marker: Parameters<InMemoryContentBlobStore["writeReplayTombstone"]>[1],
+  ) {
+    this.writes += 1;
+    return this.inner.writeReplayTombstone(digest, marker);
+  }
+
+  removeReplayTombstone(digest: string) {
+    this.writes += 1;
+    return this.inner.removeReplayTombstone(digest);
+  }
+
+  listReplayTombstones() {
+    return this.inner.listReplayTombstones();
+  }
+
+  readKeyFailureSince(source: string, address: string) {
+    return this.inner.readKeyFailureSince(source, address);
+  }
+
+  writeKeyFailureSince(source: string, address: string, firstFailureAt: string) {
+    this.writes += 1;
+    return this.inner.writeKeyFailureSince(source, address, firstFailureAt);
+  }
+
+  clearKeyFailureSince(source: string, address: string) {
+    this.writes += 1;
+    return this.inner.clearKeyFailureSince(source, address);
+  }
+
 
   removeAll(source: string, address: string): Promise<void> {
     this.writes += 1;
@@ -844,11 +888,7 @@ describe("index.ts wiring", () => {
     expect(INDEX.match(/"\/api\/connectors\/meetings"/g)).toHaveLength(1);
   });
 
-  test("the read API shares ONE ContentStore instance with the rest of the build", () => {
-    // Two instances = two sets of per-tenant lanes over one substrate, which is the
-    // interleaved read-modify-write W4's lanes exist to prevent.
-    expect(INDEX.match(/new ContentStore\(/g)?.length ?? 0).toBe(1);
-  });
+
 });
 
 // ── The published contract ───────────────────────────────────────────

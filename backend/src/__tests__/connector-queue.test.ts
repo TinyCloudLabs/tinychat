@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import {
   AWAITING_TRANSCRIPT,
-  AWAITING_TRANSCRIPT_TIMEOUT,
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
   CONTENT_STORE_UNAVAILABLE,
@@ -17,7 +16,6 @@ import {
   QUEUE_TTL_MS,
   SCHEMA_MISSING,
   SPACE_NOT_HOSTED,
-  TTL_EXPIRED,
   backoffDelayMs,
   burnsAttempt,
   corruptQueueKey,
@@ -311,14 +309,15 @@ describe("enqueue under concurrency", () => {
 // ── Dedup (§5.3) ─────────────────────────────────────────────────────
 
 describe("dedup by (meetingId, kind)", () => {
-  test("a duplicate delivery updates receivedAt and never appends", async () => {
+  test("a redelivery keeps the first receivedAt so it cannot reset the 14-day expiry", async () => {
     const { node, queue, clock } = createQueue();
 
     await queue.enqueue(SOURCE, ADDRESS, {
       meetingId: "M1",
       kind: "transcript",
     });
-    clock.now = T0 + 5_000;
+    const receivedAt = new Date(T0).toISOString();
+    clock.now = T0 + 13 * 24 * 60 * 60 * 1000;
     const second = await queue.enqueue(SOURCE, ADDRESS, {
       meetingId: "M1",
       kind: "transcript",
@@ -328,7 +327,21 @@ describe("dedup by (meetingId, kind)", () => {
     expect(second.depth).toBe(1);
     const items = stored(node, PENDING_KEY) as Array<{ receivedAt: string }>;
     expect(items).toHaveLength(1);
-    expect(items[0]!.receivedAt).toBe(new Date(T0 + 5_000).toISOString());
+    expect(items[0]!.receivedAt).toBe(receivedAt);
+
+    clock.now = T0 + QUEUE_TTL_MS + 1;
+    expect(await queue.list(SOURCE, ADDRESS)).toEqual([]);
+  });
+  test("the periodic sweep margin removes pending IDs before the 14-day deadline", async () => {
+    const { node, queue, clock } = createQueue();
+    await queue.enqueue(SOURCE, ADDRESS, {
+      meetingId: "M-SWEEP-MARGIN",
+      kind: "transcript",
+    });
+
+    clock.now = T0 + QUEUE_TTL_MS - 5 * 60_000;
+    expect(await queue.sweep(SOURCE, ADDRESS, 5 * 60_000)).toEqual({ pending: 0, dead: 0 });
+    expect(stored(node, PENDING_KEY)).toEqual([]);
   });
 
   test("the same meeting's transcript and summary are distinct items", async () => {
@@ -590,6 +603,19 @@ describe("error classes", () => {
     );
   });
 
+  test("redelivery after dead-lettering keeps the original receipt for expiry", async () => {
+    const { node, queue, clock } = createQueue();
+    await queue.enqueue(SOURCE, ADDRESS, { meetingId: "M1", kind: "transcript" });
+    await queue.fail(SOURCE, ADDRESS, "M1", "transcript", "meeting_not_found", { terminal: true });
+    clock.now = T0 + 13 * QUEUE_TTL_MS / 14;
+
+    await queue.enqueue(SOURCE, ADDRESS, { meetingId: "M1", kind: "transcript" });
+
+    expect((stored(node, PENDING_KEY) as Array<{ receivedAt: string }>)[0]!.receivedAt).toBe(new Date(T0).toISOString());
+    clock.now = T0 + QUEUE_TTL_MS + 1;
+    expect(await queue.list(SOURCE, ADDRESS)).toEqual([]);
+  });
+
   test("a second-write failure during settle preserves pending and dead, emits no success log, and retries without duplication", async () => {
     const { node, queue } = createQueue();
     await queue.enqueue(SOURCE, ADDRESS, {
@@ -692,11 +718,10 @@ describe("error classes", () => {
 // ── awaiting_transcript: the §5.5-vs-§5.6 contradiction, both halves ──
 
 describe("awaiting_transcript", () => {
-  test("never dead-letters by the 5-attempt rule, and IS dead-lettered at the 14-day TTL", async () => {
-    const { queue, clock } = createQueue();
+  test("an unanswered summary expires from the server at the 14-day bound", async () => {
+    const { queue, clock, node } = createQueue();
     await queue.enqueue(SOURCE, ADDRESS, { meetingId: "M1", kind: "summary" });
 
-    // Half 1: far more than MAX_ATTEMPTS failures, still pending, attempts never burned.
     for (let i = 0; i < MAX_ATTEMPTS + 5; i += 1) {
       const result = await queue.fail(
         SOURCE,
@@ -710,107 +735,72 @@ describe("awaiting_transcript", () => {
       clock.now += 60 * 60 * 1000;
     }
     expect(await queue.depth(SOURCE, ADDRESS)).toBe(1);
-    expect(await queue.dead(SOURCE, ADDRESS)).toHaveLength(0);
 
-    // Half 2: at the TTL it IS dead-lettered, with the class-specific code.
-    clock.now = T0 + QUEUE_TTL_MS + 1;
+    clock.now = T0 + QUEUE_TTL_MS;
     expect(await queue.depth(SOURCE, ADDRESS)).toBe(0);
-    const dead = await queue.dead(SOURCE, ADDRESS);
-    expect(dead).toHaveLength(1);
-    expect(dead[0]!.meetingId).toBe("M1");
-    expect(dead[0]!.kind).toBe("summary");
-    expect(dead[0]!.lastError).toBe(AWAITING_TRANSCRIPT_TIMEOUT);
-    expect(dead[0]!.attempts).toBe(0);
+    expect(await queue.dead(SOURCE, ADDRESS)).toEqual([]);
+    expect(stored(node, PENDING_KEY)).toEqual([]);
+    expect(stored(node, DEAD_KEY)).toEqual([]);
   });
 
-  test("an ordinary item promoted by the TTL carries ttl_expired, not the summary code", async () => {
-    const { queue, clock } = createQueue();
-    await queue.enqueue(SOURCE, ADDRESS, {
-      meetingId: "M1",
-      kind: "transcript",
-    });
-
-    clock.now = T0 + QUEUE_TTL_MS + 1;
-    const dead = await queue.dead(SOURCE, ADDRESS);
-    expect(await queue.depth(SOURCE, ADDRESS)).toBe(0);
-    expect(dead[0]!.lastError).toBe(TTL_EXPIRED);
-  });
-
-  test("a TTL promotion is a promotion — the item is in the dead-letter, never silently dropped", async () => {
+  test("an ordinary pending item expires without being copied into a dead letter", async () => {
     const { node, queue, clock } = createQueue();
     await queue.enqueue(SOURCE, ADDRESS, {
       meetingId: "M1",
       kind: "transcript",
     });
-    clock.now = T0 + QUEUE_TTL_MS + 1;
-    await queue.list(SOURCE, ADDRESS);
 
-    expect(stored(node, PENDING_KEY)).toHaveLength(0);
-    expect(stored(node, DEAD_KEY)).toHaveLength(1);
+    clock.now = T0 + QUEUE_TTL_MS;
+    await queue.sweep(SOURCE, ADDRESS);
+
+    expect(stored(node, PENDING_KEY)).toEqual([]);
+    expect(stored(node, DEAD_KEY)).toEqual([]);
   });
 
-  test("a second-write failure during TTL promotion preserves both copies and list retry converges without duplicate dead entries", async () => {
+  test("a dead letter is swept when its original receivedAt reaches 14 days", async () => {
     const { node, queue, clock } = createQueue();
     await queue.enqueue(SOURCE, ADDRESS, {
-      meetingId: "M-TTL-AT-LEAST-ONCE",
+      meetingId: "M-DEAD",
       kind: "transcript",
     });
-    clock.now = T0 + QUEUE_TTL_MS + 1;
-
-    const originalPut = node.kv.put.bind(node.kv);
-    const writeKeys: string[] = [];
-    let armed = true;
-    node.kv.put = async (key: string, value: unknown) => {
-      if (!armed) return originalPut(key, value);
-      writeKeys.push(key);
-      if (writeKeys.length === 2) {
-        return {
-          ok: false,
-          error: {
-            code: "WRITE_REJECTED",
-            message: "PRIVATE_RESULT_PAYLOAD ttl pending removal failed",
-            service: "kv",
-            meta: { status: 503 },
-          },
-        };
-      }
-      return originalPut(key, value);
-    };
-
-    const partial = captureLogs();
-    try {
-      await expect(queue.list(SOURCE, ADDRESS)).rejects.toMatchObject({
-        name: "KvResultError",
-        code: "WRITE_REJECTED",
-        status: 503,
-      });
-    } finally {
-      partial.restore();
-    }
-
-    expect(writeKeys).toEqual([DEAD_KEY, PENDING_KEY]);
-    expect(stored(node, PENDING_KEY).map((item) => item.meetingId)).toEqual([
-      "M-TTL-AT-LEAST-ONCE",
+    const failed = await queue.fail(
+      SOURCE,
+      ADDRESS,
+      "M-DEAD",
+      "transcript",
+      "meeting_not_found",
+      { terminal: true },
+    );
+    expect(failed.disposition).toBe("dead-lettered");
+    expect((await queue.dead(SOURCE, ADDRESS)).map((item) => item.meetingId)).toEqual([
+      "M-DEAD",
     ]);
-    const partialDead = stored(node, DEAD_KEY);
-    expect(partialDead.map((item) => item.meetingId)).toEqual([
-      "M-TTL-AT-LEAST-ONCE",
-    ]);
-    expect(partial.lines.some((line) => line.includes("op=dead-letter"))).toBe(
-      false,
+
+    clock.now = T0 + QUEUE_TTL_MS - 1;
+    expect(await queue.sweep(SOURCE, ADDRESS)).toEqual({ pending: 0, dead: 1 });
+    clock.now += 1;
+    expect(await queue.sweep(SOURCE, ADDRESS)).toEqual({ pending: 0, dead: 0 });
+    expect(stored(node, DEAD_KEY)).toEqual([]);
+  });
+  test("a dead letter expires at 14 days from receipt even when failure occurs on day 13", async () => {
+    const { node, queue, clock } = createQueue();
+    await queue.enqueue(SOURCE, ADDRESS, {
+      meetingId: "M-DELAYED-DEAD",
+      kind: "transcript",
+    });
+    clock.now = T0 + 13 * 24 * 60 * 60 * 1000;
+    await queue.fail(
+      SOURCE,
+      ADDRESS,
+      "M-DELAYED-DEAD",
+      "transcript",
+      "meeting_not_found",
+      { terminal: true },
     );
 
-    armed = false;
-    const retried = await withLogs(() => queue.list(SOURCE, ADDRESS));
-    expect(retried.result).toEqual([]);
-    const converged = await queue.dead(SOURCE, ADDRESS);
-    expect(converged.map((item) => item.meetingId)).toEqual([
-      "M-TTL-AT-LEAST-ONCE",
-    ]);
-    expect(converged[0]!.deadAt).toBe(partialDead[0]!.deadAt);
-    expect(
-      retried.lines.filter((line) => line.includes("op=dead-letter")),
-    ).toHaveLength(1);
+    clock.now = T0 + QUEUE_TTL_MS;
+    expect(await queue.sweep(SOURCE, ADDRESS)).toEqual({ pending: 0, dead: 0 });
+    expect(stored(node, DEAD_KEY)).toEqual([]);
   });
 });
 
@@ -913,7 +903,7 @@ describe("dead-letter cap", () => {
 // ── Container-level recovery (§5.3) ──────────────────────────────────
 
 describe("container-level recovery", () => {
-  test("a corrupt queue value is moved aside, op=queue-reset is logged, and the next enqueue succeeds", async () => {
+  test("a corrupt queue value is sanitized, op=queue-reset is logged, and the next enqueue succeeds", async () => {
     const { node, queue } = createQueue();
     node.store.set(PENDING_KEY, "{ this is not json");
 
@@ -921,23 +911,22 @@ describe("container-level recovery", () => {
       queue.enqueue(SOURCE, ADDRESS, { meetingId: "M1", kind: "transcript" }),
     );
 
-    // The address is not wedged.
     expect(result.status).toBe("queued");
     expect(await queue.depth(SOURCE, ADDRESS)).toBe(1);
-
-    // The corrupt value is preserved verbatim for triage.
-    expect(node.store.get(CORRUPT_KEY)).toBe("{ this is not json");
+    expect(node.store.get(CORRUPT_KEY)).toMatchObject({
+      reason: "unparseable",
+    });
+    expect(JSON.stringify(node.store.get(CORRUPT_KEY))).not.toContain("M1");
 
     const resetLine = lines.find((line) => line.includes("op=queue-reset"));
     expect(resetLine).toBeDefined();
     expect(resetLine).toContain("reason=unparseable");
     expect(resetLine).toContain(`moved_to=webhooks/corrupt/${SOURCE}`);
-    // The key's last segment is the raw address, so the line names the prefix only (§6.3).
     expect(resetLine).not.toContain(LOWER);
     expect(resetLine).toMatch(/aid=[0-9a-f]{16}/);
   });
 
-  test("a type-invalid queue value (not an array) resets the same way", async () => {
+  test("a type-invalid queue value is sanitized before replacement", async () => {
     const { node, queue } = createQueue();
     node.store.set(PENDING_KEY, { meetingId: "M9", kind: "transcript" });
 
@@ -946,9 +935,9 @@ describe("container-level recovery", () => {
     );
 
     expect(await queue.depth(SOURCE, ADDRESS)).toBe(1);
-    expect(node.store.get(CORRUPT_KEY)).toEqual({
-      meetingId: "M9",
-      kind: "transcript",
+    expect(JSON.stringify(node.store.get(CORRUPT_KEY))).not.toContain("M9");
+    expect(node.store.get(CORRUPT_KEY)).toMatchObject({
+      reason: "not-an-array",
     });
     expect(
       lines.some(
@@ -958,7 +947,43 @@ describe("container-level recovery", () => {
       ),
     ).toBe(true);
   });
+  test("maintenance removes a legacy raw-corrupt queue copy", async () => {
+    const { node, queue } = createQueue();
+    node.store.set(CORRUPT_KEY, {
+      meetingId: "M-LEGACY-CORRUPT",
+      raw: "M-LEGACY-CORRUPT",
+    });
 
+    await queue.sweep(SOURCE, ADDRESS);
+
+    expect(node.store.has(CORRUPT_KEY)).toBe(false);
+    expect(JSON.stringify([...node.store.values()])).not.toContain("M-LEGACY-CORRUPT");
+  });
+
+
+  test("pending and dead items with malformed receipt dates are dropped by maintenance", async () => {
+    const { node, queue } = createQueue();
+    node.store.set(PENDING_KEY, [{
+      meetingId: "BADPENDING",
+      kind: "transcript",
+      receivedAt: "not-a-date",
+      nextAttemptAt: new Date(T0).toISOString(),
+      attempts: 0,
+    }]);
+    node.store.set(DEAD_KEY, [{
+      meetingId: "BADDEAD",
+      kind: "transcript",
+      receivedAt: new Date(T0).toISOString(),
+      deadAt: "not-a-date",
+      nextAttemptAt: new Date(T0).toISOString(),
+      attempts: 0,
+    }]);
+
+    await queue.sweep(SOURCE, ADDRESS);
+
+    expect(stored(node, PENDING_KEY)).toEqual([]);
+    expect(stored(node, DEAD_KEY)).toEqual([]);
+  });
   test("individual invalid entries are dropped with their count logged — the valid ones survive", async () => {
     const { node, queue } = createQueue();
     node.store.set(PENDING_KEY, [
@@ -1002,7 +1027,7 @@ describe("container-level recovery", () => {
     await expect(
       queue.enqueue(SOURCE, ADDRESS, { meetingId: "M1", kind: "transcript" }),
     ).resolves.toMatchObject({ status: "queued" });
-    expect(await queue.depth(SOURCE, ADDRESS)).toBe(1);
+    expect(stored(node, DEAD_KEY)).toEqual([]);
   });
 });
 
@@ -1319,7 +1344,7 @@ describe("durable kv Result{ok:false} surfacing", () => {
       cleared: 0,
       superseded: 0,
     });
-    expect(deleted).toEqual([PENDING_KEY, DEAD_KEY]);
+    expect(deleted).toEqual([PENDING_KEY, DEAD_KEY, CORRUPT_KEY]);
     expect(node.store.size).toBe(0);
   });
 
@@ -1543,8 +1568,8 @@ describe("session-class Result{ok:false} takes the single sign-in + retry path",
 
     await queue.clear(SOURCE, ADDRESS);
     expect(signInCalls).toBe(1);
-    // Pending-delete throws + retries (2 calls) + dead-delete succeeds (1 call).
-    expect(deleteCalls).toBe(3);
+    // Pending-delete retries plus dead and corrupt-key cleanup.
+    expect(deleteCalls).toBe(4);
   });
 });
 
@@ -1557,7 +1582,7 @@ describe("session-class Result{ok:false} takes the single sign-in + retry path",
 // otherwise swept only if a delivery or a user visit happens to touch it.
 
 describe("maintenance sweep", () => {
-  test("applies the TTL promotion and reports counts, never ids", async () => {
+  test("drops expired pending IDs and reports counts, never IDs", async () => {
     const { node, queue, clock } = createQueue();
     await queue.enqueue(SOURCE, ADDRESS, {
       meetingId: "M1",
@@ -1571,10 +1596,10 @@ describe("maintenance sweep", () => {
     clock.now = T0 + QUEUE_TTL_MS + 1;
     const result = await queue.sweep(SOURCE, ADDRESS);
 
-    expect(result).toEqual({ pending: 0, dead: 2 });
+    expect(result).toEqual({ pending: 0, dead: 0 });
     expect(JSON.stringify(result)).not.toContain("M1");
-    // The promotion is durable, not a view: a later read sees the swept state.
     expect(stored(node, PENDING_KEY)).toEqual([]);
+    expect(stored(node, DEAD_KEY)).toEqual([]);
   });
 
   test("is a no-op that surfaces nothing when nothing has expired", async () => {

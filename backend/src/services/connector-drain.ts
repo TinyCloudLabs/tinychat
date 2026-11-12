@@ -7,9 +7,11 @@ import type {
 } from "../routes/connector-webhooks.js";
 import {
   AWAITING_TRANSCRIPT,
+  DEAD_KEY_PREFIX,
   DELEGATION_UNUSABLE,
   LEDGER_UNAVAILABLE,
   NON_BURNING_ERRORS,
+  PENDING_KEY_PREFIX,
   sanitizeErrorCode,
   SCHEMA_MISSING,
   SPACE_NOT_HOSTED,
@@ -24,6 +26,9 @@ import {
   type WebhookConfigRecord,
 } from "./webhook-tokens.js";
 import { runInWriteLane } from "./write-lane.js";
+// Must match PURGE_LEDGER_KEY_PREFIX in connector-webhooks.ts. Kept local to avoid a runtime
+// cycle: connector-webhooks imports the drain's replay-marker helpers.
+const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
 
 /**
  * The drain worker (§5.4/§5.5/§6.1 step -1/§3.6) — all four triggers, the per-address
@@ -1143,6 +1148,110 @@ function safeAddress(address: string): string {
     return "invalid";
   }
 }
+export interface ConnectorRetentionAddress {
+  source: string;
+  address: string;
+}
+
+function listedKeys(response: unknown, prefix: string): string[] {
+  const page = (response as { data?: unknown } | null)?.data as
+    | { keys?: unknown; truncated?: boolean; nextCursor?: unknown }
+    | null
+    | undefined;
+  if (!page || !Array.isArray(page.keys)) {
+    throw new Error("webhook retention listing is unavailable");
+  }
+  const keys = extractKeys(page.keys);
+  const marker = `${prefix}/`;
+  if (
+    keys.length !== page.keys.length ||
+    keys.some((key) => !key.includes(marker))
+  ) {
+    throw new Error("webhook retention listing is invalid");
+  }
+  return keys;
+}
+
+async function listWebhookKeys(
+  node: TinyCloudNode,
+  prefix: string,
+): Promise<string[]> {
+  const kv = node.kv as unknown as {
+    list: (options: { prefix: string; cursor?: string }) => Promise<unknown>;
+  };
+  const keys: string[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < 1000; page += 1) {
+    const response = await withSessionRefresh(node, async () =>
+      assertKvResult(
+        await kv.list({ prefix, ...(cursor === undefined ? {} : { cursor }) }),
+      ),
+    );
+    keys.push(...listedKeys(response, prefix));
+    const result = response as {
+      data?: { truncated?: unknown; nextCursor?: unknown };
+    };
+    if (result.data?.truncated !== true) return keys;
+    const next = result.data.nextCursor;
+    if (typeof next !== "string" || next.length === 0 || cursors.has(next)) {
+      throw new Error("webhook retention listing is truncated");
+    }
+    cursors.add(next);
+    cursor = next;
+  }
+  throw new Error("webhook retention listing exceeded page limit");
+}
+
+function retentionAddresses(
+  keys: readonly string[],
+  prefix: string,
+): ConnectorRetentionAddress[] {
+  const marker = `${prefix}/`;
+  const entries = new Map<string, ConnectorRetentionAddress>();
+  for (const key of keys) {
+    const offset = key.lastIndexOf(marker);
+    if (offset < 0) continue;
+    const parts = key.slice(offset + marker.length).split("/");
+    const [source, rawAddress] = parts;
+    if (parts.length !== 2 || !source || !rawAddress || !isValidSource(source)) {
+      continue;
+    }
+    try {
+      const address = normalizeWebhookAddress(rawAddress);
+      entries.set(`${source}/${address}`, { source, address });
+    } catch {
+      // Invalid paths cannot be safely mapped to an owner's queue or purge ledger.
+    }
+  }
+  return [...entries.values()];
+}
+
+export function createWebhookQueueDirectory(
+  node: TinyCloudNode,
+): () => Promise<ConnectorRetentionAddress[]> {
+  return async () => {
+    const prefixes = [PENDING_KEY_PREFIX, DEAD_KEY_PREFIX];
+    const entries = new Map<string, ConnectorRetentionAddress>();
+    for (const prefix of prefixes) {
+      for (const address of retentionAddresses(await listWebhookKeys(node, prefix), prefix)) {
+        entries.set(`${address.source}/${address.address}`, address);
+      }
+    }
+    return [...entries.values()];
+  };
+}
+
+export function createWebhookPurgeLedgerDirectory(
+  node: TinyCloudNode,
+): () => Promise<ConnectorRetentionAddress[]> {
+  return async () =>
+    retentionAddresses(
+      await listWebhookKeys(node, PURGE_LEDGER_KEY_PREFIX),
+      PURGE_LEDGER_KEY_PREFIX,
+    );
+}
+
 
 // ── §5.4 trigger 2 under OPTION C: bounded queue maintenance ─────────
 //
@@ -1162,16 +1271,34 @@ export interface ConnectorQueueMaintenanceTimer {
   tick(): Promise<void>;
 }
 
-export interface ConnectorQueueMaintenanceOptions {
-  /**
-   * Per-address maintenance. MUST be bounded and MUST NOT surface ids — `ConnectorQueue.sweep`
-   * returns counts precisely so this callback has nothing to leak.
-   */
-  sweep: (address: string) => Promise<unknown> | unknown;
-  /** Addresses with a `webhooks/config/{address}` entry (§5.4). */
-  listAddresses: () => Promise<string[]>;
+interface ConnectorQueueMaintenanceBase {
   intervalMs?: number;
 }
+
+interface LegacyConnectorQueueMaintenanceOptions
+  extends ConnectorQueueMaintenanceBase {
+  /** Legacy per-address sweep, retained for existing consumers. */
+  sweep: (address: string) => Promise<unknown> | unknown;
+  listAddresses: () => Promise<string[]>;
+}
+
+interface ConnectorRetentionMaintenanceOptions
+  extends ConnectorQueueMaintenanceBase {
+  listQueueEntries: () => Promise<ConnectorRetentionAddress[]>;
+  listLedgerAddresses: () => Promise<ConnectorRetentionAddress[]>;
+  sweepQueue: (
+    entry: ConnectorRetentionAddress,
+    safetyMarginMs: number,
+  ) => Promise<unknown> | unknown;
+  sweepLedger: (
+    entry: ConnectorRetentionAddress,
+    safetyMarginMs: number,
+  ) => Promise<unknown> | unknown;
+}
+
+export type ConnectorQueueMaintenanceOptions =
+  | LegacyConnectorQueueMaintenanceOptions
+  | ConnectorRetentionMaintenanceOptions;
 
 /**
  * The env override §5.4 requires ("default 5 min, env-tunable"), failing loudly on a bad value.
@@ -1189,44 +1316,97 @@ export function drainIntervalFromEnv(
 }
 
 /**
- * Started in `main()` ONLY when the flag is on, and **`unref()`'d so `bun test` does not hang**
- * — a 5-minute interval on a test process is a 5-minute hang.
- *
- * Sequential per address (§9.3: TinyCloud drops concurrent responses on one space), and one
- * address's failure never skips the addresses behind it — a maintenance pass that gave up on
- * the first unreadable queue would quietly stop honouring the TTL for everyone else.
+ * Maintenance is independent of ingestion being enabled. Retention scans are sequential,
+ * non-overlapping, and unref'd so they cannot keep a test process alive.
  */
 export function startConnectorQueueMaintenanceTimer(
   options: ConnectorQueueMaintenanceOptions,
 ): ConnectorQueueMaintenanceTimer {
-  const intervalMs = options.intervalMs ?? DRAIN_INTERVAL_MS;
+  // Retention must run often enough to delete IDs by their 14-day boundary. A deployment
+  // override may make the interval shorter, but cannot make this sweep less frequent than 5m.
+  const intervalMs = Math.min(options.intervalMs ?? DRAIN_INTERVAL_MS, DRAIN_INTERVAL_MS);
+  const safetyMarginMs = intervalMs;
+  const retentionMode = !("listAddresses" in options);
   let running = false;
 
+  const sweepEntry = async (
+    entry: ConnectorRetentionAddress,
+    sweep: (
+      entry: ConnectorRetentionAddress,
+      safetyMarginMs: number,
+    ) => Promise<unknown> | unknown,
+    kind: "queue" | "ledger",
+  ): Promise<void> => {
+    try {
+      await sweep(entry, safetyMarginMs);
+    } catch (error) {
+      logDrainWarn(
+        `op=maintenance-${kind}-sweep result=error aid=${hashed(safeAddress(entry.address))}`,
+      );
+      console.warn(
+        `[connector-drain] ${kind} retention sweep failed:`,
+        redactedErrorMessage(error),
+      );
+    }
+  };
+
+  const sweepDirectory = async (
+    kind: "queue" | "ledger",
+    list: () => Promise<ConnectorRetentionAddress[]>,
+    sweep: (
+      entry: ConnectorRetentionAddress,
+      safetyMarginMs: number,
+    ) => Promise<unknown> | unknown,
+  ): Promise<void> => {
+    let entries: ConnectorRetentionAddress[];
+    try {
+      entries = await list();
+    } catch (error) {
+      logDrainWarn(`op=maintenance-${kind}-scan result=error`);
+      console.warn(
+        `[connector-drain] ${kind} retention scan failed:`,
+        redactedErrorMessage(error),
+      );
+      return;
+    }
+    for (const entry of entries) {
+      await sweepEntry(entry, sweep, kind);
+    }
+  };
+
   const tick = async (): Promise<void> => {
-    // Never overlap ticks: a scan that outlives its interval must not stack.
     if (running) return;
     running = true;
     try {
-      const addresses = await options.listAddresses();
-      for (const address of addresses) {
+      if ("listAddresses" in options) {
+        let addresses: string[];
         try {
-          await options.sweep(address);
+          addresses = await options.listAddresses();
         } catch (error) {
-          logDrainWarn(
-            `op=maintenance-sweep result=error aid=${hashed(safeAddress(address))}`,
-          );
+          logDrainWarn("op=maintenance-scan result=error");
           console.warn(
-            "[connector-drain] queue maintenance sweep failed:",
+            "[connector-drain] queue maintenance scan failed:",
             redactedErrorMessage(error),
           );
+          return;
         }
+        for (const address of addresses) {
+          try {
+            await options.sweep(address);
+          } catch (error) {
+            logDrainWarn(
+              `op=maintenance-sweep result=error aid=${hashed(safeAddress(address))}`,
+            );
+            console.warn(
+              "[connector-drain] queue maintenance sweep failed:",
+              redactedErrorMessage(error),
+            );
+          }
+        }
+        return;
       }
-    } catch (error) {
-      logDrainWarn(`op=maintenance-scan result=error`);
-      console.warn(
-        "[connector-drain] queue maintenance scan failed:",
-        redactedErrorMessage(error),
-      );
+      await sweepDirectory("queue", options.listQueueEntries, options.sweepQueue);
+      await sweepDirectory("ledger", options.listLedgerAddresses, options.sweepLedger);
     } finally {
       running = false;
     }
@@ -1236,6 +1416,7 @@ export function startConnectorQueueMaintenanceTimer(
     void tick();
   }, intervalMs);
   (timer as unknown as { unref?: () => void }).unref?.();
+  if (retentionMode) void tick();
 
   return {
     stop: () => clearInterval(timer),

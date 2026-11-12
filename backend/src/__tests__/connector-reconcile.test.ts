@@ -91,6 +91,10 @@ class CountingBlobStore implements ContentBlobStore {
     return this.inner.writeIndex(source, address, blob);
   }
 
+  removeIndex(source: string, address: string): Promise<void> {
+    this.writes += 1;
+    return this.inner.removeIndex(source, address);
+  }
   read(source: string, address: string, sourceId: string): Promise<SealedBlob | null> {
     return this.inner.read(source, address, sourceId);
   }
@@ -109,6 +113,42 @@ class CountingBlobStore implements ContentBlobStore {
     this.writes += 1;
     return this.inner.remove(source, address, sourceId);
   }
+
+  readReplayTombstone(digest: string) {
+    return this.inner.readReplayTombstone(digest);
+  }
+
+  writeReplayTombstone(
+    digest: string,
+    marker: Parameters<InMemoryContentBlobStore["writeReplayTombstone"]>[1],
+  ) {
+    this.writes += 1;
+    return this.inner.writeReplayTombstone(digest, marker);
+  }
+
+  removeReplayTombstone(digest: string) {
+    this.writes += 1;
+    return this.inner.removeReplayTombstone(digest);
+  }
+
+  listReplayTombstones() {
+    return this.inner.listReplayTombstones();
+  }
+
+  readKeyFailureSince(source: string, address: string) {
+    return this.inner.readKeyFailureSince(source, address);
+  }
+
+  writeKeyFailureSince(source: string, address: string, firstFailureAt: string) {
+    this.writes += 1;
+    return this.inner.writeKeyFailureSince(source, address, firstFailureAt);
+  }
+
+  clearKeyFailureSince(source: string, address: string) {
+    this.writes += 1;
+    return this.inner.clearKeyFailureSince(source, address);
+  }
+
 
   removeAll(source: string, address: string): Promise<void> {
     this.writes += 1;

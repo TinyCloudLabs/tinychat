@@ -240,6 +240,8 @@ export interface IngestObservabilitySnapshot {
   /** Content dropped to a cap: per-user oldest-drop plus per-meeting reject. */
   overflowDrops: number;
   contentWriteFailures: number;
+  /** Content indexes or their master key that could not be read by retention/sync-off cleanup. */
+  unreadableIndexes: number;
   reconciled: number;
   reconcileLagP95Ms: number;
   fetchLagP95Ms: number;
@@ -299,6 +301,7 @@ export async function collectIngestObservability(
     dlqUnreadable: dlq.unreadable,
     overflowDrops:
       (content?.droppedOverflow ?? 0) + (content?.rejectedTooLarge ?? 0),
+    unreadableIndexes: content?.unreadableIndexes ?? 0,
     contentWriteFailures: content?.writeFailures ?? 0,
     reconciled: content?.reconciled ?? 0,
     reconcileLagP95Ms: audit.reconcile.p95LagMs,
@@ -480,6 +483,7 @@ export class IngestObservabilityReporter {
         `dlq_depth=${snapshot.dlqDepth} dlq_unreadable=${snapshot.dlqUnreadable} ` +
         `overflow_drops=${snapshot.overflowDrops} ` +
         `content_write_failures=${snapshot.contentWriteFailures} ` +
+        `content_index_unreadable=${snapshot.unreadableIndexes} ` +
         `reconciled=${snapshot.reconciled} ` +
         `reconcile_lag_p95_ms=${snapshot.reconcileLagP95Ms} ` +
         `fetch_lag_p95_ms=${snapshot.fetchLagP95Ms} ` +
