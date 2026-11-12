@@ -1,8 +1,8 @@
-// The feed lab's feed (FeedLab.tsx): six made-up cards and a simulated agent, held in
+// The feed lab's feed (FeedLab.tsx): seven made-up cards and a simulated agent, held in
 // memory, in the shapes the real source returns (feedStore.ts, loadTypedFeed.ts).
 // Nothing is read from or written to any space, server or browser storage.
 import type { FeedCard, FeedHandling, FeedResponse, FeedResponseHandling, FeedResponsePayload, FeedSelector, FeedSource, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
-import { emptySitrepOwnerData, mergeSitrepStates, parseSitrepCardPayload, safeSitrepActionSummary, validateSitrepAction, type AskOption, type SamState, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
+import { compactStamp, emptySitrepOwnerData, mergeSitrepStates, ownerThreadResponseKey, parseSitrepCardPayload, safeSitrepActionSummary, validateSitrepAction, type AskOption, type SamState, type SitrepHeldNote, type ThreadMessage } from "@tinyboilerplate/core/feed/sitrep";
 import { ownerCardKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource, HomeFeedViewEvent } from "./feedStoreTypes";
 import { addCanonicalOwnerEvent, combineOwnerData } from "./sitrepOwnerStore";
@@ -13,8 +13,13 @@ export const LAB_SAVE_MS = 600;
 export const LAB_RECEIVED_MS = 1_500;
 export const LAB_COMPLETED_MS = 6_000;
 export const LAB_OUTCOME = "Done. The simulated agent acted on your answer.";
+/** After a reply is saved, the simulated agent receives it, then answers in the card's conversation. */
+export const LAB_REPLY_RECEIVED_MS = 1_000;
+export const LAB_REPLY_MS = 2_000;
+export const labReplyText = (text: string) => `Got it. I’ll act on “${text.length > 80 ? `${text.slice(0, 80)}…` : text}” and tell you here.`;
 
-interface LabCard { source: FeedSource; card: FeedCard }
+/** `route`: the agents the person approved a link to for the card's owner, as an owner archive supplies them. */
+interface LabCard { source: FeedSource; card: FeedCard; route?: NonNullable<HomeFeedEntry["recipientRoute"]> }
 
 function agent(token: string, label: string): FeedSource {
   const database = (side: string) => ({ spaceId: "feed-lab", database: `xyz.tinycloud.tinychat/feed/feed_${side}_lab${token}` });
@@ -26,6 +31,9 @@ function labCards(now: number): LabCard[] {
   const trip = agent("trip", "Trip agent");
   const home = agent("home", "Home agent");
   const studio = agent("studio", "Studio agent");
+  // One connection that posts for a crew: the card names the crew member it is from.
+  const crew = agent("crew", "Studio crew");
+  const kiln = { recipientKey: "lab-kiln", legacyName: "Kiln agent", runtimeTarget: { agentId: "lab-kiln-agent" } };
   const plain = (cardId: string, urgency: number, minutes: number, card: Pick<FeedCard, "kind" | "needsResponse" | "title" | "body" | "choices">): FeedCard => ({ cardId, revision: 1, issuanceId: "lab-1", urgency, createdAt: at(minutes), ...card });
   // A typed card as its agent publishes it: the record in payload.sitrep, its title, body and options on the card.
   const typed = (cardId: string, urgency: number, minutes: number, record: { kind: string; title: string; body: string; options?: AskOption[] } & Record<string, unknown>): FeedCard => {
@@ -92,6 +100,21 @@ function labCards(now: number): LabCard[] {
         known: [], related: [],
       },
     }) },
+    // The person approved a link to Kiln agent, so a reply goes straight to it rather than through Studio crew.
+    { source: crew, route: { recipients: [kiln], unresolved: [], receiptRecipients: [kiln] }, card: typed("lab-glaze", 3, -15, {
+      kind: "ask", id: "open-day-glaze", from: "Kiln agent", title: "Which glaze should the open-day mugs get?", body: "Forty mugs are bisque-fired and ready to glaze.",
+      askedAt: at(-15), status: "open", expiresAt: "never", recommend: "celadon",
+      options: [
+        { id: "celadon", label: "Celadon", detail: "Pale green, the studio's usual. Glaze firing on Tuesday." },
+        { id: "speckled", label: "Speckled white", detail: "New for spring. Needs one test firing first, so Thursday." },
+      ],
+      context: {
+        background: "The mugs are for the open day in two weeks. Both glazes are in stock.",
+        whyNow: "The kiln is booked from Tuesday; a test firing has to go in before then.",
+        ifNoAnswer: "The mugs get celadon on Tuesday.",
+        known: [], related: [],
+      },
+    }) },
   ];
 }
 
@@ -103,6 +126,8 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
   const views = new Map<string, { seenAt?: string; snoozedUntil?: string; events: HomeFeedViewEvent[] }>();
   const states = new Map<string, { eventId: string; state: SamState }[]>();
   const heldNotes = new Map<string, SitrepHeldNote[]>();
+  // The simulated agent's replies, by card, as the real feed attaches its output cards (feedStore.ts).
+  const replies = new Map<string, ThreadMessage[]>();
   const listeners = new Set<() => void>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let defaultSelector: FeedSelector = "needs-action";
@@ -116,7 +141,7 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
   const wait = (ms: number) => new Promise<void>((resolve) => later(ms, resolve));
   function notify() { for (const listener of listeners) listener(); }
 
-  function entryOf({ source, card }: LabCard): HomeFeedEntry {
+  function entryOf({ source, card, route }: LabCard): HomeFeedEntry {
     const key = ownerCardKey(source.sourceId, card);
     const history = saved.filter(({ response }) => ownerCardKey(source.sourceId, response) === key);
     const latest = history.filter(({ response }) => response.kind !== "message").at(-1)?.response ?? null;
@@ -137,12 +162,21 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
       if (event.state.doneAt || event.state.lift || event.state.clears?.length) (owner.commands ??= []).push(event);
     }
     if (heldNotes.has(key)) owner.heldNotes = heldNotes.get(key);
-    for (const { response, payload } of history) if (payload) addCanonicalOwnerEvent(owner, entry, response, payload);
+    // As loadTypedFeed.ts: each message keeps the route it was sent on.
+    const threadRoutes: NonNullable<HomeFeedEntry["threadRoutes"]> = {};
+    for (const { response, payload } of history) {
+      const decoded = payload && addCanonicalOwnerEvent(owner, entry, response, payload);
+      if (decoded) threadRoutes[ownerThreadResponseKey(decoded.message)] = decoded.delivery ? { kind: "recipients", delivery: decoded.delivery } : { kind: "publisher" };
+    }
+    for (const reply of replies.get(key) ?? []) {
+      owner.threads.push(reply);
+      (owner.threadOrigins ??= {})[ownerThreadResponseKey(reply)] = { kind: "agent-output", sourceId: source.sourceId, cardId: `lab-reply-${reply.messageId}`, revision: 1, issuanceId: "lab-1" };
+    }
     const state: SamState = mergeSitrepStates(owner.states, "provided")[0] ?? { kind: typed.record.kind, id: typed.record.id, steps: {}, updatedAt: view.seenAt ?? card.createdAt };
     const snoozes = view.events.flatMap((event) => event.kind === "snoozed" && event.snoozedUntil ? [{ at: event.createdAt, until: event.snoozedUntil }] : []);
     if (owner.states.length || view.seenAt || snoozes.length) owner.states = [{ ...state, ...(view.seenAt ? { seenAt: view.seenAt } : {}), ...(snoozes.length ? { snoozedUntil: view.snoozedUntil ?? null, snoozes } : {}) }];
     const receipts = history.flatMap(({ response }) => { const reported = handling.get(response.responseId); return reported ? [[response.responseId, reported] as const] : []; });
-    return { ...entry, owner: combineOwnerData([owner]), responseHandling: Object.fromEntries(receipts), threadRoutes: {}, historicalCommands: [] };
+    return { ...entry, owner: combineOwnerData([owner]), responseHandling: Object.fromEntries(receipts), threadRoutes, historicalCommands: [], ...(route ? { recipientRoute: structuredClone(route) } : {}) };
   }
 
   async function store(entry: HomeFeedEntry, response: NewFeedResponse | NewFeedMessage, payload?: FeedResponsePayload): Promise<FeedResponse> {
@@ -176,7 +210,22 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
       later(LAB_COMPLETED_MS, () => report(stored, "succeeded", { message: LAB_OUTCOME }));
       return stored;
     },
-    sendMessage: (entry, message, payload) => store(entry, message, payload),
+    async sendMessage(entry, message, payload) {
+      const stored = await store(entry, message, payload);
+      const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);
+      const sent = payload?.type === "sitrep.thread" ? payload.data as { text?: unknown; messageId?: unknown } : undefined;
+      if (typed && typeof sent?.text === "string" && typeof sent.messageId === "string") {
+        const { text, messageId } = sent;
+        later(LAB_REPLY_RECEIVED_MS, () => report(stored, "acknowledged"));
+        later(LAB_REPLY_MS, () => {
+          const at = new Date().toISOString();
+          const reply: ThreadMessage = { side: "officer", kind: typed.record.kind, id: typed.record.id, at, from: typed.record.from, text: labReplyText(text), replyTo: messageId, messageId: `${compactStamp(at)}-${crypto.randomUUID().replace(/-/g, "")}` };
+          replies.set(keyOf(entry), [...(replies.get(keyOf(entry)) ?? []), reply]);
+          notify();
+        });
+      }
+      return stored;
+    },
     async saveOwnerState(entry, event) { states.set(keyOf(entry), [...(states.get(keyOf(entry)) ?? []), structuredClone(event)]); notify(); },
     async saveHeldNote(entry, note) { heldNotes.set(keyOf(entry), [...(heldNotes.get(keyOf(entry)) ?? []), structuredClone(note)]); notify(); },
     async markSeen(entry) {

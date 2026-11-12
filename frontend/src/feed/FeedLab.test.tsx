@@ -13,7 +13,7 @@ import { FEED_LAB, FEED_LAB_PATH, FeedLabRoutes as lazyRoutes } from "@/lib/feed
 import { installDom } from "@/test/dom";
 import { ANSWER_UNDO_SECONDS } from "./AnswerOptions";
 import FeedLabRoutes from "./FeedLab";
-import { createFeedLabSource, LAB_COMPLETED_MS, LAB_OUTCOME, LAB_RECEIVED_MS, LAB_SAVE_MS } from "./feedLabSource";
+import { createFeedLabSource, LAB_COMPLETED_MS, LAB_OUTCOME, LAB_RECEIVED_MS, LAB_REPLY_MS, LAB_REPLY_RECEIVED_MS, LAB_SAVE_MS, labReplyText } from "./feedLabSource";
 import type { HomeFeedEntry } from "./feedStoreTypes";
 
 let restore: (() => void) | undefined;
@@ -49,14 +49,26 @@ function answerTo(entry: HomeFeedEntry, choiceId: string): NewFeedResponse {
   return { responseId: crypto.randomUUID(), cardId, revision, issuanceId, kind: "answer", choiceId, createdAt: new Date().toISOString() };
 }
 
-test("the six made-up cards are two plain questions, a plain update, two typed asks and a typed approval", async () => {
+async function enter(host: HTMLElement, selector: string, text: string) {
+  const node = host.querySelector<HTMLTextAreaElement>(selector);
+  expect(node).not.toBeNull();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(node, text);
+    node!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+test("the seven made-up cards are two plain questions, a plain update, three typed asks and a typed approval", async () => {
   const { entries } = await createFeedLabSource().load();
-  expect(entries).toHaveLength(6);
+  expect(entries).toHaveLength(7);
   const plain = entries.filter((entry) => entry.state.card.payload?.sitrep === undefined);
   expect(plain.filter((entry) => entry.state.card.needsResponse).map((entry) => entry.state.card.choices?.length)).toEqual([2, 3]);
   expect(plain.filter((entry) => !entry.state.card.needsResponse).map((entry) => entry.state.card.choices)).toEqual([undefined]);
   const records = entries.flatMap((entry) => entry.state.card.payload?.sitrep === undefined ? [] : [parseSitrepCardPayload(entry.state.card.payload.sitrep)?.record]);
-  expect(records.map((record) => record?.kind)).toEqual(["ask", "ask", "approval"]);
+  expect(records.map((record) => record?.kind)).toEqual(["ask", "ask", "approval", "ask"]);
+  // One card's owner has a link the person approved, so both ways a reply goes can be tried.
+  const linked = entries.filter((entry) => entry.recipientRoute?.recipients.some((recipient) => recipient.runtimeTarget));
+  expect(linked.map((entry) => [entry.source.label, parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record.from])).toEqual([["Studio crew", "Kiln agent"]]);
   for (const record of records) {
     if (record?.kind !== "ask") continue;
     expect(record.options.every((option) => !!option.detail)).toBe(true);
@@ -137,6 +149,39 @@ test("in the lab an answer runs its whole course: one tap, the undo window, the 
   expect(steps()).toEqual(["sent:done", "received:done", "outcome:done"]);
   expect(host.querySelector('[aria-label="Answer sent"]')?.textContent).toContain(LAB_OUTCOME);
   expect(host.querySelector('[aria-label="Cards in this view"]')?.textContent).not.toContain("Which train");
+  expect(calls).toEqual([]);
+});
+
+test("in the lab a reply to the linked agent counts down, is received, and is answered about two seconds later", async () => {
+  jest.useFakeTimers();
+  const { host, calls } = await mount(FEED_LAB_PATH);
+  const pass = (ms: number) => act(async () => { jest.advanceTimersByTime(ms); });
+  const glaze = [...host.querySelectorAll<HTMLButtonElement>('[aria-label="Cards in this view"] button')].find((node) => node.textContent?.includes("Which glaze"));
+  await act(async () => glaze!.click());
+  expect(host.querySelector('[aria-label="Focused card"] article')?.textContent).toContain("Kiln agent · via Studio crew");
+  await act(async () => [...host.querySelectorAll<HTMLButtonElement>("fieldset button")].find((node) => node.textContent?.startsWith("Celadon"))!.click());
+  expect(host.textContent).toContain(`Sending to Kiln agent in ${ANSWER_UNDO_SECONDS}s`);
+  await pass(ANSWER_UNDO_SECONDS * 1_000 + LAB_SAVE_MS);
+  const fold = () => host.querySelector('[aria-label="Answer sent"]');
+  expect(fold()?.textContent).toContain("Sent to Kiln agent");
+  await act(async () => button(host, "Reply to Kiln agent").click());
+  await enter(host, '[aria-label="Answer sent"] textarea[name="reply"]', "Use the darker celadon please.");
+  await act(async () => button(host, "Send").click());
+  expect(button(host, `Sending to Kiln agent in ${ANSWER_UNDO_SECONDS}s`).disabled).toBe(true);
+  await pass(ANSWER_UNDO_SECONDS * 1_000 + LAB_SAVE_MS);
+  const latest = () => host.querySelector('[aria-label="Latest in the conversation"]');
+  expect(latest()?.textContent).toContain("You to Kiln agent");
+  expect(latest()?.textContent).toContain("Use the darker celadon please.");
+  expect(latest()?.querySelector('[data-step="received"]')?.getAttribute("data-state")).toBe("upcoming");
+  await pass(LAB_REPLY_RECEIVED_MS);
+  expect(latest()?.querySelector('[data-step="received"]')?.getAttribute("data-state")).toBe("done");
+  expect(latest()?.textContent).toContain("Kiln agent received it");
+  await pass(LAB_REPLY_MS - LAB_REPLY_RECEIVED_MS);
+  expect(latest()?.textContent).toContain(labReplyText("Use the darker celadon please."));
+  await act(async () => button(host, "Show card").click());
+  const thread = host.querySelector('[aria-label="Card thread"] ol')?.textContent;
+  expect(thread).toContain("Use the darker celadon please.");
+  expect(thread).toContain(labReplyText("Use the darker celadon please."));
   expect(calls).toEqual([]);
 });
 
