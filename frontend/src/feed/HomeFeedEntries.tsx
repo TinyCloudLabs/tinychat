@@ -112,13 +112,13 @@ function CardHistory({ entry }: { entry: HomeFeedEntry }) {
     </ol>
   </details>;
 }
-function ResponseStatus({ entry }: { entry: HomeFeedEntry }) {
+function ResponseStatus({ entry, agent }: { entry: HomeFeedEntry; agent?: string }) {
   const response = entry.state.response;
   if (!response) return null;
   const { acknowledgement, outcome } = answerHandling(entry, response.responseId);
   const detail = outcome?.detail?.message;
   return <div className="space-y-2 rounded-xl border border-border bg-muted/40 p-4 text-sm" role="status" aria-label="Answer status">
-    <AnswerSteps sent={response.createdAt} acknowledgement={acknowledgement} outcome={outcome} />
+    <AnswerSteps sent={response.createdAt} acknowledgement={acknowledgement} outcome={outcome} agent={agent ?? cardAuthor(entry).name} />
     {response.choiceId && <p>{entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? response.choiceId}</p>}
     {response.text && <p className="whitespace-pre-wrap break-words">{response.text}</p>}
     {typeof detail === "string" && <p className="whitespace-pre-wrap break-words">{detail}</p>}
@@ -127,6 +127,8 @@ function ResponseStatus({ entry }: { entry: HomeFeedEntry }) {
 
 /** How far (px, after damping) a pull at the top must go before earlier answers load. */
 const PULL_PX = 56;
+/** Pages the end of the feed may add by itself before it says "That's everything" (design critique #4). */
+const MAX_AUTO_LOADS = 8;
 interface SentAnswer { key: string; response: FeedResponse; summary: string; open: boolean }
 /**
  * What stays of a card once its answer is sent: what was chosen and, while the card is folded away, the
@@ -282,11 +284,15 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // sent, for the floating pill. Null at the current feed.
   const headerRef = useRef<HTMLElement>(null);
   const [historyAt, setHistoryAt] = useState<string | null>(null);
+  // "Go to current" shows only while the feed's heading is below the screen (design critique #9).
+  const [currentBelow, setCurrentBelow] = useState(false);
   const measureHistory = useCallback(() => {
     const root = mainRef.current, header = headerRef.current;
     if (!root || !header) return;
     const top = root.getBoundingClientRect().top;
-    if (header.getBoundingClientRect().top <= top + 48) { setHistoryAt(null); return; }
+    const headerTop = header.getBoundingClientRect().top;
+    setCurrentBelow(headerTop > top + root.clientHeight - 64);
+    if (headerTop <= top + 48) { setHistoryAt(null); return; }
     const inView = [...root.querySelectorAll<HTMLElement>("[data-sent-at]")].find((node) => node.getBoundingClientRect().bottom > top + 56);
     setHistoryAt(inView?.dataset.sentAt ?? null);
   }, []);
@@ -299,11 +305,20 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       setEarlier((current) => [...[...page].reverse(), ...current]);
     } finally { loading.current.earlier = false; }
   }, [source]);
+  // The end of the feed (design critique #4): automatic loads stop once a page adds nothing this view shows, or
+  // after MAX_AUTO_LOADS pages, and the list ends with "That's everything". A change of view or filter starts over.
+  const autoLoads = useRef(0);
+  const loadedFrom = useRef<number | null>(null);
+  const [ended, setEnded] = useState(false);
+  const shownCount = useRef(0);
   const loadMore = useCallback(async () => {
-    if (!source.loadMore || loading.current.more) return;
+    if (!source.loadMore || loading.current.more || ended) return;
+    if (autoLoads.current >= MAX_AUTO_LOADS) { setEnded(true); return; }
     loading.current.more = true;
+    loadedFrom.current = shownCount.current;
+    autoLoads.current += 1;
     try { await source.loadMore(); } finally { loading.current.more = false; }
-  }, [source]);
+  }, [source, ended]);
   useEffect(() => { measureHistory(); }, [earlier, size, measureHistory]);
   // Reaching the end of the feed adds cards (downward only; earlier answers never load by scrolling).
   useEffect(() => {
@@ -426,6 +441,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       const parent = typed.entries.find((candidate) => { const context = contextFor(candidate); return context?.record.kind === "ask" && context.record.id === typed.projection.foldedInto?.id; });
       if (parent && matchesFilters(parent) && needsAttention(parent, clock, contextFor(parent)?.projection)) return false;
     }
+    // The card just answered stays where it was, folded to what you chose, until the next answer (critique #2).
+    if (sent?.key === keyOf(entry)) return true;
     return selector === "both" || (selector === "information" ? typed ? !typed.projection.request : unsupported || !card.needsResponse : needsAttention(entry, clock, typed?.projection));
   }).sort((a, b) => { const first = contextFor(a)?.waiting; const second = contextFor(b)?.waiting; return first && second ? compareWaiting(first, second) || compare(a, b) : compare(a, b); });
   const grouped = groupCards(matching, (entry) => {
@@ -443,17 +460,29 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const navigation = [...priority.priority, ...priority.rest];
   const filtered = navigation.flatMap((row) => row.kind === "card" ? [row.item] : row.items);
   const isOpen = (entry: HomeFeedEntry) => size === "full" || opened.has(keyOf(entry));
+  shownCount.current = filtered.length;
+  // A load that adds nothing this view shows ends the feed.
+  useEffect(() => {
+    if (loadedFrom.current === null || loading.current.more) return;
+    if (filtered.length <= loadedFrom.current) setEnded(true);
+    loadedFrom.current = null;
+  }, [filtered.length, snapshot]);
+  useEffect(() => { autoLoads.current = 0; loadedFrom.current = null; setEnded(false); }, [selector, agent, kind, project, history]);
   /** Opens a card in place (in the compact view) and brings it into view. */
   function openCard(entry: HomeFeedEntry) {
     const key = keyOf(entry);
     setOpened((current) => new Set(current).add(key));
     scrollTo.current = key;
   }
+  // Only the feed scrolls, never the page around it (critique #10), and only when the card's top is out of view.
   useEffect(() => {
-    const key = scrollTo.current;
-    if (!key) return;
+    const key = scrollTo.current, root = mainRef.current;
+    if (!key || !root) return;
     scrollTo.current = null;
-    [...document.querySelectorAll<HTMLElement>("[data-card-key]")].find((node) => node.dataset.cardKey === key)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    const node = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((item) => item.dataset.cardKey === key);
+    if (!node) return;
+    const offset = node.getBoundingClientRect().top - root.getBoundingClientRect().top;
+    if (offset < 0 || offset > root.clientHeight - 80) root.scrollTo({ top: root.scrollTop + offset - 16, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   });
   // The card whose answer was just sent folds to a line with its steps, unless it still needs the owner. Until
   // a load confirms the answer the card cannot say so itself, and only an ask's approval steps can still be open.
@@ -467,7 +496,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // "Needs action": every card in the page's order and groups, under two plain headings, what needs you and the
   // rest. "All" and "Information" (feed lab, Sam 11-12): one timeline, newest first, so posts, decisions and updates
   // mix as they came, and the end of the list keeps reaching all three.
-  const rowNeedsYou = (row: (typeof navigation)[number]) => (row.kind === "card" ? [row.item] : row.items).some((entry) => needsAttention(entry, clock, contextFor(entry)?.projection));
+  const rowNeedsYou = (row: (typeof navigation)[number]) => (row.kind === "card" ? [row.item] : row.items).some((entry) => sent?.key === keyOf(entry) || needsAttention(entry, clock, contextFor(entry)?.projection));
   const newest = (row: (typeof navigation)[number]) => Math.max(...(row.kind === "card" ? [row.item] : row.items).map((entry) => Date.parse(entry.state.card.createdAt)));
   const sections: [string, typeof navigation][] = selector === "needs-action"
     ? [["Needs you", navigation.filter(rowNeedsYou)], ["Updates", navigation.filter((row) => !rowNeedsYou(row))]]
@@ -652,7 +681,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     onTouchEnd={() => { if (pull >= PULL_PX) void loadEarlier(); pullStart.current = null; setPull(0); }}>
     {/* Feed lab: pull down at the top for the cards you answered earlier (or use the button, without touch). */}
     {source.loadAnswered && <div aria-hidden style={{ height: pull }} className="flex items-end justify-center overflow-hidden text-xs text-muted-foreground">{pull >= PULL_PX ? "Release for earlier answers" : "Pull for earlier answers"}</div>}
-    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5">
+    {/* While a post's page is open, the feed behind it takes no focus or taps (design critique #3). */}
+    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5" {...(pageEntry ? { inert: "" } : {})}>
       {/* Feed lab (Sam, 11-12): in earlier answers, a pill floats at the top with when the ones in view were sent.
           Its look is uiverse.io "quiet-rat-82" by ahkamboh (MIT), in the app's styling. */}
       {historyAt && <div className="pointer-events-none sticky top-2 z-20 flex h-0 justify-center">
@@ -681,8 +711,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           <LabSwitch label="Grid" checked={grid} onChange={(on) => relayout(() => { setGrid(on); setOpened(new Set()); })} />
         </>}
         <span className="ml-auto flex items-center gap-2">
-          <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
-          {!agentView && <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-10 rounded-lg border px-3 text-sm ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>}
+          <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
+          {!agentView && <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-11 rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>}
         </span>
       </div>
       {filtersOpen && <div id="home-feed-filters" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
@@ -690,7 +720,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => setKind(event.target.value)}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => setProject(event.target.value)}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <button type="button" aria-pressed={history} onClick={() => setHistory(!history)} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
-        {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">{savingDefault ? "Saving default…" : "Use as default"}</button>}
+        {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10">{savingDefault ? "Saving default…" : "Use as default"}</button>}
       </div>}</>}
       {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
       {!snapshot && !error && <p className="text-sm text-muted-foreground">Loading your feed…</p>}
@@ -725,12 +755,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         </section>)}
       </div>}
       {/* Feed lab: the end of the list loads more cards, so the feed never stops short. */}
-      {source.loadMore && !!filtered.length && <div ref={bottomSentinel} aria-hidden className="h-8" />}
+      {source.loadMore && !!filtered.length && !ended && <div ref={bottomSentinel} aria-hidden className="h-8" />}
+      {source.loadMore && !!filtered.length && ended && <p className="py-6 text-center text-meta text-muted-foreground">That's everything · updated {shortTime(new Date(clock).toISOString(), clock)}</p>}
       </>}
       {/* Feed lab (Sam, 11-12): from earlier answers, one tap back to now. Its look is uiverse.io
           "selfish-dolphin-96" by ParasSalunke (MIT), in the app's styling: dark on light, light on dark. */}
-      {historyAt && <div className="sticky bottom-4 z-20 flex h-0 items-end justify-center">
-        <button type="button" onClick={() => headerRef.current?.scrollIntoView({ block: "start" })}
+      {historyAt && currentBelow && <div className="sticky bottom-4 z-20 flex h-0 items-end justify-center">
+        <button type="button" onClick={() => { const root = mainRef.current, header = headerRef.current; if (root && header) root.scrollTop += header.getBoundingClientRect().top - root.getBoundingClientRect().top - 16; }}
           className="group relative inline-block rounded-xl bg-zinc-800 p-px font-semibold leading-6 text-white shadow-2xl shadow-zinc-900/40 transition-transform duration-300 ease-in-out hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 motion-reduce:transition-none dark:bg-zinc-300 dark:text-zinc-900 dark:shadow-black/60 dark:focus-visible:ring-zinc-100 dark:focus-visible:ring-offset-background">
           <span aria-hidden className="absolute inset-0 rounded-xl bg-zinc-500 opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
           <span className="relative z-10 flex min-h-11 items-center gap-2 rounded-xl bg-zinc-950 px-4 text-sm dark:bg-zinc-50">Go to current<ArrowDownIcon aria-hidden className="size-4 transition-transform duration-500 group-hover:translate-y-0.5" /></span>
@@ -741,7 +772,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       const author = cardAuthor(pageEntry).name;
       return <PostPage key={pageKey} entry={pageEntry} page={pageOpen} source={source} author={author} onSaved={onSaved} onClose={() => setPageKey(null)}
         card={(children) => <FeedCardView card={cardView(pageEntry)} sample={false} readBody={source.readBody} status={cardStatus(pageEntry, undefined, clock, author)} onAuthor={() => { setPageKey(null); setAgentView(agentKey(pageEntry)); }} agent={{ key: agentKey(pageEntry), profile: agentProfile(pageEntry.state.card.payload) }}>{children}</FeedCardView>}
-        status={pageEntry.state.response ? <ResponseStatus entry={pageEntry} /> : null}
+        status={pageEntry.state.response ? <ResponseStatus entry={pageEntry} agent={author} /> : null}
         footer={<PlainThread entry={pageEntry} source={source} onSaved={onSaved} />} />;
     })()}
   </main>;

@@ -381,11 +381,9 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
         const source = agents[more % agents.length]!;
         const createdAt = new Date(now - (120 + more * 37) * 60_000).toISOString();
         const base = { cardId: `lab-more-${more}`, revision: 1, issuanceId: "lab-1", urgency: 0, createdAt };
-        // Every fourth card is an update, and now and then a post, so the scroll mixes all three kinds.
-        if (more % 9 === 5) {
-          const page = PAGES[Math.floor(more / 9) % PAGES.length]!;
-          cards.push({ source: agents[2]!, card: { ...base, kind: "page", needsResponse: true, title: page.title, body: page.body, payload: { summary: page.summary, page: page.page } } });
-        } else if (more % 4 === 3) {
+        // Every fourth card is an update, so the scroll mixes them in. The three posts appear once, at the top
+        // (design critique #4: the same posts repeated at the end).
+        if (more % 4 === 3) {
           const update = MORE_UPDATES[Math.floor(more / 4) % MORE_UPDATES.length]!;
           cards.push({ source, card: { ...base, kind: "update", needsResponse: false, title: update.title, body: update.body, payload: { summary: update.summary } } });
         } else {

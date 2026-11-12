@@ -33,12 +33,12 @@ export function FeedLab() {
         250 ms, their content crossfading inside their changing box; the rest of the page snaps. */}
     <style>{`::view-transition-group(*){animation-duration:250ms;animation-timing-function:cubic-bezier(.2,0,0,1)}
 ::view-transition-image-pair(*){overflow:clip}
-::view-transition-old(*),::view-transition-new(*){height:auto;animation-duration:250ms}
+::view-transition-old(*),::view-transition-new(*){height:auto;animation-duration:150ms}
 ::view-transition-old(root),::view-transition-new(root){animation:none}`}</style>
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-sm">
       <p className="min-w-0 flex-1"><span className="font-medium">Feed lab</span><span className="block text-xs text-muted-foreground">Made-up cards and a simulated agent. Nothing leaves this page.</span></p>
-      <button type="button" onClick={() => setLab({ run: lab.run + 1, source: createFeedLabSource() })} className="min-h-10 rounded-lg border border-border px-3 text-sm">Reset</button>
-      <Link to="/" className="inline-flex min-h-10 items-center underline underline-offset-2">Close</Link>
+      <button type="button" onClick={() => setLab({ run: lab.run + 1, source: createFeedLabSource() })} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10">Reset</button>
+      <Link to="/" className="inline-flex min-h-11 items-center underline underline-offset-2 fine:min-h-10">Close</Link>
     </header>
     <div className="min-h-0 flex-1"><HomeFeedEntries key={lab.run} source={lab.source} /></div>
     {/* Which build this is, so anyone can tell they are looking at the latest. */}

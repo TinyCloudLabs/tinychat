@@ -122,8 +122,9 @@ function PageQuestionView({ question, index, count, answer, disabled, onChange }
           <span className="min-w-0 flex-1">
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="min-w-0 break-words font-medium">{option.label}</span>{option.recommended && <span className="shrink-0 rounded-full border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground">Suggested</span>}</span>
             {option.description && <span className="mt-0.5 block break-words text-muted-foreground">{option.description}</span>}
-            {option.image && <img src={option.image} alt="" loading="lazy" className="mt-2 block w-full rounded-lg border border-border bg-muted" />}
           </span>
+          {/* A picture beside its option, small, so a list of options stays on a screen (design critique #7). */}
+          {option.image && <img src={option.image} alt="" loading="lazy" className="size-16 shrink-0 rounded-lg border border-border bg-muted object-cover" />}
         </button>;
       })}
     </fieldset>}
@@ -146,6 +147,8 @@ export function PostPage({ entry, page, source, author, card, status, footer, on
   const [answers, setAnswers] = useState<Record<string, PageAnswer>>(() => drafts.get(key) ?? {});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Changed since the last send: only then is there anything to send again.
+  const [dirty, setDirty] = useState(false);
   const sent = entry.state.response;
   const pending = useRef<NewFeedResponse | null>(null);
   const hold = useUndoWindow(() => void send());
@@ -153,16 +156,23 @@ export function PostPage({ entry, page, source, author, card, status, footer, on
   const count = page.questions.filter((question) => answered(answers[question.id])).length;
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
-  // The page is a step in the browser's history, so a phone's back gesture closes it.
+  const homeRef = useRef<HTMLButtonElement>(null);
+  const firstNote = useRef<HTMLDivElement>(null);
+  // The page is a step in the browser's history, so a phone's back gesture (or Escape) closes it. It takes focus
+  // when it opens and gives it back to the post that opened it when it closes (design critique #3).
   useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     history.pushState({ feedLabPage: key }, "");
     const back = () => closeRef.current();
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") history.back(); };
     addEventListener("popstate", back);
-    return () => removeEventListener("popstate", back);
+    addEventListener("keydown", escape);
+    homeRef.current?.focus();
+    return () => { removeEventListener("popstate", back); removeEventListener("keydown", escape); if (opener?.isConnected) opener.focus(); };
   }, [key]);
   function change(id: string, answer: PageAnswer) {
     const next = { ...answers, [id]: answer };
-    drafts.set(key, next); setAnswers(next); pending.current = null;
+    drafts.set(key, next); setAnswers(next); setDirty(true); pending.current = null;
   }
   async function send() {
     if (saving || !count) return;
@@ -176,19 +186,20 @@ export function PostPage({ entry, page, source, author, card, status, footer, on
     pending.current = response;
     try {
       onSaved(entry, await source.saveResponse(entry, response));
-      pending.current = null;
+      pending.current = null; setDirty(false);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Your answers weren't sent. Try again."); }
     finally { setSaving(false); }
   }
   return <div role="dialog" aria-modal aria-label={entry.state.card.title} className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-background text-foreground">
     <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-36 pt-4 sm:px-5">
-      <button type="button" onClick={() => history.back()} className="mb-4 inline-flex min-h-10 items-center gap-1 rounded-lg border border-border px-3 text-sm"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
+      <button ref={homeRef} type="button" onClick={() => history.back()} className="mb-4 inline-flex min-h-10 items-center gap-1 rounded-lg border border-border px-3 text-sm"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
       {card(<div className="mt-4 space-y-5">
-        <img src={page.image} alt={page.imageAlt} className="block aspect-video w-full rounded-xl border border-border bg-muted object-cover" />
+        {/* The page's picture, unless its first question shows its own media (design critique #7). */}
+        {!page.questions[0]?.media?.length && <img src={page.image} alt={page.imageAlt} className="block aspect-video w-full rounded-xl border border-border bg-muted object-cover" />}
         {status}
-        {page.questions.map((question, index) => <PageQuestionView key={question.id} question={question} index={index} count={page.questions.length}
-          answer={answers[question.id] ?? { choices: [], note: "" }} disabled={waiting} onChange={(answer) => change(question.id, answer)} />)}
-        <div className="border-t border-border pt-4">{footer}</div>
+        <div ref={firstNote} className="space-y-5">{page.questions.map((question, index) => <PageQuestionView key={question.id} question={question} index={index} count={page.questions.length}
+          answer={answers[question.id] ?? { choices: [], note: "" }} disabled={waiting} onChange={(answer) => change(question.id, answer)} />)}</div>
+        {footer}
       </div>)}
     </div>
     {/* One send for the whole page, at the bottom where the answers are. */}
@@ -197,6 +208,8 @@ export function PostPage({ entry, page, source, author, card, status, footer, on
         <p className="min-w-0 flex-1 text-sm text-muted-foreground" aria-live="polite">{error ? <span role="alert" className="text-destructive">{error}</span> : waiting ? sendingLabel(hold.seconds, "Sending", author) : `${count} of ${page.questions.length} answered`}</p>
         {hold.seconds !== null
           ? <Button type="button" variant="outline" onClick={hold.undo} className="min-h-11">Undo</Button>
+          // Once sent and unchanged, adding more is the quiet way back in (design critique #7).
+          : sent && !dirty ? <button type="button" onClick={() => firstNote.current?.querySelector("textarea")?.focus()} className="min-h-11 shrink-0 px-1 text-sm font-medium underline decoration-border underline-offset-4">Add to your answer</button>
           : <Button type="button" disabled={!count || saving} onClick={hold.start} className="min-h-11">{sent ? "Send again" : "Send answers"}</Button>}
       </div>
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
