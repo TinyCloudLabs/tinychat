@@ -784,7 +784,8 @@ describe("activation on restore (TC-2865)", () => {
     const live = { restoreSession: async () => { flow.order.push("liveRestore"); return { status: "restored" }; } } as never;
     flow.deps.activateSession = async () => ({ success: false, status: 401, error: "unknown delegation" });
     const renewed = { tokens: { accessToken: "a", refreshToken: "r" }, sessionKey, delegation: { ...delegation, delegationCid: "bafyrenewed" } };
-    await expect(installNativeSession(flow.openkey, renewed, config, flow.deps, live, true, true)).rejects.toThrow("unknown delegation");
+    const renewal = await nativeRenewalServices(config, flow.openkey, flow.deps);
+    await expect(renewal.install(renewed, live)).rejects.toThrow("unknown delegation");
     expect(flow.order).not.toContain("liveRestore");
     expect(marker.writes).toEqual([]);
   });
