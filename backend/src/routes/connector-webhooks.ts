@@ -1371,26 +1371,30 @@ export class ConnectorControlStore implements ConnectorControl {
     safetyMarginMs = 0,
   ): Promise<PurgeLedgerRead> {
     const key = purgeLedgerKey(source, address);
-    const raw = await this.run(() => this.readJson(key));
-    if (raw === null || raw === undefined) return { status: "absent" };
-    const ledger = parsePurgeLedger(raw, this.now(), safetyMarginMs);
-    if (ledger === null) return { status: "unparseable", raw };
+    // TC-2847 assumes one backend instance: all ledger mutations share this process lane.
+    // Multiple instances require KV-version CAS before this read/modify/write is safe.
+    return this.run(async () => {
+      const raw = await this.readJson(key);
+      if (raw === null || raw === undefined) return { status: "absent" };
+      const ledger = parsePurgeLedger(raw, this.now(), safetyMarginMs);
+      if (ledger === null) return { status: "unparseable", raw };
 
-    const value = raw as Record<string, unknown>;
-    const oldIds = Array.isArray(value.recentIds) ? value.recentIds : [];
-    const oldTimes =
-      typeof value.recentIdsAddedAt === "object" &&
-      value.recentIdsAddedAt !== null &&
-      !Array.isArray(value.recentIdsAddedAt)
-        ? value.recentIdsAddedAt
-        : {};
-    if (
-      JSON.stringify(oldIds) !== JSON.stringify(ledger.recentIds) ||
-      JSON.stringify(oldTimes) !== JSON.stringify(ledger.recentIdsAddedAt)
-    ) {
-      await this.run(() => this.writeJson(key, ledger));
-    }
-    return { status: "ok", ledger };
+      const value = raw as Record<string, unknown>;
+      const oldIds = Array.isArray(value.recentIds) ? value.recentIds : [];
+      const oldTimes =
+        typeof value.recentIdsAddedAt === "object" &&
+        value.recentIdsAddedAt !== null &&
+        !Array.isArray(value.recentIdsAddedAt)
+          ? value.recentIdsAddedAt
+          : {};
+      if (
+        JSON.stringify(oldIds) !== JSON.stringify(ledger.recentIds) ||
+        JSON.stringify(oldTimes) !== JSON.stringify(ledger.recentIdsAddedAt)
+      ) {
+        await this.writeJson(key, ledger);
+      }
+      return { status: "ok", ledger };
+    });
   }
 
   async writeLedger(
@@ -1405,6 +1409,24 @@ export class ConnectorControlStore implements ConnectorControl {
 
   async clearLedger(source: string, address: string): Promise<void> {
     await this.run(() => this.deleteKey(purgeLedgerKey(source, address)));
+  }
+
+  async repairUnreadableLedger(source: string, address: string): Promise<void> {
+    const key = purgeLedgerKey(source, address);
+    await this.run(async () => {
+      const raw = await this.readJson(key);
+      if (raw === null || raw === undefined || parsePurgeLedger(raw, this.now()) !== null) return;
+      // Keep authorization fail-closed without keeping corrupt meeting IDs. Explicit re-sync
+      // clears this watermark through the existing clearLedger path.
+      await this.writeJson(key, {
+        purgedThrough: "9999-12-31T23:59:59.999Z", recentIds: [], recentIdsAddedAt: {},
+        updatedAt: new Date(this.now()).toISOString(),
+      });
+    });
+  }
+
+  async clearQuarantinedLedger(source: string, address: string): Promise<void> {
+    await this.run(() => this.deleteKey(corruptPurgeLedgerKey(source, address)));
   }
 
   /** Never persist raw corrupt ledger values: they may contain meeting IDs. */

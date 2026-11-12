@@ -160,6 +160,8 @@ export interface ContentMeta {
   storedAt: string;
   /** Immutable UTC-day expiry set by the backend on first storage. */
   expiresAt?: string;
+  /** Authenticated one-time legacy migration day; first-store time remains unchanged. */
+  retentionAnchorDay?: string;
   updatedAt: string;
   /** Stamped by W5's reconcile-ack after the browser wrote the user's OWN space (W6). */
   reconciledAt?: string;
@@ -276,7 +278,7 @@ export interface ContentBlobStore {
   ): Promise<void>;
   clearKeyFailureSince(source: string, address: string): Promise<void>;
   /** W7's teardown primitive: every blob and the index for ONE tenant. */
-  removeAll(source: string, address: string): Promise<void>;
+  removeAll(source: string, address: string, guard?: () => void): Promise<void>;
 }
 
 /**
@@ -799,25 +801,6 @@ export class ContentStore implements ContentSink, RetentionGuard {
     }
 
     const { source, address, sourceId } = target;
-    const sourceTimestamp =
-      input.ts === undefined ? NaN : Date.parse(input.ts);
-    if (
-      Number.isFinite(sourceTimestamp) &&
-      this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS
-    ) {
-      warnContent(
-        `op=upsert result=${MEETING_TOO_OLD} source=${source} ` +
-          `mid=${hashed(sourceId)} aid=${hashed(address)}`,
-      );
-      return { ok: false, code: MEETING_TOO_OLD };
-    }
-    if (!Number.isFinite(sourceTimestamp)) {
-      warnContent(
-        `op=upsert result=meeting_time_missing source=${source} ` +
-          `mid=${hashed(sourceId)} aid=${hashed(address)}`,
-      );
-    }
-
     return this.lane(source, address, async () => {
       try {
         const index = await this.openIndex(source, address);
@@ -843,6 +826,14 @@ export class ContentStore implements ContentSink, RetentionGuard {
           return { ok: false, code: PURGE_TOMBSTONED };
         }
 
+        const sourceTimestamp = input.ts === undefined ? NaN : Date.parse(input.ts);
+        if (!Number.isFinite(sourceTimestamp) || sourceTimestamp > this.now() + 5 * 60_000) {
+          warnContent(`op=upsert result=meeting_time_invalid mid=${hashed(sourceId)} aid=${hashed(address)}`);
+          return { ok: false, code: "meeting_time_invalid" };
+        }
+        if (this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
+          return { ok: false, code: MEETING_TOO_OLD };
+        }
         const prior = index.meetings.find((m) => m.sourceId === sourceId);
         const existing = await this.readMeeting(source, address, sourceId);
         if (prior !== undefined && existing === null) {
@@ -930,12 +921,17 @@ export class ContentStore implements ContentSink, RetentionGuard {
               : {}),
           sizeBytes,
           storedAt,
+          ...(priorMeta?.retentionAnchorDay ? { retentionAnchorDay: priorMeta.retentionAnchorDay } : {}),
           expiresAt,
           updatedAt: stamp,
         };
 
         const others = index.meetings.filter((m) => m.sourceId !== sourceId);
         const { kept, evicted } = this.enforceCaps(source, address, others, meta);
+        const receipt = Date.parse(input.receivedAt);
+        if (!Number.isFinite(receipt) || this.now() >= receipt + RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
+          return { ok: false, code: "receipt_expired" };
+        }
         if (priorMeta?.reconciledAt !== undefined) {
           const unreconciledPrior = { ...priorMeta };
           delete unreconciledPrior.reconciledAt;
@@ -947,6 +943,13 @@ export class ContentStore implements ContentSink, RetentionGuard {
           });
         }
 
+        const receivedAt = Date.parse(input.receivedAt);
+        if (!Number.isFinite(receivedAt) || this.now() >= receivedAt + RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
+          return { ok: false, code: "receipt_expired" };
+        }
+        if (this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
+          return { ok: false, code: MEETING_TOO_OLD };
+        }
         await this.writeMeeting(source, address, meta, content);
         await this.writeIndex(source, address, {
           meetings: [...kept, meta],
@@ -1133,7 +1136,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
           let expectedExpiry: string;
           try {
             expectedExpiry = expiryDateForStoredAt(
-              indexMeta.storedAt,
+              indexMeta.retentionAnchorDay ?? indexMeta.storedAt,
               this.retentionMs,
             );
           } catch {
@@ -1151,10 +1154,23 @@ export class ContentStore implements ContentSink, RetentionGuard {
           expired.push({ sourceId, meta: indexMeta, missing: true });
           continue;
         }
-        const meta = stored.meta;
+        let meta = stored.meta;
+        if (meta.expiresAt === undefined && index !== null) {
+          const retentionAnchorDay = new Date(now).toISOString().slice(0, 10);
+          meta = { ...meta, retentionAnchorDay,
+            expiresAt: expiryDateForStoredAt(retentionAnchorDay, this.retentionMs) };
+          try {
+            await this.writeMeeting(target.source, target.address, meta, stored.content);
+            index.meetings = index.meetings.map(entry => entry.sourceId === sourceId ? meta : entry);
+            await this.writeIndex(target.source, target.address, index);
+          } catch {
+            warnContent("op=legacy-expiry-backfill result=write_failed");
+            continue;
+          }
+        }
         let expectedExpiry: string;
         try {
-          expectedExpiry = expiryDateForStoredAt(meta.storedAt, this.retentionMs);
+          expectedExpiry = expiryDateForStoredAt(meta.retentionAnchorDay ?? meta.storedAt, this.retentionMs);
         } catch {
           this.warnUnreadableExpiry(target.source, target.address, sourceId);
           continue;
@@ -1348,7 +1364,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         await this.blobs.remove(target.source, target.address, meta.sourceId);
       }
       this.assertMutationAllowed();
-      await this.blobs.removeAll(target.source, target.address);
+      await this.blobs.removeAll(target.source, target.address, () => this.assertMutationAllowed());
       logContent(
         `op=purge result=ok source=${target.source} ` +
           `aid=${hashed(target.address)} removed=${index.meetings.length}`,
@@ -1638,6 +1654,7 @@ function parseMeta(raw: unknown): ContentMeta | null {
     return null;
   }
   if (value.expiresAt !== undefined && !isUtcDate(value.expiresAt)) return null;
+  if (value.retentionAnchorDay !== undefined && !isUtcDate(value.retentionAnchorDay)) return null;
   const sizeBytes =
     typeof value.sizeBytes === "number" && Number.isFinite(value.sizeBytes)
       ? value.sizeBytes
@@ -1661,6 +1678,7 @@ function parseMeta(raw: unknown): ContentMeta | null {
       : {}),
     sizeBytes,
     storedAt: value.storedAt,
+    ...(value.retentionAnchorDay === undefined ? {} : { retentionAnchorDay: value.retentionAnchorDay as string }),
     ...(value.expiresAt === undefined ? {} : { expiresAt: value.expiresAt as string }),
     updatedAt: value.updatedAt,
     ...(typeof value.reconciledAt === "string"
@@ -1914,7 +1932,7 @@ export class InMemoryContentBlobStore implements ContentBlobStore {
       });
   }
 
-  async removeAll(source: string, address: string): Promise<void> {
+  async removeAll(source: string, address: string, guard?: () => void): Promise<void> {
     const prefix = `${contentSlot(source, address, "")}`;
     for (const key of [...this.blobs.keys()]) {
       if (key === indexSlot(source, address) || key.startsWith(prefix)) {
@@ -2188,11 +2206,7 @@ export class KvContentBlobStore implements ContentBlobStore {
     if (!kv || typeof kv.list !== "function") {
       throw new Error("Replay tombstone listing is unavailable");
     }
-    const response = await this.run(() =>
-      withSessionRefresh(this.node, async () =>
-        assertKvResult(await kv.list!({ prefix })),
-      ),
-    );
+    const response = await listAllContentKeys(this.node, prefix, operation => this.run(operation));
     const keys = extractKeys(response).filter((key) => key.startsWith(prefix));
     const markers: Array<{ digest: string; marker: ReplayTombstoneRecord | null }> = [];
     for (const key of keys) {
@@ -2227,11 +2241,7 @@ export class KvContentBlobStore implements ContentBlobStore {
     if (!kv || typeof kv.list !== "function") {
       throw new Error("Content blob listing is unavailable");
     }
-    const response = await this.run(() =>
-      withSessionRefresh(this.node, async () =>
-        assertKvResult(await kv.list!({ prefix })),
-      ),
-    );
+    const response = await listAllContentKeys(this.node, prefix, operation => this.run(operation));
     const ids = extractKeys(response)
       .filter((key) => key.startsWith(prefix))
       .map((key) => key.slice(prefix.length))
@@ -2260,10 +2270,10 @@ export class KvContentBlobStore implements ContentBlobStore {
   /**
    * Teardown's last sweep. `ContentStore.purge` has already deleted every blob the index named;
    * this drops the index itself and, where the SDK exposes a prefix scan, any ORPHAN left by a
-   * crash between a content write and its index write. No scan available means the orphans stay
-   * — said out loud in the log rather than reported as a complete teardown.
+   * crash between a content write and its index write. An unavailable or incomplete scan refuses
+   * cleanup; each queued deletion rechecks the continuity guard.
    */
-  async removeAll(source: string, address: string): Promise<void> {
+  async removeAll(source: string, address: string, guard?: () => void): Promise<void> {
     const prefix = `${CONTENT_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}/`;
     const kv = (
       this.node as unknown as {
@@ -2271,22 +2281,16 @@ export class KvContentBlobStore implements ContentBlobStore {
       }
     ).kv;
     if (kv && typeof kv.list === "function") {
-      const response = await this.run(() =>
-        withSessionRefresh(this.node, async () =>
-          assertKvResult(await kv.list!({ prefix })),
-        ),
-      );
+      const response = await listAllContentKeys(this.node, prefix, operation => this.run(operation));
       for (const key of extractKeys(response)) {
-        if (key.startsWith(prefix)) await this.run(() => this.deleteKey(key));
+        if (key.startsWith(prefix)) await this.run(() => { guard?.(); return this.deleteKey(key); });
       }
     } else {
-      warnContentAdapter(
-        `op=purge-scan result=unsupported reason=kv_list_unavailable source=${source}`,
-      );
+      throw new Error("content purge listing unavailable");
     }
-    await this.run(() => this.deleteKey(indexKey(source, address)));
+    await this.run(() => { guard?.(); return this.deleteKey(indexKey(source, address)); });
     await this.run(() =>
-      this.deleteKey(keyFailureKey(source, address)),
+      { guard?.(); return this.deleteKey(keyFailureKey(source, address)); },
     );
   }
 
@@ -2393,6 +2397,34 @@ function warnContentAdapter(fields: string): void {
 }
 
 /** KV `list` responses have been seen wrapped, doubly wrapped, and as bare arrays. */
+async function listAllContentKeys(
+  node: TinyCloudNode,
+  prefix: string,
+  run: <T>(operation: () => Promise<T>) => Promise<T> = operation => operation(),
+): Promise<string[]> {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < 1000; page += 1) {
+    const response = await run(() => withSessionRefresh(node, async () =>
+      assertKvResult(await node.kv.list({ prefix, ...(cursor ? { cursor } : {}) })),
+    ));
+    let raw: any = response;
+    while (raw && typeof raw === "object" && !Array.isArray(raw) && !Array.isArray(raw.keys) && "data" in raw) raw = raw.data;
+    const entries = Array.isArray(raw) ? raw : raw?.keys;
+    if (!Array.isArray(entries)) throw new Error("content listing is incomplete");
+    const listed = extractKeys(entries);
+    if (listed.length !== entries.length) throw new Error("content listing is invalid");
+    keys.push(...listed);
+    const next = raw?.nextCursor;
+    if (raw?.truncated !== true && (next === undefined || next === null || next === "")) return keys;
+    if (typeof next !== "string" || !next || seen.has(next)) throw new Error("content listing cursor is incomplete or repeated");
+    seen.add(next);
+    cursor = next;
+  }
+  throw new Error("content listing exceeded page limit");
+}
+
 function extractKeys(response: unknown): string[] {
   const seen: string[] = [];
   const visit = (value: unknown, depth: number): void => {
@@ -2449,9 +2481,7 @@ export function createContentIndexDirectory(
       CONTENT_KEY_FAILURE_PREFIX,
     ]) {
       const marker = `${prefix}/`;
-      const response = await withSessionRefresh(node, async () =>
-        assertKvResult(await kv.list!({ prefix: marker })),
-      );
+      const response = await listAllContentKeys(node, marker);
       for (const key of extractKeys(response)) {
         const markerIndex = key.lastIndexOf(marker);
         if (markerIndex < 0) continue;

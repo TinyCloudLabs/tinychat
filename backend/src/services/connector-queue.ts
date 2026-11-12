@@ -47,7 +47,7 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
 
 export const PENDING_KEY_PREFIX = "webhooks/pending";
 export const DEAD_KEY_PREFIX = "webhooks/dead";
-const CORRUPT_KEY_PREFIX = "webhooks/corrupt";
+export const CORRUPT_KEY_PREFIX = "webhooks/corrupt";
 
 /** §5.3: cap 200 items/user, drop-oldest, and log the drop. */
 export const PENDING_CAP = 200;

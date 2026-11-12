@@ -1278,13 +1278,14 @@ async function main() {
     listQueueEntries: createWebhookQueueDirectory(node),
     listLedgerAddresses: createWebhookPurgeLedgerDirectory(node),
     sweepLedger: async ({ source, address }, safetyMarginMs) => {
+      await connectorControl.clearQuarantinedLedger(source, address);
       const read = await connectorControl.readLedger(
         source,
         address,
         safetyMarginMs,
       );
       if (read.status === "unparseable") {
-        throw new Error("purge ledger is unreadable; retention skipped");
+        await connectorControl.repairUnreadableLedger(source, address);
       }
     },
     sweepQueue: ({ source, address }, safetyMarginMs) =>
