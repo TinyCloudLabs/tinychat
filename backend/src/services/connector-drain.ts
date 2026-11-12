@@ -1163,21 +1163,13 @@ export interface ConnectorQueueMaintenanceTimer {
 }
 
 export interface ConnectorQueueMaintenanceOptions {
-  /** Legacy per-config scan, retained for timer users without a queue-key directory. */
-  sweep?: (address: string) => Promise<unknown> | unknown;
-  listAddresses?: () => Promise<string[]>;
-  /** Scans all queue keys, including disconnected users and old corrupt queue keys. */
-  listQueueEntries?: () => Promise<Array<{ source: string; address: string }>>;
-  sweepQueue?: (
-    entry: { source: string; address: string },
-    safetyMarginMs: number,
-  ) => Promise<unknown> | unknown;
-  /** Purge ledger keys include disconnected users and therefore require their own scan. */
-  listLedgerAddresses?: () => Promise<Array<{ source: string; address: string }>>;
-  sweepLedger?: (
-    entry: { source: string; address: string },
-    safetyMarginMs: number,
-  ) => Promise<unknown> | unknown;
+  /**
+   * Per-address maintenance. MUST be bounded and MUST NOT surface ids — `ConnectorQueue.sweep`
+   * returns counts precisely so this callback has nothing to leak.
+   */
+  sweep: (address: string) => Promise<unknown> | unknown;
+  /** Addresses with a `webhooks/config/{address}` entry (§5.4). */
+  listAddresses: () => Promise<string[]>;
   intervalMs?: number;
 }
 
@@ -1215,57 +1207,16 @@ export function startConnectorQueueMaintenanceTimer(
     if (running) return;
     running = true;
     try {
-      if (options.listQueueEntries !== undefined && options.sweepQueue !== undefined) {
-        const entries = await options.listQueueEntries();
-        for (const entry of entries) {
-          try {
-            await options.sweepQueue(entry, intervalMs);
-          } catch (error) {
-            logDrainWarn(
-              `op=maintenance-sweep result=error source=${entry.source} aid=${hashed(safeAddress(entry.address))}`,
-            );
-            console.warn(
-              "[connector-drain] queue maintenance sweep failed:",
-              redactedErrorMessage(error),
-            );
-          }
-        }
-      } else if (options.listAddresses !== undefined && options.sweep !== undefined) {
-        const addresses = await options.listAddresses();
-        for (const address of addresses) {
-          try {
-            await options.sweep(address);
-          } catch (error) {
-            logDrainWarn(
-              `op=maintenance-sweep result=error aid=${hashed(safeAddress(address))}`,
-            );
-            console.warn(
-              "[connector-drain] queue maintenance sweep failed:",
-              redactedErrorMessage(error),
-            );
-          }
-        }
-      }
-      if (options.listLedgerAddresses !== undefined && options.sweepLedger !== undefined) {
+      const addresses = await options.listAddresses();
+      for (const address of addresses) {
         try {
-          const ledgers = await options.listLedgerAddresses();
-          for (const entry of ledgers) {
-            try {
-              await options.sweepLedger(entry, intervalMs);
-            } catch (error) {
-              logDrainWarn(
-                `op=ledger-maintenance result=error source=${entry.source} aid=${hashed(safeAddress(entry.address))}`,
-              );
-              console.warn(
-                "[connector-drain] ledger maintenance sweep failed:",
-                redactedErrorMessage(error),
-              );
-            }
-          }
+          await options.sweep(address);
         } catch (error) {
-          logDrainWarn("op=ledger-maintenance-scan result=error");
+          logDrainWarn(
+            `op=maintenance-sweep result=error aid=${hashed(safeAddress(address))}`,
+          );
           console.warn(
-            "[connector-drain] ledger maintenance scan failed:",
+            "[connector-drain] queue maintenance sweep failed:",
             redactedErrorMessage(error),
           );
         }
@@ -1382,99 +1333,6 @@ export function createWebhookConfigDirectory(
       }
     }
     return addresses;
-  };
-}
-const QUEUE_KEY_PREFIXES = [
-  "webhooks/pending/",
-  "webhooks/dead/",
-  "webhooks/corrupt/",
-] as const;
-
-/** Scan live and legacy-corrupt queues, including disconnected addresses. */
-export function createWebhookQueueDirectory(
-  node: TinyCloudNode,
-): () => Promise<PurgeLedgerAddress[]> {
-  return async () => {
-    const kv = (
-      node as unknown as {
-        kv?: { list?: (options: unknown) => Promise<unknown> };
-      }
-    ).kv;
-    if (!kv || typeof kv.list !== "function") {
-      logDrainWarn("op=queue-scan result=unsupported reason=kv_list_unavailable");
-      return [];
-    }
-    const entries = new Map<string, PurgeLedgerAddress>();
-    for (const prefix of QUEUE_KEY_PREFIXES) {
-      const response = await withSessionRefresh(node, async () =>
-        assertKvResult(await kv.list!({ prefix })),
-      );
-      for (const key of extractKeys(response)) {
-        if (!key.startsWith(prefix)) continue;
-        const parts = key.slice(prefix.length).split("/");
-        if (parts.length !== 2) continue;
-        const [source, address] = parts;
-        const normalized = address?.toLowerCase() ?? "";
-        if (
-          source !== undefined &&
-          /^[a-z][a-z0-9-]{0,39}$/.test(source) &&
-          ADDRESS_KEY_PATTERN.test(normalized)
-        ) {
-          entries.set(`${source}/${normalized}`, { source, address: normalized });
-        }
-      }
-    }
-    return [...entries.values()];
-  };
-}
-export interface PurgeLedgerAddress {
-  source: string;
-  address: string;
-}
-
-const PURGE_LEDGER_KEY_PREFIXES = [
-  "webhooks/purged/",
-  "webhooks/corrupt/purged/",
-] as const;
-
-/** Scan live and legacy-corrupt purge keys, including disconnected addresses. */
-export function createWebhookPurgeLedgerDirectory(
-  node: TinyCloudNode,
-): () => Promise<PurgeLedgerAddress[]> {
-  return async () => {
-    const kv = (
-      node as unknown as {
-        kv?: { list?: (options: unknown) => Promise<unknown> };
-      }
-    ).kv;
-    if (!kv || typeof kv.list !== "function") {
-      logDrainWarn("op=ledger-scan result=unsupported reason=kv_list_unavailable");
-      return [];
-    }
-    const entries = new Map<string, PurgeLedgerAddress>();
-    for (const prefix of PURGE_LEDGER_KEY_PREFIXES) {
-      const response = await withSessionRefresh(node, async () =>
-        assertKvResult(await kv.list!({ prefix })),
-      );
-      for (const key of extractKeys(response)) {
-        if (!key.startsWith(prefix)) continue;
-        const parts = key.slice(prefix.length).split("/");
-        if (parts.length !== 2) continue;
-        const [source, address] = parts;
-        const normalized = address?.toLowerCase() ?? "";
-        if (
-          source !== undefined &&
-          /^[a-z][a-z0-9-]{0,39}$/.test(source) &&
-          ADDRESS_KEY_PATTERN.test(normalized)
-        ) {
-          entries.set(`${source}/${normalized}`, {
-            source,
-            address: normalized,
-          });
-        }
-      }
-    }
-    return [...entries.values()];
   };
 }
 

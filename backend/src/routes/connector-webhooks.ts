@@ -545,7 +545,6 @@ export interface WebhookEnqueuer {
     address: string,
     input: EnqueueInput,
   ): Promise<EnqueueResult>;
-  clear?(source: string, address: string): Promise<unknown>;
 }
 
 export interface ConnectorWebhookHandlerOptions {
@@ -554,8 +553,6 @@ export interface ConnectorWebhookHandlerOptions {
   limiters: ConnectorWebhookLimiters;
   registry?: ReadonlySet<string>;
   now?: () => number;
-  /** Post-write recheck for a concurrent disconnect; true causes the address queue to be cleared. */
-  discardIfDisconnected?: (source: string, address: string) => Promise<boolean>;
   /**
    * Fire-and-forget post-ack hook, invoked AFTER the response is written (§4.6's fast-ack
    * discipline: the 202 never waits on a delegation activation or a write to the user's space).
@@ -1090,33 +1087,6 @@ export function createConnectorWebhookHandler(
         return;
       }
 
-      // Disconnect writes its durable marker before clearing. Re-check after enqueue so a
-      // delivery whose write raced behind that clear cannot recreate the pending queue.
-      try {
-        if (await options.discardIfDisconnected?.(source, record.address)) {
-          if (queue.clear === undefined) {
-            throw new Error("queue clear unavailable");
-          }
-          await queue.clear(source, record.address);
-          logWebhook(
-            `recv tid=${hashedField(token)} source=${source} ` +
-              `mid=${hashedField(meetingId)} result=discarded_disconnected`,
-          );
-          respond(202, { status: "queued" });
-          return;
-        }
-      } catch (error) {
-        logWebhookWarn(
-          `op=disconnect-recheck-error tid=${hashedField(token)} ` +
-            `source=${source} mid=${hashedField(meetingId)}`,
-        );
-        console.warn(
-          "[connector-webhook] disconnect recheck failed:",
-          redactedErrorMessage(error),
-        );
-        respond(503, { error: "unavailable" });
-        return;
-      }
 
       logWebhook(
         `recv tid=${hashedField(token)} sig=${hashedField(signatureValue(req))} ` +

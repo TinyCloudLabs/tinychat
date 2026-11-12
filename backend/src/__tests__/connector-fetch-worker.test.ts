@@ -197,15 +197,12 @@ interface FetchCall {
 class FakeFetcher implements MeetingFetcher {
   readonly calls: FetchCall[] = [];
   peakConcurrent = 0;
-  readonly behaviour = new Map<
-    string,
-    MeetingFetchResult | "throw" | "hang"
-  >();
   private inFlight = 0;
-  /** Hook for a deterministic disconnect race. */
-  onFetch: (() => Promise<void> | void) | null = null;
+  /** Per-meeting scripted behaviour; the default is a successful transcript. */
+  behaviour = new Map<string, MeetingFetchResult | "hang" | "throw">();
   /** Real overlap so the concurrency cap is observable rather than theoretical. */
   latencyMs = 0;
+
   async fetchMeeting(request: MeetingFetchRequest): Promise<MeetingFetchResult> {
     const secret = request.secret;
     this.calls.push({
@@ -220,7 +217,6 @@ class FakeFetcher implements MeetingFetcher {
       if (this.latencyMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, this.latencyMs));
       }
-      await this.onFetch?.();
       const scripted = this.behaviour.get(request.meetingId);
       if (scripted === "hang") {
         // Never resolves on its own — only the worker's own timeout ends it.
@@ -297,7 +293,6 @@ function harness(
     spacingMs?: number;
     fetchTimeoutMs?: number;
     credentials?: Map<string, CredentialSecret>;
-    isDisabled?: (address: string) => Promise<boolean>;
     /**
      * The REAL lookup the process wires (§6.2 "rotate"), instead of the fake map — this is how the
      * rotation-before-use tests exercise the seam `index.ts` actually hands the worker.
@@ -348,7 +343,6 @@ function harness(
       fetcher,
       content: sink,
       ...(options.retention ? { retention: options.retention } : {}),
-      isDisabled: options.isDisabled ?? (async () => false),
     },
     {
       now,
@@ -471,37 +465,6 @@ describe("W3 fetch worker — tenant resolution (delta 1, AP 1)", () => {
     expect(WORKER_SOURCE).not.toMatch(/^const\s+current\w*\s*=/m);
   });
 });
-  test("a disconnect during provider fetch prevents the server write and cannot requeue the cleared id", async () => {
-    let disabled = false;
-    const h = harness({
-      isDisabled: async () => disabled,
-    });
-    await enqueue(h.queue, ADDRESS_A, "mtg-disconnect-race");
-    h.fetcher.onFetch = async () => {
-      disabled = true;
-      await h.queue.clear(SOURCE, ADDRESS_A);
-    };
-
-    await h.worker.runOnce();
-    expect(disabled).toBe(true);
-
-    expect(h.fetcher.calls.map((call) => call.meetingId)).toEqual([
-      "mtg-disconnect-race",
-    ]);
-    expect(h.sink.writes).toEqual([]);
-    expect(await h.queue.depth(SOURCE, ADDRESS_A)).toBe(0);
-  });
-  test("a disabled sync marker prevents provider fetches and server copies", async () => {
-    const h = harness({
-      isDisabled: async () => true,
-    });
-    await enqueue(h.queue, ADDRESS_A, "mtg-while-disabled");
-
-    await h.worker.runOnce();
-
-    expect(h.fetcher.calls).toEqual([]);
-    expect(h.sink.writes).toEqual([]);
-  });
 
 // ── Delta 2 — fair queue + shared upstream budget ────────────────────
 

@@ -100,6 +100,9 @@ async function runIsolatedStartup(
           finishRetentionSweep();
           return { swept: 1, bytesFreed: 0, tombstones: 0 };
         }
+        async sweepExpiredReplayTombstones() {
+          return 0;
+        }
       },
     },
     "./services/ingest-retention.js": load("./services/ingest-retention.ts"),

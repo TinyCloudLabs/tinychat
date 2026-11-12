@@ -15,7 +15,6 @@ import {
   REVOCATION_RECHECK_MS,
   classifyDrainError,
   createWebhookConfigDirectory,
-  createWebhookQueueDirectory,
   drainIntervalFromEnv,
   isTombstoned,
   REVOCATION_RECHECK_ITEMS_SIDE_EFFECTING,
@@ -613,7 +612,7 @@ describe("purge ledger (step -1)", () => {
     expect(result.dropped).toBe(1);
   });
 
-  test("a duplicate delivery preserves receivedAt and the provider stamp", async () => {
+  test("a duplicate delivery refreshes receivedAt but never the provider stamp", async () => {
     const h = harness();
     const sourceTimestamp = new Date(T0 - 120_000).toISOString();
     await h.queue.enqueue(SOURCE, ADDRESS, {
@@ -629,7 +628,7 @@ describe("purge ledger (step -1)", () => {
     });
 
     const [item] = await h.queue.list(SOURCE, ADDRESS);
-    expect(item!.receivedAt).toBe(new Date(T0).toISOString());
+    expect(item!.receivedAt).toBe(new Date(T0 + 60_000).toISOString());
     expect(item!.sourceTimestamp).toBe(sourceTimestamp);
   });
 
@@ -1159,39 +1158,7 @@ describe("queue maintenance timer", () => {
       timer.stop();
     }
   });
-  test("queue-key maintenance passes its interval as the expiry safety margin", async () => {
-    const margins: number[] = [];
-    const timer = startConnectorQueueMaintenanceTimer({
-      listQueueEntries: async () => [{ source: SOURCE, address: ADDRESS }],
-      sweepQueue: async (_entry, safetyMarginMs) => {
-        margins.push(safetyMarginMs);
-      },
-      intervalMs: 1_234,
-    });
-    try {
-      await timer.tick();
-      expect(margins).toEqual([1_234]);
-    } finally {
-      timer.stop();
-    }
-  });
 
-  test("ledger maintenance passes its interval as the expiry safety margin", async () => {
-    const margins: number[] = [];
-    const timer = startConnectorQueueMaintenanceTimer({
-      listLedgerAddresses: async () => [{ source: SOURCE, address: ADDRESS }],
-      sweepLedger: async (_entry, safetyMarginMs = 0) => {
-        margins.push(safetyMarginMs);
-      },
-      intervalMs: 1_234,
-    });
-    try {
-      await timer.tick();
-      expect(margins).toEqual([1_234]);
-    } finally {
-      timer.stop();
-    }
-  });
   test("a scan failure is logged, not thrown, and the timer survives it", async () => {
     const timer = startConnectorQueueMaintenanceTimer({
       sweep: async () => {},
@@ -1283,32 +1250,6 @@ describe("queue maintenance timer", () => {
     );
     expect(await directory()).toEqual([LOWER, OTHER]);
     expect(node.listCalls[0]).toEqual({ prefix: "webhooks/config/" });
-  });
-
-  test("the queue directory scans live and corrupt pending/dead keys, including disconnected users", async () => {
-    const node = new FakeNode();
-    node.listResponse = {
-      data: [
-        `webhooks/pending/fireflies/${LOWER}`,
-        `webhooks/dead/fireflies/${OTHER}`,
-        `webhooks/corrupt/fireflies/${LOWER}`,
-        `webhooks/corrupt/purged/fireflies/${OTHER}`,
-        "webhooks/pending/not-a-source/not-an-address",
-      ],
-    };
-    const directory = createWebhookQueueDirectory(
-      node as unknown as TinyCloudNode,
-    );
-
-    await expect(directory()).resolves.toEqual([
-      { source: "fireflies", address: LOWER },
-      { source: "fireflies", address: OTHER },
-    ]);
-    expect(node.listCalls).toEqual([
-      { prefix: "webhooks/pending/" },
-      { prefix: "webhooks/dead/" },
-      { prefix: "webhooks/corrupt/" },
-    ]);
   });
 
   test("the config directory parses the production Result data.keys shape", async () => {
@@ -1465,6 +1406,18 @@ describe("index.ts wiring", () => {
     expect(source).toContain("onDelivery: createIngestOnDelivery(");
   });
 
+  // OPTION C re-scopes trigger 2 to bounded queue maintenance: the TTL / dead-letter sweep,
+  // which surfaces nothing, instead of a timed drain that surfaced ids to nobody.
+  test("trigger 2 is bounded queue maintenance, not a background drain", () => {
+    expect(source).toContain("startConnectorQueueMaintenanceTimer({");
+    expect(source).not.toContain("startConnectorDrainTimer");
+    expect(source).not.toContain("drainAddresses");
+    expect(source).toMatch(
+      /connectorWebhooks\s*\n?\s*\?\s*startConnectorQueueMaintenanceTimer/,
+    );
+    expect(source).toContain("createWebhookConfigDirectory(node)");
+    expect(source).toContain("queue.sweep(");
+  });
 
   test("trigger 3 — the authenticated user-visit drain — is THE processing trigger", () => {
     expect(source).toMatch(

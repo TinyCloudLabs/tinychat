@@ -80,17 +80,6 @@ class FakeQueue {
     this.enqueued.push({ source, address, input });
     return { status: this.status, depth: this.enqueued.length };
   }
-  readonly clears: Array<{ source: string; address: string }> = [];
-
-  async clear(source: string, address: string): Promise<void> {
-    this.clears.push({ source, address });
-    for (let index = this.enqueued.length - 1; index >= 0; index -= 1) {
-      const entry = this.enqueued[index]!;
-      if (entry.source === source && entry.address === address) {
-        this.enqueued.splice(index, 1);
-      }
-    }
-  }
 }
 
 interface Harness {
@@ -101,11 +90,9 @@ interface Harness {
   kicks: Array<{ source: string; address: string }>;
 }
 
-function createHarness(options: {
-  limiter?: ConnectorWebhookLimiterOptions;
-  mounted?: boolean;
-  discardIfDisconnected?: (source: string, address: string) => Promise<boolean>;
-} = {}): Harness {
+function createHarness(
+  options: { limiter?: ConnectorWebhookLimiterOptions; mounted?: boolean } = {},
+): Harness {
   const tokens = new FakeTokenStore();
   const queue = new FakeQueue();
   const limiters = new ConnectorWebhookLimiters(options.limiter);
@@ -123,7 +110,6 @@ function createHarness(options: {
         tokens,
         queue,
         limiters,
-        discardIfDisconnected: options.discardIfDisconnected,
         onDelivery: (input) => {
           kicks.push(input);
         },
@@ -330,35 +316,6 @@ describe("POST /api/connectors/webhooks/:source/:token", () => {
     });
     // Fast-ack: the drain kick is fire-and-forget AFTER the response.
     expect(h.kicks).toEqual([{ source: SOURCE, address: ADDRESS }]);
-  });
-
-  test("a write that lands after disconnect is cleared before the webhook is acknowledged", async () => {
-    const disconnected = { value: false };
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const h = createHarness({
-      discardIfDisconnected: async () => disconnected.value,
-    });
-    const token = h.tokens.register(generateWebhookToken());
-    const originalEnqueue = h.queue.enqueue.bind(h.queue);
-    h.queue.enqueue = async (source, address, input) => {
-      entered.resolve();
-      await release.promise;
-      return originalEnqueue(source, address, input);
-    };
-    const body = currentBody("01JDISCONNECTRACE0001");
-
-    const request = withServer(h.app, async (base) =>
-      deliver(base, path(token), { body, signature: sign(body, token) }),
-    );
-    await entered.promise;
-    disconnected.value = true;
-    release.resolve();
-    const response = await request;
-
-    expect(response.status).toBe(202);
-    expect(h.queue.clears).toEqual([{ source: SOURCE, address: ADDRESS }]);
-    expect(h.queue.enqueued).toEqual([]);
   });
 
   test("the legacy body shape is accepted (and skips the freshness check)", async () => {

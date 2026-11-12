@@ -26,7 +26,7 @@ export const BACKGROUND_SYNC_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "C",
   heading: "Background sync",
   intro:
-    "Fireflies tells our server when a meeting finishes, and TinyChat pulls it into your space the next time you open it. Our server gets only the meeting's ID, never its content or your Fireflies key. Our server keeps those IDs for up to 14 days. You can turn this off at any time, which deletes them.",
+    "Fireflies tells our server when a meeting finishes, and TinyChat pulls it into your space the next time you open it. Our server gets only the meeting's ID, never its content or your Fireflies key.",
 };
 
 
@@ -35,7 +35,7 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "B-ingest",
   heading: "Background sync (server-side)",
   intro:
-    "Our server keeps your Fireflies sign-in and a copy of each finished meeting for up to 14 days, so your meetings are waiting on any device you sign in on. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes both and asks Fireflies to revoke it.",
+    "Our server keeps your Fireflies sign-in and a copy of each finished meeting for up to 90 days, so your meetings are waiting on any device you sign in on. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes both and asks Fireflies to revoke it.",
   disconnectNote:
     "**Disconnecting undoes all of it, in one click.** We revoke the Fireflies token upstream and " +
     "delete it, delete every meeting we are holding for you, and stop accepting notifications. " +
@@ -48,7 +48,7 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "google-oauth",
   heading: "Connect Google Meet",
   intro:
-    "You'll sign in with Google so TinyChat can read your Meet transcripts and Gemini notes and turn on transcription for meetings you host. Your browser fetches them from Google and saves them to your space; our server never keeps your Google token or your meetings. You can disconnect at any time; meetings already saved stay in your space.",
+    "You'll sign in with Google so TinyChat can read your Meet transcripts and Gemini notes and turn on transcription for meetings you host. Your browser fetches them from Google and saves them to your space; our server never keeps your Google token or your meetings.",
   disconnectNote:
     "**Disconnecting asks Google to revoke this access and deletes the saved token from your " +
     "secrets.** If Google cannot be reached we say so instead of pretending the revoke worked, " +
@@ -79,7 +79,7 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
  * reach (V3), and claims nothing about other connectors' transcript bodies, which it does not ask for.
  */
 const TRANSCRIPT_WRITER_NOTICE =
-  "Because the Private Notetaker is on, our server can also read, change and delete the meeting records in your connectors library, and save Notetaker transcripts there. You can turn the Notetaker off at any time.";
+  "Because the Private Notetaker is on, our server can also read, change and delete the meeting records in your connectors library, and save Notetaker transcripts there.";
 
 export const BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
   ...BACKGROUND_SYNC_CONSENT_COPY,

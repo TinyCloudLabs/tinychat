@@ -1592,6 +1592,9 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
             inflight -= 1;
           }
         },
+        async sweepExpiredReplayTombstones() {
+          return 0;
+        },
       },
     };
   }
@@ -1629,6 +1632,9 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
             storedAtBackfilled: 2,
             unreadableIndex: true,
           };
+        },
+        async sweepExpiredReplayTombstones() {
+          return 0;
         },
       },
       indexes: indexes(ADDRESS_A, ADDRESS_B),
@@ -1685,6 +1691,30 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
       { source: SOURCE, address: ADDRESS_A, safetyMarginMs: 5 * 60_000 },
     ]);
   });
+  test("expired replay markers are swept even when the index directory is unavailable", async () => {
+    const recorder = sweepRecorder();
+    let markerSweeps = 0;
+    const sweeper = new IngestRetentionSweeper({
+      content: {
+        ...recorder.target,
+        async sweepExpiredReplayTombstones() {
+          markerSweeps += 1;
+          return 2;
+        },
+      },
+      indexes: async () => {
+        throw new Error("index listing unavailable");
+      },
+    });
+
+    expect(await sweeper.sweepOnce()).toEqual({
+      addresses: 0,
+      swept: 0,
+      errors: 1,
+    });
+    expect(markerSweeps).toBe(1);
+  });
+
 
   test("[delta-05] one index failure does not cost other indexes their sweep", async () => {
     const recorder = sweepRecorder({ throwOn: ADDRESS_A });
@@ -2127,5 +2157,158 @@ describe("W4 content store — sequential storage (§9.3)", () => {
 
     expect(node.maxConcurrent).toBe(1);
     expect((await store.list(SOURCE, ADDRESS_A)).length).toBe(3);
+  });
+});
+describe("W4 content store — immutable expiry and replay protection", () => {
+  test("expiry is fixed at first server storage and merges cannot extend it", async () => {
+    const { store, clock } = harness();
+    const id = "mtg-immutable-expiry";
+    expect(
+      await store.upsert(
+        upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+      ),
+    ).toEqual({ ok: true, stored: "created" });
+
+    const first = await store.get(SOURCE, ADDRESS_A, id);
+    expect(first?.meta.expiresAt).toBe("2026-08-24");
+
+    clock.now += 10 * DAY_MS;
+    expect(
+      await store.upsert(
+        upsertInput({
+          sourceId: id,
+          kind: "summary",
+          ts: new Date(clock.now).toISOString(),
+          content: { overview: SUMMARY_TEXT },
+        }),
+      ),
+    ).toEqual({ ok: true, stored: "merged" });
+
+    const merged = await store.get(SOURCE, ADDRESS_A, id);
+    expect(merged?.meta.storedAt).toBe(first?.meta.storedAt);
+    expect(merged?.meta.expiresAt).toBe(first?.meta.expiresAt);
+  });
+
+  test("refuses a provider meeting older than the retention window", async () => {
+    const { store } = harness();
+    expect(
+      await store.upsert(
+        upsertInput({
+          sourceId: "mtg-too-old",
+          ts: new Date(T0 - 15 * DAY_MS).toISOString(),
+        }),
+      ),
+    ).toEqual({ ok: false, code: "meeting_too_old" });
+    expect(await store.get(SOURCE, ADDRESS_A, "mtg-too-old")).toBeNull();
+  });
+
+  test("age-sweeps valid expired content while the index is unreadable", async () => {
+    const { store, blobs, clock } = harness();
+    const id = "mtg-expired-unreadable-index";
+    await store.upsert(
+      upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+    );
+    clock.now = T0 + 14 * DAY_MS + 2 * 60 * 60_000;
+
+    await blobs.writeIndex(SOURCE, ADDRESS_A, {
+      ciphertext: "corrupt",
+      wrappedDEK: "corrupt",
+      updatedAt: new Date(clock.now).toISOString(),
+    });
+    const retentionStore = new ContentStore(blobs, {
+      now: () => clock.now,
+      master: () => CONTENT_MASTER,
+    });
+    expect(
+      await retentionStore.sweepRetention({
+        source: SOURCE,
+        address: ADDRESS_A,
+      }),
+    ).toMatchObject({ swept: 1, unreadableIndex: true });
+    expect(await store.get(SOURCE, ADDRESS_A, id)).toBeNull();
+  });
+
+  test("a replay after the deletion marker expires cannot restart retention", async () => {
+    const { store, clock } = harness();
+    const id = "mtg-old-replay";
+    await store.upsert(
+      upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+    );
+    clock.now = T0 + 14 * DAY_MS + 2 * 60 * 60_000;
+    expect(
+      (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }))
+        .swept,
+    ).toBe(1);
+
+    clock.now += 15 * DAY_MS;
+    expect(
+      await store.upsert(
+        upsertInput({ sourceId: id, ts: new Date(T0).toISOString() }),
+      ),
+    ).toEqual({ ok: false, code: "meeting_too_old" });
+    expect(await store.get(SOURCE, ADDRESS_A, id)).toBeNull();
+  });
+  test("missing provider time relies on a non-identifying marker that expires after 14 days", async () => {
+    const { store, blobs, clock } = harness();
+    const id = "mtg-no-time-replay";
+    expect(await store.upsert(upsertInput({ sourceId: id }))).toMatchObject({
+      ok: true,
+      stored: "created",
+    });
+
+    clock.now = T0 + 15 * DAY_MS;
+    expect(
+      (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A })).swept,
+    ).toBe(1);
+    const markers = await blobs.listReplayTombstones();
+    expect(markers).toHaveLength(1);
+    expect(markers[0]?.digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(markers[0]?.marker?.expiresAt).toBe(
+      new Date(clock.now + 14 * DAY_MS).toISOString(),
+    );
+
+    await blobs.removeIndex(SOURCE, ADDRESS_A);
+    expect(
+      await store.upsert(upsertInput({ sourceId: id })),
+    ).toMatchObject({ ok: false, code: "retention_tombstoned" });
+
+    clock.now += 14 * DAY_MS - 1;
+    expect(await store.sweepExpiredReplayTombstones()).toBe(0);
+    clock.now += 1;
+    expect(await store.sweepExpiredReplayTombstones()).toBe(1);
+    expect(await blobs.listReplayTombstones()).toEqual([]);
+
+    expect(await store.upsert(upsertInput({ sourceId: id }))).toMatchObject({
+      ok: true,
+      stored: "created",
+    });
+  });
+
+  test("expiry metadata is authenticated by the content envelope", async () => {
+    const { store, blobs } = harness();
+    const id = "mtg-expiry-aad";
+    await store.upsert(upsertInput({ sourceId: id }));
+    const sealed = await blobs.read(SOURCE, ADDRESS_A, id);
+    expect(sealed?.expiresAt).toBe("2026-08-24");
+    await blobs.write(SOURCE, ADDRESS_A, id, {
+      ...sealed!,
+      expiresAt: "2026-08-25",
+    });
+
+    await expect(store.get(SOURCE, ADDRESS_A, id)).rejects.toThrow();
+  });
+  test("expired replay markers are removed by retention even after all content indexes disappear", async () => {
+    const { store, blobs, clock } = harness();
+    const id = "mtg-marker-expiry";
+    await store.upsert(upsertInput({ sourceId: id }));
+    clock.now = T0 + 15 * DAY_MS;
+    expect(
+      (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A })).swept,
+    ).toBe(1);
+    await blobs.removeIndex(SOURCE, ADDRESS_A);
+
+    clock.now += 14 * DAY_MS;
+    expect(await store.sweepExpiredReplayTombstones()).toBe(1);
+    expect(await blobs.listReplayTombstones()).toEqual([]);
   });
 });
