@@ -32,7 +32,6 @@ import { useRecorder } from "./recorder/RecorderProvider";
 import { SoftHomeProvider } from "./home/softHome";
 import { SystemAudioStart } from "./home/desktop/SystemAudioStart";
 import { ActivityPanel } from "./activity/ActivityPanel";
-import { openManageStorage } from "@/lib/openManageStorage";
 import { MANIFEST_RESIGN_NOTICE } from "@/lib/manifestRevision";
 
 /** A missing pending-store entry does not prove that a known account is signed out. */
@@ -101,7 +100,7 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
     };
     const pipeline = notePipeline(input);
     return [note.id, { input, pipeline, provider: route === "on-device" ? "local" : note.options?.transcriber === "assemblyai" ? "powerful" : "private",
-      onAction: (kind) => { if (kind === "sign-in") onSignIn(); else if (kind === "get-model") void downloadOnDeviceModel(); else if (kind === "retry") { if (pipeline.current === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); } else if (kind === "check-again") void recorder.transcription?.onRecheck(); else if (kind === "review-consent") recorder.reviewPrivateConsent?.(); else if (kind === "manage-storage") void openManageStorage(); },
+      onAction: (kind) => { if (kind === "sign-in") onSignIn(); else if (kind === "get-model") void downloadOnDeviceModel(); else if (kind === "retry") { if (pipeline.current === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); } else if (kind === "check-again") void recorder.transcription?.onRecheck(); else if (kind === "review-consent") recorder.reviewPrivateConsent?.(); },
       onRetryStep: (key) => { if (key === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); }, actionError: null }];
   })), [notes, recorder, status, platform, offline, onSignIn, onRetry, did, error]);
   const selected = notes.find((note) => onPhoneItem(note).id === screen.noteId);

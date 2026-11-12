@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useContext, useEffect } from "react";
 import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
@@ -19,7 +19,9 @@ import {
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { StorageFullMessage } from "./StorageFullDialog";
-import { openManageStorage } from "@/lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
+import { PlatformContext } from "@/lib/platform";
 import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
@@ -113,6 +115,8 @@ export function SettingsPage({
   const near = pct >= 90;
   const storageFull = useStorageReadOnly();
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
+  // The iOS and Android apps show usage only: no Manage storage, Upgrade or Manage plan (App Store 3.1.1, Play Payments).
+  const billingLinks = billingLinksAllowed(useContext(PlatformContext));
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   useEffect(() => {
     if (hash !== "#agent-access") return;
@@ -136,13 +140,19 @@ export function SettingsPage({
             <p>
               <strong>Storage full</strong> <StorageFullMessage detail />
             </p>
-            <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
-              Manage storage
-            </Button>
-            {canUpgrade && (
-              <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
-                Upgrade
-              </Button>
+            {billingLinks ? (
+              <>
+                <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
+                  Manage storage
+                </Button>
+                {canUpgrade && (
+                  <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
+                    Upgrade
+                  </Button>
+                )}
+              </>
+            ) : (
+              <p className="mt-3 text-muted-foreground">{NATIVE_PLAN_NOTE}</p>
             )}
           </div>
         )}
@@ -292,15 +302,20 @@ export function SettingsPage({
                   )}
                 </div>
               )}
+              {!billingLinks && (
+                <p className="mt-3 text-xs text-muted-foreground">{NATIVE_PLAN_NOTE}</p>
+              )}
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={onManagePlan}
-                  aria-haspopup="dialog"
-                >
-                  Manage plan
-                </Button>
+                {billingLinks && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={onManagePlan}
+                    aria-haspopup="dialog"
+                  >
+                    Manage plan
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"

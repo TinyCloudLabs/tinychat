@@ -70,8 +70,9 @@ import {
   subscribeStorageScopeRetired,
   reportStoragePlanTier,
   STORAGE_READ_ONLY_NOTICE,
+  NATIVE_PLAN_NOTE,
 } from "./lib/storageStatus";
-import { openManageStorage } from "./lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "./lib/openManageStorage";
 import { useStorageFreePlan } from "./lib/useStorageFreePlan";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
@@ -505,6 +506,8 @@ export function App() {
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
+  // The iOS and Android apps open no purchase page: no pricing dialog, Manage storage or Upgrade (App Store 3.1.1, Play Payments).
+  const billingLinks = billingLinksAllowed(platform);
   const billingTierName = billingConfig?.tiers.find(
     (tier) => tier.id === billingStatus?.tier,
   )?.name ?? (billingStatus
@@ -1470,7 +1473,7 @@ export function App() {
         <UsageIndicator
           status={billingStatus}
           tierName={billingTierName}
-          onClick={openPricing}
+          onClick={billingLinks ? openPricing : undefined}
           onOpenRates={openRates}
         />
       )}
@@ -1637,18 +1640,22 @@ export function App() {
         <div data-testid="app-storage-read-only-notice" role="region" aria-label="Storage full" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full</strong>{" "}
           {STORAGE_READ_ONLY_NOTICE}{" "}
-          <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
-            Manage storage
-          </button>
-          {canUpgrade && (
-            <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
-              Upgrade
-            </button>
-          )}
+          {billingLinks ? (
+            <>
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+                Manage storage
+              </button>
+              {canUpgrade && (
+                <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+                  Upgrade
+                </button>
+              )}
+            </>
+          ) : NATIVE_PLAN_NOTE}
         </div>
       )}
 
-      {paywallEnabled && billingConfig && (
+      {billingLinks && paywallEnabled && billingConfig && (
         <PricingDialog
           open={pricingOpen}
           onOpenChange={setPricingOpen}
