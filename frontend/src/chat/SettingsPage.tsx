@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
+import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
 import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { AppearanceControl } from "./AppearanceControl";
@@ -201,6 +202,9 @@ export function SettingsPage({
                 </p>
               </div>
             )}
+            <div className="mt-4 border-t border-border pt-3 fine:pt-4">
+              <PrivacyPolicyLink />
+            </div>
           </SectionCard>
           <AppLockSettings />
           <SectionCard icon={LayoutGridIcon} title="Home">

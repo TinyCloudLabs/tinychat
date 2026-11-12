@@ -136,6 +136,7 @@ describe("How it works: the canonical claims", () => {
     expect(data).toContain("Voice notes are saved there, and so is a copy of each file you upload.");
     expect(data).toContain("The audio of a desktop local recording stays on that Mac.");
     expect(data).not.toContain("your recordings");
+    expect(markup).toMatch(/<section id="your-data"[\s\S]*?<button type="button"[^>]*>Privacy policy<svg[\s\S]*?<\/section>/);
   });
 
   test("the notetaker, autojoin and verification keep their specifics", () => {

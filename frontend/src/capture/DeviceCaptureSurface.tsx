@@ -3,6 +3,7 @@ import { Capacitor } from "@capacitor/core";
 import { Link, useNavigate } from "react-router-dom";
 import { MicIcon, UserIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
 import { SectionCard } from "@/components/ui/section-card";
 import { PageHeader } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
@@ -183,7 +184,7 @@ export function DeviceCaptureSettings({ onBack, onSignIn, offline = false }: { o
   return <div className="h-full overflow-y-auto" data-scroll-root>
     <PageHeader title="Settings" back={onBack} className="mx-auto w-full max-w-2xl px-4" />
     <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-8 pt-2">
-      <SectionCard icon={UserIcon} title="Account"><p className="text-callout text-muted-foreground">{offline ? "TinyCloud Home will sync when it reconnects." : "Sign in to sync your recordings."}</p><Button className="mt-3" onClick={onSignIn}>{offline ? "Try again" : "Sign in"}</Button></SectionCard>
+      <SectionCard icon={UserIcon} title="Account"><p className="text-callout text-muted-foreground">{offline ? "TinyCloud Home will sync when it reconnects." : "Sign in to sync your recordings."}</p><Button className="mt-3" onClick={onSignIn}>{offline ? "Try again" : "Sign in"}</Button><div className="mt-3"><PrivacyPolicyLink /></div></SectionCard>
       <SectionCard icon={MicIcon} title="Voice notes"><VoiceNotesTranscriberSettings /></SectionCard>
       <SectionCard icon={MicIcon} title="Storage"><AudioCacheSettings /></SectionCard>
     </div>

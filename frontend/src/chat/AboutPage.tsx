@@ -8,6 +8,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
 import { FINAL_COPY, POWERFUL_PROVIDER_NAME } from "@/capture/recorder/final/finalCopy";
 import { ABOUT_SECTIONS, type AboutSectionId } from "@/lib/about";
 import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -189,6 +190,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         or resetting it cannot be undone.
       </p>
       <p>You can also bring your Claude conversation history into your space, from Settings.</p>
+      <PrivacyPolicyLink className="-my-2 fine:my-0" />
     </>
   ),
   verification: (

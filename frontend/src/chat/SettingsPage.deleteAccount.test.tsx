@@ -11,7 +11,8 @@ import { installDom } from "@/test/dom";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 
 // App Store 5.1.1(v): Settings → Account offers "Delete OpenKey account", which opens
-// OpenKey's deletion page outside the app.
+// OpenKey's deletion page outside the app. App Store 5.1.1(i): it also links the privacy
+// policy, on every platform.
 
 let cleanDom: (() => void) | undefined;
 let previousCustomElements: PropertyDescriptor | undefined;
@@ -80,5 +81,19 @@ test("desktop, which has no fixed-URL opener for it, shows no deletion row", asy
     expect(page.textContent).not.toContain("Delete OpenKey account");
   } finally {
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  }
+});
+
+test("the Account section links the privacy policy, on the web and on desktop", async () => {
+  for (const platform of ["web", "tauri"] as const) {
+    if (platform === "tauri") Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    try {
+      const page = await renderSettings(platform);
+      const link = [...page.querySelectorAll("button")].find((button) => button.textContent === "Privacy policy");
+      expect(link).toBeDefined();
+      expect(accountSection(page)?.contains(link!)).toBe(true);
+    } finally {
+      Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    }
   }
 });
