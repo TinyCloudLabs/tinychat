@@ -10,7 +10,9 @@ import { botsConnectFetch } from "../bots-transport";
 const env = { BOTS_ENABLED: "true", BOTS_SERVICE_URL: "https://bots.tinycloud.xyz", BOTS_SERVICE_SECRET: "test", BOTS_TEST_ACCOUNTS: "*" };
 test("unset override retains fetch; unsafe route and HTTP fail at config load", () => {
   expect(botsFromEnv(env)?.fetchImpl).toBeUndefined();
-  expect(() => botsFromEnv({ ...env, BOTS_SERVICE_CONNECT_HOST: "app-443.example.com" })).toThrow();
+  for (const host of ["foreign.example", `${"a".repeat(40)}-443.dstack-prod.phala.network`]) {
+    expect(() => botsFromEnv({ ...env, BOTS_SERVICE_CONNECT_HOST: host })).toThrow();
+  }
   expect(() => botsFromEnv({ ...env, BOTS_SERVICE_URL: "http://bots.tinycloud.xyz", BOTS_SERVICE_CONNECT_HOST: "localhost" })).toThrow();
 });
 
