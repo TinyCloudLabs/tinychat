@@ -38,15 +38,32 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 ## How a message runs
 
 1. The bot id is `sha256(owner DID)`. Every path is built from it, never from the DID.
-2. On the first message (or the first after an idle stop) the supervisor mounts the bot's state filesystem,
-   registers a fresh random token for the bot with the gateway, writes the OCI spec (from `runsc spec`) and runs
-   `runsc run` in the foreground. Inside, `bot-start.sh` bridges `127.0.0.1:8080` to the egress socket and execs
-   `omp --mode rpc --no-ui`; the sandbox's stdio is the RPC channel.
+2. On the first message (or the first after an idle stop) the supervisor mounts a fresh tmpfs for the bot's state,
+   restores the bot's saved state into it, registers a fresh random token for the bot with the gateway, writes the
+   OCI spec (from `runsc spec`) and runs `runsc run` in the foreground. Inside, `bot-start.sh` bridges
+   `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui`; the sandbox's stdio is the RPC channel.
 3. The supervisor waits for OMP's `ready`, sets the event filter (assistant deltas only), opens the session in
    `/root/bot/sessions/main`, sends the `prompt`, and maps `message_update` text deltas to `delta` and
    `prompt_result` to `done` / `error`.
-4. After `session_settled` the bot stops once it has been idle for `BOTS_IDLE_MS`. The next message starts it again
-   on the same session.
+4. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
+   `BOTS_IDLE_MS`. The next message starts it again on the same session.
+
+## Working state
+
+Each bot's working state, its state snapshot, stays on the bots server and is deleted after `BOTS_RETENTION_DAYS` days
+(default 30) without use. Every message and history request records the bot's last use in
+`/data/bots/<bot id>/last-used`, next to the state snapshot and outside anything the sandbox mounts; a bot without that
+file counts from the snapshot's modification time. The supervisor checks every bot directory in `/data/bots` (symlinks
+are skipped) at startup and every 6 hours, and skips a bot with a request in flight.
+
+Deleting goes through one path. It stops the bot's sandbox (unmounting its state snapshot) and then checks that the
+teardown succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories (not symlinks) directly
+under their roots, that nothing is mounted at or under either (`/proc/self/mountinfo`). If all hold, it removes both directories and logs `state_deleted`. Otherwise it removes
+nothing and logs `state_delete_skipped` with a `cause` (`teardown_failed`, `unsafe_path`, `mounted`
+or `error`), and the next sweep tries again. A message that arrives meanwhile waits for the deletion, then starts a
+fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
+
+The supervisor creates data and run roots with mode 0700 and refuses roots that are symlinks, owned by another user, or writable by group or others.
 
 ## Containment
 
@@ -57,18 +74,23 @@ Each sandbox:
 - gets its own writable root layer in memory (`--overlay2=root:memory,size=BOTS_SANDBOX_OVERLAY_MB`) over one
   shared read-only bot rootfs, and a capped `/tmp` (`BOTS_SANDBOX_TMP_MB`); the host rootfs is never written;
 - has its own cgroup: `BOTS_SANDBOX_MEMORY_MB`, `BOTS_SANDBOX_CPUS`, `BOTS_SANDBOX_PIDS`;
-- keeps its state on its own fixed-size ext4 image (`BOTS_STATE_MB`, at `/data/bots/<bot id>/state.img`),
-  loop-mounted only while it runs, so one bot cannot fill the disk.
+- keeps its state (`/root/bot`) in its own tmpfs while it runs: `BOTS_STATE_MB` in size, with room for 64 files and
+  directories per MiB, mounted nosuid, nodev and noexec (it holds the bot's sessions; nothing runs from it).
 
-RAM budget per running bot is `BOTS_SANDBOX_MEMORY_MB` (default 1536 MiB). It covers the processes and both in-memory
-layers: the root layer and `/tmp` are held in sandbox memory and charged to its cgroup, so the supervisor refuses to
-start unless memory exceeds overlay + tmp by at least 512 MiB. A bot that goes over is killed alone and reports
-`bot_unavailable`.
+RAM budget per running bot is `BOTS_SANDBOX_MEMORY_MB` (default 1536 MiB). It covers the processes and the three
+in-memory layers: the root layer, `/tmp` and the state the bot writes are held in memory and charged to its cgroup,
+so the supervisor refuses to start unless memory exceeds overlay + tmp + state by at least 512 MiB. A bot that goes
+over is killed alone and reports `bot_unavailable`.
 
 All sandboxes together sit under one parent cgroup (`/bots`) capped at `BOTS_TOTAL_MEMORY_MB` (default 6144) and
-`BOTS_TOTAL_PIDS` (default 2048), and the whole supervisor container at `mem_limit: 7g` in the compose, so many bots
-cannot starve the gateway or the ingress. Each running bot also holds one of the 8 loop devices the compose passes
-in, so at most 8 bots run at once. Size the CVM as the supervisor's `mem_limit` plus about 1 GiB.
+`BOTS_TOTAL_PIDS` (default 2048). A restore writes the bot's saved state from a leaf of that parent
+(`/bots/restore`), outside the bot's own cgroup, so each running bot counts there as `BOTS_SANDBOX_MEMORY_MB +
+BOTS_STATE_MB`. `BOTS_MAX_RUNNING` caps how many bots run at once (default `BOTS_TOTAL_MEMORY_MB /
+(BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)`, 3); the supervisor refuses to start if that many would not fit, and a
+message or history request that would start a bot past the cap gets `bot_unavailable`. A bot whose last stop was
+not confirmed (see Saved state) keeps its place until its next start confirms the end. The whole supervisor
+container sits at `mem_limit: 7g` in the compose, so many bots cannot starve the gateway or the ingress. Size the CVM
+as the supervisor's `mem_limit` plus about 1 GiB.
 
 The supervisor runs in its own cgroup namespace (`cgroup: private`) and refuses to start unless `/proc/self/cgroup`
 reads `0::/`, so the cgroup tree it writes is the container's own.
@@ -102,6 +124,38 @@ The gateway, per bot socket:
 
 OMP also probes `GET /models` and `GET /props` without a token at startup; the gateway refuses them and logs it.
 
+### Saved state
+
+The supervisor saves each bot's tmpfs to `/data/bots/<bot id>/state`: when a turn settles, with the sandbox paused
+(`runsc pause` … `runsc resume`) for the copy, and on every stop, once the sandbox is confirmed gone and before the
+tmpfs is unmounted. A start restores that copy into the fresh tmpfs before the sandbox starts. Every copy runs in its
+own process, is killed past `BOTS_STATE_COPY_TIMEOUT_MS` (cause `timeout`; a paused sandbox is resumed), and:
+
+- looks up every name through an open directory and follows no symlink, at any level;
+- copies only directories, regular files and symlinks, each created fresh by the supervisor: directories 0700, files
+  with their permission bits only (no setuid, setgid or sticky bit) and their times, symlinks with their target as
+  text; no owner and no xattrs;
+- checks that each directory and file it creates sits at its own path under the destination;
+- stops at a device, FIFO or socket (`special_file`), past `BOTS_STATE_MB` of file data (`too_large`), past the
+  tmpfs's file count (`too_many_files`) or past 64 directory levels (`too_deep`).
+
+A save writes `state.new` and fsyncs it, renames `state` to `state.old` and `state.new` to `state`, fsyncing the
+bot's directory after each rename, then removes `state.old` and fsyncs again; a start first finishes or undoes a swap
+a crash interrupted, the same way. Each bot takes at most about 2 × `BOTS_STATE_MB` on the volume. A save that fails
+or stops keeps the previous copy and logs `snapshot_failed` with its cause (`snapshot_skipped` if the sandbox could
+not be paused). A restore that fails or stops fails the start with `state restore failed: <cause>` and leaves the
+saved copy as it is.
+
+Teardown gives `runsc run` a few seconds to finish on its own, then ends the sandbox. A stop is confirmed when a
+sandbox runsc listed as running was killed, `runsc delete` succeeded, `runsc list` no longer shows it and its cgroup
+holds no process. Only then is the state saved and the tmpfs unmounted. Otherwise the supervisor logs
+`teardown_unconfirmed` and `snapshot_skipped` (cause `teardown_unconfirmed`), copies nothing and leaves the tmpfs
+mounted; the bot's next start tries to confirm the end again and gets `bot_unavailable` until it is confirmed.
+
+The supervisor reads the mount flags back from `/proc/self/mountinfo`: a state tmpfs without nosuid,nodev,noexec
+fails the start, and a `bot-data` volume without nosuid,nodev (it is remounted that way at startup) stops the
+supervisor from starting.
+
 ### Budget file recovery
 
 If `budget.json` is unreadable or malformed, the gateway logs one line and exits with status 78:
@@ -132,10 +186,13 @@ Supervisor (`bots-supervisor`):
 | `BOTS_IDLE_MS` | `600000` | idle time after `session_settled` before a sandbox stops |
 | `BOTS_SANDBOX_MEMORY_MB` / `_CPUS` / `_PIDS` | `1536` / `1` / `256` | per-sandbox cgroup limits |
 | `BOTS_SANDBOX_OVERLAY_MB` / `_TMP_MB` | `512` / `256` | root layer and `/tmp` caps (inside the memory limit) |
-| `BOTS_STATE_MB` | `256` | state image size, fixed when a bot first runs |
-| `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes together |
+| `BOTS_STATE_MB` | `256` | state tmpfs size (inside the memory limit, 64 files and directories per MiB) and the cap on its saved copy |
+| `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes and their restored state together |
+| `BOTS_MAX_RUNNING` | `BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)` (3) | sandboxes running at once; at most that quotient |
+| `BOTS_STATE_COPY_TIMEOUT_MS` | `60000` | a state restore or save still running by then is killed and fails |
 | `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
 | `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |
+| `BOTS_RETENTION_DAYS` | `30` | a bot's working state is deleted after this many days without use |
 | `PORT` | `8080` | |
 
 Gateway (`bots-gateway`):
@@ -167,13 +224,15 @@ file never passes it.
 `runsc` needs `SYS_ADMIN`, `SYS_CHROOT`, `SETUID`, `SETGID`, `SETFCAP`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `CHOWN`,
 `KILL`, with seccomp and AppArmor unconfined, to create a sandbox; this is the smallest set that passed the local
 smoke (without `SETFCAP` the gofer fails with `fork/exec /proc/self/exe: operation not permitted`;
-`DAC_READ_SEARCH` and `MKNOD` are not needed). The loop devices for the state images are passed in as devices
-(`/dev/loop-control`, `/dev/loop0`–`7`), so the container needs no `MKNOD`; to run more than 8 bots at once, add
-`MKNOD` and `device_cgroup_rules: ["b 7:* rmw"]` and the supervisor creates further nodes itself. The supervisor
-remounts its cgroup2 namespace read-write (Docker mounts it read-only outside privileged mode) and moves itself
-into a leaf cgroup so each sandbox can have its own limits; it refuses to start if that fails. If a CVM's Docker
-refuses these settings, `privileged: true` in place of them also works; that changes little in practice, since the
-supervisor is already effectively CVM root (see above).
+`DAC_READ_SEARCH` and `MKNOD` are not needed). Each bot's state is a tmpfs the supervisor mounts itself, so the
+container needs no devices. At startup the supervisor remounts its cgroup2 namespace read-write (Docker mounts it
+read-only), moves itself into a leaf cgroup so each sandbox can have its own limits, and remounts the `bot-data`
+volume nosuid,nodev. If the host lacks any of this (a private cgroup namespace, the cpu, memory and pids
+controllers, or one of those mounts), the supervisor exits before serving, and the container log shows the error
+naming what is missing, for example
+`supervisor needs a private cgroup2 namespace (cgroup: private); /proc/self/cgroup is "…"`,
+`cgroup controllers unavailable: memory`, or the `mount` command that failed with its exit code and output. Under
+`restart: unless-stopped` each restart logs the same error.
 
 ## Develop
 
@@ -187,24 +246,49 @@ DOCKER="sudo docker" PORT=28808 bun run smoke   # MOCK-model smoke, see below
 
 `test/smoke.sh` builds the image and runs the real supervisor and gateway with gVisor, but with
 `test/mock-upstream.ts` as the model (it always answers "pong"); the image never contains the mock. It shows the
-SSE events for two owners, the busy rule, history, a gateway restart (budgets kept, the bot registered again), the
-idle stop and restart, and a containment checklist (two sandboxes, aggregate caps, egress and state isolation,
-caps, no network, no model key in a sandbox or the supervisor). It exits 1 if any check fails. Report its result as
-a mock run. It removes everything it creates. CI (`.github/workflows/bots.yml`) runs the unit tests and the
-typecheck on every PR touching `bots/`; the smoke needs a Docker host and runs by hand.
+SSE events for two owners, the busy rule, history, the running cap, a gateway restart (budgets kept, the bot
+registered again), the idle stop and restart, a containment checklist (two sandboxes, aggregate caps, egress and
+state isolation, caps, no network, no model key in a sandbox or the supervisor, no devices), and the saved state:
+kept across a stop and start, with setuid bits dropped, symlinks kept as symlinks and nothing written outside; a FIFO
+the bot makes stays inside gVisor, and a FIFO on the tmpfs stops the save while the previous copy stays. It exits 1
+if any check fails. Report its result as a mock run. It removes everything it creates. CI
+(`.github/workflows/bots.yml`) runs the unit tests and the typecheck on every PR touching `bots/`; the smoke needs a
+Docker host and runs by hand.
 
 ## Deploying
 
-A deploy, modelled on `.github/workflows/deploy-backend-phala.yml`:
+`.github/workflows/deploy-bots-phala.yml` deploys a commit on main to the dedicated bots CVM:
 
-1. Build `bots/` (context `bots/`, `linux/amd64`) and push `ghcr.io/tinycloudlabs/tinychat-bots`; reuse the
-   backend's ingress image (`infra/phala-ingress`). Write both pushed digests over `BOTS_IMAGE_DIGEST` and
-   `INGRESS_IMAGE_DIGEST` in `docker-compose.phala.yml`.
-2. Deploy to a dedicated CVM (its own `PHALA_CVM_ID`, the same pinned dstack OS image as the backend) with
-   encrypted envs `BOTS_SERVICE_SECRET`, `BOTS_TEST_ACCOUNTS`, `REDPILL_API_KEY` (dedicated key),
-   `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL`, `PHALA_GATEWAY_CNAME`, `BOTS_INGRESS_DOMAIN`, plus any limit overrides,
-   and sync `allowed_envs`. No other secrets belong in this CVM.
-3. Point `BOTS_INGRESS_DOMAIN` (DNS CNAME to the Phala gateway) at the CVM, then probe
-   `https://<BOTS_INGRESS_DOMAIN>/healthz` for `ok`.
-4. Set the backend's `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>`, the same `BOTS_SERVICE_SECRET`, and the
-   same `BOTS_TEST_ACCOUNTS`.
+```bash
+gh workflow run deploy-bots-phala.yml --ref main -f ref=<full main SHA>
+```
+
+It builds `bots/` (`linux/amd64`) as `ghcr.io/tinycloudlabs/tinychat-bots:<sha>` and the backend's ingress image
+(`infra/phala-ingress`) as `ghcr.io/tinycloudlabs/tinychat-backend:ingress-bots-<sha>`, writes both pushed digests
+over `BOTS_IMAGE_DIGEST` and `INGRESS_IMAGE_DIGEST` in a copy of `docker-compose.phala.yml`, and deploys that copy
+with the complete encrypted env set below. It checks the CVM runs the backend's pinned dstack OS image before and
+after, syncs `allowed_envs`, and probes `https://<BOTS_INGRESS_DOMAIN>/healthz` for `ok`. The job summary lists the
+commit, both digests, the rendered compose's sha256 and the env names. To roll back, run it with an earlier SHA;
+the `bot-data` and `bot-budget` volumes are kept.
+
+Its configuration lives in the `production-bots` GitHub environment:
+
+| Name | Kind | |
+| --- | --- | --- |
+| `BOTS_PHALA_CVM_ID` | variable | the bots CVM; required, never the backend's `PHALA_CVM_ID` |
+| `BOTS_INGRESS_DOMAIN` | variable | the bots TLS hostname; required |
+| `BOTS_TEST_ACCOUNTS` | variable | the same list as the backend's; empty admits nobody |
+| limit overrides from [Configuration](#configuration) | variables | optional, e.g. `BOTS_MODEL`, `BOTS_TOTAL_MEMORY_MB`, `BOTS_GLOBAL_DAILY_TOKENS`; empty keeps the compose default |
+| `PHALA_CLOUD_API_KEY` | secret | deploy tooling only; never a CVM env |
+| `BOTS_SERVICE_SECRET` | secret | the supervisor's secret, the same value as the backend's |
+| `BOTS_REDPILL_API_KEY` | secret | the dedicated RedPill key, written to the CVM as `REDPILL_API_KEY` |
+| `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL` | secrets | the ingress certificate |
+
+`PHALA_GATEWAY_CNAME` is read from the CVM. No other secrets belong in this CVM.
+
+The operator points `BOTS_INGRESS_DOMAIN` at the CVM with a DNS CNAME to its Phala gateway (`.gateway.cname`, shown
+in the job summary).
+
+The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>` and
+`BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
+through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.

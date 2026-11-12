@@ -170,7 +170,7 @@ async function typeAnswer(host: HTMLElement, value: string) {
   });
 }
 function segment(host: HTMLElement, label: "Needs you" | "All" | "Done") {
-  const node = [...host.querySelectorAll('[role="group"][aria-label="Show"] button')].find((candidate) => candidate.textContent?.startsWith(label));
+  const node = host.querySelector<HTMLButtonElement>(`[data-testid="feed-view-${({ "Needs you": "needs-you", All: "all", Done: "done" } as Record<string, string>)[label]}"]`);
   expect(node).toBeDefined();
   return node as HTMLButtonElement;
 }

@@ -17,6 +17,10 @@ on:
         description: Full commit SHA to build and deploy (resolved and gated by deploy-production.yml)
         type: string
         required: true
+      allow_current_dev_os_until_tc2843:
+        description: TC-2843 transition only; refused unless the originating event is workflow_dispatch
+        type: boolean
+        default: false
     outputs:
       state:
         description: unchanged | changed-verified | changed-unverified
@@ -36,7 +40,7 @@ env:
   DOCKER_IMAGE: ${{ vars.TINYCHAT_BACKEND_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
   INGRESS_IMAGE: ${{ vars.TINYCHAT_INGRESS_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
   PHALA_CVM_ID: ${{ vars.PHALA_CVM_ID }}
-  # Production dstack OS the backend CVM must run (the Phala KMS only releases app keys to this image).
+  # Reviewed production OS pin; this is deployment policy, not a claim about KMS release policy.
   PHALA_OS_IMAGE: dstack-0.5.12
   PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
   PHALA_INGRESS_DOMAIN: ${{ vars.PHALA_INGRESS_DOMAIN || 'api.tinycloud.chat' }}
@@ -66,6 +70,7 @@ jobs:
       version: ${{ steps.live.outputs.version }}
     env:
       DEPLOY_SHA: ${{ inputs.ref }}
+      ALLOW_CURRENT_DEV_OS_UNTIL_TC2843: ${{ inputs.allow_current_dev_os_until_tc2843 }}
     steps:
       - name: Require a full commit SHA
         run: |
@@ -81,6 +86,18 @@ jobs:
 
       - name: Check the checkout is the deploy commit
         run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+
+      # Guard policy comes from the workflow commit, never the application/rollback ref.
+      - name: Check out trusted OS guard
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .os-guard
+          sparse-checkout: |
+            /.github/scripts/phala-os-guard.sh
+            /.github/scripts/test-phala-os-guard.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Publish pending deployment status
         env:
@@ -213,11 +230,10 @@ jobs:
           fi
           echo "$RAW" | jq '{success, username, workspace, profile}'
 
-      # Fail closed before any image is built or the CVM is touched unless it runs the pinned production OS, or the one
-      # pinned dev OS in .github/scripts/phala-dev-os-allowlist.txt after a fresh integrity check.
-      # To fix it, set the OS by hand: `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
+      # Require production OS before building or changing the CVM, except for an explicit
+      # manual TC-2843 transition override for the exact recorded dev image.
       - name: Test the OS image guard
-        run: bash .github/scripts/test-phala-os-guard.sh
+        run: bash .os-guard/.github/scripts/test-phala-os-guard.sh
 
       - name: Require a permitted OS image on the CVM
         env:
@@ -229,7 +245,7 @@ jobs:
             echo "$RAW" | jq '{success, error, details}'
             exit 1
           fi
-          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
+          bash .os-guard/.github/scripts/phala-os-guard.sh <<<"$RAW"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -418,6 +434,17 @@ jobs:
           MCP_CHAT_GRANT_REJECTED_ERROR: ${{ vars.MCP_CHAT_GRANT_REJECTED_ERROR || 'native_grant_rejected' }}
           # web_search for MCP accounts runs in the backend; the key moves here from eliza-service.
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          # Tiny bots (Home Main bot chat, backend/src/routes/bots.ts). Off by default; on only with BOTS_ENABLED=true, the
+          # service URL and secret, and the accounts named in BOTS_TEST_ACCOUNTS (an empty list admits nobody). The URL is
+          # the bots CVM's ingress (https://<BOTS_INGRESS_DOMAIN>, deploy-bots-phala.yml); the secret is the same value the
+          # bots CVM holds as BOTS_SERVICE_SECRET, and it is a secret, never a variable.
+          BOTS_ENABLED: ${{ vars.BOTS_ENABLED || 'false' }}
+          BOTS_TEST_ACCOUNTS: ${{ vars.BOTS_TEST_ACCOUNTS }}
+          BOTS_SERVICE_CONNECT_HOST: ${{ vars.BOTS_SERVICE_CONNECT_HOST }}
+          BOTS_SERVICE_URL: ${{ vars.BOTS_SERVICE_URL }}
+          BOTS_SERVICE_SECRET: ${{ secrets.BOTS_SERVICE_SECRET }}
+          # Empty means the backend default (120000).
+          BOTS_POST_TIMEOUT_MS: ${{ vars.BOTS_POST_TIMEOUT_MS }}
           # Optional meeting rollout; defaults keep controller routing disabled.
           MEETING_CONTENT_RETRIEVAL_ENABLED: ${{ vars.MEETING_CONTENT_RETRIEVAL_ENABLED || 'false' }}
           MEETING_CONTENT_TEST_ACCOUNTS: ${{ vars.MEETING_CONTENT_TEST_ACCOUNTS }}
@@ -562,7 +589,8 @@ jobs:
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           # These values are written one per line into the env file, so a line break in any of them would add settings.
           for item in MCP_CHAT_ENABLED MCP_CHAT_TEST_ACCOUNTS MCP_CHAT_URL MCP_CHAT_SERVICE_DID MCP_CHAT_SERVICE_CREDENTIAL \
-            MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER MCP_CHAT_GRANT_EXPIRED_ERROR MCP_CHAT_GRANT_REJECTED_ERROR TAVILY_API_KEY; do
+            MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER MCP_CHAT_GRANT_EXPIRED_ERROR MCP_CHAT_GRANT_REJECTED_ERROR TAVILY_API_KEY \
+            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_POST_TIMEOUT_MS; do
             case "${!item-}" in
               *$'\n'*|*$'\r'*) echo "::error title=Invalid deployment config::$item must be a single line"; exit 1 ;;
             esac
@@ -590,6 +618,12 @@ jobs:
             printf '%s\n' "MCP_CHAT_GRANT_EXPIRED_ERROR=${MCP_CHAT_GRANT_EXPIRED_ERROR:-}"
             printf '%s\n' "MCP_CHAT_GRANT_REJECTED_ERROR=${MCP_CHAT_GRANT_REJECTED_ERROR:-}"
             printf '%s\n' "TAVILY_API_KEY=${TAVILY_API_KEY:-}"
+            printf '%s\n' "BOTS_ENABLED=${BOTS_ENABLED:-false}"
+            printf '%s\n' "BOTS_TEST_ACCOUNTS=${BOTS_TEST_ACCOUNTS:-}"
+            printf '%s\n' "BOTS_SERVICE_CONNECT_HOST=${BOTS_SERVICE_CONNECT_HOST:-}"
+            printf '%s\n' "BOTS_SERVICE_URL=${BOTS_SERVICE_URL:-}"
+            printf '%s\n' "BOTS_SERVICE_SECRET=${BOTS_SERVICE_SECRET:-}"
+            printf '%s\n' "BOTS_POST_TIMEOUT_MS=${BOTS_POST_TIMEOUT_MS:-}"
             printf '%s\n' "MEETING_CONTENT_RETRIEVAL_ENABLED=${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}"
             printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
             printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"
@@ -694,7 +728,7 @@ jobs:
             echo "$RAW" | jq '{success, error, details}'
             exit 1
           fi
-          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
+          bash .os-guard/.github/scripts/phala-os-guard.sh <<<"$RAW"
 
       # `phala deploy` updates the encrypted env but NOT the CVM's registered
       # allowed_envs whitelist (frozen at CVM creation), so env vars added after

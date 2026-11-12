@@ -38,7 +38,7 @@ async function mount(source: HomeFeedSource) {
   document.body.append(host);
   const root = createRoot(host);
   roots.add(root);
-  await act(async () => root.render(<MemoryRouter><HomeFeedEntries source={source} homeSite /></MemoryRouter>));
+  await act(async () => root.render(<MemoryRouter><HomeFeedEntries source={source} /></MemoryRouter>));
   await act(async () => {});
   return host;
 }

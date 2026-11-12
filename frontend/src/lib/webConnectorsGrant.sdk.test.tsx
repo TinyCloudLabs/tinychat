@@ -13,13 +13,13 @@ import { installDom } from "@/test/dom";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState } from "@/shell/homeFeatureAccess";
 import { homeFeaturesToRequest, readHomeFeatures, rememberHomeFeature, webSignInManifest, sessionCoversHomeFeature, type HomeFeature } from "./homeFeatures";
 import { reauthorizeHome } from "./homeReauthorize";
-import { webAppManifestFor } from "./webSignInPrefetch";
+import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 
 // Anvil's second default key: a well-known test key, never a real account.
 const account = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
 const ADDRESS = account.address;
 const HOST = "http://127.0.0.1:9";
-const base = webAppManifestFor(false);
+const base = WEB_APP_MANIFEST;
 const config = { autoCreateSpace: false, includeAccountRegistryPermissions: false as const, tinycloudHosts: [HOST] };
 
 let restoreDom: () => void;
@@ -76,7 +76,7 @@ function reauthorize(features: readonly HomeFeature[], answer: "approve" | "decl
     prefetch: { manifest: async () => base, nonceForSigning: async () => "webReauthTest1", guardSigning: (provider) => provider, complete: () => {}, cancel: () => {} },
     createTcw: createTinyCloudWeb,
     verify: async () => ({ token: "bearer", expiresIn: 3600 }),
-  }, { address: ADDRESS, features, homeSite: false, config, canCommit: () => null });
+  }, { address: ADDRESS, features, config, canCommit: () => null });
 }
 
 /** Restore against the shipped full web manifest, as App does. */
@@ -89,7 +89,6 @@ async function reload(): Promise<TinyCloudWeb> {
 test("a new web account has no decrypt grant, while a device that used Connectors includes it", () => {
   expect(webSignInManifest(base, [], ADDRESS)).toEqual({ ...base, secrets: {} });
   expect(base.permissions?.some((entry) => entry.service === "tinycloud.encryption")).toBe(false);
-  expect(webSignInManifest(base, ["recording"], ADDRESS)).toEqual({ ...base, secrets: {} });
   expect(rememberHomeFeature(localStorage, ADDRESS, "connectors")).toBe(true);
   const manifest = webSignInManifest(base, readHomeFeatures(localStorage, ADDRESS.toLowerCase()), ADDRESS);
   expect(manifest.permissions?.filter((entry) => entry.service === "tinycloud.encryption")).toHaveLength(1);
@@ -107,7 +106,7 @@ test("web Connectors first use shows the existing prompt and Continue obtains a 
   function Page() {
     const [tcw, setTcw] = useState(initial);
     access = useHomeFeatureAccessState({
-      homeSite: false, webConnectors: true,
+      enabled: true,
       tcw: {
         hasPermissions: (entries) => tcw.hasPermissions(entries),
         kv: { get: async () => { firstUseReads++; return { ok: false, error: { code: "KV_NOT_FOUND" } }; } } as unknown as TinyCloudWeb["kv"],
@@ -133,7 +132,11 @@ test("web Connectors first use shows the existing prompt and Continue obtains a 
     expect(host.textContent).toContain("OpenKey");
     expect(host.querySelector('[data-testid="connectors-screen"]')).toBeNull();
     expect(firstUseReads).toBe(0);
-    expect(access!.covered("recording")).toBe(true);
+    // Recording needs no ask: the base web sign-in already covers its storage.
+    expect(initial.hasPermissions([
+      { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.tinychat/transcripts", skipPrefix: true, actions: ["read", "write", "schema"] },
+      { service: "tinycloud.kv", space: "applications", path: "xyz.tinycloud.tinychat/exo/voiceNotes/hostedJobs/", skipPrefix: true, actions: ["get", "put", "del", "list"] },
+    ])).toBe(true);
     await act(async () => { (host.querySelector("button") as HTMLButtonElement).click(); });
     expect(asked).toBe(1);
     expect(host.querySelector('[data-testid="feature-access-connectors"]')).toBeNull();
@@ -179,7 +182,7 @@ test("Capture's Connect meetings entry opens the same permission surface before 
   function Page() {
     const location = useLocation();
     const access = useHomeFeatureAccessState({
-      homeSite: false, webConnectors: true, tcw: initial, address: ADDRESS,
+      enabled: true, tcw: initial, address: ADDRESS,
       store: localStorage, inFlight: null, requestFeatureAccess: async () => "failed",
     });
     return <HomeFeatureAccessContext.Provider value={access}>

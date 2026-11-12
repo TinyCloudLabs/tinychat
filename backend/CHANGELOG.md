@@ -1,5 +1,51 @@
 # @tinychat/backend
 
+## 0.8.0-beta.11
+
+### Patch Changes
+
+- 78c73f1: Support a bots service connection host with TLS verification against the service URL identity. Details: TC-2808
+
+## 0.8.0-beta.10
+
+### Patch Changes
+
+- 898ce96: Require a pinned content-master commitment and successful existing-index decrypt before canary enrollment; verify the encrypted canary before ingestion starts. Add an authenticated read-only continuity diagnostic. Existing ingestion deployments must pin CONNECTOR_CONTENT_EXPECTED_SHA256 from their live master before first startup; fresh installations require explicit CONNECTOR_CONTENT_ENROLL_FRESH=true enrollment.
+
+  Take the ingest singleton lease before enrollment and reject blank pins. Require encoded random key material for new enrollment. An unset master permits startup only with empty sealed storage, leaves sealed features disabled, and returns a diagnostic error without a fingerprint.
+
+  Close connections that become idle after an in-flight response finishes during shutdown, so Bun shutdown does not wait for keep-alive expiry. Tighten base64 padding validation and limit the diagnostic exemption to its literal path.
+
+## 0.8.0-beta.9
+
+### Patch Changes
+
+- 20598f6: The backend accepts both tinycloud.chat and home.tinycloud.xyz for CORS, sign-in (the SIWE domain) and Google OAuth returns, through the new `FRONTEND_ORIGINS` allowlist: comma-separated exact origins, `FRONTEND_URL` always added, defaulting to `https://tinycloud.chat,https://home.tinycloud.xyz`. A Google connection started on tinycloud.chat returns to tinycloud.chat even after `FRONTEND_URL` moves to home.tinycloud.xyz; one started on home.tinycloud.xyz returns there. Stripe and connector-off links still use `FRONTEND_URL`.
+
+  Deploy this backend before setting `TINYCHAT_FRONTEND_URL` to `https://home.tinycloud.xyz`. That variable is also the backend's `FRONTEND_URL`, and an older backend would stop accepting tinycloud.chat, where visitors whose recordings are still only in that browser stay.
+
+## 0.8.0-beta.8
+
+### Patch Changes
+
+- f4853a8: Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
+
+  Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
+
+  Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
+
+  Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
+  Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
+  Details: TC-2192
+
+## 0.8.0-beta.7
+
+### Patch Changes
+
+- 36f006a: Backend deploys pass the tiny bots settings (BOTS_ENABLED, BOTS_TEST_ACCOUNTS, BOTS_SERVICE_URL, BOTS_SERVICE_SECRET, BOTS_POST_TIMEOUT_MS) to the backend CVM; BOTS_ENABLED defaults to false. A new workflow, deploy-bots-phala.yml, deploys the bots service to its own CVM. Details: TC-2808
+
 ## 0.8.0-beta.6
 
 ### Minor Changes

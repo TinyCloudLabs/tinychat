@@ -97,6 +97,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   let operation = 0;
   let probeSequence = 0;
   let disposed = false;
+  let initialProbeSettled = false;
   let ceremony: Promise<void> | null = null;
   let stopping: Promise<void> | null = null;
   let replacementPending = false;
@@ -118,6 +119,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   const markOffline = () => {
     probeSequence++;
     clearPollTimer();
+    initialProbeSettled = true;
     update({ capability: "unavailable", status: null, revision: null, probeFailed: false, reconnectReason: null });
   };
   const scheduleProbe = (probeFailed?: boolean) => {
@@ -141,6 +143,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   const apply = (result: AgentSessionProbe) => {
     access(result.capability === "enabled", result.revision);
     agentEnabledRef.current = result.capability === "enabled" || result.capability === "available";
+    initialProbeSettled = true;
     update({ ...result, reconnectReason: result.status === "expired" ? "delegation_expired"
       : result.status === "stale" ? "delegation_stale" : null });
   };
@@ -156,6 +159,22 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       apply(result);
       scheduleProbe(result.probeFailed);
     }
+  };
+  const waitForInitialProbe = (signal: AbortSignal): Promise<void> => {
+    if (initialProbeSettled || signal.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const finish = () => {
+        listeners.delete(onChange);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const onChange = () => {
+        if (state.capability !== "probing") finish();
+      };
+      listeners.add(onChange);
+      signal.addEventListener("abort", finish, { once: true });
+      onChange();
+    });
   };
   const invalidate = () => {
     operation++;
@@ -245,7 +264,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     scheduleProbe();
   };
   return {
-    agentEnabledRef, activeThreadIdRef, privateAccessRef, refresh, onEnable, onDisconnect, onDelegationError,
+    agentEnabledRef, activeThreadIdRef, privateAccessRef, refresh, waitForInitialProbe, onEnable, onDisconnect, onDelegationError,
     getSnapshot: () => state,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     /** Notification carries no grants or state; receiving tabs always ask the server. */
@@ -287,41 +306,27 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
         document.removeEventListener("visibilitychange", visible);
       };
     },
-    dispose: () => { listening = false; clearPollTimer(); invalidate(); disposed = true; agentEnabledRef.current = false; listeners.clear(); },
+    dispose: () => {
+      listening = false;
+      clearPollTimer();
+      if (!initialProbeSettled) {
+        initialProbeSettled = true;
+        update({ capability: "unavailable" });
+      }
+      invalidate();
+      disposed = true;
+      agentEnabledRef.current = false;
+      listeners.clear();
+    },
   };
 }
 export type AgentAccessController = ReturnType<typeof createAgentAccessController>;
 export type UseAgentEnablementResult = AgentAccessState & Pick<AgentAccessController, "onEnable" | "onDisconnect" | "onDelegationError">;
 const AgentAccessContext = createContext<AgentAccessController | null>(null);
 
-const AGENT_ACCESS_OFF: AgentAccessState = {
-  capability: "unavailable", status: null, revision: null, probeFailed: false, enableError: null,
-  enabling: false, disconnecting: false, reconnectReason: null, silentlyEnabled: false,
-};
-
-/** Agent access switched off: it never asks the backend, never connects, and chat gets no agent tools. */
-function agentAccessOff(opts: UseAgentEnablementOptions): AgentAccessController {
-  const off = createAgentAccessController(opts);
-  return {
-    ...off,
-    refresh: async () => {},
-    onEnable: async () => {},
-    onDisconnect: async () => {},
-    onDelegationError: () => {},
-    getSnapshot: () => AGENT_ACCESS_OFF,
-    subscribe: () => () => {},
-    listen: () => () => {},
-  };
-}
-
-/** `enabled: false` (the Home site, which shows no agent-access control) switches agent access off. */
-export function AgentAccessProvider(props: UseAgentEnablementOptions & { enabled?: boolean; children: React.ReactNode }) {
+export function AgentAccessProvider(props: UseAgentEnablementOptions & { children: React.ReactNode }) {
   const account = props.tcw.address()?.toLowerCase();
-  const enabled = props.enabled !== false;
-  const controller = useMemo(
-    () => (enabled ? createAgentAccessController(props) : agentAccessOff(props)),
-    [enabled, props.tcw, props.backendUrl, props.sessionStore, account],
-  );
+  const controller = useMemo(() => createAgentAccessController(props), [props.tcw, props.backendUrl, props.sessionStore, account]);
   useEffect(() => {
     const unlisten = controller.listen();
     void controller.refresh();

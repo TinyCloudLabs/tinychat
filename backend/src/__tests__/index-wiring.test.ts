@@ -63,6 +63,11 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
   const express = Object.assign(() => fakeApp, { raw: middleware, json: middleware });
   const moduleExports = {};
   const known: Record<string, any> = {
+    "./services/content-store.js": {
+      KvContentBlobStore: class {},
+      assertNoContentKey: async () => {},
+      ContentStore: class { async assertContinuity() {} },
+    },
     fs: { existsSync: () => false },
     path: load("node:path"),
     url: load("node:url"),
@@ -806,7 +811,16 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       CredentialStore: class {},
       KvCredentialRowStore: class {},
     },
-    "./services/content-store.js": { ...contentStore },
+    "./routes/content-continuity.js": { mountContentContinuityRoute: noop },
+    "./services/content-store.js": {
+      ...contentStore,
+      assertNoContentKey: async () => {},
+      currentContentMaster: () => env.CONNECTOR_CONTENT_MASTER,
+      ContentStore: class extends contentStore.ContentStore {
+        async assertContinuity() {}
+        async probeIndex() { return { ok: true, id: "fixture-index" }; }
+      },
+    },
     "./services/fireflies-oauth.js": { ...firefliesOAuthModule },
     "./services/calendar-autojoin-connection.js": { CalendarAutojoinConnection: class {
       constructor(config: Record<string, unknown>) { options.capture?.("calendar", config); }
@@ -891,7 +905,10 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./redpill-aci.js": load("./redpill-aci.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
     "./local-validation.js": { localValidationFromEnv: () => false, localValidationGuard: noop },
-    "./cors-origins.js": { appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }) },
+    "./cors-origins.js": {
+      appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }),
+      frontendOriginsFromEnv: load("./cors-origins.ts").frontendOriginsFromEnv,
+    },
     "js-yaml": { load: () => ({}) },
     "@scalar/express-api-reference": { apiReference: router },
   };

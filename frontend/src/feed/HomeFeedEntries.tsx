@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+import { PATHS } from "@/shell/routes";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
@@ -11,14 +13,13 @@ import { threadSize, ThreadView, type ThreadItem } from "./HomeCardThread";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { AnsweredPanel, AnswerFailedLine, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
-import { HOME_SITE } from "@/lib/homeSite";
-import { HOME_EMPTY_BODY, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
+import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { AgentPrompt } from "@/home/AgentPromptCard";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 import { FEED_SKILL_URL } from "./strings";
 
 type HomeView = "needs-you" | "all" | "done";
-const VIEWS: readonly { id: HomeView; label: string }[] = [{ id: "needs-you", label: "Needs you" }, { id: "all", label: "All" }, { id: "done", label: "Done" }];
+const VIEWS: readonly { id: HomeView; label: string }[] = [{ id: "needs-you", label: "Needs you" }, { id: "all", label: "All" }, { id: "done", label: "History" }];
 
 function keyOf(entry: HomeFeedEntry): string {
   const card = entry.state.card;
@@ -284,7 +285,7 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
 type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "group"; name: string; items: HomeFeedEntry[] };
 
 /** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
-export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source: HomeFeedSource; homeSite?: boolean; ask?: ReactNode }) {
+export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
   // No segment is pressed until the saved view arrives, so the row never flips while loading.
   const [view, setView] = useState<HomeView | null>(null);
@@ -652,12 +653,12 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
   // The Home site shows only the heading and its empty state until the first card arrives.
   // The Home site shows only the heading and its empty card until the first card arrives;
   // while loading, the control row is already in place so nothing moves when cards land.
-  const bare = homeSite && !!snapshot && !snapshot.entries.length && !snapshot.historicalEntries?.length;
+  const bare = !!snapshot && !snapshot.entries.length && !snapshot.historicalEntries?.length;
   const selectClass = `mt-2 block h-11 w-full rounded-xl bg-background px-3 text-[15px] shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))] ${focusRing}`;
-  return <PendingSendContext.Provider value={pendingSends.current}><main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={homeSite ? NAV_LABEL_HOME : "Feed"}>
+  return <PendingSendContext.Provider value={pendingSends.current}><main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label={NAV_LABEL_HOME}>
     <div className="mx-auto w-full max-w-[672px] min-w-0 px-4 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10">
       <header>
-        <h1 className="font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{homeSite ? NAV_LABEL_HOME : "Feed"}</h1>
+        <h1 className="font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
         <p className="mt-1 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
           ? <>{needsCount ? <b className="font-semibold text-foreground">{needsCount} {needsCount === 1 ? "needs" : "need"} you.</b> : <b className="font-semibold text-foreground">Nothing needs you.</b>}{today > 0 && ` ${today} ${today === 1 ? "update" : "updates"} today.`}</>
           : "Updates and decisions from your agents."}</p>
@@ -665,7 +666,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
       {ask}
       {!bare && <div className="mt-4 flex items-center gap-2">
         <div role="group" aria-label="Show" className="flex gap-0.5 rounded-full bg-muted">
-          {VIEWS.map((option) => <button key={option.id} type="button" aria-pressed={view === option.id} onClick={() => changeView(option.id)}
+          {VIEWS.map((option) => <button key={option.id} data-testid={`feed-view-${option.id}`} type="button" aria-pressed={view === option.id} onClick={() => changeView(option.id)}
             className={`h-11 whitespace-nowrap rounded-full px-4 text-sm font-medium aria-pressed:bg-background aria-pressed:font-semibold aria-pressed:shadow-[inset_0_0_0_2px_hsl(var(--foreground))] ${focusRing}`}>
             {option.label}{option.id === "needs-you" && snapshot && <span className="ml-1 tabular-nums">{needsCount}</span>}
           </button>)}
@@ -700,6 +701,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
         ? <section aria-labelledby="home-empty-title" className={`mt-6 ${cardClass}`}>
           <h2 id="home-empty-title" className="font-display text-[1.375rem] font-normal leading-[1.2]">{HOME_EMPTY_TITLE}</h2>
           <p className="mt-2 max-w-[60ch] text-base leading-[1.5]">{HOME_EMPTY_BODY}</p>
+          <Link to={PATHS.chat} className={primaryPillClass}>{HOME_EMPTY_CHAT}</Link>
           <AgentPrompt copyButton={({ onClick, children }) => <button type="button" className={primaryPillClass} onClick={onClick}>{children}</button>}
             aside={<a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className={quietClass}>{HOME_EMPTY_HOW}</a>} />
         </section>
@@ -709,7 +711,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
         </div>)}
       {!!filteredCount && (view === "all"
         ? <>{group("Needs you", rows.filter(rowNeeds), needsCount)}{group("Earlier", rows.filter((row) => !rowNeeds(row)))}</>
-        : group(view === "done" ? "Done" : "Needs you", rows, undefined, true))}
+        : group(view === "done" ? "History" : "Needs you", rows, undefined, true))}
     </div>
   </main></PendingSendContext.Provider>;
 }

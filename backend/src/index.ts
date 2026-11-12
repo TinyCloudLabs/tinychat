@@ -1,5 +1,7 @@
 import "./types/index.js";
 
+import { mountContentContinuityRoute } from "./routes/content-continuity.js";
+
 import { existsSync, readFileSync } from "fs";
 import { createServer as createHttpsServer } from "https";
 import { dirname, resolve } from "path";
@@ -99,6 +101,8 @@ import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
 import {
   ContentStore,
+  currentContentMaster,
+  assertNoContentKey,
   KvContentBlobStore,
   validateContentCustodyConfig,
 } from "./services/content-store.js";
@@ -122,7 +126,7 @@ import {
 } from "./services/google-oauth.js";
 import { ConnectorFetchWorker } from "./services/fetch-worker.js";
 import { FirefliesMeetingFetcher } from "./services/fireflies-fetch.js";
-import { backendIngestEnabled, IngestModeService } from "./services/ingest-mode.js";
+import { backendIngestEnabled as ingestFlagEnabled, IngestModeService } from "./services/ingest-mode.js";
 import {
   IngestInstanceGuard,
   IngestInstanceSupervisor,
@@ -139,7 +143,7 @@ import {
 } from "./services/connector-drain.js";
 import { assertStrongSecret, WebhookTokenService } from "./services/webhook-tokens.js";
 import { createTinychatBackendIdentity } from "./startup.js";
-import { appCorsOptions } from "./cors-origins.js";
+import { appCorsOptions, frontendOriginsFromEnv } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
@@ -288,8 +292,13 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
+  const hasContentMaster = Boolean(process.env.CONNECTOR_CONTENT_MASTER?.trim());
+  const backendIngestEnabled = () => ingestFlagEnabled() && hasContentMaster;
   const localValidation = localValidationFromEnv(process.env);
   const requestIdFirstPartyOrigins = parseRequestIdFirstPartyOrigins(process.env.REQUEST_ID_FIRST_PARTY_ORIGINS);
+  // CORS, SIWE domains and Google OAuth returns: FRONTEND_URL plus FRONTEND_ORIGINS (default: both
+  // production sites), so moving FRONTEND_URL to home.tinycloud.xyz keeps tinycloud.chat working.
+  const frontendOrigins = frontendOriginsFromEnv(FRONTEND_URL, process.env);
   let transcriptDeliveryConfig;
   try {
     transcriptDeliveryConfig = transcriptDeliveryConfigFromEnv(process.env);
@@ -387,8 +396,8 @@ async function main() {
         if (!custody.ok) throw new Error(custody.error);
       }
       // The callback page's `postMessage` target, validated at boot rather than at the first
-      // consent. This web origin is also one member of the CORS allowlist; Exo's fixed app origins
-      // are the others. The callback page stays pinned to the web origin: the Exo apps never use it,
+      // consent. This web origin is also in the FRONTEND_ORIGINS allowlist (CORS, SIWE, OAuth
+      // returns). The callback page only targets allowlisted web origins: the Exo apps never use it,
       // they return through the router's fixed native deep link (`native.` states, TC-521).
       // A bare host or `*` throws here.
       normalizeAppOrigin(FRONTEND_URL);
@@ -476,6 +485,11 @@ async function main() {
     localValidation,
   });
 
+  if (!hasContentMaster) {
+    const noKeyBlobs = new KvContentBlobStore(node);
+    await assertNoContentKey(noKeyBlobs);
+  }
+
   // §E.6/E.7 — construct and start the ledger flusher + rehydrator when configured.
   let ledgerFlusher: LedgerFlusher | undefined;
   let ledgerRehydrator: LedgerRehydrator | undefined;
@@ -510,7 +524,7 @@ async function main() {
   if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
-  app.use(cors(appCorsOptions(FRONTEND_URL)));
+  app.use(cors(appCorsOptions(frontendOrigins)));
 
   // Stripe webhook MUST be mounted before the JSON body parser and CSRF
   // middleware: it needs the raw request bytes for signature verification, and
@@ -729,6 +743,9 @@ async function main() {
   // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
   logGlobalBucketRoutes(globalRoutes);
 
+  if (!hasContentMaster) {
+    mountContentContinuityRoute(app, process.env, "", did, async () => ({ ok: false, id: null }));
+  }
   app.get("/health", (_req, res) => {
     // TEMPORARY: aggregate route templates and counts only, our one view of the global bucket
     // until the tinychat log shipper (TC-959) is live. Remove this field then.
@@ -754,7 +771,7 @@ async function main() {
     createAuthRouter({
       nonceStore,
       privateKey: backendPrivateKey,
-      frontendUrl: FRONTEND_URL,
+      frontendOrigins,
       nativeSiweDomain: process.env.OPENKEY_SIWE_DOMAIN,
     }),
   );
@@ -841,9 +858,16 @@ async function main() {
       // disconnect (or a user purge) that writes the watermark also stops a replayed delivery
       // from re-creating rows the user tore down. Same `control` the drain and `POST …/purged`
       // use: one ledger, one rule, two consumers.
-      const contentStore = new ContentStore(
-        new KvContentBlobStore(node, connectorWebhooks.backendStorageLane),
-        { purgeLedger: connectorWebhooks.control },
+      const contentBlobs = new KvContentBlobStore(node, connectorWebhooks.backendStorageLane);
+      const contentMaster = currentContentMaster();
+      const contentStore = new ContentStore(contentBlobs, {
+        purgeLedger: connectorWebhooks.control,
+        master: () => contentMaster,
+      });
+      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
+      await contentStore.assertContinuity(contentBlobs, process.env, ingestGuard);
+      mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
+        contentStore.probeIndex(await contentBlobs.findIndex()),
       );
       const credentialStore = new CredentialStore(
         new KvCredentialRowStore(node, connectorWebhooks.backendStorageLane),
@@ -904,7 +928,7 @@ async function main() {
       // must never resolve to "nobody does". Constraint and its exit:
       // `docs/connector-webhooks-single-instance.md`.
       const supervisor = new IngestInstanceSupervisor({
-        guard: new IngestInstanceGuard(new KvInstanceLeaseStore(node)),
+        guard: ingestGuard,
         worker: new ConnectorFetchWorker({
           queue: connectorWebhooks.queue,
           modes: connectorWebhooks.modes,
@@ -1030,9 +1054,11 @@ async function main() {
         // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
         // env read does not have. CORS also accepts Exo's fixed app origins, but the callback page
-        // stays pinned to this web origin (or the fixed Home origin for `home.`/`hometab.` states);
-        // the Exo apps return through the fixed native deep link.
+        // only returns to an allowlisted web origin (FRONTEND_URL, tinycloud.chat once FRONTEND_URL
+        // is the Home site, or the fixed Home origin for `home.`/`hometab.` states); the Exo apps
+        // return through the fixed native deep link.
         appOrigin: FRONTEND_URL,
+        frontendOrigins,
       }),
     );
   }
@@ -1240,6 +1266,13 @@ async function main() {
       () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
     );
   }
+  // Bun can leave a request that finishes during shutdown on a keep-alive connection.
+  // Retry idle-connection closure after it has left the active-request set.
+  server.on("request", (_req, res) => {
+    res.once("finish", () => {
+      if (shuttingDown) setTimeout(() => server.closeIdleConnections(), 0).unref();
+    });
+  });
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;

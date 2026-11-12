@@ -108,7 +108,7 @@ async function enter(scope: ParentNode, label: string, text: string) {
 }
 /** Picks a segment of the Show control ("Needs you", "All", "Done"). */
 async function show(host: HTMLElement, label: string) {
-  const segment = [...host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Show"] button')].find((node) => node.textContent?.startsWith(label));
+  const segment = host.querySelector<HTMLButtonElement>(`[data-testid="feed-view-${({ "Needs you": "needs-you", All: "all", Done: "done" } as Record<string, string>)[label]}"]`);
   expect(segment !== undefined).toBe(true);
   await act(async () => segment!.click());
   expect(segment!.getAttribute("aria-pressed")).toBe("true");

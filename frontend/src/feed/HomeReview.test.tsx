@@ -193,7 +193,9 @@ function foldedStep(host: ParentNode, askTitle: string): HTMLElement {
 async function showView(transport: Transport, host: ParentNode, label: string) {
   const control = host.querySelector('[role="group"][aria-label="Show"]');
   if (!control) throw new Error("View control is missing");
-  await click(transport, button(control, label));
+  const target = control.querySelector<HTMLButtonElement>(`[data-testid="feed-view-${({ "Needs you": "needs-you", All: "all", Done: "done" } as Record<string, string>)[label]}"]`);
+  if (!target) throw new Error("View segment missing");
+  await click(transport, target);
 }
 
 for (const engagement of ["empty field focus", "consent link activation"] as const) {

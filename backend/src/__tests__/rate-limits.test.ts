@@ -696,7 +696,7 @@ describe("aggregate ceilings over per-session buckets", () => {
 it("exposes limiter headers on a cross-origin PTX status 429", async () => {
   const origin = "https://tinycloud.chat";
   const app = express();
-  app.use(cors(appCorsOptions(origin)));
+  app.use(cors(appCorsOptions([origin])));
   applyRateLimiters(app, { sessionKey: SESSION_KEY });
   app.get("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
   const authorization = `Bearer ${(await issueSessionToken("0x0000000000000000000000000000000000000b0b", SESSION_KEY)).token}`;

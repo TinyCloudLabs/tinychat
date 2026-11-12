@@ -6,10 +6,11 @@ to the Tauri desktop app), plus native plugins for what a web view cannot do.
 
 ## Layout
 
-- `capacitor.config.ts`: app id `xyz.tinycloud.exo`, name `TinyCloud Home`, `webDir`
+- `capacitor.config.ts`: app id `xyz.tinycloud.home`, name `TinyCloud Home`, `webDir`
   `../frontend/dist`. `EXO_DEV_SERVER_URL` switches it to live reload.
-- `android/`: Gradle project. App-local plugin code lives in
-  `app/src/main/java/xyz/tinycloud/exo/`.
+- `android/`: Gradle project, applicationId `xyz.tinycloud.home` (the Play
+  package) with Kotlin/Java namespace `xyz.tinycloud.exo`. App-local plugin code
+  lives in `app/src/main/java/xyz/tinycloud/exo/`.
 - `ios/`: Xcode project (Swift Package Manager). App-local plugin code lives in
   `App/App/`, registered by `ExoBridgeViewController`.
 - `assets/`, `scripts/brand-assets.py`: the brand mark and the generator for
@@ -284,7 +285,7 @@ code:
   (`--ks-pass env:`, `-storepass:env`), never the command line.
 - `scripts/release/verify-android-release.sh` checks the result against the
   same variable before any upload. Both files must be signed with that
-  certificate (never the debug key). The APK must be `xyz.tinycloud.exo` at the
+  certificate (never the debug key). The APK must be `xyz.tinycloud.home` at the
   expected versionName/versionCode, not debuggable, with an icon. Both must
   bundle the web app without `server.url`.
 - The artifact is `exo-android-<versionName>-<versionCode>`, containing
@@ -389,7 +390,7 @@ which deletes TinyCloud Home's local data (sign-in, pending voice notes).
 ### Play Console checklist (internal testing)
 
 - [ ] Google Play developer account (organization; D-U-N-S number needed) and
-  the app: name **TinyCloud Home**, package `xyz.tinycloud.exo` (permanent once uploaded),
+  the app: name **TinyCloud Home**, package `xyz.tinycloud.home` (permanent once uploaded),
   app, free.
 - [ ] Play App Signing: accept Google-managed signing on the first upload. The
   CI artifact's `.aab` is signed with the upload key above. Record Play's
@@ -633,8 +634,9 @@ second only for a run you dispatched.
 #### After enrollment completes (Sam)
 
 The iOS app ships as **TinyCloud Home** under the TinyCloud, Inc. organization
-team (Team ID `R4QVKA785H`), bundle ID `xyz.tinycloud.home`. Android and macOS
-keep `xyz.tinycloud.exo`; the `xyz.tinycloud.exo://` URL scheme is unchanged.
+team (Team ID `R4QVKA785H`), bundle ID `xyz.tinycloud.home`, the same id as the
+Android package. macOS keeps `xyz.tinycloud.exo`; the `xyz.tinycloud.exo://` URL
+scheme is unchanged on both phones.
 
 1. **Team ID**: developer.apple.com → Account → Membership details. It must be
    the organization team `R4QVKA785H`, not a personal team.
