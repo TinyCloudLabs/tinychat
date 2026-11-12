@@ -42,6 +42,7 @@ import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPur
 import { replicationRestorePatch } from "./lib/replication/replicationRestore";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { wipeNativeReplicaOnSignOut } from "./lib/replication/nativeReplicaStore";
 import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
 import { uploadRunner } from "./lib/audioUpload";
 import {
@@ -415,6 +416,8 @@ export function App() {
     endStorageAccountSession();
     if (storedAddress) clearPersistedSession(storedAddress);
     if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
+    // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.
+    void wipeNativeReplicaOnSignOut(accountDid);
     sessionStoreRef.current.clear();
     if (storedAddress) clearSendIntentsForOwner(storedAddress);
     clearTranscriptDelegationSchedule(storedAddress);

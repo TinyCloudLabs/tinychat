@@ -34,6 +34,11 @@ interface ImportMetaEnv {
   /** "false" turns web-only local replication OFF for this build (unset or anything else = ON; it also needs a qualified Chromium web browser and is off for any user who opted out). */
   readonly VITE_EXO_REPLICATION?: string;
   /**
+   * TC-2862: "true" lets the phone app's native local copy (the TinyCloudReplicaStore plugin) be used once the SDK can
+   * consume it. Unset (off) in every build; the sign-out wipe of that copy runs regardless.
+   */
+  readonly VITE_EXO_NATIVE_REPLICA?: string;
+  /**
    * Exo mobile health spike (TC-525): "true" shows the development-only Health card in Connectors → Sources
    * (when the app's native Health plugin exists, i.e. Android and iOS debug builds). Unset in every normal build.
    */

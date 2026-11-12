@@ -111,6 +111,18 @@ Info.plist keys added to Debug builds by `App/location-spike-info-plist.sh`, and
 refuse any location permission, key or code. Findings, store requirements and the recommendation:
 [`docs/location-spike.md`](docs/location-spike.md).
 
+## Native replica store (off by default)
+
+TC-2862: a native `TinyCloudReplicaStore` plugin (iOS `Packages/ReplicaStore` + `App/App/ReplicaStorePlugin.swift`,
+Android `replica/`) keeps the device's local copy of TinyCloud data in SQLite outside the WebView: one file and one
+256-bit secret per account (iOS Keychain `AfterFirstUnlockThisDeviceOnly`; Android wrapped by a Keystore key), rows
+sealed with AES-256-GCM under HMAC-opaque keys, files excluded from backup (iOS Application Support,
+Android `noBackupFilesDir`). The JS contract is `frontend/src/lib/replication/nativeReplicaStore.ts`. Nothing reads
+or writes it until the SDK can (`VITE_EXO_NATIVE_REPLICA=true`); sign-out always wipes it. Debug smoke: launch with
+`EXO_REPLICA_SMOKE=write`, then `read` (after a restart), then `wipe`, and read the `EXO_REPLICA_SMOKE {json}` line.
+The iOS Keychain needs a signed build: an unsigned (`CODE_SIGNING_ALLOWED=NO`) simulator build rejects with
+`IO` (`-34018`); sign ad hoc (`CODE_SIGN_IDENTITY=-`) as the HealthKit spike step in `mobile.yml` does.
+
 ## Google connectors (OAuth)
 
 Google refuses OAuth inside an embedded WebView (`disallowed_useragent`), and
