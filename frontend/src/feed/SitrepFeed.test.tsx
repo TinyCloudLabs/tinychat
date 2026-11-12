@@ -709,6 +709,31 @@ test("an answered ask stays open while one of its approval steps still needs the
   expect(view.host.querySelector('[aria-label="Folded approval step"] button') !== null).toBe(true);
 });
 
+test("the folded row keeps the conversation one tap away: its latest line, and a reply that counts down like an answer", async () => {
+  jest.useFakeTimers();
+  const fixture = typedFixture(syntheticRecord("ask"));
+  fixture.owner.threads.push({ side: "officer", kind: "ask", id: "ask-synthetic", messageId: "20261029T113000000Z-00000000000000000000000000000030", at: "2026-10-29T11:30:00.000Z", from: "SyntheticOfficer", text: "Both options are ready to run." });
+  const view = await mount(fixture.source);
+  await act(async () => option(view.host, "Careful option").click());
+  await wait();
+  const row = fold(view.host)!;
+  expect(row.textContent).toContain("Sent to SyntheticOfficer");
+  expect(row.querySelector('[aria-label="Latest in the conversation"]')?.textContent).toContain("Both options are ready to run.");
+  await act(async () => button(row, "Reply to SyntheticOfficer").click());
+  await enter(row, "Reply to SyntheticOfficer", "Go ahead with the careful run.");
+  await act(async () => button(row, "Send").click());
+  expect(button(row, `Sending to SyntheticOfficer in ${ANSWER_UNDO_SECONDS}s`).disabled).toBe(true);
+  await act(async () => button(row, "Undo").click());
+  await wait(ANSWER_UNDO_SECONDS * 2);
+  expect(fixture.saved).toHaveLength(1);
+  await act(async () => button(row, "Send").click());
+  await wait();
+  expect(fixture.saved[1]?.response.kind).toBe("message");
+  expect(fixture.saved[1]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "Go ahead with the careful run." } });
+  expect(fold(view.host)?.querySelector('[aria-label="Latest in the conversation"]')?.textContent).toContain("You to SyntheticOfficer");
+  expect(folded(view.host)).toBe(true);
+});
+
 test("the card face says who is asking and what it needs in plain words; ids and wiring wait under a closed Details", async () => {
   const fixture = typedFixture(syntheticRecord("task"));
   const view = await mount(fixture.source);

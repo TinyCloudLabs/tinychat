@@ -4,11 +4,12 @@ import { CheckIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { ANSWER_UNDO_HINT, AnswerOptions, answerSummary, sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AnswerSteps, answerHandling } from "./AnswerSteps";
-import { cardAuthor } from "./CardReply";
+import { cardAuthor, ReplyBox, replyRoute, usePostReply } from "./CardReply";
 import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
+import { cardThread, messageRecipient } from "./HomeCardThread";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
@@ -95,11 +96,16 @@ interface SentAnswer { key: string; response: FeedResponse; summary: string; ope
  * What stays of a card once its answer is sent: what was chosen and, while the card is folded away, the
  * answer's steps. It takes focus when it appears, so the result is announced where the card was.
  */
-function AnswerFold({ entry, sent, agent, onToggle }: { entry: HomeFeedEntry; sent: SentAnswer; agent: string; onToggle: () => void }) {
+function AnswerFold({ entry, sent, agent, typed, source, onSaved, onToggle }: { entry: HomeFeedEntry; sent: SentAnswer; agent: string; typed?: TypedCardContext; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; onToggle: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [replying, setReplying] = useState(false);
   useEffect(() => { ref.current?.focus(); }, []);
   const handling = answerHandling(entry, sent.response.responseId);
   const detail = handling.outcome?.detail?.message;
+  // The conversation stays one tap away: its latest line, and a reply to the agent that can act.
+  const latest = typed ? cardThread(entry, typed.record, typed.owner).at(-1) : undefined;
+  const route = typed && replyRoute(entry, typed.record, source);
+  const latestHandling = latest?.header && answerHandling(entry, latest.header.responseId);
   return <div ref={ref} role="status" tabIndex={-1} aria-label="Answer sent" className="mb-3 space-y-3 rounded-2xl border border-border bg-card p-4 text-sm text-card-foreground shadow-sm motion-safe:animate-rise-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
     <div className="flex items-start gap-2">
       <CheckIcon aria-hidden className="mt-0.5 size-4 shrink-0" />
@@ -108,7 +114,19 @@ function AnswerFold({ entry, sent, agent, onToggle }: { entry: HomeFeedEntry; se
     </div>
     {!sent.open && <AnswerSteps sent={sent.response.createdAt} {...handling} agent={agent} />}
     {!sent.open && typeof detail === "string" && <p className="whitespace-pre-wrap break-words">{detail}</p>}
+    {!sent.open && latest && typed && <div aria-label="Latest in the conversation" className="space-y-1 rounded-lg bg-muted/40 p-3">
+      <p className="text-xs text-muted-foreground">{latest.message.side === "sam" ? `You to ${messageRecipient(entry, typed.record, latest.message)}` : latest.message.from} · <time dateTime={latest.message.at}>{new Date(latest.message.at).toLocaleString()}</time></p>
+      <p className="line-clamp-3 whitespace-pre-wrap break-words">{latest.message.text}</p>
+      {latest.header && latestHandling && <div className="text-xs"><AnswerSteps sent={latest.header.createdAt} {...latestHandling} agent={messageRecipient(entry, typed.record, latest.message)} final={false} /></div>}
+    </div>}
+    {!sent.open && typed && route?.to && (replying
+      ? <FoldReply entry={entry} record={typed.record} source={source} onSaved={onSaved} to={route.to} delivery={route.delivery} />
+      : <button type="button" onClick={() => setReplying(true)} className="min-h-10 rounded-lg border border-border px-3 text-sm">Reply to {route.to}</button>)}
   </div>;
+}
+function FoldReply({ entry, record, source, onSaved, to, delivery }: { entry: HomeFeedEntry; record: TypedCardContext["record"]; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; to: string; delivery?: Parameters<ReturnType<typeof usePostReply>>[1] }) {
+  const post = usePostReply(entry, record, source, onSaved);
+  return <ReplyBox to={to} autoFocus onSend={(text) => post(text, delivery)} />;
 }
 
 function AnswerForm({ entry, source, onSaved, onAnswered }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; onAnswered: (response: FeedResponse, summary: string) => void }) {
@@ -431,7 +449,7 @@ export function HomeFeedEntries({ source, homeSite = HOME_SITE, ask }: { source:
         </section>
         : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
       {focused && <section aria-label="Focused card" className="mb-5 min-w-0">
-        {fold && <AnswerFold key={fold.response.responseId} entry={focused} sent={fold} agent={focusedAuthor} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
+        {fold && <AnswerFold key={fold.response.responseId} entry={focused} sent={fold} agent={focusedAuthor} typed={focusedContext} source={source} onSaved={onSaved} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
         <div hidden={!!fold && !fold.open}>
           <FeedCardView card={cardView(focused, focusedContext)} sample={false} readBody={source.readBody} status={focusedUnsupported ? undefined : cardStatus(focused, focusedContext?.projection, clock, focusedAuthor)} />
           <ReportLink entry={focused} />
