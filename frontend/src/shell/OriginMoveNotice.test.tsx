@@ -81,9 +81,9 @@ test("another account's recordings: the count links to the Recording tab, and th
   const many = render(work({ otherAccount: 2 }));
   expect(textOf(many)).toBe(`${MOVED} 2 recordings in this browser belong to another TinyCloud account. Sign in to that account here to save them. ${CLOSER}`);
   expect(linksOf(many)).toEqual([{ text: "2 recordings", href: "/chat/capture" }]);
-  // As approved: the singular keeps "save them".
+  // The singular says "save it"; the plural keeps "save them".
   const one = render(work({ otherAccount: 1, signedIn: false }));
-  expect(textOf(one)).toBe(`${MOVED} 1 recording in this browser belongs to another TinyCloud account. Sign in to that account here to save them. ${CLOSER}`);
+  expect(textOf(one)).toBe(`${MOVED} 1 recording in this browser belongs to another TinyCloud account. Sign in to that account here to save it. ${CLOSER}`);
   expect(linksOf(one)).toEqual([{ text: "1 recording", href: "/chat/capture" }]);
 });
 
@@ -108,7 +108,7 @@ test("mixed reasons: one moved sentence, then audio, unclaimed and another accou
   expect(originMoveNoticeText(work({ localAudio: ["rec-1"], otherAccount: 1, signedIn: false }))).toBe([
     MOVED,
     "The audio of 1 recording is only in this browser, so this tab stays here until you upload it: open the recording and choose Upload audio to TinyCloud.",
-    "1 recording in this browser belongs to another TinyCloud account. Sign in to that account here to save them.",
+    "1 recording in this browser belongs to another TinyCloud account. Sign in to that account here to save it.",
     CLOSER,
   ].join(" "));
   expect(originMoveNoticeText(work({ unclaimed: 2, otherAccount: 2, signedIn: false }))).toBe([

@@ -119,6 +119,12 @@ describe("the Library reached by the notice's address", () => {
     expect(listed()).toEqual(["/chat/capture/library/row-1", "/chat/capture/library/row-2", "/chat/capture/library/row-3", "/chat/capture/library/row-ff"]);
   });
 
+  test("with nothing held for its audio, it says so", async () => {
+    await open(LOCAL_AUDIO_LIBRARY_PATH, async () => ({ ...HELD, localAudio: [] }));
+    expect(listed()).toEqual([]);
+    expect(host.querySelector('[data-testid="library-empty"]')?.textContent).toBe("No recordings have audio only in this browser.");
+  });
+
   test("the plain Library address shows no filter and reads nothing", async () => {
     let reads = 0;
     await open(PATHS.library, async () => { reads++; return HELD; });
