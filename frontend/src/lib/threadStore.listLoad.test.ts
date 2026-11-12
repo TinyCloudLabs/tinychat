@@ -35,7 +35,12 @@ class SqlService {
         return { ok: false as const, error: { code: "SQL_ERROR", message: "boom", service: "sql" } };
       }
     }
-    return { ok: true as const, data: { rows: this.sqlite.query(sql).values(...(params as never[])) } };
+    // Like the SDK, a SQL failure (e.g. "no such table") is a Result, not a throw.
+    try {
+      return { ok: true as const, data: { rows: this.sqlite.query(sql).values(...(params as never[])) } };
+    } catch (error) {
+      return { ok: false as const, error: { code: "SQL_ERROR", message: String(error), service: "sql" } };
+    }
   };
 
   execute = async (sql: string, params: unknown[] = []) => {
@@ -138,8 +143,8 @@ describe("chat-list read retry", () => {
     expect([...storage.keys()]).toEqual([]);
     const logged = String(errorSpy.mock.calls[0]?.[0]);
     expect(logged).toContain("listThreads cold load failed");
-    // 1 schema probe + 3 thread selects.
-    expect(logged).toContain("attempts=4");
+    // 3 thread selects; reads no longer wait on a schema probe.
+    expect(logged).toContain("attempts=3");
   });
 
   test("a read that times out once then succeeds renders the list from a second, fresh invoke", async () => {

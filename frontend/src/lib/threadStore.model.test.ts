@@ -152,7 +152,7 @@ function blockSchemaProbe(service: SqlService) {
 }
 
 describe("thread reads with partial schemas", () => {
-  test("a rejected unrelated compactions migration does not hide existing thread data", async () => {
+  test("existing thread data is read without attempting an unrelated compactions migration", async () => {
     reportStorageWriteSucceeded();
     const service = new SqlService();
     service.sqlite.exec(`
@@ -167,8 +167,9 @@ describe("thread reads with partial schemas", () => {
       const thread = await getThread(tcw(service), "readable");
       expect(thread?.title).toBe("Existing thread");
       expect(thread?.messages[0]?.message?.id).toBe("m1");
-      expect(service.batchCalls).toBe(1);
-      expect(isStorageReadOnly()).toBe(true);
+      // Reads run before any schema check, so nothing tries to create the missing tables.
+      expect(service.batchCalls).toBe(0);
+      expect(isStorageReadOnly()).toBe(false);
     } finally {
       reportStorageWriteSucceeded();
     }
@@ -243,13 +244,14 @@ describe("thread writes with partial schemas", () => {
 });
 
 describe("concurrent schema migration policy", () => {
-  test("a write joining a read-first migration keeps its own storage policy", async () => {
+  test("a write joining a migration started by a read of a missing table keeps its own storage policy", async () => {
     reportStorageWriteSucceeded();
     const service = new SqlService();
     const migration = blockSchemaProbe(service);
     const cloud = tcw(service);
     try {
-      const read = getSetting(cloud, "theme");
+      // `threads` is missing, so this read starts the probe/create and then reads again.
+      const read = getThreadModel(cloud, "missing-table");
       await migration.entered;
       const write = importThread(cloud, {
         id: "concurrent-read-first",
@@ -261,7 +263,8 @@ describe("concurrent schema migration policy", () => {
       const writeResult = write.then(() => null, (error: unknown) => error);
       migration.release();
 
-      await expect(read).resolves.toBe("dark");
+      // Storage is full, so the table could not be created and the retried read still finds none.
+      await expect(read).rejects.toThrow(/no such table/);
       expect(await writeResult).toMatchObject({
         code: "STORAGE_QUOTA_EXCEEDED",
         retryable: false,

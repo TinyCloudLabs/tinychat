@@ -10,7 +10,7 @@ import { CHAT_SHARING_PAUSED } from "./chatSharing";
 import { cleanupShareRecordsAfterDelete } from "./shareRecords";
 import { THREAD_LIST_LOAD_FAILED } from "./threadListStrings";
 import { clearLocalMarker, hasLocalMarker, setLocalMarker } from "./localFirst/localCache";
-import { inForeground, type Lane } from "./localFirst/requestLanes";
+import { inBackground, inForeground, type Lane } from "./localFirst/requestLanes";
 
 // ── Storage layout ───────────────────────────────────────────────────
 //
@@ -248,37 +248,74 @@ function withDeadline<R>(
   });
 }
 
+/** How a SQL handle reacts to the schema; see `ensureSchema`. */
+interface SchemaHooks {
+  /** A write found a table missing: run the schema check again on the next write. */
+  forget(): void;
+  /** A read found a table missing: create the missing tables. True when the read may run again. */
+  repair(): Promise<boolean>;
+  /** A read succeeded without a schema check: confirm the schema after the open's own reads. */
+  confirm(): void;
+}
+
+function missingTable(result: { ok: boolean; error?: { message?: string } }): boolean {
+  return !result.ok && /no such table/i.test(result.error?.message ?? "");
+}
+
 /**
  * The three SqlDb calls threadStore uses, each bounded by a deadline.
  * Foreground calls count in the foreground request lane, so background
  * copying waits for them; background calls are already scheduled by their
  * task (the history copy) and run as issued.
+ *
+ * Reads never wait on a schema check: a read that fails with "no such table"
+ * creates the missing tables and runs once more.
  */
-function bounded(db: SqlDb, lane: Lane, onMissingTable: () => void, timeoutMs?: number) {
+function bounded(db: SqlDb, lane: Lane, schema: SchemaHooks, timeoutMs?: number) {
   const ms = () => timeoutMs ?? sqlCallTimeoutMs;
-  const call = async <R extends { ok: boolean; error?: { message?: string } }>(work: (signal: AbortSignal) => Promise<R>) => {
-    const result = lane === "foreground"
-      ? await inForeground(() => withDeadline(ms(), work))
-      : await withDeadline(ms(), work);
+  const call = <R,>(work: (signal: AbortSignal) => Promise<R>) =>
+    lane === "foreground" ? inForeground(() => withDeadline(ms(), work)) : withDeadline(ms(), work);
+  const write = async <R extends { ok: boolean; error?: { message?: string } }>(work: (signal: AbortSignal) => Promise<R>) => {
+    const result = await call(work);
     // A table this device thought it had created is gone: re-run the schema
-    // check on the next call instead of trusting the stored marker.
-    if (!result.ok && /no such table/i.test(result.error?.message ?? "")) onMissingTable();
+    // check on the next write instead of trusting the stored marker.
+    if (missingTable(result)) schema.forget();
     return result;
   };
+  const read = (sql: string, params?: Parameters<SqlDb["query"]>[1]) =>
+    call((signal) => db.query(sql, params, { signal }));
   return {
-    query: (sql: string, params?: Parameters<SqlDb["query"]>[1]) =>
-      call((signal) => db.query(sql, params, { signal })),
+    query: async (sql: string, params?: Parameters<SqlDb["query"]>[1]) => {
+      const result = await read(sql, params);
+      if (result.ok) schema.confirm();
+      if (!missingTable(result) || !(await schema.repair())) return result;
+      return read(sql, params);
+    },
     execute: (sql: string, params?: Parameters<SqlDb["execute"]>[1]) =>
-      call((signal) => db.execute(sql, params, { signal })),
+      write((signal) => db.execute(sql, params, { signal })),
     batch: (statements: Parameters<SqlDb["batch"]>[0]) =>
-      call((signal) => db.batch(statements, { signal })),
+      write((signal) => db.batch(statements, { signal })),
   };
 }
 
 /** A SQL database handle bound to the granted per-space resource. */
 function store(tcw: TinyCloudWeb, scope: ReturnType<typeof storageScopeFor>, timeoutMs?: number, lane: Lane = "foreground") {
   if (localStores.has(tcw)) throw new Error("Local validation cannot access the production chat store");
-  return trackStorageWrites(bounded(tcw.sql.db(SQL_DB_NAME), lane, () => forgetSchema(tcw), timeoutMs), scope);
+  const schema: SchemaHooks = {
+    forget: () => forgetSchema(tcw),
+    repair: async () => {
+      forgetSchema(tcw);
+      try {
+        await ensureSchema(tcw, {}, scope);
+        return true;
+      } catch {
+        // ensureSchema reported the failure; the caller handles the read's own error.
+        return false;
+      }
+    },
+    confirm: () => confirmSchemaInBackground(tcw, scope),
+  };
+  return trackStorageWrites(bounded(tcw.sql.db(SQL_DB_NAME), lane, schema, timeoutMs), scope);
 }
 
 // ── Bounded retry for READS ──────────────────────────────────────────
@@ -403,6 +440,7 @@ function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
 
 const schemaReadySpaces = new Set<string>();
 const schemaInFlight = new Map<string, Promise<SqlError | null>>();
+const schemaCheckedThisSession = new Set<string>();
 
 /** Tables `SCHEMA` creates; part of the device marker, so a new table re-runs the check once. */
 const SCHEMA_TABLES = SCHEMA.map((sql) => sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1]).filter(
@@ -419,6 +457,20 @@ function schemaMarkerKey(memoKey: string): string {
   return `tinychat:threads-schema:${SCHEMA_TABLES.join(",")}:${memoKey}`;
 }
 
+const SCHEMA_PROBE_SQL = `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${SCHEMA_TABLES.map(() => "?").join(", ")})`;
+
+function schemaKnown(memoKey: string): boolean {
+  if (schemaReadySpaces.has(memoKey)) return true;
+  if (!hasLocalMarker(schemaMarkerKey(memoKey))) return false;
+  schemaReadySpaces.add(memoKey);
+  return true;
+}
+
+function markSchemaReady(memoKey: string): void {
+  schemaReadySpaces.add(memoKey);
+  setLocalMarker(schemaMarkerKey(memoKey));
+}
+
 /** A table went missing: the next call probes (and creates) the schema again. */
 function forgetSchema(tcw: TinyCloudWeb): void {
   const memoKey = schemaMemoKey(tcw);
@@ -428,37 +480,59 @@ function forgetSchema(tcw: TinyCloudWeb): void {
 }
 
 /**
+ * A read succeeded on a device that has not checked this account's schema.
+ * That read proves only its own table, so the read-only probe runs once per
+ * session on the background lane, after the open's foreground reads; when
+ * every table exists it stores the marker, and the first write skips the
+ * probe. It never creates tables: a read that finds one missing does that,
+ * and so does a write. A failed probe may run again after a later read.
+ */
+function confirmSchemaInBackground(tcw: TinyCloudWeb, scope: ReturnType<typeof storageScopeFor>): void {
+  const memoKey = schemaMemoKey(tcw);
+  if (!memoKey || schemaCheckedThisSession.has(memoKey) || schemaInFlight.has(memoKey) || schemaKnown(memoKey)) return;
+  schemaCheckedThisSession.add(memoKey);
+  void inBackground(async () => {
+    if (schemaInFlight.has(memoKey) || schemaKnown(memoKey)) return;
+    const res = await store(tcw, scope, undefined, "background").query(SCHEMA_PROBE_SQL, SCHEMA_TABLES);
+    if (!res.ok) {
+      schemaCheckedThisSession.delete(memoKey);
+      return;
+    }
+    // Rows are cell arrays (see the read helpers below), typed by the SDK as records.
+    const names = new Set((res.data.rows as unknown as unknown[][]).map((row) => row[0]));
+    if (SCHEMA_TABLES.every((table) => names.has(table))) markSchemaReady(memoKey);
+  }).catch((err) => {
+    schemaCheckedThisSession.delete(memoKey);
+    console.warn("[threadStore] background schema check failed", err);
+  });
+}
+
+/**
  * Probe the schema read-only before creating any missing tables. Existing
  * schemas therefore remain readable when storage is full. Memoized per
  * account; concurrent callers share one probe/create sequence. Once it has
- * succeeded for an account on this device, later opens skip the probe (a
+ * succeeded for an account on this device, later calls skip the probe (a
  * marker in localStorage); a "no such table" error clears the marker.
+ *
+ * Writes call this first. Reads do not: they run at once, and only a read
+ * that fails with "no such table" calls this and runs again (see `bounded`).
  *
  * The memo key prefers `tcw.did` over `tcw.spaceId` because restored sessions
  * may not expose `spaceId`. Failed probes or creates are not memoized.
  */
 async function ensureSchema(
   tcw: TinyCloudWeb,
-  options: { forWrite?: boolean; readBudget?: ReadBudget },
+  options: { forWrite?: boolean },
   scope: ReturnType<typeof storageScopeFor>,
 ): Promise<void> {
   const memoKey = schemaMemoKey(tcw);
-  if (memoKey && schemaReadySpaces.has(memoKey)) return;
-  if (memoKey && hasLocalMarker(schemaMarkerKey(memoKey))) {
-    schemaReadySpaces.add(memoKey);
-    return;
-  }
+  if (memoKey && schemaKnown(memoKey)) return;
 
   let run = memoKey ? schemaInFlight.get(memoKey) : undefined;
   if (!run) {
     run = (async (): Promise<SqlError | null> => {
       const db = store(tcw, scope);
-      const tables = SCHEMA_TABLES;
-      const probeSql = `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`;
-      const { readBudget } = options;
-      const existingResult = readBudget
-        ? await retryRead(readBudget, (ms) => store(tcw, scope, ms).query(probeSql, tables))
-        : await db.query(probeSql, tables);
+      const existingResult = await db.query(SCHEMA_PROBE_SQL, SCHEMA_TABLES);
       if (!existingResult.ok) throw new SqlOpError(existingResult.error, "ensureSchema probe", scope);
       const existingRows = existingResult.data.rows as unknown as unknown[][];
       const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
@@ -475,10 +549,7 @@ async function ensureSchema(
           throw new SqlOpError(result.error, "ensureSchema", scope);
         }
       }
-      if (memoKey) {
-        schemaReadySpaces.add(memoKey);
-        setLocalMarker(schemaMarkerKey(memoKey));
-      }
+      if (memoKey) markSchemaReady(memoKey);
       return null;
     })();
 
@@ -521,7 +592,6 @@ export async function getThread(
 ): Promise<ThreadDoc | null> {
   const local = localStores.get(tcw);
   if (local) return structuredClone(local.threads.get(id) ?? null);
-  await ensureSchema(tcw, {}, scope);
 
   const db = store(tcw, scope, undefined, lane);
   const readThread = () => db.query("SELECT id, title, model, created_at, updated_at FROM threads WHERE id = ?", [id]);
@@ -568,7 +638,6 @@ export async function getThreadModel(tcw: TinyCloudWeb, id: string): Promise<Thr
     const doc = local.threads.get(id);
     return doc ? { status: "found", model: doc.model } : { status: "missing" };
   }
-  await ensureSchema(tcw, {}, scope);
   const res = await store(tcw, scope).query("SELECT model FROM threads WHERE id = ?", [id]);
   if (!res.ok) throw new SqlOpError(res.error, "getThreadModel", scope);
   const rows = res.data.rows;
@@ -582,7 +651,6 @@ export async function getThreadTitle(tcw: TinyCloudWeb, id: string): Promise<str
   const scope = storageScopeFor(tcw);
   const local = localStores.get(tcw);
   if (local) return local.threads.get(id)?.title ?? null;
-  await ensureSchema(tcw, {}, scope);
   const res = await store(tcw, scope).query("SELECT title FROM threads WHERE id = ?", [id]);
   if (!res.ok) throw new SqlOpError(res.error, "getThreadTitle", scope);
   const rows = res.data.rows;
@@ -601,7 +669,6 @@ export async function getSetting(tcw: TinyCloudWeb, key: string): Promise<string
   const scope = storageScopeFor(tcw);
   const local = localStores.get(tcw);
   if (local) return local.settings.get(key) ?? null;
-  await ensureSchema(tcw, {}, scope);
   const res = await store(tcw, scope).query("SELECT value FROM settings WHERE key = ?", [key]);
   if (!res.ok) throw new SqlOpError(res.error, "getSetting", scope);
   const rows = res.data.rows;
@@ -626,7 +693,6 @@ export async function getSettingsByPrefix(tcw: TinyCloudWeb, prefix: string): Pr
   const scope = storageScopeFor(tcw);
   const local = localStores.get(tcw);
   if (local) return new Map([...local.settings].filter(([key]) => key.startsWith(prefix)));
-  await ensureSchema(tcw, {}, scope);
   // A key range instead of LIKE: `_` and `%` in keys must never act as wildcards.
   const res = await store(tcw, scope).query(
     "SELECT key, value FROM settings WHERE key >= ? AND key < ?",
@@ -697,7 +763,6 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
   const local = localStores.get(tcw);
   if (local) return local.memory;
   try {
-    await ensureSchema(tcw, {}, scope);
     const res = await store(tcw, scope).query(
       "SELECT content FROM memory WHERE id = ?",
       [MEMORY_ROW_ID],
@@ -866,7 +931,6 @@ export async function getLatestCompaction(
   const local = localStores.get(tcw);
   if (local) return local.compactions.get(threadId) ?? null;
   if (compactionCache.has(threadId)) return compactionCache.get(threadId) ?? null;
-  await ensureSchema(tcw, {}, scope);
   const res = await store(tcw, scope).query(
     "SELECT id, thread_id, covers_through_message_id, summary, created_at FROM compactions WHERE thread_id = ?",
     [threadId],
@@ -1121,7 +1185,6 @@ async function fetchFromSql(
   scope: ReturnType<typeof storageScopeFor>,
   budget: ReadBudget,
 ): Promise<ThreadSummary[]> {
-  await ensureSchema(tcw, { readBudget: budget }, scope);
   const res = await retryRead(budget, (ms) =>
     store(tcw, scope, ms).query("SELECT id, title, model, updated_at FROM threads ORDER BY updated_at DESC"),
   );
@@ -1139,7 +1202,7 @@ async function fetchFromSql(
  *
  * Stale-while-revalidate: if a local cache exists, return it IMMEDIATELY and
  * refresh in the background (a failed refresh keeps the cache and sets the
- * load state to error). Cold (no cache): ensure the schema, read from SQL
+ * load state to error). Cold (no cache): read from SQL
  * (timed-out reads are retried), then cache. If the cold load still fails it
  * THROWS `ThreadListLoadError` — never an empty list — and the load state is
  * "error" so the sidebar can offer a retry.
@@ -1193,7 +1256,7 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
 
 /**
  * The cold-path read used by both the first load and the background revalidate.
- * Pure SQL: ensure the schema then read summaries, retrying timed-out reads
+ * Pure SQL: read summaries (a missing table is created on demand), retrying timed-out reads
  * within one bounded budget. On failure it logs, sets the error load state and
  * throws `ThreadListLoadError`; it never returns an empty list for a failure.
  */
