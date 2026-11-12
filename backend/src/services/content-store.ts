@@ -1494,6 +1494,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
       index = parseIndex(plaintext, this.now());
     } catch (error) {
       if (error instanceof ContentMasterUnavailableError) throw error;
+      warnContent("op=index-read result=unreadable_index");
       throw new ContentIndexUnreadableError();
     }
     const now = this.now();
@@ -1687,7 +1688,7 @@ function parseBoundedStrings(value: unknown, emails: boolean): string[] | undefi
   return result;
 }
 
-function parseIndex(plaintext: string, now: number): ContentIndex {
+function parseIndex(plaintext: string, _now: number): ContentIndex {
   let raw: unknown;
   try {
     raw = JSON.parse(plaintext);
@@ -1709,15 +1710,15 @@ function parseIndex(plaintext: string, now: number): ContentIndex {
   }
   const tombstones: RetentionTombstone[] = [];
   for (const entry of value.tombstones) {
-    if (typeof entry !== "object" || entry === null) continue;
+    if (typeof entry !== "object" || entry === null) throw new Error("content index is unreadable");
     const t = entry as Record<string, unknown>;
     if (
       !isValidMeetingId(t.sourceId) ||
       typeof t.sweptAt !== "string" ||
       typeof t.expiresAt !== "string" ||
       !Number.isFinite(Date.parse(t.expiresAt)) ||
-      Date.parse(t.expiresAt) <= now
-    ) continue;
+      !Number.isFinite(Date.parse(t.sweptAt))
+    ) throw new Error("content index is unreadable");
     tombstones.push({
       sourceId: t.sourceId,
       sweptAt: t.sweptAt,

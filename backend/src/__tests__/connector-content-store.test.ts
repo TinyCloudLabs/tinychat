@@ -1166,7 +1166,7 @@ describe("W4 content store — retention", () => {
     ).toBe(true);
   });
 
-  test("[delta-05] a legacy tombstone without an expiry is not kept", async () => {
+  test("[delta-05] a malformed tombstone without an expiry fails closed", async () => {
     const { store } = harness();
     const seedIndex = store as unknown as {
       writeIndex(source: string, address: string, index: unknown): Promise<void>;
@@ -1179,13 +1179,9 @@ describe("W4 content store — retention", () => {
       }],
     });
 
-    expect(
-      await store.tombstoned({
-        source: SOURCE,
-        address: ADDRESS_A,
-        meetingId: "mtg-legacy-tombstone",
-      }),
-    ).toBe(false);
+    await expect(store.tombstoned({
+      source: SOURCE, address: ADDRESS_A, meetingId: "mtg-legacy-tombstone",
+    })).rejects.toThrow("content index is unreadable");
   });
 
   test("[delta-05] the sweep touches ONLY the address it was asked for", async () => {
@@ -2235,3 +2231,16 @@ for (const time of ["00:00:00.001", "23:59:59.999"]) {
     expect(await blobs.read(SOURCE, ADDRESS_A, id)).toBeNull();
   });
 }
+
+test("an expired plaintext-ID tombstone is physically pruned with no live rows", async () => {
+  const { store, blobs } = harness();
+  const internal = store as any;
+  await internal.writeIndex(SOURCE, ADDRESS_A, {
+    meetings: [], tombstones: [{sourceId: "expired-id", sweptAt: new Date(T0 - 15 * DAY_MS).toISOString(), expiresAt: new Date(T0 - DAY_MS).toISOString()}],
+  });
+  const before = await blobs.readIndex(SOURCE, ADDRESS_A);
+  await store.sweepRetention({source: SOURCE, address: ADDRESS_A});
+  const after = await blobs.readIndex(SOURCE, ADDRESS_A);
+  expect(after?.ciphertext).not.toBe(before?.ciphertext);
+  expect(JSON.parse(internal.unseal(SOURCE, ADDRESS_A, "index", after)).tombstones).toEqual([]);
+});
