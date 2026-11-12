@@ -254,6 +254,7 @@ function harness(): Harness {
   const exoCleared: Array<{ source: string; address: string }> = [];
   const teardown = new ConnectorTeardownService(
     {
+      notifications: { disable: async () => {} },
       credentials,
       content,
       queue,
@@ -364,7 +365,7 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
     const h = harness();
     await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, ["mtgA1"]);
     const teardown = new ConnectorTeardownService(
-      { credentials: h.credentials, content: h.content, queue: h.queue, control: h.control },
+      { notifications: { disable: async () => {} }, credentials: h.credentials, content: h.content, queue: h.queue, control: h.control },
       { now: h.clock },
     );
 

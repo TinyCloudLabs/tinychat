@@ -569,8 +569,11 @@ async function main() {
 
   // Share these stores with the optional routes, but keep retention maintenance alive even when
   // the connector webhook feature is disabled.
-  const connectorQueue = new ConnectorQueue(node, { storageLane: backendStorageLane });
   const connectorControl = new ConnectorControlStore(node);
+  const connectorQueue = new ConnectorQueue(node, {
+    storageLane: backendStorageLane,
+    isDisabled: async address => (await connectorControl.readDisabled(address)) !== null,
+  });
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
   // authenticated companions further down (§3.6/§4.4): the companions' teardown must evict the
   // very token cache the public route reads, and `GET …/webhooks/pending` must see the queue
@@ -894,6 +897,13 @@ async function main() {
           // upstream revoke), every content row, the queue. A disconnect that left the server's
           // copy of the meetings behind is §9 anti-pattern 8.
           teardown: new ConnectorTeardownService({
+            notifications: {
+              disable: async (source, address) => {
+                connectorDrainAbort.abort(address);
+                await connectorWebhooks.control.markDisabled(address, source);
+                await connectorWebhooks.tokens.revoke(address);
+              },
+            },
             credentials: credentialStore,
             content: contentStore,
             queue: connectorWebhooks.queue,
