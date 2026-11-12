@@ -246,7 +246,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   };
   return <div>
     {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-      {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
+      {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>}
     </PendingAnswer> : <>
       {saved && !asking && <ResponseStatus entry={target} focusOnMount={justSaved} />}
       {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}

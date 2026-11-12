@@ -264,7 +264,7 @@ export function SitrepCard(props: Props) {
 
     {record.kind === "ask" && <>
       {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-        {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
+        {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>}
       </PendingAnswer>}
       {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
