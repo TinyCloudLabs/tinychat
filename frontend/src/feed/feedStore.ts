@@ -41,6 +41,10 @@ function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardI
 export const HOME_FEED_RESOURCE = "xyz.tinycloud.tinychat/home_feed";
 export const HOME_FEED_DEFAULT_KEY = "home-feed-default-view";
 const RECONCILE_MS = 5 * 60_000;
+/** How long a hidden page keeps its live-update stream; a shorter absence needs no catch-up of its own. */
+const FRESH_MS = 60_000;
+/** The longest the first load waits for the live-update stream before reading without it. */
+const COVER_WAIT_MS = 5_000;
 /** Bump when the registry schema batch below changes, so devices re-run it once. */
 const FEED_SCHEMA_VERSION = 1;
 
@@ -176,6 +180,16 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   let wakeTimer: number | undefined;
   let renewal: number | undefined;
   let streamError: Error | undefined;
+  let streamReady = false;
+  const waiters = new Set<() => void>();
+  let localReads = 0;
+  let hiddenAt: number | undefined;
+  let hiddenTimer: number | undefined;
+  // The fingerprint read at the last ready stream; the shown feed holds every
+  // write it counts. Cleared when a load fails, since then it may not.
+  let baseline: string | undefined;
+  let loadsBegun = 0;
+  let loadFailures = 0;
 
   // The registry tables only ever need creating once per account: after the
   // first success this device skips the write on every later open.
@@ -210,13 +224,26 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     }, 50);
   }
 
+  function release() {
+    for (const done of [...waiters]) done();
+  }
+
+  function stop() {
+    controller?.abort(); controller = undefined;
+    streamReady = false;
+    release();
+  }
+
   function connect(force = false) {
-    if (!listeners.size || document.visibilityState === "hidden") return;
+    // The device's copy names the agents to subscribe to; wait for it rather
+    // than open a stream that its answer would replace.
+    if (!listeners.size || document.visibilityState === "hidden" || localReads) return;
     const resources = [HOME_FEED_RESOURCE, THREADS_SQL_DB_NAME, ...sources.flatMap((source) => [source.output.database, source.responses.database])];
     const nextKey = JSON.stringify(resources);
     const hooks: FeedHooks = tcw.hooks;
     if (!force && controller && !controller.signal.aborted && streamKey === nextKey && streamHooks === hooks) return;
     controller?.abort();
+    streamReady = false;
     const request = new AbortController();
     controller = request;
     streamKey = nextKey;
@@ -226,13 +253,15 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         const subscriptions = resources.map((pathPrefix) => ({ space, service: "sql" as const, pathPrefix }));
         for await (const _event of hooks.subscribe(subscriptions, {
           signal: request.signal, ttlSeconds: 300,
-          onReady: () => { if (!request.signal.aborted) { streamError = undefined; wake(); } },
+          onReady: () => { if (!request.signal.aborted) void catchUp(request); },
         })) {
           if (!request.signal.aborted) wake();
         }
         if (!request.signal.aborted) throw new Error("Home feed notifications disconnected");
       } catch (error) {
         if (!request.signal.aborted) {
+          streamReady = false;
+          release();
           streamError = error instanceof Error ? error : new Error(String(error));
           wake();
         }
@@ -240,12 +269,81 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     })();
   }
 
+  /**
+   * One cheap read per database the feed shows, all in one round. Every feed
+   * table only appends (plain INSERTs, and the SDK's ON CONFLICT DO NOTHING),
+   * so a row count plus the highest rowid changes with any write; the agent
+   * registry and the default view are compared by value. A table `readFeed`
+   * starts reading belongs here too.
+   */
+  async function fingerprint(): Promise<string> {
+    const tally = async (database: FeedDatabase, tables: readonly string[], columns: readonly string[] = []) => unwrap(await database.query(
+      `SELECT ${[...columns, ...tables.map((table) => `(SELECT count(*) || ':' || ifnull(max(rowid), 0) FROM ${table})`)].join(", ")}`, [],
+    )).rows;
+    const agents = "(SELECT group_concat(quote(agent_id) || quote(agent_did) || quote(label) || quote(output_resource) || quote(response_resource) || quote(authorization_json), ',') FROM (SELECT * FROM feed_agents ORDER BY agent_id))";
+    return JSON.stringify(await Promise.all([
+      tally(registry, ["feed_view_events", "feed_owner_events", "feed_owner_imports"], [agents]),
+      getSetting(tcw, HOME_FEED_DEFAULT_KEY),
+      ...sources.flatMap((source) => [
+        tally(db(source.output.database), ["feed_cards", "feed_handling"]),
+        tally(db(source.responses.database), ["feed_responses", "feed_response_payloads"]),
+      ]),
+    ]));
+  }
+
+  /**
+   * Every ready stream (the first connection, the SDK's reconnects and ticket
+   * renewals, a resume) may follow a gap that no notification covers, since
+   * notifications are not replayed. Instead of reloading, compare fingerprints:
+   * a write during the gap changes it. Writes while a stream is ready arrive as
+   * notifications and reload on their own.
+   */
+  async function catchUp(request: AbortController) {
+    const recovering = streamError !== undefined;
+    streamError = undefined;
+    streamReady = true;
+    release();
+    const previous = baseline;
+    const begun = loadsBegun;
+    const failures = loadFailures;
+    const current = await fingerprint().catch(() => undefined);
+    if (request.signal.aborted) return;
+    baseline = loadFailures === failures ? current : undefined;
+    // With no earlier fingerprint, the feed can only lack a write when a load
+    // began before this stream was ready. A load another view (a sitrep card)
+    // starts meanwhile never reaches the Feed's snapshot, so it cancels nothing.
+    const stale = previous === undefined ? begun > 0 : current === undefined || current !== previous;
+    if (stale || recovering) wake();
+  }
+
+  /** Lets the first load start under a ready stream, so that stream's ready needs no second load. */
+  function streamCovered(): Promise<void> {
+    if (loadsBegun || streamReady || streamError || !listeners.size || document.visibilityState === "hidden") return Promise.resolve();
+    // The app's TypeScript lib predates Promise.withResolvers.
+    return new Promise((resolve) => {
+      const done = () => { window.clearTimeout(timer); waiters.delete(done); resolve(); };
+      const timer = window.setTimeout(done, COVER_WAIT_MS);
+      waiters.add(done);
+    });
+  }
+
   function foreground() {
     if (document.visibilityState === "hidden") {
-      controller?.abort(); controller = undefined;
+      hiddenAt ??= Date.now();
+      window.clearTimeout(hiddenTimer);
+      hiddenTimer = window.setTimeout(() => {
+        hiddenTimer = undefined;
+        if (document.visibilityState === "hidden") stop();
+      }, FRESH_MS);
     } else {
-      connect(true);
-      wake();
+      window.clearTimeout(hiddenTimer); hiddenTimer = undefined;
+      const away = hiddenAt === undefined ? 0 : Date.now() - hiddenAt;
+      hiddenAt = undefined;
+      // A stream that outlived a short absence missed nothing, and one that
+      // broke reconnects and checks. After a long one, or once the stream has
+      // failed for good, start a new stream: its ready runs the single
+      // freshness check.
+      connect(away > FRESH_MS || streamError !== undefined);
     }
   }
 
@@ -315,6 +413,18 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
 
   async function loadFeed(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot> {
     assertAccount();
+    await streamCovered();
+    loadsBegun++;
+    try {
+      return await readFeed(focused);
+    } catch (error) {
+      loadFailures++;
+      baseline = undefined;
+      throw error;
+    }
+  }
+
+  async function readFeed(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot> {
     const readRegistry = async () => {
       await ensureSchema();
       const [agents, events] = await Promise.all([
@@ -527,15 +637,18 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   return {
     load: (focused) => loadFeed(focused),
     async cached() {
-      const local = await readLocal<LocalFeed>(localKey);
-      if (!local) return null;
-      // Subscribe to every agent's databases from the first connection, so the
-      // first network load does not have to re-subscribe.
-      if (!loadedOnce && !sources.length) {
-        sources = local.value.sources;
+      localReads++;
+      try {
+        const local = await readLocal<LocalFeed>(localKey);
+        if (!local) return null;
+        // Subscribe to every agent's databases from the first connection, so the
+        // first network load does not have to re-subscribe.
+        if (!loadedOnce && !sources.length) sources = local.value.sources;
+        return local.value.snapshot;
+      } finally {
+        localReads--;
         connect();
       }
-      return local.value.snapshot;
     },
     saveResponse,
     holdsAnswer(entry, responseId) {
@@ -625,14 +738,15 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       listeners.add(listener);
       if (listeners.size === 1) {
         document.addEventListener("visibilitychange", foreground);
-        renewal = window.setInterval(() => { if (document.visibilityState !== "hidden") { connect(true); wake(); } }, RECONCILE_MS);
+        renewal = window.setInterval(() => { if (document.visibilityState !== "hidden") connect(true); }, RECONCILE_MS);
         connect();
       }
       return () => {
         listeners.delete(listener);
         if (!listeners.size) {
-          controller?.abort(); controller = undefined;
+          stop();
           window.clearTimeout(wakeTimer); wakeTimer = undefined;
+          window.clearTimeout(hiddenTimer); hiddenTimer = undefined; hiddenAt = undefined;
           window.clearInterval(renewal); renewal = undefined;
           document.removeEventListener("visibilitychange", foreground);
         }
