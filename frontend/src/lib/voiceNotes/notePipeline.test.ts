@@ -498,3 +498,36 @@ test("a browser's local-only space step names the browser", () => {
   const pipeline = notePipeline(input({ device: "browser", space: { saved: true, localOnly: true, pending: null } }));
   expect(pipeline.steps.find((step) => step.key === "space")?.caption).toBe("Audio stays in this browser");
 });
+
+describe("storage full in the iOS and Android apps (App Store 3.1.1, Play Payments)", () => {
+  const QUOTA: Patch = { space: { pending: { failed: { kind: "quota", message: "quota" } } } };
+  const HELD = local({ onDevice: od({ stt: stt("done"), sync: { state: "held", message: "x" } }) }, { space: SAVED });
+  const PRIVATE_FULL = cloud({ kind: "failed", code: "storage_full", message: "Storage full.", retryable: false, reference: null });
+  const PLAN_NOTE = "Manage your plan on the web at tinycloud.xyz.";
+  const allBlockers = (pipeline: NotePipeline) => [pipeline.blocker, ...pipeline.steps.map((step) => step.blocker)].filter((blocker) => blocker !== undefined);
+
+  for (const device of ["iphone", "android"] as const) {
+    test(`${device}: no blocker offers Manage storage; each says where the plan is managed, as text`, () => {
+      for (const patch of [QUOTA, HELD]) {
+        const pipeline = notePipeline(input({ ...patch, device }));
+        expect(pipeline.blocker?.cause).toEndWith(PLAN_NOTE);
+        expect(pipeline.blocker?.action).toBeUndefined();
+        for (const blocker of allBlockers(pipeline)) expect(blocker.action?.kind).not.toBe("manage-storage");
+      }
+      const privateFull = notePipeline(input({ ...PRIVATE_FULL, device }));
+      expect(privateFull.blocker?.cause).toEndWith(PLAN_NOTE);
+      expect(privateFull.blocker?.action).toEqual({ kind: "retry", label: "Transcribe again" });
+      expect(privateFull.blocker?.secondaryAction).toBeUndefined();
+    });
+  }
+
+  for (const device of ["browser", "mac"] as const) {
+    test(`${device}: storage full keeps Manage storage`, () => {
+      for (const patch of [QUOTA, HELD, PRIVATE_FULL]) {
+        const pipeline = notePipeline(input({ ...patch, device }));
+        expect(pipeline.blocker?.action?.kind).toBe("manage-storage");
+        expect(pipeline.blocker?.cause).not.toContain(PLAN_NOTE);
+      }
+    });
+  }
+});

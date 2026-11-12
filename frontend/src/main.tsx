@@ -20,6 +20,8 @@ import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 import { installDebugLog } from "./lib/debugLog";
+import { billingLinksAllowed } from "./lib/openManageStorage";
+import { hideSdkPurchaseLinks } from "./lib/sdkPanelPurchaseLinks";
 
 // False on the web and in the desktop (Tauri) app; true only inside the TinyCloud Home mobile app.
 const nativeShell = Capacitor.isNativePlatform();
@@ -52,6 +54,8 @@ if (platform === "ios") {
 }
 initSizeClass();
 initTheme();
+// The iOS and Android apps open no purchase page, including from the TinyCloud SDK's panel and toasts.
+if (!billingLinksAllowed(platform)) hideSdkPurchaseLinks();
 
 // Installable web app: registers the service worker on the web only — never in
 // the Capacitor or Tauri shells, and not under `vite dev` unless VITE_PWA_DEV.

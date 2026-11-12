@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { installDom } from "@/test/dom";
 import { __resetStorageStatusForTests, reportStorageError } from "@/lib/storageStatus";
+import { PlatformContext } from "@/lib/platform";
 
 import { MinimizedProvider } from "./final/MinimizedProvider";
 import { HeaderLiveChipView } from "./HeaderLiveChip";
@@ -116,6 +117,24 @@ describe("IslandView", () => {
       restoreDom();
     }
   });
+
+  for (const platform of ["ios", "android"] as const) {
+    test(`failed while TinyCloud storage is full on ${platform}: Save now, never Manage storage`, async () => {
+      const restoreDom = installDom();
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "storage is full" });
+      try {
+        await act(async () => root.render(<PlatformContext.Provider value={platform}><IslandView recorder={value({ phase: "idle", outcome: "failed" })} /></PlatformContext.Provider>));
+        expect(container.textContent).toContain("Save now");
+        expect(container.textContent).not.toContain("Manage storage");
+      } finally {
+        await act(async () => root.unmount());
+        restoreDom();
+      }
+    });
+  }
 
   test("shown while minimised and under way or just ended; never over the open sheet or when idle", () => {
     expect(islandShown(value())).toBe(true);
