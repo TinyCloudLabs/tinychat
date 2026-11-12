@@ -45,6 +45,13 @@ function patch(root: ShadowRoot): MutationObserver {
 export function hideSdkPurchaseLinks(doc: Document = document): () => void {
   const patched = new Map<ShadowRoot, MutationObserver>();
   const scan = () => {
+    // The SDK removes its host when its last client unregisters and makes a new one later.
+    for (const [root, observer] of patched) {
+      if (!root.host.isConnected) {
+        observer.disconnect();
+        patched.delete(root);
+      }
+    }
     for (const host of doc.body.children) {
       const root = host.shadowRoot;
       if (root !== null && !patched.has(root)) patched.set(root, patch(root));
