@@ -1,5 +1,4 @@
-import { HOME_SIGN_IN_BUNDLE_ENTRIES, manifestCarriesBundle } from "@tinyboilerplate/core";
-import { HOME_SITE } from "./homeSite";
+import { manifestCarriesBundle } from "@tinyboilerplate/core";
 
 /**
  * App-owned revision of the sign-in manifest's grants. The manifest's own
@@ -11,22 +10,6 @@ import { HOME_SITE } from "./homeSite";
  * whose records may still sit in browsers, so the current value is never "1".
  */
 export const EXO_MANIFEST_REVISION = "4";
-
-/**
- * The Home site signs in with a narrower grant than revision "4", so it has its own value. A Home session
- * recorded under "4" (the broad grant) is cleared once, and the user signs in once under the narrow grant.
- */
-export const HOME_MANIFEST_REVISION = "home-1";
-
-/** The revision a build's sign-in grants stand for. */
-export function manifestRevisionFor(homeSite: boolean): string {
-  return homeSite ? HOME_MANIFEST_REVISION : EXO_MANIFEST_REVISION;
-}
-
-/** Whether `manifest` carries the bundle this build's revision stands for. */
-export function manifestCarriesCurrentBundle(manifest: Parameters<typeof manifestCarriesBundle>[0], homeSite: boolean = HOME_SITE): boolean {
-  return homeSite ? manifestCarriesBundle(manifest, HOME_SIGN_IN_BUNDLE_ENTRIES) : manifestCarriesBundle(manifest);
-}
 
 /** Shown above the sign-in action only after the gate clears a stale session (final wording). */
 export const MANIFEST_RESIGN_NOTICE =
@@ -57,8 +40,8 @@ function readRevision(store: RevisionStore | null, address: string): string | nu
  * True when the persisted session for `address` predates the current revision
  * and must be cleared so the user signs in again. Never writes.
  */
-export function needsManifestResign(store: RevisionStore | null, address: string, homeSite: boolean = HOME_SITE): boolean {
-  return readRevision(store, address) !== manifestRevisionFor(homeSite);
+export function needsManifestResign(store: RevisionStore | null, address: string): boolean {
+  return readRevision(store, address) !== EXO_MANIFEST_REVISION;
 }
 
 export type ManifestRevisionGate = "current" | "deferred" | "cleared" | "handoff_failed";
@@ -75,8 +58,6 @@ export type ManifestRevisionGate = "current" | "deferred" | "cleared" | "handoff
 export async function applyManifestRevisionGate(input: {
   store: RevisionStore | null;
   address: string | null;
-  /** The build whose revision applies; defaults to this build. */
-  homeSite?: boolean;
   isOffline: () => boolean;
   /** Reports whether the current sign-in manifest carries the bundle; a rejection counts as no. */
   servedManifestCarriesBundle: () => Promise<boolean>;
@@ -85,8 +66,8 @@ export async function applyManifestRevisionGate(input: {
   /** When given, the gate clears a stale session at most once per guard (one page session). */
   promptGuard?: ResignPromptGuard;
 }): Promise<ManifestRevisionGate> {
-  const { store, address, isOffline, servedManifestCarriesBundle, handoff, clearSession, promptGuard, homeSite = HOME_SITE } = input;
-  if (!address || !needsManifestResign(store, address, homeSite)) return "current";
+  const { store, address, isOffline, servedManifestCarriesBundle, handoff, clearSession, promptGuard } = input;
+  if (!address || !needsManifestResign(store, address)) return "current";
   if (promptGuard?.prompted) return "current";
   if (isOffline()) return "deferred";
   const served = await servedManifestCarriesBundle().catch(() => false);
@@ -114,10 +95,10 @@ export function createResignPromptGuard(): ResignPromptGuard {
  * Record the current revision after a successful sign-in. Unwritable storage
  * leaves the revision stale; the gate's prompt guard keeps that to one re-sign per page session.
  */
-export function recordManifestRevision(store: RevisionStore | null, address: string, homeSite: boolean = HOME_SITE): void {
+export function recordManifestRevision(store: RevisionStore | null, address: string): void {
   if (!store) return;
   try {
-    store.setItem(revisionKey(address), manifestRevisionFor(homeSite));
+    store.setItem(revisionKey(address), EXO_MANIFEST_REVISION);
   } catch {
     // Not recorded: the next restore finds it stale and re-signs.
   }
@@ -131,9 +112,8 @@ export function recordManifestRevisionIfSigned(
   store: RevisionStore | null,
   address: string,
   signedManifest: Parameters<typeof manifestCarriesBundle>[0],
-  homeSite: boolean = HOME_SITE,
 ): void {
-  if (manifestCarriesCurrentBundle(signedManifest, homeSite)) recordManifestRevision(store, address, homeSite);
+  if (manifestCarriesBundle(signedManifest)) recordManifestRevision(store, address);
 }
 
 /** Browser storage, or null when it is absent or blocked (reading the global can throw). */

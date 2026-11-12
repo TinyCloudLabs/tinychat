@@ -52,9 +52,10 @@ describe("TabBar", () => {
     const markup = render(<TabBar {...props("chat")} />);
     expect(markup).toContain('<nav aria-label="Primary"');
     expect(markup.match(/<a /g)).toHaveLength(5);
-    expect(markup.indexOf(`href="${PATHS.capture}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.chat}"`));
-    expect(markup.indexOf(`href="${PATHS.chat}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.connectors}"`));
-    for (const label of ["Recording", "Chat", "Apps", "Feed", "Connectors"]) expect(markup).toContain(`>${label}</span>`);
+    expect(markup.indexOf(`href="${PATHS.feed}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.chat}"`));
+    expect(markup.indexOf(`href="${PATHS.chat}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.capture}"`));
+    expect(markup.indexOf(`href="${PATHS.capture}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.connectors}"`));
+    for (const label of ["Home", "Chat", "Apps", "Recording", "Connectors"]) expect(markup).toContain(`>${label}</span>`);
   });
 
   test("exactly the current item is marked: aria-current, the tinted pill, label weight 600 and a heavier icon", () => {
