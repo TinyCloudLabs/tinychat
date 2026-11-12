@@ -277,6 +277,25 @@ class ReplicaStoreCoreTest {
         assertEquals(2L, core.estimate().usedBytes)
     }
 
+    @Test fun overBudgetStoreCanStillShrink() {
+        core.open("alice", null)
+        core.write(listOf(put("s", "a", "1234567890"), put("s", "b", "1234567890")))
+        core.open("alice", 5)
+        // Still over budget afterwards, but smaller: allowed. Growing is not.
+        core.write(listOf(WriteOp("delete", "s", "a")))
+        assertEquals(10L, core.estimate().usedBytes)
+        assertEquals("STORAGE_BUDGET", code { core.write(listOf(put("s", "c", "1"))) })
+        core.write(listOf(WriteOp("clear", "s")))
+        assertEquals(0L, core.estimate().usedBytes)
+    }
+
+    @Test fun invalidArgumentsAreRejected() {
+        assertEquals("INVALID_ARGUMENT", code { core.open("alice", -1) })
+        assertEquals("INVALID_ARGUMENT", code { core.wipe("") })
+        core.open("alice", null)
+        assertEquals("INVALID_ARGUMENT", code { core.list("s", null, -1) })
+    }
+
     @Test fun missingMarkerClearsOrphanSecrets() {
         secrets.save("orphan", ByteArray(32))
         core.open("alice", null)

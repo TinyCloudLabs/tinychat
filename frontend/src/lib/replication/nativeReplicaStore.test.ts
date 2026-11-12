@@ -136,6 +136,39 @@ describe("native replica storage facade (TC-2862)", () => {
   });
 });
 
+describe("process-wide binding (TC-2862 review)", () => {
+  test("a handle from one storage instance stops once another instance opens a different account", async () => {
+    const fake = fakePlugin();
+    const alice = await createNativeReplicaStorage(fake.plugin).open({ account: ALICE });
+    await createNativeReplicaStorage(fake.plugin).open({ account: BOB });
+    await expect(alice.get("s", "k")).rejects.toMatchObject({ code: "ACCOUNT_MISMATCH" });
+  });
+
+  test("the sign-out wipe ends every open handle", async () => {
+    const fake = fakePlugin();
+    const alice = await createNativeReplicaStorage(fake.plugin).open({ account: ALICE });
+    await wipeNativeReplicaOnSignOut(ALICE, fake.plugin);
+    await fake.plugin.open({ account: BOB });
+    await expect(alice.get("s", "k")).rejects.toMatchObject({ code: "ACCOUNT_MISMATCH" });
+  });
+
+  test("wiping another account keeps the open handle, and close still closes it", async () => {
+    const fake = fakePlugin();
+    const storage = createNativeReplicaStorage(fake.plugin);
+    const alice = await storage.open({ account: ALICE });
+    await alice.write([{ op: "put", store: "s", key: "k", value: bytes("v") }]);
+    await storage.wipe(BOB);
+    expect(text(await alice.get("s", "k"))).toBe("v");
+    await alice.close();
+    expect(fake.calls).toContain("close");
+  });
+
+  test("the plugin is registered once however often it is looked up", () => {
+    const first = nativeReplicaPlugin("ios", () => true);
+    expect(nativeReplicaPlugin("android", () => true)).toBe(first);
+  });
+});
+
 describe("native replica flag and availability (TC-2862)", () => {
   const plugin = fakePlugin().plugin;
 

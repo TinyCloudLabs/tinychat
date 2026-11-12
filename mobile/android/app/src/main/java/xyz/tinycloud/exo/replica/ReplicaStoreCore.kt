@@ -222,6 +222,8 @@ class ReplicaStoreCore(
     fun write(ops: List<WriteOp>): Unit = guard {
         val s = requireOpen()
         s.db.transaction {
+            val budget = s.maxBytes
+            val before = if (budget == null) 0L else usedBytes(s)
             for ((i, op) in ops.withIndex()) {
                 fun missing(field: String): Nothing = throw ReplicaStoreException("INVALID_ARGUMENT", "ops[$i].$field is required")
                 val store = op.store?.takeIf { it.isNotEmpty() } ?: missing("store")
@@ -238,10 +240,11 @@ class ReplicaStoreCore(
                     else -> throw ReplicaStoreException("INVALID_ARGUMENT", "ops[$i].op must be put, delete or clear")
                 }
             }
-            val budget = s.maxBytes
+            // Over budget only when this batch grows the store: deletes must still be able to shrink one that is
+            // already over (a lower budget on reopen).
             if (budget != null) {
                 val used = usedBytes(s)
-                if (used > budget) throw ReplicaStoreException("STORAGE_BUDGET", "Replica would use $used bytes, over the $budget byte budget")
+                if (used > budget && used > before) throw ReplicaStoreException("STORAGE_BUDGET", "Replica would use $used bytes, over the $budget byte budget")
             }
         }
     }

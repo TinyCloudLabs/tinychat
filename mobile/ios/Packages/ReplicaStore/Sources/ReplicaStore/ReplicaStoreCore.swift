@@ -91,6 +91,7 @@ public final class ReplicaStoreCore {
         lock.lock()
         defer { lock.unlock() }
         guard !account.isEmpty else { throw ReplicaStoreError("INVALID_ARGUMENT", "account is required") }
+        if let maxBytes, maxBytes < 0 { throw ReplicaStoreError("INVALID_ARGUMENT", "maxBytes must be >= 0") }
         if let open = current, open.account == account {
             open.maxBytes = maxBytes
             return (Self.schemaVersion, false)
@@ -146,6 +147,7 @@ public final class ReplicaStoreCore {
     public func wipe(account: String) throws {
         lock.lock()
         defer { lock.unlock() }
+        guard !account.isEmpty else { throw ReplicaStoreError("INVALID_ARGUMENT", "account is required") }
         try prepareDirectory()
         try wipeLocked(Self.accountId(account))
     }
@@ -184,6 +186,7 @@ public final class ReplicaStoreCore {
         lock.lock()
         defer { lock.unlock() }
         let open = try requireOpen()
+        if let limit, limit < 0 { throw ReplicaStoreError("INVALID_ARGUMENT", "limit must be >= 0") }
         return try readingSealed(open) {
             var entries: [(key: String, value: String, bytes: [UInt8])] = []
             let wanted = prefix.map { Array($0.utf8) } ?? []
@@ -193,7 +196,7 @@ public final class ReplicaStoreCore {
                 if bytes.starts(with: wanted) { entries.append((entry.key, entry.value, bytes)) }
             }
             entries.sort { $0.bytes.lexicographicallyPrecedes($1.bytes) }
-            let cut = limit.map { Array(entries.prefix(max(0, $0))) } ?? entries
+            let cut = limit.map { Array(entries.prefix($0)) } ?? entries
             return cut.map { ($0.key, $0.value) }
         }
     }
@@ -205,6 +208,7 @@ public final class ReplicaStoreCore {
         let open = try requireOpen()
         try open.db.exec("BEGIN IMMEDIATE")
         do {
+            let before = open.maxBytes == nil ? 0 : try usedBytesLocked(open)
             for op in ops {
                 switch op {
                 case let .put(store, key, value):
@@ -222,8 +226,13 @@ public final class ReplicaStoreCore {
                     try open.db.run("DELETE FROM kv WHERE store = ?", [.text(store)])
                 }
             }
-            if let maxBytes = open.maxBytes, try usedBytesLocked(open) > maxBytes {
-                throw ReplicaStoreError("STORAGE_BUDGET", "the write would exceed \(maxBytes) bytes")
+            // Over budget only when this batch grows the store: deletes must still be able to shrink one that is
+            // already over (a lower budget on reopen).
+            if let maxBytes = open.maxBytes {
+                let after = try usedBytesLocked(open)
+                if after > maxBytes && after > before {
+                    throw ReplicaStoreError("STORAGE_BUDGET", "the write would exceed \(maxBytes) bytes")
+                }
             }
             try open.db.exec("COMMIT")
         } catch {

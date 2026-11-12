@@ -76,13 +76,17 @@ export interface ReplicaStorage {
   wipeAll(): Promise<void>;
 }
 
+let registered: TinyCloudReplicaStorePlugin | null = null;
+
 /** The plugin on the phone apps when the shell has it (older shells don't); null on the web and desktop. */
 export function nativeReplicaPlugin(
   platform: AppPlatform = appPlatform(),
   available: (name: string) => boolean = (name) => Capacitor.isPluginAvailable(name),
 ): TinyCloudReplicaStorePlugin | null {
   if ((platform !== "ios" && platform !== "android") || !available(NATIVE_REPLICA_PLUGIN)) return null;
-  return registerPlugin<TinyCloudReplicaStorePlugin>(NATIVE_REPLICA_PLUGIN);
+  // Capacitor warns on a second registration of the same name.
+  registered ??= registerPlugin<TinyCloudReplicaStorePlugin>(NATIVE_REPLICA_PLUGIN);
+  return registered;
 }
 
 /** Off unless the build sets `VITE_EXO_NATIVE_REPLICA=true` and the shell has the plugin. */
@@ -133,21 +137,26 @@ export function base64ToBytes(text: string): Uint8Array {
 }
 
 /**
+ * The account the plugin has open, as far as JS knows. The native side holds one account per process, so this is
+ * module-wide: every storage instance and the sign-out wipe share it.
+ */
+let activeBinding: { token: object; account: string } | null = null;
+
+/**
  * The KV `ReplicaStorage` over the plugin. The plugin holds one account at a time, so a handle stops working once
- * another account opens or it is closed (`ACCOUNT_MISMATCH`) instead of reading the other account's copy.
+ * another account opens, its account is wiped or it is closed (`ACCOUNT_MISMATCH`) instead of reading another
+ * account's copy.
  */
 export function createNativeReplicaStorage(plugin: TinyCloudReplicaStorePlugin): ReplicaStorage {
-  let active: object | null = null;
-
   const open = async (binding: { account: string; maxBytes?: number }): Promise<ReplicaStorageHandle> => {
     if (!binding.account) throw new ReplicaStorageError("INVALID_ARGUMENT", "account is required");
     const token = {};
-    active = token;
+    activeBinding = { token, account: binding.account };
     const opened = await native(() => plugin.open(
       binding.maxBytes === undefined ? { account: binding.account } : { account: binding.account, maxBytes: binding.maxBytes },
     ));
     const current = <T>(operation: () => Promise<T>): Promise<T> => {
-      if (active !== token) {
+      if (activeBinding?.token !== token) {
         return Promise.reject(new ReplicaStorageError("ACCOUNT_MISMATCH", "this replica handle is no longer open"));
       }
       return native(operation);
@@ -173,8 +182,8 @@ export function createNativeReplicaStorage(plugin: TinyCloudReplicaStorePlugin):
       })),
       estimate: () => current(() => plugin.estimate()),
       close: async () => {
-        if (active !== token) return;
-        active = null;
+        if (activeBinding?.token !== token) return;
+        activeBinding = null;
         await native(() => plugin.close());
       },
     };
@@ -184,11 +193,11 @@ export function createNativeReplicaStorage(plugin: TinyCloudReplicaStorePlugin):
     kind: "native-sqlite",
     open,
     wipe: async (account) => {
-      active = null;
+      if (activeBinding?.account === account) activeBinding = null;
       await native(() => plugin.wipe({ account }));
     },
     wipeAll: async () => {
-      active = null;
+      activeBinding = null;
       await native(() => plugin.wipeAll());
     },
   };
@@ -203,12 +212,14 @@ export type NativeReplicaWipeResult = { ok: true; skipped: boolean } | { ok: fal
  */
 export async function wipeNativeReplicaOnSignOut(
   account: string | null,
-  plugin: TinyCloudReplicaStorePlugin | null = nativeReplicaPlugin(),
+  plugin?: TinyCloudReplicaStorePlugin | null,
 ): Promise<NativeReplicaWipeResult> {
-  if (!plugin) return { ok: true, skipped: true };
   try {
-    if (account) await plugin.wipe({ account });
-    await plugin.wipeAll();
+    const target = plugin === undefined ? nativeReplicaPlugin() : plugin;
+    if (!target) return { ok: true, skipped: true };
+    activeBinding = null;
+    if (account) await target.wipe({ account });
+    await target.wipeAll();
     return { ok: true, skipped: false };
   } catch (caught) {
     return { ok: false, code: storageError(caught).code };

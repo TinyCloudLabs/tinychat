@@ -218,6 +218,27 @@ final class ReplicaStoreCoreTests: XCTestCase {
         XCTAssertEqual(estimate.freeBytes, 1234)
     }
 
+    func testOverBudgetStoreCanStillShrink() throws {
+        let core = makeCore()
+        try core.open(account: alice)
+        try core.write([.put(store: "s", key: "a", value: "1234567890"), .put(store: "s", key: "b", value: "1234567890")])
+        try core.open(account: alice, maxBytes: 5)
+        // Still over budget afterwards, but smaller: allowed. Growing is not.
+        try core.write([.delete(store: "s", key: "a")])
+        XCTAssertEqual(try core.estimate().usedBytes, 10)
+        assertCode("STORAGE_BUDGET") { try core.write([.put(store: "s", key: "c", value: "1")]) }
+        try core.write([.clear(store: "s")])
+        XCTAssertEqual(try core.estimate().usedBytes, 0)
+    }
+
+    func testInvalidArgumentsAreRejected() throws {
+        let core = makeCore()
+        assertCode("INVALID_ARGUMENT") { try core.open(account: alice, maxBytes: -1) }
+        assertCode("INVALID_ARGUMENT") { try core.wipe(account: "") }
+        try core.open(account: alice)
+        assertCode("INVALID_ARGUMENT") { _ = try core.list(store: "s", limit: -1) }
+    }
+
     func testMissingInstallMarkerClearsOrphanSecrets() throws {
         secrets.secrets["left-over-from-a-previous-install"] = Data(repeating: 1, count: 32)
         let core = makeCore()

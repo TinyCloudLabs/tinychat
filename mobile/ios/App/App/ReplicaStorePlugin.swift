@@ -34,7 +34,11 @@ public final class ReplicaStorePlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func open(_ call: CAPPluginCall) {
         run(call) { core in
             let account = try Self.string(call, "account")
-            let maxBytes = call.getDouble("maxBytes").map { Int64($0) }
+            var maxBytes: Int64?
+            if let raw = call.getDouble("maxBytes") {
+                guard let exact = Int64(exactly: raw.rounded(.down)) else { throw Self.invalid("maxBytes is out of range") }
+                maxBytes = exact
+            }
             let opened = try core.open(account: account, maxBytes: maxBytes)
             return ["schemaVersion": opened.schemaVersion, "created": opened.created]
         }
