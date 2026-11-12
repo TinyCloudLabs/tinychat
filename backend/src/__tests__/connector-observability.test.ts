@@ -695,6 +695,7 @@ describe("W8 — reconcile lag (plan §8.1 W8)", () => {
       content: { text: TRANSCRIPT_TEXT },
       fetchedAt: new Date(T0).toISOString(),
       receivedAt: new Date(T0).toISOString(),
+      ts: new Date(T0).toISOString(),
     });
     expect(upserted.ok).toBe(true);
 

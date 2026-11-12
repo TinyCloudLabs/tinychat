@@ -1,5 +1,17 @@
 # @tinychat/backend
 
+## 0.8.0-beta.14
+
+### Patch Changes
+
+- fc73a24: Remove reconciled server copies when Fireflies sync is disabled, preserving unreadable or unreconciled copies for retention cleanup.
+
+## 0.8.0-beta.13
+
+### Patch Changes
+
+- 20484c4: Delete server-held Fireflies meeting IDs within 14 days and enforce authenticated content expiry and bounded replay protection.
+
 ## 0.8.0-beta.12
 
 ### Minor Changes
