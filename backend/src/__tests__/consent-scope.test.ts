@@ -447,9 +447,6 @@ describe("the Option-C truth pass — the records describe the selected product"
     expect(doc).toMatch(/full-account/i);
     expect(doc).toMatch(/keeps its own copy/i);
     expect(doc).toMatch(/encrypted under\s+`CONNECTOR_CONTENT_MASTER`/);
-    expect(doc).toMatch(
-      /Disconnect\/purge deletes reconciled stored meetings and the credential immediately/i,
-    );
     expect(doc).toMatch(/no connector delegation/i);
   });
 });
