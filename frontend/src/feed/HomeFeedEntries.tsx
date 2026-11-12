@@ -246,7 +246,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   };
   return <div>
     {countdown.pending ? <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-      {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
+      {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
     </PendingAnswer> : <>
       {saved && !asking && <ResponseStatus entry={target} focusOnMount={justSaved} />}
       {asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
@@ -706,7 +706,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
             aside={<a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className={quietClass}>{HOME_EMPTY_HOW}</a>} />
         </section>
         : <div className="mt-6 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
-          <p>{filtering ? "No cards match this filter." : history ? "Nothing answered or snoozed yet." : view === "needs-you" ? "Nothing needs you right now." : "No cards yet."}</p>
+          <p>{filtering ? "No cards match this filter." : history ? "Nothing answered or snoozed yet." : view === "needs-you" ? "Nothing needs you." : "No cards yet."}</p>
           {filtering && <button type="button" className={`mt-2 ${pillClass} text-foreground`} onClick={() => setFilter(() => { setAgent(""); setKind(""); setProject(""); })}>Clear filter</button>}
         </div>)}
       {!!filteredCount && (view === "all"

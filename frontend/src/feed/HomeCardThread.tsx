@@ -179,7 +179,7 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, open, 
     ...plainMessages.map((message) => ({ key: `message:${message.responseId}`, id: message.responseId, at: message.createdAt, speaker: COMMENT_COPY.you, text: message.text ?? "", mine: true,
       status: entry.responseHandling?.[message.responseId]?.acknowledgement ? <span>{agent} got it</span> : undefined })),
     ...(owner.heldNotes ?? []).map((note) => ({ key: `held:${note.eventId}`, id: note.eventId, at: note.at, speaker: COMMENT_COPY.you, text: note.text, mine: true,
-      status: <span>Kept private, not sent: {note.intendedRecipient} isn't connected yet.</span> })),
+      status: <span>Kept private, not sent: {note.intendedRecipient} isn't connected.</span> })),
   ];
   return <ThreadView items={items} now={clock} open={open} composing={composing} input={input} helper={helper} busy={busy} closed={closed} onSend={onSend} onClose={onClose} />;
 }

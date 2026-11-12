@@ -140,7 +140,7 @@ export function SitrepCard(props: Props) {
   }
   async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string, hold = false) {
     // A replaced issuance is never answered: the owner answers the newer card instead.
-    if (stale) throw new Error("This card was replaced by a newer issuance");
+    if (stale) throw new Error("This card was replaced by a newer one.");
     const action = validateSitrepAction(record, type, data, new Date().toISOString());
     let draft = pending.current?.key === operationKey ? pending.current : undefined;
     if (!draft) {
@@ -264,7 +264,7 @@ export function SitrepCard(props: Props) {
 
     {record.kind === "ask" && <>
       {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-        {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer …</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
+        {countdown.pending.label === NOT_SENT_COPY.yourAnswer ? <p>Sending your answer…</p> : <p>Sending <b className="font-semibold">{countdown.pending.label}</b> …</p>}
       </PendingAnswer>}
       {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
@@ -330,7 +330,7 @@ export function SitrepCard(props: Props) {
         <p><a href={record.url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{record.site}</a> · {record.location} · {record.severity}</p>
         <blockquote className="border-l border-border pl-4">{record.quote}</blockquote><p><strong className="font-semibold">True today: </strong>{record.trueToday}</p>
         <ul>{record.evidence.map((evidence) => <li key={evidence.ref}>{safeUrl(evidence.ref) ? <a href={evidence.ref} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{evidence.label}</a> : <span>{evidence.label}: {evidence.ref}</span>}</li>)}</ul>
-        <p>To make it true: {record.makeTrue.tc?.join(", ") || "nothing planned yet"}{record.makeTrue.effort && ` · ${record.makeTrue.effort}`}</p>
+        {!!record.makeTrue.tc?.length && <p>To make it true: {record.makeTrue.tc.join(", ")}{record.makeTrue.effort && ` · ${record.makeTrue.effort}`}</p>}
         {!!claims.length && <ol aria-label="Your decisions" className="space-y-1">{claims.map((decision) => <li key={decision.sourceKey}>{decision.value.choice === "keep" ? "Keep" : decision.value.choice === "remove" ? "Remove" : "Ignore"} · {stamp(decision.value.at)}{decision.value.note && ` · ${decision.value.note}`}</li>)}</ol>}
       </div>}
       {record.kind === "hold" && <div className="space-y-1 text-sm">
@@ -383,7 +383,7 @@ export function SitrepCard(props: Props) {
       </div>}
       <SheetSection title="Details">
         <p className="text-sm">{kindWord(record.kind)} · {record.status}{pinned && ` · Priority (${pinned.reason})`}</p>
-        {receipt && <p className="text-sm">{receipt.header ? "Your answer is saved here." : "Your answer comes from your archive; this device has no receipt for it."}</p>}
+        {receipt && <p className="text-sm">{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
         {routeReady && <p className="text-[12.5px] leading-[1.4] text-muted-foreground">Messages on this card go to: {destinations.map((recipient) => <span key={recipient.recipientKey} className="block break-all font-mono">{recipient.legacyName} · {recipient.runtimeTarget.agentId}</span>)}</p>}
         {!!state?.notes?.length && <div aria-label="Your private notes" className="space-y-1 text-sm"><p className={fineClass}>Your private notes. Only you can see them; they aren't sent to the agent.</p>{state.notes.map((note) => <p key={note.id} className="whitespace-pre-wrap">{note.text} <time className={fineClass} dateTime={note.at}>{stamp(note.at)}</time></p>)}</div>}
         {reference}

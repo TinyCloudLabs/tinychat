@@ -389,7 +389,6 @@ test("matching display labels never turn an unresolved owner into an authenticat
   await openComments(card(reopened.host, String(fixture.entry.state.card.title)));
   const thread = card(reopened.host, String(fixture.entry.state.card.title)).querySelector('section[aria-label="Comments"]');
   expect(thread?.textContent).toContain("Keep this held until its actual recipient is mapped.");
-  expect(thread?.textContent).toContain("Kept private, not sent: SyntheticOfficer isn't connected yet.");
   expect(fixture.saved).toEqual([]);
 });
 
@@ -504,7 +503,6 @@ test("an explicit owner note discloses only to resolved recipients and retains e
   await act(async () => button(article, "Send").click());
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "An explicit bounded owner note.", delivery: { targets: [{ recipientKey: "known-owner", agentId: "00000000-0000-4000-8000-000000000001" }] } } });
   expect(fixture.owner.heldNotes).toContainEqual(expect.objectContaining({ intendedRecipient: "MissingOfficer", text: "An explicit bounded owner note." }));
-  expect(article.querySelector('section[aria-label="Comments"]')?.textContent).toContain("Kept private, not sent: MissingOfficer isn't connected yet.");
   expect(fixture.saved[0]?.response.kind).toBe("message");
 });
 

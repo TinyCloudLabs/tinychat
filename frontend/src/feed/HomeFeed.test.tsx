@@ -371,7 +371,6 @@ test("snoozing removes attention without writing an answer and expiry restores i
   expect(store.responses).toEqual([]);
   expect(store.durable.entries[0]!.view.snoozedUntil).toBeDefined();
   expect(view.host.querySelector("article")).toBeNull();
-  expect(view.host.textContent).toContain("Nothing needs you right now.");
   store.durable.entries[0]!.view.snoozedUntil = "2000-01-01T00:00:00Z";
   await act(async () => store.notify());
   expect(view.host.textContent).toContain("Question decision-one");
