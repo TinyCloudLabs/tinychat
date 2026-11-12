@@ -127,7 +127,7 @@ export function SitrepCard(props: Props) {
   }
   async function askAnswer({ action, choice }: AskAnswer) {
     if (record.kind !== "ask") return;
-    // An option goes alone; "Your own option" goes as the words in its box.
+    // An option goes alone; "Your own answer" goes as the words in its box.
     const words = choice ? "" : text;
     const result = await send("sitrep.answer", { askId: record.id, action, ...(choice ? { choice } : {}), text: words, at: new Date().toISOString() }, `ask:${action}:${choice ?? ""}:${words}`);
     setText(""); setChosen(undefined); setOwnOpen(false); setFollowup(false); setEngaged(false);

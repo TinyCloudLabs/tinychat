@@ -171,7 +171,7 @@ function AnswerForm({ entry, source, onSaved, onAnswered }: { entry: HomeFeedEnt
     } finally { setSaving(false); }
   }
   function editText(value: string) { setText(value); pendingResponse.current = null; }
-  // One tap chooses: the option waits out the undo window, then is saved. "Your own option" opens a box instead.
+  // One tap chooses: the option waits out the undo window, then is saved. "Your own answer" opens a box instead.
   function choose(id: string) {
     if (waiting) return;
     if (id === OWN_OPTION.id) { setOwnOpen(!ownOpen); return; }

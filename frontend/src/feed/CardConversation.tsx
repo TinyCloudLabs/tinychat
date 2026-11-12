@@ -1,6 +1,6 @@
 // The conversation at the foot of every card (feed lab, Sam's order of 11-12): your comments and the agent's replies,
-// in time order, all left-aligned in Hunter's Mock 5 look. Under each of your comments: "Sent", then
-// "<agent> received" once the agent says so. One quiet control opens the comment box, and it stays open so you can
+// in time order, all left-aligned in Hunter's Mock 5 look. Under each of your comments: "Sent", then "Received"
+// once the agent says so. One quiet control opens the comment box, and it stays open so you can
 // go again. A comment never answers or moves the card.
 import { useState } from "react";
 import { CheckIcon, MessageSquareIcon } from "lucide-react";
@@ -83,8 +83,8 @@ export function CardConversation({ lines, to, reason, disabled = false, onSend }
         <p className={`inline-block whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-[15px] leading-snug ${line.mine ? "bg-selected" : "border border-border bg-background"}`}>{line.text}</p>
         {line.mine
           ? <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">{line.held
-            ? <span className="text-muted-foreground">Not sent · kept for {line.who}</span>
-            : <><Tick done label="Sent" /><Tick done={!!line.received} label={`${line.who} received`} /></>}</p>
+            ? <span className="text-muted-foreground">Not sent · saved until {line.who} can get it</span>
+            : <><Tick done label="Sent" /><Tick done={!!line.received} label="Received" /></>}</p>
           : <p className="mt-1 text-xs text-muted-foreground">{line.who} · <ShortTime at={line.at} /></p>}
       </li>)}
     </ol>}

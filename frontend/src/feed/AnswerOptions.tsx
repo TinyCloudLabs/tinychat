@@ -58,7 +58,7 @@ export function useUndoWindow(send: () => void) {
 export interface AnswerOption { id: string; label: string; detail?: string; cost?: string }
 
 /** The last entry of every option list (feed lab, Sam's order of 11-12): it opens a box to write your own answer. */
-export const OWN_OPTION: AnswerOption = { id: "lab-your-own-option", label: "Your own option" };
+export const OWN_OPTION: AnswerOption = { id: "lab-your-own-option", label: "Your own answer" };
 
 /**
  * A question's options as choices: filled rows, each with a round marker, its label and detail, and "Suggested" on
@@ -72,7 +72,7 @@ export function AnswerOptions({ options: given, suggested, chosen, seconds, send
   /** The agent the answer goes to, named while it waits. */
   to?: string;
   chosen?: string;
-  /** "Your own option" as the last entry; `open` shows `box` (the text and Send) under it. */
+  /** "Your own answer" as the last entry; `open` shows `box` (the text and Send) under it. */
   own?: { open: boolean; box: ReactNode };
   seconds: number | null;
   sending: boolean;
@@ -105,7 +105,7 @@ export function AnswerOptions({ options: given, suggested, chosen, seconds, send
   </fieldset>;
 }
 
-/** What "Your own option" opens: a text box and Send. Send waits out the same undo window as a tap. */
+/** What "Your own answer" opens: a text box and Send. Send waits out the same undo window as a tap. */
 export function OwnAnswerBox({ text, disabled, onText, onSend }: { text: string; disabled: boolean; onText: (text: string) => void; onSend: () => void }) {
   return <div className="space-y-2 rounded-xl border border-border p-3">
     <textarea autoFocus rows={3} aria-label={OWN_OPTION.label} value={text} disabled={disabled} onInput={(event) => onText(event.currentTarget.value)}
