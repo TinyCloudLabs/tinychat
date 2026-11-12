@@ -248,7 +248,7 @@ async function seed(
     sourceId: input.sourceId,
     kind: input.kind,
     ...(input.title === undefined ? {} : { title: input.title }),
-    ...(input.ts === undefined ? {} : { ts: input.ts }),
+    ts: input.ts ?? new Date(T0).toISOString(),
     content: { text: input.text },
     fetchedAt: new Date(T0).toISOString(),
     receivedAt: new Date(T0).toISOString(),

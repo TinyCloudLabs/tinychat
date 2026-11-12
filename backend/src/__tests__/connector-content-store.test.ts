@@ -169,6 +169,7 @@ function upsertInput(
     content: { sentences: [TRANSCRIPT_TEXT] },
     fetchedAt: new Date(T0).toISOString(),
     receivedAt: new Date(T0 - 1_000).toISOString(),
+    ts: new Date(T0).toISOString(),
     ...overrides,
   };
 }
@@ -882,7 +883,8 @@ describe("W4 content store — retention", () => {
     await store.upsert(
       upsertInput({
         sourceId: "mtg-old",
-        ts: new Date(T0 + 100 * DAY_MS).toISOString(),
+        ts: new Date(clock.now + 60_000).toISOString(),
+        receivedAt: new Date(clock.now).toISOString(),
       }),
     );
     clock.now = T0 + 1_000;
@@ -949,7 +951,7 @@ describe("W4 content store — retention", () => {
     await store.upsert(
       upsertInput({
         sourceId: "mtg-future",
-        ts: new Date(T0 + 1_000 * 365 * DAY_MS).toISOString(),
+        ts: new Date(T0 + 60_000).toISOString(),
       }),
     );
     clock.now = T0 + 100 * DAY_MS;
@@ -1166,7 +1168,7 @@ describe("W4 content store — retention", () => {
     ).toBe(true);
   });
 
-  test("[delta-05] a legacy tombstone without an expiry is not kept", async () => {
+  test("[delta-05] a malformed tombstone without an expiry fails closed", async () => {
     const { store } = harness();
     const seedIndex = store as unknown as {
       writeIndex(source: string, address: string, index: unknown): Promise<void>;
@@ -1179,13 +1181,9 @@ describe("W4 content store — retention", () => {
       }],
     });
 
-    expect(
-      await store.tombstoned({
-        source: SOURCE,
-        address: ADDRESS_A,
-        meetingId: "mtg-legacy-tombstone",
-      }),
-    ).toBe(false);
+    await expect(store.tombstoned({
+      source: SOURCE, address: ADDRESS_A, meetingId: "mtg-legacy-tombstone",
+    })).rejects.toThrow("content index is unreadable");
   });
 
   test("[delta-05] the sweep touches ONLY the address it was asked for", async () => {
@@ -1488,6 +1486,8 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
       upsertInput({
         address: ADDRESS_B,
         sourceId: "mtg-out-of-cohort",
+        ts: new Date(clock.now).toISOString(),
+        receivedAt: new Date(clock.now).toISOString(),
       }),
     );
     clock.now = T0;
@@ -1516,6 +1516,8 @@ describe("W4 retention sweep — wired to the lease-holding instance", () => {
     await store.upsert(
       upsertInput({
         sourceId: "mtg-old",
+        ts: new Date(clock.now).toISOString(),
+        receivedAt: new Date(clock.now).toISOString(),
       }),
     );
     clock.now = T0;
@@ -2145,49 +2147,19 @@ describe("W4 content store — immutable expiry and replay protection", () => {
     ).toEqual({ ok: false, code: "meeting_too_old" });
     expect(await store.get(SOURCE, ADDRESS_A, id)).toBeNull();
   });
-  test("missing provider time uses the marker alone and logs without content", async () => {
+  test("missing, invalid and far-future provider dates are refused even after marker expiry", async () => {
     const { store, blobs, clock } = harness();
-    const id = "mtg-no-time-replay";
     const logs = captureLogs();
     try {
-      expect(await store.upsert(upsertInput({ sourceId: id }))).toMatchObject({
-        ok: true,
-        stored: "created",
-      });
-      expect(logs.lines.some((line) => line.includes("meeting_time_missing"))).toBe(true);
-      expect(logs.lines.join(" ")).not.toContain(id);
-      expect(logs.lines.join(" ")).not.toContain(ADDRESS_A);
-
-      clock.now = T0 + 15 * DAY_MS;
-      expect(
-        (await store.sweepRetention({ source: SOURCE, address: ADDRESS_A }))
-          .swept,
-      ).toBe(1);
-      const markers = await blobs.listReplayTombstones();
-      expect(markers).toHaveLength(1);
-      expect(markers[0]?.digest).toMatch(/^[a-f0-9]{64}$/);
-      expect(markers[0]?.marker?.expiresAt).toBe(
-        new Date(clock.now + 14 * DAY_MS).toISOString(),
-      );
-
-      await blobs.removeIndex(SOURCE, ADDRESS_A);
-      expect(
-        await store.upsert(upsertInput({ sourceId: id })),
-      ).toMatchObject({ ok: false, code: "retention_tombstoned" });
-
-      clock.now += 14 * DAY_MS - 1;
-      expect(await store.sweepExpiredReplayTombstones()).toBe(0);
-      clock.now += 1;
-      expect(await store.sweepExpiredReplayTombstones()).toBe(1);
-      expect(await blobs.listReplayTombstones()).toEqual([]);
-
-      expect(await store.upsert(upsertInput({ sourceId: id }))).toMatchObject({
-        ok: true,
-        stored: "created",
-      });
-    } finally {
-      logs.restore();
-    }
+      for (const ts of [undefined, "invalid", new Date(T0 + 5 * 60_000 + 1).toISOString()]) {
+        expect(await store.upsert(upsertInput({ sourceId: "invalid-time", ts }))).toEqual({ok:false, code:"meeting_time_invalid"});
+      }
+      clock.now += 30 * DAY_MS;
+      expect(await store.upsert(upsertInput({sourceId: "invalid-time", ts: undefined, receivedAt: new Date(clock.now).toISOString()}))).toEqual({ok:false, code:"meeting_time_invalid"});
+      expect(await blobs.read(SOURCE, ADDRESS_A, "invalid-time")).toBeNull();
+      expect(logs.lines.join(" ")).not.toContain("invalid-time");
+      expect(logs.lines.some(line => line.includes("meeting_time_invalid"))).toBe(true);
+    } finally { logs.restore(); }
   });
 
   test("expiry metadata is authenticated by the content envelope", async () => {
@@ -2235,3 +2207,41 @@ for (const time of ["00:00:00.001", "23:59:59.999"]) {
     expect(await blobs.read(SOURCE, ADDRESS_A, id)).toBeNull();
   });
 }
+
+test("an expired plaintext-ID tombstone is physically pruned with no live rows", async () => {
+  const { store, blobs } = harness();
+  const internal = store as any;
+  await internal.writeIndex(SOURCE, ADDRESS_A, {
+    meetings: [], tombstones: [{sourceId: "expired-id", sweptAt: new Date(T0 - 15 * DAY_MS).toISOString(), expiresAt: new Date(T0 - DAY_MS).toISOString()}],
+  });
+  const before = await blobs.readIndex(SOURCE, ADDRESS_A);
+  await store.sweepRetention({source: SOURCE, address: ADDRESS_A});
+  const after = await blobs.readIndex(SOURCE, ADDRESS_A);
+  expect(after?.ciphertext).not.toBe(before?.ciphertext);
+  expect(JSON.parse(internal.unseal(SOURCE, ADDRESS_A, "index", after)).tombstones).toEqual([]);
+});
+
+test("a malformed index tombstone isolates failure while both owners' valid expired blobs are swept", async () => {
+  const { store, blobs, clock } = harness();
+  await store.upsert(upsertInput({ sourceId: "owner-a-good" }));
+  await store.upsert(upsertInput({ sourceId: "owner-a-bad" }));
+  await store.upsert(upsertInput({ sourceId: "owner-b-good", address: ADDRESS_B }));
+  const bad = await blobs.read(SOURCE, ADDRESS_A, "owner-a-bad");
+  await blobs.write(SOURCE, ADDRESS_A, "owner-a-bad", { ...bad!, expiresAt: "malformed" });
+  await (store as any).writeIndex(SOURCE, ADDRESS_A, {
+    meetings: await store.list(SOURCE, ADDRESS_A),
+    tombstones: [{ sourceId: "malformed-tombstone", sweptAt: new Date(T0).toISOString() }],
+  });
+  clock.now = T0 + 15 * DAY_MS;
+  const sweeper = new IngestRetentionSweeper({
+    content: store,
+    indexes: async () => [ADDRESS_A, ADDRESS_B].map(address => ({ source: SOURCE, address })),
+  });
+  const result = await sweeper.sweepOnce();
+  expect(result.addresses).toBe(2);
+  expect(result.swept).toBe(2);
+  expect(await blobs.read(SOURCE, ADDRESS_A, "owner-a-good")).toBeNull();
+  expect(await blobs.read(SOURCE, ADDRESS_B, "owner-b-good")).toBeNull();
+  expect(await blobs.read(SOURCE, ADDRESS_A, "owner-a-bad")).not.toBeNull();
+  await expect(store.list(SOURCE, ADDRESS_A)).rejects.toThrow("content index is unreadable");
+});

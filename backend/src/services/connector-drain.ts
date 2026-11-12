@@ -8,6 +8,7 @@ import type {
 import {
   AWAITING_TRANSCRIPT,
   DEAD_KEY_PREFIX,
+  CORRUPT_KEY_PREFIX,
   DELEGATION_UNUSABLE,
   LEDGER_UNAVAILABLE,
   NON_BURNING_ERRORS,
@@ -29,6 +30,7 @@ import { runInWriteLane } from "./write-lane.js";
 // Must match PURGE_LEDGER_KEY_PREFIX in connector-webhooks.ts. Kept local to avoid a runtime
 // cycle: connector-webhooks imports the drain's replay-marker helpers.
 const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
+const CORRUPT_PURGE_LEDGER_KEY_PREFIX = "webhooks/corrupt/purged";
 
 /**
  * The drain worker (§5.4/§5.5/§6.1 step -1/§3.6) — all four triggers, the per-address
@@ -1231,7 +1233,7 @@ export function createWebhookQueueDirectory(
   node: TinyCloudNode,
 ): () => Promise<ConnectorRetentionAddress[]> {
   return async () => {
-    const prefixes = [PENDING_KEY_PREFIX, DEAD_KEY_PREFIX];
+    const prefixes = [PENDING_KEY_PREFIX, DEAD_KEY_PREFIX, CORRUPT_KEY_PREFIX];
     const entries = new Map<string, ConnectorRetentionAddress>();
     for (const prefix of prefixes) {
       for (const address of retentionAddresses(await listWebhookKeys(node, prefix), prefix)) {
@@ -1245,11 +1247,15 @@ export function createWebhookQueueDirectory(
 export function createWebhookPurgeLedgerDirectory(
   node: TinyCloudNode,
 ): () => Promise<ConnectorRetentionAddress[]> {
-  return async () =>
-    retentionAddresses(
-      await listWebhookKeys(node, PURGE_LEDGER_KEY_PREFIX),
-      PURGE_LEDGER_KEY_PREFIX,
-    );
+  return async () => {
+    const entries = new Map<string, ConnectorRetentionAddress>();
+    for (const prefix of [PURGE_LEDGER_KEY_PREFIX, CORRUPT_PURGE_LEDGER_KEY_PREFIX]) {
+      for (const entry of retentionAddresses(await listWebhookKeys(node, prefix), prefix)) {
+        entries.set(`${entry.source}/${entry.address}`, entry);
+      }
+    }
+    return [...entries.values()];
+  };
 }
 
 

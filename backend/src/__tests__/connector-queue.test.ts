@@ -1027,6 +1027,7 @@ describe("container-level recovery", () => {
     await expect(
       queue.enqueue(SOURCE, ADDRESS, { meetingId: "M1", kind: "transcript" }),
     ).resolves.toMatchObject({ status: "queued" });
+    expect((stored(node, PENDING_KEY) as unknown[]).length).toBe(1);
     expect(stored(node, DEAD_KEY)).toEqual([]);
   });
 });

@@ -817,6 +817,9 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
     item: PendingItem,
     secret: CredentialSecret,
   ): Promise<ItemOutcome> {
+    const receiptExpired = () => !Number.isFinite(Date.parse(item.receivedAt)) ||
+      this.now() >= Date.parse(item.receivedAt) + 14 * 86_400_000;
+    if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };
     // 1. Retention / purge tombstones (delta 5, W4/W7). Checked BEFORE the upstream call: a
     //    swept or purged meeting must cost neither a fetch nor a store.
     if (this.deps.retention !== undefined) {
@@ -863,6 +866,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       if (this.inFlightUpstream > this.counters.peakUpstreamConcurrency) {
         this.counters.peakUpstreamConcurrency = this.inFlightUpstream;
       }
+      if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };
       this.lastCallAt.set(key, this.now());
       result = await this.fetchWithTimeout(target.source, item, secret);
     } finally {
@@ -958,6 +962,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       receivedAt: item.receivedAt,
     };
 
+    if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };
     let stored: unknown;
     try {
       stored = await this.deps.content.upsert(upsert);
