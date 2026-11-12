@@ -239,11 +239,32 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
   const cards = labCards(now);
   // Cards you answered earlier, made as you pull down for them; they load as the feed's history.
   const archived: LabCard[] = [];
-  // The agent's replies to your comments on plain cards, as `payload.replies` on the card.
-  const plainReplies = new Map<string, { text: string; at: string }[]>();
+  // The agent's replies to your comments on plain cards, as `payload.replies` on the card. `replyTo` is the id of the
+  // comment answered (Sam, 11-12: the agent replies to something you said, like iMessage). The real feed has no
+  // such field on a reply yet: it would need a reply-to reference on agent replies.
+  const plainReplies = new Map<string, { text: string; at: string; replyTo?: string }[]>();
   let more = 0;
   const saved: { response: FeedResponse; payload?: FeedResponsePayload }[] = [];
   const handling = new Map<string, FeedResponseHandling>();
+  // A conversation already under the water filter card: two of your comments, the first answered twice, the
+  // second once, each reply pointing at its comment.
+  {
+    const filter = cards.find((labCard) => labCard.card.cardId === "lab-filter")!;
+    const at = (minutes: number) => new Date(now + minutes * 60_000).toISOString();
+    const comment = (text: string, minutes: number) => {
+      const response: FeedResponse = { responseId: crypto.randomUUID(), cardId: filter.card.cardId, revision: filter.card.revision, issuanceId: filter.card.issuanceId, kind: "message", text, createdAt: at(minutes), sequence: saved.length + 1 };
+      saved.push({ response });
+      handling.set(response.responseId, { acknowledgement: { cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId, handlingId: crypto.randomUUID(), phase: "acknowledged", createdAt: at(minutes + 0.5) }, outcome: null });
+      return response.responseId;
+    };
+    const wait = comment("Can it wait until the next order on the 3rd?", -32);
+    const left = comment("How many filters do we have left?", -27);
+    plainReplies.set(ownerCardKey(filter.source.sourceId, filter.card), [
+      { text: "It can. Skipping now moves the order to the 3rd, with no fee.", at: at(-31), replyTo: wait },
+      { text: "You'd still have one unopened filter to use until then.", at: at(-30.5), replyTo: wait },
+      { text: "One, unopened, in the hall cupboard.", at: at(-26), replyTo: left },
+    ]);
+  }
   const views = new Map<string, { seenAt?: string; snoozedUntil?: string; events: HomeFeedViewEvent[] }>();
   const states = new Map<string, { eventId: string; state: SamState }[]>();
   const heldNotes = new Map<string, SitrepHeldNote[]>();
@@ -356,7 +377,7 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
         const text = message.text;
         later(LAB_REPLY_RECEIVED_MS, () => report(stored, "acknowledged"));
         later(LAB_REPLY_MS, () => {
-          plainReplies.set(keyOf(entry), [...(plainReplies.get(keyOf(entry)) ?? []), { text: labReplyText(text), at: new Date().toISOString() }]);
+          plainReplies.set(keyOf(entry), [...(plainReplies.get(keyOf(entry)) ?? []), { text: labReplyText(text), at: new Date().toISOString(), replyTo: stored.responseId }]);
           notify();
         });
       }

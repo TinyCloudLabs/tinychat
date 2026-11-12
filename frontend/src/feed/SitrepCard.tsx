@@ -34,6 +34,8 @@ interface Props {
   onNavigate: (entry: HomeFeedEntry) => void;
   /** The card's reference line, kept with the other wiring under Details. */
   reference?: ReactNode;
+  /** At the far end of the card's foot: "Show less" on a card opened from the list. */
+  end?: ReactNode;
 }
 type AskAnswer = { action: "answer" | "drop" | "accept-default"; choice?: string };
 
@@ -254,7 +256,7 @@ export function SitrepCard(props: Props) {
     {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className="text-xs text-muted-foreground">{response.reason}. Saved transport record preserved; no question decision inferred.</p>)}
     {/* The card's foot (Sam, 11-12): Ask me later beside Details (who posted it, its history, its wiring). */}
     <div className="border-t border-border pt-3">
-      <CardDetails actions={<button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}>
+      <CardDetails end={props.end} actions={<button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}>
         <p>{record.kind} · {record.status} · {record.id}</p>
         <p>Posted by {entry.source.label} · {entry.source.agentDid}{record.from !== entry.source.label && ` · from ${record.from}`}</p>
         {record.owner && <p>Agent working on this: {record.owner}</p>}

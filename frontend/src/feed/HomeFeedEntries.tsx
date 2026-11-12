@@ -595,19 +595,18 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       <div hidden={!!fold && !fold.open}>
         <FeedCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} status={unsupported ? undefined : cardStatus(entry, context?.projection, clock, author)} onAuthor={() => setAgentView(agentKey(entry, context?.record))} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}>
           <ReportLink entry={entry} />
-          {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} />
-            : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-3"><CardDetails>{reference}</CardDetails></div></div>
+          {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} end={fewer || undefined} />
+            : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-3"><CardDetails end={fewer || undefined}>{reference}</CardDetails></div></div>
             : <div className="mt-4 space-y-4">
               <AnswerForm key={key} entry={entry} source={source} onSaved={onSaved} onAnswered={onAnswered} />
               <PlainThread entry={entry} source={source} onSaved={onSaved} />
               {/* The card's foot (Sam, 11-12): Ask me later beside Details; its times open under it. */}
-              <div className="border-t border-border pt-3"><CardDetails actions={needsAttention(entry, clock) && <button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={actionClass}>Ask me later</button>}>
+              <div className="border-t border-border pt-3"><CardDetails end={fewer || undefined} actions={needsAttention(entry, clock) && <button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={actionClass}>Ask me later</button>}>
                 <p>Posted by {entry.source.label} · {entry.source.agentDid}</p><p>{entry.state.card.kind}</p><CardHistory entry={entry} />{reference}</CardDetails></div>
               {later && needsAttention(entry, clock) && <section aria-label="Ask me later" className="space-y-2 rounded-xl border border-border p-3 text-sm"><p className="font-medium">Ask me again</p>
                 <div className="flex flex-wrap gap-2">{snoozePresets(clock).slice(0, 3).map((preset) => <button key={preset.id} type="button" disabled={viewBusy} onClick={() => void snooze(entry, preset.until)} className={actionClass}>{preset.label}</button>)}</div>
               </section>}
             </div>}
-          {fewer && <div className="mt-2 flex justify-end">{fewer}</div>}
         </FeedCardView>
       </div>
     </div>;

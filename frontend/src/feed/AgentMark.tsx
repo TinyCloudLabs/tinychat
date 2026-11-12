@@ -50,12 +50,16 @@ export function agentProfile(payload: Record<string, unknown> | undefined): Agen
 
 // White letters on each of these pass 4.5:1, and each stands out on the light and the dark background.
 const MARK_COLOURS = ["bg-sky-700", "bg-emerald-700", "bg-violet-700", "bg-amber-700", "bg-rose-700", "bg-teal-700", "bg-indigo-700", "bg-fuchsia-700"] as const;
-/** An agent's colour, from its key (agentKey): the same agent always gets the same one. */
+/**
+ * An agent's colour, from its key (agentKey). Colours go out in order of first appearance on the page, so the first
+ * eight agents shown never share one (design critique #11: a hash gave Studio and Kiln the same teal); the same
+ * agent keeps its colour for as long as the page is open.
+ */
+const given = new Map<string, string>();
 export function markColour(key: string): string {
-  // FNV-1a, with its high bits folded in: a plain multiply-by-31 hash leaves the low bits to only a few characters.
-  let hash = 0x811c9dc5;
-  for (const char of key) hash = Math.imul(hash ^ char.codePointAt(0)!, 0x01000193) >>> 0;
-  return MARK_COLOURS[((hash ^ (hash >>> 16)) >>> 0) % MARK_COLOURS.length]!;
+  let colour = given.get(key);
+  if (!colour) { colour = MARK_COLOURS[given.size % MARK_COLOURS.length]!; given.set(key, colour); }
+  return colour;
 }
 export const markLetter = (name: string) => (name.match(/[\p{L}\p{N}]/u)?.[0] ?? "?").toLocaleUpperCase();
 
