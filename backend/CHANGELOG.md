@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.11
+
+### Patch Changes
+
+- 78c73f1: Support a bots service connection host with TLS verification against the service URL identity. Details: TC-2808
+
 ## 0.8.0-beta.10
 
 ### Patch Changes

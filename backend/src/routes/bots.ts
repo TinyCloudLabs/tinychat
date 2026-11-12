@@ -3,6 +3,7 @@
 // The owner is always the authenticated session address; the body and request headers never choose it.
 // The service secret stays server-side. Message content is neither logged nor stored here.
 
+import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 
@@ -29,6 +30,8 @@ export function botOwnerDid(address: string): string {
  * BOTS_TEST_ACCOUNTS are set. The single entry `*` admits every account; an empty list admits nobody.
  */
 export function botsFromEnv(env: Record<string, string | undefined>): BotsConfig | undefined {
+  const connectHost = env.BOTS_SERVICE_CONNECT_HOST?.trim();
+  if (connectHost) validateBotsConnectHost(env.BOTS_SERVICE_URL ?? "", connectHost);
   if (env.BOTS_ENABLED !== "true") return undefined;
   const serviceUrl = env.BOTS_SERVICE_URL?.trim().replace(/\/$/, "");
   const serviceSecret = env.BOTS_SERVICE_SECRET;
@@ -40,6 +43,7 @@ export function botsFromEnv(env: Record<string, string | undefined>): BotsConfig
   const postTimeoutMs = Number(env.BOTS_POST_TIMEOUT_MS ?? "");
   return {
     serviceUrl, serviceSecret,
+    ...(connectHost ? { fetchImpl: botsConnectFetch(serviceUrl, connectHost) } : {}),
     postTimeoutMs: Number.isInteger(postTimeoutMs) && postTimeoutMs > 0 ? postTimeoutMs : 120_000,
     accountAllowed: address => accounts.has("*") || accounts.has(address.toLowerCase()) };
 }
