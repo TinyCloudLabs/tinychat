@@ -122,6 +122,7 @@ import {
   type GmeetSyncStage,
 } from "@/lib/connectors/gmeetSyncLog";
 import { resolveBuildInfo } from "@/lib/buildInfo";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import {
   GOOGLE_MEET_CONSENT_COPY,
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
@@ -777,6 +778,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   onConnected,
 }) => {
   const [phase, setPhase] = useState<OAuthConnectPhase>("authorize");
+  // From the popup to the end of the first sync, this page holds the PKCE verifier and the popup posts back to
+  // this origin: a held tinycloud.chat page must not move mid-flow.
+  useOriginMoveDeferral(phase !== "authorize" && phase !== "done" && phase !== "error");
   const transcriptConsent = useSyncExternalStore(
     subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
   );

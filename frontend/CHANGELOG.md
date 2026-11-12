@@ -15,6 +15,65 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.26
+
+### Patch Changes
+
+- 31c1323: tinycloud.chat notice: one recording that belongs to another account now reads "…Sign in to that account here to save it." The Library's "Audio only in this browser" filter, when empty, says "No recordings have audio only in this browser." Details: TC-2050
+
+## 0.14.0-beta.25
+
+### Patch Changes
+
+- b557fb0: tinycloud.chat: the notice on a tab kept there says why, one line per reason (audio only in this browser, recordings in no account yet, another account's recordings), and each count links to where to deal with them. Several recordings with audio only in this browser open the Library's new "Audio only in this browser" filter. Details: TC-2050
+
+## 0.14.0-beta.24
+
+### Minor Changes
+
+- 20598f6: One TinyCloud Home: home.tinycloud.xyz, tinycloud.chat, the desktop app and the mobile apps now run the same build. The `VITE_HOME_SITE` build flag, its separate production upload job and the Home-only sign-in grant (`manifest.home.json`) are gone.
+  - Every platform opens on Feed, named Home, with the tabs Home, Chat, Apps, Recording and Connectors in that order. Signed out on the web you see the Home front page with its demo feed, and the install prompt waits until you have signed in.
+  - Every web build signs in with `manifest.json`'s storage, without the connector secrets or the decrypt grant until this device has used Connectors. Opening Connectors the first time asks OpenKey for them in place, once. Recording no longer asks for its own permission, and Local copy, Agent access, Conversation Canvas and every Settings section are available on home.tinycloud.xyz too. If you signed in on home.tinycloud.xyz under the narrower Home grant, you sign in once more. The desktop and mobile apps sign in as before.
+  - tinycloud.chat moves you to home.tinycloud.xyz with the same path, query and `#` link. If this browser still holds recordings that are only saved on tinycloud.chat, you stay there with a notice and move automatically once they are saved.
+
+  Details: TC-2050
+
+## 0.14.0-beta.23
+
+### Patch Changes
+
+- 7b41d89: Android: TinyCloud Home's package is now `xyz.tinycloud.home`, the same id as the iPhone app, ahead of its first Google Play release. To Android it is a new app: an installed debug or sideloaded `xyz.tinycloud.exo` build does not update in place. Open the old build and let its pending recordings upload, then uninstall it (uninstalling deletes its local data, and both builds answer the same `xyz.tinycloud.exo://` sign-in link), install the new one and sign in again. Sign-in and Google return links are unchanged. Details: TC-2846
+
+## 0.14.0-beta.22
+
+### Patch Changes
+
+- 4143792: Remove the transcript-share action from note detail. Transcript sharing returns through the TC-2525 SDK adoption.
+
+  Details: TC-2845, TC-2192
+
+## 0.14.0-beta.21
+
+### Minor Changes
+
+- e5f9e06: Share links you open or create are now kept in your TinyCloud space (`xyz.tinycloud.tinychat/threads/shared-with-me/`, inside the existing `threads/` grant), so they follow your account to other devices and to the new Home address (TC-2830). The browser keeps only a per-account copy, which is cleared at sign-out. The first account to sign in on a browser takes over that browser's old list, once. A link opened while signed out is saved only if you then sign in on that same page.
+
+## 0.14.0-beta.20
+
+### Patch Changes
+
+- f4853a8: Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
+
+  Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
+
+  Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
+
+  Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
+  Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
+  Details: TC-2192
+
 ## 0.14.0-beta.19
 
 ### Patch Changes

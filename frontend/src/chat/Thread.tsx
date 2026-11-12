@@ -54,6 +54,7 @@ import {
 } from "@/lib/billingApi";
 import { copyText } from "@/lib/copyText";
 import { isLocalThreadStorage } from "@/lib/threadStore";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
@@ -63,6 +64,7 @@ import {
   type OwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
+import { sharedWithMeVersion, subscribeSharedWithMe } from "@/lib/sharedWithMe";
 import { canOfferChatShare } from "@/lib/chatSharing";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
@@ -251,7 +253,9 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
 
   // `visible` gates whether the share button renders at all — only once a
   // chat exchange exists (not empty, history loaded). `canShare` additionally
-  // pauses actions while a share link is being created.
+  // pauses actions while a share link is being created. Subscribing re-renders
+  // when the account's share list syncs from its space.
+  useSyncExternalStore(subscribeSharedWithMe, sharedWithMeVersion);
   const hasExistingShare = Boolean(threadId && findStoredTinychatShareForThread(threadId));
   const visible = Boolean(
     !isLocalThreadStorage(tcw) &&
@@ -560,6 +564,8 @@ const WELCOME_SUGGESTIONS = [
 // above the tab bar it needs no safe area (the bar has it), over the keyboard
 // it tightens to 8 px, and at the screen's edge it clears the home indicator.
 const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boolean }> = ({ selection, toolbar, isEmpty }) => {
+  // A typed draft and a reply being written live only in this page: a held tinycloud.chat page must not move under them.
+  useOriginMoveDeferral(useAuiState((s) => s.thread.isRunning || s.composer.text.trim() !== ""));
   return (
     <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 [html[data-keyboard=open]_&]:pb-2 [html[data-nav=tabbar]:not([data-keyboard=open])_&]:pb-3">
       <div className="relative">

@@ -28,12 +28,12 @@ test("same-tab return restores only its stored PKCE verifier and consumes the co
 const NONCE = "abcdefghijklmnopqrstuvwx";
 const b64url = (text: string) => btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 
-test("popup states: untagged on the plain build, home.<nonce> on the Home site", () => {
+test("popup states: home.<nonce> on home.tinycloud.xyz, untagged elsewhere", () => {
   expect(popupOAuthState(NONCE, false)).toBe(NONCE);
   expect(popupOAuthState(NONCE, true)).toBe(`home.${NONCE}`);
 });
 
-test("same-tab states: tab.<path>.<nonce> on the plain build, hometab.<path>.<nonce> on the Home site", () => {
+test("same-tab states: hometab.<path>.<nonce> on home.tinycloud.xyz, tab.<path>.<nonce> elsewhere", () => {
   expect(sameTabState("/chat/connectors", NONCE, false)).toBe(`tab.${b64url("/chat/connectors")}.${NONCE}`);
   expect(sameTabState("/chat/connectors", NONCE, true)).toBe(`hometab.${b64url("/chat/connectors")}.${NONCE}`);
 });

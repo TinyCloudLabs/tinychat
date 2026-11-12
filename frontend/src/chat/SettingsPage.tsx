@@ -45,8 +45,6 @@ import { WordFixesSettings } from "./WordFixesSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { ReplicationSettings } from "../lib/replication/ReplicationSettings";
-import { HOME_SITE } from "../lib/homeSite";
-import { HomeFeatureGate, useHomeFeatureAccess } from "../shell/homeFeatureAccess";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
@@ -104,7 +102,6 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const { hash } = useLocation();
   const agentAccess = useAgentAccess();
-  const recordingCovered = useHomeFeatureAccess().covered("recording");
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
   const compact = useSizeClass().size === "compact";
   const usage = billingStatus?.usage;
@@ -209,8 +206,6 @@ export function SettingsPage({
           <SectionCard icon={LayoutGridIcon} title="Home">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
-          {/* Agent access offers meeting access to agents, which the Home site does not. */}
-          {!HOME_SITE && (<>
           <SectionCard
             id="agent-access"
             icon={ShieldCheckIcon}
@@ -224,7 +219,6 @@ export function SettingsPage({
             <AgentAccessControls {...agentAccess} />
           </SectionCard>
           <AgentSetupCard />
-          </>)}
           <SectionCard icon={BrainIcon} title="Memory">
             <MemoryPanel
               variant="inline"
@@ -233,10 +227,8 @@ export function SettingsPage({
               onMemoryUpdated={onMemoryUpdated}
             />
           </SectionCard>
-          {/* Recording's sections: on the Home site they ask for Recording's permission in place until it is given. */}
-          <HomeFeatureGate feature="recording"><TranscriptionSettings tcw={tcw} /></HomeFeatureGate>
+          <TranscriptionSettings tcw={tcw} />
           <WordFixesSettings tcw={tcw} />
-          {recordingCovered && (<>
           <SectionCard icon={BookOpenIcon} title="Meeting summaries">
             <AutomaticSummariesSettings tcw={tcw} />
           </SectionCard>
@@ -245,7 +237,6 @@ export function SettingsPage({
               <VoiceNotesTranscriberSettings />
             </SectionCard>
           )}
-          </>)}
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
             <BackendAttestationPanel
               backendUrl={backendUrl}
@@ -253,13 +244,10 @@ export function SettingsPage({
             />
           </SectionCard>
           <DebugLogRow />
-          {recordingCovered && (
-            <SectionCard icon={DatabaseIcon} title="Audio storage">
-              <AudioCacheSettings />
-            </SectionCard>
-          )}
-          {/* Local copy (replication) stays off on the Home site. */}
-          {!HOME_SITE && <ReplicationSettings tcw={tcw} />}
+          <SectionCard icon={DatabaseIcon} title="Audio storage">
+            <AudioCacheSettings />
+          </SectionCard>
+          <ReplicationSettings tcw={tcw} />
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.

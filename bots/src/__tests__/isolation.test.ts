@@ -38,7 +38,7 @@ function specFor(owner: string, token: string) {
 
 const pathsOf = (layout: BotLayout) => [
   layout.dataDir,
-  layout.stateImage,
+  layout.stateSnapshot,
   layout.bundleDir,
   layout.stateMount,
   layout.egressDir,
@@ -81,7 +81,7 @@ describe("owner to bot isolation", () => {
 });
 
 describe("sandbox mounts", () => {
-  test("exactly the runsc defaults, a capped /tmp, and the bot's own egress (read-only) and state (read-write)", () => {
+  test("exactly the runsc defaults, a capped /tmp, and the bot's own egress (read-only) and state (read-write, noexec)", () => {
     const { layout, spec } = specFor(A, "1".repeat(64));
     expect(spec.mounts).toEqual([
       { destination: "/proc", type: "proc", source: "proc" },
@@ -94,7 +94,12 @@ describe("sandbox mounts", () => {
         source: `/egress/${layout.botId}`,
         options: ["rbind", "ro", "nosuid", "nodev", "noexec"],
       },
-      { destination: "/root/bot", type: "bind", source: `/run/bots/${layout.botId}/state`, options: ["rbind", "rw", "nosuid", "nodev"] },
+      {
+        destination: "/root/bot",
+        type: "bind",
+        source: `/run/bots/${layout.botId}/state`,
+        options: ["rbind", "rw", "nosuid", "nodev", "noexec"],
+      },
     ]);
     // The egress mount is the bot's own directory, never the shared volume root holding the control socket.
     expect(spec.mounts.some(mount => mount.source === roots.egressRoot || mount.source === "/run")).toBe(false);

@@ -52,16 +52,16 @@ const GRID = {
   sidebar: "grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)]",
 } as const;
 
-/** The Home site's navigation around the real Home feed. */
+/** The app's navigation around the real Home feed. */
 function Home({ ask }: { ask: ReactNode }) {
   const nav = navKindFor(useSizeClass());
-  const navProps = { items: navItems(0, true), current: "feed" as const, replace: false, onReselect: () => {} };
+  const navProps = { items: navItems(0), current: "feed" as const, replace: false, onReselect: () => {} };
   return (
     <div className={cn("grid h-[100dvh] min-h-0 bg-background text-foreground", GRID[nav])}>
       {nav === "sidebar" ? <Sidebar {...navProps} settings /> : null}
       {nav === "rail" ? <NavRail {...navProps} settings /> : null}
       <div className="min-h-0 min-w-0" data-surface="feed">
-        <HomeFeedEntries source={EMPTY_FEED} homeSite ask={ask} />
+        <HomeFeedEntries source={EMPTY_FEED} ask={ask} />
       </div>
       {nav === "tabbar" ? <TabBar {...navProps} /> : null}
     </div>
