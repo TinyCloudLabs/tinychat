@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.15
+
+### Patch Changes
+
+- 915a8f9: Stop webhook admission on Fireflies disconnect, close the in-flight enqueue race, and retain purge-ledger ID timestamps without extending them on retries.
+
 ## 0.8.0-beta.14
 
 ### Patch Changes
