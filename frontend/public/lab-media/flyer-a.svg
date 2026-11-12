@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" width="600" height="750">
+<rect width="600" height="750" fill="#C8643B"/>
+<path d="M120 640 V330 A180 180 0 0 1 480 330 V640z" fill="#2B1D16"/>
+<path d="M170 640 V350 A130 130 0 0 1 430 350 V640z" fill="#F2A65A" opacity=".9"/>
+<circle cx="300" cy="470" r="90" fill="#FFD9A0" opacity=".55"/>
+<text x="300" y="120" text-anchor="middle" font-family="DejaVu Serif, Georgia, serif" font-size="76" font-weight="700" fill="#FFF4E6">Open day</text>
+<text x="300" y="185" text-anchor="middle" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="30" fill="#FFF4E6" letter-spacing="4">SATURDAY 23 · 10–16</text>
+<text x="300" y="705" text-anchor="middle" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="24" fill="#2B1D16" letter-spacing="3">THE KILN OPENS AT NOON</text></svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" width="600" height="750">
+<rect width="600" height="750" fill="#FFFFFF"/>
+<text x="40" y="100" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="54" font-weight="700" fill="#1A1917">STUDIO OPEN DAY</text>
+<text x="40" y="160" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="28" fill="#57544D">Saturday 23 · 10–16 · free</text>
+<rect x="40" y="220" width="160" height="150" rx="10" fill="#3D6B5E"/><rect x="220" y="220" width="160" height="150" rx="10" fill="#C8643B"/><rect x="400" y="220" width="160" height="150" rx="10" fill="#E9DCC8"/><rect x="40" y="390" width="160" height="150" rx="10" fill="#2F4A73"/><rect x="220" y="390" width="160" height="150" rx="10" fill="#C9A227"/><rect x="400" y="390" width="160" height="150" rx="10" fill="#8E3B2E"/>
+<text x="40" y="700" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="22" fill="#57544D">Six glazes, one kiln, everyone welcome</text></svg>
