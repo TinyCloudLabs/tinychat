@@ -123,6 +123,11 @@ for (const theme of THEMES) {
         expect(apart(area, pause)).toBe(true);
         // Every bar is still drawn: at least 1 px wide.
         for (const bar of bars) expect(bar.right - bar.left).toBeGreaterThan(1);
+        // Pause and Stop are 44 px touch targets; 0.5 px is sub-pixel rounding only.
+        for (const button of [pause, stop]) {
+          expect(button.right - button.left).toBeGreaterThanOrEqual(44 - 0.5);
+          expect(button.bottom - button.top).toBeGreaterThanOrEqual(44 - 0.5);
+        }
         await page.context().close();
       });
     }
