@@ -11,8 +11,8 @@ import { installDom } from "@/test/dom";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 
 // App Store 5.1.1(v): Settings → Account offers "Delete OpenKey account", which opens
-// OpenKey's deletion page outside the app. App Store 5.1.1(i): it also links the privacy
-// policy, on every platform.
+// OpenKey's deletion page outside the app.
+// App Store 5.1.1(i): it also links the privacy policy, on every platform.
 
 let cleanDom: (() => void) | undefined;
 let previousCustomElements: PropertyDescriptor | undefined;
