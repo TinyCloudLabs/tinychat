@@ -4,11 +4,13 @@
 import { ChevronLeftIcon } from "lucide-react";
 import type { FeedResponse } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
+import { AgentDetails, AgentMark, agentProfile, PlatformName, type AgentProfile } from "./AgentMark";
 import { answerSummary } from "./AnswerOptions";
 import { answerHandling } from "./AnswerSteps";
 import { cardAuthor, ReplyBox, replyRoute, usePostReply } from "./CardReply";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
 import { cardThread, messageRecipient } from "./HomeCardThread";
+import { ShortTime } from "./ShortTime";
 import type { TypedCardContext } from "./sitrepProjection";
 
 export interface AgentLine {
@@ -29,6 +31,8 @@ export interface AgentThread {
   needsYou: number;
   /** The newest card that can take a reply. */
   replyCard?: { entry: HomeFeedEntry; record: BoardRecord };
+  /** What the agent said about itself on its newest card that says anything. */
+  profile?: AgentProfile;
 }
 
 /** One agent: the crew member named on its cards, within the connection that posts them. */
@@ -69,6 +73,7 @@ function linesOf(entry: HomeFeedEntry, context: TypedCardContext | undefined, ag
 /** Every agent in the feed with its lines in time order, newest activity first. */
 export function agentThreads(entries: readonly HomeFeedEntry[], contextFor: (entry: HomeFeedEntry) => TypedCardContext | undefined, source: HomeFeedSource, needsYou: (entry: HomeFeedEntry) => boolean): AgentThread[] {
   const agents = new Map<string, AgentThread>();
+  const profiled = new Map<string, string>();
   for (const entry of entries) {
     const context = contextFor(entry);
     const author = cardAuthor(entry, context?.record);
@@ -76,6 +81,8 @@ export function agentThreads(entries: readonly HomeFeedEntry[], contextFor: (ent
     const agent = agents.get(key) ?? agents.set(key, { key, ...author, lines: [], needsYou: 0 }).get(key)!;
     agent.lines.push(...linesOf(entry, context, author.name));
     if (needsYou(entry)) agent.needsYou++;
+    const profile = agentProfile(entry.state.card.payload);
+    if (profile && (profiled.get(key) ?? "") <= entry.state.card.createdAt) { agent.profile = profile; profiled.set(key, entry.state.card.createdAt); }
     if (context && replyRoute(entry, context.record, source).to && (!agent.replyCard || agent.replyCard.entry.state.card.createdAt < entry.state.card.createdAt)) agent.replyCard = { entry, record: context.record };
   }
   for (const agent of agents.values()) agent.lines.sort((a, b) => a.at.localeCompare(b.at));
@@ -95,10 +102,14 @@ export function AgentList({ agents, now, onOpen }: { agents: AgentThread[]; now:
     {!agents.length && <p className="text-sm text-muted-foreground">No agent has posted yet.</p>}
     <ul className="space-y-2">{agents.map((agent) => {
       const last = agent.lines.at(-1);
-      return <li key={agent.key}><button type="button" onClick={() => onOpen(agent.key)} className="block min-h-11 w-full rounded-xl border border-border bg-card px-3 py-2 text-left text-sm">
-        <span className="flex items-baseline gap-2"><span className="min-w-0 flex-1 break-words font-semibold">{agent.name}{agent.via && <span className="font-normal text-muted-foreground"> · via {agent.via}</span>}</span>{last && <time dateTime={last.at} className="shrink-0 text-xs text-muted-foreground">{ago(last.at, now)}</time>}</span>
-        {agent.needsYou > 0 && <span className="mt-1 block text-xs font-medium">Needs you: {agent.needsYou} {agent.needsYou > 1 ? "cards" : "card"}</span>}
-        {last && <span className="mt-1 line-clamp-2 block break-words text-muted-foreground">{lineText(last)}</span>}
+      return <li key={agent.key}><button type="button" onClick={() => onOpen(agent.key)} className="flex min-h-11 w-full items-start gap-3 rounded-xl border border-border bg-card px-3 py-3 text-left text-sm">
+        <AgentMark agentKey={agent.key} name={agent.name} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline gap-2"><span className="min-w-0 flex-1 break-words font-semibold">{agent.name}{agent.via && <span className="font-normal text-muted-foreground"> · via {agent.via}</span>}</span>{last && <time dateTime={last.at} className="shrink-0 text-xs text-muted-foreground">{ago(last.at, now)}</time>}</span>
+          {agent.profile?.platform && <span className="mt-1 flex text-xs text-muted-foreground"><PlatformName platform={agent.profile.platform} /></span>}
+          {agent.needsYou > 0 && <span className="mt-1 block text-xs font-medium">Needs you: {agent.needsYou} {agent.needsYou > 1 ? "cards" : "card"}</span>}
+          {last && <span className="mt-1 line-clamp-2 block break-words text-muted-foreground">{lineText(last)}</span>}
+        </span>
       </button></li>;
     })}</ul>
   </section>;
@@ -112,15 +123,20 @@ export function AgentConversation({ agent, source, onSaved, onBack, onOpenCard }
   onOpenCard: (entry: HomeFeedEntry) => void;
 }) {
   return <section aria-label={`Conversation with ${agent.name}`} className="space-y-4">
-    <div className="flex items-center gap-2">
-      <button type="button" onClick={onBack} className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-lg border border-border px-3 text-sm"><ChevronLeftIcon aria-hidden className="size-4" />Agents</button>
-      <h2 className="min-w-0 break-words font-display text-xl font-semibold">{agent.name}{agent.via && <span className="font-sans text-sm font-normal text-muted-foreground"> · via {agent.via}</span>}</h2>
+    <button type="button" onClick={onBack} className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-lg border border-border px-3 text-sm"><ChevronLeftIcon aria-hidden className="size-4" />Agents</button>
+    <div className="space-y-3 rounded-2xl border border-foreground/20 bg-card p-4 shadow-float">
+      <div className="flex min-w-0 items-center gap-3">
+        <AgentMark agentKey={agent.key} name={agent.name} />
+        <h2 className="min-w-0 flex-1 break-words font-display text-xl font-semibold">{agent.name}{agent.via && <span className="font-sans text-sm font-normal text-muted-foreground"> · via {agent.via}</span>}</h2>
+        {agent.profile?.platform && <PlatformName platform={agent.profile.platform} chip />}
+      </div>
+      <AgentDetails name={agent.name} via={agent.via} profile={agent.profile} />
     </div>
     <ol aria-label="Everything in time order" className="space-y-2 text-sm">
       {agent.lines.map((line, index) => <li key={`${line.at}:${index}`} className={line.side === "you" ? "ml-8 rounded-xl bg-muted/50 p-3" : line.side === "agent" ? "mr-8 rounded-xl border border-border bg-card p-3" : ""}>
         {line.side === "card"
-          ? <button type="button" onClick={() => onOpenCard(line.entry)} className="block min-h-10 w-full rounded-xl border border-dashed border-border px-3 py-2 text-left"><span className="block text-xs text-muted-foreground">Card · <time dateTime={line.at}>{new Date(line.at).toLocaleString()}</time></span><span className="break-words font-medium">{line.text}</span></button>
-          : <><p className="whitespace-pre-wrap break-words">{line.text}</p><p className="mt-1 text-xs text-muted-foreground"><time dateTime={line.at}>{new Date(line.at).toLocaleString()}</time>{line.note && ` · ${line.note}`}</p></>}
+          ? <button type="button" onClick={() => onOpenCard(line.entry)} className="block min-h-10 w-full rounded-xl border border-dashed border-border px-3 py-2 text-left"><span className="block text-xs text-muted-foreground">Card · <ShortTime at={line.at} /></span><span className="break-words font-medium">{line.text}</span></button>
+          : <><p className="whitespace-pre-wrap break-words">{line.text}</p><p className="mt-1 text-xs text-muted-foreground"><ShortTime at={line.at} />{line.note && ` · ${line.note}`}</p></>}
       </li>)}
     </ol>
     {agent.replyCard ? <AgentReply key={agent.replyCard.entry.state.card.cardId} {...agent.replyCard} source={source} onSaved={onSaved} /> : <p role="status" className="text-sm text-muted-foreground">You can’t reply to {agent.name} here: none of its cards takes replies.</p>}
