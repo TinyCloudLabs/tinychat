@@ -1,5 +1,31 @@
 # exo-desktop
 
+## 0.14.0-beta.33
+
+No changes in this release.
+
+## 0.14.0-beta.32
+
+### Patch Changes
+
+- 87f3e3f: The minimised recorder bar on the phone and in the browser is back to how it was before TC-2077: the timer, the moving level bars, the stop time under them, and the larger Pause and Stop. The small bar with "Stops in" and the stop time on hover stays on the desktop: the sidebar dock and the Mac app's floating bar. Details: TC-2077
+
+## 0.14.0-beta.31
+
+No changes in this release.
+
+## 0.14.0-beta.30
+
+No changes in this release.
+
+## 0.14.0-beta.29
+
+No changes in this release.
+
+## 0.14.0-beta.28
+
+No changes in this release.
+
 ## 0.14.0-beta.27
 
 No changes in this release.

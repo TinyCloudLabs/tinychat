@@ -10,7 +10,7 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
 /**
  * W1 — the per-address INGEST MODE (backend-ingest plan §8.1 W1, §5.3, §12.1).
  *
- * Two independent switches decide whether a given address's deliveries are consumed by the
+ * Three conditions decide whether a given address's deliveries are consumed by the
  * BROWSER (Option C, shipped) or by the backend fetch worker (hardened Option B, W3):
  *
  *  1. `CONNECTOR_BACKEND_INGEST_ENABLED` — the process-wide flag, **dark by default** (the name
@@ -21,6 +21,8 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
  *     dark address to start). Membership is a SET test, never a stored "current user" — §8.2
  *     delta item 1 / §9 anti-pattern 1 (Listen's global single-user routing) turns on exactly
  *     that distinction.
+ *
+ *  3. A per-source OAuth credential: cohort users without one stay on browser ingestion.
  *
  * FAIL CLOSED. A cohort read that fails, or a stored value that does not parse, REJECTS. It is
  * never read as "this address is not in the cohort", because that reading silently hands a
@@ -55,7 +57,8 @@ export type IngestMode = "browser" | "backend";
 
 /** The slice the delivery path and the companions consume. */
 export interface IngestModeLookup {
-  mode(address: string): Promise<IngestMode>;
+  mode(address: string, source?: string): Promise<IngestMode>;
+  eligible?(address: string): Promise<boolean>;
 }
 
 export interface IngestCohortRecord {
@@ -91,6 +94,8 @@ export function backendIngestEnabled(
 }
 
 export interface IngestModeOptions {
+  /** Fresh metadata lookup: credential additions/removals must not wait for cohort cache expiry. */
+  hasOAuthCredential?: (source: string, address: string) => Promise<boolean>;
   /** Injectable so a test can pin the flag without mutating the process env. */
   enabled?: () => boolean;
   ttlMs?: number;
@@ -104,6 +109,7 @@ interface CohortCache {
 
 export class IngestModeService implements IngestModeLookup {
   private readonly enabled: () => boolean;
+  private readonly hasOAuthCredential: NonNullable<IngestModeOptions["hasOAuthCredential"]>;
   private readonly ttlMs: number;
   private readonly now: () => number;
   private cache: CohortCache | null = null;
@@ -114,22 +120,22 @@ export class IngestModeService implements IngestModeLookup {
     private readonly node: TinyCloudNode,
     options: IngestModeOptions = {},
   ) {
+    this.hasOAuthCredential = options.hasOAuthCredential ?? (async () => false);
     this.enabled = options.enabled ?? (() => backendIngestEnabled());
     this.ttlMs = options.ttlMs ?? COHORT_CACHE_TTL_MS;
     this.now = options.now ?? (() => Date.now());
   }
 
-  /**
-   * `backend` only for a flag-on, allow-listed address. Rejects rather than guessing when the
-   * cohort cannot be read — see the fail-closed note above.
-   */
-  async mode(address: string): Promise<IngestMode> {
-    // The dark-default short circuit, BEFORE any normalization or node call: with the flag off
-    // this method is pure, free, and cannot introduce a failure mode into Option C.
-    if (!this.enabled()) return "browser";
+  /** OAuth may be connected by an eligible user before an effective backend connection exists. */
+  async eligible(address: string): Promise<boolean> {
+    if (!this.enabled()) return false;
+    return (await this.cohort()).has(normalizeWebhookAddress(address));
+  }
+
+  async mode(address: string, source = "fireflies"): Promise<IngestMode> {
+    if (!await this.eligible(address)) return "browser";
     const normalized = normalizeWebhookAddress(address);
-    const cohort = await this.cohort();
-    return cohort.has(normalized) ? "backend" : "browser";
+    return await this.hasOAuthCredential(source, normalized) ? "backend" : "browser";
   }
 
   /** The allow-listed set, cached for `ttlMs`. Rejects on an unreadable/unparseable value. */

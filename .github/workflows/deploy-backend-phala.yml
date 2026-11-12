@@ -445,6 +445,11 @@ jobs:
           BOTS_SERVICE_SECRET: ${{ secrets.BOTS_SERVICE_SECRET }}
           # Empty means the backend default (120000).
           BOTS_POST_TIMEOUT_MS: ${{ vars.BOTS_POST_TIMEOUT_MS }}
+          # Owner-history variables; off until explicitly enabled in production-api.
+          BOTS_HISTORY_ENABLED: ${{ vars.BOTS_HISTORY_ENABLED || 'false' }}
+          BOTS_HISTORY_SIGNER_DID: ${{ vars.BOTS_HISTORY_SIGNER_DID }}
+          BOTS_HISTORY_NODE_ORIGIN: ${{ vars.BOTS_HISTORY_NODE_ORIGIN }}
+          BOTS_UNARCHIVED_HISTORY_POLICY: ${{ vars.BOTS_UNARCHIVED_HISTORY_POLICY }}
           # Optional meeting rollout; defaults keep controller routing disabled.
           MEETING_CONTENT_RETRIEVAL_ENABLED: ${{ vars.MEETING_CONTENT_RETRIEVAL_ENABLED || 'false' }}
           MEETING_CONTENT_TEST_ACCOUNTS: ${{ vars.MEETING_CONTENT_TEST_ACCOUNTS }}
@@ -590,7 +595,8 @@ jobs:
           # These values are written one per line into the env file, so a line break in any of them would add settings.
           for item in MCP_CHAT_ENABLED MCP_CHAT_TEST_ACCOUNTS MCP_CHAT_URL MCP_CHAT_SERVICE_DID MCP_CHAT_SERVICE_CREDENTIAL \
             MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER MCP_CHAT_GRANT_EXPIRED_ERROR MCP_CHAT_GRANT_REJECTED_ERROR TAVILY_API_KEY \
-            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_POST_TIMEOUT_MS; do
+            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_POST_TIMEOUT_MS \
+            BOTS_HISTORY_ENABLED BOTS_HISTORY_SIGNER_DID BOTS_HISTORY_NODE_ORIGIN BOTS_UNARCHIVED_HISTORY_POLICY; do
             case "${!item-}" in
               *$'\n'*|*$'\r'*) echo "::error title=Invalid deployment config::$item must be a single line"; exit 1 ;;
             esac
@@ -624,6 +630,10 @@ jobs:
             printf '%s\n' "BOTS_SERVICE_URL=${BOTS_SERVICE_URL:-}"
             printf '%s\n' "BOTS_SERVICE_SECRET=${BOTS_SERVICE_SECRET:-}"
             printf '%s\n' "BOTS_POST_TIMEOUT_MS=${BOTS_POST_TIMEOUT_MS:-}"
+            printf '%s\n' "BOTS_HISTORY_ENABLED=${BOTS_HISTORY_ENABLED:-false}"
+            printf '%s\n' "BOTS_HISTORY_SIGNER_DID=${BOTS_HISTORY_SIGNER_DID:-}"
+            printf '%s\n' "BOTS_HISTORY_NODE_ORIGIN=${BOTS_HISTORY_NODE_ORIGIN:-}"
+            printf '%s\n' "BOTS_UNARCHIVED_HISTORY_POLICY=${BOTS_UNARCHIVED_HISTORY_POLICY:-}"
             printf '%s\n' "MEETING_CONTENT_RETRIEVAL_ENABLED=${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}"
             printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
             printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"

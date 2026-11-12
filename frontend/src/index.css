@@ -142,6 +142,13 @@
   html[data-nav="tabbar"][data-island]:not([data-keyboard="open"]) {
     --tc-bottom-chrome: calc(3.5rem + 4rem + env(safe-area-inset-bottom));
   }
+  /* The TinyCloud SDK's toasts ("Successfully signed in") sit 56px above the
+     SDK's bottom offset. Over a tab bar (and the recording island), that offset
+     lifts them to 12px above the bar's 1px top edge. The variable inherits into
+     the SDK's shadow root. */
+  html[data-nav="tabbar"]:not([data-keyboard="open"]) {
+    --tinycloud-ui-offset-bottom: calc(var(--tc-bottom-chrome) - env(safe-area-inset-bottom) - 56px + 13px);
+  }
 }
 
 @layer base {

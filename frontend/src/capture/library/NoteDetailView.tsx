@@ -11,9 +11,10 @@ import { CheckIcon, CopyIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { NotePlaybackContext } from "@/lib/audio/notePlayback";
-import { appPlatform } from "@/lib/platform";
+import { appPlatform, PlatformContext } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
-import { openManageStorage } from "@/lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
@@ -141,11 +142,17 @@ function Frame(props: { title: string; pushed: boolean; onBack: () => void; acti
   );
 }
 
-/** Private storage-full: Manage storage first. Retry follows the committed transcript state. */
+/**
+ * Private storage-full: Manage storage first (web and desktop; the iOS and Android apps say where the plan is managed,
+ * as plain text). Retry follows the committed transcript state.
+ */
 function StorageFullActions(props: Pick<TranscribeActionProps, "noteId" | "transcription" | "durationSecs"> & { privateAudioSource?: PrivateAudioSource; hasCommittedTranscript: boolean }) {
+  const billingLinks = billingLinksAllowed(useContext(PlatformContext));
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button type="button" onClick={() => void openManageStorage()}>Manage storage</Button>
+      {billingLinks
+        ? <Button type="button" onClick={() => void openManageStorage()}>Manage storage</Button>
+        : <p className="w-full text-meta text-muted-foreground">{NATIVE_PLAN_NOTE}</p>}
       <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs} privateAudioSource={props.privateAudioSource} rerun={props.hasCommittedTranscript} label="Transcribe again" />
     </div>
   );

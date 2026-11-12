@@ -42,6 +42,7 @@ import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPur
 import { replicationRestorePatch } from "./lib/replication/replicationRestore";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { wipeNativeReplicaOnSignOut } from "./lib/replication/nativeReplicaStore";
 import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
 import { uploadRunner } from "./lib/audioUpload";
 import {
@@ -70,8 +71,9 @@ import {
   subscribeStorageScopeRetired,
   reportStoragePlanTier,
   STORAGE_READ_ONLY_NOTICE,
+  NATIVE_PLAN_NOTE,
 } from "./lib/storageStatus";
-import { openManageStorage } from "./lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "./lib/openManageStorage";
 import { useStorageFreePlan } from "./lib/useStorageFreePlan";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
@@ -105,6 +107,8 @@ import { SettingsPage } from "./chat/SettingsPage";
 import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
+import { clearHeldAnswers } from "./feed/answerOutbox";
+import { settleHeldAnswersForSignOut } from "./feed/feedStore";
 import { AppsPage } from "./home/AppsPage";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
@@ -413,8 +417,14 @@ export function App() {
     uploadRunner.reset();
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
+    const accountSpace = tcw?.spaceId ?? spaceId;
+    if (accountSpace) clearHeldAnswers(accountSpace);
     if (storedAddress) clearPersistedSession(storedAddress);
     if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
+    // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.
+    void wipeNativeReplicaOnSignOut(accountDid).then((result) => {
+      if (!result.ok) console.warn("[Replica] Could not delete the native local copy at sign-out", result.code);
+    });
     sessionStoreRef.current.clear();
     if (storedAddress) clearSendIntentsForOwner(storedAddress);
     clearTranscriptDelegationSchedule(storedAddress);
@@ -454,7 +464,7 @@ export function App() {
     setPricingOpen(false);
     setError(warning);
     setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
-  }, [address, did, tcw, voiceNotePipeline]);
+  }, [address, did, tcw, voiceNotePipeline, spaceId]);
   useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,
     () => completeLocalSignOut(null)), [captureHandoff, completeLocalSignOut]);
   const [models, setModels] = useState<ModelOption[]>(() =>
@@ -501,6 +511,8 @@ export function App() {
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
+  // The iOS and Android apps open no purchase page: no pricing dialog, Manage storage or Upgrade (App Store 3.1.1, Play Payments).
+  const billingLinks = billingLinksAllowed(platform);
   const billingTierName = billingConfig?.tiers.find(
     (tier) => tier.id === billingStatus?.tier,
   )?.name ?? (billingStatus
@@ -1295,6 +1307,8 @@ export function App() {
         if (!options.terminal) void nativeRenewalRef.current?.resume();
         return;
       }
+      // Home answers held from a closed page get one bounded try while the session still works.
+      if (tcw) await settleHeldAnswersForSignOut(tcw);
       const openKeyClient = !nativeSession && !options.terminal ? openkeyRef.current : null;
       completeLocalSignOut(nativeFenceStored ? options.terminal ?? null : NATIVE_SIGN_OUT_WARNING,
         Boolean(options.terminal), webFenceToken);
@@ -1464,7 +1478,7 @@ export function App() {
         <UsageIndicator
           status={billingStatus}
           tierName={billingTierName}
-          onClick={openPricing}
+          onClick={billingLinks ? openPricing : undefined}
           onOpenRates={openRates}
         />
       )}
@@ -1631,18 +1645,22 @@ export function App() {
         <div data-testid="app-storage-read-only-notice" role="region" aria-label="Storage full" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full</strong>{" "}
           {STORAGE_READ_ONLY_NOTICE}{" "}
-          <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
-            Manage storage
-          </button>
-          {canUpgrade && (
-            <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
-              Upgrade
-            </button>
-          )}
+          {billingLinks ? (
+            <>
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+                Manage storage
+              </button>
+              {canUpgrade && (
+                <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+                  Upgrade
+                </button>
+              )}
+            </>
+          ) : NATIVE_PLAN_NOTE}
         </div>
       )}
 
-      {paywallEnabled && billingConfig && (
+      {billingLinks && paywallEnabled && billingConfig && (
         <PricingDialog
           open={pricingOpen}
           onOpenChange={setPricingOpen}

@@ -15,6 +15,44 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.33
+
+### Patch Changes
+
+- 273a4cb: Home Feed loads once per open. A live-update connect, reconnect or resume no longer reloads the whole Feed: the first load waits for the live-update stream, and each later stream compares a one-request-per-database fingerprint with the last one and reloads only when something changed. A resume within 60 s makes no requests.
+
+## 0.14.0-beta.32
+
+### Patch Changes
+
+- 87f3e3f: The minimised recorder bar on the phone and in the browser is back to how it was before TC-2077: the timer, the moving level bars, the stop time under them, and the larger Pause and Stop. The small bar with "Stops in" and the stop time on hover stays on the desktop: the sidebar dock and the Mac app's floating bar. Details: TC-2077
+
+## 0.14.0-beta.31
+
+### Patch Changes
+
+- 97dbe56: iOS and Android: a returning user's Feed no longer waits for the TinyCloud node to re-activate a delegation it already holds (TC-2865). Once a launch has seen the node accept the current delegation, later launches still send `/delegate`, but in the background. On the iOS simulator, the time to the first Feed card dropped from about 3.0 s to about 0.6 s. If a background activation fails, the next launch waits for activation again and shows its error. Sign-in and renewal still wait for activation.
+
+## 0.14.0-beta.30
+
+### Patch Changes
+
+- 85e83ce: The iOS and Android apps no longer link to or open a purchase page (App Store 3.1.1, Google Play Payments). Manage storage, Upgrade, Manage plan, the pricing dialog and the usage chip's plans link are gone there. Storage-full surfaces keep Save now and Transcribe again, and say "Manage your plan on the web at tinycloud.xyz." as plain text. The TinyCloud panel's storage link and its storage-full toast link are hidden too. Web and desktop are unchanged.
+
+## 0.14.0-beta.29
+
+### Minor Changes
+
+- cf05789: The app links TinyCloud's privacy policy, `https://tinycloud.xyz/privacy` (TC-2876, App Store 5.1.1(i), Play User Data policy). The link appears in Settings → Account (signed in, and the signed-out phone Settings) and in How it works → Your data. It opens in the in-app browser on iOS and Android, in the system browser on desktop (a fixed-URL Tauri command), and in a new tab on the web.
+
+  The iOS privacy manifest now also declares Name, Purchase History, Product Interaction and Performance Data, to match the App Store privacy answers. The HealthKit purpose strings are now added to Debug builds only, and `ios-build.yml` fails a Release archive that has them.
+
+## 0.14.0-beta.28
+
+### Minor Changes
+
+- 4b2a0e3: Home's feed is now a list of cards. Every card shows at once, grouped under "Needs you" and "Earlier", with Needs you, All and Done above them and a filter for agent, project and type. A question answers with one tap on an option, or in your own words. The answer waits 5 seconds with an Undo button, then it's sent. Close the page during those 5 seconds and the answer is still sent, at once or the next time you open Home, unless the request changed in between. Comments sit under each card, one reply deep, as on the sitrep board, and an agent's replies show there too. The private note is gone from the card. Cards use plain words throughout. Empty and loading states are cards, and the signed-out demo uses the same card.
+
 ## 0.14.0-beta.27
 
 ### Minor Changes

@@ -25,6 +25,7 @@ import {
   nativeSessionWasActive,
   isNativeStorageError,
   installNativeSession,
+  nativeRenewalServices,
   resetNativeOpenKeyClientForTests,
   restoreNativeAtBoot,
   secretsAvailable,
@@ -673,6 +674,122 @@ describe("native boot", () => {
       expect(Date.now() - started).toBeLessThan(NATIVE_SIGN_OUT_DEADLINE_MS + 2_000);
     }
   }, 13_000);
+});
+
+describe("activation on restore (TC-2865)", () => {
+  const KEY = `${HOST} ${delegation.delegationCid}`;
+  const storedRecord = (cid: string): PersistedSessionData => ({
+    address: ADDRESS, chainId: 1, sessionKey: "{}", siwe: delegation.siwe!, signature: delegation.signature!,
+    tinycloudSession: { delegationHeader: delegation.delegationHeader!, delegationCid: cid, spaceId: SPACE_ID },
+    expiresAt: delegation.expiresAt as string, createdAt: new Date().toISOString(), version: "1", tinycloudHosts: [HOST],
+  });
+  /** A restore of the stored delegation, with an in-memory activation marker. */
+  function restoreFlow(initial: string | null, storedCid = delegation.delegationCid!) {
+    const flow = makeFlow();
+    const marker = { value: initial, writes: [] as (string | null)[] };
+    flow.deps.activationMarker = {
+      read: () => marker.value,
+      write: (value) => { marker.value = value; marker.writes.push(value); },
+    };
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
+    flow.storage.load = async () => { flow.order.push("load"); return storedRecord(storedCid); };
+    return { flow, marker };
+  }
+  test("restore does not await activation when this device saw the node accept the delegation", async () => {
+    const { flow, marker } = restoreFlow(KEY);
+    const pending = Promise.withResolvers<never>();
+    flow.deps.activateSession = (host, header) => {
+      flow.order.push("activate");
+      flow.activation.push({ host, header });
+      return pending.promise;
+    };
+    const boot = await restoreNativeAtBoot(config, true, flow.deps);
+    expect(boot.kind).toBe("restored");
+    // Still re-sent, so a node that lost the delegation gets it back, but not waited for.
+    expect(flow.order).toEqual(["load", "activate", "restore"]);
+    expect(flow.activation[0]?.header.Authorization).toBe("Bearer delegation");
+    expect(marker.value).toBe(KEY);
+  });
+
+  test("a failed background activation clears the marker, so the next launch waits and reports it", async () => {
+    const { flow, marker } = restoreFlow(KEY);
+    const cleared = Promise.withResolvers<void>();
+    const write = flow.deps.activationMarker!.write;
+    flow.deps.activationMarker!.write = (value) => { write(value); if (value === null) cleared.resolve(); };
+    flow.deps.activateSession = async () => ({ success: false, status: 401, error: "unknown delegation" });
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
+    await cleared.promise;
+    expect(marker.value).toBeNull();
+    resetNativeOpenKeyClientForTests();
+    flow.order.length = 0;
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("failed");
+    expect(flow.order).toEqual(["load"]);
+  });
+
+  test("an unmarked restore (first launch after this change, or a failed activation) waits, then marks", async () => {
+    const { flow, marker } = restoreFlow(null);
+    let released = false;
+    flow.deps.activateSession = async () => {
+      flow.order.push("activate");
+      await Promise.resolve();
+      released = true;
+      return { success: true, status: 200, activated: [], skipped: [] };
+    };
+    flow.deps.restoreSession = async () => {
+      expect(released).toBe(true);
+      flow.order.push("restore");
+      return { tcw: { fake: true }, status: "restored" } as never;
+    };
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
+    expect(flow.order).toEqual(["load", "activate", "restore"]);
+    expect(marker.writes).toEqual([KEY]);
+  });
+
+  test("a marker for another delegation or host does not skip the wait", async () => {
+    for (const stale of [`${HOST} bafyold`, `https://node.tinycloud.xyz ${delegation.delegationCid}`]) {
+      resetNativeOpenKeyClientForTests();
+      const { flow, marker } = restoreFlow(stale);
+      flow.deps.activateSession = async () => ({ success: false, status: 401, error: "unknown delegation" });
+      expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("failed");
+      expect(marker.value).toBeNull();
+    }
+  });
+
+  test("a stored record from an interrupted renewal (CID mismatch) waits even with a marker", async () => {
+    const { flow } = restoreFlow(KEY, "bafystale");
+    flow.deps.activateSession = async () => { flow.order.push("activate"); return { success: false, status: 503, error: "node unreachable" }; };
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("failed");
+    expect(flow.order).toEqual(["load", "save", "activate"]);
+  });
+
+  test("sign-in always waits for activation, fails without it, and never touches the marker", async () => {
+    const failed = makeFlow();
+    const failedMarker: (string | null)[] = [];
+    failed.deps.activationMarker = { read: () => KEY, write: (value) => { failedMarker.push(value); } };
+    failed.deps.activateSession = async () => ({ success: false, status: 503, error: "node unreachable" });
+    await expect(signInNative(config, undefined, failed.deps)).rejects.toBeInstanceOf(UserFacingError);
+    expect(failed.order).not.toContain("restore");
+    expect(failedMarker).toEqual([]);
+
+    resetNativeOpenKeyClientForTests();
+    const ok = makeFlow();
+    const okMarker: (string | null)[] = [];
+    ok.deps.activationMarker = { read: () => KEY, write: (value) => { okMarker.push(value); } };
+    await signInNative(config, undefined, ok.deps);
+    expect(ok.order.indexOf("activate")).toBeLessThan(ok.order.indexOf("restore"));
+    expect(okMarker).toEqual([]);
+  });
+
+  test("a renewed delegation on the live client always waits for activation, even when marked", async () => {
+    const { flow, marker } = restoreFlow(`${HOST} bafyrenewed`, "bafyrenewed");
+    const live = { restoreSession: async () => { flow.order.push("liveRestore"); return { status: "restored" }; } } as never;
+    flow.deps.activateSession = async () => ({ success: false, status: 401, error: "unknown delegation" });
+    const renewed = { tokens: { accessToken: "a", refreshToken: "r" }, sessionKey, delegation: { ...delegation, delegationCid: "bafyrenewed" } };
+    const renewal = await nativeRenewalServices(config, flow.openkey, flow.deps);
+    await expect(renewal.install(renewed, live)).rejects.toThrow("unknown delegation");
+    expect(flow.order).not.toContain("liveRestore");
+    expect(marker.writes).toEqual([]);
+  });
 });
 
 test("renewed handoff saves the new CID, activates it, then restores on the live client", async () => {

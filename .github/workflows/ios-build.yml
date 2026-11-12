@@ -8,8 +8,9 @@ name: iOS build (Exo)
 # - archive (no environment, no secret, ever): the production frontend (`bun run build:frontend`, .env.production)
 #   bundled by `cap sync ios` with EXO_DEV_SERVER_URL unset, archived unsigned (CODE_SIGNING_ALLOWED=NO, no team). The
 #   archive check refuses a capacitor.config.json with a server URL, a missing public/index.html or privacy manifest,
-#   the wrong bundle id or versions, the Debug-only smoke probe, and any trace of the Debug-only location spike
-#   (TC-524: location usage strings, the location background mode, its code or CoreLocation). The checked .xcarchive
+#   the wrong bundle id or versions, the Debug-only smoke probe, the Debug-only health spike (TC-525: HealthKit or
+#   its usage strings) and any trace of the Debug-only location spike (TC-524: location usage strings, the location
+#   background mode, its code or CoreLocation). The checked .xcarchive
 #   (ditto-zipped, so the executable bits survive) is handed to the sign job as a short-lived artifact; archive.log is
 #   uploaded for debugging.
 # - sign (sign: true: the `ios-release` environment; otherwise a dry run with no environment): checks out only
@@ -173,6 +174,9 @@ jobs:
           if grep -a -q EXO_SMOKE "$app/App"; then fail "the Release binary contains the Debug-only smoke probe"; fi
           # Health spike (TC-525): HealthKit code and entitlements are Debug-only until the App ID has the capability.
           if otool -L "$app/App" | grep -q HealthKit; then fail "the Release binary links HealthKit (mobile/docs/health-spike.md)"; fi
+          for key in NSHealthShareUsageDescription NSHealthUpdateUsageDescription; do
+            if value "$key" >/dev/null; then fail "the Release Info.plist has $key (the health spike is Debug-only)"; fi
+          done
           # TC-524: the location spike is Debug-only. A Release with location keys or code needs App Review's
           # location justification and new privacy answers first (mobile/docs/location-spike.md).
           for key in NSLocationWhenInUseUsageDescription NSLocationAlwaysAndWhenInUseUsageDescription NSLocationAlwaysUsageDescription; do

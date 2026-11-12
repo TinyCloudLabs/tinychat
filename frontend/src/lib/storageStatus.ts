@@ -27,6 +27,8 @@ export const STORAGE_FULL_DETAIL: Record<"free" | "paid", string> = {
   free: STORAGE_DELETION_NOTE,
   paid: `${STORAGE_DELETION_NOTE} ${STORAGE_NO_LARGER_PLAN}`,
 };
+/** What the iOS and Android apps say where web and desktop offer Manage storage or Upgrade. Plain text: never a link or a button. */
+export const NATIVE_PLAN_NOTE = "Manage your plan on the web at tinycloud.xyz.";
 export const STORAGE_READ_ONLY_NOTICE =
   "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. New changes can't be saved while your storage is full.";
 

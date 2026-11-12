@@ -20,7 +20,8 @@ import { type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import "./final/soft.css";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
-import { openManageStorage } from "@/lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { isOnDeviceReady, isOnDeviceStatusLoaded, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
@@ -227,7 +228,9 @@ export function SavedReceipt(props: SavedReceiptProps) {
   const platform = useContext(PlatformContext);
   const localDevice = deviceName(props.device === "mac" ? "tauri" : platform);
   const saved = props.outcome === "saved";
+  // Manage storage opens a purchase page, so the iOS and Android apps keep Save now and say where the plan is managed.
   const storageFull = useStorageReadOnly();
+  const manageStorage = storageFull && billingLinksAllowed(platform);
   const holdReason = props.holdReason ?? props.localUploadHeldReason;
   const pipelineView = props.outcome === "failed" ? null : props.pipeline ?? null;
   const stepperShown = pipelineView !== null && !pipelineView.pipeline.done;
@@ -374,6 +377,9 @@ export function SavedReceipt(props: SavedReceiptProps) {
           )}
         </div>
       )}
+      {storageFull && !manageStorage && !(saved || props.outcome === "local" || props.localAudioState === "failed") && (
+        <p className="text-meta text-muted-foreground" data-testid="voice-note-plan-note">{NATIVE_PLAN_NOTE}</p>
+      )}
       <div className="flex flex-wrap justify-end gap-2">
         {saved || props.outcome === "local" || props.localAudioState === "failed" ? (
           <>
@@ -391,8 +397,8 @@ export function SavedReceipt(props: SavedReceiptProps) {
             <Button type="button" variant="outline" onClick={props.onDone} data-testid="voice-note-receipt-done">
               Done
             </Button>
-            <Button type="button" onClick={storageFull ? openManageStorage : props.onSaveNow} disabled={props.retrying} data-testid="voice-note-retry">
-              {props.retrying && <Loader2Icon className="animate-spin" aria-hidden="true" />} {storageFull ? "Manage storage" : "Save now"}
+            <Button type="button" onClick={manageStorage ? openManageStorage : props.onSaveNow} disabled={props.retrying} data-testid="voice-note-retry">
+              {props.retrying && <Loader2Icon className="animate-spin" aria-hidden="true" />} {manageStorage ? "Manage storage" : "Save now"}
             </Button>
           </>
         )}
