@@ -19,7 +19,7 @@ import { botIdFor } from "../owner";
 import type { Frame } from "../rpc";
 import { rootProblem, removeWorkingState } from "../retention";
 import { chmodSync } from "node:fs";
-import { parseMountinfo, runStateCopy } from "../sandbox";
+import { parseMountinfo, runStateCopy, StateCopiers } from "../sandbox";
 
 const tmp = mkdtempSync(join(tmpdir(), "bots-test-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -79,11 +79,11 @@ describe("working state retention", () => {
   const OTHER = "did:pkh:eip155:1:0x00000000000000000000000000000000000000bb";
 
   /** A manager over temp roots whose launches act on disk like RunscHost: the first creates the state image. */
-  function host() {
+  function host(maxRunning = 8) {
     const dirs = roots();
-    const fake = { launches: 0, next: new FakeSandbox(), hold: Promise.resolve(), mounts: [] as string[], leftover: false };
+    const fake = { launches: 0, next: new FakeSandbox(), hold: Promise.resolve(), mounts: [] as string[], leftover: false, copiers: new StateCopiers() };
     const launcher: SandboxLauncher = {
-      leftover: () => fake.leftover,
+      leftover: (layout, sandboxOnly) => fake.leftover || (!sandboxOnly && fake.copiers.has(layout.botId)),
       hasState: layout => existsSync(layout.stateSnapshot),
       launch: async layout => {
         await fake.hold;
@@ -97,7 +97,7 @@ describe("working state retention", () => {
       },
       mountPoints: () => fake.mounts,
     };
-    const manager = new BotManager(launcher, dirs, OPTIONS, 8);
+    const manager = new BotManager(launcher, dirs, OPTIONS, maxRunning);
     return { fake, dirs, manager, layout: (owner: string) => botLayout(botIdFor(owner), dirs) };
   }
 
@@ -302,6 +302,43 @@ describe("working state retention", () => {
     fake.mounts = [layout(OWNER).dataDir + "-sibling/state"];
     await manager.sweepUnused(RETENTION);
     expect(existsSync(layout(OWNER).dataDir)).toBe(false);
+  });
+
+  test("an unreaped copier bounds teardown, blocks deletion and copies, and releases the sandbox slot", async () => {
+    const { fake, manager, layout } = host(1);
+    const sandbox = fake.next;
+    await converse(manager.forOwner(OWNER), sandbox);
+    const exit = Promise.withResolvers<number>();
+    const spawn = spyOn(Bun, "spawn").mockImplementation(() => ({
+      exited: exit.promise,
+      stdout: new ReadableStream({ start(controller) { controller.close(); } }),
+      kill: () => {},
+    }) as never);
+    const stop = sandbox.stop.bind(sandbox);
+    sandbox.stop = async () => {
+      const failure = await fake.copiers.run(botIdFor(OWNER), ["copier"], 1, 10);
+      await stop();
+      if (failure === "copier_leftover") throw new Error("state copier exit unconfirmed");
+    };
+    try {
+      const events = await stateEvents(() => manager.sweepUnused(RETENTION, Date.now() + RETENTION + DAY));
+      expect(events).toEqual([skipped("teardown_failed")]);
+      expect(fake.copiers.has(botIdFor(OWNER))).toBe(true);
+      expect(existsSync(layout(OWNER).dataDir)).toBe(true);
+      expect(existsSync(layout(OWNER).stateMount)).toBe(true);
+      expect(await fake.copiers.run(botIdFor(OWNER), ["another copier"], 1, 10)).toBe("copier_leftover");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(await stateEvents(() => manager.deleteWorkingState(botIdFor(OWNER), "unused"))).toEqual([skipped("teardown_failed")]);
+      expect((await converse(manager.forOwner(OTHER), fake.next)).at(-1)?.[0]).toBe("done");
+      exit.resolve(137);
+      await exit.promise;
+      expect(fake.copiers.has(botIdFor(OWNER))).toBe(false);
+      await manager.deleteWorkingState(botIdFor(OWNER), "unused");
+      expect(existsSync(layout(OWNER).dataDir)).toBe(false);
+    } finally {
+      exit.resolve(137);
+      spawn.mockRestore();
+    }
   });
 
   test("mount points come from mountinfo field 5 with octal escapes decoded", () => {

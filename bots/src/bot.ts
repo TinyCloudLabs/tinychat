@@ -52,8 +52,8 @@ export interface Sandbox {
 export interface SandboxLauncher {
   /** Whether the bot has ever run, i.e. has a session to list. */
   hasState(layout: BotLayout): boolean;
-  /** Whether the bot's last sandbox ended without a confirmed teardown, so it may still be running. */
-  leftover(layout: BotLayout): boolean;
+  /** Unconfirmed sandbox or copier teardown; sandboxOnly counts just sandboxes for running slots. */
+  leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
   launch(layout: BotLayout): Promise<Sandbox>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
   mountPoints?(): string[];
@@ -397,7 +397,7 @@ export class Bot {
 
   /** Gives the bot's place back, unless a leftover of it may still be running. */
   #releasePlace(): void {
-    if (!this.#hasPlace || this.#launcher.leftover(this.layout)) return;
+    if (!this.#hasPlace || this.#launcher.leftover(this.layout, true)) return;
     this.#hasPlace = false;
     this.#running.release();
   }
