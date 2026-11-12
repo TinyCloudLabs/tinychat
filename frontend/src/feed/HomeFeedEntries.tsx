@@ -11,7 +11,7 @@ import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { threadSize, ThreadView, typedCommentItems, type ThreadItem } from "./HomeCardThread";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, AnswerFailedLine, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, SnoozeChoices, usePendingSend } from "./cardKit";
+import { AnsweredPanel, AnswerFailedLine, cardClass, COMMENT_COPY, commentCopy, cardTime, chipClass, dueTime, ErrorLine, fieldClass, focusRing, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, kindWord, MoreSheet, OptionButtons, optionText, PendingAnswer, PendingSendContext, pillClass, primaryPillClass, QuietRow, quietClass, Reference, SheetSection, shortQuietClass, SnoozeChoices, usePendingSend } from "./cardKit";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { AgentPrompt } from "@/home/AgentPromptCard";
@@ -238,7 +238,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
   if (!card.needsResponse) return <>
     {thread}
     {error && <ErrorLine>{error}</ErrorLine>}
-    {(expanded || items.length > 0) && <QuietRow>{askButton}{expanded && <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>}</QuietRow>}
+    {(expanded || items.length > 0) && <QuietRow>{askButton}{expanded && <button type="button" className={shortQuietClass} onClick={() => setMore(true)}>More</button>}</QuietRow>}
     {details}
   </>;
   const asking = !saved || followup || !!text.trim();
@@ -270,7 +270,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, expand
       {followup && <button type="button" className={quietClass} disabled={!!saving} onClick={() => { setFollowup(false); setText(""); setNoteOpen(false); }}>Keep my answer</button>}
       {attention && <button type="button" className={quietClass} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}
       {askButton}
-      <button type="button" className={quietClass} onClick={() => setMore(true)}>More</button>
+      <button type="button" className={shortQuietClass} onClick={() => setMore(true)}>More</button>
     </QuietRow>}
     {later && <SnoozeChoices now={now} onPick={(until) => void snooze(until)} />}
     {details}

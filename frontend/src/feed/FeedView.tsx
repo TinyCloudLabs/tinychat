@@ -141,8 +141,9 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
       </div>
       {agent && onOpenAgent && about && <AgentDetails name={card.author.name} via={agent.via} profile={agent.profile} onOpen={onOpenAgent} />}
       {card.title && <Heading className="mt-2.5 break-words text-[17px] font-semibold leading-[1.3] [text-wrap:balance]">
+        {/* 11px of padding above and below, cancelled by the same negative margin: a 44px target, the same layout. */}
         {onToggle
-          ? <button type="button" aria-expanded={expanded} onClick={onToggle} className={`w-full rounded-sm text-left ${clampTitle && !expanded ? "line-clamp-2" : ""} ${focusRing}`}>{card.title}</button>
+          ? <button type="button" aria-expanded={expanded} onClick={onToggle} className={`-my-[11px] block w-full rounded-sm py-[11px] text-left ${focusRing}`}><span className={clampTitle && !expanded ? "line-clamp-2" : ""}>{card.title}</span></button>
           : card.title}
       </Heading>}
       {!compact && card.lead.text && <div ref={body} className={`mt-1 max-w-[60ch] text-[15px] leading-[1.5] ${full ? "" : "line-clamp-3"}`}><CardBody text={card.lead.text} /></div>}

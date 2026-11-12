@@ -16,6 +16,8 @@ export const focusRing = "focus-visible:outline focus-visible:outline-2 focus-vi
 const controlEdge = "shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))]";
 export const cardClass = "relative min-w-0 overflow-hidden rounded-[20px] bg-card py-4 pl-[18px] pr-4 text-card-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]";
 export const quietClass = `inline-flex min-h-11 items-center gap-1.5 rounded-md text-[13px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-50 ${focusRing}`;
+/** A quiet button whose word is shorter than 44px ("More"): the target grows to its right, after the word, so nothing moves. */
+export const shortQuietClass = `${quietClass} min-w-11`;
 export const pillClass = `inline-flex h-11 max-w-full items-center justify-center gap-2 rounded-full px-5 text-[13.5px] font-bold ${controlEdge} hover:bg-muted disabled:opacity-50 ${focusRing}`;
 export const primaryPillClass = `inline-flex h-[52px] max-w-full items-center justify-center gap-2 rounded-full bg-foreground px-[30px] text-[15px] font-bold text-background hover:bg-foreground/90 disabled:opacity-50 ${focusRing}`;
 export const fieldClass = `mt-2 block w-full rounded-xl bg-background p-3 text-[15px] font-normal ${controlEdge} ${focusRing} disabled:opacity-60`;
