@@ -1336,6 +1336,40 @@ export class ContentStore implements ContentSink, RetentionGuard {
    * every later upsert. Keeping the watermark out of the index is deliberate: `removeAll` sweeps
    * the index key itself, so a tombstone stored there would be swept with the rows it protects.
    */
+  /** Sync-off only removes copies whose index and authenticated blob both prove reconciliation. */
+  async deleteReconciled(source: string, address: string): Promise<{ removed: number }> {
+    const target = normalizeTarget(source, address);
+    return this.lane(target.source, target.address, async () => {
+      this.contentMaster();
+      const index = await this.openIndex(target.source, target.address);
+      const removed = new Set<string>();
+      for (const meta of index.meetings) {
+        if (!meta.reconciledAt) continue;
+        let stored: StoredMeeting | null;
+        try {
+          stored = await this.readMeeting(target.source, target.address, meta.sourceId);
+        } catch {
+          warnContent("op=sync-off result=envelope_refused");
+          continue;
+        }
+        if (!stored || JSON.stringify(stored.meta) !== JSON.stringify(meta)) {
+          warnContent("op=sync-off result=metadata_mismatch");
+          continue;
+        }
+        this.assertMutationAllowed();
+        await this.blobs.remove(target.source, target.address, meta.sourceId);
+        removed.add(meta.sourceId);
+      }
+      if (removed.size) {
+        await this.writeIndex(target.source, target.address, {
+          meetings: index.meetings.filter(meta => !removed.has(meta.sourceId)),
+          tombstones: index.tombstones,
+        });
+      }
+      return { removed: removed.size };
+    });
+  }
+
   async purge(source: string, address: string): Promise<{ removed: number }> {
     const target = normalizeTarget(source, address);
     return this.lane(target.source, target.address, async () => {

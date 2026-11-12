@@ -1611,6 +1611,7 @@ export interface ConnectorCompanionOptions {
    * The exo ledger rows of each disconnected source. ABSENT when the exo flag is off, so a flag-off
    * disconnect makes no exo call. Best-effort: a failure is logged and never becomes a 503.
    */
+  deleteReconciled?: (source: string, address: string) => Promise<unknown>;
   exo?: { clearSource: (source: string, address: string) => Promise<void> };
 }
 
@@ -1794,7 +1795,7 @@ function pendingView(item: PendingItem) {
 export function createConnectorWebhookCompanionRouter(
   options: ConnectorCompanionOptions,
 ): Router {
-  const { tokens, queue, control, limiters, exo } = options;
+  const { tokens, queue, control, limiters, exo, deleteReconciled } = options;
   const registry = options.registry ?? CONNECTOR_REGISTRY;
   const abort = options.abort ?? connectorDrainAbort;
   const now = options.now ?? (() => Date.now());
@@ -2133,6 +2134,9 @@ export function createConnectorWebhookCompanionRouter(
       for (const source of sources) {
         const { cleared } = await queue.clear(source, user.address);
         dropped += cleared;
+      }
+      for (const source of sources) {
+        await deleteReconciled?.(source, user.address);
       }
       // (4) The exo ledger rows of each source. Best-effort: the marker, config, token and queue are
       // already torn down, so a failure is logged rather than answered with a 503 that the client would

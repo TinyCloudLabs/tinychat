@@ -669,6 +669,7 @@ async function main() {
   // below only when the dark flag is armed; `shutdown` releases its lease so a rolling deploy
   // hands the seat over instead of idling out the TTL.
   let ingestSupervisor: IngestInstanceSupervisor | null = null;
+  let connectorContent: ContentStore | null = null;
   const contentIndexDirectory = createContentIndexDirectory(node);
 
   // The connectors webhook MUST be mounted before the JSON body parser and CSRF middleware:
@@ -817,6 +818,11 @@ async function main() {
       "/api/connectors/webhooks",
       authMiddleware,
       createConnectorWebhookCompanionRouter({
+        deleteReconciled: async (source, address) => {
+          if (!hasContentMaster) return;
+          if (!connectorContent) throw new Error("content cleanup unavailable");
+          return connectorContent.deleteReconciled(source, address);
+        },
         tokens: connectorWebhooks.tokens,
         queue: connectorWebhooks.queue,
         control: connectorWebhooks.control,
@@ -869,6 +875,7 @@ async function main() {
         master: () => contentMaster,
         mutationGuard: ingestGuard,
       });
+      connectorContent = contentStore;
       await contentStore.assertContinuity(contentBlobs, process.env, ingestGuard);
       mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
         contentStore.probeIndex(await contentBlobs.findIndex()),
@@ -917,6 +924,8 @@ async function main() {
         "/api/connectors/meetings",
         authMiddleware,
         createConnectorMeetingsRouter({
+          isDisabled: async address => (await connectorControl.readDisabled(address)) !== null,
+          deleteReconciled: (source, address) => contentStore.deleteReconciled(source, address),
           content: contentStore,
           modes: connectorWebhooks.modes,
         }),
@@ -990,6 +999,7 @@ async function main() {
       purgeLedger: connectorControl,
       mutationGuard: retentionGuard,
     });
+    connectorContent = retentionContent;
     await retentionContent.assertContinuity(
       retentionBlobs,
       process.env,
