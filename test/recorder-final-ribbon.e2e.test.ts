@@ -171,7 +171,7 @@ const timer = (page: Page) =>
   page.locator("[data-testid=ribbon-timer], [data-testid=dock-timer]");
 
 describe.serial(`minimised recorder interactions (${engineName})`, () => {
-  test("phone: the Ribbon shows above the tab bar with the timer, pause and stop and no waveform", async () => {
+  test("phone: the Ribbon shows above the tab bar with the timer, bars, pause and stop", async () => {
     const { page, errors } = await open("recording");
     await shown(ribbon(page));
     expect(await ribbon(page).getAttribute("data-layout")).toBe("phone");
@@ -181,8 +181,7 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
     await expect(
       page.getByTestId("ribbon-stop").getAttribute("aria-label"),
     ).resolves.toBe("Stop and save");
-    expect(await page.locator("[data-bar]").count()).toBe(0);
-    expect(await ribbon(page).innerText()).not.toContain("Listening");
+    expect(await page.locator("[data-spectrum-bars] [data-bar]").count()).toBe(30);
     const tabs = await page.getByRole("navigation").last().boundingBox();
     const box = (await ribbon(page).boundingBox())!;
     if (tabs) expect(box.y + box.height).toBeLessThanOrEqual(tabs.y + 1);
@@ -190,8 +189,8 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
     expect(errors).toEqual([]);
   });
 
-  test("tapping the timer or the stops-in readout reopens the recorder", async () => {
-    for (const target of [".ribbon-timer", ".ribbon-remaining"]) {
+  test("tapping the timer or the bars reopens the recorder", async () => {
+    for (const target of [".ribbon-timer", ".ribbon-bars"]) {
       const { page, calls, patch } = await open("recording");
       await page.locator(target).click();
       await until("openSheet", async () =>
@@ -224,12 +223,13 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
     );
   });
 
-  test("Pause holds the timer; Resume starts it again", async () => {
+  test("Pause holds the timer and greys the bars; Resume starts them again", async () => {
     const { page, calls } = await open("recording");
     const pause = page.getByTestId("ribbon-pause");
     await pause.click();
     await attr(pause, "aria-label", "Resume recording");
     await attr(ribbon(page), "data-state", "paused");
+    await attr(page.locator("[data-spectrum-bars]"), "data-paused", "true");
     const held = await seconds(timer(page));
     await sleep(1300);
     expect(await seconds(timer(page))).toBe(held);
@@ -406,18 +406,40 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
 });
 
 describe.serial(`a silenced mic (${engineName})`, () => {
-  for (const [layout, size, container] of [
-    ["Ribbon", PHONE, "ribbon"],
-    ["dock", DESKTOP, "sidebar-dock"],
-  ] as const) {
-    test(`the ${layout} stays live with no waveform`, async () => {
-      const { page, errors } = await open("silenced", size);
-      const box = page.getByTestId(container);
-      await attr(box, "data-state", "live");
-      expect(await page.locator("[data-bar]").count()).toBe(0);
-      expect(errors).toEqual([]);
-    });
-  }
+  const bars = (page: Page) => page.locator("[data-bar]");
+  const transforms = (page: Page) =>
+    bars(page).evaluateAll((spans) =>
+      spans.map((span) => (span as HTMLElement).style.transform),
+    );
+
+  test("the phone Ribbon stays red but its bars are flat while the level keeps arriving", async () => {
+    const { page, errors } = await open("silenced");
+    const box = page.getByTestId("ribbon");
+    await attr(box, "data-state", "live");
+    await attr(box.locator("[data-spectrum-bars]"), "data-paused", "false");
+    const first = await transforms(page);
+    expect(new Set(first).size).toBe(1);
+    await sleep(600);
+    expect(await transforms(page)).toEqual(first);
+    expect(
+      await bars(page).first().evaluate((span) => getComputedStyle(span).backgroundColor),
+    ).toBe("rgb(255, 107, 98)");
+    expect(errors).toEqual([]);
+  });
+
+  test("a live mic's bars on the phone Ribbon, by contrast, follow the level", async () => {
+    const { page } = await open("recording");
+    await until("the bars to move off their resting height", async () =>
+      (await transforms(page)).some((value) => value !== "scaleY(0.12)"),
+    );
+  });
+
+  test("the dock stays live with no waveform", async () => {
+    const { page, errors } = await open("silenced", DESKTOP);
+    await attr(page.getByTestId("sidebar-dock"), "data-state", "live");
+    expect(await bars(page).count()).toBe(0);
+    expect(errors).toEqual([]);
+  });
 });
 
 describe.serial(`the stop time on hover (${engineName})`, () => {
@@ -438,20 +460,15 @@ describe.serial(`the stop time on hover (${engineName})`, () => {
     expect(errors).toEqual([]);
   });
 
-  test("keyboard focus shows the same text on the Ribbon, without overflowing a 320 px phone", async () => {
+  test("the phone Ribbon shows the stop time on its own line, without overflowing a 320 px phone", async () => {
     const { page } = await open("recording", { width: 320, height: 640 });
-    await page.getByRole("button", { name: "Recording. Open recorder" }).focus();
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Shift+Tab");
-    const tip = page.getByTestId("ribbon-stops");
-    await until("the tooltip to show", async () =>
-      (await tip.evaluate((el) => getComputedStyle(el).opacity)) === "1",
-    );
-    expect(await tip.textContent()).toMatch(/^Recording stops at \d/);
+    const stops = page.getByTestId("ribbon-stops");
+    expect(await stops.textContent()).toMatch(/^Stops at \d/);
+    await expect(stops.evaluate((el) => getComputedStyle(el).opacity)).resolves.toBe("1");
+    expect(await page.locator("[data-testid=ribbon-remaining], [data-testid=ribbon-limit]").count()).toBe(0);
     const box = (await ribbon(page).boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(320);
-    expect(box.height).toBeLessThan(52);
   });
 });
 

@@ -3,14 +3,14 @@
 }
 
 /* ---------- the Ribbon: phone above the tab bar, floating on the rail ---------- */
+/* These are the phone (and web) Ribbon: timer, moving bars, Pause and Stop. The Mac app's small bar is below. */
 .ribbon {
-  position: relative;
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 3px 4px 5px 14px;
-  border-radius: 20px;
+  gap: 10px;
+  padding: 6px 6px 6px 16px;
+  border-radius: 22px;
   background: var(--solid);
   box-shadow:
     0 0 0 1px var(--gedge),
@@ -26,16 +26,14 @@
 }
 
 .ribbon-open {
-  position: relative;
   display: flex;
   flex: 1;
+  flex-wrap: wrap;
+  align-content: center;
   min-width: 0;
-  /* A 44px touch target inside the 36px slot: it overlaps the bar's own padding, so nothing moves. */
   min-height: 44px;
-  margin: -3px 0 -5px;
-  padding-bottom: 2px;
   align-items: center;
-  gap: 10px;
+  gap: 5px 10px;
   border-radius: 16px;
 }
 
@@ -55,11 +53,59 @@
 }
 
 .ribbon-timer {
+  font-size: 19px;
+}
+
+/* The stop time takes its own line under the timer and the trace, so the trace keeps its width on a 320 px phone. */
+.ribbon-stops {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ribbon-bars {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* A 320 px phone leaves the trace about 100 px: the bars give up some gap and width, never the Pause button. */
+@media (max-width: 359px) {
+  .ribbon-bars .halo-spectrum {
+    --spectrum-gap: 1px;
+  }
+}
+
+/* ---------- the Mac app's small bar (TC-2077): timer, "Stops in", Pause and Stop; the dock shares the readout, line and hover ---------- */
+.ribbon-skin[data-size="small"] .ribbon {
+  position: relative;
+  gap: 8px;
+  padding: 3px 4px 5px 14px;
+  border-radius: 20px;
+}
+
+.ribbon-skin[data-size="small"] .ribbon-open {
+  position: relative;
+  flex-wrap: nowrap;
+  /* A 44px touch target inside the 36px slot: it overlaps the bar's own padding, so nothing moves. */
+  margin: -3px 0 -5px;
+  padding-bottom: 2px;
+  gap: 10px;
+}
+
+.ribbon-skin[data-size="small"] .ribbon-timer {
   flex: none;
   font-size: 17px;
 }
 
-/* "Stops in 12:34" beside the timer; on a narrow phone it gives way before the buttons do (the hover text has the same news). */
+/* "Stops in 12:34" beside the timer; in a narrow window it gives way before the buttons do (the hover text has the same news). */
 .ribbon-remaining,
 .dock-remaining {
   min-width: 0;
@@ -165,11 +211,16 @@
   color: var(--ink);
 }
 
-.ribbon .mini-btn {
+.ribbon .mini-disc {
+  width: 40px;
+  height: 40px;
+}
+
+.ribbon-skin[data-size="small"] .ribbon .mini-btn {
   margin-block: -4px;
 }
 
-.ribbon .mini-disc {
+.ribbon-skin[data-size="small"] .ribbon .mini-disc {
   width: 30px;
   height: 30px;
 }
@@ -189,6 +240,12 @@
 }
 
 .ribbon .mini-stop-glyph {
+  width: 13px;
+  height: 13px;
+  border-radius: 3.5px;
+}
+
+.ribbon-skin[data-size="small"] .ribbon .mini-stop-glyph {
   width: 10px;
   height: 10px;
   border-radius: 3px;

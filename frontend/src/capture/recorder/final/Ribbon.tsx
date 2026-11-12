@@ -3,6 +3,7 @@ import { PlatformContext } from "@/lib/platform";
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { RecorderValue } from "../RecorderProvider";
+import { MinimizedBars } from "./MinimizedBars";
 import { PauseGlyph, PlayGlyph } from "./minimizedIcons";
 import { MinimizedAlert, MinimizedLimitNotice } from "./MinimizedAlert";
 import {
@@ -29,7 +30,11 @@ export interface RibbonViewProps {
   announcement?: string;
 }
 
-/** The minimised recorder above the tab bar (and floating on the rail): the time and bars reopen it. */
+/**
+ * The minimised recorder above the tab bar (and floating on the rail): the time and bars reopen it.
+ * On the phone (and the web) it keeps the moving bars and the stop time under them; in the Mac app
+ * it is the small bar (TC-2077): timer, Pause and Stop, "Stops in" and the stop time on hover.
+ */
 export function RibbonView({
   recorder,
   elapsedMs,
@@ -40,18 +45,21 @@ export function RibbonView({
   announcement = "",
 }: RibbonViewProps) {
   const device = useContext(PlatformContext) === "tauri" ? "mac" : "phone";
+  const small = device === "mac";
   const view = minimizedView(recorder, elapsedMs, silencedSinceMs, device);
   const live = view.ring === "live";
-  const limit = minimizedLimit(view, recorder.maxDurationMs);
+  const limit = small ? minimizedLimit(view, recorder.maxDurationMs) : null;
   const timerId = useId();
   const stopsId = useId();
   const canToggle = view.controls.resume || view.controls.pause;
+  const describedBy = (small ? limit : view.timer.countdown) ? `${timerId} ${stopsId}` : timerId;
   return (
     <div
       data-testid="ribbon"
       data-state={view.ring}
       data-live={live}
       data-layout={layout}
+      data-size={small ? "small" : "full"}
       className={cn(
         "mini-skin soft-skin ribbon-skin",
         theme === "night" ? "soft-night" : "soft-day",
@@ -64,7 +72,7 @@ export function RibbonView({
           className="ribbon-open"
           onClick={recorder.openSheet}
           aria-label={`${view.status}. Open recorder`}
-          aria-describedby={limit ? `${timerId} ${stopsId}` : timerId}
+          aria-describedby={describedBy}
           data-testid="ribbon-open"
         >
           <span
@@ -74,19 +82,37 @@ export function RibbonView({
           >
             {view.timer.text}
           </span>
-          {limit && (
+          {small ? (
+            limit && (
+              <>
+                <span className="ribbon-remaining" data-testid="ribbon-remaining">
+                  {limit.stopsIn}
+                </span>
+                <span
+                  id={stopsId}
+                  className="mini-tip"
+                  role="tooltip"
+                  data-testid="ribbon-stops"
+                >
+                  {limit.stopsAt}
+                </span>
+              </>
+            )
+          ) : (
             <>
-              <span className="ribbon-remaining" data-testid="ribbon-remaining">
-                {limit.stopsIn}
+              <span className="ribbon-bars">
+                <MinimizedBars
+                  recorder={recorder}
+                  view={view}
+                  bars={30}
+                  theme={theme}
+                />
               </span>
-              <span
-                id={stopsId}
-                className="mini-tip"
-                role="tooltip"
-                data-testid="ribbon-stops"
-              >
-                {limit.stopsAt}
-              </span>
+              {view.timer.countdown && (
+                <span id={stopsId} className="ribbon-stops" data-testid="ribbon-stops">
+                  {view.timer.countdown.text}
+                </span>
+              )}
             </>
           )}
         </button>
