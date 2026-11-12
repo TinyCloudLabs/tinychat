@@ -19,7 +19,7 @@ import type { SandboxLauncher } from "./bot";
 import type { BotLayout } from "./layout";
 
 /** Why a deletion kept the bot's working state: a fixed code, logged as `cause`. */
-export type DeleteSkip = "closing" | "teardown_failed" | "unsafe_path" | "mounted" | "error";
+export type DeleteSkip = "archive_pending" | "closing" | "teardown_failed" | "unsafe_path" | "mounted" | "error";
 
 /** Records that the bot served a request at `at`: a temporary file, fsynced, renamed over the marker. */
 export function markUsed(layout: BotLayout, at = Date.now()): void {

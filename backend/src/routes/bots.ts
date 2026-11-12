@@ -13,6 +13,7 @@ export interface BotsConfig {
   /** Overall bound on one POST turn (BOTS_POST_TIMEOUT_MS, default 120000). */
   postTimeoutMs: number;
   fetchImpl?: typeof fetch;
+  onTurnFinished?: () => void;
 }
 
 const MAX_TEXT = 8000;
@@ -134,6 +135,7 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
       clearTimeout(timer);
       res.off("close", abort);
       if (!res.writableEnded) res.end();
+      config!.onTurnFinished?.();
     }
   });
 

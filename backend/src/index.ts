@@ -24,6 +24,8 @@ import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { mcpChatFromEnv } from "./mcp-meetings/config.js";
+import { BotHistory } from "./bot-history.js";
+import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter } from "./routes/bots.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
@@ -1064,7 +1066,16 @@ async function main() {
   }
 
   // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
-  app.use("/api/bots", createBotsRouter({ config: botsFromEnv(process.env), authMiddleware, paidLimiter: paidChatLimiter }));
+  const botsConfig = botsFromEnv(process.env);
+  if (botsConfig && process.env.BOTS_HISTORY_ENABLED === "true") {
+    const history = new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST);
+    app.use("/api/bots/history", createBotHistoryRouter(history, botsConfig, authMiddleware));
+    const historyDrain = startBotHistoryDrain(history, botsConfig);
+    botsConfig.onTurnFinished = () => { void historyDrain.drain(); };
+    process.once("SIGTERM", historyDrain.stop);
+    process.once("SIGINT", historyDrain.stop);
+  }
+  app.use("/api/bots", createBotsRouter({ config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter }));
 
   // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
   const mcpChat = mcpChatFromEnv(process.env);
