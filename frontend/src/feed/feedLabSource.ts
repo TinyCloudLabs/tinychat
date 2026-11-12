@@ -259,10 +259,11 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
     };
     const wait = comment("Can it wait until the next order on the 3rd?", -32);
     const left = comment("How many filters do we have left?", -27);
+    // The first comment's second reply comes after the second comment, so it quotes the comment it answers.
     plainReplies.set(ownerCardKey(filter.source.sourceId, filter.card), [
       { text: "It can. Skipping now moves the order to the 3rd, with no fee.", at: at(-31), replyTo: wait },
-      { text: "You'd still have one unopened filter to use until then.", at: at(-30.5), replyTo: wait },
       { text: "One, unopened, in the hall cupboard.", at: at(-26), replyTo: left },
+      { text: "About the 3rd: you'd still have that unopened filter to use until then.", at: at(-25), replyTo: wait },
     ]);
   }
   const views = new Map<string, { seenAt?: string; snoozedUntil?: string; events: HomeFeedViewEvent[] }>();

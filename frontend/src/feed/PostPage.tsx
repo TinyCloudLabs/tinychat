@@ -6,7 +6,9 @@
 //
 // The page is the card's `payload.page`. The real feed has no such field: it would be a new optional card field,
 // with the media stored where the person can read it.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CheckIcon, ChevronLeftIcon, PlayIcon } from "lucide-react";
 import type { FeedResponse, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 
@@ -15,6 +17,7 @@ import { sendingLabel, useUndoWindow } from "./AnswerOptions";
 import { AgentMark, PlatformName, type Platform } from "./AgentMark";
 import { CompactCard, StatusMark } from "./CompactCard";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
+import { morphImageId, morphTitleId, useMorphTransition } from "./PostTile";
 import { ShortTime } from "./ShortTime";
 
 export interface LabPageMedia { type: "image" | "video"; src: string; caption?: string; poster?: string }
@@ -134,13 +137,33 @@ function PageQuestionView({ question, index, count, answer, disabled, onChange }
   </section>;
 }
 
+/** From Tailwind's `sm` up the page is a dialog with round corners; below it, it fills the phone's screen. */
+const WIDE = "(min-width: 640px)";
+function subscribeWide(change: () => void) {
+  if (typeof matchMedia !== "function") return () => {};
+  const query = matchMedia(WIDE);
+  query.addEventListener("change", change);
+  return () => query.removeEventListener("change", change);
+}
+const isWide = () => typeof matchMedia === "function" && matchMedia(WIDE).matches;
+
 /**
  * The whole page, over the feed: the card as the feed shows it (`card`, with the agent's header and the page's
  * opening words), then each question, then the card's comments (`footer`). One bar at the bottom sends every
  * answer together, after the feed's undo window. Back, or the phone's back, returns to the feed where you were.
+ * A phone gets the whole screen; from 640px up it is a dialog over the dimmed feed.
+ *
+ * Opened from a grid tile (`morphFrom`, the tile's postMorphId), the tile grows into the page: its surface, picture
+ * and title become the page's, and shrink back into it on the way out. The picture and title then sit above the
+ * card, so `card` is told to leave its own title out. Opened from the list, the page fades in.
  */
-export function PostPage({ entry, page, source, author, card, status, footer, onSaved, onClose }: {
-  entry: HomeFeedEntry; page: LabPage; source: HomeFeedSource; author: string; card: (children: ReactNode) => ReactNode; status: ReactNode; footer: ReactNode;
+export function PostPage({ entry, page, source, author, card, status, footer, morphFrom, onSaved, onClose }: {
+  entry: HomeFeedEntry; page: LabPage; source: HomeFeedSource; author: string;
+  /** The card around the page. `showTitle` is false when the page already shows the title above the card. */
+  card: (children: ReactNode, options: { showTitle: boolean }) => ReactNode;
+  status: ReactNode; footer: ReactNode;
+  /** The grid tile's postMorphId, when the page opens from one. */
+  morphFrom?: string;
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; onClose: () => void;
 }) {
   const key = draftKey(entry);
@@ -154,22 +177,32 @@ export function PostPage({ entry, page, source, author, card, status, footer, on
   const hold = useUndoWindow(() => void send());
   const waiting = saving || hold.seconds !== null;
   const count = page.questions.filter((question) => answered(answers[question.id])).length;
+  // Open until the history step is undone; then the page plays its way out and only after that calls `onClose`.
+  const [open, setOpen] = useState(true);
+  // The post that opened the page, read before the page takes focus, so focus can go back to it (design critique #3).
+  const [opener] = useState(() => document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   const homeRef = useRef<HTMLButtonElement>(null);
   const firstNote = useRef<HTMLDivElement>(null);
-  // The page is a step in the browser's history, so a phone's back gesture (or Escape) closes it. It takes focus
-  // when it opens and gives it back to the post that opened it when it closes (design critique #3).
+  const leaving = useRef(false);
+  const transition = useMorphTransition();
+  const reduce = useReducedMotion();
+  const wide = useSyncExternalStore(subscribeWide, isWide, () => false);
+  // The page is a step in the browser's history, so a phone's back gesture closes it. Home, Escape and a tap on the
+  // dimmed feed all go back that one step; the step's undoing is what closes the page.
   useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     history.pushState({ feedLabPage: key }, "");
-    const back = () => closeRef.current();
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") history.back(); };
+    const back = () => { leaving.current = true; setOpen(false); };
     addEventListener("popstate", back);
-    addEventListener("keydown", escape);
-    homeRef.current?.focus();
-    return () => { removeEventListener("popstate", back); removeEventListener("keydown", escape); if (opener?.isConnected) opener.focus(); };
+    return () => removeEventListener("popstate", back);
   }, [key]);
+  // Once only: a second tap on Home while the page is leaving would step the browser back past the feed.
+  function leave() {
+    if (leaving.current) return;
+    leaving.current = true;
+    history.back();
+  }
   function change(id: string, answer: PageAnswer) {
     const next = { ...answers, [id]: answer };
     drafts.set(key, next); setAnswers(next); setDirty(true); pending.current = null;
@@ -190,29 +223,77 @@ export function PostPage({ entry, page, source, author, card, status, footer, on
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Your answers weren't sent. Try again."); }
     finally { setSaving(false); }
   }
-  return <div role="dialog" aria-modal aria-label={entry.state.card.title} className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-background text-foreground">
-    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-36 pt-4 sm:px-5">
-      <button ref={homeRef} type="button" onClick={() => history.back()} className="mb-4 inline-flex min-h-10 items-center gap-1 rounded-lg border border-border px-3 text-sm"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
-      {card(<div className="mt-4 space-y-5">
-        {/* The page's picture, unless its first question shows its own media (design critique #7). */}
-        {!page.questions[0]?.media?.length && <img src={page.image} alt={page.imageAlt} className="block aspect-video w-full rounded-xl border border-border bg-muted object-cover" />}
-        {status}
-        <div ref={firstNote} className="space-y-5">{page.questions.map((question, index) => <PageQuestionView key={question.id} question={question} index={index} count={page.questions.length}
-          answer={answers[question.id] ?? { choices: [], note: "" }} disabled={waiting} onChange={(answer) => change(question.id, answer)} />)}</div>
-        {footer}
-      </div>)}
-    </div>
-    {/* One send for the whole page, at the bottom where the answers are. */}
-    <div className="fixed inset-x-0 bottom-0 z-10 border-t border-border bg-background/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur sm:px-5">
-      <div className="mx-auto flex w-full max-w-2xl items-center gap-3">
-        <p className="min-w-0 flex-1 text-sm text-muted-foreground" aria-live="polite">{error ? <span role="alert" className="text-destructive">{error}</span> : waiting ? sendingLabel(hold.seconds, "Sending", author) : `${count} of ${page.questions.length} answered`}</p>
-        {hold.seconds !== null
-          ? <Button type="button" variant="outline" onClick={hold.undo} className="min-h-11">Undo</Button>
-          // Once sent and unchanged, adding more is the quiet way back in (design critique #7).
-          : sent && !dirty ? <button type="button" onClick={() => firstNote.current?.querySelector("textarea")?.focus()} className="min-h-11 shrink-0 px-1 text-sm font-medium underline decoration-border underline-offset-4">Add to your answer</button>
-          : <Button type="button" disabled={!count || saving} onClick={hold.start} className="min-h-11">{sent ? "Send again" : "Send answers"}</Button>}
-      </div>
-      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
-    </div>
-  </div>;
+  const title = entry.state.card.title;
+  const fade = reduce ? { duration: 0 } : { duration: 0.2, ease: [0.2, 0, 0, 1] as const };
+  // Grown from a tile: the surface is the tile's. From the list: it rises a little as it fades in.
+  const surface = morphFrom ? { layoutId: morphFrom, transition }
+    : { initial: { opacity: 0, y: reduce ? 0 : 24 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: reduce ? 0 : 24 }, transition: fade };
+  // What only the page has fades in once the tile has mostly grown, and goes first on the way back, so it is never
+  // seen squeezed into the tile's size.
+  const reveal = morphFrom ? {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: reduce ? { duration: 0 } : { delay: 0.12, duration: 0.25 } },
+    exit: { opacity: 0, transition: reduce ? { duration: 0 } : { duration: 0.08 } },
+  } : {};
+  return <Dialog.Root open={open} onOpenChange={(next) => { if (!next) leave(); }}>
+    <AnimatePresence onExitComplete={() => closeRef.current()}>
+      {open && <Dialog.Portal key="page" forceMount>
+        <Dialog.Overlay asChild forceMount>
+          <motion.div className="fixed inset-0 z-40 bg-black/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={fade} />
+        </Dialog.Overlay>
+        <div className="pointer-events-none fixed inset-0 z-40 flex sm:items-center sm:justify-center sm:p-6">
+          <Dialog.Content asChild forceMount aria-describedby={undefined}
+            onOpenAutoFocus={(event) => { event.preventDefault(); homeRef.current?.focus({ preventScroll: true }); }}
+            onCloseAutoFocus={(event) => { event.preventDefault(); if (opener?.isConnected) opener.focus(); }}>
+            {/* Motion keeps corners right while it scales only when the radius is in `style`. */}
+            <motion.div {...surface} style={{ borderRadius: wide ? 16 : 0 }}
+              className="pointer-events-auto relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-background text-foreground outline-none sm:h-auto sm:max-h-full sm:max-w-2xl sm:border sm:border-border sm:shadow-float">
+              {/* "position" only, so the page is never stretched while the surface grows; it scrolls on its own. */}
+              <motion.div layout="position" layoutScroll transition={transition} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                <div className="mx-auto w-full min-w-0 px-3 pb-6 pt-4 sm:px-5">
+                  <motion.div {...reveal}>
+                    <Dialog.Close asChild>
+                      <button ref={homeRef} type="button" className="mb-4 inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-10"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
+                    </Dialog.Close>
+                  </motion.div>
+                  {morphFrom ? <>
+                    {/* The tile's picture and title, grown: above the card, in the order the tile had them. */}
+                    <motion.div layoutId={morphImageId(morphFrom)} transition={transition} style={{ borderRadius: 12 }}
+                      className="relative mb-3 aspect-[4/3] w-full overflow-hidden border border-border bg-muted sm:aspect-video">
+                      <img src={page.image} alt={page.imageAlt} className="absolute inset-0 size-full object-cover" />
+                    </motion.div>
+                    <Dialog.Title asChild>
+                      <motion.h2 layoutId={morphTitleId(morphFrom)} layout="position" transition={transition} className="mb-4 break-words font-display text-title-2">{title}</motion.h2>
+                    </Dialog.Title>
+                  </> : <Dialog.Title className="sr-only">{title}</Dialog.Title>}
+                  <motion.div {...reveal}>
+                    {card(<div className="mt-4 space-y-5">
+                      {/* The page's picture, unless it is already above the card or its first question shows its own media (design critique #7). */}
+                      {!morphFrom && !page.questions[0]?.media?.length && <img src={page.image} alt={page.imageAlt} className="block aspect-video w-full rounded-xl border border-border bg-muted object-cover" />}
+                      {status}
+                      <div ref={firstNote} className="space-y-5">{page.questions.map((question, index) => <PageQuestionView key={question.id} question={question} index={index} count={page.questions.length}
+                        answer={answers[question.id] ?? { choices: [], note: "" }} disabled={waiting} onChange={(answer) => change(question.id, answer)} />)}</div>
+                      {footer}
+                    </div>, { showTitle: !morphFrom })}
+                  </motion.div>
+                </div>
+              </motion.div>
+              {/* One send for the whole page, at the bottom where the answers are. */}
+              <motion.div {...reveal} className="shrink-0 border-t border-border bg-background px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-3">
+                <div className="mx-auto flex w-full max-w-2xl items-center gap-3">
+                  <p className="min-w-0 flex-1 text-sm text-muted-foreground" aria-live="polite">{error ? <span role="alert" className="text-destructive">{error}</span> : waiting ? sendingLabel(hold.seconds, "Sending", author) : `${count} of ${page.questions.length} answered`}</p>
+                  {hold.seconds !== null
+                    ? <Button type="button" variant="outline" onClick={hold.undo} className="min-h-11">Undo</Button>
+                    // Once sent and unchanged, adding more is the quiet way back in (design critique #7).
+                    : sent && !dirty ? <button type="button" onClick={() => firstNote.current?.querySelector("textarea")?.focus()} className="min-h-11 shrink-0 px-1 text-sm font-medium underline decoration-border underline-offset-4">Add to your answer</button>
+                    : <Button type="button" disabled={!count || saving} onClick={hold.start} className="min-h-11">{sent ? "Send again" : "Send answers"}</Button>}
+                </div>
+                <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
+              </motion.div>
+            </motion.div>
+          </Dialog.Content>
+        </div>
+      </Dialog.Portal>}
+    </AnimatePresence>
+  </Dialog.Root>;
 }

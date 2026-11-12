@@ -29,12 +29,6 @@ export function FeedLab() {
   const [lab, setLab] = useState(() => ({ run: 0, source: createFeedLabSource() }));
   useEffect(() => () => lab.source.stop(), [lab]);
   return <div className="flex h-dvh flex-col bg-background text-foreground">
-    {/* The cards' morph when the list changes shape (HomeFeedEntries `relayout`): only the named cards move, over
-        250 ms, their content crossfading inside their changing box; the rest of the page snaps. */}
-    <style>{`::view-transition-group(*){animation-duration:250ms;animation-timing-function:cubic-bezier(.2,0,0,1)}
-::view-transition-image-pair(*){overflow:clip}
-::view-transition-old(*),::view-transition-new(*){height:auto;animation-duration:150ms}
-::view-transition-old(root),::view-transition-new(root){animation:none}`}</style>
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-sm">
       <p className="min-w-0 flex-1"><span className="font-medium">Feed lab</span><span className="block text-xs text-muted-foreground">Made-up cards and a simulated agent. Nothing leaves this page.</span></p>
       <button type="button" onClick={() => setLab({ run: lab.run + 1, source: createFeedLabSource() })} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10">Reset</button>

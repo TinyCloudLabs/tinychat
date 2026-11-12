@@ -9,6 +9,7 @@ import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
 import { CardDetails } from "./CardActions";
 import { CardConversation, typedConversation } from "./CardConversation";
+import { HistoryTimeline } from "./HistoryTimeline";
 import { shortTime } from "./ShortTime";
 
 const buttonClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
@@ -36,6 +37,10 @@ interface Props {
   reference?: ReactNode;
   /** At the far end of the card's foot: "Show less" on a card opened from the list. */
   end?: ReactNode;
+  /** Beside Ask me later: the page's "Next card". */
+  next?: ReactNode;
+  /** After Ask me later: the card has gone until `until`; the page says when it comes back, with Undo. */
+  onSnoozed?: (until: string) => void;
 }
 type AskAnswer = { action: "answer" | "drop" | "accept-default"; choice?: string };
 
@@ -256,7 +261,7 @@ export function SitrepCard(props: Props) {
     {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className="text-xs text-muted-foreground">{response.reason}. Saved transport record preserved; no question decision inferred.</p>)}
     {/* The card's foot (Sam, 11-12): Ask me later beside Details (who posted it, its history, its wiring). */}
     <div className="border-t border-border pt-3">
-      <CardDetails end={props.end} actions={<button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}>
+      <CardDetails end={props.end} actions={<><button type="button" className={buttonClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>{props.next}</>}>
         <p>{record.kind} · {record.status} · {record.id}</p>
         <p>Posted by {entry.source.label} · {entry.source.agentDid}{record.from !== entry.source.label && ` · from ${record.from}`}</p>
         {record.owner && <p>Agent working on this: {record.owner}</p>}
@@ -266,7 +271,14 @@ export function SitrepCard(props: Props) {
         {/* Private priority puts the card first in your list. Only you see it; it is not sent to any agent. */}
         <button type="button" className={`${buttonClass} bg-background`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Clear private priority" : "Mark private priority"}</button>
         {props.reference}
-    {(!!answers.length || !!state?.snoozes?.length) && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer font-medium">Typed card history</summary><ol className="mt-2 space-y-2">{answers.map((answer, index) => <li key={`${answer.at}:${index}`}>{answer.action === "code" ? "Approval code saved privately" : `${answer.action}${answer.choice ? ` · ${answer.choice}` : ""}${answer.text ? ` · ${answer.text}` : ""}`} · {stamp(answer.at)}{record.kind === "approval" && answer.issuedAt && <span> · Issuance {answer.issuedAt}</span>}</li>)}{state?.snoozes?.map((snooze) => <li key={`${snooze.at}:${snooze.until}`}>Snoozed at {stamp(snooze.at)} until {stamp(snooze.until)}</li>)}</ol></details>}
+        {/* The card's history as a rail with dots (Sam, 11-12): posted, then what you did, oldest first. */}
+        <section aria-label="Card history" className="mt-2"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p>
+          <HistoryTimeline items={[
+            { key: "posted", at: entry.state.card.createdAt, title: "Posted" },
+            ...answers.map((answer, index) => ({ key: `answer:${answer.at}:${index}`, at: answer.at, title: answer.action === "code" ? "Approval code saved privately" : `You chose to ${answer.action.replace(/-/g, " ")}`, ...(answer.choice || answer.text ? { detail: [answer.choice, answer.text].filter(Boolean).join("\n") } : {}) })),
+            ...(state?.snoozes ?? []).map((snooze) => ({ key: `snooze:${snooze.at}`, at: snooze.at, title: `Snoozed until ${stamp(snooze.until)}` })),
+          ].sort((a, b) => a.at.localeCompare(b.at)).map((item, index, all) => ({ ...item, tone: index === all.length - 1 ? "current" as const : "done" as const }))} />
+        </section>
       </CardDetails>
     </div>
     {/* Ask me later's times open under the foot. A note to yourself goes with a reminder: it is saved with the
@@ -275,7 +287,7 @@ export function SitrepCard(props: Props) {
       <p className="font-medium">Ask me again</p>
       <div className="flex flex-wrap gap-2">{snoozePresets(now).slice(0, 3).map((preset) => <button key={preset.id} type="button" className={buttonClass} disabled={busy} onClick={() => void perform(async () => {
         if (selfNote.trim()) await savePrivate({ notes: [{ id: id(), at: new Date().toISOString(), text: selfNote.trim() }] }, `private-note:${selfNote}`);
-        await source.snooze(entry, preset.until); setSelfNote(""); setLater(false); onOwnerSaved();
+        await source.snooze(entry, preset.until); setSelfNote(""); setLater(false); onOwnerSaved(); props.onSnoozed?.(preset.until);
       })}>{preset.label}</button>)}</div>
       <label className="block font-medium">Add a note to yourself<span className="block text-xs font-normal text-muted-foreground">Only you see this. It is not sent to any agent.</span><textarea aria-label="Note to yourself" value={selfNote} disabled={busy} onInput={(event) => setSelfNote(event.currentTarget.value)} className={`${inputClass} min-h-16`} /></label>
     </section>}

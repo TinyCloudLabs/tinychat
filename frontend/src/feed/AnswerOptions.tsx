@@ -2,6 +2,7 @@
 // seconds with Undo, then it is sent. Plain cards (HomeFeedEntries.tsx) and typed
 // asks (SitrepCard.tsx) share the wait, its words and the option buttons.
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { StatefulSendButton, type SendState } from "./StatefulSendButton";
 
 /** Seconds an answer waits, after the tap or Send, before it is sent. Undo works until then and not after. */
 export const ANSWER_UNDO_SECONDS = 4;
@@ -106,10 +107,16 @@ export function AnswerOptions({ options: given, suggested, chosen, seconds, send
 }
 
 /** What "Your own answer" opens: a text box and Send. Send waits out the same undo window as a tap. */
-export function OwnAnswerBox({ text, disabled, onText, onSend }: { text: string; disabled: boolean; onText: (text: string) => void; onSend: () => void }) {
+// Send only starts the undo window; the real save runs later in the caller, so
+// the caller passes `state` for that save (sending/sent/error) and `onRetry` to
+// re-run it after a failure. Without `state` the button just stays on Send.
+export function OwnAnswerBox({ text, disabled, onText, onSend, state = "idle", onRetry }: {
+  text: string; disabled: boolean; onText: (text: string) => void; onSend: () => void;
+  state?: SendState; onRetry?: () => void;
+}) {
   return <div className="space-y-2 rounded-xl border border-border p-3">
     <textarea autoFocus rows={3} aria-label={OWN_OPTION.label} value={text} disabled={disabled} onInput={(event) => onText(event.currentTarget.value)}
       className="block min-h-20 w-full resize-y rounded-lg border border-border bg-background p-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" />
-    <button type="button" disabled={disabled || !text.trim()} onClick={onSend} className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">Send</button>
+    <StatefulSendButton state={state} disabled={disabled || !text.trim()} onSend={state === "error" ? (onRetry ?? onSend) : onSend} />
   </div>;
 }

@@ -6,7 +6,8 @@
 // replies on their own. You only post plain comments; there is no reply-to for you (Sam, 22:31Z). A comment never
 // answers or moves the card. One quiet control opens the comment box, and it stays open so you can go again.
 import { useState } from "react";
-import { ArrowUpIcon, MessageSquareIcon } from "lucide-react";
+import { ArrowUpIcon } from "lucide-react";
+import { StatefulSendButton } from "./StatefulSendButton";
 import type { BoardRecord, SitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 import { answerHandling } from "./AnswerSteps";
@@ -54,11 +55,11 @@ export function typedConversation(entry: HomeFeedEntry, record: BoardRecord, own
   return [...thread, ...held].sort((a, b) => a.at.localeCompare(b.at));
 }
 
-/** Where your comment stands, as one word that moves on in place. */
+/** Where your latest comment stands, as one word that moves on in place. */
 function commentStatus(line: ConversationLine, replies: number) {
   return replies ? "Replied" : line.received ? "Received" : "Sent";
 }
-const repliesLabel = (count: number) => count === 1 ? "1 Reply" : `${count} Replies`;
+const belowLabel = (count: number) => count === 1 ? "1 reply below" : `${count} replies below`;
 
 /** A bubble's tail (design agent, from iMessage): on the last bubble of a run, in the bubble's own colour. */
 function Tail({ mine }: { mine: boolean }) {
@@ -106,22 +107,24 @@ export function CardConversation({ lines, to, reason, disabled = false, onSend }
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
+  // The Send button keeps its own sending/sent/error state; this only clears
+  // the text once the comment is in, and lets a failure reach the button.
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string>();
   // The comment whose replies are open on their own.
   const [thread, setThread] = useState<string | null>(null);
   async function send() {
     const value = text.trim();
-    if (!value || saving) return;
-    setSaving(true); setError(undefined);
+    if (!value) return;
+    setSaving(true);
     try { await onSend(value); setText(""); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Your comment wasn't sent. Try again."); }
     finally { setSaving(false); }
   }
   const repliesTo = (key: string) => lines.filter((line) => line.replyTo === key);
   const original = (key?: string) => key ? lines.find((line) => line.key === key) : undefined;
   const opened = original(thread ?? undefined);
   const items = chatItems(lines);
+  // One status line, under your latest comment only (the design agent, applied at Sam's word, 22:52Z).
+  const latestMine = [...lines].reverse().find((line) => line.mine && !line.held)?.key;
   return <section aria-label="Comments" className="mt-4 space-y-3 border-t border-border pt-3 text-sm">
     {!!items.length && <ol>
       {items.map((item, index) => {
@@ -130,25 +133,34 @@ export function CardConversation({ lines, to, reason, disabled = false, onSend }
         if (item.kind === "mine") {
           const { line } = item;
           const count = repliesTo(line.key).length;
+          // Replies that are not directly under this comment get a quiet pointer to them.
+          const next = items[index + 1];
+          const below = count - (next?.kind === "theirs" && next.replyTo === line.key ? next.lines.length : 0);
           return <li key={line.key} data-mine className={`flex flex-col items-end ${gap}`}>
             <MineBubble line={line} tail={items[index + 1]?.kind !== "mine"} />
-            <p className="mt-1 flex flex-wrap items-center justify-end gap-x-1.5 text-xs text-muted-foreground">{line.held
-              ? <span>Not sent · saved until {line.who} can get it</span>
-              : <><span>{commentStatus(line, count)}</span>{!!count && <>·<button type="button" onClick={() => setThread(line.key)} className="min-h-6 font-medium text-primary underline-offset-2 hover:underline">{repliesLabel(count)}</button></>}</>}</p>
+            {line.held
+              ? <p className="mt-1 text-xs text-muted-foreground">Not sent · saved until {line.who} can get it</p>
+              : (line.key === latestMine || below > 0) && <p className="mt-1 flex flex-wrap items-center justify-end gap-x-1.5 text-xs text-muted-foreground">
+                {line.key === latestMine && <span>{commentStatus(line, count)}</span>}
+                {line.key === latestMine && below > 0 && <span aria-hidden>·</span>}
+                {below > 0 && <button type="button" onClick={() => setThread(line.key)} className="min-h-6 font-medium text-foreground underline decoration-border underline-offset-2">{belowLabel(below)}</button>}
+              </p>}
           </li>;
         }
+        // A reply right under the comment it answers needs no quote; one further down quotes it as a ghost.
         const quoted = original(item.replyTo);
-        if (!quoted) return <li key={item.lines[0]!.key} className={gap}><TheirRun lines={item.lines} /></li>;
-        return <li key={item.lines[0]!.key} className={gap}>
-          {/* The comment answered, as a ghost on its own side, with a curve down to the replies; tapping it opens
-              the comment with its replies. */}
+        const previous = items[index - 1];
+        const adjacent = previous?.kind === "mine" && previous.line.key === item.replyTo;
+        if (!quoted || adjacent) return <li key={item.lines[0]!.key} className={gap}><TheirRun lines={item.lines} /></li>;
+        return <li key={item.lines[0]!.key} className="mt-4">
+          {/* The comment answered, as a ghost on its own side, joined by one curve to the reply below; tapping it
+              opens the comment with its replies. */}
           <div className="flex items-stretch">
-            <span aria-hidden className="ml-4 mt-[0.9rem] flex-1 rounded-tl-xl border-l-2 border-t-2 border-border" />
+            <span aria-hidden className="-mb-[7px] ml-5 mr-1.5 mt-[13px] flex-1 rounded-tl-xl border-l-[1.5px] border-t-[1.5px] border-border" />
             <button type="button" onClick={() => setThread(quoted.key)} aria-label={`Reply to your comment: ${quoted.text}`}
-              className="ml-1 max-w-[70%] rounded-[14px] border border-primary/50 px-2.5 py-1 text-left text-[13px] leading-[17px] text-primary"><span className="line-clamp-2 break-words">{quoted.text}</span></button>
+              className="max-w-[70%] rounded-[14px] border border-border px-2.5 py-1 text-left text-[13px] leading-[17px] text-muted-foreground"><span className="line-clamp-2 break-words">{quoted.text}</span></button>
           </div>
-          {/* One bracket down the left of every reply to that comment. */}
-          <div className="ml-4 border-l-2 border-border pl-2 pt-1"><TheirRun lines={item.lines} /></div>
+          <div className="mt-1.5"><TheirRun lines={item.lines} /></div>
         </li>;
       })}
     </ol>}
@@ -160,18 +172,17 @@ export function CardConversation({ lines, to, reason, disabled = false, onSend }
       </ResponsiveSheetBody>
     </ResponsiveSheet>
     {to && (open
-      ? <form className="space-y-2" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+      ? <form className="space-y-2" onSubmit={(event) => event.preventDefault()}>
         <textarea autoFocus rows={2} aria-label={`Leave a comment for ${to}`} placeholder={`Leave a comment for ${to}`} value={text} disabled={disabled || saving} onInput={(event) => setText(event.currentTarget.value)}
           className="block min-h-11 w-full resize-y rounded-[22px] border border-border bg-background px-4 py-2.5 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" />
-        {error && <p role="alert" className="text-destructive">{error}</p>}
         <div className="flex flex-wrap gap-2">
-          <button type="submit" disabled={disabled || saving || !text.trim()} className="min-h-11 rounded-lg bg-primary px-4 font-medium text-primary-foreground disabled:opacity-50">{saving ? "Sending…" : "Send"}</button>
-          <button type="button" onClick={() => { setOpen(false); setText(""); setError(undefined); }} className="min-h-11 rounded-lg border border-border px-4">Cancel</button>
+          <StatefulSendButton onSend={send} disabled={disabled || !text.trim()} />
+          <button type="button" onClick={() => { setOpen(false); setText(""); }} className="min-h-11 rounded-lg border border-border px-4">Cancel</button>
         </div>
       </form>
       // Closed, the control has the shape of a composer (design agent).
       : <button type="button" disabled={disabled} onClick={() => setOpen(true)} className="flex min-h-11 w-full items-center gap-2 rounded-full border border-border pl-3.5 pr-1.5 text-left text-muted-foreground disabled:opacity-50">
-        <MessageSquareIcon aria-hidden className="size-4 shrink-0" /><span className="min-w-0 flex-1 truncate">Leave a comment for {to}</span>
+        <span className="min-w-0 flex-1 truncate">Leave a comment for {to}</span>
         <span aria-hidden className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-foreground"><ArrowUpIcon className="size-4" /></span>
       </button>)}
     {!to && reason && <p role="status" className="text-muted-foreground">{reason}</p>}

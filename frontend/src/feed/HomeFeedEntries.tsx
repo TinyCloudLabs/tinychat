@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ArrowDownIcon, CheckIcon, ChevronRightIcon, ChevronUpIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
@@ -9,14 +9,14 @@ import { agentProfile, AgentMark } from "./AgentMark";
 import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { CardConversation, plainConversation, typedConversation } from "./CardConversation";
 import { actionClass, CardDetails } from "./CardActions";
-import { flushSync } from "react-dom";
 import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
+import { PostTile, postMorphId } from "./PostTile";
 import { labPageOf, PostPage, PostPreview, postStatus } from "./PostPage";
 import { CompactCard, StatusMark } from "./CompactCard";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
-import { ShortTime, shortTime } from "./ShortTime";
+import { shortTime } from "./ShortTime";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
@@ -25,6 +25,9 @@ import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV
 import { PATHS } from "@/shell/routes";
 import { FEED_SKILL_URL } from "./strings";
 import { FeedViewSlider } from "./FeedViewSlider";
+import { FloatingHeader } from "./FloatingHeader";
+import { MorphConfig, MorphItem, useAnchoredToggle } from "./densityMorph";
+import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
 
 /** How long ago an answer went, after the pill's "Sent" tag: "3 hrs ago", "1 day ago"; nothing in its first minute. */
 export function sentAgo(at: string, now: number): string {
@@ -95,22 +98,9 @@ function ReportLink({ entry }: { entry: HomeFeedEntry }) {
   return <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-9 max-w-full items-center break-all text-sm underline underline-offset-2">{typeof label === "string" ? label : "Full report"}</a>;
 }
 
+/** The card's history in Details (Sam, 11-12, Aceternity timeline as inspiration): a rail with a dot per step. */
 function CardHistory({ entry }: { entry: HomeFeedEntry }) {
-  const responses = entry.responses ?? (entry.state.response ? [entry.state.response] : []);
-  const snoozes = entry.viewEvents?.filter((event) => event.kind === "snoozed") ?? [];
-  if (!responses.length && !snoozes.length) return null;
-  return <details className="mt-4 rounded-xl border border-border p-3 text-sm">
-    <summary className="min-h-8 cursor-pointer font-medium">Card history</summary>
-    <ol className="mt-2 space-y-3">
-      {responses.map((response) => <li key={response.responseId} className="break-words">
-        <p className="text-xs text-muted-foreground">{response.kind === "message" ? "Message saved" : response.kind === "followup" ? "Follow-up saved" : "Answer saved"} · <ShortTime at={response.createdAt} /></p>
-        {response.choiceId && <p>{entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label ?? response.choiceId}</p>}
-        {response.text && <p className="whitespace-pre-wrap">{response.text}</p>}
-        {response.supersedesResponseId && <p className="text-xs text-muted-foreground">Follows response {response.supersedesResponseId}</p>}
-      </li>)}
-      {snoozes.map((event) => <li key={`snooze-${event.sequence}`} className="text-xs text-muted-foreground">Snoozed at {shortTime(event.createdAt)}{event.snoozedUntil && ` until ${shortTime(event.snoozedUntil)}`}</li>)}
-    </ol>
-  </details>;
+  return <section aria-label="Card history" className="mt-4"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p><HistoryTimeline items={historyFromEntry(entry)} /></section>;
 }
 function ResponseStatus({ entry, agent }: { entry: HomeFeedEntry; agent?: string }) {
   const response = entry.state.response;
@@ -223,8 +213,9 @@ function AnswerForm({ entry, source, onSaved, onAnswered }: { entry: HomeFeedEnt
     {saved && !followup ? <button type="button" className="min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setFollowup(true)}>Add follow-up</button> : <div className="space-y-3">
       {saved && <p className="text-xs text-muted-foreground">A follow-up does not cancel an action already received by the agent.</p>}
       <AnswerOptions options={entry.state.card.choices ?? []} chosen={choice} seconds={hold.seconds} sending={saving} to={entry.source.label} onChoose={(option) => choose(option.id)} onUndo={undo}
-        own={{ open: ownOpen, box: <OwnAnswerBox text={text} disabled={waiting} onText={editText} onSend={sendOwn} /> }} />
-      {error && <div role="alert" className="text-sm text-destructive"><p>{error}</p><button type="button" disabled={waiting} onClick={() => void save()} className="mt-1 min-h-9 underline">Try again</button></div>}
+        own={{ open: ownOpen, box: <OwnAnswerBox text={text} disabled={waiting} onText={editText} onSend={sendOwn} state={saving && choice === OWN_OPTION.id ? "sending" : error && choice === OWN_OPTION.id ? "error" : "idle"} onRetry={() => void save()} /> }} />
+      {/* A failed own answer says so on its Send button; a failed tap on an option says so here. */}
+      {error && choice !== OWN_OPTION.id && <div role="alert" className="text-sm text-destructive"><p>{error}</p><button type="button" disabled={waiting} onClick={() => void save()} className="mt-1 min-h-9 underline">Try again</button></div>}
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
     </div>}
   </div>;
@@ -249,6 +240,15 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
   const [history, setHistory] = useState(false);
+  // Feed lab (Sam, 22:58Z): snoozed cards leave every view until their time; the Filter's "Snoozed" lists them.
+  const [snoozedOnly, setSnoozedOnly] = useState(false);
+  // A short note after an action, with a way to take it back ("Back at 15:00 · Undo").
+  const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 6_000);
+    return () => clearTimeout(timer);
+  }, [toast]);
   const [error, setError] = useState<string | null>(null);
   const [savingDefault, setSavingDefault] = useState(false);
   const [viewBusy, setViewBusy] = useState(false);
@@ -275,7 +275,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [earlier, setEarlier] = useState<HomeFeedEntry[]>([]);
   const [pull, setPull] = useState(0);
   const mainRef = useRef<HTMLElement>(null);
+  // Full cards and Grid keep the card you are reading where it is while the cards morph (densityMorph.tsx).
+  const anchoredToggle = useAnchoredToggle(mainRef);
   const bottomSentinel = useRef<HTMLDivElement>(null);
+  const topSentinel = useRef<HTMLDivElement>(null);
   const pullStart = useRef<number | null>(null);
   const earlierRef = useRef(earlier);
   earlierRef.current = earlier;
@@ -286,22 +289,65 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [historyAt, setHistoryAt] = useState<string | null>(null);
   // "Go to current" shows only while the feed's heading is below the screen (design critique #9).
   const [currentBelow, setCurrentBelow] = useState(false);
+  // Earlier answers come and go above the feed without the feed moving: before the list above changes, the element
+  // given here is measured, and after the change the scroll is put back so it stays at the same place on screen.
+  // `then` runs after that (the scroll up to the newest earlier answer, or down to the feed).
+  const keepInPlace = useRef<{ target: HTMLElement; top: number; then?: (root: HTMLElement) => void } | null>(null);
+  const holdInPlace = (node: () => HTMLElement | null, then?: (root: HTMLElement) => void) => {
+    // The element itself is held (not found again afterwards): after a page lands above, the first earlier answer
+    // is a new one, but the one that was on screen is still in the page.
+    const root = mainRef.current, target = node();
+    keepInPlace.current = root && target ? { target, top: target.getBoundingClientRect().top - root.getBoundingClientRect().top, ...(then ? { then } : {}) } : null;
+  };
+  useLayoutEffect(() => {
+    const held = keepInPlace.current, root = mainRef.current;
+    keepInPlace.current = null;
+    if (!held || !root || !held.target.isConnected) return;
+    root.scrollTop += held.target.getBoundingClientRect().top - root.getBoundingClientRect().top - held.top;
+    held.then?.(root);
+  }, [earlier]);
+  const smooth = () => matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" as const : "smooth" as const;
+  /**
+   * History closes (Sam, 22:56Z) once you scroll back down into the feed, or tap "Go to current": the earlier
+   * answers go, the feed stays where it is, and seeing them again takes another tap or pull.
+   */
+  const closeHistory = useCallback((toCurrent = false) => {
+    if (!earlierRef.current.length) return;
+    holdInPlace(() => headerRef.current, toCurrent ? (root) => {
+      const header = headerRef.current;
+      if (header) root.scrollTo({ top: root.scrollTop + header.getBoundingClientRect().top - root.getBoundingClientRect().top - 16, behavior: smooth() });
+    } : undefined);
+    setEarlier([]);
+  }, []);
   const measureHistory = useCallback(() => {
     const root = mainRef.current, header = headerRef.current;
     if (!root || !header) return;
     const top = root.getBoundingClientRect().top;
     const headerTop = header.getBoundingClientRect().top;
     setCurrentBelow(headerTop > top + root.clientHeight - 64);
+    // Scrolled back down past the feed's heading: history closes.
+    if (earlierRef.current.length && !loading.current.earlier && headerTop < top - 24) { closeHistory(); setHistoryAt(null); return; }
     if (headerTop <= top + 48) { setHistoryAt(null); return; }
     const inView = [...root.querySelectorAll<HTMLElement>("[data-sent-at]")].find((node) => node.getBoundingClientRect().bottom > top + 56);
     setHistoryAt(inView?.dataset.sentAt ?? null);
-  }, []);
-  /** Loads the next page of earlier answers above the ones shown; the page stays at its top, where they land. */
+  }, [closeHistory]);
+  /**
+   * Loads the next page of earlier answers above the ones shown, without moving what is on screen. Opening history
+   * (a tap on "Show earlier answers" or a pull, Sam 22:56Z) then scrolls up to the newest earlier answer.
+   */
   const loadEarlier = useCallback(async () => {
     if (!source.loadAnswered || loading.current.earlier) return;
     loading.current.earlier = true;
+    const opening = !earlierRef.current.length;
     try {
       const page = await source.loadAnswered(earlierRef.current[0]?.state.response?.createdAt, 5);
+      const root = mainRef.current;
+      const first = () => root?.querySelector<HTMLElement>("[data-sent-at]") ?? null;
+      holdInPlace(opening ? () => headerRef.current : first, opening ? (container) => {
+        const items = [...container.querySelectorAll<HTMLElement>("[data-sent-at]")];
+        const newest = items.at(-1);
+        if (newest) container.scrollTo({ top: container.scrollTop + newest.getBoundingClientRect().top - container.getBoundingClientRect().top - 72, behavior: smooth() });
+      } : undefined);
       setEarlier((current) => [...[...page].reverse(), ...current]);
     } finally { loading.current.earlier = false; }
   }, [source]);
@@ -320,12 +366,20 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     try { await source.loadMore(); } finally { loading.current.more = false; }
   }, [source, ended]);
   useEffect(() => { measureHistory(); }, [earlier, size, measureHistory]);
-  // Reaching the end of the feed adds cards (downward only; earlier answers never load by scrolling).
+  // Reaching the end of the feed adds cards. Earlier answers never load by scrolling, except once history is open
+  // (a deliberate tap or pull): then reaching its top goes further back (Sam, 22:56Z).
   useEffect(() => {
-    const root = mainRef.current, node = bottomSentinel.current;
-    if (!root || !node || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver((seen) => { if (seen.some((item) => item.isIntersecting)) void loadMore(); }, { root, rootMargin: "200px 0px" });
-    observer.observe(node);
+    const root = mainRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((seen) => {
+      for (const item of seen) {
+        if (!item.isIntersecting) continue;
+        if (item.target === bottomSentinel.current) void loadMore();
+        if (item.target === topSentinel.current) void loadEarlier();
+      }
+    }, { root, rootMargin: "200px 0px" });
+    if (bottomSentinel.current) observer.observe(bottomSentinel.current);
+    if (topSentinel.current) observer.observe(topSentinel.current);
     return () => observer.disconnect();
   });
   // A short list leaves the end in view after a page lands: keep adding until the feed fills the screen.
@@ -434,7 +488,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const matching = entries.filter((entry) => {
     const card = entry.state.card;
     if (!matchesFilters(entry)) return false;
+    // A snoozed card is out of every view until its time comes, except the Filter's "Snoozed" list.
+    const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > clock;
+    if (snoozedOnly) return snoozed;
     if (history) return entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || Date.parse(entry.view.snoozedUntil ?? "") > clock;
+    if (snoozed) return false;
     const typed = contextFor(entry);
     const unsupported = card.payload?.sitrep !== undefined || card.payload?.sitrepThread !== undefined;
     if (selector === "needs-action" && typed?.projection.foldedInto) {
@@ -467,7 +525,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     if (filtered.length <= loadedFrom.current) setEnded(true);
     loadedFrom.current = null;
   }, [filtered.length, snapshot]);
-  useEffect(() => { autoLoads.current = 0; loadedFrom.current = null; setEnded(false); }, [selector, agent, kind, project, history]);
+  useEffect(() => { autoLoads.current = 0; loadedFrom.current = null; setEnded(false); }, [selector, agent, kind, project, history, snoozedOnly]);
   /** Opens a card in place (in the compact view) and brings it into view. */
   function openCard(entry: HomeFeedEntry) {
     const key = keyOf(entry);
@@ -540,8 +598,23 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       await source.snooze(entry, until);
       setSnapshot((current) => updateSnapshotEntry(current, keyOf(entry), (candidate) => ({ ...candidate, view: { ...candidate.view, snoozedUntil: until } })));
       setLaterKey(null);
+      snoozed(entry, until);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Card could not be snoozed"); }
     finally { setViewBusy(false); }
+  }
+  /** After a snooze: the card has gone; say when it comes back, with Undo. */
+  function snoozed(entry: HomeFeedEntry, until: string) {
+    setToast({ text: `Back at ${shortTime(until, clock)}`, undo: () => void unsnooze(entry) });
+  }
+  /** Brings a snoozed card back now (Undo, or "Bring back now" from the Snoozed list). */
+  async function unsnooze(entry: HomeFeedEntry) {
+    const now = new Date(Date.now() - 1_000).toISOString();
+    try {
+      await source.snooze(entry, now);
+      setSnapshot((current) => updateSnapshotEntry(current, keyOf(entry), (candidate) => ({ ...candidate, view: { ...candidate.view, snoozedUntil: now } })));
+      setToast(null);
+      refreshRef.current();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Card could not be brought back"); }
   }
 
   /** A card as a short item (compact view): its agent, title, short description and where it stands. Tap opens it. */
@@ -554,6 +627,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   }
   /** A card's one or two lines: what you chose once you have answered it, else its short description or body. */
   function describe(entry: HomeFeedEntry) {
+    // In the Snoozed list: when it comes back.
+    const until = entry.view.snoozedUntil;
+    if (until && Date.parse(until) > clock) return `Back at ${shortTime(until, clock)}`;
     const response = entry.state.response;
     if (response && !needsAttention(entry, clock, contextFor(entry)?.projection)) {
       const label = response.choiceId ? entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label : undefined;
@@ -568,10 +644,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const page = labPageOf(entry);
     const plain = cardStatus(entry, context?.projection, clock, author);
     const status = page ? postStatus(entry, page, plain) : plain;
-    return <button type="button" onClick={() => page ? setPageKey(keyOf(entry)) : openCard(entry)} {...(page ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false })}
+    // A post's tile morphs straight into its page (PostTile.tsx, Sam 22:44Z).
+    if (page) return <PostTile entry={entry} page={page} author={author} agentKey={agentKey(entry, context?.record)} status={status} onOpen={() => setPageKey(keyOf(entry))} />;
+    return <button type="button" onClick={() => openCard(entry)} aria-expanded={false}
       className="flex h-full w-full min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-card text-left text-card-foreground transition-transform duration-150 ease-smooth active:scale-[.985] fine:hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:active:scale-100">
-      {page ? <img src={page.image} alt="" loading="lazy" className="block aspect-[4/3] w-full bg-muted object-cover" />
-        : <span className="flex aspect-[4/3] w-full flex-col gap-2 bg-surface-2 p-3"><AgentMark agentKey={agentKey(entry, context?.record)} name={author} small /><span className="line-clamp-4 text-xs leading-4 text-muted-foreground">{describe(entry)}</span></span>}
+      <span className="flex aspect-[4/3] w-full flex-col gap-2 bg-surface-2 p-3"><AgentMark agentKey={agentKey(entry, context?.record)} name={author} small /><span className="line-clamp-4 text-xs leading-4 text-muted-foreground">{describe(entry)}</span></span>
       <span className="flex flex-1 flex-col gap-1.5 p-2.5">
         <span className={`line-clamp-2 break-words text-sm leading-[18px] ${status === "Needs you" ? "font-semibold" : "font-medium"}`}>{entry.state.card.title}</span>
         <span className="mt-auto flex min-w-0 items-center justify-between gap-2 text-meta text-muted-foreground"><span className="truncate">{author}</span><StatusMark status={status} /></span>
@@ -590,18 +667,24 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const reference = referenceFor(entry);
     const later = laterKey === key;
     const fewer = (size === "compact" || grid) && <button type="button" aria-expanded onClick={() => setOpened((current) => { const next = new Set(current); next.delete(key); return next; })} className="inline-flex min-h-10 items-center rounded-lg px-1 text-sm text-muted-foreground underline decoration-border underline-offset-4">Show less</button>;
+    // "Next card" (recycled from the one-open-card feed, Sam 22:52Z): the next card in this view that needs you.
+    const nextEntry = filtered.slice(filtered.findIndex((candidate) => keyOf(candidate) === key) + 1).find((candidate) => !labPageOf(candidate) && needsAttention(candidate, clock, contextFor(candidate)?.projection));
+    const nextCard = nextEntry && <button type="button" onClick={() => goNext(entry, nextEntry)} className={`${actionClass} inline-flex items-center gap-1`}>Next card<ArrowDownIcon aria-hidden className="size-4" /></button>;
+    // A snoozed card opened early, from the Snoozed list, can come back now.
+    const wake = Date.parse(entry.view.snoozedUntil ?? "") > clock && <button type="button" onClick={() => void unsnooze(entry)} className={actionClass}>Bring back now</button>;
     return <div className="min-w-0">
       {fold && <AnswerFold key={fold.response.responseId} entry={entry} sent={fold} agent={author} typed={context} source={source} onSaved={onSaved} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
+      {fold && !fold.open && nextCard && <div className="-mt-1 mb-3 flex justify-end">{nextCard}</div>}
       <div hidden={!!fold && !fold.open}>
         <FeedCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} status={unsupported ? undefined : cardStatus(entry, context?.projection, clock, author)} onAuthor={() => setAgentView(agentKey(entry, context?.record))} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}>
           <ReportLink entry={entry} />
-          {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} end={fewer || undefined} />
-            : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-3"><CardDetails end={fewer || undefined}>{reference}</CardDetails></div></div>
+          {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} end={fewer || undefined} next={wake || nextCard || undefined} onSnoozed={(until) => snoozed(entry, until)} />
+            : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-3"><CardDetails end={fewer || undefined} actions={nextCard || undefined}>{reference}</CardDetails></div></div>
             : <div className="mt-4 space-y-4">
               <AnswerForm key={key} entry={entry} source={source} onSaved={onSaved} onAnswered={onAnswered} />
               <PlainThread entry={entry} source={source} onSaved={onSaved} />
               {/* The card's foot (Sam, 11-12): Ask me later beside Details; its times open under it. */}
-              <div className="border-t border-border pt-3"><CardDetails end={fewer || undefined} actions={needsAttention(entry, clock) && <button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={actionClass}>Ask me later</button>}>
+              <div className="border-t border-border pt-3"><CardDetails end={fewer || undefined} actions={<>{wake || needsAttention(entry, clock) && <button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={actionClass}>Ask me later</button>}{nextCard}</>}>
                 <p>Posted by {entry.source.label} · {entry.source.agentDid}</p><p>{entry.state.card.kind}</p><CardHistory entry={entry} />{reference}</CardDetails></div>
               {later && needsAttention(entry, clock) && <section aria-label="Ask me later" className="space-y-2 rounded-xl border border-border p-3 text-sm"><p className="font-medium">Ask me again</p>
                 <div className="flex flex-wrap gap-2">{snoozePresets(clock).slice(0, 3).map((preset) => <button key={preset.id} type="button" disabled={viewBusy} onClick={() => void snooze(entry, preset.until)} className={actionClass}>{preset.label}</button>)}</div>
@@ -610,6 +693,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         </FeedCardView>
       </div>
     </div>;
+  }
+  /** To the next card that needs you: in the compact view this card folds and the next one opens; it comes into view. */
+  function goNext(from: HomeFeedEntry, to: HomeFeedEntry) {
+    if (size === "compact") setOpened((current) => { const next = new Set(current); next.delete(keyOf(from)); return next; });
+    openCard(to);
   }
   /** A post (feed lab): its preview in both views; tapping it opens its page. */
   function postCard(entry: HomeFeedEntry) {
@@ -627,36 +715,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const key = keyOf(entry);
     const page = labPageOf(entry);
     const wide = grid && !page && opened.has(key);
-    return <li key={key} data-card-key={key} data-sent-at={answered ? entry.state.response?.createdAt : undefined} className={`min-w-0 scroll-mt-4 ${wide ? "col-span-full" : ""}`}>
-      {grid && !wide ? gridTile(entry) : page ? postCard(entry) : isOpen(entry) ? fullCard(entry) : compactCard(entry)}</li>;
+    // Each card morphs between its shapes (compact, full, tile) as one item: its box moves and resizes while its
+    // content crossfades (densityMorph.tsx, Sam 22:44Z).
+    return <MorphItem key={key} contentKey={grid && !wide ? "tile" : page ? "post" : isOpen(entry) ? "full" : "compact"}
+      data-card-key={key} data-sent-at={answered ? entry.state.response?.createdAt : undefined} className={`min-w-0 scroll-mt-4 ${wide ? "col-span-full" : ""}`}>
+      {grid && !wide ? gridTile(entry) : page ? postCard(entry) : isOpen(entry) ? fullCard(entry) : compactCard(entry)}</MorphItem>;
   };
-  const listClass = grid ? "grid grid-cols-2 gap-3 sm:grid-cols-3" : size === "compact" ? "space-y-2" : "space-y-4";
-  /**
-   * Changes how the list is drawn (full cards, grid) without losing your place (Sam, 11-12: "jarring, randomly
-   * places in the page"): the card at the top of the screen, or an open one in view, stays where it was. Cards on
-   * screen morph to their new size while their content crossfades (View Transitions, about 250 ms); cards off
-   * screen just change. No motion when the person asks for less, or where the browser has no View Transitions.
-   */
-  function relayout(change: () => void) {
-    const root = mainRef.current;
-    if (!root) { change(); return; }
-    const top = root.getBoundingClientRect().top;
-    const bottom = top + root.clientHeight;
-    const cards = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")];
-    const visible = cards.filter((node) => { const box = node.getBoundingClientRect(); return box.bottom > top && box.top < bottom; });
-    const held = visible.find((node) => opened.has(node.dataset.cardKey ?? "")) ?? visible.find((node) => node.getBoundingClientRect().bottom > top + 1);
-    const heldKey = held?.dataset.cardKey;
-    const offset = held ? held.getBoundingClientRect().top - top : 0;
-    const apply = () => {
-      flushSync(change);
-      const after = heldKey ? [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => node.dataset.cardKey === heldKey) : undefined;
-      if (after) root.scrollTop += after.getBoundingClientRect().top - top - offset;
-    };
-    const transition = (document as Document & { startViewTransition?: (update: () => void) => { finished: Promise<void> } }).startViewTransition;
-    if (!transition || matchMedia("(prefers-reduced-motion: reduce)").matches) { apply(); return; }
-    visible.forEach((node, index) => { node.style.setProperty("view-transition-name", `lab-card-${index}`); });
-    transition.call(document, apply).finished.finally(() => visible.forEach((node) => node.style.removeProperty("view-transition-name")));
-  }
+  const listClass = grid ? "grid grid-cols-2 content-start gap-3 sm:grid-cols-3" : size === "compact" ? "space-y-2" : "space-y-4";
   const pageEntry = pageKey ? [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].find((entry) => keyOf(entry) === pageKey) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
 
@@ -671,7 +736,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
 
   // Home shows only the heading and its empty state until the first card arrives.
   const bare = !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
-  const filtersOn = [agent, kind, project].filter(Boolean).length + (history ? 1 : 0);
+  const filtersOn = [agent, kind, project].filter(Boolean).length + (history ? 1 : 0) + (snoozedOnly ? 1 : 0);
   const selectClass = "min-h-10 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   // No browser scroll anchoring: it would hold the end of the list in view as cards land, loading more forever.
   return <main ref={mainRef} onScroll={measureHistory} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
@@ -682,6 +747,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     {source.loadAnswered && <div aria-hidden style={{ height: pull }} className="flex items-end justify-center overflow-hidden text-xs text-muted-foreground">{pull >= PULL_PX ? "Release for earlier answers" : "Pull for earlier answers"}</div>}
     {/* While a post's page is open, the feed behind it takes no focus or taps (design critique #3). */}
     <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5" inert={!!pageEntry}>
+    <MorphConfig>
       {/* Feed lab (Sam, 11-12): in earlier answers, a pill floats at the top with when the ones in view were sent.
           Its look is uiverse.io "quiet-rat-82" by ahkamboh (MIT), in the app's styling. */}
       {historyAt && <div className="pointer-events-none sticky top-2 z-20 flex h-0 justify-center">
@@ -690,24 +756,31 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           {sentAgo(historyAt, clock) && <span className="text-sm font-semibold"> {sentAgo(historyAt, clock)}</span>}
         </span>
       </div>}
-      {source.loadAnswered && <div className="mb-4 flex justify-center">
+      {/* Outside history, one deliberate control opens it; inside, reaching its top loads more. */}
+      {source.loadAnswered && !earlier.length && <div className="mb-4 flex justify-center">
         <button type="button" onClick={() => void loadEarlier()} className="inline-flex min-h-10 items-center gap-1.5 rounded-full border border-border px-4 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <ChevronUpIcon aria-hidden className="size-4" />Show earlier answers</button>
       </div>}
       {!!earlier.length && <section aria-label="Answered earlier" className="mb-6">
+        <div ref={topSentinel} aria-hidden className="h-px" />
         <h2 className="mb-2 px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground">Answered earlier</h2>
         <ul className={listClass}>{earlier.map((loaded) => cardItem(snapshot?.historicalEntries?.find((candidate) => keyOf(candidate) === keyOf(loaded)) ?? loaded, true))}</ul>
       </section>}
-      <header ref={headerRef} className="mb-6 scroll-mt-4"><h1 className="font-display text-3xl font-semibold tracking-tight">{NAV_LABEL_HOME}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
+      {/* Feed lab (Sam, 11-12, Aceternity floating navbar as inspiration): Home and the slider stay in reach, hiding as
+          you scroll down and coming back as you scroll up. */}
+      <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-3 pt-2 sm:-mx-5 sm:px-5">
+        <header ref={headerRef} className="scroll-mt-4"><h1 className="font-display text-3xl font-semibold tracking-tight">{NAV_LABEL_HOME}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
+        {/* While Agents is open the view controls do nothing, so they step aside (design critique #5). */}
+        {!bare && !agentView && <FeedViewSlider value={selector} onValueChange={changeSelector} className="mt-3" />}
+      </FloatingHeader>
       {ask}
-      {/* While Agents is open the view controls do nothing, so they step aside (design critique #5). */}
-      {!bare && <>{!agentView && <FeedViewSlider value={selector} onValueChange={changeSelector} className="mb-3" />}
+      {!bare && <>
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
         {/* Feed lab (Sam, 11-12): a toggle between every card short, like a list of posts, and every card open;
-            and an optional grid of tiles. Both keep your place and morph the cards on screen (relayout). */}
+            and an optional grid of tiles. Both keep your place and morph the cards on screen (anchoredToggle). */}
         {!agentView && <>
-          <LabSwitch label="Full cards" checked={size === "full"} disabled={grid} onChange={(on) => relayout(() => { setSize(on ? "full" : "compact"); setOpened(new Set()); })} />
-          <LabSwitch label="Grid" checked={grid} onChange={(on) => relayout(() => { setGrid(on); setOpened(new Set()); })} />
+          <LabSwitch label="Full cards" checked={size === "full"} disabled={grid} onChange={(on) => anchoredToggle(() => { setSize(on ? "full" : "compact"); setOpened(new Set()); })} />
+          <LabSwitch label="Grid" checked={grid} onChange={(on) => anchoredToggle(() => { setGrid(on); setOpened(new Set()); })} />
         </>}
         <span className="ml-auto flex items-center gap-2">
           <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
@@ -719,6 +792,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => setKind(event.target.value)}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => setProject(event.target.value)}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <button type="button" aria-pressed={history} onClick={() => setHistory(!history)} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
+        <button type="button" aria-pressed={snoozedOnly} onClick={() => setSnoozedOnly(!snoozedOnly)} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">Snoozed</button>
         {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10">{savingDefault ? "Saving default…" : "Use as default"}</button>}
       </div>}</>}
       {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
@@ -736,7 +810,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
             <a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{HOME_EMPTY_HOW}</a>
           </div>
         </section>
-        : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
+        : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{snoozedOnly ? "No snoozed cards." : history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
       {!!filtered.length && <div className="mb-4 space-y-6">
         {sections.map(([heading, rows]) => !!rows.length && <section key={heading} aria-label={heading}>
           {heading && <h2 className="mb-2 flex items-baseline justify-between px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>{heading}</span><span className="tabular-nums">{rows.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0)}</span></h2>}
@@ -760,17 +834,24 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {/* Feed lab (Sam, 11-12): from earlier answers, one tap back to now. Its look is uiverse.io
           "selfish-dolphin-96" by ParasSalunke (MIT), in the app's styling: dark on light, light on dark. */}
       {historyAt && currentBelow && <div className="sticky bottom-4 z-20 flex h-0 items-end justify-center">
-        <button type="button" onClick={() => { const root = mainRef.current, header = headerRef.current; if (root && header) root.scrollTop += header.getBoundingClientRect().top - root.getBoundingClientRect().top - 16; }}
+        <button type="button" onClick={() => closeHistory(true)}
           className="group relative inline-block rounded-xl bg-zinc-800 p-px font-semibold leading-6 text-white shadow-2xl shadow-zinc-900/40 transition-transform duration-300 ease-in-out hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 motion-reduce:transition-none dark:bg-zinc-300 dark:text-zinc-900 dark:shadow-black/60 dark:focus-visible:ring-zinc-100 dark:focus-visible:ring-offset-background">
           <span aria-hidden className="absolute inset-0 rounded-xl bg-zinc-500 opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
           <span className="relative z-10 flex min-h-11 items-center gap-2 rounded-xl bg-zinc-950 px-4 text-sm dark:bg-zinc-50">Go to current<ArrowDownIcon aria-hidden className="size-4 transition-transform duration-500 group-hover:translate-y-0.5" /></span>
         </button>
       </div>}
+    </MorphConfig>
+    {/* A short note after an action, with Undo (Sam 22:58Z: "Back at 15:00 · Undo" after Ask me later). */}
+    {toast && <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex justify-center px-3">
+      <p role="status" className="pointer-events-auto flex items-center gap-3 rounded-full bg-zinc-900 py-1.5 pl-4 pr-1.5 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900">
+        {toast.text}{toast.undo && <button type="button" onClick={toast.undo} className="min-h-9 rounded-full px-3 font-semibold underline-offset-2 hover:underline">Undo</button>}
+      </p>
+    </div>}
     </div>
     {pageEntry && pageOpen && (() => {
       const author = cardAuthor(pageEntry).name;
-      return <PostPage key={pageKey} entry={pageEntry} page={pageOpen} source={source} author={author} onSaved={onSaved} onClose={() => setPageKey(null)}
-        card={(children) => <FeedCardView card={cardView(pageEntry)} sample={false} readBody={source.readBody} status={cardStatus(pageEntry, undefined, clock, author)} onAuthor={() => { setPageKey(null); setAgentView(agentKey(pageEntry)); }} agent={{ key: agentKey(pageEntry), profile: agentProfile(pageEntry.state.card.payload) }}>{children}</FeedCardView>}
+      return <PostPage key={pageKey} entry={pageEntry} page={pageOpen} source={source} author={author} onSaved={onSaved} onClose={() => setPageKey(null)} morphFrom={grid ? postMorphId(pageEntry) : undefined}
+        card={(children, options) => <FeedCardView card={options?.showTitle === false ? { ...cardView(pageEntry), title: "" } : cardView(pageEntry)} sample={false} readBody={source.readBody} status={cardStatus(pageEntry, undefined, clock, author)} onAuthor={() => { setPageKey(null); setAgentView(agentKey(pageEntry)); }} agent={{ key: agentKey(pageEntry), profile: agentProfile(pageEntry.state.card.payload) }}>{children}</FeedCardView>}
         status={pageEntry.state.response ? <ResponseStatus entry={pageEntry} agent={author} /> : null}
         footer={<PlainThread entry={pageEntry} source={source} onSaved={onSaved} />} />;
     })()}
