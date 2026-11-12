@@ -45,18 +45,20 @@ async function open(
   screen: string,
   theme: string,
   ready: string,
+  platform: "ios" | "tauri" = "ios",
 ): Promise<Page> {
+  const phone = platform === "ios";
   const page = await (
     await browser.newContext({
       viewport: SMALL,
       deviceScaleFactor: 2,
-      isMobile: true,
-      hasTouch: true,
+      isMobile: phone,
+      hasTouch: phone,
       reducedMotion: "reduce",
     })
   ).newPage();
   await page.goto(
-    `http://127.0.0.1:${server.port}/?screen=${screen}&theme=${theme}&platform=ios&freeze=1`,
+    `http://127.0.0.1:${server.port}/?screen=${screen}&theme=${theme}&platform=${platform}&freeze=1`,
   );
   await page.waitForSelector(ready);
   await page.waitForTimeout(300);
@@ -128,6 +130,30 @@ for (const theme of THEMES) {
           expect(button.right - button.left).toBeGreaterThanOrEqual(44 - 0.5);
           expect(button.bottom - button.top).toBeGreaterThanOrEqual(44 - 0.5);
         }
+        await page.context().close();
+      });
+    }
+
+    for (const state of ["recording", "paused"] as const) {
+      test(`the Mac app's small Ribbon (${state}) has no level bars; its timer, Stops in, Pause and Stop sit inside it, apart`, async () => {
+        const page = await open(
+          `recorder-final-minimized-${state}`,
+          theme.param,
+          "[data-testid=ribbon]",
+          "tauri",
+        );
+        expect(await boxes(page, ".ribbon-bars, [data-spectrum-bars]")).toHaveLength(0);
+        const [ribbon] = await boxes(page, ".ribbon");
+        const [timer] = await boxes(page, "[data-testid=ribbon-timer]");
+        const [remaining] = await boxes(page, "[data-testid=ribbon-remaining]");
+        const [pause] = await boxes(page, "[data-testid=ribbon-pause]");
+        const [stop] = await boxes(page, "[data-testid=ribbon-stop]");
+        expect(remaining).toBeDefined();
+        const parts = [timer, remaining, pause, stop];
+        // The 44 px Pause and Stop buttons overhang the 36 px bar by their negative margin; 1 px covers that offset.
+        const slack = { left: ribbon.left, right: ribbon.right, top: ribbon.top - 1, bottom: ribbon.bottom + 1 };
+        for (const part of parts) expect(within(part, slack)).toBe(true);
+        for (const [i, a] of parts.entries()) for (const b of parts.slice(i + 1)) expect(apart(a, b)).toBe(true);
         await page.context().close();
       });
     }

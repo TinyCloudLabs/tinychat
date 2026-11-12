@@ -104,7 +104,6 @@ export function RibbonView({
                 <MinimizedBars
                   recorder={recorder}
                   view={view}
-                  bars={30}
                   theme={theme}
                 />
               </span>

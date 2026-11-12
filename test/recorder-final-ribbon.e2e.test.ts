@@ -464,7 +464,9 @@ describe.serial(`the stop time on hover (${engineName})`, () => {
     const { page } = await open("recording", { width: 320, height: 640 });
     const stops = page.getByTestId("ribbon-stops");
     expect(await stops.textContent()).toMatch(/^Stops at \d/);
-    await expect(stops.evaluate((el) => getComputedStyle(el).opacity)).resolves.toBe("1");
+    const timerBox = (await page.getByTestId("ribbon-timer").boundingBox())!;
+    const stopsBox = (await stops.boundingBox())!;
+    expect(stopsBox.y).toBeGreaterThanOrEqual(timerBox.y + timerBox.height);
     expect(await page.locator("[data-testid=ribbon-remaining], [data-testid=ribbon-limit]").count()).toBe(0);
     const box = (await ribbon(page).boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(0);
