@@ -46,11 +46,24 @@ const STREAM_ENV = {
 
 // Execute the actual startup body with isolated imports and environment. Every side effect
 // is intercepted; stop at the agent-router factory, before any socket or external I/O.
-async function runIsolatedStartup(env: Record<string, string | undefined>) {
+async function runIsolatedStartup(
+  env: Record<string, string | undefined>,
+  options: {
+    contentIndexes?: readonly { source: string; address: string }[];
+    contentIndexDirectory?: () => Promise<readonly { source: string; address: string }[]>;
+    contentCustodyValid?: boolean;
+  } = {},
+) {
   const calls: string[] = [];
   const logs: string[] = [];
   let agentConfig: any;
   const stopped = new Error("synthetic-startup-stopped");
+  const retentionSweeps: { source: string; address: string }[] = [];
+  const contentCustodyChecks: boolean[] = [];
+  let finishRetentionSweep!: () => void;
+  const retentionSweepDone = new Promise<void>((resolve) => {
+    finishRetentionSweep = resolve;
+  });
   const noop = () => {};
   const middleware = () => noop;
   const fakeApp = {
@@ -73,10 +86,51 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     url: load("node:url"),
     express,
     cors: middleware,
+    "./services/content-store.js": {
+      createContentIndexDirectory: () => options.contentIndexDirectory ?? (async () => options.contentIndexes ?? []),
+      validateContentCustodyConfig: () => {
+        const valid = options.contentCustodyValid ?? true;
+        contentCustodyChecks.push(valid);
+        return valid ? { ok: true } : { ok: false, error: "content master missing" };
+      },
+      KvContentBlobStore: class {},
+      assertNoContentKey: async () => {},
+      ContentStore: class {
+        async assertContinuity() {}
+
+        async probeIndex() { return { ok: true, id: "fixture-index" }; }
+        async sweepRetention(index: {
+          source: string;
+          address: string;
+          safetyMarginMs: number;
+        }) {
+          retentionSweeps.push(index);
+          finishRetentionSweep();
+          return { swept: 1, bytesFreed: 0, tombstones: 0 };
+        }
+        async sweepExpiredReplayTombstones() { return 0; }
+      },
+    },
+    "./services/ingest-retention.js": load("./services/ingest-retention.ts"),
+    "./services/ingest-instance.js": {
+      IngestInstanceGuard: class {},
+      KvInstanceLeaseStore: class {},
+      IngestInstanceSupervisor: class {
+        private readonly worker: { start(): void };
+        constructor(config: { worker: { start(): void } }) {
+          this.worker = config.worker;
+        }
+        start() {
+          calls.push("ingest-supervisor-start");
+          this.worker.start();
+        }
+        stop() {}
+      },
+    },
     "./startup.js": {
       createTinychatBackendIdentity: async () => {
         calls.push("identity");
-        return { node: {}, did: "synthetic-backend-did" };
+        return { node: { kv: { list: async () => ({ data: { keys: [] } }) } }, did: "synthetic-backend-did" };
       },
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
@@ -141,8 +195,41 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
   } catch (error) {
     if (error !== stopped) logs.push(error instanceof Error ? error.message : String(error));
   }
-  return { calls, logs, agentConfig };
+  return { calls, logs, agentConfig, contentCustodyChecks, retentionSweeps, retentionSweepDone };
 }
+
+test("disabled backend ingest starts retention over every listed content index", async () => {
+  const index = { source: "fireflies", address: `0x${"a".repeat(40)}` };
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    { contentIndexes: [index] },
+  );
+  await result.retentionSweepDone;
+  expect(result.calls).toContain("ingest-supervisor-start");
+  expect(result.retentionSweeps).toEqual([{ ...index, safetyMarginMs: 5 * 60_000 }]);
+});
+test("content custody remains required when backend ingest is disabled", async () => {
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    { contentCustodyValid: false },
+  );
+
+  expect(result.contentCustodyChecks).toEqual([false]);
+  expect(result.calls).toContain("exit");
+  expect(result.calls).not.toContain("agent-router");
+});
+test("a failed startup index listing does not prevent backend startup", async () => {
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    {
+      contentIndexDirectory: async () => {
+        throw new Error("synthetic KV list failure");
+      },
+    },
+  );
+
+  expect(result.calls).toContain("agent-router");
+});
 
 describe("agent stream startup policy wiring", () => {
   test("rejects missing policy before identity, background work, route mounting or listening", async () => {
@@ -679,7 +766,10 @@ test("shutdown holds the exit until an in-flight retention pass stops", async ()
   expect(await exited.promise).toBe(0);
 });
 
-const envBase = { BACKEND_PRIVATE_KEY: "test-only-private-key", PORT: "0" };
+const envBase = {
+  BACKEND_PRIVATE_KEY: "test-only-private-key",
+  PORT: "0",
+};
 const privateCloud = load("./services/private-cloud-transcription.ts");
 const hosted = load("./services/assemblyai-hosted.ts");
 const transcription = load("./services/transcription-api.ts");
@@ -757,7 +847,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       createDelegationMiddleware: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
     },
     "@tinyboilerplate/core": { APP_ID: "test-backend" },
-    "./startup.js": { createTinychatBackendIdentity: async () => ({ node: {}, did: "did:test:backend" }) },
+    "./startup.js": { createTinychatBackendIdentity: async () => ({ node: { kv: { list: async () => ({ data: { keys: [] } }) } }, did: "did:test:backend" }) },
     "./build-info.js": { readBackendBuildInfo: () => ({ backendRevision: "test-revision", backendVersion: "0.5.6" }) },
     "./body-parsing.js": { createApiBodyParser },
     "./request-context.js": {
@@ -812,6 +902,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       KvCredentialRowStore: class {},
     },
     "./routes/content-continuity.js": { mountContentContinuityRoute: noop },
+    "./services/ingest-retention.js": load("./services/ingest-retention.ts"),
     "./services/content-store.js": {
       ...contentStore,
       assertNoContentKey: async () => {},
@@ -819,6 +910,12 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       ContentStore: class extends contentStore.ContentStore {
         async assertContinuity() {}
         async probeIndex() { return { ok: true, id: "fixture-index" }; }
+        async sweepRetention(index: { source: string; address: string }) {
+          retentionSweeps.push(index);
+          finishRetentionSweep();
+          return { swept: 1, bytesFreed: 0, tombstones: 0 };
+        }
+        async sweepExpiredReplayTombstones() { return 0; }
       },
     },
     "./services/fireflies-oauth.js": { ...firefliesOAuthModule },
@@ -891,7 +988,17 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/assemblyai-delete.js": { ASSEMBLYAI_DELETE_MOUNT: "/api/assemblyai/delete", createAssemblyAiDeleteRouter: router },
     "./billing/ledger-flusher.js": { LedgerFlusher: class { start() {} stop() {} } },
     "./billing/ledger-rehydrate.js": { LedgerRehydrator: class {} },
-    "./services/connector-drain.js": { ConnectorDrainWorker: class { stop() {} }, startConnectorQueueMaintenanceTimer: () => ({ stop() {} }), drainIntervalFromEnv: () => 60_000, createWebhookConfigDirectory: noop },
+    "./services/connector-drain.js": {
+      ConnectorDrainWorker: class { stop() {} },
+      startConnectorQueueMaintenanceTimer: (config: Record<string, unknown>) => {
+        options.capture?.("queueMaintenance", config);
+        return { stop() {} };
+      },
+      drainIntervalFromEnv: () => 60_000,
+      createWebhookConfigDirectory: noop,
+      createWebhookQueueDirectory: () => async () => [],
+      createWebhookPurgeLedgerDirectory: () => async () => [],
+    },
     "./services/connector-queue.js": { ConnectorQueue: class {} },
     "./services/backend-storage-lane.js": { BackendStorageLane: class {} },
     "./services/transcriber-index.js": { KvJsonKv: class {}, KvTranscriberIndexStore: class {} },
@@ -999,6 +1106,20 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await post(boot.url!, "/api/connectors/webhooks/config", "{}")).status).toBe(401);
     const disabled = await bootIndex();
     expect((await post(disabled.url!, path, "{}")).status).toBe(404);
+  });
+
+  test("queue and purge-ledger retention maintenance is wired with connector webhooks disabled", async () => {
+    const captured: Record<string, Record<string, unknown>> = {};
+    const boot = await bootIndex({}, {
+      capture: (name, config) => { captured[name] = config; },
+    });
+
+    const maintenance = captured.queueMaintenance;
+    expect(boot.exits).toEqual([]);
+    expect(typeof maintenance?.listQueueEntries).toBe("function");
+    expect(typeof maintenance?.sweepQueue).toBe("function");
+    expect(typeof maintenance?.listLedgerAddresses).toBe("function");
+    expect(typeof maintenance?.sweepLedger).toBe("function");
   });
 
   test("exo grant route is unmounted (404, before auth) when the exo flag is off", async () => {
