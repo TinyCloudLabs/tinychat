@@ -1543,12 +1543,11 @@ test('Android: the upload key only in tooling-only jobs, an unsigned build witho
   assert.doesNotMatch(withoutComments(sign), PROJECT_CODE);
   assert.deepEqual([...new Set(withoutComments(sign).match(/[\w./-]*scripts\/release\/[\w.-]+/g))], ['scripts/release/android-signing.sh', 'scripts/release/verify-android-release.sh']);
   const order = ['Require the release workflow from main', 'Check out the release tooling', 'Download the unsigned build', 'Version',
-    'Sign the AAB and APK', 'Verify the signed AAB and APK', 'Name the release files', 'Upload AAB + APK',
-    'Upload the AAB to Google Play (internal testing)'].map(name => sign.indexOf(`- name: ${name}\n`));
+    'Sign the AAB and APK', 'Verify the signed AAB and APK', 'Name the release files', 'Upload AAB + APK'].map(name => sign.indexOf(`- name: ${name}\n`));
   assert.ok(order.every(index => index !== -1), `steps: ${order}`);
   assert.deepEqual([...order].sort((a, b) => a - b), order, 'main is checked first; verification passes before anything is uploaded');
   assert.ok(sign.indexOf('secrets.') > sign.indexOf('- name: Require the release workflow from main\n'), 'no secret is referenced before the main check');
-  for (const name of ['Require the release workflow from main', 'Name the release files', 'Upload AAB + APK', 'Upload the AAB to Google Play (internal testing)']) {
+  for (const name of ['Require the release workflow from main', 'Name the release files', 'Upload AAB + APK']) {
     assert.match(stepNamed(sign, name), /\n\s+if: env\.RELEASE == 'true'\n/, name);
   }
   // Releases verify against the pinned variable, never a digest taken from the keystore secret.
@@ -1556,10 +1555,12 @@ test('Android: the upload key only in tooling-only jobs, an unsigned build witho
   assert.match(stepNamed(sign, 'Verify the signed AAB and APK'), /scripts\/release\/verify-android-release\.sh /);
   // Play: the verified AAB, to the internal track of xyz.tinycloud.home, by a pinned action.
   const play = stepNamed(sign, 'Upload the AAB to Google Play (internal testing)');
+  assert.ok(sign.indexOf('- name: Upload the AAB to Google Play (internal testing)\n') > sign.indexOf('- name: Upload AAB + APK\n'), 'Play gets the AAB after the artifact is archived');
+  assert.match(play, /\n\s+if: env\.RELEASE == 'true'\n/);
   assert.match(play, /uses: r0adkll\/upload-google-play@[0-9a-f]{40} # v/);
   assert.match(play, /packageName: xyz\.tinycloud\.home\n/);
   assert.match(play, /releaseFiles: \$\{\{ runner\.temp \}\}\/signed\/app-release\.aab\n/);
-  assert.match(play, /track: internal\n/);
+  assert.match(play, /tracks: internal\n/);
   assert.match(play, /status: completed\n/);
 
   // Signing outside Gradle, passwords from the environment only.

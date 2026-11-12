@@ -311,6 +311,8 @@ jobs:
         with:
           name: exo-android-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
           if-no-files-found: error
+          # A re-run of this job (after a failed Play upload) replaces the artifact instead of failing on its name.
+          overwrite: true
           path: dist/*
 
       # The AAB the verify step accepted, to the internal track. The upload key signed it; Play re-signs it with the
@@ -323,5 +325,5 @@ jobs:
           packageName: xyz.tinycloud.home
           releaseFiles: ${{ runner.temp }}/signed/app-release.aab
           releaseName: ${{ steps.version.outputs.name }} (${{ steps.version.outputs.code }})
-          track: internal
+          tracks: internal
           status: completed
