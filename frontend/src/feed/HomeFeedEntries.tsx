@@ -682,7 +682,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     {/* Feed lab: pull down at the top for the cards you answered earlier (or use the button, without touch). */}
     {source.loadAnswered && <div aria-hidden style={{ height: pull }} className="flex items-end justify-center overflow-hidden text-xs text-muted-foreground">{pull >= PULL_PX ? "Release for earlier answers" : "Pull for earlier answers"}</div>}
     {/* While a post's page is open, the feed behind it takes no focus or taps (design critique #3). */}
-    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5" {...(pageEntry ? { inert: "" } : {})}>
+    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5" inert={!!pageEntry}>
       {/* Feed lab (Sam, 11-12): in earlier answers, a pill floats at the top with when the ones in view were sent.
           Its look is uiverse.io "quiet-rat-82" by ahkamboh (MIT), in the app's styling. */}
       {historyAt && <div className="pointer-events-none sticky top-2 z-20 flex h-0 justify-center">
