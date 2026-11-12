@@ -1,12 +1,15 @@
 // The feed lab (lib/feedLab.ts): the real Home feed, HomeFeedEntries and everything
 // it renders, on made-up cards held in memory (feedLabSource.ts), so card
-// interactions can be tried without signing in. main.tsx loads it only in a
-// build made with VITE_FEED_LAB=true. Not a product surface.
+// interactions can be tried without signing in. It can also show a test feed's
+// export (feedLabJsonSource.ts), from `?src=<https URL>` or pasted. main.tsx loads it
+// only in a build made with VITE_FEED_LAB=true. Not a product surface.
 import { useEffect, useState } from "react";
-import { Link, Navigate, Route, Routes } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
 import { FEED_LAB_PATH } from "@/lib/feedLab";
 import { HomeFeedEntries } from "./HomeFeedEntries";
+import { createFeedLabJsonSource } from "./feedLabJsonSource";
 import { createFeedLabSource } from "./feedLabSource";
+import type { HomeFeedSource } from "./feedStoreTypes";
 
 // The lab is served over plain http on the tailnet, where browsers withhold crypto.randomUUID (secure contexts
 // only). Every id the feed makes goes through it, so the lab supplies the same v4 shape from getRandomValues,
@@ -24,20 +27,82 @@ if (typeof crypto.randomUUID !== "function") {
   });
 }
 
+/** `exportedAt`: set when the feed is a test feed's export. */
+interface Lab { run: number; source: HomeFeedSource & { stop(): void }; exportedAt?: string }
+const buttonClass = "min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10";
+
 export function FeedLab() {
-  // Reset starts over: new cards, and a new feed with nothing chosen, typed or pending.
-  const [lab, setLab] = useState(() => ({ run: 0, source: createFeedLabSource() }));
-  useEffect(() => () => lab.source.stop(), [lab]);
+  const [params, setParams] = useSearchParams();
+  const src = params.get("src");
+  // Reset starts over: new cards, and a new feed with nothing chosen, typed or pending. With `?src=`, the test feed
+  // loads first; the made-up cards wait behind it.
+  const [lab, setLab] = useState<Lab | null>(() => src ? null : { run: 0, source: createFeedLabSource() });
+  const [error, setError] = useState<string | null>(null);
+  const [pasting, setPasting] = useState(false);
+  const [pasted, setPasted] = useState("");
+  useEffect(() => () => lab?.source.stop(), [lab]);
+
+  const show = (data: unknown) => {
+    const source = createFeedLabJsonSource(data);
+    setLab((current) => ({ run: (current?.run ?? 0) + 1, source, exportedAt: source.exportedAt }));
+    setError(null);
+  };
+  const fail = (problem: unknown) => {
+    setError(problem instanceof Error ? problem.message : String(problem));
+    setLab((current) => current ?? { run: 0, source: createFeedLabSource() });
+  };
+  useEffect(() => {
+    if (!src) return;
+    const controller = new AbortController();
+    void (async () => {
+      const url = new URL(src);
+      if (url.protocol !== "https:") throw new Error("only https addresses can be loaded");
+      const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
+      if (!response.ok) throw new Error(`the server answered ${response.status}`);
+      const data: unknown = await response.json();
+      if (!controller.signal.aborted) show(data);
+    })().catch((problem: unknown) => { if (!controller.signal.aborted) fail(problem); });
+    return () => controller.abort();
+  }, [src]);
+  // A pasted feed or Reset replaces the address's feed, so reloading shows what is on screen.
+  const dropSrc = () => { if (src) setParams((current) => { current.delete("src"); return current; }, { replace: true }); };
+  const loadPasted = () => {
+    try {
+      show(JSON.parse(pasted));
+      dropSrc(); setPasting(false); setPasted("");
+    } catch (problem) { fail(problem); }
+  };
+  const reset = () => {
+    dropSrc(); setError(null);
+    setLab((current) => ({ run: (current?.run ?? 0) + 1, source: createFeedLabSource() }));
+  };
+
+  const active = !lab ? "Loading test feed…" : lab.exportedAt === undefined ? "Made-up cards" : `Test feed · ${exportStamp(lab.exportedAt)}`;
   return <div className="flex h-dvh flex-col bg-background text-foreground">
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-sm">
-      <p className="min-w-0 flex-1"><span className="font-medium">Feed lab</span><span className="block text-xs text-muted-foreground">Made-up cards and a simulated agent. Nothing leaves this page.</span></p>
-      <button type="button" onClick={() => setLab({ run: lab.run + 1, source: createFeedLabSource() })} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10">Reset</button>
+      <p className="min-w-0 flex-1"><span className="font-medium">Feed lab · {active}</span><span className="block text-xs text-muted-foreground">{lab?.exportedAt === undefined ? "A simulated agent answers. Nothing leaves this page." : "Cards from a test feed's export. Nothing you do here is sent."}</span></p>
+      <button type="button" onClick={() => setPasting(!pasting)} aria-expanded={pasting} className={buttonClass}>Load JSON</button>
+      <button type="button" onClick={reset} className={buttonClass}>Reset</button>
       <Link to="/" className="inline-flex min-h-11 items-center underline underline-offset-2 fine:min-h-10">Close</Link>
     </header>
-    <div className="min-h-0 flex-1"><HomeFeedEntries key={lab.run} source={lab.source} /></div>
+    {pasting && <div className="flex flex-col gap-2 border-b border-border px-3 py-2 text-sm">
+      <textarea value={pasted} onChange={(event) => setPasted(event.target.value)} aria-label="Feed export JSON" placeholder="Paste a test feed's export JSON" rows={6} className="w-full rounded-lg border border-border bg-background p-2 font-mono text-xs" />
+      <div className="flex gap-2">
+        <button type="button" onClick={loadPasted} disabled={!pasted.trim()} className={`${buttonClass} disabled:opacity-50`}>Load</button>
+        <button type="button" onClick={() => { setPasting(false); setPasted(""); }} className={buttonClass}>Cancel</button>
+      </div>
+    </div>}
+    {error && <p role="alert" className="border-b border-border px-3 py-1 text-xs text-destructive">Couldn't load that feed: {error}</p>}
+    <div className="min-h-0 flex-1">{lab && <HomeFeedEntries key={lab.run} source={lab.source} />}</div>
     {/* Which build this is, so anyone can tell they are looking at the latest. */}
     <footer className="border-t border-border px-3 py-1 text-[11px] text-muted-foreground"><code>{buildStamp()}</code></footer>
   </div>;
+}
+
+/** "2026-11-12 22:20 UTC" for an ISO time; anything else as written. */
+function exportStamp(at: string) {
+  const time = Date.parse(at);
+  return Number.isNaN(time) ? at : `${new Date(time).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 /** "Build 311daa1 · 2026-11-12 22:20 UTC": the commit and time this build was made. */
