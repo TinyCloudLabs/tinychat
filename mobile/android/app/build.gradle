@@ -44,11 +44,15 @@ def unsignedRelease = unsignedReleaseInput == 'true'
 def signGradleRelease = !unsignedRelease && missingReleaseSigning.isEmpty()
 
 android {
+    // The Kotlin/Java package (and so R, BuildConfig and the manifest's class names) stays xyz.tinycloud.exo; only the
+    // installed package, applicationId, is xyz.tinycloud.home, matching the iOS bundle id. Anything that names the
+    // installed package (shortcuts.xml targetPackage, `adb ... xyz.tinycloud.home`) uses applicationId, and anything that
+    // names a class uses the namespace: xyz.tinycloud.home/xyz.tinycloud.exo.MainActivity.
     namespace = "xyz.tinycloud.exo"
     compileSdk = rootProject.ext.compileSdkVersion
     buildFeatures { buildConfig true }
     defaultConfig {
-        applicationId "xyz.tinycloud.exo"
+        applicationId "xyz.tinycloud.home"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode exoVersionCode

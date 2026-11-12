@@ -1,6 +1,8 @@
 // Supervisor process: the internal API plus the bot sandboxes. Holds BOTS_SERVICE_SECRET and nothing else secret;
 // the model key lives only in the gateway container.
 
+import { mkdirSync } from "node:fs";
+import { rootProblem } from "./retention";
 import { BotManager } from "./bot";
 import { supervisorConfig } from "./config";
 import { RunscHost } from "./sandbox";
@@ -10,9 +12,18 @@ const DAY_MS = 24 * 60 * 60_000;
 const SWEEP_MS = 6 * 60 * 60_000;
 
 const cfg = supervisorConfig(process.env);
+for (const root of [cfg.dataRoot, cfg.runRoot]) {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  if (rootProblem(root, process.geteuid!())) throw new Error("untrusted bot root");
+}
 const host = new RunscHost(cfg);
 await host.init();
-const bots = new BotManager(host, cfg, { idleMs: cfg.idleMs, turnTimeoutMs: cfg.turnTimeoutMs, maxTurnBytes: cfg.maxTurnBytes });
+const bots = new BotManager(
+  host,
+  cfg,
+  { idleMs: cfg.idleMs, turnTimeoutMs: cfg.turnTimeoutMs, maxTurnBytes: cfg.maxTurnBytes },
+  cfg.maxRunning,
+);
 
 Bun.serve({
   port: cfg.port,

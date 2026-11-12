@@ -17,7 +17,8 @@ services:
     # (SYS_ADMIN, SYS_CHROOT), user namespace mapping (SETUID, SETGID, SETFCAP), the gofer's file access
     # (DAC_OVERRIDE, FOWNER, FSETID, CHOWN) and stopping sandboxes (KILL). runsc's own syscalls (clone with new
     # namespaces, pivot_root, mount) need seccomp and AppArmor unconfined. The supervisor remounts its own cgroup2
-    # namespace read-write to give each sandbox, and all of them together, memory, CPU and pids limits.
+    # namespace read-write to give each sandbox, and all of them together, memory, CPU and pids limits; it also
+    # mounts each running bot's state tmpfs and remounts the bot-data volume nosuid,nodev (SYS_ADMIN).
     cap_drop: [ALL]
     cap_add: [SYS_ADMIN, SYS_CHROOT, SETUID, SETGID, SETFCAP, DAC_OVERRIDE, FOWNER, FSETID, CHOWN, KILL]
     security_opt:
@@ -25,23 +26,12 @@ services:
       - apparmor:unconfined
     # Its own cgroup namespace; the supervisor refuses to start unless /proc/self/cgroup reads "0::/".
     cgroup: private
-    # Loop devices for the per-bot state filesystems, passed in so the container needs no MKNOD. Each running
-    # bot holds one, so at most 8 bots run at once (fewer if the CVM itself uses loop devices).
-    devices:
-      - /dev/loop-control
-      - /dev/loop0
-      - /dev/loop1
-      - /dev/loop2
-      - /dev/loop3
-      - /dev/loop4
-      - /dev/loop5
-      - /dev/loop6
-      - /dev/loop7
     # Everything in this container, sandboxes included, so many bots cannot starve the gateway or the ingress.
-    # Keep it above BOTS_TOTAL_MEMORY_MB (the sandboxes' own cap) plus about 1 GiB.
+    # Keep it above BOTS_TOTAL_MEMORY_MB (the cap on the sandboxes and their state) plus about 1 GiB.
     mem_limit: 7g
-    # Lets running bots close their sessions before the container goes.
-    stop_grace_period: 60s
+    # Lets running bots close their sessions and save their state (up to BOTS_STATE_COPY_TIMEOUT_MS) before the
+    # container goes.
+    stop_grace_period: 90s
     networks: [bots-internal]
     environment:
       PORT: "8080"
@@ -60,10 +50,11 @@ services:
       # All running sandboxes together (parent cgroup); below mem_limit above.
       BOTS_TOTAL_MEMORY_MB: ${BOTS_TOTAL_MEMORY_MB:-6144}
       BOTS_TOTAL_PIDS: ${BOTS_TOTAL_PIDS:-2048}
+      # Sandboxes running at once; empty: BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB), 3 by default.
+      BOTS_MAX_RUNNING: ${BOTS_MAX_RUNNING:-}
+      BOTS_STATE_COPY_TIMEOUT_MS: ${BOTS_STATE_COPY_TIMEOUT_MS:-60000}
       BOTS_TURN_TIMEOUT_MS: ${BOTS_TURN_TIMEOUT_MS:-300000}
       BOTS_MAX_TURN_BYTES: ${BOTS_MAX_TURN_BYTES:-262144}
-      # A bot's working state (its state image) is deleted after this many days without use.
-      BOTS_RETENTION_DAYS: ${BOTS_RETENTION_DAYS:-30}
     volumes:
       - bot-data:/data
       - bot-egress:/egress
@@ -118,7 +109,8 @@ services:
     restart: unless-stopped
 
 volumes:
-  # Per-bot state filesystems (one fixed-size image per bot, under /data/bots/<sha256(owner DID)>).
+  # Per-bot saved state (one directory per bot, under /data/bots/<sha256(owner DID)>, each at most about
+  # 2 x BOTS_STATE_MB).
   bot-data:
   # The gateway's daily token counters (one small JSON file).
   bot-budget:

@@ -2,9 +2,9 @@ import { join } from "node:path";
 import { BOT_ID } from "./owner";
 
 export interface LayoutRoots {
-  /** Persistent volume: one directory per bot holding its state filesystem image and its last-use marker. */
+  /** Persistent volume: one directory per bot holding its saved state. */
   dataRoot: string;
-  /** Supervisor-local scratch: OCI bundle and the mounted state filesystem. */
+  /** Supervisor-local scratch: OCI bundle and the bot's state tmpfs. */
   runRoot: string;
   /** Volume shared with the gateway: one directory per bot holding only its egress socket. */
   egressRoot: string;
@@ -15,8 +15,8 @@ export interface BotLayout {
   botId: string;
   containerId: string;
   dataDir: string;
-  stateImage: string;
-  /** When the bot last served a request: an ISO timestamp next to the image, outside anything the sandbox mounts. */
+  /** The saved state on disk (a plain directory), copied into the tmpfs at stateMount while the bot runs. */
+  stateSnapshot: string;
   lastUsedFile: string;
   bundleDir: string;
   stateMount: string;
@@ -40,7 +40,7 @@ export function botLayout(botId: string, roots: LayoutRoots): BotLayout {
     // Short enough for runsc's own socket paths; 128 bits still never collide between owners.
     containerId: `bot-${botId.slice(0, 32)}`,
     dataDir,
-    stateImage: join(dataDir, "state.img"),
+    stateSnapshot: join(dataDir, "state"),
     lastUsedFile: join(dataDir, "last-used"),
     bundleDir,
     stateMount: join(bundleDir, "state"),

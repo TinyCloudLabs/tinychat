@@ -25,13 +25,13 @@ function source(snapshot: HomeFeedSnapshot): HomeFeedSource {
     subscribe() { return () => {}; },
   };
 }
-async function mount(snapshot: HomeFeedSnapshot, homeSite: boolean) {
+async function mount(snapshot: HomeFeedSnapshot) {
   restore ??= installDom();
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
   roots.add(root);
-  await act(async () => root.render(<MemoryRouter><HomeFeedEntries source={source(snapshot)} homeSite={homeSite} /></MemoryRouter>));
+  await act(async () => root.render(<MemoryRouter><HomeFeedEntries source={source(snapshot)} /></MemoryRouter>));
   await act(async () => {});
   return host;
 }
@@ -52,8 +52,8 @@ function card(): HomeFeedEntry {
   };
 }
 
-test("a new account on the Home site sees the heading and No cards yet, with no view controls", async () => {
-  const host = await mount(empty, true);
+test("a new account sees the Home heading and No cards yet, with no view controls", async () => {
+  const host = await mount(empty);
   expect(host.querySelector("h1")?.textContent).toBe("Home");
   expect(host.querySelector("main")?.getAttribute("aria-label")).toBe("Home");
   expect(host.textContent).toContain("No cards yet");
@@ -61,7 +61,7 @@ test("a new account on the Home site sees the heading and No cards yet, with no 
 });
 
 test("the empty Home offers Open Chat and the feed guide", async () => {
-  const host = await mount(empty, true);
+  const host = await mount(empty);
   const chat = [...host.querySelectorAll("a")].find((node) => node.textContent === "Open Chat");
   expect(chat?.getAttribute("href")).toBe("/chat");
   const how = [...host.querySelectorAll("a")].find((node) => node.textContent === "How agents post");
@@ -69,23 +69,14 @@ test("the empty Home offers Open Chat and the feed guide", async () => {
 });
 
 test("the view controls return once the feed has a card", async () => {
-  const host = await mount({ ...empty, entries: [card()] }, true);
+  const host = await mount({ ...empty, entries: [card()] });
   expect(host.textContent).not.toContain("No cards yet");
   expect(host.querySelector('select[aria-label="Feed view"]')).not.toBeNull();
   expect(controls(host).buttons).toContain("History");
 });
 
 test("a feed with only past cards keeps History reachable", async () => {
-  const host = await mount({ ...empty, historicalEntries: [card()] }, true);
+  const host = await mount({ ...empty, historicalEntries: [card()] });
   expect(controls(host).buttons).toContain("History");
   expect(host.textContent).not.toContain("No cards yet");
-});
-
-test("the plain build keeps its feed heading, controls and empty message", async () => {
-  const host = await mount(empty, false);
-  expect(host.querySelector("h1")?.textContent).toBe("Feed");
-  expect(host.querySelector("main")?.getAttribute("aria-label")).toBe("Feed");
-  expect(host.textContent).toContain("Nothing needs your action.");
-  expect(host.textContent).not.toContain("No cards yet");
-  expect(host.querySelector('select[aria-label="Feed view"]')).not.toBeNull();
 });

@@ -139,7 +139,7 @@ import {
 } from "./services/connector-drain.js";
 import { assertStrongSecret, WebhookTokenService } from "./services/webhook-tokens.js";
 import { createTinychatBackendIdentity } from "./startup.js";
-import { appCorsOptions } from "./cors-origins.js";
+import { appCorsOptions, frontendOriginsFromEnv } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
@@ -290,6 +290,9 @@ export function validateLedgerStartupConfig(
 async function main() {
   const localValidation = localValidationFromEnv(process.env);
   const requestIdFirstPartyOrigins = parseRequestIdFirstPartyOrigins(process.env.REQUEST_ID_FIRST_PARTY_ORIGINS);
+  // CORS, SIWE domains and Google OAuth returns: FRONTEND_URL plus FRONTEND_ORIGINS (default: both
+  // production sites), so moving FRONTEND_URL to home.tinycloud.xyz keeps tinycloud.chat working.
+  const frontendOrigins = frontendOriginsFromEnv(FRONTEND_URL, process.env);
   let transcriptDeliveryConfig;
   try {
     transcriptDeliveryConfig = transcriptDeliveryConfigFromEnv(process.env);
@@ -387,8 +390,8 @@ async function main() {
         if (!custody.ok) throw new Error(custody.error);
       }
       // The callback page's `postMessage` target, validated at boot rather than at the first
-      // consent. This web origin is also one member of the CORS allowlist; Exo's fixed app origins
-      // are the others. The callback page stays pinned to the web origin: the Exo apps never use it,
+      // consent. This web origin is also in the FRONTEND_ORIGINS allowlist (CORS, SIWE, OAuth
+      // returns). The callback page only targets allowlisted web origins: the Exo apps never use it,
       // they return through the router's fixed native deep link (`native.` states, TC-521).
       // A bare host or `*` throws here.
       normalizeAppOrigin(FRONTEND_URL);
@@ -510,7 +513,7 @@ async function main() {
   if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
-  app.use(cors(appCorsOptions(FRONTEND_URL)));
+  app.use(cors(appCorsOptions(frontendOrigins)));
 
   // Stripe webhook MUST be mounted before the JSON body parser and CSRF
   // middleware: it needs the raw request bytes for signature verification, and
@@ -754,7 +757,7 @@ async function main() {
     createAuthRouter({
       nonceStore,
       privateKey: backendPrivateKey,
-      frontendUrl: FRONTEND_URL,
+      frontendOrigins,
       nativeSiweDomain: process.env.OPENKEY_SIWE_DOMAIN,
     }),
   );
@@ -1030,9 +1033,11 @@ async function main() {
         // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
         // env read does not have. CORS also accepts Exo's fixed app origins, but the callback page
-        // stays pinned to this web origin (or the fixed Home origin for `home.`/`hometab.` states);
-        // the Exo apps return through the fixed native deep link.
+        // only returns to an allowlisted web origin (FRONTEND_URL, tinycloud.chat once FRONTEND_URL
+        // is the Home site, or the fixed Home origin for `home.`/`hometab.` states); the Exo apps
+        // return through the fixed native deep link.
         appOrigin: FRONTEND_URL,
+        frontendOrigins,
       }),
     );
   }

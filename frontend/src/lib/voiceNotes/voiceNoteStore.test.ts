@@ -43,7 +43,7 @@ import {
   subscribeRecordingNoteSync,
   type VoiceNoteAudioSource,
 } from "./voiceNoteStore";
-import { loadNote, noteMarkdown, saveNote } from "./recordingNotes";
+import { loadNote, noteMarkdown, RECORDING_NOTE_LOCAL_PREFIX, saveNote, unsyncedStoredNote } from "./recordingNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { beginStorageAccountSession, endStorageAccountSession, __resetStorageStatusForTests, isStorageReadOnly } from "@/lib/storageStatus";
@@ -241,6 +241,37 @@ describe("note sync state", () => {
     expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(first.editedAt);
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(second.editedAt);
+  });
+
+  test("a sync that worked leaves no unsynced Markdown for the legacy-origin move; a later edit is unsynced until it syncs", async () => {
+    const values = new Map<string, string>();
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } });
+    try {
+      const space = fakeSpace();
+      const withNote = { ...recording, id: `rec-note-marked-${++fakeSpaceNumber}` };
+      const unsynced = () => [...values].flatMap(([key, raw]) => key.startsWith(RECORDING_NOTE_LOCAL_PREFIX)
+        ? [unsyncedStoredNote(JSON.parse(raw), key.slice(RECORDING_NOTE_LOCAL_PREFIX.length))?.recordingId ?? null] : [])
+        .filter((id) => id !== null);
+      await saveNote(withNote.id, "# Draft", { owner: space.tcw.did });
+      expect(unsynced()).toEqual([withNote.id]);
+      await saveVoiceNote(space.tcw, withNote,
+        voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+      expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+      expect(unsynced()).toEqual([]);
+
+      await saveNote(withNote.id, "# Draft, edited", { owner: space.tcw.did });
+      expect(unsynced()).toEqual([withNote.id]);
+      expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+      expect(unsynced()).toEqual([]);
+    } finally {
+      if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+      else Reflect.deleteProperty(globalThis, "localStorage");
+    }
   });
 
   test("syncing clears when a sync fails", async () => {

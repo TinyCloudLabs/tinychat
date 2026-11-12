@@ -1,6 +1,9 @@
-import { HOME_SITE } from "../homeSite";
+import { CANONICAL_ORIGIN } from "../originMove";
 
-/** The popup flow's `state`: the bare nonce, or `home.<nonce>` on the Home site so the backend posts to that origin. */
-export function popupOAuthState(nonce: string, homeSite: boolean = HOME_SITE): string {
-  return homeSite ? `home.${nonce}` : nonce;
+/**
+ * The popup flow's `state`: `home.<nonce>` on home.tinycloud.xyz so the backend posts to that origin, else the bare
+ * nonce (the backend's FRONTEND_URL, tinycloud.chat).
+ */
+export function popupOAuthState(nonce: string, homeOrigin: boolean = globalThis.location?.origin === CANONICAL_ORIGIN): string {
+  return homeOrigin ? `home.${nonce}` : nonce;
 }

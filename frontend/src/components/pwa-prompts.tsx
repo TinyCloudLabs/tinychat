@@ -2,7 +2,7 @@ import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { DownloadIcon, RefreshCwIcon, XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { APP_NAME, HOME_SITE } from "@/lib/homeSite";
+import { APP_NAME } from "@/lib/homeSite";
 import { useSignedIn } from "@/lib/signedIn";
 import { applyUpdate, getPwaState, promptInstall, subscribePwa } from "@/lib/pwa";
 
@@ -19,9 +19,9 @@ function installSnoozed(): boolean {
   }
 }
 
-/** The Home site makes no install offer until the visitor has signed in. */
-export function installOffered(input: { canInstall: boolean; installDismissed: boolean; homeSite: boolean; signedIn: boolean }): boolean {
-  return input.canInstall && !input.installDismissed && (!input.homeSite || input.signedIn);
+/** No install offer until the visitor has signed in. */
+export function installOffered(input: { canInstall: boolean; installDismissed: boolean; signedIn: boolean }): boolean {
+  return input.canInstall && !input.installDismissed && input.signedIn;
 }
 
 /**
@@ -48,7 +48,7 @@ export function PwaPrompts() {
     );
   }
 
-  if (installOffered({ canInstall, installDismissed, homeSite: HOME_SITE, signedIn })) {
+  if (installOffered({ canInstall, installDismissed, signedIn })) {
     return (
       <PwaToast>
         <span className="min-w-0 flex-1">Install {APP_NAME} as an app.</span>
