@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.30
+
+### Patch Changes
+
+- 85e83ce: The iOS and Android apps no longer link to or open a purchase page (App Store 3.1.1, Google Play Payments). Manage storage, Upgrade, Manage plan, the pricing dialog and the usage chip's plans link are gone there. Storage-full surfaces keep Save now and Transcribe again, and say "Manage your plan on the web at tinycloud.xyz." as plain text. The TinyCloud panel's storage link and its storage-full toast link are hidden too. Web and desktop are unchanged.
+
 ## 0.14.0-beta.29
 
 ### Minor Changes
