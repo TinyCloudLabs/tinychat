@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.16
+
+### Patch Changes
+
+- 339a1d2: Route Fireflies ingestion by the user's connection: server OAuth plus cohort eligibility selects backend ingestion; users without server OAuth keep browser access to their queued meetings.
+
 ## 0.8.0-beta.15
 
 ### Patch Changes
