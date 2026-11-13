@@ -327,13 +327,16 @@ async function openFeed(node: FakeNode, tcw: TinyCloudWeb): Promise<Open> {
   return state;
 }
 
-const showsCard = (open: Open) => open.host.querySelector(`article[aria-label="${PLAIN_TITLE}"]`) !== null;
+/** A card on the Feed: its tile (`li[data-card-key]`, compact by default since the Feed port) names its title. */
+const hasCard = (open: Open, title: string) =>
+  [...open.host.querySelectorAll<HTMLElement>("li[data-card-key]")].some((tile) => tile.textContent?.includes(title));
+const showsCard = (open: Open) => hasCard(open, PLAIN_TITLE);
 
 /** The node's Feed, whole: no load error, and the answered typed asks among the cards. */
 function expectWholeFeed(open: Open) {
   expect(open.host.textContent).not.toContain("Home didn't load");
   for (const title of [PLAIN_TITLE, "Choose the synthetic approach", "Choose the second synthetic approach", "Synthetic incident"]) {
-    expect(open.host.querySelector(`article[aria-label="${title}"]`)).not.toBeNull();
+    expect(hasCard(open, title)).toBe(true);
   }
 }
 
