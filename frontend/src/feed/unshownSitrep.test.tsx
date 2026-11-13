@@ -10,6 +10,7 @@ import { validateRecord, type BoardRecord, type Kind } from "@tinyboilerplate/co
 import { installDom } from "@/test/dom";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SITREP_NOW } from "./sitrep.fixtures";
+import { shortTime } from "./ShortTime";
 import { unshownFields, type Shape } from "./unshown";
 import { sitrepRecordShape, SITREP_RECORD_SHAPES } from "./unshownSitrep";
 
@@ -200,23 +201,27 @@ function sourceFor(record: Record<string, unknown>): HomeFeedSource {
   };
 }
 
-function clickable(scope: ParentNode, matches: (text: string) => boolean) {
-  const found = [...scope.querySelectorAll<HTMLButtonElement>("button")].find((node) => matches(node.textContent?.trim() ?? ""));
-  expect(found !== undefined).toBe(true);
-  return found!;
-}
-
 /** The open card, Details unfolded: its words (text nodes apart), link targets and machine times, less Details' own lists of the card's data. */
 async function openCard(record: Record<string, unknown>) {
   restore ??= installDom();
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={sourceFor(record)} />));
-  await act(async () => clickable(host, (text) => text === "View").click());
-  const full = [...host.querySelectorAll<HTMLElement>('[role="radiogroup"][aria-label="View"] [role="radio"]')].find((node) => node.textContent === "Full cards");
-  expect(full !== undefined).toBe(true);
-  await act(async () => full!.click());
-  const article = [...host.querySelectorAll<HTMLElement>("article")].find((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === record.title));
+  // Open the card in place: Needs you opens its first card itself; an answered one waits in Pending; the rest are rows.
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await act(async () => pending.click());
+  const row = () => [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].filter((item) => !item.querySelector("article"))
+    .map((item) => item.querySelector<HTMLButtonElement>('button[aria-expanded="false"]:not([aria-haspopup])')).find(Boolean) ?? null;
+  for (let next = row(); next; next = row()) await act(async () => next!.click());
+  const titled = () => [...host.querySelectorAll<HTMLElement>("article")].find((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === record.title));
+  // A record its agent closed (a rolled-back ship, a lifted hold) is in History, not the live feed.
+  if (!titled()) {
+    const history = host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]');
+    expect(history !== null).toBe(true);
+    await act(async () => history!.click());
+    for (let next = row(); next; next = row()) await act(async () => next!.click());
+  }
+  const article = titled();
   expect(article !== undefined).toBe(true);
   const details = [...article!.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")].find((node) => node.textContent?.trim().startsWith("Details"));
   expect(details !== undefined).toBe(true);
@@ -230,7 +235,7 @@ async function openCard(record: Record<string, unknown>) {
   const hrefs = [...card.querySelectorAll("a[href]")].map((node) => node.getAttribute("href") ?? "");
   const times = new Set([...card.querySelectorAll("time[datetime]")].map((node) => node.getAttribute("datetime")));
   const text = words([...texts, ...hrefs].join(" "));
-  return { text, times, has: (leaf: string) => ISO.test(leaf) ? times.has(leaf) || text.includes(words(stamp(leaf))) : text.includes(words(leaf)) };
+  return { text, times, has: (leaf: string) => ISO.test(leaf) ? times.has(leaf) || text.includes(words(stamp(leaf))) || text.includes(words(shortTime(leaf))) : text.includes(words(leaf)) };
 }
 
 test.each(VARIANTS.map((variant) => [variant.name, variant] as const))("%s: the card draws exactly what its shape names", async (_name, variant) => {

@@ -4,10 +4,25 @@
 // this card" on a decision, "Acknowledge" on an information card. Plain cards (HomeFeedEntries.tsx) and typed cards
 // (SitrepCard.tsx) share it. What a closing action writes lives in the store (ownerActions.ts); the page owns the tap
 // and its undo bar.
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
-import type { UnshownField } from "./unshown";
-import { CardData, detailsSectionTitle, FeedUsedList, UnshownList } from "./UnshownList";
+import type { FeedCard } from "@tinycloud/sdk-services/feed";
+import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
+import type * as DetailsPanel from "./cardDetailsPanel";
+
+/** A Details section's heading ("This card", "Not shown on the card"). */
+export const detailsSectionTitle = "mb-2 flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-[.04em] text-muted-foreground";
+
+// The shapes behind "+N" and Details' lists load beside the app, not in its startup chunk (entry-size-check.ts): the
+// load starts with this module, so they are there long before anyone opens a card's Details.
+type DetailsModule = typeof DetailsPanel;
+let detailsModule: DetailsModule | undefined;
+const detailsLoad = import("./cardDetailsPanel").then((loaded) => (detailsModule = loaded));
+function useDetailsModule(): DetailsModule | undefined {
+  const [loaded, setLoaded] = useState(detailsModule);
+  useEffect(() => { if (!loaded) void detailsLoad.then(setLoaded); }, [loaded]);
+  return loaded;
+}
 
 /** The class of a small action on a card: 44px on touch (QA cb784d4), 40px with a mouse. */
 export const actionClass = "min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10";
@@ -18,17 +33,19 @@ export const footActionClass = "inline-flex min-h-11 items-center whitespace-now
 export interface CardClose { kind: "drop" | "acknowledge"; onTap: () => void }
 
 /**
- * The card's foot, with "Details" in the bottom-right corner on every card, and a "+N" when `unshown` lists N parts of
- * the card it does not draw. A decision, one row: its quiet `actions` (Ask me later), then "Drop this card", both taking
- * the card away through the undo bar. An update: "Acknowledge" (its one real action, the dark pill) and its quiet
- * `actions` (Show me later), then a bottom row with `secondary` ("Comment") level with Details. `card` is the card as
- * sent and `agent` who sent it, for the disclosure.
+ * The card's foot, with "Details" in the bottom-right corner on every card, and a "+N" when the card holds N parts it
+ * does not draw. A decision, one row: its quiet `actions` (Ask me later), then "Drop this card", both taking the card
+ * away through the undo bar. An update: "Acknowledge" (its one real action, the dark pill) and its quiet `actions` (Show
+ * me later), then a bottom row with `secondary` ("Comment") level with Details. `card` is the card as sent, `typed` its
+ * board record when it is a typed card (with no record when the app could not read it), and `agent` who sent it.
  */
-export function CardDetails({ children, actions, secondary, close, unshown, card, agent }: {
+export function CardDetails({ children, actions, secondary, close, card, typed, agent }: {
   children: ReactNode; actions?: ReactNode; secondary?: ReactNode; close?: CardClose;
-  unshown: readonly UnshownField[]; card: unknown; agent: string;
+  card: FeedCard; typed?: { record?: BoardRecord }; agent: string;
 }) {
   const [open, setOpen] = useState(false);
+  const lists = useDetailsModule();
+  const unshown = lists ? lists.cardUnshown(card, typed) : [];
   // Only fields meant to be read count; the feed's own bookkeeping is listed in Details but not counted.
   const count = unshown.filter((field) => !field.quiet).length;
   const details = <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}
@@ -53,11 +70,11 @@ export function CardDetails({ children, actions, secondary, close, unshown, card
     {/* Not shown on the card (only when there is any), then This card with its history, then the feed's folded
         bookkeeping, then the card as sent. From 900px the list sits right of a 240px rail holding the rest. */}
     {open && <div aria-label="Details" className={`mt-2 grid gap-[18px] break-words rounded-[14px] bg-muted/60 p-3.5 ${count ? "min-[900px]:grid-cols-[240px_minmax(0,1fr)] min-[900px]:gap-x-5" : ""}`}>
-      {count > 0 && <div className="min-w-0 min-[900px]:col-start-2 min-[900px]:row-span-3 min-[900px]:row-start-1"><UnshownList fields={unshown.filter((field) => !field.quiet)} agent={agent} /></div>}
+      {lists && count > 0 && <div className="min-w-0 min-[900px]:col-start-2 min-[900px]:row-span-3 min-[900px]:row-start-1"><lists.UnshownList fields={unshown.filter((field) => !field.quiet)} agent={agent} /></div>}
       <div className="grid min-w-0 content-start gap-[18px]">
         <section aria-label="This card"><h3 className={detailsSectionTitle}>This card</h3>{children}</section>
-        <FeedUsedList fields={unshown.filter((field) => field.quiet)} />
-        <CardData card={card} />
+        {lists && <lists.FeedUsedList fields={unshown.filter((field) => field.quiet)} />}
+        {lists && <lists.CardData card={card} />}
       </div>
     </div>}
   </div>;
