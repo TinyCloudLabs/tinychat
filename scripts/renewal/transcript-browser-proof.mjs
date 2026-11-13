@@ -12,7 +12,7 @@ const worktree = new URL("../../", import.meta.url).pathname;
 const nodeBinary = "/var/tmp/tc2904-node-artifact/tinycloud";
 const expectedNodeBinarySha256 = "58645b7c9bec9a0d45584c0aca7a8c37bb08ab7b9aad926af05763687d053edd";
 const nodeSourceCommit = "3efdddc997eb112803166d6f45a99d8c25344715";
-const sdkCommit = "255e1c7e74cab178698e3d3fae5bae5b69f0f7c0";
+const sdkCommit = "c9add1f0b0169edc7c9ce2705c29a87b46fe0678";
 const frontendRequire = createRequire(join(worktree, "frontend/package.json"));
 const [{ blake3 }, { ed25519 }, { bases }] = await Promise.all([
   import(pathToFileURL(frontendRequire.resolve("@noble/hashes/blake3")).href),
@@ -112,6 +112,7 @@ const evidence = {
   result: "FAIL",
   stage: "setup",
   proofId,
+  runtime: {runner: "Bun", browserEnvironment: "happy-dom", chromiumProcessLaunched: false},
   nodeBinary: { path: nodeBinary, sha256: null, sourceCommit: nodeSourceCommit },
   sdk: { commit: sdkCommit, artifactsSha256: {} },
   contactedOrigins: [],
