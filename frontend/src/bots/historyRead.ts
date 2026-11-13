@@ -32,7 +32,7 @@ export async function readBotHistory(tcw: TinyCloudWeb, signal?: AbortSignal): P
       if (key !== `${prefix}${batch.generation}/${batch.seq}-${batch.challenge}`) throw new Error("history_binding_mismatch");
       const record = batch.record;
       if ((record?.type === "user" || record?.type === "assistant") && typeof record.text === "string") {
-        messages.push({ id: `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "" });
+        messages.push({ id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "" });
       }
     }
     cursor = listed.data.nextCursor;

@@ -10,6 +10,7 @@ export const BOTS_STRINGS = {
   sendToMain: "Send to Main",
   modelLine: "Runs on a confidential model.",
   tryAgain: "Try again",
+  historyLoading: "Loading earlier messages…",
   historyFailed: "Couldn't load your earlier messages with Main.",
   errors: {
     bot_unavailable: "Main couldn't start.",
