@@ -8,8 +8,11 @@
  */
 export type Shape = true | { readonly "[]": Shape } | { readonly [key: string]: Shape };
 
-/** A part of the card the open card does not draw: where it is, and its value as sent. */
-export interface UnshownField { path: string; value: unknown }
+/**
+ * A part of the card the open card does not draw: where it is, and its value as sent. `quiet`: bookkeeping the feed
+ * uses (sorting, expiry, closure) but does not draw; it is listed apart and not counted in the card's "+N".
+ */
+export interface UnshownField { path: string; value: unknown; quiet?: true }
 
 const isList = (shape: Shape): shape is { readonly "[]": Shape } => typeof shape === "object" && "[]" in shape;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -47,4 +50,20 @@ export function formHint(value: unknown): string {
   if (typeof value === "number") return "number";
   if (typeof value === "boolean") return "yes or no";
   return "text";
+}
+
+/** Names that read better than the rule makes them (Monica, TC-2980). */
+const LABELS: Readonly<Record<string, string>> = {
+  askIds: "Asks", updaters: "Updated by", expiryBaseAt: "Expires from", resubmitOf: "Replaces", resubmitCount: "Times asked again", supersededBy: "Replaced by",
+};
+
+/**
+ * A field's name in plain words, from the last key of its path: camel case split into words and a trailing "At" (a
+ * time) dropped, so `payload.sitrep.record.askedAt` reads "Asked"; a few keys have their own name (LABELS).
+ */
+export function fieldLabel(path: string): string {
+  const key = (path.split(".").at(-1) ?? path).replace(/\[\d+\]/g, "");
+  if (Object.hasOwn(LABELS, key)) return LABELS[key]!;
+  const words = key.replace(/(.)At$/, "$1").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : path;
 }

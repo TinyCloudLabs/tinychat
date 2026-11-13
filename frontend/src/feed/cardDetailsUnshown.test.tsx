@@ -59,6 +59,8 @@ test("a card says in its foot how many of its fields it does not draw, and Detai
   expect(closedText).toContain("+5");
   const list = panel!.querySelector('[aria-label="Not shown on the card"]')!;
   expect([...list.querySelectorAll("code")].map((node) => node.textContent)).toEqual(["payload.cost", "payload.seat", "payload.timetable", "payload.photo", "tags"]);
+  // Each field reads by its name in plain words, the path in small type under it.
+  expect([...list.querySelectorAll("li")].map((node) => node.querySelector("span > span")?.textContent)).toEqual(["Cost", "Seat", "Timetable", "Photo", "Tags"]);
   expect(list.textContent).toContain("£24.50 return, refundable until Thursday 18:00");
   expect(list.textContent).toContain('"coach": "C"');
   expect(list.textContent).toContain("https://trains.example/0815");
@@ -73,7 +75,7 @@ test("a card that draws all of its data has no count in its foot and no list in 
   expect(closedLabel).toBe(null);
   expect(closedText?.trim()).toBe("Details");
   expect(panel!.querySelector('[aria-label="Not shown on the card"]')).toBe(null);
-  const data = [...panel!.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent === "Card data")!;
+  const data = [...panel!.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent?.startsWith("Card data"))!;
   await act(async () => data.click());
   expect(panel!.querySelector('[aria-label="Card data"] pre')?.textContent).toContain('"cardId": "trip"');
 });

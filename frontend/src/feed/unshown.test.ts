@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import type { FeedCard } from "@tinycloud/sdk-services/feed";
-import { formHint, unshownFields } from "./unshown";
+import { fieldLabel, formHint, unshownFields } from "./unshown";
 import { cardUnshown } from "./unshownCard";
+import { syntheticRecord } from "./sitrep.fixtures";
+import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 
 const card = (payload: Record<string, unknown>, extra: Record<string, unknown> = {}): FeedCard => ({
   cardId: "c", revision: 1, issuanceId: "i", kind: "decision", needsResponse: true, title: "Which train?", body: "Two trains.",
@@ -48,4 +50,20 @@ test("a typed card Home cannot read lists every payload field", () => {
 test("each listed value says its form in plain words", () => {
   expect([formHint("x"), formHint(3), formHint(true), formHint({ a: 1 }), formHint({ a: 1, b: 2 }), formHint([1, 2, 3])])
     .toEqual(["text", "number", "yes or no", "1 field", "2 fields", "list of 3"]);
+});
+
+test("a field is named in plain words from its last key: camel case split, a trailing At (a time) dropped, a few renamed", () => {
+  const record = (key: string) => fieldLabel(`payload.sitrep.record.${key}`);
+  expect(["askedAt", "importance", "urgency", "updatedAt", "closedAt", "mode", "owner", "lastAskedAt"].map(record))
+    .toEqual(["Asked", "Importance", "Urgency", "Updated", "Closed", "Mode", "Owner", "Last asked"]);
+  expect(["expiryBaseAt", "supersededBy", "resubmitOf", "resubmitCount", "askIds", "updaters"].map(record))
+    .toEqual(["Expires from", "Replaced by", "Replaces", "Times asked again", "Asks", "Updated by"]);
+  expect([fieldLabel("payload.project"), fieldLabel("payload.page.questions[0].hint"), fieldLabel("payload.feed_id"), fieldLabel("tags[2]")]).toEqual(["Project", "Hint", "Feed id", "Tags"]);
+});
+
+test("a typed card's bookkeeping is listed apart (not counted); a field nobody named always counts", () => {
+  const record = { ...syntheticRecord("ask"), askedAt: "2026-11-13T14:48:48.086Z", importance: 4, mode: "proceeding", carrier: "Rail" } as unknown as BoardRecord;
+  const fields = cardUnshown(card({ sitrep: { version: 1, record }, project: "trips" }), { record });
+  expect(fields.filter((field) => field.quiet).map((field) => field.path)).toEqual(expect.arrayContaining(["payload.sitrep.record.askedAt", "payload.sitrep.record.importance", "payload.sitrep.record.mode"]));
+  expect(fields.filter((field) => !field.quiet).map((field) => field.path)).toEqual(["payload.sitrep.record.carrier"]);
 });

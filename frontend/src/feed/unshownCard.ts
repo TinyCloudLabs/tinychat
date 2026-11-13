@@ -30,7 +30,7 @@ function plainPayload(payload: Record<string, unknown>): Shape {
   const page = payload.page as { image?: unknown; questions?: unknown } | undefined;
   const pageDrawn = typeof page?.image === "string" && Array.isArray(page.questions);
   return {
-    summary: true, priority: true, render: true, deadline: true, expiresAt: true, url: true, image: true, body: true,
+    summary: true, priority: true, render: true, deadline: true, expiresAt: true, url: true, image: true, body: true, project: true,
     agent: { kind: true, model: true, runsOn: true, job: true },
     // Markdown wins when a brief carries both, so a url sent beside it is not drawn. A brief or page Home cannot read
     // is left out of the shape, so it is listed whole.
@@ -43,7 +43,13 @@ function plainPayload(payload: Record<string, unknown>): Shape {
 }
 
 /**
- * Everything in `card` its open card does not draw. `record`: a typed card's board record, when Home could read it;
+ * A typed record's bookkeeping: the feed sorts, expires and closes cards by these but does not draw them. They are
+ * listed apart and not counted in "+N"; only these exact keys, so a field nobody has named always counts.
+ */
+const QUIET = /^payload\.sitrep\.record\.(askedAt|updatedAt|closedAt|expiryBaseAt|importance|urgency|mode|owner)$/;
+
+/**
+ * Everything in `card` its open card does not draw. `record`: a typed card's board record, when the app could read it;
  * a typed card it could not read draws none of its payload, so every payload field is listed.
  */
 export function cardUnshown(card: FeedCard, typed?: { record?: BoardRecord }): UnshownField[] {
@@ -51,7 +57,8 @@ export function cardUnshown(card: FeedCard, typed?: { record?: BoardRecord }): U
   const payloadShape: Shape = !typed
     ? plainPayload(payload)
     : typed.record
-      ? { sitrep: { version: true, record: sitrepRecordShape(typed.record) }, sitrepThread: true, source: { label: true, url: true, ref: true } }
+      ? { sitrep: { version: true, record: sitrepRecordShape(typed.record) }, sitrepThread: true, source: { label: true, url: true, ref: true }, project: true }
       : {};
-  return unshownFields(card, { ...BOOKKEEPING, title: true, body: true, choices: { "[]": { id: true, label: true } }, payload: payloadShape });
+  return unshownFields(card, { ...BOOKKEEPING, title: true, body: true, choices: { "[]": { id: true, label: true } }, payload: payloadShape })
+    .map((field) => typed?.record && QUIET.test(field.path) ? { ...field, quiet: true as const } : field);
 }
