@@ -23,6 +23,13 @@ export interface MainChatState {
 
 export const isWorking = (turn: MainTurn | null): boolean => !!turn && turn.state !== "error";
 
+/** What the console keeps of a failure: never the object itself, which may carry a session or delegation. */
+function errorFields(value: unknown): Record<string, unknown> {
+  if (!(value instanceof Error)) return { type: typeof value };
+  const code = "code" in value && (typeof value.code === "string" || typeof value.code === "number") ? value.code : undefined;
+  return { name: value.name, message: value.message, code, stack: value.stack };
+}
+
 export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
   const [state, setState] = useState<MainChatState>({ lines: [], history: "idle", turn: null });
   const lifetime = useRef<AbortController | null>(null);
@@ -48,8 +55,14 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
       try {
         const messages = await api.listMainMessages(signal);
         setState((current) => ({ ...current, history: "loaded", lines: messages.map(({ id, role, text }) => ({ id, role, text })) }));
-      } catch {
-        if (!signal?.aborted) setState((current) => ({ ...current, history: "failed" }));
+      } catch (cause) {
+        if (signal?.aborted) return;
+        // The failure view says only that it failed; the console keeps why, for support. Details: TC-3019
+        console.warn("[bots] Main's earlier messages did not load", {
+          ...errorFields(cause),
+          cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
+        });
+        setState((current) => ({ ...current, history: "failed" }));
       }
     })();
     history.current = run;
