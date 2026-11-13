@@ -1,6 +1,7 @@
 import {
   createCipheriv,
   createDecipheriv,
+  createHash,
   createHmac,
   hkdfSync,
   randomBytes,
@@ -133,8 +134,17 @@ export interface CredentialMeta {
  */
 export interface CredentialRowStore {
   read(source: string, address: string): Promise<CredentialRow | null>;
-  write(row: CredentialRow): Promise<void>;
+  /** `condition`: write only while the substrate still holds that version (If-Match), or no row
+   *  (If-None-Match); a row store that supports it rejects with CredentialCustodyChanged. */
+  write(row: CredentialRow, condition?: CredentialWriteCondition): Promise<void>;
   remove(source: string, address: string): Promise<void>;
+  /** The row with its substrate version, for a conditional write. */
+  readVersioned?(source: string, address: string): Promise<{ row: CredentialRow; version?: string } | null>;
+}
+export type CredentialWriteCondition = { ifMatch: string } | { ifNoneMatch: "*" };
+/** A conditional custody write found the credential changed since it was read. */
+export class CredentialCustodyChanged extends Error {
+  constructor() { super("credential_custody_changed"); }
 }
 
 /**
@@ -358,19 +368,33 @@ function warnCredential(fields: string): void {
 // ── The store ────────────────────────────────────────────────────────
 
 /** Custody changes per credential in this process, by every CredentialStore instance: store,
- *  rotate, revoke and delete each bump it once settled (even on failure: the outcome is unknown). */
+ *  rotate, revoke and delete each bump it twice, when requested and once settled (even on failure:
+ *  the outcome is unknown). So a change already queued, not only one done, moves the version. */
 const custodyVersions = new Map<string, number>();
+/** Version steps one custody change makes (requested, settled). */
+export const CUSTODY_STEPS_PER_CHANGE = 2;
+function bumpCustody(key: string): void { custodyVersions.set(key, (custodyVersions.get(key) ?? 0) + 1); }
 /** Lets a cache of a decrypted secret notice a custody change made anywhere in this process without
  *  a read: capture it before reading the credential, and trust the cache only while it is unchanged. */
 export function credentialCustodyVersion(source: string, address: string): number {
   return custodyVersions.get(rowKey(normalizeSource(source), normalizeWebhookAddress(address))) ?? 0;
 }
+/** Per credential, the tail of its queue of custody changes. Every store, rotate, revoke-delete and
+ *  delete by any CredentialStore in this process runs one at a time, so a compare on the custody
+ *  version and the write it guards cannot interleave with another change. */
+const custodyQueues = new Map<string, Promise<void>>();
+async function withCustody<T>(source: string, address: string, change: () => Promise<T>): Promise<T> {
+  const key = rowKey(source, address);
+  bumpCustody(key);
+  const run = (custodyQueues.get(key) ?? Promise.resolve()).then(change);
+  const tail = run.then(() => undefined, () => undefined);
+  custodyQueues.set(key, tail);
+  try { return await run; } finally { if (custodyQueues.get(key) === tail) custodyQueues.delete(key); }
+}
+/** A custody write or removal; bumps the version once settled (even on failure: outcome unknown). */
 async function custodyChange<T>(source: string, address: string, change: () => Promise<T>): Promise<T> {
   try { return await change(); }
-  finally {
-    const key = rowKey(source, address);
-    custodyVersions.set(key, (custodyVersions.get(key) ?? 0) + 1);
-  }
+  finally { bumpCustody(rowKey(source, address)); }
 }
 
 export class CredentialStore {
@@ -420,12 +444,30 @@ export class CredentialStore {
    * and the previous ciphertext is REPLACED — a rotation that leaves the old envelope readable
    * has not rotated anything.
    */
+  /**
+   * `unlessCustodyChangedSince`: a compare-and-write on custody, for a refresh of a secret read at
+   * that custody version (credentialCustodyVersion). Inside this credential's custody queue it
+   * refuses (CredentialCustodyChanged) unless this rotation is the only change requested since then
+   * and the credential still exists; it writes with If-Match on the version it just read, so the
+   * substrate refuses a writer outside this process too; and it refuses after the write when another
+   * change was requested meanwhile (that change follows and wins). On success custody stands at
+   * `unlessCustodyChangedSince + CUSTODY_STEPS_PER_CHANGE`.
+   */
   rotate(input: {
     source: string;
     address: string;
     secret: CredentialSecret;
-  }): Promise<CredentialMeta> {
-    return this.write(input, "rotate");
+  }, options: { unlessCustodyChangedSince?: number } = {}): Promise<CredentialMeta> {
+    const since = options.unlessCustodyChangedSince;
+    if (since === undefined) return this.write(input, "rotate");
+    const src = normalizeSource(input.source);
+    const addr = normalizeWebhookAddress(input.address);
+    return withCustody(src, addr, async () => {
+      if (credentialCustodyVersion(src, addr) !== since + 1) throw new CredentialCustodyChanged();
+      const meta = await this.writeLocked(src, addr, input.secret, "rotate", true);
+      if (credentialCustodyVersion(src, addr) !== since + CUSTODY_STEPS_PER_CHANGE) throw new CredentialCustodyChanged();
+      return meta;
+    });
   }
 
   /**
@@ -576,7 +618,7 @@ export class CredentialStore {
       reason = "no_credential";
     }
 
-    await custodyChange(src, addr, () => this.rows.remove(src, addr));
+    await withCustody(src, addr, () => custodyChange(src, addr, () => this.rows.remove(src, addr)));
     logCredential(
       `op=credential-revoke result=deleted existed=${existed} upstream=${upstream} ` +
         `source=${src} aid=${hashed(addr)}`,
@@ -592,21 +634,33 @@ export class CredentialStore {
   async delete(source: string, address: string): Promise<void> {
     const src = normalizeSource(source);
     const addr = normalizeWebhookAddress(address);
-    await custodyChange(src, addr, () => this.rows.remove(src, addr));
+    await withCustody(src, addr, () => custodyChange(src, addr, () => this.rows.remove(src, addr)));
   }
 
-  private async write(
+  private write(
     input: { source: string; address: string; secret: CredentialSecret },
     op: "store" | "rotate",
   ): Promise<CredentialMeta> {
     const src = normalizeSource(input.source);
     const addr = normalizeWebhookAddress(input.address);
-    const secret = input.secret;
-    if (secret === null || typeof secret !== "object") {
-      throw new Error("credential secret is required");
-    }
+    return withCustody(src, addr, () => this.writeLocked(src, addr, input.secret, op, false));
+  }
 
-    const existing = await this.rows.read(src, addr);
+  /** Caller holds the credential's custody queue. `conditional`: the credential must exist, and the
+   *  write carries If-Match on the version read here. */
+  private async writeLocked(src: string, addr: string, secret: CredentialSecret, op: "store" | "rotate",
+    conditional: boolean): Promise<CredentialMeta> {
+    if (secret === null || typeof secret !== "object") throw new Error("credential secret is required");
+    let existing: CredentialRow | null;
+    let condition: CredentialWriteCondition | undefined;
+    if (conditional && this.rows.readVersioned) {
+      const stored = await this.rows.readVersioned(src, addr);
+      existing = stored?.row ?? null;
+      if (stored?.version !== undefined) condition = { ifMatch: stored.version };
+    } else {
+      existing = await this.rows.read(src, addr);
+    }
+    if (conditional && existing === null) throw new CredentialCustodyChanged();
     const stamp = new Date(this.now()).toISOString();
     const aad = envelopeAad(src, addr);
     const dek = randomBytes(DEK_BYTES);
@@ -621,7 +675,7 @@ export class CredentialStore {
       lastUsedAt: existing?.lastUsedAt ?? stamp,
     };
     // A durable write failure propagates — there is no "stored" to report without one.
-    await custodyChange(src, addr, () => this.rows.write(row));
+    await custodyChange(src, addr, () => this.rows.write(row, condition));
     logCredential(
       `op=credential-${op} result=ok source=${src} aid=${hashed(addr)} kind=${row.kind}`,
     );
@@ -691,8 +745,18 @@ export class InMemoryCredentialRowStore implements CredentialRowStore {
     return raw === undefined ? null : parseRow(JSON.parse(raw));
   }
 
-  async write(row: CredentialRow): Promise<void> {
-    this.rows.set(rowKey(row.source, row.address), JSON.stringify(row));
+  async readVersioned(source: string, address: string): Promise<{ row: CredentialRow; version?: string } | null> {
+    const raw = this.rows.get(rowKey(source, address));
+    const row = raw === undefined ? null : parseRow(JSON.parse(raw));
+    return row && { row, version: createHash("sha256").update(raw!).digest("hex") };
+  }
+
+  async write(row: CredentialRow, condition?: CredentialWriteCondition): Promise<void> {
+    const key = rowKey(row.source, row.address);
+    const current = this.rows.get(key);
+    if (condition && ("ifNoneMatch" in condition ? current !== undefined
+      : current === undefined || createHash("sha256").update(current).digest("hex") !== condition.ifMatch)) throw new CredentialCustodyChanged();
+    this.rows.set(key, JSON.stringify(row));
   }
 
   async remove(source: string, address: string): Promise<void> {
@@ -741,10 +805,23 @@ export class KvCredentialRowStore implements CredentialRowStore {
     });
   }
 
-  write(row: CredentialRow): Promise<void> {
+  readVersioned(source: string, address: string): Promise<{ row: CredentialRow; version?: string } | null> {
+    return this.run(async () => {
+      const stored = await this.readStored(kvKey(source, address));
+      if (stored === null) return null;
+      const row = parseRow(stored.value);
+      if (row === null) throw new Error("credential row is unparseable");
+      return { row, version: stored.etag };
+    });
+  }
+
+  write(row: CredentialRow, condition?: CredentialWriteCondition): Promise<void> {
     return this.run(async () => {
       await withSessionRefresh(this.node, async () => {
-        assertKvResult(await this.node.kv.put(kvKey(row.source, row.address), row));
+        const result = await this.node.kv.put(kvKey(row.source, row.address), row, condition);
+        const error = (result as { ok?: unknown; error?: { code?: unknown } } | null);
+        if (error?.ok === false && error.error?.code === "KV_PRECONDITION_FAILED") throw new CredentialCustodyChanged();
+        assertKvResult(result);
       });
     });
   }
@@ -799,22 +876,29 @@ export class KvCredentialRowStore implements CredentialRowStore {
   }
 
   private async readJson(key: string): Promise<unknown> {
+    return (await this.readStored(key))?.value ?? null;
+  }
+
+  /** The stored value and the node's ETag for it. */
+  private async readStored(key: string): Promise<{ value: unknown; etag?: string } | null> {
     const result = await withSessionRefresh(this.node, async () => {
       const r = await this.node.kv.get(key);
       if (isKvMissingKeyResult(r, key)) return null;
       return assertKvResult(r);
     });
     const response = (result as { data?: unknown } | null)?.data as
-      | { data?: unknown }
+      | { data?: unknown; headers?: { etag?: unknown } }
       | null
       | undefined;
     if (response === null || response === undefined) return null;
+    const etag = typeof response.headers?.etag === "string" ? response.headers.etag : undefined;
     const value = (response as { data?: unknown }).data ?? response;
-    if (typeof value !== "string") return value ?? null;
+    if (value === null || value === undefined) return null;
+    if (typeof value !== "string") return { value, etag };
     try {
-      return JSON.parse(value);
+      return { value: JSON.parse(value), etag };
     } catch {
-      return value;
+      return { value, etag };
     }
   }
 

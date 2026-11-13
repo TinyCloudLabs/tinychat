@@ -480,3 +480,243 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     expect((await b.stores.request.getConnection(owner))?.state).toBe("needs_reconnect");
   });
 });
+
+// ── TC-2917 (#697, Bobbie's review): races with writers outside the worker ─────────────────────
+// A node that versions every key like the production node: a strong ETag on each read and write,
+// If-Match / If-None-Match refused with KV_PRECONDITION_FAILED, and hooks to act between calls.
+
+interface NodeHooks {
+  afterGet?(key: string): void | Promise<void>;
+  beforePut?(key: string, value: unknown): void | Promise<void>;
+}
+function versionedNode() {
+  const rows = new Map<string, { value: unknown; version: number }>();
+  let version = 0;
+  const hooks: NodeHooks = {};
+  const etag = (n: number) => `"blake3-${n.toString(16).padStart(64, "0")}"`;
+  const node = { kv: {
+    async get(key: string) {
+      const row = rows.get(key);
+      const result = row ? { ok: true, data: { data: structuredClone(row.value), headers: { etag: etag(row.version) } } }
+        : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } };
+      await hooks.afterGet?.(key);
+      return result;
+    },
+    async put(key: string, value: unknown, options?: { ifMatch?: string; ifNoneMatch?: "*" }) {
+      await hooks.beforePut?.(key, value);
+      const row = rows.get(key);
+      if ((options?.ifMatch !== undefined && (!row || etag(row.version) !== options.ifMatch)) || (options?.ifNoneMatch && row)) {
+        return { ok: false, error: { code: "KV_PRECONDITION_FAILED", service: "kv", message: "Precondition failed" } };
+      }
+      rows.set(key, { value: structuredClone(value), version: ++version });
+      return { ok: true, data: { headers: { etag: etag(version) } } };
+    },
+    async delete(key: string) { rows.delete(key); return { ok: true, data: {} }; },
+    async list({ prefix }: { prefix: string }) { return { ok: true, data: { keys: [...rows.keys()].filter(key => key.startsWith(prefix)) } }; },
+  } } as unknown as TinyCloudNode;
+  return {
+    node, hooks,
+    /** An external write: the node changes without the backend. */
+    set(key: string, value: unknown) { rows.set(key, { value: structuredClone(value), version: ++version }); },
+    remove(key: string) { rows.delete(key); },
+    value(key: string) { return structuredClone(rows.get(key)?.value); },
+    keyOf(prefix: string) { return [...rows.keys()].find(key => key.startsWith(prefix))!; },
+  };
+}
+/** The same view of countingNode, which sends no ETags (so no write can be conditional). */
+function unversioned() {
+  const { node, values } = countingNode();
+  return { node, set: (key: string, value: unknown) => values.set(key, structuredClone(value)), remove: (key: string) => values.delete(key),
+    value: (key: string) => structuredClone(values.get(key)), keyOf: (prefix: string) => [...values.keys()].find(key => key.startsWith(prefix))! };
+}
+type TestNode = ReturnType<typeof unversioned>;
+
+/** As backend(), exposing the lane and credential options, with the token-map bound settable. */
+function wired(node: TinyCloudNode, world: ReturnType<typeof outside>, options: { accessTokenCacheMax?: number } = {}) {
+  const now = () => world.clock.now;
+  const lane = new BackendStorageLane();
+  const stores = kvCalendarAutojoinStores(node, lane);
+  const credentialOptions = { master: () => MASTER, previousMaster: () => null, now };
+  const credentials = new CredentialStore(new KvCredentialRowStore(node, lane), credentialOptions);
+  const backfillCredentials = new CredentialStore(new KvCredentialRowStore(node, lane, { priority: "background" }), credentialOptions);
+  const coordinator = new TenantCoordinator();
+  const connection = new CalendarAutojoinConnection({ store: stores.request, workerStore: stores.worker, credentials, backfillCredentials,
+    oauth: world.oauth, coordinator, calendar: world.calendar, now, ...options });
+  const worker = new CalendarAutojoinWorker({ store: stores.worker, dispatchStore: stores.dispatch, coordinator, connection,
+    calendar: world.calendar, api: world.api, index: new MemoryTranscriberIndexStore(), now, random: () => 0 });
+  /** A second CredentialStore on the same lane, as another route of this backend would hold. */
+  const otherCredentials = () => new CredentialStore(new KvCredentialRowStore(node, lane), credentialOptions);
+  return { stores, credentials, connection, worker, lane, otherCredentials };
+}
+const CONNECTIONS = "calendar-autojoin/v1/connections/";
+const credentialKey = (owner: string) => `credentials/${SOURCE}/${owner.toLowerCase()}`;
+// The service's private token map: these tests assert what it holds.
+const tokenMap = (connection: CalendarAutojoinConnection): Map<string, unknown> => connection["accessTokens"];
+
+describe("TC-2917 writers outside the worker (Bobbie's #697 probes)", () => {
+  test("1a: a credential deleted while its OAuth refresh is in flight stays deleted, and nothing is served or scanned", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 30_000); // the first use refreshes
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const refresh = world.oauth.refresh.bind(world.oauth);
+    const spy = spyOn(world.oauth, "refresh").mockImplementation(async token => { entered.resolve(); await release.promise; return refresh(token); });
+    const other = b.otherCredentials();
+    try {
+      const served = b.connection.accessToken(owner);
+      await entered.promise;
+      await other.delete(SOURCE, owner);
+      expect(await other.status(SOURCE, owner)).toBeNull();
+      release.resolve();
+      await expect(served).rejects.toThrow("connection_changed");
+    } finally { spy.mockRestore(); }
+    expect(await other.status(SOURCE, owner)).toBeNull();
+    expect(tokenMap(b.connection).size).toBe(0);
+    world.scans.length = 0;
+    await ticks(b, world, 4);
+    expect(world.scans).toEqual([]);
+    expect(await other.status(SOURCE, owner)).toBeNull();
+  });
+
+  test("1b: a delete queued on the lane between the rotation's read and its write wins; the rotation is refused", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 30_000);
+    const other = b.otherCredentials();
+    let reads = 0;
+    let deleted: Promise<void> | undefined;
+    v.hooks.afterGet = key => {
+      // Read 1: the custody read before the refresh. Read 2: the rotation's own read.
+      if (key === credentialKey(owner) && ++reads === 2) deleted = other.delete(SOURCE, owner);
+    };
+    await expect(b.connection.accessToken(owner)).rejects.toThrow("connection_changed");
+    v.hooks.afterGet = undefined;
+    expect(deleted).toBeDefined();
+    await deleted;
+    expect(await other.status(SOURCE, owner)).toBeNull();
+    expect(tokenMap(b.connection).size).toBe(0);
+    world.scans.length = 0;
+    await ticks(b, world, 4);
+    expect(world.scans).toEqual([]);
+  });
+
+  test("3a: an expired cached setup whose connection was deleted on the node stays deleted", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await b.stores.request.putConnection({ tenant: owner, subject: null, state: "enabling", generation: 1, scopes: [],
+      nextScanAt: 0, scanComplete: false, setupId: "setup", setupExpiresAt: T0 + 5 * 60_000 });
+    await b.worker.tick();
+    const key = v.keyOf(CONNECTIONS);
+    v.remove(key);
+    world.clock.now = T0 + 6 * 60_000;
+    await b.worker.tick();
+    expect(v.value(key)).toBeUndefined();
+  });
+
+  for (const between of ["the reads", "the read and the write"] as const) {
+    test(`3b: a connection deleted between ${between} of the expired-setup disable is not recreated`, async () => {
+      const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+      await b.stores.request.putConnection({ tenant: owner, subject: null, state: "enabling", generation: 1, scopes: [],
+        nextScanAt: 0, scanComplete: false, setupId: "setup", setupExpiresAt: T0 + 5 * 60_000 });
+      await b.worker.tick();
+      const key = v.keyOf(CONNECTIONS);
+      world.clock.now = T0 + 6 * 60_000;
+      let deleted = false;
+      if (between === "the reads") {
+        // The node shows the valid expired setup to the first read, then the row goes.
+        v.hooks.afterGet = k => { if (k === key && !deleted) { deleted = true; v.remove(key); } };
+      } else {
+        v.hooks.beforePut = k => { if (k === key && !deleted) { deleted = true; v.remove(key); } };
+      }
+      await b.worker.tick();
+      expect(deleted).toBe(true);
+      expect(v.value(key)).toBeUndefined();
+      await ticks(b, world, 4);
+      expect(v.value(key)).toBeUndefined();
+    });
+  }
+
+  for (const kind of ["an ETag node", "a node without ETags"] as const) {
+    test(`mid-scan disable on ${kind}: a disable stored while a scan runs is kept, and no bot is sent`, async () => {
+      const v: TestNode = kind === "an ETag node" ? versionedNode() : unversioned();
+      const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+      await seedEnabled(b, owner, T0 + 86_400_000);
+      // The first scan's bookkeeping reaches the node in the 17:00 hour; the blocked one is past 18:00,
+      // so its bookkeeping is a durable write.
+      world.clock.now = T0 + 29 * 60_000 + 30_000;
+      await b.worker.tick();
+      const key = v.keyOf(CONNECTIONS);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const list = world.calendar.listEvents.bind(world.calendar);
+      const spy = spyOn(world.calendar, "listEvents").mockImplementation(async (token, now) => {
+        entered.resolve(); await release.promise; return list(token, now);
+      });
+      world.clock.now += 60_000;
+      const tick = b.worker.tick();
+      await entered.promise;
+      v.set(key, { ...(v.value(key) as CalendarConnection), state: "disabled", generation: 2, offReason: "user_disabled" });
+      release.resolve();
+      await tick;
+      spy.mockRestore();
+      expect(v.value(key)).toMatchObject({ state: "disabled", generation: 2, offReason: "user_disabled" });
+      world.events.set(owner, [meetEvent(owner, "later", world.clock.now + 10 * 60_000)]);
+      await ticks(b, world, 62);
+      expect(v.value(key)).toMatchObject({ state: "disabled", generation: 2 });
+      expect(world.posts).toHaveLength(0);
+    });
+  }
+
+  for (const change of ["disables", "deletes"] as const) {
+    test(`CAS: a writer that ${change} the connection between the worker's read and its PUT wins (412, re-read)`, async () => {
+      const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+      await seedEnabled(b, owner, T0 + 86_400_000);
+      world.clock.now = T0 + 29 * 60_000 + 30_000;
+      await b.worker.tick();
+      const key = v.keyOf(CONNECTIONS);
+      let changed = false;
+      v.hooks.beforePut = (k, value) => {
+        if (k !== key || changed || (value as CalendarConnection).state !== "enabled") return;
+        changed = true;
+        if (change === "deletes") v.remove(key);
+        else v.set(key, { ...(v.value(key) as CalendarConnection), state: "disabled", generation: 2, offReason: "user_disabled" });
+      };
+      // The next scan is past 18:00: its bookkeeping is the worker's durable connection write.
+      await ticks(b, world, 3);
+      expect(changed).toBe(true);
+      v.hooks.beforePut = undefined;
+      if (change === "deletes") expect(v.value(key)).toBeUndefined();
+      else expect(v.value(key)).toMatchObject({ state: "disabled", generation: 2 });
+      world.events.set(owner, [meetEvent(owner, "later", world.clock.now + 10 * 60_000)]);
+      await ticks(b, world, 62);
+      if (change === "deletes") expect(v.value(key)).toBeUndefined();
+      else expect(v.value(key)).toMatchObject({ state: "disabled", generation: 2 });
+      expect(world.posts).toHaveLength(0);
+    });
+  }
+
+  test("token map: a cached token is evicted when the connection is seen disabled, and stays gone a day later", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 50 * 60_000);
+    await b.worker.tick();
+    expect(tokenMap(b.connection).size).toBe(1);
+    const key = v.keyOf(CONNECTIONS);
+    v.set(key, { ...(v.value(key) as CalendarConnection), state: "disabled", generation: 2, offReason: "user_disabled" });
+    await ticks(b, world, 4);
+    expect(tokenMap(b.connection).size).toBe(0);
+    world.clock.now += 86_400_000;
+    await ticks(b, world, 2);
+    expect(tokenMap(b.connection).size).toBe(0);
+  });
+
+  test("token map: bounded, least recently used out, and expired entries swept", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world, { accessTokenCacheMax: 2 }); const owners = [1, 2, 3].map(tenant);
+    for (const owner of owners) await seedEnabled(b, owner, T0 + 50 * 60_000);
+    await b.worker.tick();
+    expect(tokenMap(b.connection).size).toBe(2);
+    expect([...tokenMap(b.connection).keys()]).toEqual(owners.slice(1).map(owner => owner.toLowerCase()));
+    // Past expiry, with no scan due (Google is failing): the sweep still drops them.
+    world.calendar.listEvents = async () => { throw new Error("synthetic outage"); };
+    world.clock.now = T0 + 51 * 60_000;
+    await b.connection.cleanupEnabling(owners[0]!);
+    expect(tokenMap(b.connection).size).toBe(0);
+  });
+});

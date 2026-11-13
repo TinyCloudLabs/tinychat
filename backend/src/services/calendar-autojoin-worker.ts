@@ -57,6 +57,8 @@ export interface CalendarAutojoinWorkerOptions {
     needsReconnect(tenant: string, generation: number): Promise<void>;
     beginGrantBackfill?(): import("./calendar-autojoin-grants.js").GrantBackfillSnapshot;
     invalidateGrantReferences?(): void;
+    /** Every connection the worker reads: lets the service retire what that row no longer allows. */
+    observeConnection?(tenant: string, row: CalendarConnection | null): void;
     backfillGrantReferences?(rows: CalendarConnection[], store: CalendarAutojoinStore, stopping: () => boolean,
       start?: import("./calendar-autojoin-grants.js").GrantBackfillSnapshot): Promise<void>;
   };
@@ -178,7 +180,11 @@ export class CalendarAutojoinWorker {
   /** `fresh`: from the node, even through the worker's cached store. Every consent check that
    *  gates a Google read or a running recording reads fresh. */
   private async readConnection(tenant: string, store = this.options.store, fresh = false): Promise<CalendarConnection | null> {
-    try { return await (fresh ? store.getConnectionFresh(tenant) : store.getConnection(tenant)); }
+    try {
+      const row = await (fresh ? store.getConnectionFresh(tenant) : store.getConnection(tenant));
+      this.options.connection.observeConnection?.(tenant, row);
+      return row;
+    }
     catch (error) { this.options.connection.invalidateGrantReferences?.(); throw error; }
   }
   private async reconcileTenant(listed: CalendarConnection, counts: { rows: number; scans: number }): Promise<void> {

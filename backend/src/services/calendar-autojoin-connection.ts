@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { credentialCustodyVersion, type CredentialStore, type CredentialAccessPurpose, type CredentialSecret, type OAuthCredentialSecret } from "./credential-store.js";
-import { TenantCoordinator, type CalendarAutojoinStore, type CalendarAutojoinReadMetrics, type CalendarConnection } from "./calendar-autojoin-store.js";
+import { CredentialCustodyChanged, credentialCustodyVersion, CUSTODY_STEPS_PER_CHANGE, type CredentialStore, type CredentialAccessPurpose, type CredentialSecret, type OAuthCredentialSecret } from "./credential-store.js";
+import { CalendarRowChanged, TenantCoordinator, type CalendarAutojoinStore, type CalendarAutojoinReadMetrics, type CalendarConnection } from "./calendar-autojoin-store.js";
 import { CalendarAutojoinGrantIndex, liveGoogleConnection, type GoogleGrantRevokeDecision, type GrantBackfillSnapshot } from "./calendar-autojoin-grants.js";
 import type { CalendarAutojoinStatus, CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
 import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
@@ -38,6 +38,8 @@ export interface CalendarAutojoinConnectionOptions {
   grantIndex?: CalendarAutojoinGrantIndex;
   /** Background-priority credential reader for restart backfill; never enumerates credential rows. */
   backfillCredentials?: CredentialStore;
+  /** Test seam: the bound of the cached access-token map (default ACCESS_TOKEN_CACHE_MAX). */
+  accessTokenCacheMax?: number;
   /** The worker's store, for the reads of the calls the worker makes every tick (cleanupEnabling,
    *  accessToken). Default `store`. Writes and every other read use `store`. */
   workerStore?: CalendarAutojoinStore;
@@ -45,15 +47,29 @@ export interface CalendarAutojoinConnectionOptions {
   teardownExoOwner?: (owner: string) => Promise<unknown>;
 }
 
+/** The same stored row for a compare-and-set: both absent, or the same state and generation. */
+function sameConnectionVersion(stored: CalendarConnection | null, read: CalendarConnection | null): boolean {
+  return stored === null ? read === null : read !== null && stored.state === read.state && stored.generation === read.generation;
+}
+
+interface AccessTokenEntry { generation: number; custody: number; token: string; expiresAt: number }
+/** Cached access tokens at most: one per connected account, so far above any expected population. */
+const ACCESS_TOKEN_CACHE_MAX = 5_000;
+/** A token this close to expiry is refreshed, never served, so it is dropped. */
+const ACCESS_TOKEN_MARGIN_MS = 60_000;
+
 /** One-account custody lifecycle. Tenant policy coordination is separate from the global KV lane. */
 export class CalendarAutojoinConnection {
   private readonly transactions = new Map<string, Transaction>();
   private readonly refreshing = new Map<string, Promise<string>>();
   /** Access tokens this process read or refreshed, by tenant, so a scan reads no custody while one is
    *  valid. An entry serves only its connection generation and only while no CredentialStore in this
-   *  process has changed the credential since it was read (credentialCustodyVersion); disable,
-   *  expiry and every set drop entries that can no longer serve. */
-  private readonly accessTokens = new Map<string, { generation: number; custody: number; token: string; expiresAt: number }>();
+   *  process has changed the credential since it was read (credentialCustodyVersion). Bounded
+   *  (least recently used out), and dropped as soon as it cannot serve: on expiry (swept at least
+   *  once a minute), and on any read of the connection that shows a disable, a deletion or another
+   *  generation. */
+  private readonly accessTokens = new Map<string, AccessTokenEntry>();
+  private tokensSweptAt = 0;
   /** Disabled/reconnect tenants whose leftover custody this process already removed, at that generation. */
   private readonly custodyCleared = new Map<string, number>();
   private readonly now: () => number;
@@ -85,9 +101,21 @@ export class CalendarAutojoinConnection {
       const row = await store.getConnection(tenant);
       if (!row) this.grantIndex.forget(tenant);
       else if (!liveGoogleConnection(row, this.now())) this.grantIndex.detach(tenant);
+      this.observeConnection(tenant, row);
       return row;
     }
     catch (error) { this.grantIndex.invalidate(); throw error; }
+  }
+
+  /** Every read of a connection, here or by the worker: drop the tenant's cached access token unless
+   *  the row is the enabled generation it was cached for, and sweep expired tokens. */
+  observeConnection(tenant: string, row: CalendarConnection | null): void {
+    const key = tenant.toLowerCase();
+    const cached = this.accessTokens.get(key);
+    if (cached && (row?.state !== "enabled" || row.generation !== cached.generation)) this.accessTokens.delete(key);
+    if (this.now() - this.tokensSweptAt < ACCESS_TOKEN_MARGIN_MS) return;
+    this.tokensSweptAt = this.now();
+    for (const [other, entry] of this.accessTokens) if (entry.expiresAt <= this.now() + ACCESS_TOKEN_MARGIN_MS) this.accessTokens.delete(other);
   }
 
   /** Failed reads make the projection uncertain; only a complete backfill can restore trust. */
@@ -185,7 +213,8 @@ export class CalendarAutojoinConnection {
       if (transaction.expiresAt <= this.now()) throw new CalendarAutojoinError("invalid_oauth_transaction", 400);
       if ((current?.generation ?? 0) !== transaction.generation) throw new CalendarAutojoinError("connection_changed");
       // Persist disabled scheduling and stop intent in the old subject namespace first.
-      const disabled = await this.disableLocked(tenant, "setup_pending");
+      // The default `when` always disables, so a row is written.
+      const disabled = (await this.disableLocked(tenant, "setup_pending"))!;
       const enabling: CalendarConnection = {
         ...disabled, subject: tokens.subject!, state: "enabling", consentAt: transaction.consentAt,
         scopes, credentialRef: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, setupId,
@@ -366,11 +395,10 @@ export class CalendarAutojoinConnection {
       if (!row) this.grantIndex.forget(tenant);
       else if (!liveGoogleConnection(row, this.now())) this.grantIndex.detach(tenant);
       if (row?.state === "enabling" && (row.setupExpiresAt ?? 0) <= this.now()) {
-        // Memory chose this; the node decides. A row deleted or changed elsewhere is left as stored.
-        const latest = await this.readConnection(tenant);
-        if (latest?.state === "enabling" && latest.generation === row.generation && (latest.setupExpiresAt ?? 0) <= this.now()) {
-          await this.disableLocked(tenant, "setup_expired");
-        }
+        // Memory chose this; the stored row decides, inside the disable's own compare-and-set. A row
+        // deleted or changed elsewhere is left as stored, and nothing is created.
+        await this.disableLocked(tenant, "setup_expired", latest => latest?.state === "enabling"
+          && latest.generation === row.generation && (latest.setupExpiresAt ?? 0) <= this.now());
       } else if (row && (row.state === "disabled" || row.state === "needs_reconnect")
         && this.custodyCleared.get(tenant.toLowerCase()) !== row.generation) {
         // Recover a crash after persisted disable but before local credential deletion. Every
@@ -392,10 +420,10 @@ export class CalendarAutojoinConnection {
     if (connection?.state !== "enabled") throw new CalendarAutojoinError("autojoin_disabled");
     const cached = this.accessTokens.get(tenant.toLowerCase());
     if (cached) {
-      const serves = cached.generation === connection.generation && cached.expiresAt > this.now() + 60_000
+      const serves = cached.generation === connection.generation && cached.expiresAt > this.now() + ACCESS_TOKEN_MARGIN_MS
         && cached.custody === credentialCustodyVersion(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
-      if (!serves) this.accessTokens.delete(tenant.toLowerCase());
-      else if (!forceRefresh) return cached.token;
+      this.accessTokens.delete(tenant.toLowerCase());
+      if (serves && !forceRefresh) { this.accessTokens.set(tenant.toLowerCase(), cached); return cached.token; }
     }
     const key = `${tenant}:${connection.generation}`;
     const existing = this.refreshing.get(key);
@@ -413,7 +441,9 @@ export class CalendarAutojoinConnection {
       await this.needsReconnect(tenant, generation);
       throw new CalendarAutojoinError("needs_reconnect", 401);
     }
-    if (!forceRefresh && old.expiresAt && Date.parse(old.expiresAt) > this.now() + 60_000) {
+    if (!forceRefresh && old.expiresAt && Date.parse(old.expiresAt) > this.now() + ACCESS_TOKEN_MARGIN_MS) {
+      // Custody changed while it was read: the secret may be one that no longer exists.
+      if (credentialCustodyVersion(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant) !== custody) throw new CalendarAutojoinError("connection_changed");
       this.cacheToken(tenant, { generation, custody, token: old.accessToken, expiresAt: Date.parse(old.expiresAt) });
       return old.accessToken;
     }
@@ -432,24 +462,31 @@ export class CalendarAutojoinConnection {
       if (latest?.state !== "enabled" || latest.generation !== generation) throw new CalendarAutojoinError("connection_changed");
       await this.grantWriter.run("grants", async () => {
         const secret = this.secret(tokens, old);
-        // Custody changed since it was read (a delete, revoke or rotate by any CredentialStore in this
-        // process): never write the refreshed grant back over it.
-        if (credentialCustodyVersion(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant) !== custody) throw new CalendarAutojoinError("connection_changed");
-        try { await this.options.credentials.rotate({ source: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, address: tenant, secret }); }
-        catch (error) { this.grantIndex.invalidate(); throw error; }
+        // A compare-and-write on custody: refused when any CredentialStore in this process changed
+        // the credential since it was read (a delete, revoke or rotate), or the node holds another
+        // version. The refreshed grant is then neither written back nor returned.
+        try {
+          await this.options.credentials.rotate({ source: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, address: tenant, secret },
+            { unlessCustodyChangedSince: custody });
+        } catch (error) {
+          if (error instanceof CredentialCustodyChanged) throw new CalendarAutojoinError("connection_changed");
+          this.grantIndex.invalidate(); throw error;
+        }
         this.holdGrant(latest, secret);
-        // Cache only when our rotation is the one custody change since the read.
-        const rotated = credentialCustodyVersion(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
-        if (rotated === custody + 1) this.cacheToken(tenant, { generation, custody: rotated, token: secret.accessToken, expiresAt: Date.parse(secret.expiresAt!) });
+        // Valid while nothing changes custody after this rotation.
+        this.cacheToken(tenant, { generation, custody: custody + CUSTODY_STEPS_PER_CHANGE, token: secret.accessToken, expiresAt: Date.parse(secret.expiresAt!) });
       });
       return tokens.access_token;
     });
   }
 
-  /** Replaces the tenant's entry and drops every expired one, so the map holds live tokens only. */
-  private cacheToken(tenant: string, entry: { generation: number; custody: number; token: string; expiresAt: number }): void {
-    for (const [key, value] of this.accessTokens) if (value.expiresAt <= this.now() + 60_000) this.accessTokens.delete(key);
+  /** Replaces the tenant's entry (most recently used), drops every expired one, and evicts the least
+   *  recently used past the bound. */
+  private cacheToken(tenant: string, entry: AccessTokenEntry): void {
+    for (const [key, value] of this.accessTokens) if (value.expiresAt <= this.now() + ACCESS_TOKEN_MARGIN_MS) this.accessTokens.delete(key);
+    this.accessTokens.delete(tenant.toLowerCase());
     this.accessTokens.set(tenant.toLowerCase(), entry);
+    while (this.accessTokens.size > (this.options.accessTokenCacheMax ?? ACCESS_TOKEN_CACHE_MAX)) this.accessTokens.delete(this.accessTokens.keys().next().value!);
   }
 
   async needsReconnect(tenant: string, generation: number, reason: "needs_reconnect" | "invalid_grant" = "needs_reconnect"): Promise<void> {
@@ -457,8 +494,12 @@ export class CalendarAutojoinConnection {
       const row = await this.readConnection(tenant);
       if (row?.generation !== generation) return;
       this.grantIndex.detach(tenant);
-      const disabled = await this.disableLocked(tenant, reason);
-      await this.options.store.putConnection({ ...disabled, state: "needs_reconnect", errorCode: "needs_reconnect" });
+      const disabled = await this.disableLocked(tenant, reason, latest => latest?.generation === generation);
+      if (!disabled) return;
+      try {
+        await this.options.store.putConnection({ ...disabled, state: "needs_reconnect", errorCode: "needs_reconnect" },
+          stored => sameConnectionVersion(stored, disabled));
+      } catch (error) { if (!(error instanceof CalendarRowChanged)) throw error; } // changed since: it stands
     });
   }
 
@@ -474,14 +515,29 @@ export class CalendarAutojoinConnection {
       || (connection.setupExpiresAt ?? 0) <= this.now()) throw new CalendarAutojoinError("setup_expired");
   }
 
-  /** Caller holds tenant coordination. Generation persists before credential/occurrence mutation. */
-  private async disableLocked(tenant: string, offReason: CalendarAutojoinOffReason): Promise<CalendarConnection> {
-    const current = await this.readConnection(tenant);
-    const disabled: CalendarConnection = { ...(current ?? { tenant, subject: null, scopes: [] }),
-      state: "disabled", generation: (current?.generation ?? 0) + 1, nextScanAt: 0,
-      credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, offReason, scanComplete: false };
-    try { await this.options.store.putConnection(disabled); }
-    catch (error) { this.grantIndex.invalidate(); throw error; }
+  /**
+   * Caller holds tenant coordination. Generation persists before credential/occurrence mutation.
+   * The disable is a compare-and-set: it is computed from the row read here and written only while
+   * the node still holds that row (same existence, state and generation, and its ETag); a row that
+   * changed is read and decided again. `when` decides on the row read (the default, a user's own
+   * disable, also records one for a tenant with none). Null, with nothing written or torn down, when
+   * `when` refuses.
+   */
+  private async disableLocked(tenant: string, offReason: CalendarAutojoinOffReason,
+    when: (current: CalendarConnection | null) => boolean = () => true): Promise<CalendarConnection | null> {
+    let disabled: CalendarConnection | undefined;
+    for (let attempt = 1; !disabled; attempt++) {
+      const current = await this.readConnection(tenant);
+      if (!when(current)) return null;
+      const next: CalendarConnection = { ...(current ?? { tenant, subject: null, scopes: [] }),
+        state: "disabled", generation: (current?.generation ?? 0) + 1, nextScanAt: 0,
+        credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, offReason, scanComplete: false };
+      try { await this.options.store.putConnection(next, stored => sameConnectionVersion(stored, current)); disabled = next; }
+      catch (error) {
+        if (error instanceof CalendarRowChanged && attempt < 3) continue;
+        this.grantIndex.invalidate(); throw error;
+      }
+    }
     try {
       this.grantIndex.detach(tenant);
       this.accessTokens.delete(tenant.toLowerCase());
