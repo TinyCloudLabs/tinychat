@@ -18,6 +18,7 @@ const usage = [
   "bun scripts/home-feed/run.ts post|close|watch --tc-home DIR --profile NAME --owner-space FULL_URI --legacy-space FULL_URI --file JSON [--host URL] [--handoff SQLITE_FILE for watch]",
   "bun scripts/home-feed/run.ts post-many --from-index BOARD_INDEX_SQLITE --source SOURCE_ID --owner-space FULL_URI --legacy-space FULL_URI [--kinds ask,task,incident,progress,work] [--dry-run | --tc-home DIR --profile NAME] [--host URL]",
   "Watch JSON: {sourceId,recipient,runner:[executable,...argv],renewalSeconds?}. Runner exit zero must mean durable acceptance of the full response ID; execution must recheck dispatchBefore.",
+  "The answer runner (answer-runner.ts) takes the same recipient as --recipient and rechecks the owner's delivery policy itself. One handoff file serves one owner's source.",
   "post-many --dry-run reads only the local index and prints the plan; it makes no node call.", "",
 ].join("\n");
 
@@ -90,7 +91,9 @@ async function runPostMany(values: Values): Promise<void> {
 async function openHandoff(path: string): Promise<{ handle: FeedDatabase; close(): void }> {
   if (!("Bun" in globalThis)) throw new Error("Home mirror watch requires Bun SQLite");
   if (path === ":memory:" || path.startsWith("file:")) throw Object.assign(new Error("Home mirror handoff requires a persistent file path"), { code: "INVALID_INPUT" });
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  // A directory created here holds only the ledger: owner-only, whatever the umask.
+  const created = await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  if (created !== undefined) await chmod(dirname(path), 0o700);
   const { Database } = await import("bun:sqlite");
   const database = new Database(path);
   try {

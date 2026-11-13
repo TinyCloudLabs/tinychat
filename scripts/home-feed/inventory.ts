@@ -80,9 +80,13 @@ export function readBoardIndex(path: string, kinds: readonly InventoryKind[]): {
   } finally { database.close(); }
 }
 
-/** The Home card for one board record, as the import builds it (prepare-import.ts), under its board-key identity. */
+/**
+ * The Home card for one board record, as the import builds it (prepare-import.ts), under its board-key identity.
+ * Approvals, holds and claims are refused here as well as at the command line: they stay on the board.
+ */
 export function boardCard(row: InventoryRow, all: readonly BoardRecord[], now: number): FeedCard {
   const { record } = row;
+  if (STAYS_ON_BOARD.includes(record.kind)) throw homeMirrorRefusal("Home mirror inventory leaves approvals, holds and claims on the board");
   const projection = projectSitrepCard(record, all, emptySitrepOwnerData(), now);
   const card: FeedCard = {
     ...boardCardIdentity(row.key), kind: record.kind, needsResponse: projection.request,

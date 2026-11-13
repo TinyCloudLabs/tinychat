@@ -5,7 +5,12 @@
 // then a feed_handling "acknowledged". It exits 0 only after both writes are read back. Anything else (a comment, a
 // card action) is not written through and exits non-zero, so it stays unconfirmed in the handoff ledger.
 //
-// Approval codes pass through here: the log holds ids and times only, never a payload or response text.
+// The header on stdin names a response and grants nothing. The runner reads the response from the owner's storage
+// and, immediately before its first write, checks that the owner's delivery policy releases it to the recipient this
+// runner was configured with (`--recipient`, the watch config's recipient), within its dispatch deadline.
+//
+// Approval codes pass through here: the log holds the stored response's ids and times only, never a payload, a
+// response text or anything read from stdin.
 import { appendFile, chmod } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import { parseArgs } from "node:util";
@@ -13,20 +18,26 @@ import { z } from "zod";
 import { ErrorCodes } from "@tinycloud/sdk-services";
 import { answerKey, mergeSitrepStates, stateKey, validateAnswer, validateState } from "@tinyboilerplate/core/feed/sitrep";
 import type { SamState } from "@tinyboilerplate/core/feed/sitrep";
-import { acknowledgeHomeMirrorResponse, homeMirrorDiagnostic, homeMirrorRefusal, readHomeMirrorBinding, readHomeMirrorResponse } from "./bridge";
+import { acknowledgeHomeMirrorResponse, homeMirrorDiagnostic, homeMirrorFailure, homeMirrorRefusal, readHomeMirrorBinding, readHomeMirrorDelivery, readHomeMirrorResponse } from "./bridge";
 import type { HomeMirrorContext } from "./bridge-types";
 import { openOwnerSession, withStopSignal } from "./owner-session";
 
-/** The notification run.ts writes on the runner's stdin (projectFeedResponseNotification). */
+/**
+ * The notification run.ts writes on the runner's stdin (projectFeedResponseNotification), restored deliveries'
+ * `dispatchBefore` included. Only the identity is used, to find the stored response; fields this runner does not
+ * know are dropped rather than refused, so an SDK that adds one does not leave responses unconfirmed forever.
+ */
 export const handedOffResponse = z.object({
   responseId: z.string().min(1), cardId: z.string().uuid(), revision: z.number().int().positive().safe(), issuanceId: z.string().min(1),
   kind: z.enum(["answer", "followup", "message"]), createdAt: z.string().min(1), sequence: z.number().int().positive().safe(),
   choiceId: z.string().optional(), text: z.string().optional(), supersedesResponseId: z.string().optional(),
-  payloadType: z.string().optional(), payloadVersion: z.number().int().optional(),
-}).strict();
+  payloadType: z.string().optional(), payloadVersion: z.number().int().optional(), dispatchBefore: z.string().nullable().optional(),
+});
 export type HandedOffResponse = z.infer<typeof handedOffResponse>;
 
 export interface WriteThroughResult { wrote: "answer" | "state"; key: string; stored: "written" | "already"; received: "recorded" | "already" }
+/** What the log may hold about a response: taken from the stored row, never from the header. */
+export interface RunnerLogIds { responseId: string; cardId: string; createdAt: string }
 
 type Kv = HomeMirrorContext["legacy"];
 type Read = { text: string; etag: string } | undefined;
@@ -83,35 +94,47 @@ async function writeState(kv: Kv, key: string, delta: SamState, signal?: AbortSi
   throw homeMirrorRefusal("Home mirror operation refused", ErrorCodes.KV_PRECONDITION_FAILED);
 }
 
-/** Writes one handed-off response through to the board and records Home's "received". Throws when it does not. */
-export async function writeThroughResponse(ctx: HomeMirrorContext, options: { sourceId: string; header: HandedOffResponse }): Promise<WriteThroughResult> {
-  const { header } = options;
-  const binding = await readHomeMirrorBinding(ctx, { sourceId: options.sourceId, cardId: header.cardId, revision: header.revision, issuanceId: header.issuanceId });
-  if (!binding) throw homeMirrorRefusal("Home mirror operation refused", ErrorCodes.NOT_FOUND);
-  const saved = await readHomeMirrorResponse(ctx, binding, header.responseId, header.sequence);
-  if (!saved || saved.response.kind !== header.kind || saved.response.sequence !== header.sequence) throw homeMirrorRefusal("Home mirror operation refused", ErrorCodes.NOT_FOUND);
-  const { response, payload } = saved;
-  let wrote: WriteThroughResult["wrote"], key: string, stored: WriteThroughResult["stored"];
-  if (payload?.type === "sitrep.answer" && payload.version === 1 && response.kind !== "message" && (binding.legacy.kind === "ask" || binding.legacy.kind === "approval")) {
-    const answer = validateAnswer(payload.data);
-    if (!answer.ok || answer.value.askId !== binding.legacy.id) throw homeMirrorRefusal("Home mirror operation refused");
-    wrote = "answer"; key = answerKey(answer.value.askId, answer.value.at);
-    stored = await writeAnswer(ctx.legacy, key, payload.data, ctx.signal);
-  } else if (payload?.type === "sitrep.state" && payload.version === 1 && response.kind === "message" && (binding.legacy.kind === "task" || binding.legacy.kind === "hold")) {
-    const state = validateState(payload.data);
-    if (!state.ok || state.value.kind !== binding.legacy.kind || state.value.id !== binding.legacy.id) throw homeMirrorRefusal("Home mirror operation refused");
-    wrote = "state"; key = stateKey(state.value.kind, state.value.id);
-    stored = await writeState(ctx.legacy, key, state.value, ctx.signal);
-  } else throw homeMirrorRefusal("This response is not one the runner writes through");
-  const { recorded } = await acknowledgeHomeMirrorResponse(ctx, binding, response);
-  return { wrote, key, stored, received: recorded ? "recorded" : "already" };
+/**
+ * Writes one handed-off response through to the board and records Home's "received". Throws when it does not; the
+ * error carries a code and a safe message only. `recipient` must come from this runner's own configuration.
+ * `observe` receives the stored response's ids as soon as they are known, for the log.
+ */
+export async function writeThroughResponse(ctx: HomeMirrorContext, options: { sourceId: string; recipient: string; header: HandedOffResponse; observe?: (ids: RunnerLogIds) => void }): Promise<WriteThroughResult> {
+  try {
+    const { header, recipient } = options;
+    if (!recipient || recipient === "*") throw homeMirrorRefusal("Answer runner requires a source, a recipient, spaces and a response on stdin");
+    const binding = await readHomeMirrorBinding(ctx, { sourceId: options.sourceId, cardId: header.cardId, revision: header.revision, issuanceId: header.issuanceId });
+    if (!binding) throw homeMirrorRefusal("Home mirror operation refused", ErrorCodes.NOT_FOUND);
+    const saved = await readHomeMirrorResponse(ctx, binding, header.responseId, header.sequence);
+    if (!saved || saved.response.kind !== header.kind || saved.response.sequence !== header.sequence) throw homeMirrorRefusal("Home mirror operation refused", ErrorCodes.NOT_FOUND);
+    const { response, payload } = saved;
+    options.observe?.({ responseId: response.responseId, cardId: response.cardId, createdAt: response.createdAt });
+    let wrote: WriteThroughResult["wrote"], key: string, write: () => Promise<WriteThroughResult["stored"]>;
+    if (payload?.type === "sitrep.answer" && payload.version === 1 && response.kind !== "message" && (binding.legacy.kind === "ask" || binding.legacy.kind === "approval")) {
+      const answer = validateAnswer(payload.data);
+      if (!answer.ok || answer.value.askId !== binding.legacy.id) throw homeMirrorRefusal("Home mirror operation refused");
+      wrote = "answer"; key = answerKey(answer.value.askId, answer.value.at);
+      write = () => writeAnswer(ctx.legacy, key, payload.data, ctx.signal);
+    } else if (payload?.type === "sitrep.state" && payload.version === 1 && response.kind === "message" && (binding.legacy.kind === "task" || binding.legacy.kind === "hold")) {
+      const state = validateState(payload.data);
+      if (!state.ok || state.value.kind !== binding.legacy.kind || state.value.id !== binding.legacy.id) throw homeMirrorRefusal("Home mirror operation refused");
+      wrote = "state"; key = stateKey(state.value.kind, state.value.id);
+      const delta = state.value;
+      write = () => writeState(ctx.legacy, key, delta, ctx.signal);
+    } else throw homeMirrorRefusal("This response is not one the runner writes through");
+    // The delivery gate, immediately before the first write: the owner's stored policy for this recipient, and its deadline.
+    if (!await readHomeMirrorDelivery(ctx, binding, response, recipient)) throw homeMirrorRefusal("This response is not deliverable to this runner", ErrorCodes.PERMISSION_DENIED);
+    const stored = await write();
+    const { recorded } = await acknowledgeHomeMirrorResponse(ctx, binding, response);
+    return { wrote, key, stored, received: recorded ? "recorded" : "already" };
+  } catch (error) { throw homeMirrorFailure(error, "runner"); }
 }
 
-/** One log line per run: ids and times only. `pickupMs` is how long after the owner's save the runner started. */
-export function runnerLogLine(start: string, header: Pick<HandedOffResponse, "responseId" | "cardId" | "createdAt"> | undefined, outcome: { result?: WriteThroughResult; code?: string }): string {
-  const pickupMs = header && Number.isFinite(Date.parse(header.createdAt)) ? Date.parse(start) - Date.parse(header.createdAt) : null;
+/** One log line per run: the stored response's ids and times only. `pickupMs` is how long after the owner's save the runner started. */
+export function runnerLogLine(start: string, ids: RunnerLogIds | undefined, outcome: { result?: WriteThroughResult; code?: string }): string {
+  const pickupMs = ids && Number.isFinite(Date.parse(ids.createdAt)) ? Date.parse(start) - Date.parse(ids.createdAt) : null;
   return `${JSON.stringify({
-    at: start, ...(header ? { responseId: header.responseId, cardId: header.cardId, createdAt: header.createdAt } : {}), pickupMs,
+    at: start, ...(ids ? { responseId: ids.responseId, cardId: ids.cardId, createdAt: ids.createdAt } : {}), pickupMs,
     ...(outcome.result ? { wrote: outcome.result.wrote, stored: outcome.result.stored, received: outcome.result.received } : {}),
     ...(outcome.code ? { error: outcome.code } : {}),
   })}\n`;
@@ -123,31 +146,35 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export async function runAnswerRunner(argv: string[], stdin: () => Promise<string> = readStdin): Promise<number> {
+type OpenSession = (options: Parameters<typeof openOwnerSession>[0]) => Promise<{ ctx: HomeMirrorContext }>;
+
+export async function runAnswerRunner(argv: string[], stdin: () => Promise<string> = readStdin, open: OpenSession = openOwnerSession): Promise<number> {
   const start = new Date().toISOString();
-  let header: HandedOffResponse | undefined, log: string | undefined;
+  let ids: RunnerLogIds | undefined, log: string | undefined;
   try {
     const { values } = parseArgs({ args: argv, strict: true, options: {
       "tc-home": { type: "string" }, profile: { type: "string" }, host: { type: "string" },
-      "owner-space": { type: "string" }, "legacy-space": { type: "string" }, source: { type: "string" }, log: { type: "string" },
+      "owner-space": { type: "string" }, "legacy-space": { type: "string" }, source: { type: "string" }, recipient: { type: "string" }, log: { type: "string" },
     } });
     log = values.log;
-    if (!values["tc-home"] || !values.profile || !values["owner-space"] || !values["legacy-space"] || !values.source || !values.log) throw homeMirrorRefusal("Answer runner requires a source, spaces and a response on stdin");
-    const parsed = handedOffResponse.safeParse(JSON.parse(await stdin()));
-    if (!parsed.success) throw homeMirrorRefusal("Answer runner requires a source, spaces and a response on stdin");
-    header = parsed.data;
+    const refused = () => homeMirrorRefusal("Answer runner requires a source, a recipient, spaces and a response on stdin");
+    if (!values["tc-home"] || !values.profile || !values["owner-space"] || !values["legacy-space"] || !values.source || !values.recipient || values.recipient === "*" || !values.log) throw refused();
+    let input: unknown;
+    try { input = JSON.parse(await stdin()); } catch { throw refused(); }
+    const parsed = handedOffResponse.safeParse(input);
+    if (!parsed.success) throw refused();
     const options = { tcHome: values["tc-home"], profile: values.profile, ownerSpace: values["owner-space"], legacySpace: values["legacy-space"], host: values.host };
-    const sourceId = values.source, logPath = values.log, response = header;
+    const sourceId = values.source, recipient = values.recipient, logPath = values.log, header = parsed.data;
     const result = await withStopSignal(async (signal) => {
-      const { ctx } = await openOwnerSession({ ...options, signal });
-      return writeThroughResponse(ctx, { sourceId, header: response });
+      const { ctx } = await open({ ...options, signal });
+      return writeThroughResponse(ctx, { sourceId, recipient, header, observe: (stored) => { ids = stored; } });
     });
-    await writeLog(logPath, runnerLogLine(start, header, { result }));
+    await writeLog(logPath, runnerLogLine(start, ids, { result }));
     return 0;
   } catch (error) {
     const diagnostic = homeMirrorDiagnostic(error);
     process.stderr.write(`${JSON.stringify(diagnostic)}\n`);
-    if (log) await writeLog(log, runnerLogLine(start, header, { code: diagnostic.error.code })).catch(() => {});
+    if (log) await writeLog(log, runnerLogLine(start, ids, { code: diagnostic.error.code })).catch(() => {});
     return diagnostic.exitCode;
   }
 }

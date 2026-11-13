@@ -68,8 +68,10 @@ const refusalMessages = [
   "Synthetic check requires a profile, full spaces and a source",
   "Synthetic check readback did not match",
   "This response is not one the runner writes through",
+  "This response is not deliverable to this runner",
+  "This handoff ledger belongs to another Home feed source",
   "The board already holds a different answer for this response",
-  "Answer runner requires a source, spaces and a response on stdin",
+  "Answer runner requires a source, a recipient, spaces and a response on stdin",
 ] as const;
 export type HomeMirrorRefusalMessage = (typeof refusalMessages)[number];
 const safeMessages = new Set<string>([
@@ -79,7 +81,7 @@ const safeMessages = new Set<string>([
 ]);
 const argumentMessages = new Set<string>([
   "Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file", "Home mirror inventory requires a board index, a source and full spaces",
-  "Synthetic check requires a profile, full spaces and a source", "Answer runner requires a source, spaces and a response on stdin",
+  "Synthetic check requires a profile, full spaces and a source", "Answer runner requires a source, a recipient, spaces and a response on stdin",
 ]);
 const inputFields = new Set(["source", "sourceId", "agentDid", "label", "output", "responses", "spaceId", "database", "card", "cardId", "revision", "issuanceId", "legacy", "fullKey", "record", "recipient", "runner", "renewalSeconds", "responseId", "kind", "createdAt", "sequence", "payloadType", "payloadVersion"]);
 function failure(code: string = ErrorCodes.INVALID_INPUT): Error { return Object.assign(new Error("Home mirror operation refused"), { code }); }
@@ -107,6 +109,8 @@ function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
   }
   return new MirrorFailure({ name, message, code, step, ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {}) });
 }
+/** Any failure as the mirror reports it: a code, a safe message and a step, never a node message or HTTP body. */
+export function homeMirrorFailure(error: unknown, step: string): Error { return safeFailure(error, step); }
 export function homeMirrorDiagnostic(error: unknown) {
   const failure = safeFailure(error, "run");
   const { code, status } = failure.diagnostic;
@@ -470,6 +474,28 @@ export async function acknowledgeHomeMirrorResponse(ctx: HomeMirrorContext, bind
   } catch (error) { throw safeFailure(error, "handling"); }
 }
 
+async function deliverable(ctx: HomeMirrorContext, binding: HomeMirrorBinding, response: FeedResponse, recipient: string): Promise<FeedResponse | null> {
+  if (!recipient || recipient === "*") throw failure();
+  const responses = privateDatabase(ctx.sql.db(binding.source.responses.database), ctx);
+  const page = take(await listFeedResponseDeliveries(responses, { recipient, afterSequence: response.sequence - 1, limit: 1, signal: ctx.signal }));
+  active(ctx);
+  return page.responses.find((header) => header.responseId === response.responseId && sameIdentity(header, binding.identity)) ?? null;
+}
+
+/**
+ * The stored response as the owner's delivery policy releases it to `recipient` now (restored rows carry their
+ * `dispatchBefore`), or null when the policy withholds it: never dispatched, another recipient's, or past its cutoff.
+ * The recipient must come from the caller's own configuration, never from a handed-off header.
+ */
+export async function readHomeMirrorDelivery(ctx: HomeMirrorContext, binding: HomeMirrorBinding, response: FeedResponse, recipient: string): Promise<FeedResponse | null> {
+  try {
+    const allowed = await deliverable(ctx, binding, response, recipient);
+    const cutoff = allowed?.dispatchBefore;
+    if (!allowed || (typeof cutoff === "string" && !(Date.now() < Date.parse(cutoff)))) return null;
+    return allowed;
+  } catch (error) { throw safeFailure(error, "delivery"); }
+}
+
 /** Close is projection evidence; only the existing durable handoff records delivery. */
 export async function forwardHomeMirrorResponse(ctx: HomeMirrorContext, options: HomeMirrorForwardOptions): Promise<FeedHandoff | null> {
   try {
@@ -485,12 +511,10 @@ export async function forwardHomeMirrorResponse(ctx: HomeMirrorContext, options:
       hash(publication(typed.record, binding.cardUuid)) !== binding.legacy.publicationSha256) return null;
     const response = await savedResponse(ctx, binding, options.responseId, options.sequence);
     if (!response) return null;
-    const responses = privateDatabase(ctx.sql.db(binding.source.responses.database), ctx);
     // A targeted verified policy page also protects restored rows on a fresh local ledger.
-    const page = take(await listFeedResponseDeliveries(responses, { recipient: options.recipient, afterSequence: response.sequence - 1, limit: 1, signal: ctx.signal }));
-    active(ctx);
-    const allowed = page.responses.find((header) => header.responseId === response.responseId && sameIdentity(header, binding.identity));
+    const allowed = await deliverable(ctx, binding, response, options.recipient);
     if (!allowed) return null;
+    const responses = privateDatabase(ctx.sql.db(binding.source.responses.database), ctx);
     const payload = take(await readFeedResponsePayload(responses, response));
     active(ctx);
     if (!payload || payload.version !== 1) return null;
@@ -542,11 +566,32 @@ export interface HomeMirrorWatchOptions {
 }
 
 /**
+ * A handoff ledger serves one owner's source: its first drain records the owner space, the source and its responses
+ * database, and a drain for anything else is refused. Sequences are per responses database, so a mark taken from
+ * another source's handoffs would pass over this one's pending responses. A ledger that already holds handoffs but
+ * names no source is refused too, since its marks cannot be attributed.
+ */
+async function bindLedger(ctx: HomeMirrorContext, ledger: FeedDatabase, source: HomeMirrorBinding["source"]): Promise<void> {
+  const scope = JSON.stringify({ ownerSpaceId: ctx.ownerSpaceId, sourceId: source.sourceId, responses: { spaceId: source.responses.spaceId, database: source.responses.database } });
+  const refused = () => homeMirrorRefusal("This handoff ledger belongs to another Home feed source");
+  take(await ledger.execute("CREATE TABLE IF NOT EXISTS home_mirror_ledger (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), scope_json TEXT NOT NULL)"));
+  let [row] = take(await ledger.query<unknown>("SELECT scope_json FROM home_mirror_ledger WHERE singleton=1")).rows;
+  if (!row) {
+    if (take(await ledger.query<unknown>("SELECT 1 FROM feed_handoffs LIMIT 1")).rows.length) throw refused();
+    take(await ledger.execute("INSERT OR IGNORE INTO home_mirror_ledger (singleton,scope_json) VALUES (1,?)", [scope]));
+    [row] = take(await ledger.query<unknown>("SELECT scope_json FROM home_mirror_ledger WHERE singleton=1")).rows;
+  }
+  if (row?.[0] !== scope) throw refused();
+}
+
+/**
  * Where a drain for this recipient starts, from its local handoff ledger alone (no node read): after the highest
  * sequence it already handed off, or just before the earliest one still prepared, which is handed off again.
  */
-export async function homeMirrorDrainStart(handoff: FeedDatabase, recipient: string): Promise<number> {
-  const rows = take(await handoff.query<unknown>("SELECT response_json,state FROM feed_handoffs WHERE recipient=?", [recipient])).rows;
+export async function homeMirrorDrainStart(ctx: HomeMirrorContext, options: Pick<HomeMirrorDrainOptions, "source" | "recipient" | "handoff">): Promise<number> {
+  const handoff = privateDatabase(options.handoff, ctx);
+  await bindLedger(ctx, handoff, options.source);
+  const rows = take(await handoff.query<unknown>("SELECT response_json,state FROM feed_handoffs WHERE recipient=?", [options.recipient])).rows;
   let highest = 0, prepared = Number.POSITIVE_INFINITY;
   for (const row of rows) {
     if (row.length !== 2 || typeof row[0] !== "string" || typeof row[1] !== "string") throw failure();
@@ -576,6 +621,7 @@ export interface HomeMirrorDrainOptions {
 export async function drainHomeMirrorResponses(ctx: HomeMirrorContext, options: HomeMirrorDrainOptions): Promise<number> {
   const responses = privateDatabase(ctx.sql.db(options.source.responses.database), ctx);
   const ledger = privateDatabase(options.handoff, ctx);
+  await bindLedger(ctx, ledger, options.source);
   let afterSequence = options.afterSequence;
   while (!ctx.signal?.aborted) {
     const page = take(await listFeedResponseDeliveries(responses, { recipient: options.recipient, afterSequence, limit: 100, signal: ctx.signal }));
@@ -604,7 +650,7 @@ export async function watchHomeMirrors(context: HomeMirrorContext, options: Home
   if (!Number.isInteger(renewalSeconds) || renewalSeconds < 60 || renewalSeconds > 300 || !options.recipient || options.recipient === "*") throw failure();
   if (signal.aborted) return;
   const source = await registered(ctx, options.sourceId);
-  let mark = await homeMirrorDrainStart(privateDatabase(options.handoff, ctx), options.recipient);
+  let mark = await homeMirrorDrainStart(ctx, { source, recipient: options.recipient, handoff: options.handoff });
   let ready = false, dirty = false, failed = false;
   let draining: Promise<void> | undefined, failureValue: unknown;
   let current: AbortController | undefined;

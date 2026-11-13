@@ -7,7 +7,7 @@ import { ErrorCodes } from "@tinycloud/sdk-services";
 import { listFeedCards } from "@tinycloud/sdk-services/feed";
 import { boardKey, validateRecord } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
-import { homeMirrorDiagnostic, homeMirrorRefusal, publishHomeMirror, readHomeMirrorBinding, readHomeMirrorSource } from "./bridge";
+import { homeMirrorDiagnostic, homeMirrorFailure, homeMirrorRefusal, publishHomeMirror, readHomeMirrorBinding, readHomeMirrorSource } from "./bridge";
 import type { HomeMirrorContext } from "./bridge-types";
 import { boardCard, boardCardIdentity } from "./inventory";
 import { openOwnerSession, withStopSignal } from "./owner-session";
@@ -42,7 +42,12 @@ async function removeAll(ctx: HomeMirrorContext, legacyKv: Cleanup, output: stri
   else if (head.error.code !== ErrorCodes.KV_NOT_FOUND) throw head.error;
 }
 
+/** Runs the check once; a failure carries a code and a safe message only, never a node message. */
 export async function runSyntheticCheck(ctx: HomeMirrorContext, legacyKv: Cleanup, options: { sourceId: string }): Promise<SyntheticResult> {
+  try { return await syntheticCheck(ctx, legacyKv, options); } catch (error) { throw homeMirrorFailure(error, "synthetic"); }
+}
+
+async function syntheticCheck(ctx: HomeMirrorContext, legacyKv: Cleanup, options: { sourceId: string }): Promise<SyntheticResult> {
   if ([ctx.ownerSpaceId, ctx.legacySpaceId].some((space) => space.toLowerCase().includes(PRODUCTION_OWNER))) throw homeMirrorRefusal("The synthetic check runs only in a QA owner space");
   const record = syntheticRecord(), key = boardKey("ask", SYNTHETIC_ID), identity = boardCardIdentity(key);
   const source = await readHomeMirrorSource(ctx, options.sourceId);
