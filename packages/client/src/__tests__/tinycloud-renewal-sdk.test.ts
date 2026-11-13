@@ -29,7 +29,7 @@ test("published SDK verifies signed renewal proofs, account binding and restore 
     const result = JSON.parse(probe.stdout.toString());
     expect(result.result).toBe("PASS");
     expect(result.realSignedProofs).toBe(true);
-    expect(result.outcomes).toHaveLength(12);
+    expect(result.outcomes).toHaveLength(13);
   } finally {
     rmSync(privateRoot, { recursive: true, force: true });
   }

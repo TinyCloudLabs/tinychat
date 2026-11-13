@@ -24,11 +24,11 @@
   },
   "peerDependencies": {
     "@openkey/sdk": "0.12.2",
-    "@tinycloud/web-sdk": "3.12.0-beta.25"
+    "@tinycloud/web-sdk": "3.12.0-beta.26"
   },
   "devDependencies": {
     "@openkey/sdk": "0.12.2",
-    "@tinycloud/web-sdk": "3.12.0-beta.25",
+    "@tinycloud/web-sdk": "3.12.0-beta.26",
     "typescript": "^5.7.0"
   }
 }

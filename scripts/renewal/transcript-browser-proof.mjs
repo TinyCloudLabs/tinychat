@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -12,7 +13,7 @@ const worktree = new URL("../../", import.meta.url).pathname;
 const nodeBinary = "/var/tmp/tc2904-node-artifact/tinycloud";
 const expectedNodeBinarySha256 = "58645b7c9bec9a0d45584c0aca7a8c37bb08ab7b9aad926af05763687d053edd";
 const nodeSourceCommit = "3efdddc997eb112803166d6f45a99d8c25344715";
-const sdkCommit = "c9add1f0b0169edc7c9ce2705c29a87b46fe0678";
+const sdkCommit = "41daf1c4717e15d6f95564f7246030877221f24a";
 const frontendRequire = createRequire(join(worktree, "frontend/package.json"));
 const [{ blake3 }, { ed25519 }, { bases }] = await Promise.all([
   import(pathToFileURL(frontendRequire.resolve("@noble/hashes/blake3")).href),
@@ -121,6 +122,8 @@ const evidence = {
 let nodeChild;
 let registry;
 let owner;
+let epochOwner;
+let afterStatusRead;
 let restored;
 let restoreDom;
 let stage = "setup";
@@ -192,6 +195,16 @@ try {
     if (url.origin === "https://registry.tinycloud.xyz") { url.host = `127.0.0.1:${registryPort}`; url.protocol = "http:"; input = url.toString(); }
     if (!allowedOrigins.has(url.origin)) throw new Error("SDK attempted a non-loopback request; blocked by proof harness");
     const response = await originalFetch(input, init);
+    if (url.origin === nodeOrigin && url.pathname === "/delegation/status" && afterStatusRead && response.ok) {
+      const request = typeof init?.body === "string" ? JSON.parse(init.body) : input instanceof Request ? await input.clone().json() : null;
+      if (request?.cid === afterStatusRead.cid) {
+        const mutation = afterStatusRead;
+        afterStatusRead = undefined;
+        const status = await response.clone().json();
+        assert.equal(status.active, true, "status passed before the mutation");
+        await mutation.run();
+      }
+    }
     evidence.contactedOrigins.push(url.origin);
     if (url.origin === nodeOrigin && url.pathname === "/invoke" && !response.ok) {
       (evidence.failedInvocations ??= []).push({stage, status: response.status, body: await response.clone().text(), originalDelegationCid: evidence.originalDelegationCid});
@@ -202,7 +215,7 @@ try {
 
   stage = "browser-sign-in";
   const { installDom } = await import("../../frontend/src/test/dom.ts");
-  restoreDom = installDom();
+  restoreDom = installDom({});
   const { privateKeyToAccount } = await import(frontendRequire.resolve("viem/accounts"));
   const account = privateKeyToAccount(`0x${ownerKey}`);
   const provider = { request: async ({method, params}) => {
@@ -236,18 +249,91 @@ try {
     stage = "owner-lease-admission";
     const receipt = await owner.createRenewalLease(new Date(Date.now() + 1200000));
     evidence.leaseExpiresAt = receipt.leaseExpiresAt;
-    owner.cleanup(); owner = null;
-    stage = "wait-original-expiry";
-    await delay(Math.max(0, originalExpiryMs - Date.now() + 1500));
-    stage = "app-wrapper-restore";
-    const result = await restoreTinyCloudWebSession(account.address, {...config, autoCreateSpace: false, renewalLeaseAuthorization: receipt.leaseAuthorization});
-    if (result.status !== "restored" || !result.tcw) throw new Error("app wrapper refused renewal restore");
-    restored = result.tcw;
-    const read = await restored.kv.list({prefix: "xyz.tinycloud.tinychat/connectors/"});
-    evidence.read = {ok: read.ok, code: read.error?.code, message: read.error?.message};
-    if (!read.ok) throw new Error("transcript read refused");
-    evidence.browser = {restoreAfterOriginalExpiry: true, transcriptList: true};
-    evidence.result = "PASS"; evidence.stage = "complete";
+    if (process.argv.includes("--post-status-controls")) {
+      const epochStorage = new BrowserSessionStorage({storage: window.localStorage, keyPrefix: "tc2872-epoch:"});
+      epochOwner = new TinyCloudWeb({...config, sessionStorage: epochStorage, provider, sessionExpirationMs: 960000, autoBootstrapAccount: false, includeAccountRegistryPermissions: false, ui: {button:false}});
+      await epochOwner.signIn();
+      const epochSaved = await epochStorage.loadWithStatus(account.address);
+      assert.equal(epochSaved.status, "loaded");
+      const epochReceipt = await epochOwner.createRenewalLease(new Date(Date.now() + 1200000));
+      stage = "wait-original-expiry-controls";
+      await delay(Math.max(0, Math.max(originalExpiryMs, Date.parse(epochSaved.data.expiresAt)) - Date.now() + 1500));
+      const { restorePersistedSession } = await import("../../frontend/src/lib/sessionRestore.ts");
+      const { SessionStore } = await import("../../packages/client/src/tokens.ts");
+      evidence.postStatusControls = [];
+      const check = async (kind, candidateStorage, candidateReceipt, cid, mutation) => {
+        stage = `post-status-${kind}`;
+        const sessionKey = `tc2872:${kind}:session`;
+        const session = new SessionStore(sessionKey);
+        session.setSession("synthetic-token", 3600, account.address);
+        const view = document.createElement("output");
+        view.dataset.state = "checking";
+        window.localStorage.setItem("tc2872:cached-state", "cached-transcript");
+        let mutated = false;
+        let reads = 0;
+        let refusalStatus;
+        afterStatusRead = {cid, run: async () => {
+          assert.equal(view.textContent, "");
+          await mutation();
+          mutated = true;
+        }};
+        const outcome = await restorePersistedSession(session, {
+          loadManifest: async () => config.manifest,
+          restore: async (address, manifest) => restoreTinyCloudWebSession(address, {...config, manifest, sessionStorage: candidateStorage, autoCreateSpace: false, renewalLeaseAuthorization: candidateReceipt.leaseAuthorization}),
+          isOffline: () => false,
+          renewalVerification: {
+            read: async (client) => {
+              reads++;
+              const read = await client.kv.list({prefix: "xyz.tinycloud.tinychat/connectors/"});
+              if (!read.ok) { refusalStatus = read.error?.meta?.status; throw read.error; }
+            },
+            signOut: async (client) => { await client.signOut(); },
+            cleanup: (client) => client.cleanup(),
+          },
+        });
+        view.dataset.state = outcome.kind === "signedOut" ? "unauthenticated" : outcome.kind;
+        if (outcome.kind === "restored") view.textContent = window.localStorage.getItem("tc2872:cached-state");
+        assert.equal(mutated, true, "mutation followed the successful status response");
+        assert.ok(refusalStatus === 401 || refusalStatus === 403);
+        assert.equal(reads, 1);
+        assert.equal(outcome.kind, "signedOut");
+        assert.equal(session.hasSession(), false);
+        assert.equal(window.localStorage.getItem(sessionKey), null);
+        assert.equal((await candidateStorage.loadRenewalCandidate(account.address)).status, "missing");
+        assert.equal(view.dataset.state, "unauthenticated");
+        assert.equal(view.textContent, "");
+        evidence.postStatusControls.push({kind, mutatedAfterStatus: true, firstReadStatus: refusalStatus, reads, sdkSessionCleared: true, metadataCleared: true, state: view.dataset.state, renderedData: false});
+      };
+      await check("revoke", storage, receipt, saved.data.tinycloudSession.delegationCid, async () => {
+        const revoked = await owner.revokeDelegation(saved.data.tinycloudSession.delegationCid);
+        assert.equal(revoked.ok, true, "owner revocation was admitted by the real node");
+      });
+      await check("epoch", epochStorage, epochReceipt, epochSaved.data.tinycloudSession.delegationCid, async () => {
+        await stopNode(nodeChild);
+        const { DatabaseSync } = await import("node:sqlite");
+        const db = new DatabaseSync(join(dataDir, "caps.db"));
+        db.prepare("UPDATE renewal_identity SET epoch = epoch + 1").run();
+        db.close();
+        nodeChild = startNode(nodeOrigin, nodePort, configPath, nodeLog);
+        const changed = await waitForNode(nodeChild, nodeOrigin, expectedIdentity);
+        assert.equal(changed.renewerEpoch, initialIdentity.renewerEpoch + 1);
+        evidence.controlEpoch = {before: initialIdentity.renewerEpoch, after: changed.renewerEpoch, ownedNodeRestarted: true};
+      });
+      evidence.result = "PASS"; evidence.stage = "post-status-controls-complete";
+    } else {
+      owner.cleanup(); owner = null;
+      stage = "wait-original-expiry";
+      await delay(Math.max(0, originalExpiryMs - Date.now() + 1500));
+      stage = "app-wrapper-restore";
+      const result = await restoreTinyCloudWebSession(account.address, {...config, autoCreateSpace: false, renewalLeaseAuthorization: receipt.leaseAuthorization});
+      if (result.status !== "restored" || !result.tcw) throw new Error("app wrapper refused renewal restore");
+      restored = result.tcw;
+      const read = await restored.kv.list({prefix: "xyz.tinycloud.tinychat/connectors/"});
+      evidence.read = {ok: read.ok, code: read.error?.code, message: read.error?.message};
+      if (!read.ok) throw new Error("transcript read refused");
+      evidence.browser = {restoreAfterOriginalExpiry: true, transcriptList: true};
+      evidence.result = "PASS"; evidence.stage = "complete";
+    }
   }
 } catch (error) {
   evidence.result = "FAIL";
@@ -273,6 +359,7 @@ try {
   await stopNode(nodeChild);
   await closeServer(registry);
   owner?.cleanup?.();
+  epochOwner?.cleanup?.();
   restored?.cleanup?.();
   restoreDom?.();
   const evidenceTmp = `${evidencePath}.tmp`;

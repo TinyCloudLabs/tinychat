@@ -294,6 +294,58 @@ try {
   stampEnd = Math.floor((expires.getTime() + 30000) / 1000);
   history = [makeStamp()];
   await run("lapsed-stamp");
+  {
+    const race = "lapse-during-commit";
+    Date.now = () => expires.getTime() + 60000;
+    identity.renewerEpoch = 1;
+    mode = "valid";
+    stampEnd = Math.floor((expires.getTime() + 7200000) / 1000);
+    history = [makeStamp()];
+    const callsBefore = statusCalls;
+    const previousEnsure = wasm.ensureInitialized;
+    let fired = false;
+    wasm.ensureInitialized = async () => {
+      await previousEnsure?.call(wasm);
+      if (!fired && statusCalls > callsBefore) {
+        fired = true;
+        if (race === "lapse-during-commit")
+          Date.now = () => stampEnd * 1000 + 1000;
+      }
+    };
+    const candidate = new TinyCloudNode({
+      host,
+      wasmBindings: wasm,
+      tinycloudRegistryUrl: registry,
+      autoDiscoverLocalNode: false,
+    });
+    try {
+      await assert.rejects(
+        () =>
+          candidate.restoreSessionWithRenewal(proof, lease.leaseAuthorization),
+        race,
+      );
+      assert.equal(fired, true, `${race} fired after status validation`);
+      outcomes.push({
+        label: race,
+        status: "restore-failed",
+        raceFired: fired,
+        statusCalls: statusCalls - callsBefore,
+      });
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          race,
+          raceFired: fired,
+          statusCalls: statusCalls - callsBefore,
+          mode,
+          renewerEpoch: identity.renewerEpoch,
+        }),
+      );
+      throw error;
+    } finally {
+      wasm.ensureInitialized = previousEnsure;
+    }
+  }
   console.log(
     JSON.stringify(
       {

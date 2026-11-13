@@ -45,6 +45,12 @@ export interface RestoreDeps<M, T> {
   loadManifest: () => Promise<M>;
   /** restoreTinyCloudWebSession, bound to the app's host + restore config. */
   restore: (address: string, manifest: M) => Promise<RestoreAttempt<T>>;
+  /** Explicit lease bootstrap verifies one live read before publishing its client. Details: TC-2872 */
+  renewalVerification?: {
+    read: (tcw: T) => Promise<void>;
+    signOut: (tcw: T) => Promise<void>;
+    cleanup: (tcw: T) => void;
+  };
   /** True when the browser reports no connectivity (`navigator.onLine`). */
   isOffline: () => boolean;
 }
@@ -183,6 +189,22 @@ export async function restorePersistedSession<M, T>(
   }
 
   if (restored.status === "restored" && restored.tcw) {
+    if (deps.renewalVerification) {
+      try {
+        await deps.renewalVerification.read(restored.tcw);
+      } catch (error) {
+        const refusal = error as { status?: number; meta?: { status?: number } } | null;
+        const status = refusal?.meta?.status ?? refusal?.status;
+        if (status === 401 || status === 403) {
+          await deps.beforeClear?.();
+          await deps.renewalVerification.signOut(restored.tcw);
+          sessionStore.clear();
+          return { kind: "signedOut" };
+        }
+        deps.renewalVerification.cleanup(restored.tcw);
+        return unavailable();
+      }
+    }
     return { kind: "restored", address, tcw: restored.tcw };
   }
   if (isMissingSpaceError(restored.error)) {
