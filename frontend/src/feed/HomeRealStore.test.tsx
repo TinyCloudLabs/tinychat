@@ -490,13 +490,12 @@ async function tap(element: HTMLElement) {
   await act(async () => { element.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true })); element.click(); });
 }
 
-test("in View → Full cards, any other revision during the countdown refuses the commit too: nothing is written", async () => {
+test("Needs you's first card, open without a tap: any other revision during the countdown refuses the commit too, nothing is written", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("stale-full");
   value(await publishFeedCard(agent.output, plainCard()));
-  // Not tapped open first (that alone binds the card): Full cards shows it open, and the tap on Go must bind it.
+  // Not tapped open first (that alone binds the card): Needs you shows its first card open, and the tap on Go must bind it.
   const transport = owner.fresh(); const view = await mount(transport, { open: false });
-  await act(async () => button(view.host, "View").click());
-  await act(async () => [...view.host.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="View"] [role="radio"]')].find((node) => node.textContent === "Full cards")!.click());
+  await act(async () => view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="needs-action"]')!.click());
   await tap(option(card(view.host, "Book the Thursday flight?"), "Go"));
   await clock.advance(2000);
   value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", body: "Only the 11:40 is left." })));
@@ -538,11 +537,13 @@ test("Drop this card writes one feed.drop message once the bar's 5 s pass, held 
   expect(header(rows[0]!)).toEqual({ responseId: rows[0]!.responseId, cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", kind: "message", text: "Dropped", createdAt: COMMITTED });
   expect(value(await readFeedResponsePayload(agent.responses, rows[0]!))).toEqual({ type: "feed.drop", version: 1, data: {} });
   expect(outboxKeys()).toEqual([]);
-  // Out of the feed, and in Filter → History marked Dropped.
+  // Out of Needs you and Updates, a row under All's Done today, and in History marked Dropped.
   await transport.notify();
-  expect(view.host.textContent).not.toContain("Book the Thursday flight?");
-  await act(async () => button(view.host, "Filter").click());
-  await click(transport, button(view.host, "History"));
+  const done = view.host.querySelector<HTMLElement>('section[aria-label="Done today"]');
+  expect(done?.textContent).toContain("Book the Thursday flight?");
+  expect(done?.querySelector("article")).toBeNull();
+  for (const section of ["Needs you", "Updates"]) expect(view.host.querySelector(`section[aria-label="${section}"]`)?.textContent ?? "").not.toContain("Book the Thursday flight?");
+  await click(transport, view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!);
   const history = view.host.querySelector<HTMLElement>('section[aria-label="History"]');
   const item = [...history?.querySelectorAll<HTMLElement>("li[data-card-key]") ?? []].find((node) => node.textContent?.includes("Book the Thursday flight?"));
   expect(item?.textContent).toContain("Dropped");
