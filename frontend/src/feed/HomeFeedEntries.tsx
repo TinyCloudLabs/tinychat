@@ -261,7 +261,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
   }
   function undo() { countdown.undo(); setChoice(undefined); }
   const timing = cardTiming(entry);
-  const timingLine = [timing.deadline && `Due ${shortTime(timing.deadline, now)}`, timing.expiresAt && `Matters until ${shortTime(timing.expiresAt, now)}`].filter(Boolean).join(" · ");
+  const timingLine = [timing.deadline && `Due ${shortTime(timing.deadline, now)}`, timing.expiresAt && `Matters until ${shortTime(timing.expiresAt, now)}`, timing.priority !== undefined && `Priority P${timing.priority}`].filter(Boolean).join(" · ");
   const thread = <CardConversation lines={plainConversation(entry, revisions)} to={source.sendMessage ? entry.source.label : undefined} stale={stale}
     onSend={message} onResend={(line) => message(line.text)} {...(info ? { composer: { open: commenting, onOpenChange: setCommenting } } : {})} />;
   const laterWord = info ? "Show me later" : "Ask me later";
@@ -864,11 +864,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setProject(""); setPriorityMax(""); setSortBy(""); setHistory(false); setSnoozedOnly(false); });
   // No browser scroll anchoring: the view change keeps the card in view itself (anchoredToggle).
   return <PendingSendContext.Provider value={pendingSends.current}><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}>
-    <div className="mx-auto w-full max-w-[672px] min-w-0 px-4 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}>
+    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}>
     <MorphConfig>
       {/* Home and the slider stay in reach: the header hides as you scroll down and comes back as you scroll up,
           stuck over the cards as the slider alone. */}
-      <FloatingHeader scrollRef={mainRef} className="-mx-4 mb-3 px-4 pb-3 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-3 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <header ref={headerRef} className="scroll-mt-4">
           <h1 className="font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
           <p className="mt-1 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
