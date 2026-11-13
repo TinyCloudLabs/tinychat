@@ -483,8 +483,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const lineageKey = (entry: HomeFeedEntry) => keyOf(replyChain(entry)[0]!);
   /** The revision in the reply-only run that holds the stored answer, if any. */
   const answeredIn = (entry: HomeFeedEntry) => isTypedPayload(entry) ? undefined : [...replyChain(entry)].reverse().find((candidate) => candidate.state.response);
-  /** Dropped or acknowledged by the owner, on any revision of the run (a reply-only revision doesn't reopen it). */
-  const closureOf = (entry: HomeFeedEntry) => ownerClosure(replyChain(entry).flatMap((candidate) => candidate.responses ?? []));
+  /**
+   * Dropped or acknowledged by the owner, on any revision of the run (a reply-only revision doesn't reopen it). A typed
+   * ask is dropped by its answer: "Drop this card" sends the agent a drop, and the card leaves with it.
+   */
+  const closureOf = (entry: HomeFeedEntry) => ownerClosure(replyChain(entry).flatMap((candidate) => candidate.responses ?? []))
+    ?? (contextFor(entry)?.projection.answer?.action === "drop" ? "Dropped" as const : undefined);
   const all = [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()];
   // In History a revision that only gained agent replies is shown as its latest revision, once.
   const entries = history || snoozedOnly
