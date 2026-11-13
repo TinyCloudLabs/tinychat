@@ -6,7 +6,7 @@ import { libraryRowTitle } from "../../src/capture/library/LibraryRow";
 import { listMeetingsRead } from "../../src/lib/connectors/meetingExplorer";
 import { VOICE_NOTE_SOURCE } from "../../src/lib/voiceNotes/voiceNoteStore";
 import { CHAT_THREAD_ID, feedCards, SEED_MARKER_KEY, SEED_REVISION, VOICE_NOTE } from "./content";
-import { assertGrant, parseSeedArgs, UsageError } from "./args";
+import { assertGrant, parseSeedArgs, PRODUCTION_HOST, UsageError } from "./args";
 import { readBackSeed, ReviewerSeedRefusal, runReviewerSeed, seedPermissions, type SeedSpace } from "./seed";
 
 const open: Database[] = [];
@@ -132,12 +132,22 @@ test("a write without the confirmation is refused before any storage request", a
     await expect(runReviewerSeed(fake.space, fake.target, { dryRun: false, confirm })).rejects.toMatchObject({ code: "CONFIRMATION_REQUIRED" });
   }
   expect(fake.touched.sql.size + fake.touched.kv.size).toBe(0);
-  const base = ["--space", fake.spaceId, "--owner", fake.ownerDid, "--allow-owner", fake.ownerDid, "--request-out", "request.json"];
+  const base = ["--space", fake.spaceId, "--owner", fake.ownerDid, "--allow-owner", fake.ownerDid, "--request-out", "request.json", "--host", "https://node.example"];
   expect(() => parseSeedArgs(base)).toThrow(UsageError);
   expect(() => parseSeedArgs([...base, "--dry-run", "--confirm", fake.spaceId])).toThrow(UsageError);
   expect(parseSeedArgs([...base, "--confirm", fake.spaceId]).mode).toEqual({ dryRun: false, confirm: fake.spaceId });
-  for (const host of ["http://node.tinycloud.xyz", "https://node.tinycloud.xyz/", "https://node.tinycloud.xyz@evil.example", "https://evil.example/?x"])
-    expect(() => parseSeedArgs([...base, "--dry-run", "--host", host])).toThrow(UsageError);
+});
+
+test("the node is chosen explicitly: --host or --production, never a default", () => {
+  const fake = fakeSpace();
+  const base = ["--space", fake.spaceId, "--owner", fake.ownerDid, "--allow-owner", fake.ownerDid, "--request-out", "request.json", "--dry-run"];
+  expect(() => parseSeedArgs(base)).toThrow(/--host <origin>, or --production/);
+  expect(() => parseSeedArgs([...base, "--production", "--host", PRODUCTION_HOST])).toThrow(/not both/);
+  expect(() => parseSeedArgs([...base, "--production", "--host", "https://node.example"])).toThrow(/not both/);
+  expect(parseSeedArgs([...base, "--production"]).host).toBe("https://tee.node.tinycloud.xyz");
+  expect(parseSeedArgs([...base, "--host", "https://node.example"]).host).toBe("https://node.example");
+  for (const host of ["http://node.tinycloud.xyz", "https://node.tinycloud.xyz/", "https://node.tinycloud.xyz@evil.example", "https://evil.example/?x", ""])
+    expect(() => parseSeedArgs([...base, "--host", host])).toThrow(UsageError);
 });
 
 test("an owner off the operator's allowlist, or a handle for another space, is refused", async () => {
@@ -270,7 +280,7 @@ test("the capability request covers exactly what the seed and its read-back touc
 
 test("a grant is accepted only from the target owner, for the target space, to this run's key, no wider than asked", () => {
   const fake = fakeSpace();
-  const options = parseSeedArgs(["--space", fake.spaceId, "--owner", fake.ownerDid, "--allow-owner", fake.ownerDid, "--request-out", "r.json", "--dry-run"]);
+  const options = parseSeedArgs(["--space", fake.spaceId, "--owner", fake.ownerDid, "--allow-owner", fake.ownerDid, "--request-out", "r.json", "--host", "https://node.example", "--dry-run"]);
   const address = fake.ownerDid.split(":").at(-1)!;
   const now = Date.parse("2026-11-11T12:00:00Z");
   const requested = seedPermissions(options.mode);
