@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.8.0-beta.18
+
+### Patch Changes
+
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
 ## 0.8.0-beta.17
 
 ### Patch Changes
