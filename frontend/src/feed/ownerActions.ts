@@ -35,12 +35,16 @@ export function ownerActionMessage(action: OwnerAction, identity: FeedResponseId
 }
 
 /**
- * Whether a stored response is an owner action rather than something the owner said: a `message` whose private
- * payload type starts with "feed.". Never a chat bubble, never counted as a comment. (A post's `feed.page` answer is
- * an answer, not a message, so it is not an owner action.)
+ * Whether a stored response is one of the owner's card actions rather than something the owner said: a `message`
+ * whose private payload is exactly one of the three reserved types at version 1. Never a chat bubble, never counted
+ * as a comment. Any other `feed.*` message shows as an ordinary message, so nothing can be hidden silently. (A post's
+ * `feed.page` answer is an answer, not a message, so it is not an owner action.)
+ *
+ * Only the header is read here (type and version; the payload's data isn't loaded), so this trusts where the row is:
+ * the owner's own response database, which agents can read but not write (Bobbie's review, #680).
  */
-export function isOwnerAction(response: Pick<FeedResponse, "kind" | "payloadType">): boolean {
-  return response.kind === "message" && !!response.payloadType?.startsWith("feed.");
+export function isOwnerAction(response: Pick<FeedResponse, "kind" | "payloadType" | "payloadVersion">): boolean {
+  return response.kind === "message" && response.payloadVersion === 1 && OWNER_ACTION_TYPES.has(response.payloadType ?? "");
 }
 
 /**
@@ -55,7 +59,7 @@ export function isOwnerAction(response: Pick<FeedResponse, "kind" | "payloadType
 export function ownerClosure(responses: readonly FeedResponse[]): "Dropped" | "Acknowledged" | undefined {
   let latest: FeedResponse | undefined;
   for (const response of responses) {
-    if (response.kind !== "message" || (response.payloadType !== "feed.drop" && response.payloadType !== "feed.acknowledge")) continue;
+    if (response.kind !== "message" || response.payloadVersion !== 1 || (response.payloadType !== "feed.drop" && response.payloadType !== "feed.acknowledge")) continue;
     if (!latest || response.sequence > latest.sequence) latest = response;
   }
   if (!latest) return undefined;

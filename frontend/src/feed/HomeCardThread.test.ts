@@ -28,13 +28,16 @@ test("a comment waits for confirmation unless received, replied to, held, or sen
   expect(awaitingConfirmation(lines).map((line) => line.key)).toEqual(["me:e"]);
 });
 
-test("a plain card's conversation: messages and replies with replyTo; owner actions (feed.*) never show", () => {
+test("a plain card's conversation: messages and replies with replyTo; only the reserved owner actions are hidden", () => {
   const entry = {
     source: { label: "Helper" },
     state: { card: { revision: 1, createdAt: "2026-11-01T09:00:00Z", payload: { replies: [{ text: "On it", at: "2026-11-01T10:01:00Z", replyTo: "r1" }] } } },
     responses: [
       { responseId: "r1", kind: "message", text: "Please hurry", createdAt: "2026-11-01T10:00:00Z" },
-      { responseId: "r2", kind: "message", text: "Dropped", payloadType: "feed.drop", createdAt: "2026-11-01T10:02:00Z" },
+      { responseId: "r2", kind: "message", text: "Dropped", payloadType: "feed.drop", payloadVersion: 1, createdAt: "2026-11-01T10:02:00Z" },
+      // Not one of the three reserved actions at version 1: it shows as an ordinary message, never hidden.
+      { responseId: "r4", kind: "message", text: "Archive", payloadType: "feed.archive", payloadVersion: 1, createdAt: "2026-11-01T10:04:00Z" },
+      { responseId: "r5", kind: "message", text: "Dropped twice", payloadType: "feed.drop", payloadVersion: 2, createdAt: "2026-11-01T10:05:00Z" },
       { responseId: "r3", kind: "answer", choiceId: "a", createdAt: "2026-11-01T10:03:00Z" },
     ],
     responseHandling: { r1: { acknowledgement: { at: "2026-11-01T10:00:05Z" } } },
@@ -42,5 +45,7 @@ test("a plain card's conversation: messages and replies with replyTo; owner acti
   expect(plainConversation(entry).map(({ key, mine, text, received, replyTo }) => ({ key, mine, text, received, replyTo }))).toEqual([
     { key: "me:r1", mine: true, text: "Please hurry", received: true, replyTo: undefined },
     { key: "agent:0", mine: false, text: "On it", received: undefined, replyTo: "me:r1" },
+    { key: "me:r4", mine: true, text: "Archive", received: false, replyTo: undefined },
+    { key: "me:r5", mine: true, text: "Dropped twice", received: false, replyTo: undefined },
   ]);
 });

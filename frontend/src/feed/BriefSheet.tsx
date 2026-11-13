@@ -5,14 +5,15 @@
 // gives the focus trap, Escape, scrim close and focus return to "Read the brief". With reduced motion it neither
 // slides nor scales: it just appears and disappears.
 //
-// The brief is Markdown carried on the card, or the address of a .md or .html page. Markdown is rendered by
-// BriefMarkdown.tsx (never as HTML); an .html page shows in a sandboxed frame with no script and no access to the app.
+// The brief is Markdown carried on the card, or the address of a .md or .html page on this app's own origin. Markdown
+// is rendered by BriefMarkdown.tsx (never as HTML); an .html page shows in a sandboxed frame with no script, no access
+// to the app, and links that open only in sandboxed windows.
 import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { FileTextIcon, XIcon } from "lucide-react";
 import { BriefMarkdown } from "./BriefMarkdown";
 
-/** A card's brief: `markdown` carried inline, or `url`, a .md or .html page on this host or on https. */
+/** A card's brief: `markdown` carried inline, or `url`, a .md or .html page on this app's own origin. */
 export interface Brief {
   title: string;
   markdown?: string;
@@ -21,11 +22,15 @@ export interface Brief {
 
 // Past this a brief is no longer one page, and rendering it would stall the sheet.
 const MAX_MARKDOWN = 100_000;
+// A brief page is read only this far, and only for this long; the rest is cancelled unread (Bobbie's review, #680).
+const MAX_PAGE_BYTES = 1_000_000;
+const PAGE_DEADLINE_MS = 10_000;
 
 /**
- * The page a brief's `url` names, when the sheet can open it: a path on this host, or an absolute address on this
- * origin or on https, ending .md or .html. Anything else (http elsewhere, javascript:, data:, other file types) is no
- * brief.
+ * The page a brief's `url` names, when the sheet can open it: a page on this app's own origin (a path, or an absolute
+ * address on this origin), ending .md or .html. Nothing off-host: another host would learn the owner's address and
+ * when they read the card, and could track or phish inside the frame (Bobbie's review, #680). Inline Markdown is the
+ * preferred way to send a brief.
  */
 function briefPage(value: string): { href: string; format: "markdown" | "html" } | undefined {
   if (value.length > 2048) return undefined;
@@ -39,7 +44,7 @@ function briefPage(value: string): { href: string; format: "markdown" | "html" }
     return undefined;
   }
   const sameOrigin = onThisHost || (here !== undefined && url.origin === new URL(here).origin);
-  if (!sameOrigin && url.protocol !== "https:") return undefined;
+  if (!sameOrigin) return undefined;
   const path = url.pathname.toLowerCase();
   const format = /\.(md|markdown)$/.test(path) ? "markdown" : /\.html?$/.test(path) ? "html" : undefined;
   return format && { href: here ? url.href : value, format };
@@ -57,12 +62,35 @@ export function briefOf(payload: Record<string, unknown> | undefined): Brief | u
 }
 
 async function readBriefPage(href: string, signal: AbortSignal): Promise<string> {
-  const response = await fetch(href, { cache: "no-cache", signal });
-  // A missing file on a single-page host comes back as the app's own index.html, with a 200.
-  if (!response.ok || (response.headers.get("content-type") ?? "").includes("text/html")) throw new Error("Brief unavailable");
-  const text = await response.text();
-  if (text.length > MAX_MARKDOWN) throw new Error("Brief too long");
-  return text;
+  const deadline = new AbortController();
+  const stop = () => deadline.abort();
+  const timer = setTimeout(stop, PAGE_DEADLINE_MS);
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    // No redirects: a page that moves could leave this origin without being checked again.
+    const response = await fetch(href, { cache: "no-cache", redirect: "error", signal: deadline.signal });
+    // A missing file on a single-page host comes back as the app's own index.html, with a 200.
+    if (!response.ok || (response.headers.get("content-type") ?? "").includes("text/html") || !response.body) throw new Error("Brief unavailable");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_PAGE_BYTES) { await reader.cancel(); throw new Error("Brief too long"); }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const text = new TextDecoder().decode(bytes);
+    if (text.length > MAX_MARKDOWN) throw new Error("Brief too long");
+    return text;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", stop);
+  }
 }
 
 function Unavailable({ href }: { href?: string }) {
@@ -132,7 +160,7 @@ export function BriefSheet({ brief, open, onOpenChange }: {
           ? <div className="flex min-h-0 flex-1 flex-col p-2 sm:p-3">
             {/* No scripts, forms or access to the app; its links may open new tabs. White behind it, as a page
                 with no background of its own expects. */}
-            <iframe src={frame} title={brief.title} sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" className="min-h-0 w-full flex-1 rounded-lg border border-border bg-white" />
+            <iframe src={frame} title={brief.title} sandbox="allow-popups" referrerPolicy="no-referrer" className="min-h-0 w-full flex-1 rounded-lg border border-border bg-white" />
           </div>
           : <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6 sm:py-5">
             {brief.markdown ? <BriefMarkdown markdown={brief.markdown} /> : page ? <BriefPage href={page.href} /> : <Unavailable />}

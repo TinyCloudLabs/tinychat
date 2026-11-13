@@ -16,6 +16,7 @@ import { ComposerField } from "./ComposerField";
 import { StatefulSendButton } from "./StatefulSendButton";
 import { ShortTime } from "./ShortTime";
 import { COMMENT_COPY, UNDO_SECONDS, usePendingSend } from "./cardKit";
+import { isOwnerAction } from "./ownerActions";
 
 export interface ConversationLine {
   key: string;
@@ -41,9 +42,6 @@ export interface ConversationLine {
   /** Yours: delivery detail under the bubble (typed per-recipient receipts, a held route). */
   note?: ReactNode;
 }
-
-/** Owner card actions (snooze, drop, acknowledge) are `message` responses with private "feed.*" payloads: never comments. */
-export const isOwnerAction = (response: { kind: string; payloadType?: string }) => response.kind === "message" && !!response.payloadType?.startsWith("feed.");
 
 /**
  * A plain card's conversation: your card messages on every revision of the card, and the agent's `payload.replies`

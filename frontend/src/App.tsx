@@ -111,6 +111,7 @@ import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
 import { clearHeldAnswers } from "./feed/answerOutbox";
+import { clearPostDrafts } from "./feed/postAnswers";
 import { settleHeldAnswersForSignOut } from "./feed/feedStore";
 import { AppsPage } from "./home/AppsPage";
 import { HomeEntryGate } from "./home/HomeEntryGate";
@@ -421,7 +422,8 @@ export function App() {
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
     const accountSpace = tcw?.spaceId ?? spaceId;
-    if (accountSpace) clearHeldAnswers(accountSpace);
+    // The page-close outbox and post drafts hold the owner's words in this device's storage; both go with the account.
+    if (accountSpace) { clearHeldAnswers(accountSpace); clearPostDrafts(accountSpace); }
     if (storedAddress) clearPersistedSession(storedAddress);
     if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
     // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.

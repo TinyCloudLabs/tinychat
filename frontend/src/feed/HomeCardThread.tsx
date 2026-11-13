@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ownerThreadResponseKey, parseThreadKey, publisherThreadReceipts, recentThread, type BoardRecord, type SitrepOwnerData, type ThreadMessage } from "@tinyboilerplate/core/feed/sitrep";
 import type { HomeFeedEntry } from "./feedStoreTypes";
-import { CardConversation, isOwnerAction, type ConversationLine } from "./CardConversation";
+import { CardConversation, type ConversationLine } from "./CardConversation";
+import { isOwnerAction } from "./ownerActions";
 
 interface Props {
   entry: HomeFeedEntry;
