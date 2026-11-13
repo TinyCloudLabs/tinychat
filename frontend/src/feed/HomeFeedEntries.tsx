@@ -56,6 +56,21 @@ function closesRecord(entry: HomeFeedEntry): boolean {
   const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
   return !!record && record.kind === entry.state.card.kind && isClosed(record);
 }
+/** When the newest card the owner holds arrived, live or past. */
+function lastCardAt(snapshot: HomeFeedSnapshot | null): string | undefined {
+  return [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].reduce<string | undefined>((latest, entry) => !latest || entry.state.card.createdAt > latest ? entry.state.card.createdAt : latest, undefined);
+}
+const LAST_CARD_TIME = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
+const LAST_CARD_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
+/** "at 12:00 PM" today, "yesterday", else "on 11 Nov" (with the year when it isn't this one): the feed's date order (Monica). */
+function lastCardWhen(at: string, now: number): string {
+  const date = new Date(at);
+  const today = new Date(now);
+  const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return `at ${LAST_CARD_TIME.format(date)}`;
+  if (date.toDateString() === yesterday.toDateString()) return "yesterday";
+  return `on ${date.getDate()} ${LAST_CARD_MONTH.format(date)}${date.getFullYear() === today.getFullYear() ? "" : ` ${date.getFullYear()}`}`;
+}
 function snoozedNow(entry: HomeFeedEntry, now: number): boolean {
   return Date.parse(entry.view.snoozedUntil ?? "") > now;
 }
@@ -152,7 +167,7 @@ function CardFacts({ entry, reference, priority }: { entry: HomeFeedEntry; refer
     ["Type", entry.state.card.kind.charAt(0).toUpperCase() + entry.state.card.kind.slice(1)],
     ...(job ? [["Working on", job] as [string, ReactNode]] : []),
     ...(projectOf(entry) ? [["Project", projectOf(entry)] as [string, ReactNode]] : []),
-    ["Reference", reference],
+    ["Card ID", reference],
     ...sourceRow(entry.state.card.payload),
     // P0 and P1 show on the card itself; every level shows here.
     ...(priority !== undefined ? [["Priority", `P${priority}`] as [string, ReactNode]] : []),
@@ -1119,7 +1134,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         </section>
         : <div className="mb-4 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))] motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
           {/* Focusable (not a tab stop), so focus lands here when the last card leaves (the design agent). */}
-          <p data-feed-empty tabIndex={-1} className="outline-none">{snoozedOnly ? "No snoozed cards." : history ? "Nothing answered or snoozed yet." : filtersOn ? "No cards match this filter." : view === "needs-action" ? "Nothing needs you." : "No cards yet."}</p>
+          {/* Needs you, empty: the summary already says nothing needs you, so the box says when the last card came (Monica). */}
+          <p data-feed-empty tabIndex={-1} className="outline-none">{snoozedOnly ? "No snoozed cards." : history ? "Nothing answered or snoozed yet." : filtersOn ? "No cards match this filter." : view === "needs-action" && lastCardAt(snapshot) ? `All caught up. Last card ${lastCardWhen(lastCardAt(snapshot)!, clock)}.` : "No cards yet."}</p>
           {!!filtersOn && <button type="button" className="mt-2 inline-flex min-h-11 items-center rounded-xl border border-border px-3 text-sm text-foreground" onClick={clearFilters}>Clear filter</button>}
         </div>)}
       {agentPage === null && !!listed.length && <div className="mb-4 space-y-6">

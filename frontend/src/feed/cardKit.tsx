@@ -345,12 +345,9 @@ export function SheetSection({ title, children }: { title: string; children: Rea
   </section>;
 }
 
-/** Mono reference line, for More → Details only. */
+/** A card's ID in mono, for Details' "Card ID" row (FactRows gives it the same muted label as every other fact). */
 export function Reference({ children, title }: { children: ReactNode; title?: string }) {
-  return <div>
-    <p className="text-[12.5px] font-semibold text-muted-foreground">Card ID</p>
-    <p aria-label="Card reference" className="text-[12.5px] leading-[1.4] text-muted-foreground"><code className="select-all break-all" title={title}>{children}</code></p>
-  </div>;
+  return <code aria-label="Card reference" className="block select-all text-xs [overflow-wrap:anywhere]" title={title}>{children}</code>;
 }
 
 /**
