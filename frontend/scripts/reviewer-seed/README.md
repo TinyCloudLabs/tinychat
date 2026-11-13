@@ -37,7 +37,7 @@ bun frontend/scripts/reviewer-seed/cli.ts \
 | `--allow-owner` | yes, repeatable | The operator's allowlist. Pass the reviewer DID only. Never read from the environment. It guards against a mistyped `--owner`; the owner's grant is what authorizes the run. |
 | `--request-out` | yes | A new file for the capability request. An existing file is not overwritten (usage error). Not secret. |
 | `--dry-run` / `--confirm <space id>` | one of them | A dry run writes nothing. Writing needs `--confirm` set to the same space id as `--space`. |
-| `--host` | no | Node origin, `https://` with no path. Default `https://node.tinycloud.xyz`. |
+| `--host` | no | Node origin, `https://` with no path. Default `https://tee.node.tinycloud.xyz`. |
 | grant JSON on stdin | yes | The owner's delegation to this run's session key. |
 
 The CLI never reads or prints a private key and never prints or stores the session key or the grant.
