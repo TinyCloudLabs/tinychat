@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.21
+
+### Patch Changes
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+
 ## 0.8.0-beta.20
 
 ### Patch Changes
