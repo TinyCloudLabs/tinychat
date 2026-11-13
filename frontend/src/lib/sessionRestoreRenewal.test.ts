@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { restorePersistedSession } from "./sessionRestore";
 
 function session() {
@@ -83,3 +83,40 @@ test("explicit lease bootstrap publishes only after one successful live read", a
   expect(outcome.kind).toBe("restored");
   expect(reads).toBe(1);
 });
+
+for (const failure of ["beforeClear", "signOut"]) {
+  test(`explicit renewal refusal still signs out when ${failure} throws`, async () => {
+    const store = session();
+    const calls: string[] = [];
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const outcome = await restorePersistedSession(store, {
+        loadManifest: async () => ({}),
+        restore: async () => ({ status: "restored", tcw: {} }),
+        isOffline: () => false,
+        beforeClear: async () => {
+          calls.push("beforeClear");
+          if (failure === "beforeClear") throw new Error("must-not-log");
+        },
+        renewalVerification: {
+          read: async () => {
+            throw { meta: { status: 401 } };
+          },
+          signOut: async () => {
+            calls.push("signOut");
+            if (failure === "signOut") throw new Error("must-not-log");
+          },
+          cleanup: () => {},
+        },
+      });
+      expect(outcome.kind).toBe("signedOut");
+      expect(store.hasSession()).toBe(false);
+      expect(calls).toEqual(["beforeClear", "signOut"]);
+      expect(warning.mock.calls).toEqual([
+        ["[session] renewal sign-out cleanup failed"],
+      ]);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+}

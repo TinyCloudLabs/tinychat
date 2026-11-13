@@ -189,19 +189,28 @@ export async function restorePersistedSession<M, T>(
   }
 
   if (restored.status === "restored" && restored.tcw) {
-    if (deps.renewalVerification) {
+    const renewal = deps.renewalVerification;
+    if (renewal) {
       try {
-        await deps.renewalVerification.read(restored.tcw);
+        await renewal.read(restored.tcw);
       } catch (error) {
         const refusal = error as { status?: number; meta?: { status?: number } } | null;
         const status = refusal?.meta?.status ?? refusal?.status;
         if (status === 401 || status === 403) {
-          await deps.beforeClear?.();
-          await deps.renewalVerification.signOut(restored.tcw);
-          sessionStore.clear();
+          try {
+            try {
+              await deps.beforeClear?.();
+            } finally {
+              await renewal.signOut(restored.tcw);
+            }
+          } catch {
+            console.warn("[session] renewal sign-out cleanup failed");
+          } finally {
+            sessionStore.clear();
+          }
           return { kind: "signedOut" };
         }
-        deps.renewalVerification.cleanup(restored.tcw);
+        renewal.cleanup(restored.tcw);
         return unavailable();
       }
     }
