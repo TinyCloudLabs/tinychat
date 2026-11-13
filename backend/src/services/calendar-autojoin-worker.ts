@@ -2,7 +2,7 @@ import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./c
 import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import { logCalendarAutojoinFailure } from "./calendar-autojoin-diagnostics.js";
 import {
-  type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, TenantCoordinator,
+  type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, stableJson, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
 import {
   calendarMeetEvent, calendarOccurrenceIdentity, dispatchCutoff, eligibleCalendarEvent, ExternalOperationLimiter,
@@ -71,6 +71,9 @@ export interface CalendarAutojoinWorkerOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** The started worker of each store. The row cache and due-time timers assume one scheduler per store. */
+const schedulers = new WeakMap<CalendarAutojoinStore, CalendarAutojoinWorker>();
+
 /**
  * Durable intents are authoritative. This worker requires a single backend writer.
  *
@@ -101,7 +104,9 @@ export class CalendarAutojoinWorker {
   private readonly armable = new Set<string>();
   private tickStartedAt?: number;
   private tickPeriodMs = TICK_MS;
+  private readonly ownerKey: CalendarAutojoinStore;
   constructor(options: CalendarAutojoinWorkerOptions) {
+    this.ownerKey = options.store;
     this.options = { ...options, store: this.tracked(options.store) };
     this.dispatchStore = this.tracked(options.dispatchStore ?? options.store);
     this.meetingCoordinator = options.meetingCoordinator ?? new TenantCoordinator();
@@ -112,6 +117,9 @@ export class CalendarAutojoinWorker {
   }
   start(): void {
     if (this.timer) return;
+    const owner = schedulers.get(this.ownerKey);
+    if (owner && owner !== this) throw new Error("calendar_autojoin_worker_already_started");
+    schedulers.set(this.ownerKey, this);
     this.stopping = false;
     void this.tick();
     this.timer = setInterval(() => void this.tick(), TICK_MS);
@@ -125,6 +133,9 @@ export class CalendarAutojoinWorker {
     this.dueTimers.clear();
     this.armable.clear();
     await Promise.all([this.running, ...this.timerRuns]);
+    // Release after the drain, and only if this instance holds the claim: stopping a refused
+    // second worker must not free the store under the running one.
+    if (schedulers.get(this.ownerKey) === this && !this.timer) schedulers.delete(this.ownerKey);
   }
   /** TC-1047: the tenant was disabled, disconnected or needs a reconnect. The tick handles its rows. */
   cancelTenant(tenant: string): void {
@@ -354,6 +365,12 @@ export class CalendarAutojoinWorker {
             && old.title === next.title) continue;
         }
         else if (this.now() >= dispatchCutoff(next)) { next.phase = "terminal"; next.disposition = "missed_window"; }
+        // A rescan that changes nothing but updatedAt (and a terminal row's unused nextAttemptAt) writes nothing.
+        if (old?.id === next.id) {
+          const terminal = old.phase === "terminal" && next.phase === "terminal";
+          const comparable = (row: CalendarOccurrence) => stableJson({ ...row, updatedAt: undefined, nextAttemptAt: terminal ? undefined : row.nextAttemptAt });
+          if (comparable(old) === comparable(next)) continue;
+        }
         await store.putOccurrence(next);
       }
       // TC-1047: a timer's dispatch records lastDispatchLag outside this lock; keep the latest one.

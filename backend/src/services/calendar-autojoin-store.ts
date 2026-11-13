@@ -127,6 +127,8 @@ export interface CalendarAutojoinStore {
   putConnection(row: CalendarConnection): Promise<void>;
   updateConnection(tenant: string, update: Update<CalendarConnection>): Promise<CalendarConnection | null>;
   listConnections(): Promise<CalendarConnection[]>;
+  /** Drop the in-memory copies of connection rows: the next read of each comes from the node. */
+  forgetCachedConnections(): void;
   getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary | null>;
   getStatusSummaryOrLegacy(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary>;
   putStatusSummary(tenant: string, summary: CalendarAutojoinStatusSummary): Promise<void>;
@@ -162,6 +164,120 @@ interface JsonStore {
   put(key: string, value: unknown): Promise<void>;
   remove(key: string): Promise<void>;
   keys(prefix: string): Promise<string[]>;
+  /** Cached stores only: the row's live value changes in memory; the node keeps its stored copy. */
+  stage?(key: string, value: unknown): void;
+  /** Cached stores only: forget the rows under `prefix`. Listings stay: writes keep them complete. */
+  forgetRows?(prefix: string): void;
+}
+/** Key-order independent JSON, so an unchanged row compares equal however it was built. */
+export function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, field: unknown) => field && typeof field === "object" && !Array.isArray(field)
+    ? Object.fromEntries(Object.entries(field).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : field);
+}
+/** Fields every scan rewrites. Alone, they reach the node once per hour (see updateConnection). */
+const SCAN_BOOKKEEPING_PERSIST_MS = 3_600_000;
+function scanBookkeepingOnly(previous: CalendarConnection, next: CalendarConnection): boolean {
+  const hour = (row: CalendarConnection) => Math.floor((row.lastScanAt ?? 0) / SCAN_BOOKKEEPING_PERSIST_MS);
+  const rest = (row: CalendarConnection) => stableJson({ ...row, lastScanAt: undefined, nextScanAt: undefined });
+  return hour(previous) === hour(next) && rest(previous) === rest(next);
+}
+
+interface CachedRow { value: unknown; persisted: string }
+/**
+ * In-process copy of the calendar rows, shared by the request, worker and dispatch stores. The
+ * status projection is not cached: only status requests read it.
+ *
+ * The backend is the only writer of these keys (docker-compose.phala.yml: one backend, stop-and-drain
+ * replacement), so once read, a row changes only through this process. Reads are served from memory,
+ * and writing the value the node already stores is skipped. Durable writes come first: memory changes
+ * after the node acknowledges a write, and a failed write (its outcome unknown) forgets the row and
+ * any listing that holds it, so the next read goes back to the node. Every call runs inside a storage
+ * lane job, so read-compare-write stays serialized. A restart starts empty and re-reads on first use.
+ *
+ * The cost is memory: every row read or written since the start, including markers, which never expire.
+ */
+export class CalendarAutojoinRowCache {
+  /** `null`: known absent. */
+  private readonly rows = new Map<string, CachedRow | null>();
+  /** Complete key sets of listed prefixes. */
+  private readonly listings = new Map<string, Set<string>>();
+
+  /** `json` read through this cache. `freshReads` stores (request and dispatch) read every row and
+   *  listing from the node, and keep the cache current with what they read. */
+  view(json: JsonStore, freshReads = false): JsonStore {
+    const cached = (key: string) => !key.startsWith(`${PREFIX}status/`);
+    return {
+      get: async <T>(key: string) => {
+        if (!cached(key)) return json.get<T>(key);
+        const known = this.rows.get(key);
+        if (!freshReads) {
+          if (known !== undefined) return known === null ? null : structuredClone(known.value) as T;
+          if (this.unlisted(key)) return null;
+        }
+        return this.observe(key, await json.get<T>(key));
+      },
+      put: async (key, value) => {
+        if (!cached(key)) return json.put(key, value);
+        const persisted = stableJson(value);
+        if (this.rows.get(key)?.persisted !== persisted) {
+          try { await json.put(key, value); }
+          catch (error) { this.forget(key); throw error; }
+        }
+        this.rows.set(key, { value: structuredClone(value), persisted });
+        this.listed(key, true);
+      },
+      remove: async key => {
+        if (!cached(key)) return json.remove(key);
+        if (this.rows.get(key) === null || (!this.rows.has(key) && this.unlisted(key))) return;
+        try { await json.remove(key); }
+        catch (error) { this.forget(key); throw error; }
+        this.rows.set(key, null);
+        this.listed(key, false);
+      },
+      keys: async prefix => {
+        const listing = freshReads ? undefined : this.listings.get(prefix);
+        if (listing) return [...listing];
+        const keys = await json.keys(prefix);
+        if (!cached(prefix)) return keys;
+        const present = new Set(keys);
+        for (const key of this.rows.keys()) if (key.startsWith(prefix) && !present.has(key)) this.rows.set(key, null);
+        this.listings.set(prefix, present);
+        return keys;
+      },
+      stage: (key, value) => {
+        const known = this.rows.get(key);
+        if (!known) throw new Error("calendar_row_not_cached");
+        this.rows.set(key, { value: structuredClone(value), persisted: known.persisted });
+      },
+      forgetRows: prefix => {
+        for (const key of this.rows.keys()) if (key.startsWith(prefix)) this.rows.delete(key);
+      },
+    };
+  }
+  /** A node read. When it matches the stored copy, memory keeps any newer staged value. */
+  private observe<T>(key: string, value: T | null): T | null {
+    const known = this.rows.get(key);
+    if (value === null) { this.rows.set(key, null); this.listed(key, false); return null; }
+    const persisted = stableJson(value);
+    if (known?.persisted === persisted) return structuredClone(known.value) as T;
+    this.rows.set(key, { value: structuredClone(value), persisted });
+    this.listed(key, true);
+    return value;
+  }
+  private unlisted(key: string): boolean {
+    for (const [prefix, keys] of this.listings) if (key.startsWith(prefix) && !keys.has(key)) return true;
+    return false;
+  }
+  private listed(key: string, present: boolean): void {
+    for (const [prefix, keys] of this.listings) {
+      if (!key.startsWith(prefix)) continue;
+      if (present) keys.add(key); else keys.delete(key);
+    }
+  }
+  private forget(key: string): void {
+    this.rows.delete(key);
+    for (const prefix of this.listings.keys()) if (key.startsWith(prefix)) this.listings.delete(prefix);
+  }
 }
 const PREFIX = "calendar-autojoin/v1/";
 const tenantKey = (tenant: string) => createHash("sha256").update(tenant.toLowerCase()).digest("hex");
@@ -199,7 +315,11 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
       const key = connectionKey(tenant);
       const previous = await this.json.get<CalendarConnection>(key);
       const next = fn(previous === null ? null : structuredClone(previous));
-      if (next !== null) {
+      if (next !== null && previous !== null && this.json.stage && scanBookkeepingOnly(previous, next)) {
+        // The live lastScanAt/nextScanAt stay in memory; the node's copy lags by at most an hour. A
+        // restart reads an overdue nextScanAt, which only scans at once.
+        this.json.stage(key, next);
+      } else if (next !== null) {
         const write = async () => {
           await this.json.put(key, next);
           // Connection rows are never deleted; a new tenant cannot have occurrence history.
@@ -215,6 +335,7 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     });
   }
   listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
+  forgetCachedConnections(): void { this.json.forgetRows?.(`${PREFIX}connections/`); }
   getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) {
     return this.read(() => this.readSummary(tenant), deadline, metrics);
   }
@@ -344,9 +465,11 @@ export class MemoryCalendarAutojoinStore extends JsonCalendarAutojoinStore {
   }
 }
 
+/** `rows`: read through a row cache shared with the process's other calendar stores. */
 export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
-  constructor(node: TinyCloudNode, lane: BackendStorageLane, laneOptions: BackendStorageLaneRunOptions = {}, statusCache = new CalendarAutojoinStatusCache()) {
-    super({
+  constructor(node: TinyCloudNode, lane: BackendStorageLane, laneOptions: BackendStorageLaneRunOptions = {}, statusCache = new CalendarAutojoinStatusCache(),
+    rows?: { cache: CalendarAutojoinRowCache; freshReads?: boolean }) {
+    const json: JsonStore = {
       async get<T>(key: string) {
         const result = await withSessionRefresh(node, async () => {
           const response = await node.kv.get(key);
@@ -373,7 +496,8 @@ export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
         }
         return data.keys.map(key => key.startsWith(prefix) ? key : `${prefix}${key}`);
       },
-    }, lane, laneOptions, statusCache);
+    };
+    super(rows ? rows.cache.view(json, rows.freshReads) : json, lane, laneOptions, statusCache);
   }
 }
 
@@ -384,12 +508,17 @@ export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
  * intent write and the post-send writes) queues with requests, but with no wait budget: no client
  * waits on it, and under contention it must be late rather than fail and retry, which would add
  * more lane work. A storage failure before the intent write still sends nothing and is retried.
+ *
+ * One row cache serves all three. Only the worker store reads from it: request handlers and the
+ * dispatch path read every row from the node, so user actions and the policy checks that decide a
+ * POST see the stored connection and occurrence, never memory alone.
  */
 export function kvCalendarAutojoinStores(node: TinyCloudNode, lane: BackendStorageLane) {
   const statusCache = new CalendarAutojoinStatusCache();
+  const cache = new CalendarAutojoinRowCache();
   return {
-    request: new KvCalendarAutojoinStore(node, lane, { waitTimeoutMs: REQUEST_LANE_WAIT_MS }, statusCache),
-    worker: new KvCalendarAutojoinStore(node, lane, { priority: "background" }, statusCache),
-    dispatch: new KvCalendarAutojoinStore(node, lane, { priority: "foreground" }, statusCache),
+    request: new KvCalendarAutojoinStore(node, lane, { waitTimeoutMs: REQUEST_LANE_WAIT_MS }, statusCache, { cache, freshReads: true }),
+    worker: new KvCalendarAutojoinStore(node, lane, { priority: "background" }, statusCache, { cache }),
+    dispatch: new KvCalendarAutojoinStore(node, lane, { priority: "foreground" }, statusCache, { cache, freshReads: true }),
   };
 }
