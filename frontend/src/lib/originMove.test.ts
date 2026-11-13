@@ -317,12 +317,12 @@ describe("origin move", () => {
     const countWork = async () => { reads++; return none; };
     const decide = (search: string, pathname = "/chat/connectors") =>
       decideOriginMove({ location: { ...legacy, pathname, search, hash: "" }, countWork, canonicalReady: ready });
-    const tab = sameTabState("/chat/connectors", "n".repeat(24), false);
+    const tab = sameTabState("/chat/connectors", "n".repeat(24), null);
     expect(tab.startsWith("tab.")).toBe(true);
     for (const search of [
       `?${new URLSearchParams({ state: tab, [SAME_TAB_CODE_PARAM]: "code" })}`,
       `?${new URLSearchParams({ state: tab, [SAME_TAB_ERROR_PARAM]: "not_completed" })}`,
-      `?${new URLSearchParams({ state: sameTabState("/chat", "n".repeat(24), true), [SAME_TAB_CODE_PARAM]: "code" })}`,
+      `?${new URLSearchParams({ state: sameTabState("/chat", "n".repeat(24), "home"), [SAME_TAB_CODE_PARAM]: "code" })}`,
     ]) {
       expect(originMoveExemption({ pathname: "/chat/connectors", search }, false)).toBe("oauth-return");
       expect(await decide(search)).toEqual({ kind: "stay" });
@@ -330,7 +330,7 @@ describe("origin move", () => {
     expect(reads).toBe(0);
     // A started flow's state without the backend's return markers, or a popup state (its return is the backend's
     // own /callback page, never this app), is an ordinary URL.
-    for (const search of [`?state=${tab}`, `?${new URLSearchParams({ state: popupOAuthState("n".repeat(24), false), code: "c" })}`, "?tab=all"]) {
+    for (const search of [`?state=${tab}`, `?${new URLSearchParams({ state: popupOAuthState("n".repeat(24), null), code: "c" })}`, "?tab=all"]) {
       expect(originMoveExemption({ pathname: "/chat", search }, false)).toBeNull();
       expect((await decide(search)).kind).toBe("move");
     }
