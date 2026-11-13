@@ -120,6 +120,11 @@ jobs:
         working-directory: test
         run: bun test home-feed-outbox.e2e.test.ts
 
+      - name: Home feed Details layout (Chromium)
+        if: ${{ !cancelled() }}
+        working-directory: test
+        run: bun test home-feed-details-layout.e2e.test.ts
+
       - name: SDK permission dialog over Main (Chromium)
         if: ${{ !cancelled() }}
         working-directory: test

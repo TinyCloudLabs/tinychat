@@ -72,7 +72,9 @@ export function CardDetails({ children, actions, secondary, close, card, typed, 
         (a URL, an ID) wrap anywhere, as on the card, so no value widens a column or runs under its neighbour. */}
     {open && <div aria-label="Details" className={`mt-2 grid grid-cols-[minmax(0,1fr)] gap-[18px] rounded-[14px] bg-muted/60 p-3.5 [overflow-wrap:anywhere] ${count ? "min-[900px]:grid-cols-[240px_minmax(0,1fr)] min-[900px]:gap-x-5" : ""}`}>
       {lists && count > 0 && <div className="min-w-0 min-[900px]:col-start-2 min-[900px]:row-span-3 min-[900px]:row-start-1"><lists.UnshownList fields={unshown.filter((field) => !field.quiet)} agent={agent} /></div>}
-      <div className="grid min-w-0 content-start gap-[18px]">
+      {/* Its own one column is bounded as well: an auto column would grow to its widest fact (a Rocinante agent ID,
+          truncated but still counted at full width) and run under the list beside it (Clarissa, #711 at 1280). */}
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-[18px]">
         <section aria-label="This card"><h3 className={detailsSectionTitle}>This card</h3>{children}</section>
         {lists && <lists.FeedUsedList fields={unshown.filter((field) => field.quiet)} />}
         {lists && <lists.CardData card={card} />}
