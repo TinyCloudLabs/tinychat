@@ -7,8 +7,8 @@ import { useState, type ReactNode } from "react";
 import { CheckIcon } from "lucide-react";
 import { DetailsSheet } from "./DetailsSheet";
 
-/** The class of a small action on a card. */
-export const actionClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
+/** The class of a small action on a card: 44px on touch (QA cb784d4), 40px with a mouse. */
+export const actionClass = "min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10";
 /** The class of a quiet action in the card's foot (Ask me later, Details): text that lights up when touched. */
 export const footActionClass = "inline-flex min-h-11 items-center rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground disabled:opacity-50 fine:min-h-9";
 

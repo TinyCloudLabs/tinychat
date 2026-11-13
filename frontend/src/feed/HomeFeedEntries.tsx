@@ -875,10 +875,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const pageOpen = pageEntry && labPageOf(pageEntry);
   const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setProject(""); setPriorityMax(""); setSortBy(""); setHistory(false); setSnoozedOnly(false); });
   // No browser scroll anchoring: the view change keeps the card in view itself (anchoredToggle).
-  return <PendingSendContext.Provider value={pendingSends.current}><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}>
-    {/* While undo bars show, the list's end grows by their height, so its last cards can scroll clear of them. */}
-    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}
-      style={undoBar.height ? { paddingBottom: `calc(var(--tc-bottom-chrome) + 2rem + ${undoBar.height}px + 0.5rem)` } : undefined}>
+  // While undo bars show, the scroll container itself grows at its end by their height, their offset from the bottom
+  // edge and the safe-area inset, so its last cards can scroll clear of them (Clarissa, 75eebec).
+  return <PendingSendContext.Provider value={pendingSends.current}><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
+    style={undoBar.height ? { paddingBottom: `calc(${undoBar.height + 32}px + env(safe-area-inset-bottom))` } : undefined}>
+    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}>
     <MorphConfig>
       {/* Home, the slider and the toolbar stay in reach: scrolled down, only the toolbar (Filter · View) stays at the
           top; scrolling up brings the slider back above it, stuck over the cards. */}
