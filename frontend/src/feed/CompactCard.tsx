@@ -2,7 +2,7 @@
 // the status mark the grid's tiles share. Spec: the design agent's compact-card/SPEC.md. Three cues, none of them
 // colour alone, tell a card's kind before you read it: a solid "Needs you" chip (every other status is quiet text
 // with an icon; updates show none), a semibold title only on cards that need you, and a thumbnail only on posts.
-import { AlarmClockIcon, CheckIcon, CircleAlertIcon, Clock3Icon, MessageCircleIcon, PlayIcon } from "lucide-react";
+import { AlarmClockIcon, CheckCheckIcon, CheckIcon, CircleAlertIcon, Clock3Icon, MessageCircleIcon, PlayIcon } from "lucide-react";
 
 import { AgentMark, PlatformName, type Platform } from "./AgentMark";
 import { ShortTime } from "./ShortTime";
@@ -13,6 +13,7 @@ export function StatusMark({ status }: { status?: string }) {
   if (status === "Needs you") return <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground px-2 text-[11px] font-semibold text-background">Needs you</span>;
   const quiet = "inline-flex shrink-0 items-center gap-1 text-meta text-muted-foreground [&_svg]:size-3.5";
   if (status.startsWith("Waiting on")) return <span className={quiet} title={status}><Clock3Icon aria-hidden />Waiting</span>;
+  if (status === "Answered") return <span className={quiet}><CheckCheckIcon aria-hidden />Answered</span>;
   if (status === "Done") return <span className={quiet}><CheckIcon aria-hidden />Done</span>;
   if (status === "Snoozed") return <span className={quiet}><AlarmClockIcon aria-hidden />Snoozed</span>;
   if (status === "Failed") return <span className={`${quiet} text-destructive`}><CircleAlertIcon aria-hidden />Failed</span>;
