@@ -164,6 +164,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   let renewal: number | undefined;
   let streamError: Error | undefined;
   let localReads = 0;
+  /** A device copy or a registry read has named the agents the stream covers. */
+  let sourcesKnown = false;
   /** The device copy's read, which names the agents the first load reads beside the registry. */
   let localRead: Promise<unknown> | undefined;
   let hiddenAt: number | undefined;
@@ -214,8 +216,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
 
   function connect(force = false) {
     // The device's copy names the agents to subscribe to; wait for it rather
-    // than open a stream that its answer would replace.
-    if (!listeners.size || document.visibilityState === "hidden" || localReads) return;
+    // than open a stream that its answer would replace. Without a copy (a new
+    // device) the first load's registry read names them.
+    if (!listeners.size || document.visibilityState === "hidden" || localReads || !sourcesKnown) return;
     const resources = [HOME_FEED_RESOURCE, THREADS_SQL_DB_NAME, ...sources.flatMap((source) => [source.output.database, source.responses.database])];
     const nextKey = JSON.stringify(resources);
     const hooks: FeedHooks = tcw.hooks;
@@ -386,6 +389,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   async function loadFeed(focused?: HomeFeedEntry, options?: HomeFeedLoadOptions): Promise<HomeFeedSnapshot> {
     assertAccount();
     const load = readFeed(focused);
+    // A load that failed before its registry read named the agents still
+    // opens the stream: its ready retries the load.
+    load.catch(() => { if (!sourcesKnown) { sourcesKnown = true; connect(); } });
     if (!options?.feed) return (await load).snapshot;
     feedLoad = load;
     try {
@@ -457,6 +463,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         responses: { spaceId: space, database: responses as string },
       };
     });
+    sourcesKnown = true;
     connect();
     // Archives this session has not validated yet are read beside the agents'
     // rows; both are needed only to assemble entries.
@@ -607,6 +614,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         const read = readLocal<LocalFeed>(localKey).then((local) => {
           // Subscribe to every agent's databases from the first connection, and
           // let the first network load read them beside the registry.
+          if (local) sourcesKnown = true;
           if (local && !loadedOnce && !sources.length) sources = local.value.sources;
           return local;
         });

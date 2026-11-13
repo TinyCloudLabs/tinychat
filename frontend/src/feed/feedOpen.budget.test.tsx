@@ -24,8 +24,20 @@ import { FeedViewEntries } from "./FeedView";
 import { FROZEN_SITREP_RECORDS, SITREP_NOW, syntheticRecord } from "./sitrep.fixtures";
 import type { HomeFeedSource } from "./feedStoreTypes";
 
-/** The budgets (home-perf data-2026-11 §6). */
-const BUDGET = { warmBeforeFresh: 8, newDeviceBeforeFirstCard: 10, newDeviceBeforeFresh: 8, rounds: 2, idle: 2, idleMs: 60_000 };
+/**
+ * The node closes a live-update stream about 60 s after it opens. Measured on
+ * production (home-perf data-idle-f1, a 200 s idle Feed): every GET
+ * /hooks/events ended after 59.4 s, and the SDK connected again about 0.2 s
+ * later.
+ */
+const STREAM_LIFETIME_MS = 60_000;
+/** One reconnect: a new ticket and stream (2 requests), whose ready runs the Feed's freshness check (4: the registry, the default view, the agent's output and responses). */
+const RECONNECT_REQUESTS = 2 + 4;
+/**
+ * The budgets (home-perf data-2026-11 §6). Idle: a Feed minute spans one
+ * stream reconnect, so it costs that reconnect and nothing else.
+ */
+const BUDGET = { warmBeforeFresh: 8, newDeviceBeforeFirstCard: 10, newDeviceBeforeFresh: 8, rounds: 2, idle: RECONNECT_REQUESTS, idleMs: 60_000 };
 
 type SqlValue = string | number | null | Uint8Array;
 type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } };
@@ -33,17 +45,18 @@ interface NodeRequest {
   /** 1 + the waves the node had answered when the request went out: requests in round N needed only answers from rounds before N. */
   round: number;
   resource: string;
-  /** The statement, a batch's statements joined by "; ", or "subscribe". */
+  /** The statement, a batch's statements joined by "; ", or the hooks request. */
   sql: string;
 }
 
 /**
  * A TinyCloud node over bun:sqlite. While `counting`, every SQL query, execute
- * and batch and every live-update subscribe is one request, and each waits
- * until `answerWave()` answers everything outstanding at once. Requests that
- * only follow from wave N's answers therefore go out in round N + 1. A stream
- * subscribed in wave N becomes ready once that wave's SQL answers have landed:
- * its handshake (ticket, then the stream) is never quicker than one SQL reply.
+ * and batch is one request, and each waits until `answerWave()` answers
+ * everything outstanding at once. Requests that only follow from wave N's
+ * answers therefore go out in round N + 1. A live-update stream costs two
+ * requests per connection (its ticket, then the stream), answered as one
+ * handshake: a stream connected in wave N becomes ready once that wave's SQL
+ * answers have landed, never quicker than one SQL reply.
  */
 class FakeNode {
   readonly requests: NodeRequest[] = [];
@@ -59,11 +72,25 @@ class FakeNode {
     this.hooks = { subscribe: (subscriptions, options) => this.subscribe(subscriptions.length, options) };
   }
 
-  /** A live-update stream: ready once the node answers its wave, open until aborted. */
+  /**
+   * A live-update subscription as the SDK serves it: open until aborted, over
+   * a stream the node closes STREAM_LIFETIME_MS after it opens. The SDK then
+   * connects again, and each new stream's ready calls `onReady` again.
+   */
   private async *subscribe(resources: number, options?: { onReady?: () => void; signal?: AbortSignal }): AsyncGenerator<never> {
-    this.record("hooks", `subscribe(${resources})`);
     this.streams.push(options ?? {});
-    if (this.counting) this.handshakes.push(() => { if (!options?.signal?.aborted) options?.onReady?.(); });
+    const connect = () => {
+      if (options?.signal?.aborted) return;
+      this.record("hooks", `POST /hooks/tickets (${resources})`);
+      this.record("hooks", "GET /hooks/events");
+      if (!this.counting) return;
+      this.handshakes.push(() => {
+        if (options?.signal?.aborted) return;
+        window.setTimeout(connect, STREAM_LIFETIME_MS);
+        options?.onReady?.();
+      });
+    };
+    connect();
     const { promise, resolve } = Promise.withResolvers<void>();
     if (options?.signal?.aborted) resolve();
     else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
@@ -92,11 +119,14 @@ class FakeNode {
     if (this.counting) this.requests.push({ round: this.answered + 1, resource, sql });
   }
 
+  /** Resources whose SQL the node answers with an error, while they are listed. */
+  readonly unavailable = new Set<string>();
+
   private send<T>(resource: string, sql: string, run: () => T): Promise<T> {
     if (!this.counting) return Promise.resolve(run());
     this.record(resource, sql);
     const { promise, resolve } = Promise.withResolvers<T>();
-    this.outstanding.push(() => resolve(run()));
+    this.outstanding.push(() => resolve(this.unavailable.has(resource) ? { ok: false, error: { code: "SQL_ERROR", message: "SQL operation failed" } } as T : run()));
     return promise;
   }
 
@@ -137,6 +167,8 @@ class FakeNode {
 
 /** A full Feed load reads the agent registry; a freshness check only tallies it. */
 const isFullLoad = (request: NodeRequest) => request.resource === HOME_FEED_RESOURCE && /\bFROM feed_agents\b/.test(request.sql) && !request.sql.startsWith("SELECT (SELECT");
+/** A stream connection's first request: one per connection, the first and every reconnect. */
+const isTicket = (request: NodeRequest) => request.sql.startsWith("POST /hooks/tickets");
 const isDdl = (request: NodeRequest) => /\b(CREATE|ALTER|DROP)\s/i.test(request.sql);
 const rounds = (requests: readonly NodeRequest[]) => Math.max(0, ...requests.map((request) => request.round));
 
@@ -389,7 +421,7 @@ test("warm open: the device copy shows the first card before any answer; the Fee
   expect(node.requests.filter(isFullLoad)).toHaveLength(1);
 });
 
-test("new device: an empty device copy shows the first card and is fresh within budget, loaded once, with no schema DDL first", async () => {
+test("new device: an empty device copy shows the first card and is fresh within budget, loaded once over one stream, with no schema DDL first", async () => {
   const node = new FakeNode(databases);
   await seedAccount(node);
   const open = await openFeed(node, ownerClient(node));
@@ -410,6 +442,26 @@ test("new device: an empty device copy shows the first card and is fresh within 
   await answerAll(node, open);
   expectWholeFeed(open);
   expect(node.requests.filter(isFullLoad)).toHaveLength(1);
+  // The stream opens once the registry read names the agents, not first for the registry alone and again for them.
+  expect({ streams: node.requests.filter(isTicket).length, detail: describeRequests(node.requests) }).toEqual({ streams: 1, detail: describeRequests(node.requests) });
+});
+
+test("new device: a first load that fails before the registry names the agents still opens the stream, and its ready loads the Feed", async () => {
+  const node = new FakeNode(databases);
+  await seedAccount(node);
+  node.unavailable.add(HOME_FEED_RESOURCE);
+  const open = await openFeed(node, ownerClient(node));
+  await answerUntil(node, open, () => node.requests.some(isTicket));
+  expect(open.host.textContent).toContain("Home didn't load");
+  expect(open.fresh).toBeUndefined();
+
+  node.unavailable.clear();
+  await answerAll(node, open); // the stream is ready: its check finds the Feed unshown
+  await advance(node, open, 50); // the notification debounce, then the reload
+  expect(open.fresh).toBeDefined();
+  expectWholeFeed(open);
+  // The registry alone, then, once the reload names the agents, a stream that covers them too.
+  expect(node.requests.filter(isTicket)).toHaveLength(2);
 });
 
 test("first ready after the load: the stream's freshness check reloads nothing", async () => {
@@ -423,7 +475,7 @@ test("first ready after the load: the stream's freshness check reloads nothing",
   expect(node.requests.filter(isFullLoad)).toHaveLength(1);
 });
 
-test(`idle: ${BUDGET.idleMs / 1000} s on a fresh Feed with a ready stream costs at most ${BUDGET.idle} requests`, async () => {
+test(`idle: ${BUDGET.idleMs / 1000} s on a fresh Feed costs one stream reconnect and its freshness check, at most ${BUDGET.idle} requests, and reloads nothing`, async () => {
   const { node, open } = await warmOpen();
   await answerUntil(node, open, () => open.fresh !== undefined);
   await answerAll(node, open);
@@ -431,8 +483,13 @@ test(`idle: ${BUDGET.idleMs / 1000} s on a fresh Feed with a ready stream costs 
   const before = node.requests.length;
   await advance(node, open, BUDGET.idleMs);
   const idle = node.since(before);
-  observed.idle = { requests: idle.length, streamsOpened: node.streams.length - streams };
-  expect({ requests: idle.length, detail: describeRequests(idle) }).toEqual({ requests: Math.min(idle.length, BUDGET.idle), detail: describeRequests(idle) });
-  // The stream's 5-minute renewal is not due within the idle minute.
+  const detail = describeRequests(idle);
+  const reconnects = idle.filter(isTicket).length;
+  observed.idle = { requests: idle.length, reconnects, fullLoads: idle.filter(isFullLoad).length, subscriptionsOpened: node.streams.length - streams };
+  // The node closed the stream once within the minute: without that reconnect this test measures nothing.
+  expect({ reconnects, detail }).toEqual({ reconnects: 1, detail });
+  expect({ fullLoads: idle.filter(isFullLoad).length, detail }).toEqual({ fullLoads: 0, detail });
+  expect({ requests: idle.length, detail }).toEqual({ requests: Math.min(idle.length, BUDGET.idle), detail });
+  // The SDK reconnects under the same subscription; the store's 5-minute renewal is not due within the idle minute.
   expect(node.streams.length).toBe(streams);
 });
