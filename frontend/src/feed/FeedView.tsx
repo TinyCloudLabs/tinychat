@@ -200,7 +200,8 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
               : <span className="max-w-full shrink-0 truncate font-semibold text-foreground">{card.author.name}</span>}
             {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
           </span>
-          <p className={`flex items-center gap-1.5 before:content-['·'] ${card.author.via ? "min-w-0" : "shrink-0"}`}>{card.author.via && <span className="min-w-0 truncate">{`via ${card.author.via} · `}</span>}<ShortTime at={card.at} day className="shrink-0 tabular-nums" /></p>
+          {/* Who a typed card came through ("Holden (through Rocinante)") is in Details; here it was a stub ("via…"). */}
+          <p className="flex shrink-0 items-center gap-1.5 before:content-['·']"><ShortTime at={card.at} day className="shrink-0 tabular-nums" /></p>
           <span className="ml-auto flex shrink-0 items-center gap-2">
             {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
             {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}

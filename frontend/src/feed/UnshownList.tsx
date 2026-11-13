@@ -43,29 +43,27 @@ function FieldRow({ field }: { field: UnshownField }) {
 
 const rows = "divide-y divide-border overflow-hidden rounded-xl border border-border bg-card";
 
-/**
- * The fields the card does not draw, one row each; `agent` names who sent them. Bookkeeping the feed uses but does not
- * draw (`quiet`) is listed under it, folded, and not counted. Nothing when every field is drawn.
- */
+/** The fields the card does not draw and are meant to be read, one row each; `agent` names who sent them. */
 export function UnshownList({ fields, agent }: { fields: readonly UnshownField[]; agent: string }) {
-  const [quietOpen, setQuietOpen] = useState(false);
-  const loud = fields.filter((field) => !field.quiet);
-  const quiet = fields.filter((field) => field.quiet);
   if (!fields.length) return null;
-  return <div className="grid gap-[18px]">
-    {loud.length > 0 && <section aria-label="Not shown on the card">
-      <h3 className={sectionTitle}>Not shown on the card <b className="font-semibold text-foreground">{loud.length}</b></h3>
-      <ul className={rows}>{loud.map((field) => <FieldRow key={field.path} field={field} />)}</ul>
-      <p className="mt-2 text-xs leading-[17px] text-muted-foreground">These fields are shown exactly as {agent} sent them. Links aren't opened and images aren't loaded.</p>
-    </section>}
-    {quiet.length > 0 && <section aria-label="Used by the feed">
-      <h3 className="m-0"><button type="button" aria-expanded={quietOpen} onClick={() => setQuietOpen(!quietOpen)} className={`${sectionTitle} mb-0 min-h-8 w-full`}>
-        Used by the feed <b className="font-semibold text-foreground">{quiet.length}</b>
-        <ChevronDownIcon aria-hidden className={`ml-auto size-4 transition-transform motion-reduce:transition-none ${quietOpen ? "rotate-180" : ""}`} />
-      </button></h3>
-      {quietOpen && <ul className={`mt-2 ${rows}`}>{quiet.map((field) => <FieldRow key={field.path} field={field} />)}</ul>}
-    </section>}
-  </div>;
+  return <section aria-label="Not shown on the card">
+    <h3 className={sectionTitle}>Not shown on the card <b className="font-semibold text-foreground">{fields.length}</b></h3>
+    <ul className={rows}>{fields.map((field) => <FieldRow key={field.path} field={field} />)}</ul>
+    <p className="mt-2 text-xs leading-[17px] text-muted-foreground">These fields are shown exactly as {agent} sent them. Links aren't opened and images aren't loaded.</p>
+  </section>;
+}
+
+/** Bookkeeping the feed uses but does not draw (`quiet` fields), folded, listed in full, never counted. */
+export function FeedUsedList({ fields }: { fields: readonly UnshownField[] }) {
+  const [open, setOpen] = useState(false);
+  if (!fields.length) return null;
+  return <section aria-label="Used by the feed">
+    <h3 className="m-0"><button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className={`${sectionTitle} mb-0 min-h-8 w-full`}>
+      Used by the feed <b className="font-semibold text-foreground">{fields.length}</b>
+      <ChevronDownIcon aria-hidden className={`ml-auto size-4 transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
+    </button></h3>
+    {open && <ul className={`mt-2 ${rows}`}>{fields.map((field) => <FieldRow key={field.path} field={field} />)}</ul>}
+  </section>;
 }
 
 /** The whole card as it was sent, as JSON, folded into one row: the fallback that leaves nothing out. */
