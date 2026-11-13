@@ -12,6 +12,7 @@ import type {
   NewFeedResponse,
 } from "@tinycloud/sdk-services/feed";
 import type { PreparedRecipient, SamState, SitrepMessageDelivery, SitrepOwnerData, SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
+import type { OwnerAction } from "./ownerActions";
 
 export interface HomeFeedViewEvent {
   sequence: number;
@@ -45,7 +46,10 @@ export interface HomeFeedEntry {
   responses?: FeedResponse[];
   viewEvents?: HomeFeedViewEvent[];
   owner?: SitrepOwnerData;
+  /** The agent's handling (acknowledged, succeeded or failed) of each of `responses`, by responseId; absent: none yet. */
   responseHandling?: Record<string, FeedResponseHandling>;
+  /** A plain card's private `feed.page` answer payloads (a post's answers), by responseId. */
+  responsePayloads?: Record<string, FeedResponsePayload>;
   recipientRoute?: { recipients: PreparedRecipient[]; unresolved: string[]; receiptRecipients?: PreparedRecipient[] };
   /** Only validated owner archives may join relationships across registered sources. */
   modelScope?: string;
@@ -88,8 +92,8 @@ export interface HeldAnswerOutcome {
 
 export interface HomeFeedSaveOptions {
   /**
-   * Hold the answer in the page-close outbox first, synchronously, until the write is confirmed
-   * or refused: a page that closes before it lands sends it at the next launch.
+   * Hold the answer (or owner action) in the page-close outbox first, synchronously, until the write
+   * is confirmed or refused: a page that closes before it lands sends it at the next launch.
    */
   hold?: boolean;
 }
@@ -106,6 +110,11 @@ export interface HomeFeedSource {
   cached?: () => Promise<HomeFeedSnapshot | null>;
   saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload, options?: HomeFeedSaveOptions): Promise<FeedResponse>;
   holdsAnswer?(entry: HomeFeedEntry, responseId: string): boolean;
+  /**
+   * Tells the card's agent about an owner action (Drop, Acknowledge, Ask me later) on this exact card identity:
+   * a `message` with the agreed header and private payload (see ownerActions.ts).
+   */
+  sendOwnerAction?(entry: HomeFeedEntry, action: OwnerAction, options?: HomeFeedSaveOptions): Promise<FeedResponse>;
   flushHeldAnswers?(): Promise<HeldAnswerOutcome[]>;
   sendMessage?: (entry: HomeFeedEntry, message: HomeFeedMessageDraft, payload?: FeedResponsePayload) => Promise<FeedResponse>;
   saveOwnerState?: (entry: HomeFeedEntry, event: HomeFeedOwnerEvent) => Promise<void>;

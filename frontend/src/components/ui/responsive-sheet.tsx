@@ -30,16 +30,17 @@ export function ResponsiveSheet({ footer, ...props }: ResponsiveSheetProps) {
       </BottomSheet>
     );
   }
-  const { open, onOpenChange, dismissible = true, title, description, children, contentProps } = props;
+  const { open, onOpenChange, dismissible = true, modal = true, onOpenAutoFocus, title, description, children, contentProps } = props;
   const block = (event: Event) => {
     if (!dismissible) event.preventDefault();
   };
   return (
-    <Dialog open={open} onOpenChange={(next) => (dismissible || next) && onOpenChange(next)}>
+    <Dialog open={open} modal={modal} onOpenChange={(next) => (dismissible || next) && onOpenChange(next)}>
       <DialogContent
         {...contentProps}
         {...(description ? {} : { "aria-describedby": undefined })}
         hideCloseButton
+        onOpenAutoFocus={onOpenAutoFocus}
         onEscapeKeyDown={block}
         onPointerDownOutside={block}
         onInteractOutside={block}

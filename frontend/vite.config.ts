@@ -3,11 +3,12 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "path";
 import { fileURLToPath } from "url";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
 import { firstNonEmpty } from "./src/lib/buildEnv";
+import { extractInlinedSdkWasm } from "./src/lib/sdkWasmAsset";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromApp = createRequire(import.meta.url);
@@ -78,6 +79,33 @@ export default defineConfig(({ command, mode }) => {
         this.emitFile({ type: "asset", fileName: "version.json", source: `${JSON.stringify({ commit: exoBuildInfo.commit ?? null })}\n` });
       },
     },
+    (() => {
+      // The TinyCloud SDK's WASM as its own file (assets/tinycloud_web_sdk_rs_bg-*.wasm) instead of 1.9 MB of base64
+      // in the entry chunk that is decoded at module evaluation (TC-2882, src/lib/sdkWasmAsset.ts). index.html
+      // preloads it, so it arrives while the entry chunk is still parsing, and wasm-bindgen then fetches it. The web
+      // precaches it (globPatterns); the Capacitor and Tauri shells serve it from the app bundle, as they do
+      // franken-markdown's WASM. `vite dev` keeps it inline.
+      const wasmName = "tinycloud_web_sdk_rs_bg.wasm";
+      return {
+        name: "tinycloud-sdk-wasm-asset",
+        apply: "build",
+        enforce: "pre",
+        transform(code, id) {
+          if (!/[\\/]@tinycloud[\\/]web-sdk[\\/]dist[\\/]index\.mjs$/.test(id)) return null;
+          const extracted = extractInlinedSdkWasm(code, (base64) =>
+            `import.meta.ROLLUP_FILE_URL_${this.emitFile({ type: "asset", name: wasmName, source: Buffer.from(base64, "base64") })}`);
+          return extracted && { code: extracted.code, map: null };
+        },
+        transformIndexHtml: {
+          order: "post",
+          handler(_html, { bundle }) {
+            const wasm = Object.values(bundle ?? {}).find((file) => file.type === "asset" && file.names.includes(wasmName));
+            // Same mode and credentials as wasm-bindgen's fetch(), so the preloaded response is reused.
+            return wasm && [{ tag: "link", attrs: { rel: "preload", href: `/${wasm.fileName}`, as: "fetch", crossorigin: "anonymous" }, injectTo: "head" }];
+          },
+        },
+      } satisfies Plugin;
+    })(),
     nodePolyfills({ globals: { Buffer: true, process: true, global: true } }),
     react(),
     // Installable web app (PWA). Builds dist/manifest.webmanifest (linked from index.html) and a Workbox
@@ -128,8 +156,8 @@ export default defineConfig(({ command, mode }) => {
           "agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm",
           "assets/kv-storage*.js", "assets/replica-*.js", "assets/profile-gate-*.js",
         ],
-        // The main chunk carries the TinyCloud SDK's inlined WASM (~7.4 MB today); Workbox skips
-        // anything over its 2 MiB default, which would leave the shell unable to boot offline.
+        // The main chunk (~7.4 MB, most of it the TinyCloud SDK) and the SDK's WASM (1.4 MB) are needed to boot;
+        // Workbox skips anything over its 2 MiB default, which would leave the shell unable to boot offline.
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
         // App routes (/, /chat/*) are client-side: serve the precached index.html for navigations.
         navigateFallback: "index.html",

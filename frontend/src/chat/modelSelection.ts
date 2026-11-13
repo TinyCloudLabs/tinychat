@@ -122,35 +122,85 @@ function spaceOf(tcw: TinyCloudWeb): string {
   );
 }
 
+/** How long one automatic lookup waits for the server's choice. */
+const LOOKUP_DEADLINE_MS = 3_000;
+
+type AutomaticChoiceBody = { model?: unknown; reason?: unknown } | null;
+interface SharedLookup {
+  request: Promise<AutomaticChoiceBody>;
+  /** Keep the request open until at least `deadline` (epoch ms) for a lookup that joined it. */
+  holdUntil(deadline: number): void;
+}
+
+/**
+ * Lookups in flight, by backend and session token. Lookups that overlap share
+ * one request: on open, a render React discards can start a lookup in a
+ * coordinator that never mounts, beside the mounted one's identical lookup.
+ * Each lookup keeps its own deadline; the request is aborted only once the
+ * latest one has passed. A settled lookup is forgotten, so the next new chat
+ * asks again.
+ */
+const lookupsInFlight = new Map<string, SharedLookup>();
+
+function requestAutomaticChoice(backendUrl: string, token: string | null): SharedLookup {
+  const key = `${backendUrl}\u0000${token ?? ""}`;
+  const shared = lookupsInFlight.get(key);
+  if (shared) return shared;
+  const controller = new AbortController();
+  let abortAt = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const holdUntil = (deadline: number) => {
+    if (deadline <= abortAt) return;
+    abortAt = deadline;
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), deadline - Date.now());
+  };
+  const request: Promise<AutomaticChoiceBody> = Promise.race([
+    (async () => {
+      const response = await fetch(`${backendUrl}/api/chat/model-selection`, {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (response.status === 401 || response.status === 403) throw new SelectionAuthError();
+      if (!response.ok) throw new Error("Health unavailable");
+      return await response.json() as AutomaticChoiceBody;
+    })(),
+    new Promise<never>((_, reject) => {
+      controller.signal.addEventListener("abort", () => reject(new Error("Health lookup aborted")), { once: true });
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+    if (lookupsInFlight.get(key)?.request === request) lookupsInFlight.delete(key);
+  });
+  const lookup = { request, holdUntil };
+  lookupsInFlight.set(key, lookup);
+  return lookup;
+}
+
 async function fetchAutomaticChoice(
   backendUrl: string,
   sessionStore: SessionStore,
   signal: AbortSignal,
 ): Promise<{ model: OfferedModelId; reason: "healthy" | "health-unverified" } | null> {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  signal.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(() => controller.abort(), 3_000);
+  let cancelled = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const token = sessionStore.getToken();
+    const lookup = requestAutomaticChoice(backendUrl, sessionStore.getToken());
+    lookup.holdUntil(Date.now() + LOOKUP_DEADLINE_MS);
+    // A cancelled lookup stops waiting; the shared request still ends at its own deadline.
     const body = await Promise.race([
-      (async () => {
-        const response = await fetch(`${backendUrl}/api/chat/model-selection`, {
-          headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            "X-Requested-With": "XMLHttpRequest",
-          },
-          signal: controller.signal,
-          cache: "no-store",
-        });
-        if (response.status === 401 || response.status === 403) throw new SelectionAuthError();
-        if (!response.ok) throw new Error("Health unavailable");
-        return response.json();
-      })(),
+      lookup.request,
       new Promise<never>((_, reject) => {
-        const fail = () => reject(new Error("Health lookup aborted"));
-        if (controller.signal.aborted) fail();
-        else controller.signal.addEventListener("abort", fail, { once: true });
+        timer = setTimeout(() => reject(new Error("Health lookup timed out")), LOOKUP_DEADLINE_MS);
+      }),
+      new Promise<never>((_, reject) => {
+        cancelled = () => reject(new TurnCancelledError());
+        if (signal.aborted) cancelled();
+        else signal.addEventListener("abort", cancelled, { once: true });
       }),
     ]);
     if (
@@ -160,7 +210,7 @@ async function fetchAutomaticChoice(
       return null;
     }
     if (
-      isOfferedChatModel(body?.model) &&
+      typeof body?.model === "string" && isOfferedChatModel(body.model) &&
       (body?.reason === "healthy" || body?.reason === "health-unverified")
     ) {
       return { model: body.model, reason: body.reason };
@@ -172,7 +222,7 @@ async function fetchAutomaticChoice(
     return { model: DEFAULT_CHAT_MODEL, reason: "health-unverified" };
   } finally {
     clearTimeout(timer);
-    signal.removeEventListener("abort", abort);
+    signal.removeEventListener("abort", cancelled);
   }
 }
 

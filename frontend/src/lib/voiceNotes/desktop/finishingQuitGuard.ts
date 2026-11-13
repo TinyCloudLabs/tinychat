@@ -1,5 +1,3 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
-
 export const FINISHING_QUIT_COPY = "TinyCloud Home is finishing a recording. Quit anyway? It finishes next time you open TinyCloud Home.";
 
 /** One decision per close request. The native stop journal survives either choice. */
@@ -34,15 +32,19 @@ interface CloseWindow {
 }
 
 export async function installFinishingQuitGuard(isFinishing: () => Promise<boolean>,
-  appWindow: CloseWindow = getCurrentWindow(), ask = askToQuitDuringFinishing,
+  closeWindow?: CloseWindow, ask = askToQuitDuringFinishing,
   subscribeExit?: (handler: () => void) => Promise<() => void>,
-  quitApp: () => Promise<void> = () => appWindow.destroy()): Promise<() => void> {
+  quitApp?: () => Promise<void>): Promise<() => void> {
+  // A dynamic import: the window API is desktop-only, and a static one would put its chunk (which the web's precache
+  // leaves out) on every platform's boot path, so an offline web launch could not load the app (TC-2882).
+  const appWindow = closeWindow ?? (await import("@tauri-apps/api/window")).getCurrentWindow();
+  const quit = quitApp ?? (() => appWindow.destroy());
   let prompting = false;
   const decide = async () => {
     if (prompting) return;
     prompting = true;
     try {
-      if (!await isFinishing() || await ask()) await quitApp();
+      if (!await isFinishing() || await ask()) await quit();
     } finally { prompting = false; }
   };
   const unlistenClose = await appWindow.onCloseRequested((event) => {

@@ -15,6 +15,42 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.43
+
+### Patch Changes
+
+- 749f7bf: Keep TinyCloud permission prompts accessible while Main's chat is open, then restore chat focus without losing the draft. Details: TC-2835.
+
+## 0.14.0-beta.42
+
+### Minor Changes
+
+- fc1ba3e: Home Feed gets the new card design.
+  - **Views:** an Information | All | Needs action slider stays in reach as you scroll. "View" shows cards Compact (the default), as Full cards, or as a Grid, and keeps your place when you switch. History, Snoozed, priority and order sit under Filter.
+  - **Compact cards:** each shows the agent, a relative time, where the card stands, a P0/P1 priority mark, when it's due, and how many times the agent replied.
+  - **Open cards:** a card can carry a one-page brief that opens in the app. Comments read as a conversation. A comment shows "Received" only once the agent confirms it, and offers "Send again" if it isn't confirmed within two minutes.
+  - **5 s Undo on every send:** that covers answers, comments, approvals, codes, and claim and task actions. A go-ahead is checked again before it's sent, and an approval that expired or closed in the meantime sends nothing.
+  - **Card actions:** a decision can be dropped and an update acknowledged; either can be brought back later. Each takes the card away at once with Undo at the bottom of the screen, then tells the agent, and the card moves to History, marked Dropped or Acknowledged. Cards past their expiry move there too, marked Expired.
+  - **Posts:** a post opens as a page with media and questions. Answers go to the agent per question, and unsent answers stay on the device.
+
+## 0.14.0-beta.41
+
+### Patch Changes
+
+- 94fbf3b: TinyCloud Home starts with less JavaScript. The startup script drops from 10.1 MB to 7.4 MB. The TinyCloud SDK's WebAssembly is now a separate file in the app bundle, fetched while the page loads, instead of 1.9 MB of base64 decoded at startup. Chat, Recording, Connectors, Apps, Settings and How it works load from their own files once Feed is up. The web app precaches everything an offline launch needs, and the desktop and phone apps load it all from the app bundle. An installed web app opened offline loads again: since the desktop quit guard (October), the startup script imported a desktop-only file the offline cache leaves out, so the page stayed blank. One copy of `@tinycloud/replica` (0.4.4, the SDK's) is installed instead of two. CI fails a build whose startup script goes over 7.6 MB or inlines WebAssembly again. Details: TC-2882
+
+## 0.14.0-beta.40
+
+### Patch Changes
+
+- 7e763b6: Home loads the Feed first when it opens on the Feed. The chat list refresh, the first-screen, word fixes and Canvas settings reads, the memory check, the transcriber library sync and the background chat history copy now wait until the Feed's first network load has shown (at most 3 s), so the Feed's reads no longer queue behind them at the node. Lists stored on the device still show at once, and opening Chat or any other screen releases the waiting reads immediately. Two overlapping automatic model lookups now share one request.
+
+## 0.14.0-beta.39
+
+### Patch Changes
+
+- e84dd3b: Allow first-use bot history approval with fresh SDK session snapshots while refusing owner or session-key changes. Details: TC-2895.
+
 ## 0.14.0-beta.38
 
 ### Patch Changes

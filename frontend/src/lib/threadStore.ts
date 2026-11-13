@@ -10,7 +10,7 @@ import { CHAT_SHARING_PAUSED } from "./chatSharing";
 import { cleanupShareRecordsAfterDelete } from "./shareRecords";
 import { THREAD_LIST_LOAD_FAILED } from "./threadListStrings";
 import { clearLocalMarker, hasLocalMarker, setLocalMarker } from "./localFirst/localCache";
-import { inBackground, inForeground, type Lane } from "./localFirst/requestLanes";
+import { afterFeedFirst, inBackground, inForeground, type Lane } from "./localFirst/requestLanes";
 
 // ── Storage layout ───────────────────────────────────────────────────
 //
@@ -1239,7 +1239,8 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
     markIndexDelivered(cached);
     const startGen = mutationGen;
     setIndexSyncing(true);
-    void coldLoad(tcw, scope)
+    // On a Feed open the refresh waits for the Feed's first load (requestLanes.ts).
+    void afterFeedFirst(() => coldLoad(tcw, scope))
       .then((fresh) => {
         // Drop a revalidate whose SELECT was in flight when a mutation happened
         // — otherwise it would resurrect deleted/renamed rows by overwriting
@@ -1256,7 +1257,7 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
   }
   // Cold load — no usable local cache. Pay the network once, then cache.
   const startGen = mutationGen;
-  const fresh = await coldLoad(tcw, scope);
+  const fresh = await afterFeedFirst(() => coldLoad(tcw, scope));
   if (mutationGen === startGen) writeCache(tcw, fresh);
   // The cold result IS what the UI renders — mark it delivered FIRST so the
   // notify carries changed=false (no sidebar reload), then notify so the

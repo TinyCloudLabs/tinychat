@@ -11,6 +11,7 @@ import {
   ThreadListLoadError,
   SqlOpError,
 } from "./threadStore";
+import { markFeedFresh, noteScreen, resetLanesForTests } from "./localFirst/requestLanes";
 
 // Regression coverage for TC-2016: a hung or failed chat-list read is retried
 // and, if it still fails, surfaces as an error state, never an empty list.
@@ -27,8 +28,11 @@ class SqlService {
   /** Probes of sqlite_master that never answer, before the next one does. */
   hangingProbes = 0;
   messageBatches = 0;
+  /** Every SQL invoke (query, execute, batch) sent to the node. */
+  invokes = 0;
 
   query = async (sql: string, params: unknown[] = [], options?: { signal?: AbortSignal }) => {
+    this.invokes++;
     if (THREADS_SELECT.test(sql)) {
       this.selectSignals.push(options?.signal);
       const behavior = this.selectScript.shift() ?? "ok";
@@ -50,11 +54,13 @@ class SqlService {
   };
 
   execute = async (sql: string, params: unknown[] = []) => {
+    this.invokes++;
     this.sqlite.query(sql).run(...(params as never[]));
     return { ok: true as const, data: { changes: 1, lastInsertRowId: null } };
   };
 
   batch = async (statements: Array<{ sql: string; params?: unknown[] }>) => {
+    this.invokes++;
     if (statements.some((s) => s.sql.includes("INSERT INTO messages"))) {
       this.messageBatches++;
       if (this.hangBatchMatch) return new Promise<never>(() => {});
@@ -99,6 +105,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetLanesForTests();
   jest.useRealTimers();
   errorSpy.mockRestore();
   (globalThis as { window?: unknown }).window = originalWindow;
@@ -272,5 +279,44 @@ describe("chat-list read retry", () => {
     expect(error).toBeInstanceOf(SqlOpError);
     expect((error as SqlOpError).retryable).toBe(true);
     expect(service.messageBatches).toBe(1);
+  });
+});
+
+describe("chat list on a Feed open (requestLanes Feed first)", () => {
+  test("a cold chat-list load sends nothing to the node until the Feed's first load renders", async () => {
+    const service = new SqlService();
+    service.seedThread("t1", "One", "2026-01-01T00:00:00.000Z");
+    const tcw = cloud(service);
+    noteScreen(true);
+    const outcome = start(tcw);
+    await advance(2_000);
+    expect(service.invokes).toBe(0);
+    expect(outcome.done).toBe(false);
+
+    markFeedFresh();
+    await advance(0);
+    expect(outcome.done).toBe(true);
+    expect((outcome.value as Array<{ id: string }>).map((t) => t.id)).toEqual(["t1"]);
+    expect(service.invokes).toBeGreaterThan(0);
+  });
+
+  test("the device's copy paints at once; only its network refresh waits for the Feed", async () => {
+    const service = new SqlService();
+    service.seedThread("t1", "One", "2026-01-01T00:00:00.000Z");
+    const tcw = cloud(service);
+    await listThreads(tcw); // nothing held yet: this fills the device copy
+    service.seedThread("t2", "Two", "2026-01-02T00:00:00.000Z");
+    const before = service.invokes;
+
+    noteScreen(true);
+    const cached = await listThreads(tcw);
+    expect(cached.map((t) => t.id)).toEqual(["t1"]);
+    await advance(2_000);
+    expect(service.invokes).toBe(before);
+
+    noteScreen(false); // the user opened Chat: the refresh goes now
+    await advance(0);
+    expect(service.invokes).toBeGreaterThan(before);
+    expect((await listThreads(tcw)).map((t) => t.id)).toEqual(["t2", "t1"]);
   });
 });

@@ -128,9 +128,12 @@ process.exit(Number(exitCode));
     if (intent) take(await owner.execute("INSERT INTO feed_owner_events VALUES (?,?,?,?,?,?,?,?)", [responseId, identity.sourceId, identity.cardId, identity.revision, identity.issuanceId, "state", JSON.stringify(intent), T2]));
     return take(await appendFeedMessage(output, responses, { ...tuple(identity), responseId, kind: "message", text: "Safe explicit Home command", createdAt: T2 }, { type: "sitrep.state", version: 1, data }));
   }
+  async function ownerAction(type: string, data: FeedResponsePayload["data"], version = 1) {
+    return take(await appendFeedMessage(output, responses, { ...tuple(identity), responseId: randomUUID(), kind: "message", text: "Owner card action", createdAt: T2 }, { type, version, data }));
+  }
   const forward = (response: FeedResponse, callback = deliver()) => forwardHomeMirrorResponse(ctx, { identity, responseId: response.responseId, handoff, recipient: RECIPIENT, deliver: callback });
   const noDelivery = async (response: FeedResponse) => { expect(take(await getFeedHandoff(handoff, response.responseId, RECIPIENT))).toBeNull(); expect(attempts()).toEqual([]); };
-  return { ctx, input, identity, owner, output, responses, handoff, legacy, values, key, answer, command, forward, deliver, attempts, noDelivery,
+  return { ctx, input, identity, owner, output, responses, handoff, legacy, values, key, answer, command, ownerAction, forward, deliver, attempts, noDelivery,
     holdClose: () => { const gate = { arrived: deferred(), release: deferred() }; closeGate = gate; cleanup.push(() => gate.release.resolve()); return gate; },
     failClose: () => { failClose = true; }, failRead: () => { failResponseRead = true; } };
 }
@@ -219,6 +222,47 @@ test("an explicit valid thread note retains normal handoff without closing its u
   expect(await f.forward(response)).toMatchObject({ state: "delivered" });
   expect(f.values.get(f.key)).toEqual(before);
   expect(f.attempts()).toEqual([{ header: response, boardStatus: "open", liftReason: null, liftedBy: null }]);
+  expect(take(await f.owner.query("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows).toEqual([[null]]);
+});
+
+test("each owner card action is handed off once as a nonclosing message", async () => {
+  const f = await fixture(), before = f.values.get(f.key), delivered: unknown[] = [];
+  for (const [type, data] of [["feed.drop", {}], ["feed.acknowledge", {}], ["feed.snooze", { until: "2099-01-01T08:00:00.000Z" }]] as const) {
+    const response = await f.ownerAction(type, data);
+    expect(await f.forward(response)).toMatchObject({ responseId: response.responseId, state: "delivered" });
+    delivered.push({ header: response, boardStatus: "open", liftReason: null, liftedBy: null });
+    expect(f.attempts()).toEqual(delivered);
+    expect(await f.forward(response)).toMatchObject({ responseId: response.responseId, state: "delivered" });
+    expect(f.attempts()).toEqual(delivered);
+  }
+  expect(f.values.get(f.key)).toEqual(before);
+  expect(take(await f.owner.query("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows).toEqual([[null]]);
+});
+
+test("a malformed owner snooze is not delivered", async () => {
+  const f = await fixture(), before = f.values.get(f.key);
+  const malformed: Array<[FeedResponsePayload["data"], number]> = [[{ until: "later" }, 1], [{}, 1], [{ until: "2099-01-01T08:00:00.000Z", note: PRIVATE }, 1], [{ until: "2099-01-01T08:00:00.000Z" }, 2], [[], 1]];
+  for (const [data, version] of malformed) {
+    const response = await f.ownerAction("feed.snooze", data, version);
+    await blocked(f.forward(response)); await f.noDelivery(response);
+  }
+  const extra = await f.ownerAction("feed.drop", { private: PRIVATE });
+  await blocked(f.forward(extra)); await f.noDelivery(extra);
+  expect(f.values.get(f.key)).toEqual(before);
+});
+
+test("an unknown owner card action is not delivered", async () => {
+  const f = await fixture(), response = await f.ownerAction("feed.archive", {});
+  await blocked(f.forward(response)); await f.noDelivery(response);
+  expect(JSON.parse(f.values.get(f.key)!.text).status).toBe("open");
+});
+
+test("an owner drop never closes the mirror", async () => {
+  const f = await fixture(), before = f.values.get(f.key), response = await f.ownerAction("feed.drop", {});
+  expect(await closeHomeMirror(f.ctx, f.identity)).toBeNull();
+  expect(await f.forward(response)).toMatchObject({ state: "delivered" });
+  expect(await closeHomeMirror(f.ctx, f.identity)).toBeNull();
+  expect(f.values.get(f.key)).toEqual(before);
   expect(take(await f.owner.query("SELECT close_receipt_json FROM feed_sitrep_mirrors")).rows).toEqual([[null]]);
 });
 
