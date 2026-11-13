@@ -986,7 +986,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     return <MorphItem key={key} contentKey={page ? "post" : isOpen(entry) || retained ? "full" : "compact"} data-card-key={keyOf(entry)} className="min-w-0 scroll-mt-4">
       {/* A card leaving after a decision: its content fades and lifts 4px first, then its space closes (`gone`); on
           Undo the space opens first and the content fades in last. Taps and focus skip it meanwhile. */}
-      <div data-leave-key={key} inert={away} className={`transition-[opacity,transform] duration-[120ms] ease-[cubic-bezier(.2,0,0,1)] motion-reduce:transition-none ${away ? "-translate-y-1 opacity-0" : "delay-[120ms]"} ${gone.has(key) ? "h-0 overflow-hidden" : ""}`}>
+      <div data-leave-key={key} inert={away} className={`transition-[opacity,transform] duration-[120ms] [transition-timing-function:cubic-bezier(.2,0,0,1)] motion-reduce:transition-none ${away ? "-translate-y-1 opacity-0" : "delay-[120ms]"} ${gone.has(key) ? "h-0 overflow-hidden" : ""}`}>
         {page ? postCard(entry) : isOpen(entry) || retained ? fullCard(entry, retained) : compactCard(entry)}
       </div>
       {/* The Snoozed list: each card can come back now without opening it. */}

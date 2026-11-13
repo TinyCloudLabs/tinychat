@@ -8,10 +8,13 @@ import { actionClass, CardDetails, footActionClass, type CardClose } from "./Car
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
-import { HomeCardThread } from "./HomeCardThread";
 import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
 import { shortTime } from "./ShortTime";
 import { useLeave } from "./leaveCard";
+import { preloadModule } from "./preloadModule";
+
+// The card's thread (its comments and closed comment box) loads beside the app, not in its startup chunk.
+const useThreadModule = preloadModule(() => import("./HomeCardThread"));
 
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
 const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
@@ -162,6 +165,7 @@ export function SitrepCard(props: Props) {
   // An ask whose folded approval steps stay with Sam after its answer keeps its place; the bar still shows (the design agent).
   const pageBar = useLeave(decided ? { away: !projection.parts.length, ...(counting && words ? { bar: { ...words, endsAt: counting.endsAt, undo: decisionUndo } } : {}) } : null);
   const barred = pageBar && decided;
+  const threadKit = useThreadModule();
   const closed = isClosed(record);
   const answers = owner.answers.filter((answer) => answer.card.kind === record.kind && answer.card.id === record.id).map((answer) => answer.value);
   const claims = claimDecisionHistory(owner, record.id);
@@ -321,7 +325,7 @@ export function SitrepCard(props: Props) {
   // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the agent.
   // The conversation keeps its own closed box ("Leave a comment for …") above the foot, as on the lab's cards.
   const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : agent;
-  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo}
+  const thread = threadKit && <threadKit.HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />;
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own
   // countdown (`chosen`) shows in its row instead.
