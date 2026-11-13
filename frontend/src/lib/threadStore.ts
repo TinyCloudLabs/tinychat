@@ -252,8 +252,11 @@ function withDeadline<R>(
 interface SchemaHooks {
   /** A write found a table missing: run the schema check again on the next write. */
   forget(): void;
-  /** A read found a table missing: create the missing tables. True when the read may run again. */
-  repair(): Promise<boolean>;
+  /**
+   * A read found a table missing: create the missing tables. Null when the read
+   * may run again; otherwise the error that stopped the probe or the create.
+   */
+  repair(): Promise<SqlError | null>;
   /** A read succeeded without a schema check: confirm the schema after the open's own reads. */
   confirm(): void;
 }
@@ -269,7 +272,8 @@ function missingTable(result: { ok: boolean; error?: { message?: string } }): bo
  * task (the history copy) and run as issued.
  *
  * Reads never wait on a schema check: a read that fails with "no such table"
- * creates the missing tables and runs once more.
+ * creates the missing tables and runs once more. When the probe or create
+ * fails, the read returns that error (a timeout, an auth or storage failure).
  */
 function bounded(db: SqlDb, lane: Lane, schema: SchemaHooks, timeoutMs?: number) {
   const ms = () => timeoutMs ?? sqlCallTimeoutMs;
@@ -288,7 +292,9 @@ function bounded(db: SqlDb, lane: Lane, schema: SchemaHooks, timeoutMs?: number)
     query: async (sql: string, params?: Parameters<SqlDb["query"]>[1]) => {
       const result = await read(sql, params);
       if (result.ok) schema.confirm();
-      if (!missingTable(result) || !(await schema.repair())) return result;
+      if (!missingTable(result)) return result;
+      const failure = await schema.repair();
+      if (failure) return { ok: false, error: { code: failure.code, message: failure.message, service: "sql" } } satisfies SqlTimeoutResult;
       return read(sql, params);
     },
     execute: (sql: string, params?: Parameters<SqlDb["execute"]>[1]) =>
@@ -306,11 +312,15 @@ function store(tcw: TinyCloudWeb, scope: ReturnType<typeof storageScopeFor>, tim
     repair: async () => {
       forgetSchema(tcw);
       try {
-        await ensureSchema(tcw, {}, scope);
-        return true;
-      } catch {
-        // ensureSchema reported the failure; the caller handles the read's own error.
-        return false;
+        return await ensureSchema(tcw, {}, scope);
+      } catch (err) {
+        // ensureSchema already reported it; hand the read the SQL error that stopped it.
+        const cause = err instanceof SqlOpError ? err.cause : undefined;
+        if (cause && typeof cause === "object" && "code" in cause && "message" in cause
+          && typeof cause.code === "string" && typeof cause.message === "string") {
+          return { code: cause.code, message: cause.message };
+        }
+        return { code: "SCHEMA_ERROR", message: err instanceof Error ? err.message : String(err) };
       }
     },
     confirm: () => confirmSchemaInBackground(tcw, scope),
@@ -524,9 +534,9 @@ async function ensureSchema(
   tcw: TinyCloudWeb,
   options: { forWrite?: boolean },
   scope: ReturnType<typeof storageScopeFor>,
-): Promise<void> {
+): Promise<SqlError | null> {
   const memoKey = schemaMemoKey(tcw);
-  if (memoKey && schemaKnown(memoKey)) return;
+  if (memoKey && schemaKnown(memoKey)) return null;
 
   let run = memoKey ? schemaInFlight.get(memoKey) : undefined;
   if (!run) {
@@ -568,6 +578,8 @@ async function ensureSchema(
 
   const storageError = await run;
   if (storageError && options.forWrite) throw new SqlOpError(storageError, "ensureSchema", scope);
+  // A read gets the storage error back: its missing table could not be created.
+  return storageError;
 }
 
 // ── Read helpers (rows are CELL-arrays, mapped by column order) ───────

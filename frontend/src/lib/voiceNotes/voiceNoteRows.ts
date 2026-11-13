@@ -11,6 +11,7 @@ import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptK
 import { clearLocalMarker, hasLocalMarker, setLocalMarker } from "../localFirst/localCache";
 import { whenForegroundIdle } from "../localFirst/requestLanes";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedSqlCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
+import { isAccountWorkAllowed } from "./accountContext";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, SQL_CHUNK, type LegacyTranscriptRow, type TranscriptCommit } from "./voiceNoteCommits";
 
@@ -115,12 +116,16 @@ function forgetVoiceNoteIdentity(tcw: TinyCloudWeb): void {
 /**
  * The identity is known from an earlier open, so no DDL runs. The space-wide
  * archive sweep (late writes to archived duplicates) still runs once per
- * session, after the open's foreground reads.
+ * session, after the open's foreground reads. A failed or stopped sweep runs
+ * again on the next identity check. Sign-out stops it like other account work.
  */
 function sweepAfterOpen(tcw: TinyCloudWeb, key: string): void {
   if (sweptThisSession.get(tcw) === key) return;
   sweptThisSession.set(tcw, key);
-  const current = () => { if (identityKey(tcw) !== key) throw new Error("Voice-note space changed"); };
+  const current = () => {
+    if (identityKey(tcw) !== key) throw new Error("Voice-note space changed");
+    if (!isAccountWorkAllowed(tcw)) throw new Error("Voice-note account work is paused");
+  };
   void whenForegroundIdle().then(() => sweepArchived(tcw, current)).catch((error: unknown) => {
     if (sweptThisSession.get(tcw) === key) sweptThisSession.delete(tcw);
     console.warn("[VoiceNotes] Archived duplicate sweep is still pending", error);
@@ -135,7 +140,10 @@ function sweepAfterOpen(tcw: TinyCloudWeb, key: string): void {
 export function ensureVoiceNoteIdentity(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<IdentityResult> {
   checkpoint();
   const key = identityKey(tcw);
-  if (identityReady.get(tcw) === key) return Promise.resolve({ status: "established" });
+  if (identityReady.get(tcw) === key) {
+    sweepAfterOpen(tcw, key);
+    return Promise.resolve({ status: "established" });
+  }
   const marker = identityMarkerKey(tcw);
   if (marker && hasLocalMarker(marker)) {
     identityReady.set(tcw, key);

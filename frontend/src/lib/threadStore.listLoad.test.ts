@@ -24,6 +24,8 @@ class SqlService {
   selectScript: Behavior[] = [];
   readonly selectSignals: Array<AbortSignal | undefined> = [];
   hangBatchMatch: RegExp | null = null;
+  /** Probes of sqlite_master that never answer, before the next one does. */
+  hangingProbes = 0;
   messageBatches = 0;
 
   query = async (sql: string, params: unknown[] = [], options?: { signal?: AbortSignal }) => {
@@ -34,6 +36,10 @@ class SqlService {
       if (behavior === "error") {
         return { ok: false as const, error: { code: "SQL_ERROR", message: "boom", service: "sql" } };
       }
+    }
+    if (/sqlite_master/.test(sql) && this.hangingProbes > 0) {
+      this.hangingProbes--;
+      return new Promise<never>(() => {});
     }
     // Like the SDK, a SQL failure (e.g. "no such table") is a Result, not a throw.
     try {
@@ -208,6 +214,19 @@ describe("chat-list read retry", () => {
     expect((outcome.value as Array<{ id: string }>).map((t) => t.id)).toEqual(["old"]);
     expect(getThreadListLoadState()).toEqual({ status: "error", hasCache: true });
     expect(JSON.parse(storage.get(`tinychat:index:${tcw.did}`)!).threads.map((t: { id: string }) => t.id)).toEqual(["old"]);
+  });
+
+  test("a timed-out schema probe after a missing table is retried like a timed-out read", async () => {
+    const service = new SqlService();
+    service.hangingProbes = 1;
+    const outcome = start(cloud(service));
+    await advance(20_000);
+
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.value).toEqual([]);
+    // First invoke: missing table, probe timed out. Second: missing table, probe + create, read again.
+    expect(service.selectSignals).toHaveLength(3);
+    expect(getThreadListLoadState()).toEqual({ status: "ok" });
   });
 
   test("a successful read of 0 rows is an empty list, not an error", async () => {

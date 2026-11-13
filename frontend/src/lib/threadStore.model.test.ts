@@ -263,8 +263,8 @@ describe("concurrent schema migration policy", () => {
       const writeResult = write.then(() => null, (error: unknown) => error);
       migration.release();
 
-      // Storage is full, so the table could not be created and the retried read still finds none.
-      await expect(read).rejects.toThrow(/no such table/);
+      // Storage is full, so the table could not be created: the read reports that, not "no such table".
+      await expect(read).rejects.toMatchObject({ code: "STORAGE_QUOTA_EXCEEDED", message: STORAGE_FULL_SAVE_MESSAGE });
       expect(await writeResult).toMatchObject({
         code: "STORAGE_QUOTA_EXCEEDED",
         retryable: false,

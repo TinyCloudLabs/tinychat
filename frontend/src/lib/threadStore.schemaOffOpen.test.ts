@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getSetting, getSettingsByPrefix, getThread, listThreads, setSetting } from "./threadStore";
 import { FOREGROUND_QUIET_MS, resetLanesForTests } from "./localFirst/requestLanes";
+import { __resetStorageStatusForTests, isStorageReadOnly, reportStorageWriteSucceeded, STORAGE_FULL_SAVE_MESSAGE } from "./storageStatus";
 
 // Option 8 (home-perf data §1d): opening Home must not put a schema probe or a
 // CREATE in front of the chat list and settings reads.
@@ -15,6 +16,8 @@ class SqlService {
   readonly statements: string[] = [];
   /** Holds every sqlite_master probe until released. */
   probeGate: Promise<void> | null = null;
+  rejectWrites = false;
+  batchCalls = 0;
 
   query = async (sql: string, params: unknown[] = []) => {
     this.statements.push(sql);
@@ -33,7 +36,11 @@ class SqlService {
   };
 
   batch = async (operations: Array<{ sql: string; params?: unknown[] }>) => {
+    this.batchCalls++;
     for (const operation of operations) this.statements.push(operation.sql);
+    if (this.rejectWrites) {
+      return { ok: false as const, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
+    }
     this.sqlite.transaction(() => {
       for (const operation of operations) this.sqlite.query(operation.sql).run(...((operation.params ?? []) as never[]));
     })();
@@ -75,7 +82,8 @@ beforeEach(() => {
   (globalThis as { window?: unknown }).window = { localStorage };
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await __resetStorageStatusForTests();
   jest.useRealTimers();
   resetLanesForTests();
   if (originalLocalStorage === undefined) Reflect.deleteProperty(globalThis, "localStorage");
@@ -149,5 +157,39 @@ describe("threads schema stays off the open's read path", () => {
     expect(service.statements.at(-1)).toBe(settingsRead);
     expect(service.statements.filter((sql) => sql === settingsRead)).toHaveLength(2);
     expect(storage.get(SCHEMA_MARKER(tcw.did!))).toBe("1");
+  });
+
+  test("a reset space (marker present, tables gone) recovers on the first read", async () => {
+    const service = new SqlService();
+    const tcw = cloud(service);
+    storage.set(SCHEMA_MARKER(tcw.did!), "1");
+
+    expect(await getSetting(tcw, "theme")).toBeNull();
+
+    const settingsRead = "SELECT value FROM settings WHERE key = ?";
+    expect(service.statements[0]).toBe(settingsRead);
+    expect(service.statements[1]).toMatch(/sqlite_master/);
+    expect(service.statements.filter((sql) => /CREATE TABLE IF NOT EXISTS/.test(sql))).toHaveLength(5);
+    expect(service.statements.at(-1)).toBe(settingsRead);
+    expect(storage.get(SCHEMA_MARKER(tcw.did!))).toBe("1");
+    await setSetting(tcw, "theme", "dark");
+    expect(await getSetting(tcw, "theme")).toBe("dark");
+  });
+
+  test("a read whose missing table cannot be created because storage is full reports storage full once", async () => {
+    reportStorageWriteSucceeded();
+    const service = new SqlService();
+    service.rejectWrites = true;
+    const tcw = cloud(service);
+
+    await expect(getSetting(tcw, "theme")).rejects.toMatchObject({
+      code: "STORAGE_QUOTA_EXCEEDED",
+      message: STORAGE_FULL_SAVE_MESSAGE,
+    });
+    // One read, one probe, one refused create; the read is not re-issued and no marker is stored.
+    expect(service.statements.filter((sql) => sql === "SELECT value FROM settings WHERE key = ?")).toHaveLength(1);
+    expect(service.batchCalls).toBe(1);
+    expect(isStorageReadOnly()).toBe(true);
+    expect(storage.has(SCHEMA_MARKER(tcw.did!))).toBe(false);
   });
 });

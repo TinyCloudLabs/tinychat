@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { FOREGROUND_QUIET_MS, inForeground, resetLanesForTests } from "../localFirst/requestLanes";
-import { currentAccountGeneration } from "./accountContext";
+import { currentAccountGeneration, setAccountWorkPaused } from "./accountContext";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
 import { ensureVoiceNoteIdentity, VOICE_NOTE_IDENTITY_VERSION } from "./voiceNoteRows";
@@ -119,6 +119,29 @@ describe("voice-note identity on open", () => {
     await afterForegroundQuiet();
     expect(statements.filter((sql) => SWEEP_STATEMENT.test(sql))).toHaveLength(1);
     expect(statements.filter((sql) => IDENTITY_STATEMENT.test(sql))).toEqual([]);
+  });
+
+  test("sign-out stops the post-open sweep, and the next identity check runs it again", async () => {
+    const { tcw, statements } = space();
+    expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
+    statements.length = 0;
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const warm = reopen(tcw);
+    try {
+      setAccountWorkPaused(warm, true);
+      expect((await ensureVoiceNoteIdentity(warm)).status).toBe("established");
+      await afterForegroundQuiet();
+      expect(statements.filter((sql) => SWEEP_STATEMENT.test(sql))).toEqual([]);
+
+      setAccountWorkPaused(warm, false);
+      expect((await ensureVoiceNoteIdentity(warm)).status).toBe("established");
+      await afterForegroundQuiet();
+      expect(statements.filter((sql) => SWEEP_STATEMENT.test(sql))).toHaveLength(1);
+      expect(statements.filter((sql) => IDENTITY_STATEMENT.test(sql))).toEqual([]);
+    } finally {
+      setAccountWorkPaused(warm, false);
+      warn.mockRestore();
+    }
   });
 
   test("an open with nothing to save runs the first identity check only after the open's foreground reads", async () => {
