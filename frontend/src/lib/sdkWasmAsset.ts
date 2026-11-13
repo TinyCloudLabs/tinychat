@@ -17,8 +17,8 @@ export type InlinedSdkWasm = {
 /**
  * Finds the WASM the SDK inlines as `module_or_path: <decode IIFE>(…, "<base64>", …)` and replaces that IIFE
  * with the URL expression `urlFor` returns for those bytes (wasm-bindgen then fetches it). Null when the code
- * carries no inlined WASM. Throws when it does but not in that shape, so an SDK upgrade can't silently put it
- * back into the entry chunk.
+ * carries no inlined WASM. Throws when it does but not in that shape, or carries a second one, so an SDK upgrade
+ * can't silently put WASM back into the entry chunk.
  */
 export function extractInlinedSdkWasm(code: string, urlFor: (base64: string) => string): InlinedSdkWasm | null {
   const literal = WASM_BASE64_LITERAL.exec(code);
@@ -30,8 +30,9 @@ export function extractInlinedSdkWasm(code: string, urlFor: (base64: string) => 
     || code.slice(literal.index + literal[0].length, callEnd).trim() !== ",void 0") {
     throw new Error("@tinycloud/web-sdk inlines its WASM in an unrecognised form: update extractInlinedSdkWasm (src/lib/sdkWasmAsset.ts)");
   }
-  return {
-    base64: literal[1],
-    code: code.slice(0, argumentStart + INIT_ARGUMENT.length) + urlFor(literal[1]) + code.slice(callEnd + 1),
-  };
+  const extracted = code.slice(0, argumentStart + INIT_ARGUMENT.length) + urlFor(literal[1]) + code.slice(callEnd + 1);
+  if (WASM_BASE64_LITERAL.test(extracted)) {
+    throw new Error("@tinycloud/web-sdk inlines more than one WASM binary: update extractInlinedSdkWasm (src/lib/sdkWasmAsset.ts)");
+  }
+  return { base64: literal[1], code: extracted };
 }

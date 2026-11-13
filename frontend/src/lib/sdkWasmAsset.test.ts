@@ -25,6 +25,8 @@ describe("extractInlinedSdkWasm", () => {
     expect(() => extractInlinedSdkWasm('const wasm="AGFzbQEAAAA=";', urlFor)).toThrow(/unrecognised form/);
     expect(() => extractInlinedSdkWasm(`X({module_or_path:${decoder}(0,0,"AGFzbQEAAAA=",imports)})`, urlFor))
       .toThrow(/unrecognised form/);
+    expect(() => extractInlinedSdkWasm(`X({module_or_path:${decoder}(0,0,"AGFzbQEAAAA=",void 0)});Y("AGFzbQEAAAA=")`, urlFor))
+      .toThrow(/more than one WASM binary/);
   });
 
   test("takes the WASM out of the installed @tinycloud/web-sdk bundle", () => {

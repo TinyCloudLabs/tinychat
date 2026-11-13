@@ -1348,7 +1348,8 @@ export function App() {
   useEffect(() => { setSignedIn(isReady); }, [isReady]);
   useEffect(() => { void bindSharedWithMe(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
   // The other screens' chunks load once the signed-in shell has shown Feed, so opening one doesn't wait. A failed
-  // load is reported (and retried) by the screen itself when it is opened.
+  // load is reported by the screen itself when it is opened: it loads again, or offers a reload when the browser may
+  // have kept the failed chunk (src/shell/lazyTab.tsx).
   useEffect(() => {
     if (isReady) for (const screen of LAZY_SCREENS) screen.preload().catch(() => {});
   }, [isReady]);
