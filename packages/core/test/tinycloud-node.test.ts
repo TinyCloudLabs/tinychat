@@ -13,3 +13,10 @@ test("other hosts match only their own origin", () => {
   expect(sameTinyCloudNode("http://node.tinycloud.xyz", "https://tee.node.tinycloud.xyz")).toBe(false);
   expect(sameTinyCloudNode("not a url", "not a url")).toBe(false);
 });
+
+test("only bare origins compare: userinfo, paths, queries, ports and other schemes never match", () => {
+  for (const host of ["https://evil@tee.node.tinycloud.xyz", "https://u:p@node.tinycloud.xyz", "https://tee.node.tinycloud.xyz/some/path?q#f",
+    "HTTPS://TEE.NODE.TINYCLOUD.XYZ:443", "blob:https://tee.node.tinycloud.xyz/abc", "https://tee.node.tinycloud.xyz\\@evil.com", "https://tee%2enode.tinycloud.xyz"]) {
+    expect(sameTinyCloudNode(host, "https://node.tinycloud.xyz")).toBe(false);
+  }
+});
