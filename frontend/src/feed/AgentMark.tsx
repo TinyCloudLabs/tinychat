@@ -3,6 +3,7 @@
 // optional `agent` object in a card's payload ({ kind, model, runsOn, job }); without one there is no platform, and
 // nothing is guessed from a name. Platforms show by name: the makers' marks need each maker's permission first.
 import type { ReactNode } from "react";
+import { SCREEN_NAME } from "@/lib/homeStrings";
 
 export interface Platform { name: string }
 /** What an agent says it is: its platform (`kind`), its model and where it runs, each as the agent reports it. */
@@ -83,7 +84,7 @@ export function AgentDetails({ name, via, profile, onOpen }: { name: string; via
   if (profile?.model) rows.push(["Model", profile.model]);
   if (profile?.runsOn) rows.push(["Runs on", profile.runsOn]);
   if (via) rows.push(["Posts through", via]);
-  rows.push(["It can", via ? `Reach you on cards ${via} posts, and read your answers to them` : "Post cards to your Home and read your answers to them"]);
+  rows.push(["It can", via ? `Reach you on cards ${via} posts, and read your answers to them` : `Post cards to your ${SCREEN_NAME} and read your answers to them`]);
   return <section aria-label={`About ${name}`} className="space-y-2 rounded-xl bg-muted/50 p-3 text-sm">
     <dl>{rows.map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0">
       <dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 break-words text-right">{value}</dd>

@@ -13,6 +13,7 @@ import { CheckIcon, ChevronLeftIcon } from "lucide-react";
 import type { FeedResponse, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 
 import { Button } from "@/components/ui/button";
+import { NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { ANSWER_FAILED_COPY, ANSWER_HELD_COPY, NOT_SENT_COPY, UNDO_SECONDS, usePendingSend } from "./cardKit";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
 import {
@@ -215,7 +216,7 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 <div className="mx-auto w-full min-w-0 px-3 pb-6 pt-4 sm:px-5">
                   <Dialog.Close asChild>
-                    <button ref={homeRef} type="button" className="mb-4 inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-10"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
+                    <button ref={homeRef} type="button" className="mb-4 inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-10"><ChevronLeftIcon aria-hidden className="size-4" />{NAV_LABEL_HOME}</button>
                   </Dialog.Close>
                   <Dialog.Title className="sr-only">{title}</Dialog.Title>
                   {card(<div className="mt-4 space-y-5">

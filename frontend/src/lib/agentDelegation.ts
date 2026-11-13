@@ -63,7 +63,7 @@ export const TRANSCRIPT_PERMISSIONS: PermissionEntry[] = [
 export const AGENT_CONSENT_MANIFEST: Manifest = {
   manifest_version: 1,
   app_id: "xyz.tinycloud.tinychat.private-agent",
-  name: "TinyCloud Home private agent",
+  name: "TinyCloud One private agent",
   description: "Authorize the private agent to remember conversations and read meeting transcripts.",
   defaults: false,
   includePublicSpace: false,
@@ -89,7 +89,7 @@ export const AGENT_CONSENT_MANIFEST: Manifest = {
  */
 export const MCP_CONSENT_MANIFEST: Manifest = {
   ...AGENT_CONSENT_MANIFEST,
-  description: "Authorize TinyCloud Home to read your meeting transcripts.",
+  description: "Authorize TinyCloud One to read your meeting transcripts.",
   permissions: [...TRANSCRIPT_PERMISSIONS],
 };
 
