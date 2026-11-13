@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
+import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, UNDO_SECONDS, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox, type AnswerOption } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass, type CardClose } from "./CardActions";
 import { safeUrl } from "./feedData";
@@ -28,6 +28,8 @@ function approvalWords(type: string, kind?: string): string | undefined {
   return type === "go" && kind && GO_WORDS[kind] ? GO_WORDS[kind] : APPROVAL_WORDS[type];
 }
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
+/** The countdown label of "Skip this question": it shows as "Skipping in Ns", and a refusal names the button. */
+const SKIP_LABEL = "Skip this question";
 /** An approval's one action ("Give the go", "Save code", "I've done this step"): a normal-size dark button, as in the lab. */
 const approveClass = "inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50";
 const STEP_WORDS: Record<StepState, string> = { pending: "Waiting for you", done: "Done", "not needed": "Not needed", expired: "Ended", closed: "Closed" };
@@ -296,9 +298,14 @@ export function SitrepCard(props: Props) {
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />;
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own
   // countdown (`chosen`) shows in its row instead.
-  const pendingLine = countdown.pending && !chosen && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
-    <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>
-  </PendingAnswer>;
+  // "Skip this question" says what is happening while it waits, with the same Undo as a comment's (Monica).
+  const pendingLine = countdown.pending && !chosen && (countdown.pending.label === SKIP_LABEL
+    ? <><p className="mt-3.5 flex items-center gap-x-1.5 text-sm text-muted-foreground"><span className="tabular-nums">Skipping in {countdown.pending.seconds}s</span><span aria-hidden>·</span>
+      <button type="button" onClick={countdown.undo} className="relative min-h-11 rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9">Undo</button></p>
+      <p role="status" className="sr-only">Skipping this question in {UNDO_SECONDS} seconds. Undo is available until then.</p></>
+    : <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
+      <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>
+    </PendingAnswer>);
   const waiting = !!countdown.pending;
   const failed = failedAnswer !== null;
 
@@ -322,7 +329,7 @@ export function SitrepCard(props: Props) {
         {steer === "open" && record.default && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>}
         {record.recommend && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.recommend) ?? "the recommendation", () => askAnswer("accept-default", record.recommend, true), true)}>Accept recommendation</button>}
         {/* "Skip this question", not "Drop": "Drop this card" in the foot is a different action (Monica). */}
-        <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo("“Skip this question”", () => askAnswer("drop", undefined, true), true)}>Skip this question</button>
+        <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(SKIP_LABEL, () => askAnswer("drop", undefined, true), true)}>Skip this question</button>
       </div>}
       {!waiting && asking && steer === "open" && record.default && <p className={`mt-2 ${fineClass}`}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</p>}
       {!waiting && responds && (!asking || followup) && <div className="mt-1 flex flex-wrap gap-x-[26px]">

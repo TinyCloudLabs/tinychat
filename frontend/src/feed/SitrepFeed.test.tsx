@@ -450,8 +450,8 @@ test("Accept recommendation and Skip this question wait under Undo before anythi
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Skip this question").click());
-  expect(undoPill(article)?.textContent).toBe("Undo · 5");
-  await act(async () => undoPill(article)!.click());
+  expect(article.textContent).toContain("Skipping in 5s");
+  await act(async () => button(article, "Undo").click());
   await timer.advance(10_000);
   expect(fixture.saved).toEqual([]);
   await act(async () => button(article, "Accept recommendation").click());
