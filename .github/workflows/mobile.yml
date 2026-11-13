@@ -85,7 +85,20 @@ jobs:
         run: |
           sysctl hw.memsize hw.ncpu hw.model
           node -v; node -e 'console.log("heap_size_limit MB", require("v8").getHeapStatistics().heap_size_limit/2**20)'
-          nohup bash -c 'while true; do { echo "=== $(date -u +%T) load $(sysctl -n vm.loadavg) swap $(sysctl -n vm.swapusage)"; memory_pressure -Q | tail -1; vm_stat | grep -E "Pages (free|active|inactive|wired down|occupied by compressor)|Swapouts|Pageouts"; ps -Ao pcpu=,rss=,comm= -r | head -14 | awk "{n=split(\$3,a,\"/\"); printf \"%6s %8d %s\n\", \$1, \$2, a[n]}"; } >> "$RUNNER_TEMP/host-samples.log"; sleep 10; done' >/dev/null 2>&1 &
+          cat > "$RUNNER_TEMP/sample.sh" <<'SH'
+          while true; do
+            {
+              echo "=== $(date -u +%T) load $(sysctl -n vm.loadavg) swap $(sysctl -n vm.swapusage)"
+              memory_pressure -Q | tail -1
+              vm_stat | grep -E "Pages (free|occupied by compressor)|Swapouts|Pageins|Pageouts"
+              iostat -d -c 2 -w 1 | tail -1
+              ps -Ao pcpu=,rss=,state=,command= -r | head -16 | awk '{c=$1; r=$2; st=$3; $1=$2=$3=""; sub(/^ +/, ""); sub(/ -.*$/, ""); n=split($0, a, "/"); printf "%6s %8d %s %s\n", c, r, st, a[n]}'
+              echo "runnable/uninterruptible: $(ps -Ao state= | grep -c '^[RU]')"
+            } >> "$RUNNER_TEMP/host-samples.log"
+            sleep 10
+          done
+          SH
+          nohup bash "$RUNNER_TEMP/sample.sh" >/dev/null 2>&1 &
 
       # A first boot takes minutes on the runner; let it run while the app builds.
       - name: Start booting an iOS Simulator
@@ -147,12 +160,20 @@ jobs:
           if-no-files-found: warn
           path: ${{ runner.temp }}/ios-smoke
 
+      - name: (diag) cumulative CPU by process
+        if: always()
+        run: |
+          ps -Ao cputime=,rss=,command= | awk '{t=$1; r=$2; $1=$2=""; sub(/^ +/, ""); sub(/ -.*$/, ""); n=split($0, a, "/"); print t, r, a[n]}' | sort -t: -k1,1nr -k2,2nr | head -60 > "$RUNNER_TEMP/cputime.log"
+          mdutil -sa 2>&1 | head -10 >> "$RUNNER_TEMP/cputime.log"
+          cat "$RUNNER_TEMP/cputime.log"
       - name: (diag) upload host samples
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: host-samples-${{ github.run_id }}
-          path: ${{ runner.temp }}/host-samples.log
+          path: |
+            ${{ runner.temp }}/host-samples.log
+            ${{ runner.temp }}/cputime.log
 
       # Health spike (TC-525), never fails the job. With no Apple team there is no provisioning profile, so the question
       # is whether an ad-hoc signed ("Sign to Run Locally") simulator build, which embeds the Debug configuration's
