@@ -1,4 +1,5 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { CONNECTOR_SCHEMA } from "@tinyboilerplate/core";
 import { readableError } from "@/lib/readableError";
 import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
@@ -7,7 +8,10 @@ import { autoMeetingTitle } from "@/lib/meetingTitle";
 import { planRename } from "../recordingTitleMeta";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
+import { clearLocalMarker, hasLocalMarker, setLocalMarker } from "../localFirst/localCache";
+import { whenForegroundIdle } from "../localFirst/requestLanes";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedSqlCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
+import { isAccountWorkAllowed } from "./accountContext";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, SQL_CHUNK, type LegacyTranscriptRow, type TranscriptCommit } from "./voiceNoteCommits";
 
@@ -30,10 +34,15 @@ function errorOf(result: { ok: boolean; error?: { code?: string; message?: strin
     code: e?.code ?? "STORE_ERROR", meta: e?.meta, requiredAction: e?.requiredAction,
   });
 }
+function failureOf(tcw: TinyCloudWeb, result: { ok: boolean; error?: { code?: string; message?: string } }): Error {
+  // A table the stored identity marker vouched for is gone (a reset space): check the identity again.
+  if (/no such table/i.test(result.error?.message ?? "")) forgetVoiceNoteIdentity(tcw);
+  return errorOf(result);
+}
 async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<unknown[][]> {
   const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).query(sql, params as never[], { signal }); },
     { operation: `SQL query: ${sql.slice(0, 80)}`, sql: true });
-  if (!result.ok) throw errorOf(result);
+  if (!result.ok) throw failureOf(tcw, result);
   return result.data.rows as unknown[][];
 }
 async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined,
@@ -41,7 +50,7 @@ async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], c
   const result = await runOnSpaceLane((signal) => {
     checkpoint(); return db(tcw, reportSuccessfulWrites).execute(sql, params as never[], { signal });
   }, { operation: `SQL execute: ${sql.slice(0, 80)}`, sql: true });
-  if (!result.ok) throw errorOf(result);
+  if (!result.ok) throw failureOf(tcw, result);
   return Number((result.data as { changes?: number }).changes ?? 0);
 }
 async function readTranscriptCommitOnLane(tcw: TinyCloudWeb, sourceId: string,
@@ -78,13 +87,69 @@ function identityFailure(e: unknown): IdentityResult {
 const identityInFlight = new WeakMap<TinyCloudWeb, { key: string; promise: Promise<IdentityResult>;
   checkpoints: Set<() => void> }>();
 const identityReady = new WeakMap<TinyCloudWeb, string>();
+const sweptThisSession = new WeakMap<TinyCloudWeb, string>();
 function identityKey(tcw: TinyCloudWeb): string { return JSON.stringify([tcw.did, tcw.spaceId]); }
 
-/** DDL requires the manifest's schema grant; an older delegation is a sign-in state. */
+/**
+ * Changes with the identity DDL (and the connector tables it relies on), so
+ * every device runs the changed check once. FNV-1a of the statements.
+ */
+export const VOICE_NOTE_IDENTITY_VERSION = (() => {
+  const text = [...CONNECTOR_SCHEMA.map(({ sql }) => sql), TRANSCRIPT_TABLE_DDL, VOICE_NOTE_INDEX_DDL].join("\n");
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+  return (hash >>> 0).toString(36);
+})();
+
+/** "This device established the identity for this account at this version"; null without an account. */
+function identityMarkerKey(tcw: TinyCloudWeb): string | null {
+  if (typeof tcw.did !== "string" || !tcw.did || typeof tcw.spaceId !== "string" || !tcw.spaceId) return null;
+  return `tinychat:voice-note-identity:${VOICE_NOTE_IDENTITY_VERSION}:${tcw.did}:${tcw.spaceId}`;
+}
+
+function forgetVoiceNoteIdentity(tcw: TinyCloudWeb): void {
+  identityReady.delete(tcw);
+  const marker = identityMarkerKey(tcw);
+  if (marker) clearLocalMarker(marker);
+}
+
+/**
+ * The identity is known from an earlier open, so no DDL runs. The space-wide
+ * archive sweep (late writes to archived duplicates) still runs once per
+ * session, after the open's foreground reads. A failed or stopped sweep runs
+ * again on the next identity check. Sign-out stops it like other account work.
+ */
+function sweepAfterOpen(tcw: TinyCloudWeb, key: string): void {
+  if (sweptThisSession.get(tcw) === key) return;
+  sweptThisSession.set(tcw, key);
+  const current = () => {
+    if (identityKey(tcw) !== key) throw new Error("Voice-note space changed");
+    if (!isAccountWorkAllowed(tcw)) throw new Error("Voice-note account work is paused");
+  };
+  void whenForegroundIdle().then(() => sweepArchived(tcw, current)).catch((error: unknown) => {
+    if (sweptThisSession.get(tcw) === key) sweptThisSession.delete(tcw);
+    console.warn("[VoiceNotes] Archived duplicate sweep is still pending", error);
+  });
+}
+
+/**
+ * DDL requires the manifest's schema grant; an older delegation is a sign-in state.
+ * The DDL and definition check run once per account per `VOICE_NOTE_IDENTITY_VERSION`
+ * on this device; later opens trust the stored marker.
+ */
 export function ensureVoiceNoteIdentity(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<IdentityResult> {
   checkpoint();
   const key = identityKey(tcw);
-  if (identityReady.get(tcw) === key) return Promise.resolve({ status: "established" });
+  if (identityReady.get(tcw) === key) {
+    sweepAfterOpen(tcw, key);
+    return Promise.resolve({ status: "established" });
+  }
+  const marker = identityMarkerKey(tcw);
+  if (marker && hasLocalMarker(marker)) {
+    identityReady.set(tcw, key);
+    sweepAfterOpen(tcw, key);
+    return Promise.resolve({ status: "established" });
+  }
   const existing = identityInFlight.get(tcw);
   if (existing?.key === key) {
     existing.checkpoints.add(checkpoint);
@@ -125,6 +190,9 @@ async function establish(tcw: TinyCloudWeb, key: string, checkpoint: () => void)
       await sweepArchived(tcw, checkpoint);
       if (identityKey(tcw) !== key) return { status: "retry", reason: "Voice-note space changed during identity check" };
       identityReady.set(tcw, key);
+      sweptThisSession.set(tcw, key);
+      const marker = identityMarkerKey(tcw);
+      if (marker) setLocalMarker(marker);
       return { status: "established" };
     } catch (e) {
       if (!isConstraint(e)) return identityFailure(e);

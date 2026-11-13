@@ -7,6 +7,7 @@ import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingU
 import { ensureVoiceNoteIdentity, spaceLaneAbandonedSqlCalls } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
+import { whenForegroundIdle } from "@/lib/localFirst/requestLanes";
 import { withAbortTimeout } from "@/lib/abortTimeout";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
@@ -227,6 +228,12 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           if (migrationError) throw Object.assign(new Error(`Voice-note discard migration failed: ${String(migrationError)}`),
             { code: "discard_migration_failed", cause: migrationError });
           return;
+        }
+        // Nothing to save: the identity check only prepares the space (once per device and
+        // schema version) and sweeps archived rows, so it waits until the open's reads are done.
+        if (notes.length === 0) {
+          await Promise.race([whenForegroundIdle(), drainWaitersReleased]);
+          check();
         }
         await awaitServerDrain(check);
         try {

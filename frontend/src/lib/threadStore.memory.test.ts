@@ -146,15 +146,16 @@ describe("threadStore memory backup/restore (Layer 3)", () => {
     expect(await getMemory(makeTcw(db))).toBe("LIVE DOC");
   });
 
-  it("reads an existing table when an unrelated missing-schema write is rejected", async () => {
+  it("reads an existing table without attempting an unrelated missing-schema write", async () => {
     reportStorageWriteSucceeded();
     const db = new FakeSqlDb();
     db.existingTables.delete("compactions");
     db.rows.set(LIVE, "READABLE DOC");
     db.rejectWrites = true;
     expect(await getMemory(makeTcw(db))).toBe("READABLE DOC");
-    expect(db.writes).toBe(1); // only the rejected missing-table migration
-    expect(isStorageReadOnly()).toBe(true);
+    // Reads do not check the schema first, so the missing table is not created here.
+    expect(db.writes).toBe(0);
+    expect(isStorageReadOnly()).toBe(false);
   });
 
   it("getMemory returns the backup without repairing the live row", async () => {
