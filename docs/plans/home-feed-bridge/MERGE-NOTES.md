@@ -29,7 +29,7 @@ Each entry says what the real feed needs: new card fields, the response and outb
 
 ### Undo and countdown on every answer
 
-- **Lab:** every path that sends something to an agent waits out the same 4-second count with Undo before it writes: options, your own answer, "Accept recommendation", "Drop question", and on typed cards "Give the go", "Save code", "I completed this step", task done, claim decisions, blocker cleared and hold lift. Private actions stay immediate (task step ticks, private acknowledgement and priority, Ask me later, which has its own Undo). Comments send at once.
+- **Lab:** every path that sends something to an agent waits the same 5-second count with Undo before it writes (`ANSWER_UNDO_SECONDS`): options, your own answer, "Accept recommendation", "Drop question", post "Send answers", comments ("Sending in 5s · Undo", then Sent → Received → Replied), "Send again", and on typed cards "Give the go", "Save code", "I completed this step", task done, claim decisions, blocker cleared and hold lift. Private actions stay immediate (task step ticks, private acknowledgement and priority). Only one comment waits at a time: sending another sends the waiting one.
 - **Lab:** the count sends at once when the card unmounts or the page is hidden or closed (`pagehide`, `visibilitychange` to hidden). Switching apps during the count therefore sends it, which ends the chance to undo.
 - **Lab:** a go re-checks when the count ends that it is still open, the same issuance and not past `expiresAt`. If not, nothing is written: "This approval expired before it was sent. Nothing was sent." or "This approval closed before it was sent. Nothing was sent."
 - **Port:** use main's path, `saveResponse(entry, response, payload, { hold: true })` with `answerOutbox.ts` (`holdAnswer` before the first await, `flushHeldAnswers` at the next launch) and `cardKit.tsx`'s `pagehide` flush. Better still, hold at the tap with a release time, so Undo removes it from the outbox and a killed page finishes it at the next launch. The release must run the approval re-check above, and commands keep their idempotency keys through the outbox.
@@ -61,13 +61,17 @@ Each entry says what the real feed needs: new card fields, the response and outb
 
 ### Priority
 
-- **Lab:** `payload.priority` 0 to 5, set by the agent, shown as "P0"…"P5" on the compact card. Filter: "Any priority", "P0 only", "P0 to P1" … "P0 to P4"; order "Priority first".
+- **Lab:** `payload.priority` 0 to 5, set by the agent. Compact cards and grid tiles mark only P0 (red) and P1, at the right beside the status; every level shows as a "Priority" row under Details. Filter: "Any priority", "P0 only", "P0 to P1" … "P0 to P4"; order "Priority first". Monica suggests owners would read "Most urgent" / "Urgency {n}" more easily than "P0"; that is Sam's call.
 - **Port:** card guide v2 (prompts#171) tells agents to set `urgency = 5 − priority`, so `main`, which sorts by `urgency` only, already ranks plain cards in priority order before the port. Typed cards' urgency and importance stay separate; the lab doesn't map them.
 
-### Ask me later reaches the agent
+### Drop this card, Acknowledge, Ask me later / Show me later
 
-- **Lab:** snooze stays private: the card leaves every view until its time, "Back at {time} · Undo", Filter → Snoozed, "Bring back now". Nothing goes to the agent.
-- **Port (proposed in card guide v2, used by its forward tests):** on snooze, Home appends a `message` response with text `Ask me later: <ISO until>` and private payload `{ type: "feed.snooze", version: 1, data: { until } }`. The watcher delivers payload type `feed.snooze`; the agent acknowledges it with no reply and no outcome. "Bring back now" and Undo need a matching shape (not yet named). Rename before the guide ships if a better name comes up.
+- **Lab (Sam 23:40Z, 23:5xZ):** a decision's foot is Ask me later · Drop this card · Details; an update's is Acknowledge · Show me later · Comment · Details. Details sits bottom-right on every card. Post cards keep their own foot (open question: Sam hasn't said whether posts get Drop or Acknowledge).
+- **Lab:** Drop, Acknowledge and the later times take the card away at once and show a bar at the bottom ("Dropped · 5s · Undo", "Acknowledged · 5s", "Back at 08:00 · 5s"), sitrep-style (`UndoBar.tsx`). Bars stack (three at most; a fourth commits the oldest). Undo puts the card back where it was. Only when the count ends is anything written; a hidden or closed page commits at once.
+- **Lab:** each is a `message` response with a private payload, names agreed with card guide v2: Ask me later `Ask me later: <ISO until>` + `{ type: "feed.snooze", version: 1, data: { until } }`; Drop `Dropped` + `{ type: "feed.drop", version: 1, data: {} }`; Acknowledge `Acknowledged` + `{ type: "feed.acknowledge", version: 1, data: {} }`. The agent acknowledges them with no reply and no outcome. They never show as chat bubbles.
+- **Lab:** a dropped or acknowledged card (its latest `feed.drop` / `feed.acknowledge`, `closedAs`) shows only in History, its status "Dropped" or "Acknowledged". An update's "Comment" opens its comment box; updates have no closed composer of their own.
+- **Port:** owner responses gain "dropped" and "acknowledged" (and the snooze message). Decide whether they stay `message` responses with private payloads (no SDK change, `feed watch` delivers them as they are) or become response kinds. "Bring back now" and the bar's Undo after a commit need a matching message (not yet named). Typed asks also keep "Drop question" (a `sitrep.answer` drop) inside their options; decide whether the foot's Drop replaces it.
+- **Port:** the bar is in-memory; route its commits through the outbox like any held send.
 
 ### Earlier in the lab (unchanged by this round)
 
