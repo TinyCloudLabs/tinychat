@@ -56,23 +56,38 @@ occurrence rows (least recently used out, no tombstones), rebuilt from the node 
 Consent is always read from the node: before each Google scan, before each recording or sharing
 check, at dispatch, by request handlers and by the restart grant backfill.
 
-Every calendar row write is a compare-and-set on the node (`If-Match` on the row's ETag, or
-`If-None-Match: *` for a new row). A connection write first re-reads the stored row and decides on
-it; a row changed in between makes the node answer 412, and the backend reads it again and decides
-again. A disable, a new generation or a deletion stored by another writer is therefore not
-overwritten, and an expired-setup cleanup never recreates a deleted connection. A node that sends no
-ETag makes these writes unconditional; the backend logs `code=connection_write_unconditional` once.
+Every calendar row write and delete is a compare-and-set on the node: `If-Match` on the row's ETag,
+or `If-None-Match: *` for a new row. Each write decides on the stored row (connection writes, the
+enable and the OAuth setup re-read it from the node); a row changed in between makes the node answer
+412, and the backend reads it again and decides again, never reusing a decision made on an older row.
+A disable, a new generation or a deletion stored by another writer is therefore not overwritten, an
+expired-setup cleanup never recreates a deleted connection, and a stale enable never re-enables over
+a newer generation. A node that sends no ETag for a stored row gets no write or delete to it: the
+backend refuses (`calendar_row_unversioned`, `credential_unversioned`) rather than write blind.
 
-A token refresh writes the new grant only as a compare-and-write on custody. It is refused when any
-CredentialStore in this process changed or queued a change to that credential since it was read, or
-when the node holds another version (`If-Match`). A refused refresh returns no token. Cached access
-tokens serve only their connection generation and custody version. The cache is bounded, and a
-token is dropped on expiry and whenever a read of its connection shows a disable, a deletion or
-another generation.
+The node's ETag is a hash of the stored bytes, so a row changed and changed back would carry the same
+ETag. Every calendar row and credential row therefore holds a revision (`rev`, `revision`) that every
+write increases: no two versions of a row have the same bytes.
+
+Credential custody follows the same rule. Store, rotate, markUsed and delete are conditional
+(`If-Match`, `If-None-Match` to create); markUsed never creates a credential. A token refresh is bound
+to the grant it read: it is refused when this process changed or queued a change to that credential
+since the read, when the stored grant is no longer that version (replaced or deleted by any process),
+or when the credential read back after the write is not the one written. A refused refresh returns
+and caches no token. Cached access tokens serve only their connection generation and custody
+version, and at most 5 minutes (`ACCESS_TOKEN_TTL_MS`) after custody was last read; past that, the
+next use reads custody again. The cache is bounded, and a token is dropped on expiry and whenever a
+read of its connection, a status read included, shows a disable, a deletion or another generation.
+
+**Residual window.** A credential deleted or replaced by another backend process is not seen by this
+one until it next reads custody, so this process can keep using a token it cached for up to 5
+minutes after the other process's change. With the deploy rule above (one backend) there is no other
+process.
 
 An idle connected user costs 40–60 node calls an hour for the policy read before each scan (one
-scan every 60–90 s), plus an hourly `lastScanAt` write and its read, and one token refresh. Disabled
-users and finished meetings cost none, and identical writes are skipped.
+scan every 60–90 s), plus 12 custody reads (one per token TTL), an hourly `lastScanAt` write and its
+read, and one token refresh: about 1.2 node reads per scan. Disabled users and finished meetings
+cost none, and identical writes are skipped.
 
 Correctness still rests on the deploy rule above: a writer outside this backend is refused only
 when its write lands between a read and a write of ours, and nothing tells the worker about it

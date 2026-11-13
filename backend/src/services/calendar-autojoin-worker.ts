@@ -228,7 +228,8 @@ export class CalendarAutojoinWorker {
           if (this.stopping) return;
           if (row.phase === "terminal") {
             // Unsent outcomes are visible for a month; sent dedupe markers have no expiry.
-            if (row.updatedAt < this.now() - 30 * 86_400_000) await store.deleteOccurrence(tenant, row.id);
+            const cutoff = this.now() - 30 * 86_400_000;
+            if (row.updatedAt < cutoff) await store.deleteOccurrence(tenant, row.id, stored => stored.phase === "terminal" && stored.updatedAt < cutoff);
             continue;
           }
           if (row.nextAttemptAt > this.now()) { this.arm(row); continue; }
@@ -316,7 +317,11 @@ export class CalendarAutojoinWorker {
         if (row) { this.recordSummaryChange(tenant, id, row); this.arm(row); }
         return row;
       },
-      deleteOccurrence: async (tenant: string, id: string) => { await store.deleteOccurrence(tenant, id); this.recordSummaryChange(tenant, id, null); },
+      deleteOccurrence: async (tenant: string, id: string, when?: (stored: CalendarOccurrence) => boolean) => {
+        const deleted = await store.deleteOccurrence(tenant, id, when);
+        if (deleted) this.recordSummaryChange(tenant, id, null);
+        return deleted;
+      },
     });
   }
   private async google<T>(connection: CalendarConnection, fn: (token: string) => Promise<T>): Promise<T> {
@@ -354,7 +359,7 @@ export class CalendarAutojoinWorker {
         }
         if (!eligible && event.attendees?.find(attendee => attendee.self)?.responseStatus === "declined") {
           if (old?.phase === "pending") await this.finish(old, "event_ineligible");
-          else if (old?.disposition === "not_accepted") await store.deleteOccurrence(connection.tenant, old.id);
+          else if (old?.disposition === "not_accepted") await store.deleteOccurrence(connection.tenant, old.id, stored => stored.disposition === "not_accepted");
           continue;
         }
         if (await store.getMarker(connection.tenant, id)) continue;
@@ -363,6 +368,8 @@ export class CalendarAutojoinWorker {
           firstSeenAt: old?.id === id ? old.firstSeenAt ?? firstSeenAt : firstSeenAt,
           phase: "pending", nextAttemptAt: Math.max(this.now(), candidate.start - 60_000),
           attemptCount: 0, stopRequested: false, updatedAt: this.now(),
+          // Written only on the stored version this was decided on (putOccurrence).
+          rev: old?.id === id ? old.rev : 0,
         };
         // Preserve backoff when discovery has not changed the occurrence.
         if (old?.phase === "pending" && old.start === next.start && old.end === next.end && old.meetingUrl === next.meetingUrl) {
@@ -495,7 +502,8 @@ export class CalendarAutojoinWorker {
             row = { ...row, generation: current!.generation, createBody: body, requestHash: computeCreateRequestHash(body), idempotencyKey: `calendar-v1-${row.id}` };
           }
           // The one attemptCount increment for this attempt (TC-907): defer() does not count it again.
-          row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, capacityExhausted: undefined, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000 };
+          // Written only on the version just read and decided on (`latest`'s rev).
+          row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, capacityExhausted: undefined, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000, rev: latest.rev };
           await this.dispatchStore.putOccurrence(row); // Failure here MUST imply zero POSTs.
           // Durable storage can take us past the deadline. Do not send a now-ineligible
           // request; keep its frozen intent so a restart can conservatively recover it.

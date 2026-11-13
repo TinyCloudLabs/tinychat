@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { fakeBackendNode } from "./helpers/fake-backend-node.js";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { BackendStorageLane, BackendStorageLaneTimeout, type BackendStorageLaneRunOptions } from "../services/backend-storage-lane.js";
 import { CalendarAutojoinConnection } from "../services/calendar-autojoin-connection.js";
@@ -127,19 +128,7 @@ afterEach(() => {
 function slowNode(values: Map<string, unknown>, delay: { ms: number }, onOp: (op: string, key: string) => void = () => {}) {
   // Zero-delay seeding must not wait for the fake clock.
   const wait = async () => { if (delay.ms > 0) await new Promise(resolve => setTimeout(resolve, delay.ms)); };
-  return { kv: {
-    async get(key: string) {
-      await wait(); onOp("get", key);
-      if (!values.has(key)) return { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } };
-      return { ok: true, data: { data: structuredClone(values.get(key)) } };
-    },
-    async put(key: string, value: unknown) { await wait(); onOp("put", key); values.set(key, structuredClone(value)); return { ok: true, data: {} }; },
-    async list({ prefix }: { prefix: string }) {
-      await wait(); onOp("list", prefix);
-      return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } };
-    },
-    async delete(key: string) { await wait(); onOp("delete", key); values.delete(key); return { ok: true, data: {} }; },
-  } } as unknown as TinyCloudNode;
+  return fakeBackendNode(values, { async before(op, key) { await wait(); onOp(op, key); } }).node;
 }
 
 describe("TC-1047 due-time dispatch on a slow lane", () => {

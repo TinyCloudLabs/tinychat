@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { fakeBackendNode } from "./helpers/fake-backend-node.js";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { CalendarAutojoinStatusCache } from "../services/calendar-autojoin-status-cache.js";
@@ -9,19 +10,7 @@ import { CalendarAutojoinRowCache, KvCalendarAutojoinStore, type CalendarConnect
 function countingNode() {
   const values = new Map<string, unknown>();
   const calls: string[] = [];
-  const node = { kv: {
-    async get(key: string) {
-      calls.push(`get:${key}`);
-      return values.has(key) ? { ok: true, data: { data: structuredClone(values.get(key)) } }
-        : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } };
-    },
-    async put(key: string, value: unknown) { calls.push(`put:${key}`); values.set(key, structuredClone(value)); return { ok: true, data: {} }; },
-    async delete(key: string) { calls.push(`delete:${key}`); values.delete(key); return { ok: true, data: {} }; },
-    async list({ prefix }: { prefix: string }) {
-      calls.push(`list:${prefix}`);
-      return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } };
-    },
-  } } as unknown as TinyCloudNode;
+  const { node } = fakeBackendNode(values, { before(op, key) { calls.push(`${op}:${key}`); } });
   return { node, values, calls };
 }
 
