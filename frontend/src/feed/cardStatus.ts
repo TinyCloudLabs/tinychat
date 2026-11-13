@@ -18,14 +18,20 @@ function outcomeWord(entry: HomeFeedEntry): string | undefined {
 /**
  * One plain word for where a card stands, the same on the card and in the list: "Needs you", "Waiting on <agent>",
  * "Answered" (the agent acknowledged the answer), "Done", or the state it is in (Snoozed, Expired, Closed, Not needed,
- * Information). `typed` is a typed card's projection; a plain card goes by its answer and its agent's report.
+ * Information). A closed ask says what came of it on the board: "Answered" or "Dropped". `typed` is a typed card's
+ * projection; a plain card goes by its answer and its agent's report.
  */
 export function cardStatus(entry: HomeFeedEntry, typed: SitrepProjection | undefined, now: number, agent: string): string {
   const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > now;
   if (typed) {
     switch (typed.attention) {
       case "expired": return "Expired";
-      case "closed": return typed.answer ? "Answered" : "Closed";
+      case "closed": {
+        // The board's own outcome, not only this revision's answer: closing an ask publishes a new revision, and Sam's
+        // answer stays with the revision he answered.
+        const outcome = typed.record?.kind === "ask" ? typed.record.status : undefined;
+        return outcome === "dropped" ? "Dropped" : typed.answer || outcome === "answered" ? "Answered" : "Closed";
+      }
       case "snoozed": return "Snoozed";
       case "not-needed": return "Not needed";
       case "needs-action": return snoozed ? "Snoozed" : "Needs you";

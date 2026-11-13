@@ -68,8 +68,9 @@ export function CardDetails({ children, actions, secondary, close, card, typed, 
         : <div className="flex flex-wrap items-center gap-0.5">{leading}{details}</div>}
     </div>
     {/* Not shown on the card (only when there is any), then This card with its history, then the feed's folded
-        bookkeeping, then the card as sent. From 900px the list sits right of a 240px rail holding the rest. */}
-    {open && <div aria-label="Details" className={`mt-2 grid gap-[18px] break-words rounded-[14px] bg-muted/60 p-3.5 ${count ? "min-[900px]:grid-cols-[240px_minmax(0,1fr)] min-[900px]:gap-x-5" : ""}`}>
+        bookkeeping, then the card as sent. From 900px the list sits right of a 240px rail holding the rest. Long tokens
+        (a URL, an ID) wrap anywhere, as on the card, so no value widens a column or runs under its neighbour. */}
+    {open && <div aria-label="Details" className={`mt-2 grid grid-cols-[minmax(0,1fr)] gap-[18px] rounded-[14px] bg-muted/60 p-3.5 [overflow-wrap:anywhere] ${count ? "min-[900px]:grid-cols-[240px_minmax(0,1fr)] min-[900px]:gap-x-5" : ""}`}>
       {lists && count > 0 && <div className="min-w-0 min-[900px]:col-start-2 min-[900px]:row-span-3 min-[900px]:row-start-1"><lists.UnshownList fields={unshown.filter((field) => !field.quiet)} agent={agent} /></div>}
       <div className="grid min-w-0 content-start gap-[18px]">
         <section aria-label="This card"><h3 className={detailsSectionTitle}>This card</h3>{children}</section>

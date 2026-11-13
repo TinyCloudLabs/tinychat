@@ -64,3 +64,10 @@ test("a typed card closed after Sam answered it reads Answered; closed unanswere
   expect(cardStatus(entry(), closedAnswered, now, "Rocinante")).toBe("Answered");
   expect(cardStatus(entry(), typed("closed"), now, "Rocinante")).toBe("Closed");
 });
+
+test("a closed ask reads what the board says came of it, on a revision that does not hold Sam's answer", () => {
+  const closedAs = (status: string) => ({ attention: "closed", record: { kind: "ask", status } }) as unknown as SitrepProjection;
+  expect(cardStatus(entry(), closedAs("answered"), now, "Rocinante")).toBe("Answered");
+  expect(cardStatus(entry(), closedAs("dropped"), now, "Rocinante")).toBe("Dropped");
+  expect(cardStatus(entry(), closedAs("superseded"), now, "Rocinante")).toBe("Closed");
+});

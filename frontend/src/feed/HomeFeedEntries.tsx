@@ -32,7 +32,7 @@ import { shortTime } from "./ShortTime";
 import { PostPreview } from "./PostPreview";
 import { lazyTab } from "@/shell/lazyTab";
 import { labPageOf, postStatus } from "./postAnswers";
-import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
+import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, parseSitrepCardPayload, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
@@ -49,6 +49,11 @@ function keyOf(entry: HomeFeedEntry): string {
 }
 function isTypedPayload(entry: HomeFeedEntry): boolean {
   return entry.state.card.payload?.sitrep !== undefined || entry.state.card.payload?.sitrepThread !== undefined;
+}
+/** A typed card's revision whose board record is closed: the record's last word. */
+function closesRecord(entry: HomeFeedEntry): boolean {
+  const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
+  return !!record && record.kind === entry.state.card.kind && isClosed(record);
 }
 function snoozedNow(entry: HomeFeedEntry, now: number): boolean {
   return Date.parse(entry.view.snoozedUntil ?? "") > now;
@@ -497,9 +502,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const closureOf = (entry: HomeFeedEntry) => ownerClosure(replyChain(entry).flatMap((candidate) => candidate.responses ?? []))
     ?? (contextFor(entry)?.projection.answer?.action === "drop" ? "Dropped" as const : undefined);
   const all = [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()];
-  // In History a revision that only gained agent replies is shown as its latest revision, once.
+  // In History a revision that only gained agent replies is shown as its latest revision, once; so is a typed card its
+  // agent closed: its earlier revisions (the one Sam answered or dropped among them) give way to the closing one.
+  const replaces = (newer: HomeFeedEntry, older: HomeFeedEntry) => newer !== older && newer.state.card.revision > older.state.card.revision
+    && (lineageKey(newer) === lineageKey(older) || (isTypedPayload(older) && newer.source.sourceId === older.source.sourceId && newer.state.card.cardId === older.state.card.cardId && closesRecord(newer)));
   const entries = history || snoozedOnly
-    ? all.filter((entry) => !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === lineageKey(entry)))
+    ? all.filter((entry) => !all.some((other) => replaces(other, entry)))
     : snapshot?.entries ?? [];
   const contextFor = useMemo(() => {
     const current = typedContexts(snapshot?.entries ?? [], snapshot?.sitrep, clock);
