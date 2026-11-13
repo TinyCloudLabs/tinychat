@@ -333,7 +333,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       do {
         dirty = false;
         try {
-          const next = await source.load(activeRef.current ?? undefined);
+          const next = await source.load(activeRef.current ?? undefined, { feed: true });
           if (!alive) return;
           const reconcile = (entry: HomeFeedEntry): HomeFeedEntry => {
             const local = committed.current.get(keyOf(entry));
@@ -372,9 +372,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     };
     refreshRef.current = () => { void refresh(); };
     // The device's last copy of the feed shows at once; the network load below
-    // replaces it. Subscribing first lets that load wait for the live-update
-    // stream, which the source opens once the local read names every agent the
-    // copy knows, so the stream's first ready needs no second load.
+    // replaces it, reading every agent the copy names beside the registry. The
+    // live-update stream opens beside it, and its first ready compares the
+    // load's fingerprint instead of loading again.
     void (source.cached?.() ?? Promise.resolve(null)).then((local) => {
       if (!alive || loaded || !local) return;
       setSnapshot(local); setClock(Date.now());

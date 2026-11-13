@@ -6,14 +6,17 @@ import { feedResourceNames, initializeFeedDatabases, publishFeedCard, type FeedC
 import { installDom } from "@/test/dom";
 import { useLocalThreadStorage } from "../lib/threadStore";
 import { resetLocalCacheForTests } from "../lib/localFirst/localCache";
+import { FOREGROUND_QUIET_MS, resetLanesForTests } from "../lib/localFirst/requestLanes";
 import { createHomeFeedSource, HOME_FEED_RESOURCE } from "./feedStore";
 import type { HomeFeedSource } from "./feedStoreTypes";
 
 const databases: Database[] = [];
 const cleanups: (() => void)[] = [];
 
-/** The source's own timers (notification debounce, cover and hidden windows, renewal) run only when a test fires them. */
+/** The source's own timers (notification debounce, hidden window, renewal) run only when a test fires them. */
 let timers: Map<number, { delay: number; run: () => void }>;
+let stored: Map<string, string>;
+const localStorageItems = () => Object.fromEntries(stored);
 
 beforeEach(() => {
   cleanups.push(installDom());
@@ -31,13 +34,14 @@ beforeEach(() => {
     spyOn(window, "clearTimeout").mockImplementation(cancel as typeof window.clearTimeout),
     spyOn(window, "clearInterval").mockImplementation(cancel as typeof window.clearInterval),
   ]) cleanups.push(() => spy.mockRestore());
-  const stored = new Map<string, string>();
+  stored = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
     value: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value), removeItem: (key: string) => stored.delete(key) },
   });
   Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: new IDBFactory() });
   resetLocalCacheForTests();
+  resetLanesForTests();
 });
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
@@ -148,13 +152,15 @@ async function openFeed(fixture: Account) {
   let woken = 0;
   const local = feed.cached?.();
   cleanups.push(feed.subscribe(() => { woken++; }));
-  const first = feed.load();
+  const first = feed.load(undefined, { feed: true });
   await local;
   return { feed, first, woken: () => woken };
 }
 
-const loads = (requests: string[]) => requests.filter((sql) => sql.startsWith("SELECT agent_id,agent_did")).length;
-const checks = (requests: string[]) => requests.filter((sql) => sql.includes("count(*)")).length;
+/** The Feed's registry read: one per load. */
+const loads = (requests: string[]) => requests.filter((sql) => sql.startsWith("SELECT 'a', agent_id")).length;
+/** A freshness fingerprint's reads: tallies only. */
+const checks = (requests: string[]) => requests.filter((sql) => sql.startsWith("SELECT (SELECT")).length;
 const titles = (snapshot: { entries: { state: { card: { title: string } } }[] }) => snapshot.entries.map((entry) => entry.state.card.title).sort();
 
 function setVisibility(state: "hidden" | "visible") {
@@ -166,18 +172,69 @@ test("connecting live updates loads the feed once: the first ready stream reload
   const fixture = await account();
   const { first, woken } = await openFeed(fixture);
   expect(fixture.live.opened).toHaveLength(1);
-  await settle();
-  // The network load waits for the stream it relies on for later writes.
-  expect(loads(fixture.requests)).toBe(0);
+  // The network load does not wait for the stream: the registry and the agent's two databases, one request each.
+  expect(titles(await first)).toEqual(["Already on the feed"]);
+  expect(fixture.requests).toHaveLength(3);
+  expect(loads(fixture.requests)).toBe(1);
 
   fixture.live.ready();
-  expect(titles(await first)).toEqual(["Already on the feed"]);
   await settle();
   expect(woken()).toBe(0);
   expect(loads(fixture.requests)).toBe(1);
-  // One freshness fingerprint (registry, the agent's output and responses) taken under the ready stream.
+  // One freshness fingerprint (registry, the agent's output and responses), equal to the load's own.
   expect(checks(fixture.requests)).toBe(3);
   expect(fixture.live.opened).toHaveLength(1);
+});
+
+test("a stream that becomes ready while the load is in flight compares once it lands", async () => {
+  const fixture = await account();
+  const { first, woken } = await openFeed(fixture);
+  fixture.live.ready();
+  await first;
+  await settle();
+  expect(woken()).toBe(0);
+  expect(loads(fixture.requests)).toBe(1);
+});
+
+test("a write after the load read but before the stream was ready is caught by the first ready", async () => {
+  const fixture = await account();
+  const { feed, first, woken } = await openFeed(fixture);
+  expect(titles(await first)).toEqual(["Already on the feed"]);
+  // No notification covers this write: the stream was not ready yet.
+  value(await publishFeedCard(fixture.output, card("gap", "Written before the stream was ready")));
+  fixture.live.ready();
+  await settle();
+  expect(woken()).toBe(1);
+  expect(titles(await feed.load(undefined, { feed: true }))).toEqual(["Already on the feed", "Written before the stream was ready"]);
+});
+
+test("a load from another view never moves the Feed's freshness baseline", async () => {
+  const fixture = await account();
+  const { feed, first, woken } = await openFeed(fixture);
+  fixture.live.ready();
+  await first;
+  await settle();
+  value(await publishFeedCard(fixture.output, card("other", "Seen only by a card view")));
+  await feed.load();
+  fixture.live.ready();
+  await settle();
+  expect(woken()).toBe(1);
+});
+
+test("a new device reads before it creates: the registry, then the agents, then the schema batch behind the first load", async () => {
+  const fixture = await account();
+  for (const key of Object.keys(localStorageItems())) if (key.includes("feed-schema")) localStorage.removeItem(key);
+  resetLocalCacheForTests();
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: new IDBFactory() });
+  const { first } = await openFeed(fixture);
+  expect(titles(await first)).toEqual(["Already on the feed"]);
+  expect(fixture.requests.map((sql) => sql.match(/SELECT '(\w)'/)?.[1])).toEqual(["a", "c", "r"]);
+  expect(fixture.requests.filter((sql) => sql.startsWith("batch("))).toEqual([]);
+  // The background lane starts once the foreground has been quiet for FOREGROUND_QUIET_MS.
+  await Bun.sleep(FOREGROUND_QUIET_MS + 50);
+  await settle();
+  expect(fixture.requests.filter((sql) => sql.startsWith("batch("))).toEqual(["batch(4)"]);
+  expect(localStorageItems()).toHaveProperty(["tinychat:feed-schema:v1:isolated-feed-live-test"]);
 });
 
 test("a reconnect after writes it was not told about catches up, and one after none reloads nothing", async () => {
@@ -200,7 +257,7 @@ test("a reconnect after writes it was not told about catches up, and one after n
   fixture.live.ready();
   await settle();
   expect(woken()).toBe(1);
-  expect(titles(await feed.load())).toEqual(["Already on the feed", "Written while disconnected"]);
+  expect(titles(await feed.load(undefined, { feed: true }))).toEqual(["Already on the feed", "Written while disconnected"]);
 
   // The catch-up moved the fingerprint forward: the next quiet reconnect stays quiet.
   fixture.live.ready();
