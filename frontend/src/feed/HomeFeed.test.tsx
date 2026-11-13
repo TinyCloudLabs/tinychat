@@ -676,14 +676,15 @@ function plain(cardId = "plain-one"): HomeFeedEntry {
 const writes = (responses: FeedResponse[]) => responses.map((response) => `${response.revision}:${response.choiceId ?? response.text}`);
 const BANNER = "A newer version of this card arrived";
 
-test("a comment waits 5 s like every send: Undo writes nothing and puts the words back; left alone, one message at 5 s", async () => {
+test("a comment waits 5 s like every send: Undo writes nothing and puts the words back; left alone, one message at 5 s; Cancel inside the field sends nothing", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
   await open(view.host, "Plain question");
   await comment(view.host, "Is Friday too late?");
-  // Its Send sits inside the comment field (the helper tapped that one), and the count starts at once.
+  // Send and Cancel both sit inside the comment field's border (Sam, 23:35Z), and the count starts at once.
   const field = view.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Leave a comment for Test agent"]')!;
   expect(field.parentElement!.querySelector("button")).not.toBeNull();
+  expect(field.parentElement!.querySelector('button[aria-label="Cancel"]')).not.toBeNull();
   expect(comments(view.host)?.textContent).toContain("Sending in 5s");
   expect(field.value).toBe("");
   await clock!.advance(3000);
@@ -702,6 +703,12 @@ test("a comment waits 5 s like every send: Undo writes nothing and puts the word
   await clock!.advance(10_000);
   expect(store.messages).toHaveLength(1);
   expect(store.responses).toEqual([]);
+  // Words in the field, then its Cancel: the box closes and nothing more is sent.
+  await type(field, "Actually, never mind.");
+  await act(async () => field.parentElement!.querySelector<HTMLButtonElement>('button[aria-label="Cancel"]')!.click());
+  expect(view.host.querySelector('textarea[aria-label="Leave a comment for Test agent"]')).toBeNull();
+  await clock!.advance(10_000);
+  expect(store.messages).toHaveLength(1);
 });
 
 test("a plain card's conversation interleaves the owner's messages and revision replies, oldest first", async () => {
