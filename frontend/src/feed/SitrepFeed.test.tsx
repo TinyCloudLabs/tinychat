@@ -428,6 +428,40 @@ test("a folded approval step opens its own card after an ambiguous snapshot is r
   expect([...view.host.querySelectorAll("article")].some((article) => [...article.children].some((child) => child.tagName === "H2" && child.textContent === approval.title))).toBe(true);
 });
 
+test("a typed question's foot is one row (Ask me later, Drop this card, Details) under its closed comment box", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  const foot = article.querySelector('[aria-label="Card actions"]');
+  expect([...foot!.querySelectorAll("button")].map((node) => node.textContent)).toEqual(["Ask me later", "Drop this card", "Details"]);
+  const comment = button(article, "Leave a comment for SyntheticOfficer");
+  expect(comment.compareDocumentPosition(foot!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The context sits in its panel above the options, then the lab's expiry line (this fixture has a legacy expiry).
+  const options = article.querySelector("fieldset");
+  const why = [...article.querySelectorAll("strong")].find((node) => node.textContent === "Why now: ");
+  expect(why && options && why.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const expiry = [...article.querySelectorAll("p")].find((node) => node.textContent?.startsWith("Legacy expiry "));
+  expect(expiry && options && expiry.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("Accept recommendation and Drop question wait under Undo before anything is written", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(article, "Drop question").click());
+  expect(undoPill(article)?.textContent).toBe("Undo · 5");
+  await act(async () => undoPill(article)!.click());
+  await timer.advance(10_000);
+  expect(fixture.saved).toEqual([]);
+  await act(async () => button(article, "Accept recommendation").click());
+  await timer.advance(4000);
+  expect(fixture.saved).toEqual([]);
+  await timer.advance(1000);
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: "ask-synthetic", action: "accept-default", choice: "careful" } });
+});
+
 test("typed Ask me later offers three presets and appends owner history without creating an answer", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
@@ -446,7 +480,7 @@ test("matching display labels never turn an unresolved owner into an authenticat
   fixture.entry.recipientRoute = { recipients: [], unresolved: ["SyntheticOfficer"] };
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await act(async () => button(article, "Comment").click());
+  await act(async () => button(article, "Leave a comment for SyntheticOfficer").click());
   await enter(article, "Leave a comment for SyntheticOfficer", "Keep this held until its actual recipient is mapped.");
   const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Send").click());
@@ -469,7 +503,7 @@ test("an explicit owner note shows its approved recipients and sends a message w
   const article = card(view.host, String(fixture.entry.state.card.title));
   await details(article);
   expect(article.textContent).toContain("Messages on this card go to: SyntheticOfficer · 00000000-0000-4000-8000-000000000002");
-  await act(async () => button(article, "Comment").click());
+  await act(async () => button(article, "Leave a comment for SyntheticOfficer").click());
   await enter(article, "Leave a comment for SyntheticOfficer", "Explicitly send this update.");
   const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Send").click());
@@ -516,7 +550,7 @@ test("a failed card message keeps its exact words until Try again saves them", a
   fixture.source.sendMessage = async (...args) => { if (fail) { fail = false; throw new Error("Isolated message write refused"); } return send(...args); };
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await act(async () => button(article, "Comment").click());
+  await act(async () => button(article, "Leave a comment for SyntheticOfficer").click());
   await enter(article, "Leave a comment for SyntheticOfficer", "Keep this exact draft after the refused write.");
   const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Send").click());
@@ -591,7 +625,7 @@ test("an explicit owner note discloses only to resolved recipients and retains e
   const article = card(view.host, String(fixture.entry.state.card.title));
   await details(article);
   expect(article.textContent).toContain("Messages on this card go to: SyntheticOwner · 00000000-0000-4000-8000-000000000001");
-  await act(async () => button(article, "Comment").click());
+  await act(async () => button(article, "Leave a comment for SyntheticOwner").click());
   await enter(article, "Leave a comment for SyntheticOwner", "An explicit bounded owner note.");
   const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Send").click());

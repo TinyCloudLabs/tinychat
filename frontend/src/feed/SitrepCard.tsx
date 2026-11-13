@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, cardTime, COMMENT_COPY, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, primaryPillClass as primaryClass, quietClass } from "./cardKit";
+import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, cardTime, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox, type AnswerOption } from "./AnswerOptions";
-import { CardDetails, footActionClass, type CardClose } from "./CardActions";
+import { actionClass, CardDetails, footActionClass, type CardClose } from "./CardActions";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
@@ -14,17 +14,8 @@ import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
 function stamp(at: string) { return cardTime(at, Date.now()); }
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
-const DAY = 86_400_000;
-/** "Request ends in 6 days"; nothing for expiries more than a year out. */
-function requestEnds(expiresAt: string | undefined, now: number): string | null {
-  const ends = Date.parse(expiresAt ?? "");
-  if (!Number.isFinite(ends) || ends - now > 365 * DAY) return null;
-  if (ends <= now) return "This request has ended";
-  const hours = Math.ceil((ends - now) / 3_600_000);
-  if (hours < 24) return `Request ends in ${hours} ${hours === 1 ? "hour" : "hours"}`;
-  const days = Math.round((ends - now) / DAY);
-  return `Request ends in ${days} ${days === 1 ? "day" : "days"}`;
-}
+/** An approval's one action ("Give the go", "Save code", "I've done this step"): a normal-size dark button, as in the lab. */
+const approveClass = "inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50";
 const STEP_WORDS: Record<StepState, string> = { pending: "Waiting for you", done: "Done", "not needed": "Not needed", expired: "Ended", closed: "Closed" };
 /** "A", "A and B", "A, B and C". */
 function names(list: readonly string[]): string {
@@ -120,8 +111,6 @@ export function SitrepCard(props: Props) {
   // The option (or OWN_OPTION.id for a written answer) whose countdown or save is running, or whose save failed.
   const [chosen, setChosen] = useState<string>();
   const [justSaved, setJustSaved] = useState(false);
-  const [confirmDrop, setConfirmDrop] = useState(false);
-  const [composing, setComposing] = useState(false);
   const countdown = usePendingSend({ stale, onRefused });
   const [reason, setReason] = useState("");
   const [claimNote, setClaimNote] = useState("");
@@ -194,7 +183,7 @@ export function SitrepCard(props: Props) {
   async function askAnswer(action: "answer" | "drop" | "accept-default" = "answer", selected?: string, hold = false) {
     if (record.kind !== "ask") return;
     await send("sitrep.answer", { askId: record.id, action, ...(selected ? { choice: selected } : {}), text, at: new Date().toISOString() }, `ask:${action}:${selected ?? ""}:${text}`, false, undefined, hold);
-    setText(""); setOwnOpen(false); setChosen(undefined); setFollowup(false); setConfirmDrop(false); setJustSaved(true);
+    setText(""); setOwnOpen(false); setChosen(undefined); setFollowup(false); setJustSaved(true);
   }
   /** One tap (or Send under "Your own answer") chooses: the answer waits out the undo window in its row, then is held and sent. */
   function choose(choice: string, label: string) {
@@ -272,7 +261,6 @@ export function SitrepCard(props: Props) {
   const responds = entry.state.card.needsResponse && !closed;
   const asking = record.kind === "ask" && responds && (!projection.answer || followup || !!text.trim());
   const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > now;
-  const deadline = (record.kind === "ask" || record.kind === "task") && record.deadline && !closed ? Date.parse(record.deadline) : NaN;
   const hint = expiryHint(record, now, state);
   const receipt = projection.answer && answerReceipt(entry, owner, projection.answer);
   const options: AnswerOption[] = record.kind === "ask" ? record.options.map((option) => ({ id: option.id, label: option.label, ...(option.detail ? { detail: option.detail } : {}), ...(option.cost ? { cost: option.cost } : {}) })) : [];
@@ -288,8 +276,9 @@ export function SitrepCard(props: Props) {
   ].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).map((item, index, all) => ({ ...item, tone: index === all.length - 1 ? "current" as const : "done" as const }));
 
   // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the agent.
+  // The conversation keeps its own closed box ("Leave a comment for …") above the foot, as on the lab's cards.
   const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : agent;
-  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo} composer={{ open: composing && !closed, onOpenChange: setComposing }}
+  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />;
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own
   // countdown (`chosen`) shows in its row instead.
@@ -300,8 +289,10 @@ export function SitrepCard(props: Props) {
   const failed = failedAnswer !== null;
 
   return <div className="text-[15px]" aria-label={`${kindWord(record.kind)} details`}>
-    {Number.isFinite(deadline) && <p className={`mt-2 text-[13px] tabular-nums ${deadline - now < 86_400_000 ? "font-medium text-warning" : "text-muted-foreground"}`}>{record.kind === "ask" ? "Answer by" : "Due"} {stamp(new Date(deadline).toISOString()).replace(/^Today, /, "today ")}</p>}
-    {!Number.isFinite(deadline) && hint && <p className="mt-2 text-[13px] font-medium text-warning">{hint.replace(/^expires/, "Expires")}</p>}
+    {/* The agent's context in a shaded panel, ahead of what it asks of you. */}
+    {"context" in record && <div className="mt-4 space-y-2 rounded-xl bg-muted/30 p-4 text-sm"><p>{prose(record.context.background, record.repo)}</p>{record.context.whyNow && <p><strong className="font-semibold">Why now: </strong>{prose(record.context.whyNow, record.repo)}</p>}{record.context.ifNoAnswer && <p><strong className="font-semibold">If no answer: </strong>{prose(record.context.ifNoAnswer, record.repo)}</p>}{!!record.context.known.length && <ul className="list-disc space-y-1 pl-5">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul>}{!!record.context.related.length && <p>Earlier questions: {record.context.related.join(", ")}</p>}</div>}
+    {(record.kind === "ask" || record.kind === "task") && <p className="mt-3 text-xs text-muted-foreground">{record.deadline && `Deadline ${stamp(record.deadline)} · `}{projection.expiryAt === null ? "No automatic expiry" : projection.expiryAt ? `Legacy expiry ${stamp(new Date(projection.expiryAt).toISOString())}` : ""}{hint && ` · ${hint}`}</p>}
+    {record.kind !== "ask" && record.kind !== "task" && hint && <p className="mt-2 text-[13px] font-medium text-warning">{hint.replace(/^expires/, "Expires")}</p>}
 
     {record.kind === "ask" && <>
       {pendingLine}
@@ -313,26 +304,26 @@ export function SitrepCard(props: Props) {
         onChoose={choose} onUndo={() => { countdown.undo(); setChosen(undefined); }}
         own={{ open: ownOpen || !options.length, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={waiting || busy} onText={setText} onSend={() => { if (text.trim()) choose(OWN_OPTION.id, OWN_OPTION.label); }}
           state={chosen === OWN_OPTION.id ? (busy ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED_COPY, true)} /> }} /></div>}
-      {!countdown.pending && asking && steer === "open" && record.default && <div className="mt-2 flex flex-wrap items-center gap-x-3"><button type="button" className={buttonClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button><span className={fineClass}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</span></div>}
-      {!waiting && responds && <div className="mt-1 flex flex-wrap gap-x-[26px]">
+      {!waiting && asking && <div className="mt-3 flex flex-wrap gap-2">
+        {steer === "open" && record.default && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>}
+        {record.recommend && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.recommend) ?? "the recommendation", () => askAnswer("accept-default", record.recommend, true), true)}>Accept recommendation</button>}
+        <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo("Drop question", () => askAnswer("drop", undefined, true), true)}>Drop question</button>
+      </div>}
+      {!waiting && asking && steer === "open" && record.default && <p className={`mt-2 ${fineClass}`}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</p>}
+      {!waiting && responds && (!asking || followup) && <div className="mt-1 flex flex-wrap gap-x-[26px]">
         {!asking && projection.answer?.action !== "drop" && <button type="button" className={quietClass} onClick={() => { setFollowup(true); setJustSaved(false); }}>Change answer</button>}
         {followup && <button type="button" className={quietClass} disabled={busy} onClick={() => { setFollowup(false); setText(""); setOwnOpen(false); setChosen(undefined); }}>Keep my answer</button>}
-        {!confirmDrop && projection.answer?.action !== "drop" && <button type="button" className={quietClass} disabled={busy || stale} onClick={() => setConfirmDrop(true)}>Drop question</button>}
-      </div>}
-      {!waiting && responds && confirmDrop && <div role="group" aria-label="Drop this question?" className="mt-2 space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm">
-        <p>Drop this question? {agent} stops waiting for your answer.</p>
-        <div className="flex flex-wrap gap-2"><button type="button" className={`${buttonClass} bg-background`} disabled={busy || stale} onClick={() => afterUndo("Drop question", () => askAnswer("drop", undefined, true), true)}>Drop it</button><button type="button" className={quietClass} onClick={() => setConfirmDrop(false)}>Keep it</button></div>
       </div>}
       {projection.parts.map((part) => <section key={part.view.approval.id} className="mt-3.5 space-y-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });
         const target = matches.length === 1 ? matches[0] : undefined;
         return <div key={step.approval.id} className="space-y-1"><p className="font-semibold">{step.approval.title}</p><p className={fineClass}>{STEP_WORDS[stepState(part, step)]}{part.notNeeded && ` · ${part.notNeeded}`}</p>
-          {target ? <ApprovalActions entry={target} approval={step.approval} source={source} owner={owner} now={now} expanded={expanded} stale={stale} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} showStatus inactive={stepState(part, step) !== "pending"} /> : stepState(part, step) === "pending" && <OpenFoldedApproval approval={step.approval} source={source} sourceId={entry.source.sourceId} onNavigate={props.onNavigate} />}
+          {target ? <ApprovalActions entry={target} approval={step.approval} source={source} owner={owner} stale={stale} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} showStatus inactive={stepState(part, step) !== "pending"} /> : stepState(part, step) === "pending" && <OpenFoldedApproval approval={step.approval} source={source} sourceId={entry.source.sourceId} onNavigate={props.onNavigate} />}
         </div>;
       })}</section>)}
     </>}
 
-    {record.kind === "approval" && <><TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} /><ApprovalActions entry={entry} approval={record} source={source} owner={owner} now={now} expanded={expanded} stale={stale} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} inactive={projection.attention === "not-needed"} /></>}
+    {record.kind === "approval" && <><TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} /><ApprovalActions entry={entry} approval={record} source={source} owner={owner} stale={stale} onSaved={onSaved} onOwnerSaved={onOwnerSaved} onNavigate={props.onNavigate} inactive={projection.attention === "not-needed"} /></>}
     {record.kind === "task" && <div className="mt-3.5 space-y-2">
       <fieldset disabled={busy || closed || !entry.state.card.needsResponse}><legend className="sr-only">{entry.state.card.needsResponse ? "Your steps (private)" : "Steps"}</legend>
         {record.steps.map((step) => <label key={step.id} className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5 accent-foreground" checked={!!state?.steps[step.id]} onChange={(event) => { const checked = event.currentTarget.checked; void perform(() => savePrivate({ steps: { [step.id]: checked ? new Date().toISOString() : null } }, `tick:${step.id}:${checked}`)); }} /><span className={state?.steps[step.id] ? "text-muted-foreground line-through" : ""}>{step.text}</span></label>)}
@@ -370,7 +361,6 @@ export function SitrepCard(props: Props) {
     </div>}
 
     {expanded && <div className="mt-4 space-y-3">
-      {"context" in record && <div className="space-y-2"><p>{prose(record.context.background, record.repo)}</p>{record.context.whyNow && <p><strong className="font-semibold">Why now: </strong>{prose(record.context.whyNow, record.repo)}</p>}{record.context.ifNoAnswer && <p><strong className="font-semibold">If no answer: </strong>{prose(record.context.ifNoAnswer, record.repo)}</p>}{!!record.context.known.length && <ul className="list-disc space-y-1 pl-5">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul>}{!!record.context.related.length && <p>Earlier questions: {record.context.related.join(", ")}</p>}</div>}
       {steer && <div className="space-y-1 text-sm"><p>{record.kind === "ask" && <>If you don't choose, {agent} goes ahead with <b className="font-semibold">{optionLabel(record.default) ?? "its plan"}</b>.</>}</p><p className="text-muted-foreground">{steer === "done" ? "It has gone ahead." : steer === "closed-proceeding" ? "The time to choose has passed; it is going ahead." : `You can still choose${record.kind === "ask" && record.decideBy ? ` until ${stamp(record.decideBy)}` : ""}.`}</p>{record.kind === "ask" && record.proceededAt && <p className="text-muted-foreground">Went ahead {stamp(record.proceededAt)}. A new answer can't undo that.</p>}</div>}
       {!!dependencies.length && <div className="text-sm"><p className="font-semibold">Waiting on</p><ul className="mt-1 space-y-1">{dependencies.map((ref) => { const resolved = graph.resolve(ref); return <li key={ref}>{resolved.record ? depTitle(resolved.record) : ref} · {resolved.state}</li>; })}</ul></div>}
       {record.blocks && <p className="text-sm"><strong className="font-semibold">Holds up: </strong>{record.blocks}</p>}
@@ -412,13 +402,10 @@ export function SitrepCard(props: Props) {
     </div>}
 
     {thread}
-    {/* The card's foot, one row: Ask me later and Comment, Drop this card (from the page), and Details at the right,
-        which holds who posted the card, its wiring, private priority and its history. */}
+    {/* The card's foot, one row: Ask me later, Drop this card (from the page), and Details at the right, which holds
+        who posted the card, its wiring, private priority and its history. */}
     {!waiting && (projection.request || expanded) && <div className="mt-3 border-t border-border pt-1">
-      <CardDetails close={props.close} actions={<>
-        {props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}
-        {!closed && !composing && <button type="button" className={footActionClass} onClick={() => setComposing(true)}>{COMMENT_COPY.button}</button>}
-      </>}>
+      <CardDetails close={props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
         <dl>{([
           ["Agent", record.from !== agent ? `${record.from} (through ${agent})` : agent],
           ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
@@ -447,7 +434,7 @@ export function SitrepCard(props: Props) {
 const APPROVAL_EXPIRED = "This approval expired before it was sent. Nothing was sent.";
 const APPROVAL_CLOSED = "This approval closed before it was sent. Nothing was sent.";
 
-function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, source, owner: contextOwner, now, expanded, stale = false, onSaved, onOwnerSaved, onNavigate, showStatus = false, inactive = false }: { entry: HomeFeedEntry; approval: Approval; source: HomeFeedSource; owner: SitrepOwnerData; now: number; expanded: boolean; stale?: boolean; onSaved: Props["onSaved"]; onOwnerSaved: Props["onOwnerSaved"]; onNavigate: Props["onNavigate"]; showStatus?: boolean; inactive?: boolean }) {
+function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, source, owner: contextOwner, stale = false, onSaved, onOwnerSaved, onNavigate, showStatus = false, inactive = false }: { entry: HomeFeedEntry; approval: Approval; source: HomeFeedSource; owner: SitrepOwnerData; stale?: boolean; onSaved: Props["onSaved"]; onOwnerSaved: Props["onOwnerSaved"]; onNavigate: Props["onNavigate"]; showStatus?: boolean; inactive?: boolean }) {
   const [binding, setBinding] = useState(() => ({ entry: incomingEntry, approval: incomingApproval }));
   const { entry, approval } = binding;
   const [code, setCode] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
@@ -541,36 +528,27 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   }
   const submitLatest = useRef(submit);
   submitLatest.current = submit;
-  const ends = requestEnds(approval.expiresAt, now);
   const link = approval.url && safeUrl(approval.url) ? new URL(approval.url) : undefined;
-  // "Allows …" belongs to permission requests (an OpenKey link or a code), never to a go/no-go.
-  const scoped = approval.approvalType !== "go" && (approval.codeExpected || (!!link && /openkey/i.test(link.hostname)));
   // The code box waits behind "Got a code? Paste it": reviewing comes first.
   const codeShown = visibleForm && approval.codeExpected && (codeOpen || code.length > 0 || busy);
   const action = visibleForm && !approval.codeExpected;
-  return <div className="mt-3.5 space-y-3" onFocusCapture={() => { engagedOnce.current = true; }}>
-    {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
+  // The lab's layout: what kind of request and when, what it allows, its steps and link, then its one action.
+  return <div className="mt-3.5 space-y-3 text-sm" onFocusCapture={() => { engagedOnce.current = true; }}>
+    {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
-    {approval.warning && <p className="text-sm font-medium text-warning">{approval.warning}</p>}
-    {!expanded && approval.permissions && scoped && <p className="line-clamp-2 text-sm">Allows {approval.permissions}</p>}
-    <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
-      {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className={action ? buttonClass : primaryClass}>{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
-      {action && !waiting && <button type="button" disabled={disabled} className={approval.approvalType === "go" ? primaryClass : buttonClass} onClick={() => holdApproval(approval.approvalType === "go" ? "your go" : "“done”")}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}
-      {(ends || expired) && <span className={fineClass}>{expired ? "This request has ended" : ends}</span>}
-    </div>
+    <p>{approval.approvalType}{approval.approvalKind && ` · ${approval.approvalKind}`}{expired && " · Expired"} · Issued {stamp(approval.issuedAt)}{approval.expiresAt && ` · Expires ${stamp(approval.expiresAt)}`}</p>
+    {approval.permissions && <p><strong className="font-semibold">Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
+    {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
+    {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
+    {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center gap-1.5 underline underline-offset-2">{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
     {visibleForm && approval.codeExpected && !codeShown && <button type="button" className={quietClass} disabled={disabled} onClick={() => { engagedOnce.current = true; setCodeOpen(true); }}>Got a code? Paste it</button>}
-    {codeShown && <div className="space-y-2">
-      <label className="block text-[13px] font-semibold">Approval code<input aria-label="Approval code" type="password" autoComplete="off" autoFocus={codeOpen && !code} value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>
-      {!waiting && <button type="button" disabled={disabled || !validCode} className={buttonClass} onClick={() => holdApproval("your code")}>{busy ? "Saving…" : "Save code"}</button>}
+    {codeShown && <label className="block font-medium">Approval code<input aria-label="Approval code" type="password" autoComplete="off" autoFocus={codeOpen && !code} value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>}
+    {!waiting && (action || codeShown) && <div className="flex flex-wrap items-center gap-2">
+      {action && <button type="button" disabled={disabled} className={approveClass} onClick={() => holdApproval(approval.approvalType === "go" ? "your go" : "“done”")}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}
+      {codeShown && <button type="button" disabled={disabled || !validCode} className={approveClass} onClick={() => holdApproval("your code")}>{busy ? "Saving…" : "Save code"}</button>}
     </div>}
     {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}><p>Sending {countdown.pending.label}…</p></PendingAnswer>}
-    {notSent && <p role="status" className="text-sm">{notSent}</p>}
-    {expanded && <div className="space-y-1 text-sm">
-      {approval.permissions && <p><strong className="font-semibold">Allows: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>For: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " (everything in it)"}</p>}
-      {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also kept: {approval.keepNames.join(", ")}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
-      {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
-      <p className={fineClass}>Asked {stamp(approval.issuedAt)}</p>
-    </div>}
+    {notSent && <p role="status">{notSent}</p>}
     {failedId ? <AnswerFailedLine held={!!source.holdsAnswer?.(entry, failedId)} /> : error && <ErrorLine>{error}</ErrorLine>}
   </div>;
 }

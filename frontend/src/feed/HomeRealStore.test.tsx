@@ -358,7 +358,7 @@ test("a comment on a typed card without an owner route is a sitrep thread messag
   const owner = await ownerFixture(); const agent = await owner.agent("comment-typed");
   value(await publishFeedCard(agent.output, typedCard(syntheticRecord("ask"))));
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Comment").click());
+  await act(async () => button(view.host, "Leave a comment for Test agent").click());
   await enter(view.host, "Leave a comment for Test agent", "Which one is cheaper?");
   await click(transport, button(view.host, "Send"));
   await countdown(transport);
@@ -375,7 +375,7 @@ test("a comment on an owner-routed card goes only to its approved, connected rec
     { recipientKey: "known-owner", legacyName: "SyntheticOwner", runtimeTarget: { agentId: "00000000-0000-4000-8000-000000000001", provider: "omp" } },
   ]);
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Comment").click());
+  await act(async () => button(view.host, "Leave a comment for SyntheticOwner").click());
   await enter(view.host, "Leave a comment for SyntheticOwner", "Go ahead after lunch.");
   await click(transport, button(view.host, "Send"));
   await countdown(transport);
@@ -389,7 +389,7 @@ test("a comment for a recipient that isn't connected yet is held privately and s
   const owner = await ownerFixture(); const agent = await owner.agent("comment-held");
   await routedCard(owner, agent, { ...syntheticRecord("ask"), owner: "MissingOfficer" }, [{ recipientKey: "missing-officer", legacyName: "MissingOfficer" }]);
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Comment").click());
+  await act(async () => button(view.host, "Leave a comment for MissingOfficer").click());
   await enter(view.host, "Leave a comment for MissingOfficer", "Keep this until MissingOfficer connects.");
   await click(transport, button(view.host, "Send"));
   await countdown(transport);
