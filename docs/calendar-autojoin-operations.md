@@ -37,6 +37,10 @@ KV lease has no compare-and-set and does not make overlapping instances safe. Do
 perform rolling replacements. Stop the old instance, wait for it to exit, then start its replacement.
 This also applies to HTTP writes, including OAuth, disable, and the recording ownership index.
 
+Deploy rule: exactly one backend; all autojoin and credential writes go through the backend service.
+The worker's duplicate-scheduler lock is per store object in one process; nothing detects a second
+process.
+
 SIGTERM stops new scheduling and new HTTP connections, then drains both before exiting. Compose
 allows 130 seconds for this drain. A timeout exits with failure; wait for the old process to be gone
 before starting the replacement. Persisted unknown outcomes are looked up at startup, including
@@ -47,14 +51,19 @@ events; an incomplete scan suppresses new dispatches until a complete scan succe
 operations can run concurrently, with at most one dispatch per tenant. Retry-After delays are kept
 in full even when they exceed the ordinary 15-minute retry backoff limit.
 
-**Node calls (TC-2917).** The single writer keeps an in-process copy of the connection and
-occurrence rows, rebuilt from the node on the first tick after a restart. A tick reads them from
-memory, so an idle connected user costs about five node calls an hour (one token refresh, one
-hourly `lastScanAt` write), and disabled users and finished meetings cost none. Writes reach the
-node first; identical writes are skipped. Request handlers, the dispatch path's policy checks and
-the restart grant backfill still read the node. A row edited in the space by anything but this
-backend reaches the worker when a request or dispatch next reads it, or after a restart. A second
-worker started on the same store in one process is refused.
+**Node calls (TC-2917).** The backend keeps a bounded in-process copy of the connection and
+occurrence rows (least recently used out, no tombstones), rebuilt from the node after a restart.
+Consent is always read from the node: before each Google scan, before each recording or sharing
+check, at dispatch, by request handlers and by the restart grant backfill. Every connection write
+re-reads the stored row first and changes only what it owns, so a disable, a new generation or a
+deletion stored by something else is kept, never overwritten. An idle connected user costs 40–60
+node calls an hour for the policy read before each scan (one scan every 60–90 s), plus an hourly
+`lastScanAt` write and its read and one token refresh; disabled users and finished meetings cost none. Identical writes are skipped. Cached
+access tokens serve only their connection generation and only until any CredentialStore in this
+process changes that credential. Credential or row changes made outside this process are not
+announced; follow the deploy rule above. Account deletion does not yet go through this service, so
+do not describe autojoin as deletion-safe. A second worker started on the same store in one process
+is refused.
 
 ## Two accounts in the same meeting (TC-581)
 
@@ -69,8 +78,9 @@ account's bot is actually in, or about to be in, the call: its ptx meeting is `q
 `waiting_for_admission`, `needs_help` or `in_progress`. From `processing` on, the bot has left. An owner that
 never got a meeting id counts only until its dispatch cutoff plus one minute. The owner's ptx
 status is read before any lock is taken. If the other bot leaves (finished, failed, stopped,
-deleted) while this account is still inside its own dispatch window (one minute before start to
-five minutes after), this account sends its own bot straight away. Back-to-back meetings in the
+deleted) while this account is still inside its own dispatch window (from one minute before start
+until 15 minutes after start or one minute before end, whichever is earlier), this account sends its
+own bot straight away. Back-to-back meetings in the
 same room and last week's occurrence of a recurring meeting never overlap.
 
 **Corroboration.** When an account attaches to another account's capture, it checks its OWN

@@ -357,6 +357,22 @@ function warnCredential(fields: string): void {
 
 // ── The store ────────────────────────────────────────────────────────
 
+/** Custody changes per credential in this process, by every CredentialStore instance: store,
+ *  rotate, revoke and delete each bump it once settled (even on failure: the outcome is unknown). */
+const custodyVersions = new Map<string, number>();
+/** Lets a cache of a decrypted secret notice a custody change made anywhere in this process without
+ *  a read: capture it before reading the credential, and trust the cache only while it is unchanged. */
+export function credentialCustodyVersion(source: string, address: string): number {
+  return custodyVersions.get(rowKey(normalizeSource(source), normalizeWebhookAddress(address))) ?? 0;
+}
+async function custodyChange<T>(source: string, address: string, change: () => Promise<T>): Promise<T> {
+  try { return await change(); }
+  finally {
+    const key = rowKey(source, address);
+    custodyVersions.set(key, (custodyVersions.get(key) ?? 0) + 1);
+  }
+}
+
 export class CredentialStore {
   private readonly now: () => number;
   private readonly master: () => string;
@@ -560,7 +576,7 @@ export class CredentialStore {
       reason = "no_credential";
     }
 
-    await this.rows.remove(src, addr);
+    await custodyChange(src, addr, () => this.rows.remove(src, addr));
     logCredential(
       `op=credential-revoke result=deleted existed=${existed} upstream=${upstream} ` +
         `source=${src} aid=${hashed(addr)}`,
@@ -574,7 +590,9 @@ export class CredentialStore {
 
   /** End local custody without revoking the provider grant (Calendar autojoin Disable). */
   async delete(source: string, address: string): Promise<void> {
-    await this.rows.remove(normalizeSource(source), normalizeWebhookAddress(address));
+    const src = normalizeSource(source);
+    const addr = normalizeWebhookAddress(address);
+    await custodyChange(src, addr, () => this.rows.remove(src, addr));
   }
 
   private async write(
@@ -603,7 +621,7 @@ export class CredentialStore {
       lastUsedAt: existing?.lastUsedAt ?? stamp,
     };
     // A durable write failure propagates — there is no "stored" to report without one.
-    await this.rows.write(row);
+    await custodyChange(src, addr, () => this.rows.write(row));
     logCredential(
       `op=credential-${op} result=ok source=${src} aid=${hashed(addr)} kind=${row.kind}`,
     );

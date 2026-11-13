@@ -168,24 +168,32 @@ export class CalendarAutojoinWorker {
     await Promise.all(Array.from({ length: Math.min(4, tenants.length) }, async () => {
       while (cursor < tenants.length && !this.stopping) {
         const connection = tenants[cursor++]!;
-        try { await this.reconcileTenant(connection.tenant, counts); }
+        try { await this.reconcileTenant(connection, counts); }
         catch (error) { logCalendarAutojoinFailure("tenant_reconcile", error); }
       }
     }));
     // Counts only: never ids, titles or addresses.
     console.log(`[calendar-autojoin] code=tick_done ms=${this.now() - startedAt} tenants=${tenants.length} rows=${counts.rows} scans=${counts.scans} timers=${this.dueTimers.size}`);
   }
-  private async readConnection(tenant: string, store = this.options.store): Promise<CalendarConnection | null> {
-    try { return await store.getConnection(tenant); }
+  /** `fresh`: from the node, even through the worker's cached store. Every consent check that
+   *  gates a Google read or a running recording reads fresh. */
+  private async readConnection(tenant: string, store = this.options.store, fresh = false): Promise<CalendarConnection | null> {
+    try { return await (fresh ? store.getConnectionFresh(tenant) : store.getConnection(tenant)); }
     catch (error) { this.options.connection.invalidateGrantReferences?.(); throw error; }
   }
-  private async reconcileTenant(tenant: string, counts: { rows: number; scans: number }): Promise<void> {
+  private async reconcileTenant(listed: CalendarConnection, counts: { rows: number; scans: number }): Promise<void> {
     const { store, connection: credentials } = this.options;
+    const tenant = listed.tenant;
     await credentials.cleanupEnabling(tenant);
-    let connection = await this.readConnection(tenant);
+    const scanDue = (row: CalendarConnection) => row.state === "enabled" && !!row.subject && row.nextScanAt <= this.now();
+    // A Google scan needs the node's word that the account still consents: when the listing says a
+    // scan is due, this one read goes to the node; one that became due since reads it again.
+    const fresh = scanDue(listed);
+    let connection = await this.readConnection(tenant, store, fresh);
+    if (connection && !fresh && scanDue(connection)) connection = await this.readConnection(tenant, store, true);
     if (!connection) return;
     this.trackTenant(connection);
-    if (connection.state === "enabled" && connection.subject && connection.nextScanAt <= this.now()) {
+    if (scanDue(connection)) {
       counts.scans++;
       try {
         const events = await this.google(connection, token => this.options.calendar.listEvents(token, this.now()));
@@ -194,7 +202,7 @@ export class CalendarAutojoinWorker {
         const delay = this.retryDelay(error, 3);
         await store.updateConnection(tenant, current => current?.generation === connection!.generation ? {
           ...current, scanComplete: false, errorCode: error instanceof GoogleCalendarError ? error.code : "calendar_scan_failed", nextScanAt: this.now() + Math.max(60_000, delay),
-        } : current);
+        } : null);
       }
     }
     connection = await this.readConnection(tenant);
@@ -374,8 +382,11 @@ export class CalendarAutojoinWorker {
         await store.putOccurrence(next);
       }
       // TC-1047: a timer's dispatch records lastDispatchLag outside this lock; keep the latest one.
-      await store.updateConnection(connection.tenant, latest => ({ ...current, lastDispatchLag: latest?.lastDispatchLag,
-        scanComplete: true, errorCode: undefined, lastScanAt: this.now(), nextScanAt: this.now() + 55_000 + Math.floor(this.random() * 10_000) }));
+      // Scan bookkeeping only, onto the row as stored: an update that reaches the node re-reads it
+      // first, and a disabled, reconnected or deleted connection keeps what it has.
+      await store.updateConnection(connection.tenant, latest => latest?.state === "enabled" && latest.generation === current.generation
+        && latest.subject === current.subject ? { ...latest, scanComplete: true, errorCode: undefined, lastScanAt: this.now(),
+          nextScanAt: this.now() + 55_000 + Math.floor(this.random() * 10_000) } : null);
     });
   }
   private async reconcileOccurrence(original: CalendarOccurrence): Promise<void> {
@@ -547,7 +558,7 @@ export class CalendarAutojoinWorker {
       await this.dispatchStore.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition: "sent" });
       row = (await this.dispatchStore.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: current.stopRequested ? "stop_pending" : "sent", createBody: undefined, updatedAt: this.now() }))!;
     }
-    const connection = await this.readConnection(row.tenant, store);
+    const connection = await this.readConnection(row.tenant, store, true);
     if (connection?.state !== "enabled" || connection.subject !== row.subject || connection.generation !== row.generation) row = (await this.requestStop(row, "autojoin_disabled"))!;
     if (!row.stopRequested && connection?.state === "enabled" && connection.subject === row.subject) {
       try {
@@ -556,7 +567,7 @@ export class CalendarAutojoinWorker {
         if (!eligible || eligible.start !== row.start || eligible.end !== row.end || eligible.meetingUrl !== row.meetingUrl) row = (await this.requestStop(row, "event_changed"))!;
       } catch {
         // Google being unavailable cannot block ownership or a previously requested stop.
-        const current = await this.readConnection(row.tenant, store);
+        const current = await this.readConnection(row.tenant, store, true);
         if (current?.state === "needs_reconnect") row = (await this.requestStop(row, "google_needs_reconnect"))!;
       }
     }
@@ -574,7 +585,7 @@ export class CalendarAutojoinWorker {
     }
     // Reread stop intent: disable can have run during either upstream GET.
     row = (await store.getOccurrence(row.tenant, row.id))!;
-    const latest = await this.readConnection(row.tenant, store);
+    const latest = await this.readConnection(row.tenant, store, true);
     if (latest?.state !== "enabled" || latest.generation !== row.generation) row = (await this.requestStop(row, "autojoin_disabled"))!;
     if (row.stopRequested) {
       const stopped = await this.limiter.run(() => this.options.api.stopMeeting(row.meetingId!));
@@ -633,7 +644,7 @@ export class CalendarAutojoinWorker {
   private async reconcileShared(row: CalendarOccurrence): Promise<void> {
     const { store } = this.options;
     const shared = row.sharedCapture!;
-    const connection = await this.readConnection(row.tenant, store);
+    const connection = await this.readConnection(row.tenant, store, true);
     if (connection?.state !== "enabled" || connection.subject !== row.subject || connection.generation !== row.generation) {
       // B never sent a bot: become a plain pending row (no marker), so re-enabling rediscovers it, as before TC-581.
       await this.detach(row); await this.reconcileOccurrence(row); return;
@@ -663,7 +674,7 @@ export class CalendarAutojoinWorker {
   private async authorizeShare(row: CalendarOccurrence, owner: CalendarOccurrence, recipient: CalendarConnection): Promise<ShareDecision | "deferred"> {
     if (this.options.sharingEnabled !== true) return { ok: false, reason: "sharing_disabled" };
     if (!recipient.verifiedEmail) return { ok: false, reason: "no_verified_email" };
-    const ownerConnection = await this.options.store.getConnection(owner.tenant);
+    const ownerConnection = await this.options.store.getConnectionFresh(owner.tenant);
     if (ownerConnection?.state !== "enabled" || !ownerConnection.subject || ownerConnection.subject !== owner.subject) {
       return { ok: false, reason: "owner_autojoin_disabled" };
     }

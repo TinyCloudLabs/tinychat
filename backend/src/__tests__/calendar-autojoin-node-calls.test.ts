@@ -135,7 +135,7 @@ beforeEach(() => {
 afterEach(() => { log.mockRestore(); warn.mockRestore(); });
 
 describe("TC-2917 calendar autojoin node invocations", () => {
-  test("an idle hour costs each connected user one scan bookkeeping write and one token refresh, and a disabled user nothing", async () => {
+  test("an idle hour costs each connected user one scan bookkeeping write, one token refresh and one policy read per scan, and a disabled user nothing", async () => {
     const { node, calls } = countingNode();
     const world = outside();
     const b = backend(node, world);
@@ -164,10 +164,13 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     await ticks(restarted, world, 120); // one hour
     expect(tally(calls)).toEqual({
       // One token refresh per connected user: read custody, re-read policy, rotate (read + write).
-      "get:credentials": 2 * enabled.length, "get:connections": enabled.length, "put:credentials": enabled.length,
+      // get:connections: those 5 policy re-reads, the node read before each hourly write below (5),
+      // and the policy read from the node before each of the 300 Google scans (60 per user).
+      "get:credentials": 2 * enabled.length, "get:connections": 310, "put:credentials": enabled.length,
       // lastScanAt/nextScanAt reach the node when the hour turns (18:00).
       "put:connections": enabled.length,
     });
+    expect(world.scans).toHaveLength(300);
     // Discovery is unchanged: every connected user is still scanned every 60-90 s.
     for (const owner of enabled) expect(world.scans.filter(scan => scan === owner).length).toBeGreaterThanOrEqual(40);
     for (const owner of disabled) expect(world.scans).not.toContain(owner);
@@ -199,10 +202,12 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     const row = await b.stores.request.getOccurrence(owner, occurrenceId(owner, event));
     expect(row?.meetingId).toBe("mtg_1");
     expect(row?.phase).toBe("sent");
-    // While the bot is in the call, each minute's recording poll writes its next attempt.
+    // While the bot is in the call, each minute's recording poll reads consent from the node twice
+    // (before the Google check and before the stop check) and writes its next attempt; each of the
+    // two Google scans reads it once.
     calls.length = 0;
     await ticks(b, world, 4);
-    expect(tally(calls)).toEqual({ "put:occurrences": 2 });
+    expect(tally(calls)).toEqual({ "put:occurrences": 2, "get:connections": 6 });
     expect(world.posts).toHaveLength(1);
   });
 
@@ -307,7 +312,7 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     expect([...values.values()].some(value => (value as CalendarConnection).errorCode === "synthetic")).toBe(true);
   });
 
-  test("N idle connections x K ticks: zero node calls once warm", async () => {
+  test("N idle connections x K ticks: once warm, one policy read per Google scan and nothing else", async () => {
     // Run against cdf60bf8 too (copy this file to the baseline worktree); the stderr line is the
     // before/after count in the PR. Idle: no meeting in the scan window, a valid token for the
     // whole window, no hour boundary. Each user keeps 2 finished meetings; 5 more are disabled.
@@ -333,7 +338,9 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     world.scans.length = 0;
     await ticks(restarted, world, K);
     console.error(`[TC-2917 count] connections=${N}+${DISABLED}disabled ticks=${K} node_calls=${calls.length} google_scans=${world.scans.length}`);
-    expect(calls).toEqual([]);
+    // The policy read from the node before each Google scan; disabled users and finished meetings cost 0.
+    expect(world.scans).toHaveLength(100);
+    expect(calls).toEqual(Array.from({ length: 100 }, () => "get:connections"));
     // Discovery keeps its cadence: every connected user is scanned every 60-90 s.
     for (let n = 1; n <= N; n++) expect(world.scans.filter(scan => scan === tenant(n)).length).toBeGreaterThanOrEqual(6);
   });
@@ -351,7 +358,8 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     // An untrusted grant index backfills on each tick: its reads come from the node, but the scan
     // times staged in memory (persisted hourly) survive them.
     for (let i = 0; i < 20; i++) { b.connection.invalidateGrantReferences(); world.clock.now += TICK; await b.worker.tick(); }
-    expect(calls.filter(call => call === "get:connections")).toHaveLength(20);
+    // 20 backfill reads plus the policy read before each of the 10 scans.
+    expect(calls.filter(call => call === "get:connections")).toHaveLength(30);
     expect(world.scans).toHaveLength(10);
   });
 
@@ -370,5 +378,77 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     // Released by its owner: a restarted worker can take the store.
     second.start();
     await second.stop();
+  });
+
+  // Bobbie's #693 review (P1): writes made outside this process must never be overwritten or ignored.
+  test("an external disable survives 31+ minutes of ticks, and a later meeting gets no bot", async () => {
+    const { node, values } = countingNode();
+    const world = outside(); const b = backend(node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 50 * 60_000);
+    await b.worker.tick();
+    const key = [...values.keys()].find(k => k.startsWith("calendar-autojoin/v1/connections/"))!;
+    const stored = values.get(key) as CalendarConnection;
+    values.set(key, { ...stored, state: "disabled", generation: 2, offReason: "user_disabled" });
+    world.scans.length = 0;
+    await ticks(b, world, 62);
+    expect(values.get(key)).toMatchObject({ state: "disabled", generation: 2, offReason: "user_disabled" });
+    world.events.set(owner, [meetEvent(owner, "late", world.clock.now + 30_000)]);
+    await ticks(b, world, 3);
+    expect(world.posts).toHaveLength(0);
+    expect(world.scans).toEqual([]);
+    expect(values.get(key)).toMatchObject({ state: "disabled", generation: 2 });
+  });
+
+  test("an external deletion stays deleted, and the account is no longer scanned", async () => {
+    const { node, values } = countingNode();
+    const world = outside(); const b = backend(node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 50 * 60_000);
+    await b.worker.tick();
+    const key = [...values.keys()].find(k => k.startsWith("calendar-autojoin/v1/connections/"))!;
+    values.delete(key);
+    world.scans.length = 0;
+    await ticks(b, world, 62);
+    expect(values.has(key)).toBe(false);
+    world.events.set(owner, [meetEvent(owner, "late", world.clock.now + 30_000)]);
+    await ticks(b, world, 3);
+    expect(values.has(key)).toBe(false);
+    expect(world.posts).toHaveLength(0);
+    expect(world.scans).toEqual([]);
+  });
+
+  test("an external disable during a recording stops the bot at the next recording poll", async () => {
+    const { node, values } = countingNode();
+    const world = outside(); const b = backend(node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 86_400_000);
+    const start = T0 + 5 * 60_000;
+    const event = meetEvent(owner, "soon", start);
+    world.events.set(owner, [event]);
+    await b.worker.tick();
+    await ticks(b, world, 12);
+    expect(world.posts).toHaveLength(1);
+    const stop = spyOn(world.api, "stopMeeting");
+    const key = [...values.keys()].find(k => k.startsWith("calendar-autojoin/v1/connections/"))!;
+    values.set(key, { ...(values.get(key) as CalendarConnection), state: "disabled", generation: 2, offReason: "user_disabled" });
+    await ticks(b, world, 2);
+    expect(stop).toHaveBeenCalledTimes(1);
+    const row = await b.stores.request.getOccurrence(owner, occurrenceId(owner, event));
+    expect(row?.stopRequested).toBe(true);
+    expect(values.get(key)).toMatchObject({ state: "disabled", generation: 2 });
+  });
+
+  test("a credential deleted through another CredentialStore is not used from the token cache", async () => {
+    const { node } = countingNode();
+    const world = outside(); const b = backend(node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 86_400_000);
+    await b.worker.tick(); // caches the access token
+    // Another store instance in this process (as a connector route would hold) ends custody.
+    const other = new CredentialStore(new KvCredentialRowStore(node, new BackendStorageLane()), { master: () => MASTER, previousMaster: () => null });
+    await other.delete(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, owner);
+    world.scans.length = 0;
+    world.events.set(owner, [meetEvent(owner, "soon", world.clock.now + 90_000)]);
+    await ticks(b, world, 8);
+    expect(world.scans).toEqual([]);
+    expect(world.posts).toHaveLength(0);
+    expect((await b.stores.request.getConnection(owner))?.state).toBe("needs_reconnect");
   });
 });

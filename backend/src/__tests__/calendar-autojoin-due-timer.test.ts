@@ -226,8 +226,8 @@ describe("TC-1047 due-time dispatch on a slow lane", () => {
       "put:sent", "get:occurrences", "put:occurrences", // ownership
     ]);
     expect(dispatchPath.filter(o => o.priority !== "foreground")).toEqual([]);
-    // reconcileRecording's own writes keep the worker's background priority.
-    expect(ops[marker + 3]).toEqual({ op: "put", key: "occurrences", priority: "background" });
+    // reconcileRecording's own reads keep the worker's background priority.
+    expect(ops[marker + 3]).toEqual({ op: "get", key: "connections", priority: "background" });
     await h.stop();
   });
 });
