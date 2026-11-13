@@ -693,6 +693,28 @@ describe("TC-2917 writers outside the worker (Bobbie's #697 probes)", () => {
     });
   }
 
+  test("an external disable reaches a running recording at its next poll, with no scan due to refresh memory", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 86_400_000);
+    const start = T0 + 5 * 60_000;
+    const event = meetEvent(owner, "soon", start);
+    world.events.set(owner, [event]);
+    await b.worker.tick();
+    await ticks(b, world, 12);
+    expect(world.posts).toHaveLength(1);
+    // Keep the next Google scan (and its fresh policy read) out of the window: memory only.
+    await b.stores.worker.updateConnection(owner, row => row && { ...row, nextScanAt: world.clock.now + 30 * 60_000 });
+    const key = v.keyOf(CONNECTIONS);
+    v.set(key, { ...(v.value(key) as CalendarConnection), state: "disabled", generation: 2, offReason: "user_disabled" });
+    const stop = spyOn(world.api, "stopMeeting");
+    world.scans.length = 0;
+    await ticks(b, world, 2);
+    expect(world.scans).toEqual([]);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect((await b.stores.request.getOccurrence(owner, occurrenceId(owner, event)))?.stopRequested).toBe(true);
+    expect(v.value(key)).toMatchObject({ state: "disabled", generation: 2 });
+  });
+
   test("token map: a cached token is evicted when the connection is seen disabled, and stays gone a day later", async () => {
     const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
     await seedEnabled(b, owner, T0 + 50 * 60_000);

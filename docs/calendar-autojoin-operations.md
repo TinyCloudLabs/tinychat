@@ -54,16 +54,30 @@ in full even when they exceed the ordinary 15-minute retry backoff limit.
 **Node calls (TC-2917).** The backend keeps a bounded in-process copy of the connection and
 occurrence rows (least recently used out, no tombstones), rebuilt from the node after a restart.
 Consent is always read from the node: before each Google scan, before each recording or sharing
-check, at dispatch, by request handlers and by the restart grant backfill. Every connection write
-re-reads the stored row first and changes only what it owns, so a disable, a new generation or a
-deletion stored by something else is kept, never overwritten. An idle connected user costs 40–60
-node calls an hour for the policy read before each scan (one scan every 60–90 s), plus an hourly
-`lastScanAt` write and its read and one token refresh; disabled users and finished meetings cost none. Identical writes are skipped. Cached
-access tokens serve only their connection generation and only until any CredentialStore in this
-process changes that credential. Credential or row changes made outside this process are not
-announced; follow the deploy rule above. Account deletion does not yet go through this service, so
-do not describe autojoin as deletion-safe. A second worker started on the same store in one process
-is refused.
+check, at dispatch, by request handlers and by the restart grant backfill.
+
+Every calendar row write is a compare-and-set on the node (`If-Match` on the row's ETag, or
+`If-None-Match: *` for a new row). A connection write first re-reads the stored row and decides on
+it; a row changed in between makes the node answer 412, and the backend reads it again and decides
+again. A disable, a new generation or a deletion stored by another writer is therefore not
+overwritten, and an expired-setup cleanup never recreates a deleted connection. A node that sends no
+ETag makes these writes unconditional; the backend logs `code=connection_write_unconditional` once.
+
+A token refresh writes the new grant only as a compare-and-write on custody. It is refused when any
+CredentialStore in this process changed or queued a change to that credential since it was read, or
+when the node holds another version (`If-Match`). A refused refresh returns no token. Cached access
+tokens serve only their connection generation and custody version. The cache is bounded, and a
+token is dropped on expiry and whenever a read of its connection shows a disable, a deletion or
+another generation.
+
+An idle connected user costs 40–60 node calls an hour for the policy read before each scan (one
+scan every 60–90 s), plus an hourly `lastScanAt` write and its read, and one token refresh. Disabled
+users and finished meetings cost none, and identical writes are skipped.
+
+Correctness still rests on the deploy rule above: a writer outside this backend is refused only
+when its write lands between a read and a write of ours, and nothing tells the worker about it
+otherwise. Account deletion does not yet go through this service, so do not describe autojoin as
+deletion-safe. A second worker started on the same store in one process is refused.
 
 ## Two accounts in the same meeting (TC-581)
 
