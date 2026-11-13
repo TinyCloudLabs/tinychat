@@ -138,8 +138,13 @@ function hasButton(host: ParentNode, label: string) {
 function item(host: ParentNode, title: string) {
   return [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => node.textContent?.includes(title)) ?? null;
 }
-/** Opens a short card in place by tapping it (the compact view is the default). */
+/**
+ * Opens a short card in place by tapping it (the compact view is the default). An answered card still waiting or
+ * done sits in the Pending card at the end of the list (Sam, 11-13), so that opens first when the card isn't listed.
+ */
 async function open(host: ParentNode, title = "Question decision-one") {
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (!item(host, title) && pending) await act(async () => pending.click());
   const compact = [...(item(host, title)?.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]') ?? [])].filter(live)[0];
   expect(compact).toBeDefined();
   await act(async () => compact!.click());
@@ -967,4 +972,90 @@ test("a comment doesn't answer the card: no response is written and it still nee
   const fresh = await mount(store.source());
   expect(item(fresh.host, "Plain question")).not.toBeNull();
   expect(needsLine(fresh.host)).toContain("1 needs you.");
+});
+
+/** A decision answered with Hold: waiting on its agent, or done once the agent reports it. */
+function answered(cardId: string, done: boolean): HomeFeedEntry {
+  const entry = decision(cardId);
+  const response: FeedResponse = { cardId, revision: 1, issuanceId: "issuance-1", responseId: `answer-${cardId}`, sequence: 1, kind: "answer", choiceId: "hold", createdAt };
+  entry.state.response = response;
+  if (done) { entry.state.acknowledgement = handling(response, "acknowledged"); entry.state.outcome = handling(response, "succeeded"); }
+  return entry;
+}
+const pendingToggle = (host: ParentNode) => host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button');
+
+test("answered cards waiting on their agent or done but not acknowledged fold into one Pending card at the end; only what needs you stays in the flow", async () => {
+  for (const selector of ["needs-action", "both"] as const) {
+    const store = persistence([answered("waiting-one", false), decision("open-one"), answered("done-one", true)], { defaultSelector: selector });
+    const view = await mount(store.source());
+    expect(item(view.host, "Question open-one")).not.toBeNull();
+    expect(item(view.host, "Question waiting-one")).toBeNull();
+    expect(item(view.host, "Question done-one")).toBeNull();
+    const toggle = pendingToggle(view.host)!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toContain("Pending");
+    expect(toggle.textContent).toContain("2 · answered, not closed yet");
+    // The Pending card is the last thing in the list.
+    expect(item(view.host, "Question open-one")!.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => toggle.click());
+    const waiting = item(view.host, "Question waiting-one")!, done = item(view.host, "Question done-one")!;
+    expect(waiting.textContent).toContain("You chose Hold");
+    expect(waiting.textContent).toContain("Waiting");
+    expect(hasButton(waiting, "Acknowledge")).toBe(false);
+    expect(done.textContent).toContain("Done");
+    // A row opens its card in place, inside the Pending card.
+    await open(view.host, "Question waiting-one");
+    expect(status(view.host)).toContain("You chose Hold.");
+    await view.unmount();
+  }
+  // Information shows updates only: no Pending card.
+  const store = persistence([answered("waiting-one", false), information()], { defaultSelector: "information" });
+  const view = await mount(store.source());
+  expect(pendingToggle(view.host)).toBeNull();
+});
+
+test("Acknowledge on a done row takes it out of Pending through the undo bar", async () => {
+  const store = persistence([decision("open-one"), answered("done-one", true)], { defaultSelector: "both" });
+  const view = await mount(store.source());
+  await act(async () => pendingToggle(view.host)!.click());
+  await act(async () => button(item(view.host, "Question done-one")!, "Acknowledge").click());
+  expect(item(view.host, "Question done-one")).toBeNull();
+  expect(pendingToggle(view.host)).toBeNull();
+  expect(undoButton(view.host)).not.toBeNull();
+  await act(async () => undoButton(view.host)!.click());
+  expect(pendingToggle(view.host)?.textContent).toContain("1 · answered, not closed yet");
+});
+
+test("Filter shows its dropdowns first and the History and Snoozed buttons under them", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await act(async () => button(view.host, "Filter").click());
+  const panel = view.host.querySelector<HTMLElement>("#home-feed-filters")!;
+  const controls = [...panel.querySelectorAll<HTMLElement>("select, button")].map((node) => node.tagName === "SELECT" ? node.getAttribute("aria-label") : node.textContent);
+  expect(controls).toEqual(["Filter by type", "Filter by priority", "Order", "History", "Snoozed"]);
+  // The slider and the two buttons share one row.
+  const row = panel.parentElement!;
+  expect(row.querySelector('[role="radiogroup"][aria-label="Feed view"]')).not.toBeNull();
+  expect([...row.children].filter((node) => node.tagName === "BUTTON").map((node) => node.textContent)).toEqual(["Filter", "View"]);
+});
+
+test("the Agents pill opens every agent; an agent's page lists its cards and a card opens back in the feed", async () => {
+  const store = persistence([decision("open-one"), answered("waiting-one", false)]);
+  const view = await mount(store.source());
+  await act(async () => view.host.querySelector<HTMLButtonElement>('header button[aria-label^="Agents"]')!.click());
+  const list = view.host.querySelector<HTMLElement>('section[aria-label="Your agents"]')!;
+  expect(list.textContent).toContain("Test agent");
+  expect(list.textContent).toContain("Needs you: 1 card");
+  await act(async () => [...list.querySelectorAll("button")].find((node) => node.textContent?.includes("Test agent"))!.click());
+  const page = view.host.querySelector<HTMLElement>('section[aria-label="Conversation with Test agent"]')!;
+  expect(page.textContent).toContain("Question open-one");
+  expect(page.textContent).toContain("You chose Hold");
+  // A card line goes back to the feed with that card open: the waiting one, inside the Pending card.
+  await act(async () => [...page.querySelectorAll("button")].find((node) => node.textContent?.includes("Question waiting-one"))!.click());
+  expect(view.host.querySelector('section[aria-label="Conversation with Test agent"]')).toBeNull();
+  expect(card(view.host, "Question waiting-one")).toBeDefined();
+  // And from a card: its agent's name, then "Open conversation".
+  await act(async () => button(card(view.host, "Question waiting-one"), "Test agent").click());
+  await act(async () => button(view.host, "Open conversation").click());
+  expect(view.host.querySelector('section[aria-label="Conversation with Test agent"]')).not.toBeNull();
 });

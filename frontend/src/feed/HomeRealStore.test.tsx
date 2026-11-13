@@ -184,8 +184,13 @@ async function mount(transport: ReturnType<typeof observedSource>, { open = true
   if (open) await openCards(host);
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
 }
-/** Opens every short card in place, as the owner taps a card before answering it (cards are compact by default). */
+/**
+ * Opens every short card in place, as the owner taps a card before answering it (cards are compact by default).
+ * Answered cards still waiting or done sit in the Pending card at the end (Sam, 11-13): it is opened first.
+ */
 async function openCards(host: HTMLElement) {
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await act(async () => pending.click());
   for (const item of host.querySelectorAll<HTMLElement>("li[data-card-key]")) {
     if (item.querySelector("article")) continue;
     const toggle = item.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');

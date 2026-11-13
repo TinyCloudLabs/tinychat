@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { PATHS } from "@/shell/routes";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronRightIcon, LayoutListIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { HomeCardView } from "./FeedView";
@@ -22,6 +22,8 @@ import { agentProfile, AgentMark } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
 import { FeedViewSlider } from "./FeedViewSlider";
 import { FloatingHeader } from "./FloatingHeader";
+import { AgentConversation, AgentList, AgentsPill, agentThreads } from "./AgentConversation";
+import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures, useAnchoredToggle } from "./densityMorph";
 import { useUndoBar } from "./UndoBar";
 import { BriefButton, LazyBriefSheet } from "./BriefButton";
@@ -355,6 +357,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [viewBusy, setViewBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  // The agent view over the list: every agent ("list"), or one agent's page, by its agent key.
+  const [agentPage, setAgentPage] = useState<string | null>(null);
+  // The Pending card at the end of the list, open.
+  const [pendingOpen, setPendingOpen] = useState(false);
   const chosenView = useRef(false);
   const hasDefault = useRef(false);
   const refreshRef = useRef<() => void>(() => {});
@@ -391,7 +397,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     committed.current.clear();
     activeRef.current = null;
     setSnapshot(null); setSelector(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map());
-    setExpandedGroups(new Set()); ownDrafts.current.clear();
+    setExpandedGroups(new Set()); setAgentPage(null); setPendingOpen(false); ownDrafts.current.clear();
     const refresh = async () => {
       if (running) { dirty = true; return; }
       running = true;
@@ -544,10 +550,23 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const needing = (entry: HomeFeedEntry) => (attention(entry) && !folded(entry)) || keepsNeeds(entry);
   const isUpdate = (entry: HomeFeedEntry) => { const typed = contextFor(entry); return typed ? !typed.projection.request : isTypedPayload(entry) || !entry.state.card.needsResponse; };
   const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry)).length;
+  /**
+   * Answered and still open (Sam, 11-13): Waiting on its agent, or Done (or Failed) and not yet acknowledged. In
+   * Needs action and All these leave the main flow for the Pending card at its end, so only what needs him stays in
+   * it. A card he answered in this view keeps its place until the view changes (keepsNeeds).
+   */
+  const pendingStatus = (entry: HomeFeedEntry) => {
+    const status = statusOf(entry, cardAuthor(entry, contextFor(entry)?.record).name);
+    return status === "Done" || status === "Failed" || status?.startsWith("Waiting on") ? status : undefined;
+  };
+  const showsPending = !history && !snoozedOnly && view !== "information";
+  const visible = (entry: HomeFeedEntry) => matchesFilters(entry) && !undoBar.hidden(lineageKey(entry));
+  // A card whose answer was held when the page closed keeps its place this session, so its "sent" or "not sent" line shows.
+  const heldHere = (entry: HomeFeedEntry) => heldOutcomes.has(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
+  const pendingEntries = showsPending ? entries.filter((entry) => visible(entry) && !snoozedNow(entry, clock) && !expired(entry) && !closureOf(entry) && !attention(entry) && !keepsNeeds(entry) && !heldHere(entry) && !!pendingStatus(entry)).sort(compare) : [];
+  const pendingKeys = new Set(pendingEntries.map(keyOf));
   const matching = entries.filter((entry) => {
-    if (!matchesFilters(entry)) return false;
-    // Taken away a moment ago, while the undo bar counts.
-    if (undoBar.hidden(lineageKey(entry))) return false;
+    if (!visible(entry) || pendingKeys.has(keyOf(entry))) return false;
     // A snoozed card is out of every view until its time comes, except the Filter's "Snoozed" list.
     if (snoozedOnly) return snoozedNow(entry, clock);
     if (history) return inDone(entry);
@@ -573,7 +592,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     ?? (snapshot?.focusedEntry && keyOf(snapshot.focusedEntry) === activeKey ? snapshot.focusedEntry : active);
   // A card the owner is working on stays bound to its exact issuance when a newer one arrives: it keeps its place (in
   // place of its successor) until the owner moves on. A successor that only appends agent replies swaps in place.
-  if (selected && !rows.some((row) => (row.kind === "card" ? [row.item] : row.items).some((entry) => keyOf(entry) === keyOf(selected!)))) {
+  if (selected && !pendingKeys.has(keyOf(selected)) && !rows.some((row) => (row.kind === "card" ? [row.item] : row.items).some((entry) => keyOf(entry) === keyOf(selected!)))) {
     const current = selected;
     const successor = rows.findIndex((row) => row.kind === "card" && row.item.source.sourceId === current.source.sourceId && row.item.state.card.cardId === current.state.card.cardId);
     const next = successor >= 0 ? rows[successor] : undefined;
@@ -599,9 +618,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const sections: [string, Row[]][] = view === "needs-action" && !history && !snoozedOnly
     ? [["Needs you", ordered(rows.filter(rowNeeds))], ["Updates", ordered(rows.filter((row) => !rowNeeds(row)))]]
     : [["", ordered([...rows].sort((first, second) => newest(second) - newest(first)))]];
-  // The cards in the order this view shows them, top to bottom (where focus goes when one is taken away).
-  const shown = sections.flatMap(([, list]) => list.flatMap((row) => row.kind === "card" ? [row.item] : row.items));
-  const filteredCount = shown.length;
+  // The cards in the order this view shows them, top to bottom (where focus goes when one is taken away), Pending last.
+  const listed = sections.flatMap(([, list]) => list.flatMap((row) => row.kind === "card" ? [row.item] : row.items));
+  const shown = [...listed, ...pendingEntries];
 
   // A card counts as seen once it shows open: every card in the full view, the ones opened in the compact view.
   const seenAsked = useRef(new Set<string>());
@@ -640,7 +659,22 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   /** Every change of what the list shows: answers still counting down are sent now (the owner chose them). */
   function leaveView() {
     for (const send of [...pendingSends.current]) send();
-    setActive(null); setSticky(new Map()); setOpened(new Set());
+    setActive(null); setSticky(new Map()); setOpened(new Set()); setAgentPage(null);
+  }
+  /**
+   * A card line on an agent's page: back to the list with that card open in place. It opens where it lives: in the
+   * Pending card, in All (without filters) if it is still in the feed, else in Snoozed or History.
+   */
+  function openFromAgent(entry: HomeFeedEntry) {
+    leaveView();
+    setAgent(""); setKind(""); setProject(""); setPriorityMax(""); setSortBy("");
+    const inFeed = !snoozedNow(entry, clock) && !expired(entry) && !closureOf(entry);
+    setHistory(!inFeed && !snoozedNow(entry, clock)); setSnoozedOnly(!inFeed && snoozedNow(entry, clock));
+    // Showing All for this one tap does not change the saved default view.
+    if (inFeed && view === "information") { chosenView.current = true; setSelector("both"); }
+    if (inFeed && !attention(entry) && pendingStatus(entry)) setPendingOpen(true);
+    else if (inFeed && view === "needs-action" && !attention(entry)) { chosenView.current = true; setSelector("both"); }
+    openCard(entry);
   }
   function changeSelector(next: FeedSelector) {
     if (next === view && !history && !snoozedOnly) return;
@@ -819,6 +853,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     // issuance (retained in place when a changed revision arrives mid-countdown, so the countdown is refused, never
     // written to the old identity).
     return <div className="min-w-0" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
+      {...(unsupported ? {} : { onAuthor: () => { leaveView(); setAgentPage(agentKey(entry, context?.record)); mainRef.current?.scrollTo({ top: 0 }); } })}
       {...(status ? { status } : {})} {...(collapse ? { collapse } : {})}>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
         ? <NotSent label={refusedLabel} changed />
@@ -879,10 +914,24 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // already in place so nothing moves when cards land.
   const bare = !!snapshot && !snapshot.entries.length && !snapshot.historicalEntries?.length;
   const layout = grid ? "grid" : size;
-  const selectClass = "min-h-11 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm fine:min-h-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-  const toggleClass = "min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-primary aria-pressed:bg-primary/10";
-  // A popover under the toolbar, right-aligned, over the cards.
-  const popoverClass = "absolute right-0 top-full z-30 mt-2 flex w-max max-w-[calc(100vw-1.5rem)] flex-wrap justify-end gap-2 rounded-xl border border-border bg-card p-3 text-card-foreground shadow-lg sm:max-w-[36rem]";
+  // The agents on the Agents pill: one mark per agent (connection and crew member), newest card first.
+  const pillAgents = [...new Map([...(snapshot?.entries ?? [])].sort((a, b) => b.state.card.createdAt.localeCompare(a.state.card.createdAt)).map((entry) => {
+    const record = contextFor(entry)?.record;
+    return [agentKey(entry, record), { key: agentKey(entry, record), name: cardAuthor(entry, record).name }] as const;
+  })).values()];
+  const unreadReplies = (snapshot?.entries ?? []).some((entry) => (repliesOf(entry)?.unread ?? 0) > 0);
+  // The agent view, built only while it is open: every card on the page, each at its latest revision.
+  const agentList = agentPage === null ? [] : agentThreads(all.filter((entry) => !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === lineageKey(entry))), {
+    contextFor, author: cardAuthor, key: agentKey, needsYou: (entry) => attention(entry) && !folded(entry), unread: (entry) => repliesOf(entry)?.unread ?? 0,
+  });
+  const agentOpen = agentPage && agentPage !== "list" ? agentList.find((thread) => thread.key === agentPage) : undefined;
+  const fieldLabelClass = "mb-1 ml-0.5 block text-xs font-semibold text-muted-foreground";
+  const selectClass = "h-11 w-full min-w-0 rounded-xl border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  const toggleClass = "flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-border px-3 text-sm font-medium aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  // Under 380 px Filter and View are icons (their names stay for screen readers), so the slider keeps its labels.
+  const barButtonClass = "inline-flex min-h-11 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl border px-2.5 text-[13px] font-medium max-[379px]:min-w-11 max-[379px]:px-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  // A popover under the row, right-aligned under Filter and View, over the cards.
+  const popoverClass = "absolute right-0 top-full z-30 mt-2 w-[300px] max-w-[calc(100vw-1.5rem)] rounded-2xl border border-border bg-card p-3.5 text-card-foreground shadow-[0_12px_32px_-12px_rgb(0_0_0/0.35)]";
   const pageEntry = pageKey ? all.find((entry) => lineageKey(entry) === pageKey && !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === pageKey)) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
   const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setProject(""); setPriorityMax(""); setSortBy(""); setHistory(false); setSnoozedOnly(false); });
@@ -893,49 +942,67 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     style={undoBar.height ? { paddingBottom: `calc(${undoBar.height + 32}px + env(safe-area-inset-bottom))` } : undefined}>
     <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}>
     <MorphConfig>
-      {/* Home, the slider and the toolbar stay in reach: scrolled down, only the toolbar (Filter · View) stays at the
-          top; scrolling up brings the slider back above it, stuck over the cards. */}
+      {/* Sam, 11-13: one header for every state, phone and desktop. "Home" with the Agents pill on its line, the
+          summary, then one row: the slider on the left, Filter and View on the right. Scrolled, the row stays at the
+          top over the cards; the title comes back on scroll up. */}
       <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <header ref={headerRef} className="scroll-mt-4">
-          <h1 className="font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
-          <p className="mt-1 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="min-w-0 flex-1 font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
+            {!bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
+              onOpen={() => { if (agentPage !== null) { setAgentPage(null); return; } leaveView(); setAgentPage("list"); }} />}
+          </div>
+          <p className="mt-0.5 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
             ? <>{needsCount ? <b className="font-semibold text-foreground">{needsCount} {needsCount === 1 ? "needs" : "need"} you.</b> : <b className="font-semibold text-foreground">Nothing needs you.</b>}{today > 0 && ` ${today} ${today === 1 ? "update" : "updates"} today.`}</>
             : "Updates and decisions from your agents."}</p>
         </header>
-        {/* The slider and the toolbar come back together on scroll up; the toolbar alone stays while you scroll down.
-            Filter and View open popovers over the cards, so the list never moves under them (QA cb784d4, B1/P5). */}
-        {!bare && <div data-float-keep className="mt-3">
-          <FeedViewSlider value={view} onValueChange={changeSelector} />
-          <div ref={toolbarRef} data-float-pin className="relative mt-3 flex flex-nowrap items-center justify-end gap-2" onKeyDown={(event) => {
-            if (event.key !== "Escape" || !panel) return;
-            event.preventDefault();
-            setPanel(null);
-            (panel === "view" ? viewButton : filterButton).current?.focus();
-          }}>
-            <button ref={filterButton} type="button" aria-expanded={panel === "filter"} aria-controls="home-feed-filters" onClick={() => setPanel(panel === "filter" ? null : "filter")} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>
-            <button ref={viewButton} type="button" aria-expanded={panel === "view"} aria-controls="home-feed-view" onClick={() => setPanel(panel === "view" ? null : "view")} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${layout === "compact" ? "border-border" : "border-primary bg-primary/10 font-medium"}`}>{layout === "compact" ? "View" : `View · ${layout === "full" ? "Full" : "Grid"}`}</button>
-            {/* Every card short, like a list of posts; every card open; or a grid of tiles. Each keeps your place and
-                morphs the cards on screen. The popover stays open until View is tapped again or you tap outside it. */}
-            {panel === "view" && <div id="home-feed-view" role="radiogroup" aria-label="View" className={popoverClass}>
-              {(["compact", "full", "grid"] as const).map((option) => <button key={option} type="button" role="radio" aria-checked={layout === option}
-                onClick={() => { if (option !== layout) anchoredToggle(() => { setSize(option === "full" ? "full" : "compact"); setGrid(option === "grid"); setOpened(new Set()); }); }}
-                className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-checked:border-primary aria-checked:bg-primary/10">{option === "compact" ? "Compact" : option === "full" ? "Full cards" : "Grid"}</button>)}
-            </div>}
-            {panel === "filter" && <div id="home-feed-filters" role="group" aria-label="Filter" className={popoverClass}>
-              {agents.length > 1 && <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { const value = event.target.value; setFilter(() => setAgent(value)); }}><option value="">All agents</option>{agents.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>}
-              <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { const value = event.target.value; setFilter(() => setKind(value)); }}><option value="">All types</option>{kinds.map((value) => <option key={value} value={value}>{value}</option>)}</select>
-              {projects.length > 0 && <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { const value = event.target.value; setFilter(() => setProject(value)); }}><option value="">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select>}
+        {/* Filter and View open popovers over the cards, so the list never moves under them (QA cb784d4, B1/P5). */}
+        {!bare && <div ref={toolbarRef} data-float-keep data-float-pin className="relative mt-3.5 flex min-w-0 items-center gap-1.5" onKeyDown={(event) => {
+          if (event.key !== "Escape" || !panel) return;
+          event.preventDefault();
+          setPanel(null);
+          (panel === "view" ? viewButton : filterButton).current?.focus();
+        }}>
+          <FeedViewSlider className="min-w-0 flex-1" value={view} onValueChange={changeSelector} />
+          <button ref={filterButton} type="button" aria-expanded={panel === "filter"} aria-controls="home-feed-filters" aria-label={filtersOn ? `Filter, ${filtersOn} on` : undefined} onClick={() => setPanel(panel === "filter" ? null : "filter")}
+            className={`${barButtonClass} ${filtersOn ? "border-foreground bg-foreground/[.06]" : "border-border"}`}><SlidersHorizontalIcon aria-hidden className="hidden size-4 max-[379px]:block" /><span className="max-[379px]:sr-only">Filter</span>{!!filtersOn && <span aria-hidden className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-foreground px-1.5 text-[11px] font-bold text-background">{filtersOn}</span>}</button>
+          <button ref={viewButton} type="button" aria-expanded={panel === "view"} aria-controls="home-feed-view" aria-label={layout === "compact" ? undefined : `View, ${layout === "full" ? "full cards" : "grid"}`} onClick={() => setPanel(panel === "view" ? null : "view")}
+            className={`${barButtonClass} ${layout === "compact" ? "border-border" : "border-foreground bg-foreground/[.06]"}`}><LayoutListIcon aria-hidden className="hidden size-4 max-[379px]:block" /><span className="max-[379px]:sr-only">View</span></button>
+          {/* Every card short, like a list of posts; every card open; or a grid of tiles. Each keeps your place and
+              morphs the cards on screen. The popover stays open until View is tapped again or you tap outside it. */}
+          {panel === "view" && <div id="home-feed-view" role="radiogroup" aria-label="View" className={`${popoverClass} flex flex-col gap-2`}>
+            {(["compact", "full", "grid"] as const).map((option) => <button key={option} type="button" role="radio" aria-checked={layout === option}
+              onClick={() => { if (option !== layout) anchoredToggle(() => { setSize(option === "full" ? "full" : "compact"); setGrid(option === "grid"); setOpened(new Set()); }); }}
+              className="min-h-11 rounded-xl border border-border px-3 text-left text-sm font-medium aria-checked:border-foreground aria-checked:bg-foreground aria-checked:text-background">{option === "compact" ? "Compact" : option === "full" ? "Full cards" : "Grid"}</button>)}
+          </div>}
+          {/* Sam, 11-13: the dropdowns on top, the button filters (History, Snoozed) under them. */}
+          {panel === "filter" && <div id="home-feed-filters" role="group" aria-label="Filter" className={popoverClass}>
+            {agents.length > 1 && <label className="mb-2.5 block"><span className={fieldLabelClass}>Agent</span>
+              <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { const value = event.target.value; setFilter(() => setAgent(value)); }}><option value="">All agents</option>{agents.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>}
+            <div className="grid grid-cols-2 gap-2">
+              <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Type</span>
+                <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { const value = event.target.value; setFilter(() => setKind(value)); }}><option value="">All types</option>{kinds.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+              {projects.length > 0 && <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Project</span>
+                <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { const value = event.target.value; setFilter(() => setProject(value)); }}><option value="">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>}
+              <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Priority</span>
+                <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => { const value = event.target.value; setFilter(() => setPriorityMax(value)); }}>
+                  <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
+                </select></label>
+              <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Order</span>
+                <select aria-label="Order" className={selectClass} value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
+                  <option value="">Usual order</option><option value="priority">Priority first</option><option value="due">Due first</option><option value="expires">Expires first</option>
+                </select></label>
+            </div>
+            <div className="mb-3 mt-1 h-px bg-border" />
+            <div className="flex gap-2">
               <button type="button" aria-pressed={history} onClick={() => setFilter(() => { setHistory(!history); setSnoozedOnly(false); })} className={toggleClass}>History</button>
               <button type="button" aria-pressed={snoozedOnly} onClick={() => setFilter(() => { setSnoozedOnly(!snoozedOnly); setHistory(false); })} className={toggleClass}>Snoozed</button>
-              <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => { const value = event.target.value; setFilter(() => setPriorityMax(value)); }}>
-                <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
-              </select>
-              <select aria-label="Order" className={selectClass} value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
-                <option value="">Usual order</option><option value="priority">Priority first</option><option value="due">Due first</option><option value="expires">Expires first</option>
-              </select>
-              {!!filtersOn && <button type="button" className={toggleClass} onClick={clearFilters}>Clear filter</button>}
+            </div>
+            {!!filtersOn && <div className="mt-3 flex items-center justify-between text-[13px] text-muted-foreground">
+              <span>{filtersOn} {filtersOn === 1 ? "filter" : "filters"} on</span>
+              <button type="button" className="inline-flex min-h-9 items-center underline decoration-border underline-offset-[3px] hover:text-foreground" onClick={clearFilters}>Clear filter</button>
             </div>}
-          </div>
+          </div>}
         </div>}
       </FloatingHeader>
       {ask}
@@ -950,7 +1017,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           <div className="h-3.5 w-3/5 rounded-full bg-muted" />
         </li>)}
       </ul>}
-      {snapshot && !filteredCount && (bare
+      {snapshot && agentPage !== null && (agentOpen
+        ? <AgentConversation agent={agentOpen} onBack={() => setAgentPage("list")} onOpenCard={openFromAgent} />
+        : <AgentList agents={agentList} now={clock} onOpen={(key) => setAgentPage(key)} onBack={() => setAgentPage(null)} />)}
+      {snapshot && agentPage === null && !listed.length && (bare
         ? <section aria-labelledby="home-empty-title" className={cardClass}>
           <h2 id="home-empty-title" className="font-display text-[1.375rem] font-normal leading-[1.2]">{HOME_EMPTY_TITLE}</h2>
           <p className="mt-2 max-w-[60ch] text-base leading-[1.5]">{HOME_EMPTY_BODY}</p>
@@ -958,16 +1028,24 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           <AgentPrompt copyButton={({ onClick, children }) => <button type="button" className={primaryPillClass} onClick={onClick}>{children}</button>}
             aside={<a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className={quietClass}>{HOME_EMPTY_HOW}</a>} />
         </section>
-        : <div className="rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+        : <div className="mb-4 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
           <p>{snoozedOnly ? "No snoozed cards." : history ? "Nothing answered or snoozed yet." : filtersOn ? "No cards match this filter." : view === "needs-action" ? "Nothing needs you." : view === "information" ? "No updates yet." : "No cards yet."}</p>
-          {!!filtersOn && <button type="button" className={`mt-2 ${toggleClass} text-foreground`} onClick={clearFilters}>Clear filter</button>}
+          {!!filtersOn && <button type="button" className="mt-2 inline-flex min-h-11 items-center rounded-xl border border-border px-3 text-sm text-foreground" onClick={clearFilters}>Clear filter</button>}
         </div>)}
-      {!!filteredCount && <div className="mb-4 space-y-6">
+      {agentPage === null && !!listed.length && <div className="mb-4 space-y-6">
         {sections.map(([heading, list]) => !!list.length && <section key={heading || "cards"} aria-label={heading || (history ? "History" : snoozedOnly ? "Snoozed" : "Cards")}>
           {heading && <h2 className="mb-2 flex items-baseline justify-between px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>{heading}</span><span className="tabular-nums">{list.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0)}</span></h2>}
           <ul className={listClass}>{list.map(renderRow)}</ul>
         </section>)}
       </div>}
+      {agentPage === null && !!pendingEntries.length && <div className="mb-4"><PendingCard expanded={pendingOpen} onToggle={() => setPendingOpen(!pendingOpen)} items={pendingEntries.map((entry): PendingItem => {
+        const record = contextFor(entry)?.record;
+        const author = cardAuthor(entry, record).name;
+        const status = pendingStatus(entry)!;
+        return { key: keyOf(entry), agentKey: agentKey(entry, record), author, title: entry.state.card.title, status, detail: describe(entry), at: (answeredIn(entry) ?? entry).state.response?.createdAt ?? entry.state.card.createdAt,
+          onOpen: () => openCard(entry), ...(opened.has(lineageKey(entry)) ? { open: fullCard(entry) } : {}),
+          ...(status.startsWith("Waiting") ? {} : { onAcknowledge: () => closeCard(entry, "acknowledge") }) };
+      })} /></div>}
     </MorphConfig>
     {undoBar.bar}
     </div>

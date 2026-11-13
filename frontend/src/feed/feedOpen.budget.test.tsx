@@ -340,7 +340,10 @@ function expectWholeFeed(open: Open) {
   }
 }
 
-/** Lets everything not waiting on the node run (the device copy's read included), and notes the first card. */
+/**
+ * Lets everything not waiting on the node run (the device copy's read included), and notes the first card. Answered
+ * cards sit in the Pending card at the end of the list (Sam, 11-13); it is opened so its cards count as shown.
+ */
 async function settle(node: FakeNode, open: Open) {
   let stable = 0;
   let mark = "";
@@ -350,6 +353,8 @@ async function settle(node: FakeNode, open: Open) {
     stable = open.cachedSettled && next === mark ? stable + 1 : 0;
     mark = next;
   }
+  const pending = open.host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await act(async () => pending.click());
   if (open.firstCard === undefined && showsCard(open)) {
     open.firstCard = node.requests.length;
     open.firstCardWaves = node.waves;
