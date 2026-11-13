@@ -6,9 +6,9 @@ import type { QueryOptions, Result, SqlValue } from "@tinycloud/sdk-services";
 import {
   deliverFeedResponse, feedCardSchema, feedResourceNames, getFeedHandoff,
   listFeedCards, listFeedResponseDeliveries, listFeedResponses,
-  projectFeedResponseNotification, publishFeedCard, readFeedResponsePayload,
+  projectFeedResponseNotification, publishFeedCard, readFeedResponseHandling, readFeedResponsePayload, recordFeedHandling,
 } from "@tinycloud/sdk-services/feed";
-import type { FeedCard, FeedCardIdentity, FeedDatabase, FeedDeliveryOptions, FeedHandoff, FeedHooks, FeedResponse } from "@tinycloud/sdk-services/feed";
+import type { FeedCard, FeedCardIdentity, FeedDatabase, FeedDeliveryOptions, FeedHandling, FeedHandoff, FeedHooks, FeedResponse, FeedResponsePayload } from "@tinycloud/sdk-services/feed";
 import {
   applyUpsert, boardKey, claimDecisionHistory, closePatch, currentAnswer,
   decodeLegacySendNote, decodeOwnerThreadMessage,
@@ -58,14 +58,35 @@ class MirrorFailure extends Error {
 }
 const argumentCodes = new Set(["ERR_PARSE_ARGS_UNKNOWN_OPTION", "ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL", "ERR_INVALID_URL"]);
 const transientCodes = new Set(["NETWORK_ERROR", "TIMEOUT", "NODE_BUSY", "REQUEST_TIMEOUT"]);
-const safeMessages = new Set([
+const refusalMessages = [
   "Home mirror operation refused", "Invalid node host", "Existing owner session is unavailable",
   "Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file",
+  "Home mirror inventory requires a board index, a source and full spaces",
+  "Home mirror inventory leaves approvals, holds and claims on the board",
+  "Board index is unreadable",
+  "The synthetic check runs only in a QA owner space",
+  "Synthetic check requires a profile, full spaces and a source",
+  "Synthetic check readback did not match",
+  "This response is not one the runner writes through",
+  "This response is not deliverable to this runner",
+  "This handoff ledger belongs to another Home feed source",
+  "The board already holds a different answer for this response",
+  "Answer runner requires a source, a recipient, spaces and a response on stdin",
+] as const;
+export type HomeMirrorRefusalMessage = (typeof refusalMessages)[number];
+const safeMessages = new Set<string>([
+  ...refusalMessages,
   "Local durable handoff initialization failed", "Home mirror watch requires Bun SQLite",
   "Home mirror handoff requires a persistent file path", "Local durable handoff unavailable",
 ]);
-const inputFields = new Set(["source", "sourceId", "agentDid", "label", "output", "responses", "spaceId", "database", "card", "cardId", "revision", "issuanceId", "legacy", "fullKey", "record", "recipient", "runner", "renewalSeconds"]);
+const argumentMessages = new Set<string>([
+  "Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file", "Home mirror inventory requires a board index, a source and full spaces",
+  "Synthetic check requires a profile, full spaces and a source", "Answer runner requires a source, a recipient, spaces and a response on stdin",
+]);
+const inputFields = new Set(["source", "sourceId", "agentDid", "label", "output", "responses", "spaceId", "database", "card", "cardId", "revision", "issuanceId", "legacy", "fullKey", "record", "recipient", "runner", "renewalSeconds", "responseId", "kind", "createdAt", "sequence", "payloadType", "payloadVersion"]);
 function failure(code: string = ErrorCodes.INVALID_INPUT): Error { return Object.assign(new Error("Home mirror operation refused"), { code }); }
+/** A refusal whose message may reach the diagnostic (it names no input value). */
+export function homeMirrorRefusal(message: HomeMirrorRefusalMessage, code: string = ErrorCodes.INVALID_INPUT): Error { return Object.assign(new Error(message), { code }); }
 function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
   if (error instanceof MirrorFailure) return error.diagnostic.step === "mirror" && step !== "mirror" ? new MirrorFailure({ ...error.diagnostic, step }) : error;
   const candidate = object(error) ? error.code : undefined;
@@ -84,10 +105,12 @@ function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
     message = "Invalid command-line arguments"; step = "arguments";
   } else if (error instanceof Error && safeMessages.has(error.message)) {
     message = error.message;
-    if (message.startsWith("Home mirror requires explicit mode")) step = "arguments";
+    if (argumentMessages.has(message)) step = "arguments";
   }
   return new MirrorFailure({ name, message, code, step, ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {}) });
 }
+/** Any failure as the mirror reports it: a code, a safe message and a step, never a node message or HTTP body. */
+export function homeMirrorFailure(error: unknown, step: string): Error { return safeFailure(error, step); }
 export function homeMirrorDiagnostic(error: unknown) {
   const failure = safeFailure(error, "run");
   const { code, status } = failure.diagnostic;
@@ -109,9 +132,15 @@ function privateDatabase(database: FeedDatabase, ctx: HomeMirrorContext): FeedDa
     batch: (statements, options) => database.batch(statements, { ...options, signal: options?.signal ?? ctx.signal, redactErrors: true }),
   };
 }
-async function registered(ctx: HomeMirrorContext, sourceId: string): Promise<HomeMirrorBinding["source"]> {
+async function agentRows(ctx: HomeMirrorContext): Promise<unknown[][]> {
+  if (ctx.cache?.agents) return ctx.cache.agents;
   const owner = privateDatabase(ctx.sql.db(OWNER), ctx);
   const rows = take(await owner.query<unknown>("SELECT agent_id,agent_did,output_resource,response_resource FROM feed_agents")).rows;
+  if (ctx.cache) ctx.cache.agents = rows;
+  return rows;
+}
+async function registered(ctx: HomeMirrorContext, sourceId: string): Promise<HomeMirrorBinding["source"]> {
+  const rows = await agentRows(ctx);
   const reserved = new Set(["home_feed", "threads"]);
   let source: HomeMirrorBinding["source"] | undefined;
   for (const raw of rows) {
@@ -152,6 +181,26 @@ async function load(ctx: HomeMirrorContext, identity: HomeMirrorIdentity): Promi
   if (rows.length > 1) throw failure();
   return rows[0] ? stored(ctx, rows[0]) : undefined;
 }
+/** The binding of one mirrored card issuance, if it has one. */
+export async function readHomeMirrorBinding(ctx: HomeMirrorContext, identity: HomeMirrorIdentity): Promise<HomeMirrorBinding | undefined> {
+  try { return (await load(ctx, identity))?.binding; } catch (error) { throw safeFailure(error, "binding"); }
+}
+/** A registered feed source, as the mirror reads it from the owner's feed_agents. */
+export async function readHomeMirrorSource(ctx: HomeMirrorContext, sourceId: string): Promise<HomeMirrorBinding["source"]> {
+  try { return await registered(ctx, sourceId); } catch (error) { throw safeFailure(error, "source"); }
+}
+async function mirrorRows(ctx: HomeMirrorContext): Promise<unknown[][]> {
+  if (ctx.cache?.mirrors) return ctx.cache.mirrors;
+  const rows = take(await privateDatabase(ctx.sql.db(OWNER), ctx).query<unknown>("SELECT source_id,card_id,revision,issuance_id,binding_json,close_receipt_json FROM feed_sitrep_mirrors")).rows;
+  if (ctx.cache) ctx.cache.mirrors = rows;
+  return rows;
+}
+/** Every binding in the owner's mirror table (read once per run when the context carries a cache). */
+export async function homeMirrorBindings(ctx: HomeMirrorContext): Promise<HomeMirrorBinding[]> {
+  try { return (await mirrorRows(ctx)).map((row) => stored(ctx, row).binding); } catch (error) { throw safeFailure(error, "binding"); }
+}
+/** What a binding records as the board copy's hash, for one record and card UUID. */
+export function homeMirrorPublicationSha256(record: BoardRecord, cardUuid: string): string { return hash(publication(record, cardUuid)); }
 async function currentCard(ctx: HomeMirrorContext, source: HomeMirrorBinding["source"], identity: FeedCardIdentity): Promise<FeedCard | undefined> {
   const cards = take(await listFeedCards(privateDatabase(ctx.sql.db(source.output.database), ctx)));
   return cards.find((card) => card.cardId === identity.cardId && sameIdentity(card, identity));
@@ -186,7 +235,7 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     if (!typed || !checked.ok || typed.record.kind !== input.card.kind || !isDeepStrictEqual(typed.record, checked.value) || input.legacy.fullKey !== boardKey(checked.value.kind, checked.value.id)) throw failure();
     const record = checked.value, body = publication(record, identity.cardId), publicationSha256 = hash(body);
     const owner = privateDatabase(ctx.sql.db(OWNER), ctx);
-    const all = take(await owner.query<unknown>("SELECT source_id,card_id,revision,issuance_id,binding_json,close_receipt_json FROM feed_sitrep_mirrors")).rows.map((row) => stored(ctx, row));
+    const all = (await mirrorRows(ctx)).map((row) => stored(ctx, row));
     const previous = all.find((row) => row.binding.source.sourceId === source.sourceId && sameIdentity(row.binding.identity, identity));
     if (previous && (!isDeepStrictEqual(previous.binding.source, source) || previous.binding.legacy.fullKey !== input.legacy.fullKey || previous.binding.legacy.publicationSha256 !== publicationSha256)) throw failure();
     for (const row of all) if (row.binding.legacy.fullKey === input.legacy.fullKey && (row.binding.source.sourceId !== source.sourceId || row.binding.cardUuid !== identity.cardId)) throw failure();
@@ -230,6 +279,8 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     }
     const replay = await load(ctx, { sourceId: source.sourceId, ...identity });
     if (!replay || !isDeepStrictEqual(replay.binding, binding)) throw failure();
+    // Later posts in the same run see this binding without reading the table again.
+    ctx.cache?.mirrors?.push([source.sourceId, identity.cardId, identity.revision, identity.issuanceId, json, replay.receiptJSON]);
     return replay.binding;
   } catch (error) { throw safeFailure(error, "post"); }
 }
@@ -373,12 +424,20 @@ export interface HomeMirrorForwardOptions {
   handoff: FeedDatabase;
   recipient: string;
   deliver: FeedDeliveryOptions["deliver"];
+  /** Where the drain saw this response; read first, so one row is read instead of every page. */
+  sequence?: number;
 }
 
-async function savedResponse(ctx: HomeMirrorContext, binding: HomeMirrorBinding, responseId: string): Promise<FeedResponse | null> {
+async function savedResponse(ctx: HomeMirrorContext, binding: HomeMirrorBinding, responseId: string, sequence?: number): Promise<FeedResponse | null> {
+  const responses = privateDatabase(ctx.sql.db(binding.source.responses.database), ctx);
+  if (sequence !== undefined && Number.isSafeInteger(sequence) && sequence > 0) {
+    const [hinted] = take(await listFeedResponses(responses, { afterSequence: sequence - 1, limit: 1, signal: ctx.signal }));
+    active(ctx);
+    if (hinted?.responseId === responseId) return sameIdentity(hinted, binding.identity) ? hinted : null;
+  }
   let afterSequence = 0;
   for (;;) {
-    const page = take(await listFeedResponses(privateDatabase(ctx.sql.db(binding.source.responses.database), ctx), { afterSequence, limit: 1000, signal: ctx.signal }));
+    const page = take(await listFeedResponses(responses, { afterSequence, limit: 1000, signal: ctx.signal }));
     active(ctx);
     const response = page.find((header) => header.responseId === responseId);
     if (response) return sameIdentity(response, binding.identity) ? response : null;
@@ -387,6 +446,54 @@ async function savedResponse(ctx: HomeMirrorContext, binding: HomeMirrorBinding,
     if (next <= afterSequence) throw failure();
     afterSequence = next;
   }
+}
+
+/**
+ * A response as the owner's responses database holds it, with its private payload, for a bound card issuance.
+ * `sequence` is where it was seen; the stored row decides, so a caller's copy of the header grants nothing.
+ */
+export async function readHomeMirrorResponse(ctx: HomeMirrorContext, binding: HomeMirrorBinding, responseId: string, sequence?: number): Promise<{ response: FeedResponse; payload: FeedResponsePayload | null } | null> {
+  try {
+    const response = await savedResponse(ctx, binding, responseId, sequence);
+    if (!response) return null;
+    const payload = take(await readFeedResponsePayload(privateDatabase(ctx.sql.db(binding.source.responses.database), ctx), response));
+    return { response, payload: payload ?? null };
+  } catch (error) { throw safeFailure(error, "response"); }
+}
+
+/** Records the agent's "received" for a response once; a second call returns the first record. */
+export async function acknowledgeHomeMirrorResponse(ctx: HomeMirrorContext, binding: HomeMirrorBinding, response: FeedResponse): Promise<{ handling: FeedHandling; recorded: boolean }> {
+  try {
+    const output = privateDatabase(ctx.sql.db(binding.source.output.database), ctx);
+    const identity = { ...tuple(response), responseId: response.responseId };
+    const existing = await readFeedResponseHandling(output, identity);
+    if (!existing.ok && existing.error.code !== ErrorCodes.NOT_FOUND) throw safeFailure(existing.error);
+    if (existing.ok && existing.data.acknowledgement) return { handling: existing.data.acknowledgement, recorded: false };
+    const handling = take(await recordFeedHandling(output, { ...identity, handlingId: `${response.responseId}:acknowledged`, phase: "acknowledged", createdAt: ctx.now() }));
+    return { handling, recorded: true };
+  } catch (error) { throw safeFailure(error, "handling"); }
+}
+
+async function deliverable(ctx: HomeMirrorContext, binding: HomeMirrorBinding, response: FeedResponse, recipient: string): Promise<FeedResponse | null> {
+  if (!recipient || recipient === "*") throw failure();
+  const responses = privateDatabase(ctx.sql.db(binding.source.responses.database), ctx);
+  const page = take(await listFeedResponseDeliveries(responses, { recipient, afterSequence: response.sequence - 1, limit: 1, signal: ctx.signal }));
+  active(ctx);
+  return page.responses.find((header) => header.responseId === response.responseId && sameIdentity(header, binding.identity)) ?? null;
+}
+
+/**
+ * The stored response as the owner's delivery policy releases it to `recipient` now (restored rows carry their
+ * `dispatchBefore`), or null when the policy withholds it: never dispatched, another recipient's, or past its cutoff.
+ * The recipient must come from the caller's own configuration, never from a handed-off header.
+ */
+export async function readHomeMirrorDelivery(ctx: HomeMirrorContext, binding: HomeMirrorBinding, response: FeedResponse, recipient: string): Promise<FeedResponse | null> {
+  try {
+    const allowed = await deliverable(ctx, binding, response, recipient);
+    const cutoff = allowed?.dispatchBefore;
+    if (!allowed || (typeof cutoff === "string" && !(Date.now() < Date.parse(cutoff)))) return null;
+    return allowed;
+  } catch (error) { throw safeFailure(error, "delivery"); }
 }
 
 /** Close is projection evidence; only the existing durable handoff records delivery. */
@@ -402,14 +509,12 @@ export async function forwardHomeMirrorResponse(ctx: HomeMirrorContext, options:
     const typed = card && parseSitrepCardPayload(card.payload?.sitrep);
     if (!typed || typed.record.kind !== binding.legacy.kind || typed.record.id !== binding.legacy.id ||
       hash(publication(typed.record, binding.cardUuid)) !== binding.legacy.publicationSha256) return null;
-    const response = await savedResponse(ctx, binding, options.responseId);
+    const response = await savedResponse(ctx, binding, options.responseId, options.sequence);
     if (!response) return null;
-    const responses = privateDatabase(ctx.sql.db(binding.source.responses.database), ctx);
     // A targeted verified policy page also protects restored rows on a fresh local ledger.
-    const page = take(await listFeedResponseDeliveries(responses, { recipient: options.recipient, afterSequence: response.sequence - 1, limit: 1, signal: ctx.signal }));
-    active(ctx);
-    const allowed = page.responses.find((header) => header.responseId === response.responseId && sameIdentity(header, binding.identity));
+    const allowed = await deliverable(ctx, binding, response, options.recipient);
     if (!allowed) return null;
+    const responses = privateDatabase(ctx.sql.db(binding.source.responses.database), ctx);
     const payload = take(await readFeedResponsePayload(responses, response));
     active(ctx);
     if (!payload || payload.version !== 1) return null;
@@ -460,6 +565,83 @@ export interface HomeMirrorWatchOptions {
   renewalSeconds?: number;
 }
 
+/**
+ * A handoff ledger serves one owner's source: its first drain records the owner space, the source and its responses
+ * database, and a drain for anything else is refused. Sequences are per responses database, so a mark taken from
+ * another source's handoffs would pass over this one's pending responses. A ledger that already holds handoffs but
+ * names no source is refused too, since its marks cannot be attributed.
+ */
+async function bindLedger(ctx: HomeMirrorContext, ledger: FeedDatabase, source: HomeMirrorBinding["source"]): Promise<void> {
+  const scope = JSON.stringify({ ownerSpaceId: ctx.ownerSpaceId, sourceId: source.sourceId, responses: { spaceId: source.responses.spaceId, database: source.responses.database } });
+  const refused = () => homeMirrorRefusal("This handoff ledger belongs to another Home feed source");
+  take(await ledger.execute("CREATE TABLE IF NOT EXISTS home_mirror_ledger (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), scope_json TEXT NOT NULL)"));
+  let [row] = take(await ledger.query<unknown>("SELECT scope_json FROM home_mirror_ledger WHERE singleton=1")).rows;
+  if (!row) {
+    if (take(await ledger.query<unknown>("SELECT 1 FROM feed_handoffs LIMIT 1")).rows.length) throw refused();
+    take(await ledger.execute("INSERT OR IGNORE INTO home_mirror_ledger (singleton,scope_json) VALUES (1,?)", [scope]));
+    [row] = take(await ledger.query<unknown>("SELECT scope_json FROM home_mirror_ledger WHERE singleton=1")).rows;
+  }
+  if (row?.[0] !== scope) throw refused();
+}
+
+/**
+ * Where a drain for this recipient starts, from its local handoff ledger alone (no node read): after the highest
+ * sequence it already handed off, or just before the earliest one still prepared, which is handed off again.
+ */
+export async function homeMirrorDrainStart(ctx: HomeMirrorContext, options: Pick<HomeMirrorDrainOptions, "source" | "recipient" | "handoff">): Promise<number> {
+  const handoff = privateDatabase(options.handoff, ctx);
+  await bindLedger(ctx, handoff, options.source);
+  const rows = take(await handoff.query<unknown>("SELECT response_json,state FROM feed_handoffs WHERE recipient=?", [options.recipient])).rows;
+  let highest = 0, prepared = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    if (row.length !== 2 || typeof row[0] !== "string" || typeof row[1] !== "string") throw failure();
+    const value: unknown = JSON.parse(row[0]);
+    const sequence = object(value) ? value.sequence : undefined;
+    if (typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 1) throw failure();
+    if (row[1] === "prepared") prepared = Math.min(prepared, sequence);
+    else highest = Math.max(highest, sequence);
+  }
+  return Number.isFinite(prepared) ? Math.min(highest, prepared - 1) : highest;
+}
+
+export interface HomeMirrorDrainOptions {
+  source: HomeMirrorBinding["source"];
+  recipient: string;
+  handoff: FeedDatabase;
+  deliver: FeedDeliveryOptions["deliver"];
+  /** Exclusive start: responses at or below it were handed off or settled earlier. */
+  afterSequence: number;
+}
+
+/**
+ * Hands off every response after `afterSequence`, in order, and returns the new mark. A response the local ledger
+ * already holds as unconfirmed or delivered is passed over before any node read, so a drain with nothing new costs
+ * one page read however many responses were handed off before.
+ */
+export async function drainHomeMirrorResponses(ctx: HomeMirrorContext, options: HomeMirrorDrainOptions): Promise<number> {
+  const responses = privateDatabase(ctx.sql.db(options.source.responses.database), ctx);
+  const ledger = privateDatabase(options.handoff, ctx);
+  await bindLedger(ctx, ledger, options.source);
+  let afterSequence = options.afterSequence;
+  while (!ctx.signal?.aborted) {
+    const page = take(await listFeedResponseDeliveries(responses, { recipient: options.recipient, afterSequence, limit: 100, signal: ctx.signal }));
+    if (ctx.signal?.aborted) break;
+    for (const response of page.responses) {
+      if (ctx.signal?.aborted) return afterSequence;
+      const existing = take(await getFeedHandoff(ledger, response.responseId, options.recipient));
+      if (existing && existing.state !== "prepared") continue;
+      await forwardHomeMirrorResponse(ctx, {
+        identity: { sourceId: options.source.sourceId, ...tuple(response) }, responseId: response.responseId, sequence: response.sequence,
+        recipient: options.recipient, handoff: options.handoff, deliver: options.deliver,
+      });
+    }
+    if (page.hasMore && page.nextSequence <= afterSequence) throw failure();
+    afterSequence = Math.max(afterSequence, page.nextSequence);
+    if (!page.hasMore) break;
+  }
+  return afterSequence;
+}
+
 /** One configured source consumer; authorized ready/write notifications only, not DB polling. */
 export async function watchHomeMirrors(context: HomeMirrorContext, options: HomeMirrorWatchOptions): Promise<void> {
   const { signal } = options;
@@ -468,28 +650,14 @@ export async function watchHomeMirrors(context: HomeMirrorContext, options: Home
   if (!Number.isInteger(renewalSeconds) || renewalSeconds < 60 || renewalSeconds > 300 || !options.recipient || options.recipient === "*") throw failure();
   if (signal.aborted) return;
   const source = await registered(ctx, options.sourceId);
-  const responses = privateDatabase(ctx.sql.db(source.responses.database), ctx);
+  let mark = await homeMirrorDrainStart(ctx, { source, recipient: options.recipient, handoff: options.handoff });
   let ready = false, dirty = false, failed = false;
   let draining: Promise<void> | undefined, failureValue: unknown;
   let current: AbortController | undefined;
   const drain = async (): Promise<void> => {
     do {
       dirty = false;
-      let afterSequence = 0;
-      while (!signal.aborted) {
-        const page = take(await listFeedResponseDeliveries(responses, { recipient: options.recipient, afterSequence, limit: 100, signal }));
-        if (signal.aborted) return;
-        for (const response of page.responses) {
-          if (signal.aborted) return;
-          await forwardHomeMirrorResponse(ctx, {
-            identity: { sourceId: source.sourceId, ...tuple(response) }, responseId: response.responseId,
-            recipient: options.recipient, handoff: options.handoff, deliver: options.deliver,
-          });
-        }
-        if (page.hasMore && page.nextSequence <= afterSequence) throw failure();
-        afterSequence = page.nextSequence;
-        if (!page.hasMore) break;
-      }
+      mark = await drainHomeMirrorResponses(ctx, { source, recipient: options.recipient, handoff: options.handoff, deliver: options.deliver, afterSequence: mark });
     } while (dirty && !signal.aborted);
   };
   const schedule = (): void => {
@@ -506,7 +674,7 @@ export async function watchHomeMirrors(context: HomeMirrorContext, options: Home
     const stop = () => connection.abort();
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
-    // Renew the hook ticket, not a SQL heartbeat. Every authorized ready reconciles from start.
+    // Renew the hook ticket, not a SQL heartbeat. Every authorized ready reconciles from the drain's mark.
     const renewal = setTimeout(stop, renewalSeconds * 1000); renewal.unref?.();
     try {
       for await (const _event of options.hooks.subscribe([{ space: source.responses.spaceId, service: "sql", pathPrefix: source.responses.database }], {
