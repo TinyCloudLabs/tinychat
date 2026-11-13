@@ -201,12 +201,6 @@ function sourceFor(record: Record<string, unknown>): HomeFeedSource {
   };
 }
 
-function clickable(scope: ParentNode, matches: (text: string) => boolean) {
-  const found = [...scope.querySelectorAll<HTMLButtonElement>("button")].find((node) => matches(node.textContent?.trim() ?? ""));
-  expect(found !== undefined).toBe(true);
-  return found!;
-}
-
 /** The open card, Details unfolded: its words (text nodes apart), link targets and machine times, less Details' own lists of the card's data. */
 async function openCard(record: Record<string, unknown>) {
   restore ??= installDom();

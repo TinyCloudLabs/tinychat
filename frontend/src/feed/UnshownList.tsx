@@ -4,10 +4,10 @@
 // would tell the other site the owner's address).
 import { useLayoutEffect, useRef, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
+import { detailsSectionTitle as sectionTitle } from "./CardActions";
 import { shortTime } from "./ShortTime";
 import { fieldLabel, formHint, type UnshownField } from "./unshown";
 
-const sectionTitle = "mb-2 flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-[.04em] text-muted-foreground";
 const reveal = "inline-flex min-h-8 items-center text-xs font-medium text-muted-foreground underline decoration-border underline-offset-[3px]";
 
 /** A long value cut to a few lines, with "Show all" when it is. */
@@ -76,5 +76,3 @@ export function CardData({ card }: { card: unknown }) {
     {open && <pre className="max-h-80 overflow-auto whitespace-pre-wrap border-t border-border px-3 py-2 text-xs">{JSON.stringify(card, null, 2)}</pre>}
   </section>;
 }
-
-export const detailsSectionTitle = sectionTitle;
