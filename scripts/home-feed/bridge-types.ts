@@ -10,6 +10,16 @@ export interface HomeMirrorContext {
   legacy: Pick<IKVService, "get" | "put">;
   now: () => string;
   signal?: AbortSignal;
+  /**
+   * Set by one process that posts many cards (post-many): the registry and the mirror table are read once and kept,
+   * and each new binding is added. Every write still re-checks ownership in SQL, so a stale cache cannot double-bind.
+   */
+  cache?: HomeMirrorCache;
+}
+
+export interface HomeMirrorCache {
+  agents?: unknown[][];
+  mirrors?: unknown[][];
 }
 
 export interface HomeMirrorPublishInput {
