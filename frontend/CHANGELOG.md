@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.37
+
+### Patch Changes
+
+- 50e57be: The Home Feed refreshes in one round of requests instead of three or more. On open it reads the agent registry and every agent the device already knows at the same time, one request per database, and no longer waits for the live-update stream first: each read carries its own freshness fingerprint, so the stream's first ready compares instead of loading again. Answers, follow-ups and agent receipts come with those reads instead of one request each, in sequence. A new device reads the Feed before it creates its tables; the one-time schema batch runs after the first load.
+
 ## 0.14.0-beta.36
 
 ### Patch Changes
