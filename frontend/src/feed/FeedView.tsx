@@ -8,6 +8,9 @@ import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
+import { AgentDetails, AgentMark, PlatformName, type AgentProfile } from "./AgentMark";
+import { StatusMark } from "./CompactCard";
+import { ShortTime } from "./ShortTime";
 
 // These keys belong to the bundled sample only. A real card's media key is never a web URL.
 const sampleAssets: Record<string, string> = {
@@ -151,6 +154,81 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
       {expanded && card.source && <p className="mt-3 text-[13px] text-muted-foreground">Source: {card.source.url
         ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all underline underline-offset-[3px]">{card.source.label}</a>
         : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
+    </article>
+  );
+}
+
+/**
+ * The Home feed's card, open (the feed lab's design, approved 11-13): one meta line like the compact card's (the
+ * agent's mark, its name, its platform's mark, the time, and at the right the status and "Show less"), the title, the
+ * body, then `children` (options, conversation, the foot) inside the same surface. `FeedCardView` above stays for the
+ * sample feed and the demo card.
+ */
+export function HomeCardView({ card, sample = true, readBody, status, onAuthor, agent, collapse, plain = false, children }: {
+  card: FeedCard;
+  sample?: boolean;
+  readBody?: (key: string, signal: AbortSignal) => Promise<string>;
+  /** The card's one status word ("Needs you", "Done"). */
+  status?: string;
+  /** Opens everything between the person and the card's agent. */
+  onAuthor?: () => void;
+  /** The acting agent: its mark and, when it reported one, its platform. Tapping its name shows what it is. */
+  agent?: { key: string; profile?: AgentProfile };
+  /** A card opened in place from a list: its "Show less" control, at the top right beside the status. */
+  collapse?: ReactNode;
+  /** On a page of its own (a post's page): no card surface around it, so it isn't a card within a card. */
+  plain?: boolean;
+  /** The rest of an open card (its options, reply and actions), inside the same surface. */
+  children?: ReactNode;
+}): JSX.Element {
+  const [about, setAbout] = useState(false);
+  const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
+  const platform = agent?.profile?.platform;
+  return (
+    <article className={plain ? "min-w-0 text-foreground" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
+      {/* One meta line, the compact card's (design round 7), so a card keeps its header row when it opens: the agent's
+          mark, its name, its platform's mark, the time, and at the right the status and "Show less". */}
+      <div className="flex min-w-0 items-center gap-3">
+        {agent ? <AgentMark agentKey={agent.key} name={card.author.name} small /> : avatar && <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />}
+        <div className="flex min-h-6 min-w-0 flex-1 items-center gap-1.5 text-meta text-muted-foreground">
+          <span data-agent-line className="flex min-w-0 items-center gap-1.5">
+            {/* The name is 24px tall; its ::after stretches the tap target to 44px without moving the line (critique #8). */}
+            {onAuthor
+              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="relative flex min-h-6 min-w-0 items-center text-left font-semibold text-foreground after:absolute after:-inset-x-1 after:-inset-y-2.5 fine:after:hidden"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
+              : <span className="min-w-0 truncate font-semibold text-foreground">{card.author.name}</span>}
+            {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
+          </span>
+          <p className={`flex items-center gap-1.5 before:content-['·'] ${card.author.via ? "min-w-0" : "shrink-0"}`}>{card.author.via && <span className="min-w-0 truncate">{`via ${card.author.via} · `}</span>}<ShortTime at={card.at} className="shrink-0 tabular-nums" /></p>
+          <span className="ml-auto flex shrink-0 items-center gap-2">
+            {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
+            {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}
+            {status && status !== "Information" && <span data-status className="flex shrink-0 items-center"><StatusMark status={status} /></span>}
+            {collapse && <span className="-my-1.5 -mr-1.5 shrink-0">{collapse}</span>}
+          </span>
+        </div>
+      </div>
+      {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
+      {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-title-2">{card.title}</h2>}
+      <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>
+      {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
+      {card.render === "thread" && card.replies?.map((reply, index) => (
+        <div key={index} className="mt-3 min-w-0 border-l-2 border-border pl-4 text-sm">
+          <p className="whitespace-pre-wrap break-words">{reply.text}</p>
+        </div>
+      ))}
+      {card.render === "article" && <div className="mt-4 min-w-0 border-t border-border pt-4">
+        {card.title && <h2 className="break-words font-display text-title-2">{card.title}</h2>}
+        {card.body && (sample || readBody) && <ArticleBody body={card.body} readBody={readBody ?? readArticleBody} />}
+      </div>}
+      {card.render === "link" && card.url && <div className="mt-3 min-w-0">
+        {safeUrl(card.url)
+          ? <a className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
+          : <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
+      </div>}
+      {card.source && <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">Source: {card.source.url
+        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</a>
+        : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
+      {children}
     </article>
   );
 }

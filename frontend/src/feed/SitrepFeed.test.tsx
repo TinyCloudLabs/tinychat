@@ -18,6 +18,10 @@ mock.module("../components/ui/responsive-sheet", () => ({
     props.open ? <div role="dialog" aria-label="sheet" {...props.contentProps}><h2>{props.title}</h2><p>{props.description}</p>{props.children}<div>{props.footer}</div></div> : null,
   ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
 }));
+// The card's Details pop-up is a Radix Dialog too: the same inline stand-in, open only while Details is open.
+mock.module("./DetailsSheet", () => ({
+  DetailsSheet: (props: { open: boolean; children?: ReactNode }) => props.open ? <div role="dialog" aria-label="Details">{props.children}</div> : null,
+}));
 const { FeedViewEntries } = await import("./FeedView");
 
 type PrivatePayload = { type: string; version: number; data: unknown };
@@ -92,10 +96,13 @@ async function mount(source: HomeFeedSource) {
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={source} />));
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
 }
-/** Finds a button by its visible text in `scope`; pass `document` for the portaled More sheet. */
+/** Finds a button by its visible text in `scope`. */
 function button(scope: ParentNode, label: string) {
   const found = [...scope.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
   expect(found !== undefined).toBe(true); return found!;
+}
+function hasButton(scope: ParentNode, label: string) {
+  return [...scope.querySelectorAll("button")].some((node) => node.textContent?.trim() === label);
 }
 async function enter(scope: ParentNode, label: string, text: string) {
   const input = scope.querySelector<HTMLTextAreaElement | HTMLInputElement>(`textarea[aria-label="${label}"], input[aria-label="${label}"]`);
@@ -130,15 +137,21 @@ async function expand(article: HTMLElement) {
   await act(async () => toggle!.click());
   expect(toggle!.getAttribute("aria-expanded")).toBe("true");
 }
-function answers(scope: ParentNode) { return scope.querySelector('[role="group"][aria-label="Answers"]'); }
+/** The question's options (AnswerOptions): a fieldset whose legend is "Choose an option". */
+function answers(scope: ParentNode) { return [...scope.querySelectorAll("fieldset")].find((node) => node.querySelector("legend")?.textContent === "Choose an option") ?? null; }
 function answeredPanel(scope: ParentNode) { return scope.querySelector('[role="status"][aria-label="Your answer"]'); }
 function option(scope: ParentNode, label: string) {
   const found = [...(answers(scope)?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((node) => node.textContent?.startsWith(label));
   expect(found !== undefined).toBe(true); return found!;
 }
-/** Opens the card's More sheet; it is portaled into document.body. */
-async function more(article: HTMLElement) {
-  await act(async () => button(article, "More").click());
+/** Opens the card's Details pop-up from its foot. */
+async function details(article: HTMLElement) {
+  await act(async () => button(article, "Details").click());
+  expect(article.querySelector('[role="dialog"][aria-label="Details"]') !== null).toBe(true);
+}
+/** The "Undo · N" pill of an action counting down in `scope`. */
+function undoPill(scope: ParentNode) {
+  return scope.querySelector<HTMLButtonElement>('button[aria-label^="Undo,"]');
 }
 
 const visibleFields = [
@@ -156,19 +169,56 @@ test.each(visibleFields)("%s retains its type-specific content and private repor
   expect(article.textContent).toContain(content);
   expect(article.querySelector("a[href='https://reports.synthetic-example.ts.net/rehearsal.md']") !== null).toBe(true);
   if (["incident", "ship", "order", "progress"].includes(kind)) {
-    expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+    expect(view.host.querySelector('[aria-label="Your own answer"]')).toBeNull();
     expect(answers(view.host)).toBeNull();
   }
 });
 
-test("a go approval has its own exact-issuance action, not a generic answer", async () => {
+test("a go waits out the undo window, then writes its own exact-issuance action once", async () => {
   setSystemTime(new Date(SITREP_NOW));
   const record = syntheticRecord("approval");
   const fixture = typedFixture(record);
   const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
   await act(async () => button(view.host, "Give the go").click());
+  expect(undoPill(view.host)?.textContent).toBe("Undo · 5");
+  await timer.advance(4000);
+  expect(undoPill(view.host)?.textContent).toBe("Undo · 1");
+  expect(fixture.saved).toEqual([]);
+  await timer.advance(1000);
+  expect(undoPill(view.host)).toBeNull();
+  expect(fixture.saved).toHaveLength(1);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", version: 1, data: { askId: record.id, action: "done", issuedAt: record.issuedAt } });
   expect(fixture.saved[0]?.response).toMatchObject({ cardId: fixture.entry.state.card.cardId, revision: 1, issuanceId: "synthetic-issuance" });
+  await timer.advance(10_000);
+  expect(fixture.saved).toHaveLength(1);
+});
+
+test("an undone go writes nothing", async () => {
+  setSystemTime(new Date(SITREP_NOW));
+  const fixture = typedFixture(syntheticRecord("approval"));
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(view.host, "Give the go").click());
+  await timer.advance(2000);
+  await act(async () => undoPill(view.host)!.click());
+  await timer.advance(10_000);
+  expect(fixture.saved).toEqual([]);
+  expect(button(view.host, "Give the go").disabled).toBe(false);
+});
+
+test("a go whose approval expires during the undo window writes nothing and says so", async () => {
+  setSystemTime(new Date(SITREP_NOW));
+  const record = { ...syntheticRecord("approval"), expiresAt: new Date(Date.parse(SITREP_NOW) + 3000).toISOString() };
+  const fixture = typedFixture(record);
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(view.host, "Give the go").click());
+  expect(fixture.saved).toEqual([]);
+  setSystemTime(new Date(Date.parse(SITREP_NOW) + 5000));
+  await timer.advance(5000);
+  expect(fixture.saved).toEqual([]);
+  expect(view.host.textContent).toContain("This approval expired before it was sent. Nothing was sent.");
 });
 
 test("an expired go cannot be submitted and the earlier issuance is not treated as current", async () => {
@@ -203,7 +253,12 @@ test("typed code entry never trims invalid whitespace or copies a valid code int
   expect(button(view.host, "Save code").disabled).toBe(true);
   expect(view.host.querySelector<HTMLInputElement>('[aria-label="Approval code"]')?.value).toBe(" SYNTHETIC-CODE ");
   await enter(view.host, "Approval code", "SYNTHETIC-CODE");
+  const timer = installFakeClock(); clock = timer;
   await act(async () => button(view.host, "Save code").click());
+  expect(undoPill(view.host) !== null).toBe(true);
+  expect(fixture.saved).toEqual([]);
+  await timer.advance(5000);
+  expect(fixture.saved).toHaveLength(1);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", version: 1, data: { action: "code", text: "SYNTHETIC-CODE", issuedAt: record.issuedAt } });
   expect(JSON.stringify(fixture.saved[0]?.response)).not.toContain("SYNTHETIC-CODE");
   expect(view.host.textContent).not.toContain("SYNTHETIC-CODE");
@@ -243,24 +298,48 @@ test("a task tick persists as owner state and an incomplete task stays in Needs 
   expect(answeredPanel(reopened.host)).toBeNull();
 });
 
-test("a claim decision keeps keep/remove/ignore distinct from an ask answer", async () => {
+test("a claim decision waits out the undo window and stays distinct from an ask answer", async () => {
   const fixture = typedFixture(syntheticRecord("claim"));
   const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
   await act(async () => button(view.host, "Keep claim").click());
+  expect(undoPill(view.host) !== null).toBe(true);
+  expect(fixture.saved).toEqual([]);
+  await timer.advance(5000);
+  expect(fixture.saved).toHaveLength(1);
   expect(fixture.saved[0]?.response.kind).toBe("answer");
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.claim", version: 1, data: { choice: "keep", at: expect.any(String) } });
   expect(fixture.owner.answers).toEqual([]);
   expect(fixture.owner.claimDecisions).toContainEqual(expect.objectContaining({ card: { kind: "claim", id: "T-001" }, value: expect.objectContaining({ choice: "keep" }) }));
 });
 
-test("a blocker clear is a request for that hold/reference, not an answered question or implicit lift", async () => {
+test("a blocker clear waits out the undo window and is a request for that hold/reference, not an answer or implicit lift", async () => {
   const fixture = typedFixture(syntheticRecord("hold"));
   const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
   await act(async () => button(view.host, "Mark blocker cleared").click());
+  expect(fixture.saved).toEqual([]);
+  expect(fixture.ownerWrites).toEqual([]);
+  await timer.advance(5000);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.state", version: 1, data: { kind: "hold", id: "hold-synthetic", clears: [expect.objectContaining({ ref: "task:task-synthetic", id: expect.any(String) })] } });
   expect(fixture.saved[0]?.response.kind).toBe("message");
   expect(fixture.owner.answers).toEqual([]);
   expect(fixture.entry.state.card.payload?.sitrep).toMatchObject({ record: { status: "active" } });
+});
+
+test("an undone task completion writes nothing, private or sent", async () => {
+  const fixture = typedFixture(syntheticRecord("task"));
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(view.host, "Mark done").click());
+  await act(async () => undoPill(view.host)!.click());
+  await timer.advance(10_000);
+  expect(fixture.saved).toEqual([]);
+  expect(fixture.ownerWrites).toEqual([]);
+  await act(async () => button(view.host, "Mark done").click());
+  await timer.advance(5000);
+  expect(fixture.ownerWrites[0]?.state).toMatchObject({ kind: "task", doneAt: expect.any(String) });
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.state", data: { kind: "task", doneAt: expect.any(String) } });
 });
 
 test("existing private notes stay read-only under Details and are never sent or turned into answers", async () => {
@@ -268,8 +347,8 @@ test("existing private notes stay read-only under Details and are never sent or 
   fixture.owner.states.push({ kind: "ask", id: "ask-synthetic", steps: {}, updatedAt: "2026-10-29T11:00:00.000Z", notes: [{ id: "note-1", at: "2026-10-29T11:00:00.000Z", text: "This is an update, not a decision." }] });
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await more(article);
-  expect(document.querySelector('[aria-label="Your private notes"]')?.textContent).toContain("This is an update, not a decision.");
+  await details(article);
+  expect(article.querySelector('[aria-label="Your private notes"]')?.textContent).toContain("This is an update, not a decision.");
   expect(fixture.saved).toEqual([]);
   expect(fixture.ownerWrites).toEqual([]);
   expect(fixture.owner.answers).toEqual([]);
@@ -286,12 +365,16 @@ test("unconfirmed thread delivery stays historical until an explicit resend crea
   fixture.entry.recipientRoute = { recipients: [{ recipientKey: target.recipientKey, legacyName: "SyntheticOfficer", runtimeTarget: { agentId: target.agentId } }], unresolved: [] };
   fixture.entry.threadRoutes = { [JSON.stringify(["ask", "ask-synthetic", messageId])]: { kind: "recipients", delivery: { version: 1, targets: [target] } } };
   const view = await mount(fixture.source);
-  await more(card(view.host, String(fixture.entry.state.card.title)));
-  await act(async () => button(document, "Comment").click());
-  expect(document.body.textContent).toContain("Existing synthetic owner message");
-  expect(document.body.textContent).toContain("Unconfirmed");
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  await expand(article);
+  const thread = article.querySelector<HTMLElement>('section[aria-label="Comments"]');
+  expect(thread?.textContent).toContain("Existing synthetic owner message");
+  expect(thread?.textContent).toContain("Unconfirmed");
   expect(fixture.saved).toEqual([]);
-  await act(async () => button(document, "Resend message").click());
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(thread!, "Send again").click());
+  expect(fixture.saved).toEqual([]);
+  await timer.advance(5000);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", version: 1, data: { kind: "ask", id: "ask-synthetic", text: "Existing synthetic owner message", resendOf: messageId, delivery: { version: 1, targets: [target] } } });
   expect(fixture.saved[0]?.response.responseId).not.toBe("old-thread-response");
   expect(fixture.owner.answers).toEqual([]);
@@ -302,9 +385,9 @@ test("an unknown typed record is visibly unsupported and never receives an actio
   const view = await mount(fixture.source);
   const article = card(view.host, "Unknown preserved record");
   expect(article.querySelector('[role="status"]') !== null).toBe(true);
-  expect(article.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+  expect(article.querySelector('[aria-label="Your own answer"]')).toBeNull();
   expect(answers(article)).toBeNull();
-  // Only the title's expand toggle: no answer, note, snooze or More control.
+  // Only the title's expand toggle: no answer, note, snooze or Details control.
   expect([...article.querySelectorAll("button, input, textarea, select")].map((node) => node.getAttribute("aria-expanded"))).toEqual(["false"]);
   expect(fixture.saved).toEqual([]);
 });
@@ -364,11 +447,14 @@ test("a folded approval step opens its own card after an ambiguous snapshot is r
   expect([...view.host.querySelectorAll("article")].some((article) => article.getAttribute("aria-label") === approval.title)).toBe(true);
 });
 
-test("typed snooze presets append owner history without creating an answer", async () => {
+test("typed Ask me later offers three presets and appends owner history without creating an answer", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
-  await act(async () => button(view.host, "Ask me later").click());
-  await act(async () => button(view.host, "Tomorrow morning").click());
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  await act(async () => button(article, "Ask me later").click());
+  expect(article.querySelector('section[aria-label="Ask me later"]')?.querySelectorAll("button").length).toBe(3);
+  expect(hasButton(article, "Next week")).toBe(false);
+  await act(async () => button(article, "Tomorrow morning").click());
   expect(fixture.entry.viewEvents).toContainEqual(expect.objectContaining({ kind: "snoozed", snoozedUntil: expect.any(String), createdAt: SITREP_NOW }));
   expect(fixture.saved).toEqual([]);
   expect(fixture.owner.answers).toEqual([]);
@@ -380,15 +466,19 @@ test("matching display labels never turn an unresolved owner into an authenticat
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
   await act(async () => button(article, "Comment").click());
-  await enter(article, "Write a comment", "Keep this held until its actual recipient is mapped.");
+  await enter(article, "Leave a comment for SyntheticOfficer", "Keep this held until its actual recipient is mapped.");
+  const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Send").click());
+  await timer.advance(5000);
   expect(fixture.saved).toEqual([]);
   expect(fixture.owner.heldNotes).toContainEqual(expect.objectContaining({ intendedRecipient: "SyntheticOfficer", text: "Keep this held until its actual recipient is mapped." }));
+  timer.restore(); clock = undefined;
   await view.unmount();
   const reopened = await mount(fixture.source);
   await openComments(card(reopened.host, String(fixture.entry.state.card.title)));
   const thread = card(reopened.host, String(fixture.entry.state.card.title)).querySelector('section[aria-label="Comments"]');
   expect(thread?.textContent).toContain("Keep this held until its actual recipient is mapped.");
+  expect(thread?.textContent).toContain("Not sent · saved until SyntheticOfficer can get it");
   expect(fixture.saved).toEqual([]);
 });
 
@@ -397,11 +487,14 @@ test("an explicit owner note shows its approved recipients and sends a message w
   fixture.entry.recipientRoute = { recipients: [{ recipientKey: "approved-officer", legacyName: "SyntheticOfficer", runtimeTarget: { agentId: "00000000-0000-4000-8000-000000000002", provider: "omp" } }], unresolved: [] };
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await more(article);
-  expect(document.body.textContent).toContain("00000000-0000-4000-8000-000000000002");
+  await details(article);
+  expect(article.textContent).toContain("Messages on this card go to: SyntheticOfficer · 00000000-0000-4000-8000-000000000002");
   await act(async () => button(article, "Comment").click());
-  await enter(article, "Tell SyntheticOfficer something", "Explicitly send this update.");
+  await enter(article, "Leave a comment for SyntheticOfficer", "Explicitly send this update.");
+  const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Send").click());
+  expect(fixture.saved).toEqual([]);
+  await timer.advance(5000);
   expect(fixture.saved[0]?.response.kind).toBe("message");
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "Explicitly send this update.", delivery: { version: 1, targets: [{ recipientKey: "approved-officer", agentId: "00000000-0000-4000-8000-000000000002", provider: "omp" }] } } });
   expect(fixture.owner.answers).toEqual([]);
@@ -414,7 +507,7 @@ test("a typed information card cannot manufacture a human question from its exte
   fixture.entry.state.card.needsResponse = false;
   const view = await mount(fixture.source);
   const article = card(view.host, String(syntheticRecord("ask").title));
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]') === null).toBe(true);
+  expect(view.host.querySelector('[aria-label="Your own answer"]') === null).toBe(true);
   expect(answers(view.host)).toBeNull();
   expect([...view.host.querySelectorAll("button")].some((button) => button.textContent === "Save answer")).toBe(false);
   await expand(article);
@@ -441,7 +534,7 @@ test("matching display authors cannot fold an approval from a different register
   expect(card(view.host, approval.entry.state.card.title) !== parentCard).toBe(true);
 });
 
-test("a failed card message retains the exact draft until durable saving succeeds", async () => {
+test("a failed card message keeps its exact words until Try again saves them", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const send = fixture.source.sendMessage!;
   let fail = true;
@@ -449,12 +542,15 @@ test("a failed card message retains the exact draft until durable saving succeed
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
   await act(async () => button(article, "Comment").click());
-  await enter(article, "Tell SyntheticOfficer something", "Keep this exact draft after the refused write.");
+  await enter(article, "Leave a comment for SyntheticOfficer", "Keep this exact draft after the refused write.");
+  const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Send").click());
-  expect(article.querySelector<HTMLInputElement>('[aria-label="Tell SyntheticOfficer something"]')?.value).toBe("Keep this exact draft after the refused write.");
+  await timer.advance(5000);
+  const failed = article.querySelector('[data-outgoing="error"]');
+  expect(failed?.textContent).toContain("Keep this exact draft after the refused write.");
   expect(fixture.saved).toEqual([]);
-  await act(async () => button(article, "Send").click());
-  expect(article.querySelector<HTMLInputElement>('[aria-label="Tell SyntheticOfficer something"]')?.value).toBe("");
+  await act(async () => button(failed!, "Try again").click());
+  expect(article.querySelector('[data-outgoing="error"]')).toBeNull();
   expect(fixture.owner.answers).toEqual([]);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "Keep this exact draft after the refused write." } });
 });
@@ -496,11 +592,13 @@ test("an explicit owner note discloses only to resolved recipients and retains e
   fixture.entry.recipientRoute = { recipients: [{ recipientKey: "known-owner", legacyName: "SyntheticOwner", runtimeTarget: { agentId: "00000000-0000-4000-8000-000000000001" } }], unresolved: ["MissingOfficer"] };
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await more(article);
-  expect(document.body.textContent).toContain("Messages on this card go to: SyntheticOwner · 00000000-0000-4000-8000-000000000001");
+  await details(article);
+  expect(article.textContent).toContain("Messages on this card go to: SyntheticOwner · 00000000-0000-4000-8000-000000000001");
   await act(async () => button(article, "Comment").click());
-  await enter(article, "Tell SyntheticOwner something", "An explicit bounded owner note.");
+  await enter(article, "Leave a comment for SyntheticOwner", "An explicit bounded owner note.");
+  const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Send").click());
+  await timer.advance(5000);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "An explicit bounded owner note.", delivery: { targets: [{ recipientKey: "known-owner", agentId: "00000000-0000-4000-8000-000000000001" }] } } });
   expect(fixture.owner.heldNotes).toContainEqual(expect.objectContaining({ intendedRecipient: "MissingOfficer", text: "An explicit bounded owner note." }));
   expect(fixture.saved[0]?.response.kind).toBe("message");
@@ -560,8 +658,8 @@ test("an officer reply cannot inherit an owner's receipt merely by reusing its m
   const view = await mount(fixture.source);
   await openComments(card(view.host, posted.title));
   const items = [...card(view.host, posted.title).querySelectorAll('[aria-label="Comments"] li')];
-  expect(items.find((item) => item.textContent?.includes("Original owner message"))?.textContent).toContain("SyntheticOfficer got it");
-  expect(items.find((item) => item.textContent?.includes("Separate incoming officer message"))?.textContent).not.toContain("got it");
+  expect(items.find((item) => item.textContent?.includes("Original owner message"))?.textContent).toContain("Received");
+  expect(items.find((item) => item.textContent?.includes("Separate incoming officer message"))?.textContent).not.toContain("Received");
 });
 
 test("an unresolved original thread destination is held instead of silently resending to the publisher", async () => {
@@ -571,10 +669,12 @@ test("an unresolved original thread destination is held instead of silently rese
   fixture.owner.deliveries.push({ sourceKey: "watch.threads.json", eventSourceKey: `xyz.tinycloud.rocinante/sam/thread/ask/ask-synthetic/${messageId}.json`, publisherId: "legacy", identity: { cardId: fixture.entry.state.card.cardId, revision: 1, issuanceId: "synthetic-issuance" }, responseId: "held-thread-response", recipientKey: "unmapped-owner", state: "unconfirmed", routedTo: "owner", dispatch: "never", evidence: "explicit", originalReceipt: { state: "unconfirmed" } });
   fixture.entry.threadRoutes = { [JSON.stringify(["ask", "ask-synthetic", messageId])]: { kind: "held", unresolved: ["UnmappedOwner"] } };
   const view = await mount(fixture.source);
-  await more(card(view.host, String(fixture.entry.state.card.title)));
-  await act(async () => button(document, "Comment").click());
-  expect(button(document, "Resend message").disabled).toBe(true);
-  expect(document.body.textContent).toContain("UnmappedOwner");
-  await act(async () => button(document, "Resend message").click());
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  await expand(article);
+  const thread = article.querySelector<HTMLElement>('section[aria-label="Comments"]');
+  expect(thread?.textContent).toContain("Keep this original recipient intent.");
+  expect(thread?.textContent).toContain("UnmappedOwner");
+  // No "Send again": the original destination isn't connected, so nothing may go to the publisher instead.
+  expect(hasButton(thread!, "Send again")).toBe(false);
   expect(fixture.saved).toEqual([]);
 });

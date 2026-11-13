@@ -34,6 +34,7 @@ import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
 import { clearHeldAnswers, heldAnswers, holdAnswer, isHeld, releaseAnswer, type HeldAnswer } from "./answerOutbox";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
+import { ownerActionMessage, type OwnerAction } from "./ownerActions";
 
 function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardId === b.cardId && a.revision === b.revision && a.issuanceId === b.issuanceId; }
 
@@ -95,6 +96,8 @@ function heldAnswerOf(entry: HomeFeedEntry, response: NewFeedResponse, payload?:
     ...(typeof text === "string" && text ? { text } : {}),
     ...(action === "answer" || action === "accept-default" ? { action } : {}),
     ...(response.supersedesResponseId ? { supersedesResponseId: response.supersedesResponseId } : {}),
+    // A plain card's own payload (a post's answers) is sent unchanged; a typed answer's is rebuilt from its action.
+    ...(payload?.type.startsWith("feed.") ? { version: 2 as const, payload } : {}),
     at: response.createdAt,
   };
 }
@@ -108,7 +111,7 @@ function rebuildAnswer(held: HeldAnswer, card: FeedCard): { response: NewFeedRes
     createdAt: held.at,
   };
   const typed = parseSitrepCardPayload(card.payload?.sitrep);
-  if (!typed) return { response: { ...header, ...(held.choiceId ? { choiceId: held.choiceId } : {}), ...(held.text ? { text: held.text } : {}) } };
+  if (!typed) return { response: { ...header, ...(held.choiceId ? { choiceId: held.choiceId } : {}), ...(held.text ? { text: held.text } : {}) }, ...(held.payload ? { payload: held.payload } : {}) };
   let action: SitrepAction;
   try {
     action = validateSitrepAction(typed.record, "sitrep.answer", { askId: typed.record.id, action: held.action ?? "answer", ...(held.choiceId ? { choice: held.choiceId } : {}), text: held.text ?? "", at: held.at }, new Date().toISOString());
@@ -337,6 +340,23 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     if (!result.ok && result.error.code === "INVALID_INPUT") { release(); throw new RefusedWrite(result.error.message); }
     const saved = unwrap(result);
     release();
+    return saved;
+  }
+
+  /**
+   * An owner action as a message to the card's agent (ownerActions.ts). With `hold` it is held in the page-close
+   * outbox before the first await, and released once written or refused, exactly like an answer (saveResponse).
+   */
+  async function writeOwnerAction(entry: HomeFeedEntry, action: OwnerAction, createdAt: string, responseId: string, hold: boolean): Promise<FeedResponse> {
+    const card = entry.state.card;
+    const { message, payload } = ownerActionMessage(action, { responseId, cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId }, createdAt);
+    assertEntryScope(entry, message);
+    const held: HeldAnswer = { version: 2, sourceId: entry.source.sourceId, cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, responseId, ownerAction: action, at: createdAt };
+    if (hold) holdAnswer(space, held);
+    const result = await appendFeedMessage(db(entry.source.output.database), db(entry.source.responses.database), message, payload);
+    if (!result.ok && result.error.code === "INVALID_INPUT") { if (hold) releaseAnswer(space, held); throw new RefusedWrite(result.error.message); }
+    const saved = unwrap(result);
+    if (hold) releaseAnswer(space, held);
     return saved;
   }
 
@@ -602,9 +622,11 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       const card = entry.state.card;
       return isHeld(space, { sourceId: entry.source.sourceId, cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, responseId });
     },
+    sendOwnerAction: (entry, action, options) => writeOwnerAction(entry, action, new Date().toISOString(), crypto.randomUUID(), !!options?.hold),
     async flushHeldAnswers() {
       const outcomes: HeldAnswerOutcome[] = [];
-      for (const held of heldAnswers(space)) {
+      // Oldest first, so the agent hears owner actions in the order they were made.
+      for (const held of heldAnswers(space).sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
         // Cleared meanwhile (sign-out gave up on this flush): an entry that hasn't started is never sent.
         if (!isHeld(space, held)) continue;
         const source = sources.find((candidate) => candidate.sourceId === held.sourceId);
@@ -613,6 +635,24 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         const output = db(source.output.database);
         const responses = db(source.responses.database);
         try {
+          if (held.ownerAction) {
+            // An owner action tells the agent what the owner did to the revision they saw, so it goes to that exact
+            // identity, unchanged (same responseId and time: a write that already landed is matched, not doubled).
+            // A snooze that has already ended has nothing left to say. No outcome is shown for either.
+            if (held.ownerAction.type === "feed.snooze" && Date.parse(held.ownerAction.until) <= Date.now()) { releaseAnswer(space, held); continue; }
+            const read = await getFeedCardState(output, responses, held);
+            if (!read.ok && read.error.code === "NOT_FOUND") { releaseAnswer(space, held); continue; }
+            const state = unwrap(read);
+            // Again right before the write: only a write already started may finish after a clear.
+            if (!isHeld(space, held)) continue;
+            try {
+              await writeOwnerAction({ source, state, view: { sourceId: source.sourceId, cardId: held.cardId, revision: held.revision, issuanceId: held.issuanceId } }, held.ownerAction, held.at, held.responseId, false);
+            } catch (error) {
+              if (!(error instanceof RefusedWrite)) throw error;
+            }
+            releaseAnswer(space, held);
+            continue;
+          }
           const stored = (await allResponses(responses)).filter((response) => response.cardId === held.cardId && response.kind !== "message");
           // The write started before the page closed may have landed: then it is already sent.
           if (stored.some((response) => response.responseId === held.responseId)) { releaseAnswer(space, held); continue; }

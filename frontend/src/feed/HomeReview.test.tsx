@@ -15,6 +15,7 @@ import {
   type PrepareSitrepImportInput, type PreparedSitrepImportBundle,
 } from "@tinyboilerplate/core/feed/sitrep";
 import { installDom } from "@/test/dom";
+import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { useLocalThreadStorage } from "../lib/threadStore";
 import { createHomeFeedSource, HOME_FEED_RESOURCE } from "./feedStore";
 import { archivePreparedOwnerBundle } from "./sitrepArchiveStore";
@@ -36,6 +37,7 @@ const NONCE = "00000000000000000000000000000001";
 const roots = new Set<Root>();
 const databases: Database[] = [];
 let restoreDom: (() => void) | undefined;
+let clock: FakeClock | undefined;
 beforeEach(() => {
   setSystemTime(new Date(SITREP_NOW));
   restoreDom = installDom();
@@ -43,6 +45,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const root of roots) await act(async () => root.unmount());
   roots.clear();
+  clock?.restore(); clock = undefined;
   restoreDom?.(); restoreDom = undefined;
   for (const database of databases.splice(0)) database.close();
   setSystemTime();
@@ -256,7 +259,11 @@ for (const engagement of ["empty field focus", "consent link activation"] as con
     expect(currentInput === input).toBe(false);
     expect(currentInput.value).toBe("");
     await enterCode(currentInput, "FRESH-CODE-FROM-EXPLICIT-REPLACEMENT-CONSENT");
+    // The code waits out the undo window, then is written once.
+    clock = installFakeClock();
     await click(transport, button(current, "Save code"));
+    expect(value(await listFeedResponses(agent.responses))).toEqual([]);
+    await clock.advance(5000); await transport.settle();
     const headers = value(await listFeedResponses(agent.responses));
     expect(headers).toHaveLength(1);
     expect(headers[0]).toMatchObject({ ...identity(replacement), kind: "answer" });
@@ -291,7 +298,10 @@ test("focused code-less folded confirmation keeps its original issuance until ex
   const current = button(currentCard, "I've done this step");
   expect(current === confirmation).toBe(false);
   expect(current.disabled).toBe(false);
+  clock = installFakeClock();
   await click(transport, current);
+  expect(value(await listFeedResponses(agent.responses))).toEqual([]);
+  await clock.advance(5000); await transport.settle();
   const headers = value(await listFeedResponses(agent.responses));
   expect(headers).toHaveLength(1);
   const response = headers[0]; if (!response) throw new Error("Explicit replacement confirmation did not persist");
