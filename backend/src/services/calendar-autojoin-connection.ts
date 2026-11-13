@@ -366,7 +366,11 @@ export class CalendarAutojoinConnection {
       if (!row) this.grantIndex.forget(tenant);
       else if (!liveGoogleConnection(row, this.now())) this.grantIndex.detach(tenant);
       if (row?.state === "enabling" && (row.setupExpiresAt ?? 0) <= this.now()) {
-        await this.disableLocked(tenant, "setup_expired");
+        // Memory chose this; the node decides. A row deleted or changed elsewhere is left as stored.
+        const latest = await this.readConnection(tenant);
+        if (latest?.state === "enabling" && latest.generation === row.generation && (latest.setupExpiresAt ?? 0) <= this.now()) {
+          await this.disableLocked(tenant, "setup_expired");
+        }
       } else if (row && (row.state === "disabled" || row.state === "needs_reconnect")
         && this.custodyCleared.get(tenant.toLowerCase()) !== row.generation) {
         // Recover a crash after persisted disable but before local credential deletion. Every
@@ -428,13 +432,15 @@ export class CalendarAutojoinConnection {
       if (latest?.state !== "enabled" || latest.generation !== generation) throw new CalendarAutojoinError("connection_changed");
       await this.grantWriter.run("grants", async () => {
         const secret = this.secret(tokens, old);
-        const before = credentialCustodyVersion(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
+        // Custody changed since it was read (a delete, revoke or rotate by any CredentialStore in this
+        // process): never write the refreshed grant back over it.
+        if (credentialCustodyVersion(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant) !== custody) throw new CalendarAutojoinError("connection_changed");
         try { await this.options.credentials.rotate({ source: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, address: tenant, secret }); }
         catch (error) { this.grantIndex.invalidate(); throw error; }
         this.holdGrant(latest, secret);
-        // Cache only when our rotation is the one custody change since `before`.
-        const custody = credentialCustodyVersion(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
-        if (custody === before + 1) this.cacheToken(tenant, { generation, custody, token: secret.accessToken, expiresAt: Date.parse(secret.expiresAt!) });
+        // Cache only when our rotation is the one custody change since the read.
+        const rotated = credentialCustodyVersion(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
+        if (rotated === custody + 1) this.cacheToken(tenant, { generation, custody: rotated, token: secret.accessToken, expiresAt: Date.parse(secret.expiresAt!) });
       });
       return tokens.access_token;
     });

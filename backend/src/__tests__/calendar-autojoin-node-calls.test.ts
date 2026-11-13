@@ -451,4 +451,32 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     expect(world.posts).toHaveLength(0);
     expect((await b.stores.request.getConnection(owner))?.state).toBe("needs_reconnect");
   });
+
+  test("an expired setup whose connection was deleted elsewhere stays deleted", async () => {
+    const { node, values } = countingNode();
+    const world = outside(); const b = backend(node, world); const owner = tenant(1);
+    await b.stores.request.putConnection({ tenant: owner, subject: null, state: "enabling", generation: 1, scopes: [],
+      nextScanAt: 0, scanComplete: false, setupId: "setup", setupExpiresAt: T0 + 5 * 60_000 });
+    await b.worker.tick();
+    const key = [...values.keys()].find(k => k.startsWith("calendar-autojoin/v1/connections/"))!;
+    values.delete(key);
+    await ticks(b, world, 12);
+    expect(values.has(key)).toBe(false);
+  });
+
+  test("a credential deleted elsewhere while a token refresh is in flight is not written back or cached", async () => {
+    const { node, values } = countingNode();
+    const world = outside(); const b = backend(node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 30_000); // the first scan refreshes
+    const refresh = world.oauth.refresh.bind(world.oauth);
+    const other = new CredentialStore(new KvCredentialRowStore(node, new BackendStorageLane()), { master: () => MASTER, previousMaster: () => null });
+    const spy = spyOn(world.oauth, "refresh").mockImplementation(async token => {
+      await other.delete(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, owner);
+      return refresh(token);
+    });
+    try { await ticks(b, world, 8); } finally { spy.mockRestore(); }
+    expect([...values.keys()].filter(k => k.startsWith("credentials/"))).toEqual([]);
+    expect(world.scans).toEqual([]);
+    expect((await b.stores.request.getConnection(owner))?.state).toBe("needs_reconnect");
+  });
 });
