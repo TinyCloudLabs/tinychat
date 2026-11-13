@@ -76,7 +76,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         </li>
         <li>It receives an anonymous account identifier, not your wallet address.</li>
         <li>
-          TinyChat’s server authorizes the upload and relays status and the transcript text back to this app. It never
+          TinyCloud One’s server authorizes the upload and relays status and the transcript text back to this app. It never
           receives your audio.
         </li>
       </List>
@@ -158,7 +158,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       </p>
       <Sub>Calendar autojoin</Sub>
       <p>
-        A notetaker joins Google Meet events on your main calendar that you organize or have accepted, even while TinyChat is closed; the host still admits it. Recordings reach your space the next time you open TinyChat. Turning it off deletes our server&apos;s copy of your Google sign-in.
+        A notetaker joins Google Meet events on your main calendar that you organize or have accepted, even while TinyCloud One is closed; the host still admits it. Recordings reach your space the next time you open TinyCloud One. Turning it off deletes our server&apos;s copy of your Google sign-in.
       </p>
     </>
   ),
@@ -173,7 +173,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         any time in Settings.
       </p>
       <p>
-        To use your space from your own agent, copy the prompt in Settings into it and sign in with your TinyChat account
+        To use your space from your own agent, copy the prompt in Settings into it and sign in with your TinyCloud One account
         when prompted.
       </p>
     </>
@@ -213,7 +213,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       <p>This verifies the gateway and its enclave, not the model's own code.</p>
       <Sub>The backend</Sub>
       <p>
-        Settings checks TinyChat’s own backend from your browser. It verifies the TDX quote (relayed via Phala and
+        Settings checks TinyCloud One’s own backend from your browser. It verifies the TDX quote (relayed via Phala and
         anchored trustlessly on-chain), binds the backend identity to a fresh nonce, and replays the served code
         measurement. The status turns Backend attested only when all three legs pass. Today the compose leg can’t fully
         bind (the backend doesn’t serve the app-compose file yet), so it stays at Quote issued until that deploy lands.

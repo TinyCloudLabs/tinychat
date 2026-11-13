@@ -26,8 +26,8 @@ export function calendarAutojoinOffLabel(status: CalendarAutojoinStatus | null):
     case "user_disabled": return "You turned calendar autojoin off.";
     case "google_account_changed": return "Google account changed. Turn on calendar autojoin for this account.";
     case "disconnected": return "Google was disconnected. Reconnect to turn calendar autojoin on.";
-    case "needs_reconnect": return "Google access needs to be renewed. It may have been revoked from another TinyChat account or your Google settings. Reconnect to resume calendar autojoin.";
-    case "invalid_grant": return "Google access was revoked elsewhere, such as from another TinyChat account or your Google settings, or expired. Reconnect Google to resume calendar autojoin.";
+    case "needs_reconnect": return "Google access needs to be renewed. It may have been revoked from another TinyCloud One account or your Google settings. Reconnect to resume calendar autojoin.";
+    case "invalid_grant": return "Google access was revoked elsewhere, such as from another TinyCloud One account or your Google settings, or expired. Reconnect Google to resume calendar autojoin.";
     case "setup_expired": return "Google setup expired. Turn on calendar autojoin to try again.";
     case "setup_pending": return "Finish Google setup to turn calendar autojoin on.";
     case "never_enabled": return "Calendar autojoin has not been turned on yet.";
@@ -66,11 +66,11 @@ export function calendarOutcomeLabel(reason: string): string {
     case "disabled": case "autojoin_disabled": return "Autojoin was turned off.";
     case "needs_reconnect": case "google_needs_reconnect": case "authorization_lost":
     case "calendar_access_denied": case "calendar_unauthorized": return "Reconnect Google to restore Calendar access.";
-    case "calendar_rate_limited": return "Google temporarily limited Calendar access. TinyChat will retry.";
+    case "calendar_rate_limited": return "Google temporarily limited Calendar access. TinyCloud One will retry.";
     case "scan_incomplete": return "The Calendar scan was incomplete. New joins are paused until a complete scan succeeds.";
     case "calendar_transport": case "calendar_invalid_response": case "calendar_unavailable":
-    case "calendar_scan_failed": return "Calendar could not be checked. TinyChat will retry before sending a bot.";
-    case "autojoin_retry": return "The notetaker is temporarily unavailable. TinyChat will retry while the meeting is eligible.";
+    case "calendar_scan_failed": return "Calendar could not be checked. TinyCloud One will retry before sending a bot.";
+    case "autojoin_retry": return "The notetaker is temporarily unavailable. TinyCloud One will retry while the meeting is eligible.";
     case "lookup_identity_mismatch": return "The recording could not be verified. No replacement bot was sent.";
     case "create_rejected": return "The notetaker service could not accept this meeting.";
     // TC-907: ptx refused every create in the joining window because all its bots were in use.

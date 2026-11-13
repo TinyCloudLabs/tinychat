@@ -89,7 +89,7 @@ export function CalendarAutojoinSection(props: {
         <span className="flex items-center font-medium">
           Calendar autojoin
           <InfoTip label="About calendar autojoin" className="-my-3 fine:-my-1">
-            A notetaker joins your confirmed Google Meet events, even while TinyChat is closed.
+            A notetaker joins your confirmed Google Meet events, even while TinyCloud One is closed.
           </InfoTip>
         </span>
         <StatusDot tone={tone} className="text-muted-foreground" role="status">{label}</StatusDot>

@@ -886,7 +886,7 @@ const ConnectorRow: FC<{
       )}
       {!comingSoon && state.syncing && state.joinedBackgroundSync && (
         <p className="text-xs text-muted-foreground">
-          A sync that started when you opened TinyChat is still running — this one
+          A sync that started when you opened TinyCloud One is still running — this one
           joined it rather than starting a second pass over the same meetings. It
           finishes on its own; progress isn’t shown for the run that owns it.
         </p>

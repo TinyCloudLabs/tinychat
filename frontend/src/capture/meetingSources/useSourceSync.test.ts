@@ -101,7 +101,7 @@ describe("a saved credential this app cannot decrypt", () => {
       getConnectorKey: (async () => ({ ok: false, error: { code: "DECRYPTION_FAILED", message: "key not granted" } })) as SourceSyncDeps["getConnectorKey"],
       runFirefliesSyncNow: async () => (engineRuns++, { ok: true }),
     }));
-    expect(message).toBe("TinyChat can't read your saved Fireflies connection. Disconnect it under Manage, then connect Fireflies again.");
+    expect(message).toBe("TinyCloud One can't read your saved Fireflies connection. Disconnect it under Manage, then connect Fireflies again.");
     expect(engineRuns).toBe(0);
   });
 

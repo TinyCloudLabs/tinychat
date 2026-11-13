@@ -7,7 +7,7 @@ import { trackStartupPurge } from "./replicationStartupPurge";
 import { markReplicationPurgeFailed } from "./replicationStatus";
 
 export const REPLICA_PURGE_FAILED_WARNING =
-  "You're signed out of TinyChat, but this browser may still have a saved copy of your meetings. Reload and sign in again to remove it.";
+  "You're signed out of TinyCloud One, but this browser may still have a saved copy of your meetings. Reload and sign in again to remove it.";
 
 export type ReplicaSignOutResult = { ok: true } | { ok: false; message: string; code: string };
 

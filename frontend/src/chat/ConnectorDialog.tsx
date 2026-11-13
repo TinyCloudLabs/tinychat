@@ -2380,7 +2380,7 @@ export async function revokeGoogleUpstream(input: {
   let serverRevokeFailed = false;
   let serverRevoked = false;
   const auth = sessionStore.getToken();
-  if (!auth || sessionStore.isExpired()) return { status: "server-unavailable", message: "your TinyChat session expired" };
+  if (!auth || sessionStore.isExpired()) return { status: "server-unavailable", message: "your TinyCloud One session expired" };
   {
     try {
       const disconnected = await fetchImpl(`${backendUrl}/api/connectors/google/autojoin/disconnect`, {
@@ -2416,7 +2416,7 @@ export async function revokeGoogleUpstream(input: {
   if (!browserToken) return serverRevokeFailed || serverRevoked ? finished : localFailure ?? finished;
   const bearer = sessionStore.getToken();
   if (!bearer || sessionStore.isExpired()) {
-    return { status: "failed", message: "your TinyChat session expired" };
+    return { status: "failed", message: "your TinyCloud One session expired" };
   }
   try {
     const response = await fetchImpl(`${backendUrl}${GOOGLE_OAUTH_REVOKE_PATH}`, {
@@ -2451,7 +2451,7 @@ export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null
     case "failed":
       return `We couldn’t ask Google to revoke this access (${state.message ?? "unknown reason"}), so it may still be live. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. Everything else below still ran.`;
     case "server-unavailable":
-      return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyChat and retry disconnecting.";
+      return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyCloud One and retry disconnecting.";
     case "locked":
       return `Calendar autojoin was stopped, but your browser token remains locked: ${state.message ?? "unlock was not completed"}. Try again.`;
   }
@@ -2635,7 +2635,7 @@ function formatOAuthError(error: OAuthErrorState): string {
     case "cancelled":
       return "The Google window closed before sign-in finished. Nothing was connected — press “Continue with Google” to try again.";
     case "session":
-      return "Your TinyChat session expired before Google could finish. Sign in again, then reconnect.";
+      return "Your TinyCloud One session expired before Google could finish. Sign in again, then reconnect.";
     case "feature-dark":
       return "Google Meet connecting isn’t switched on for this deployment yet.";
     case "google-credentials":
