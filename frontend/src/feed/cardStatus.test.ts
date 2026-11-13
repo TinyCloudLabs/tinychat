@@ -39,3 +39,28 @@ test("an outcome for an earlier answer does not mark a newer follow-up done", ()
   value.state.response = { ...identity, responseId: "follow-up", sequence: 2, kind: "followup", createdAt: "2026-11-12T11:30:00.000Z" };
   expect(cardStatus(value, undefined, now, "Test agent")).toBe("Waiting on Test agent");
 });
+
+const acknowledged = (responseId = "answer-one") => (value: HomeFeedEntry) => {
+  answered(value);
+  value.state.acknowledgement = { ...identity, responseId, handlingId: "ack", phase: "acknowledged", createdAt: "2026-11-12T11:15:00.000Z" };
+};
+
+test("once the agent acknowledges the latest answer, a typed or plain card reads Answered until its outcome", () => {
+  expect(cardStatus(entry(acknowledged()), typed("handled"), now, "Rocinante")).toBe("Answered");
+  expect(cardStatus(entry(acknowledged()), undefined, now, "Test agent")).toBe("Answered");
+  const done = entry(acknowledged());
+  done.state.outcome = { ...identity, responseId: "answer-one", handlingId: "h", phase: "succeeded", createdAt: "2026-11-12T11:20:00.000Z" };
+  expect(cardStatus(done, typed("handled"), now, "Rocinante")).toBe("Done");
+});
+
+test("an acknowledgement of an earlier answer leaves a newer follow-up Waiting", () => {
+  const value = entry(acknowledged());
+  value.state.response = { ...identity, responseId: "follow-up", sequence: 2, kind: "followup", createdAt: "2026-11-12T11:30:00.000Z" };
+  expect(cardStatus(value, typed("handled"), now, "Rocinante")).toBe("Waiting on Rocinante");
+});
+
+test("a typed card closed after Sam answered it reads Answered; closed unanswered stays Closed", () => {
+  const closedAnswered = { attention: "closed", answer: { askId: "a", action: "answer", text: "OK", at: "2026-11-12T11:10:00.000Z" } } as unknown as SitrepProjection;
+  expect(cardStatus(entry(), closedAnswered, now, "Rocinante")).toBe("Answered");
+  expect(cardStatus(entry(), typed("closed"), now, "Rocinante")).toBe("Closed");
+});
