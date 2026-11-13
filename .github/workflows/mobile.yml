@@ -110,6 +110,12 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
+      # The runner's Spotlight indexes the checkout, node_modules, every build product and the simulator's data
+      # directory, competing for the disk while the simulator's first boot pages in its runtime. On this 3-CPU,
+      # 7 GB runner the smoke has seen the whole VM stall for 30 s (TC-2880). Nothing in this job uses Spotlight.
+      - name: Stop Spotlight indexing
+        run: sudo mdutil -a -i off
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
