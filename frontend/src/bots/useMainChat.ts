@@ -48,8 +48,11 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
       try {
         const messages = await api.listMainMessages(signal);
         setState((current) => ({ ...current, history: "loaded", lines: messages.map(({ id, role, text }) => ({ id, role, text })) }));
-      } catch {
-        if (!signal?.aborted) setState((current) => ({ ...current, history: "failed" }));
+      } catch (cause) {
+        if (signal?.aborted) return;
+        // The failure view says only that it failed; the console keeps why, for support. Details: TC-3019
+        console.warn("[bots] Main's earlier messages did not load", cause);
+        setState((current) => ({ ...current, history: "failed" }));
       }
     })();
     history.current = run;
