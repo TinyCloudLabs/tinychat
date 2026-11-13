@@ -1,7 +1,9 @@
-import { expect, mock, test } from "bun:test";
+import { afterEach, expect, mock, test } from "bun:test";
 
 const calls: unknown[][] = [];
 let lastConfig: any;
+let afterSdkFenceRead: (() => void) | undefined;
+afterEach(() => { afterSdkFenceRead = undefined; });
 let result = { status: "restored", session: {} };
 mock.module("@tinycloud/web-sdk", () => ({
   serializeDelegation: (delegation: any) => delegation.serialized ?? "serialized-delegation",
@@ -12,12 +14,16 @@ mock.module("@tinycloud/web-sdk", () => ({
     cleanup() { calls.push(["cleanup"]); }
     async restoreSession(address: string) {
       calls.push(["ordinary", address]);
-      await this.config.sessionStorage.loadWithStatus(address);
+      const loaded = await this.config.sessionStorage.loadWithStatus(address);
+      if (this.config.sessionStorage.isSignedOut?.(address, loaded.data?.signature)) return { status: "missing" };
+      afterSdkFenceRead?.();
       return result;
     }
     async restoreSessionWithRenewal(lease: string, address: string) {
       calls.push(["renewal", lease, address]);
-      await this.config.sessionStorage.loadRenewalCandidate(address);
+      const loaded = await this.config.sessionStorage.loadRenewalCandidate(address);
+      if (this.config.sessionStorage.isSignedOut?.(address, loaded.data?.signature)) return { status: "missing" };
+      afterSdkFenceRead?.();
       return result;
     }
   },
@@ -65,3 +71,34 @@ test("restore disables new-user bootstrap even when a caller supplies one", asyn
   await restoreTinyCloudWebSession("alice", { sessionStorage: storage, newUserHost: "http://127.0.0.1:1234" });
   expect(lastConfig.newUserHost).toBeNull();
 });
+
+
+test("captures an expired renewal candidate without replacing its space", async () => {
+  result = { status: "restored", session: {} };
+  const candidateStorage = {
+    loadRenewalCandidate: async () => ({ status: "renewal-candidate", data: { signature: "signed", tinycloudSession: { spaceId: "candidate-space" } } }),
+  } as any;
+  const restored = await restoreTinyCloudWebSession("alice", { sessionStorage: candidateStorage, renewalLeaseAuthorization: "owner-signed-lease" });
+  expect(restored.tcw?.spaceId).toBe("candidate-space");
+});
+
+for (const lease of [undefined, "owner-signed-lease"]) {
+  test(`rechecks the captured session fence before returning with lease ${lease !== undefined}`, async () => {
+    calls.length = 0;
+    result = { status: "restored", session: {} };
+    let signedOut = false;
+    const load = async () => {
+      return { status: lease ? "renewal-candidate" : "loaded", data: { signature: "signed", tinycloudSession: { spaceId: "space" } } };
+    };
+    afterSdkFenceRead = () => { signedOut = true; };
+    const fencedStorage = {
+      loadWithStatus: load,
+      loadRenewalCandidate: load,
+      isSignedOut: (address: string, signature: string) => signedOut && address === "alice" && signature === "signed",
+    } as any;
+    const restored = await restoreTinyCloudWebSession("alice", { sessionStorage: fencedStorage, renewalLeaseAuthorization: lease });
+    expect(restored.tcw).toBeNull();
+    expect(restored.status).toBe("missing");
+    expect(calls.at(-1)).toEqual(["cleanup"]);
+  });
+}

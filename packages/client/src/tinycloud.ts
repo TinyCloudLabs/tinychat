@@ -125,8 +125,10 @@ export class RestoredSessionMissingSpaceError extends Error {
   }
 }
 
+type RestoreStorage = ISessionStorage & Partial<Pick<BrowserSessionStorage, "isSignedOut">>;
+
 interface RecordingStorage {
-  storage: ISessionStorage;
+  storage: RestoreStorage;
   /** Start capturing; returns the record the SDK loaded while capturing. */
   capture: <T>(run: () => Promise<T>) => Promise<{ value: T; record: PersistedSessionData | null }>;
 }
@@ -136,7 +138,7 @@ interface RecordingStorage {
  * can be read back, instead of reading storage a second time (which could see
  * a different record than the one the SDK installed).
  */
-function recordRestoredSession(storage: ISessionStorage): RecordingStorage {
+function recordRestoredSession(storage: RestoreStorage): RecordingStorage {
   let capturing = false;
   let record: PersistedSessionData | null = null;
 
@@ -154,7 +156,7 @@ function recordRestoredSession(storage: ISessionStorage): RecordingStorage {
       if (prop === "loadWithStatus" || prop === "loadRenewalCandidate") {
         return async (address: string) => {
           const result = await member.call(target, address);
-          if (capturing) record = result?.status === "loaded" ? result.data : null;
+          if (capturing) record = result?.status === "loaded" || result?.status === "renewal-candidate" ? result.data : null;
           return result;
         };
       }
@@ -241,6 +243,10 @@ export async function restoreTinyCloudWebSession(
       ? tcw.restoreSessionWithRenewal(config.renewalLeaseAuthorization, address)
       : tcw.restoreSession(address));
     if (result.status === "restored") {
+      if (record && recording.storage.isSignedOut?.(address, record.signature)) {
+        tcw.cleanup();
+        return { tcw: null, status: "missing" };
+      }
       exposeRestoredSpaceId(tcw, record);
       return { tcw, status: result.status, session: result.session };
     }

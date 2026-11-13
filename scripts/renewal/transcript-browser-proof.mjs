@@ -179,6 +179,9 @@ try {
     if (!allowedOrigins.has(url.origin)) throw new Error("SDK attempted a non-loopback request; blocked by proof harness");
     const response = await originalFetch(input, init);
     evidence.contactedOrigins.push(url.origin);
+    if (url.origin === nodeOrigin && url.pathname === "/invoke" && !response.ok) {
+      (evidence.failedInvocations ??= []).push({stage, status: response.status, body: await response.clone().text(), originalDelegationCid: evidence.originalDelegationCid});
+    }
     evidence.httpTrace.push({ origin: url.origin === nodeOrigin ? "loopback-node" : "loopback-registry", method: init?.method ?? (input instanceof Request ? input.method : "GET"), path: url.pathname, status: response.status });
     return response;
   };
@@ -207,6 +210,7 @@ try {
   if (saved.status !== "loaded") throw new Error("browser session was not persisted");
   const originalExpiryMs = Date.parse(saved.data.expiresAt);
   if (originalExpiryMs > Date.now() + 1000000 || originalExpiryMs < Date.now() + 900000) throw new Error("unexpected fixture expiry");
+  evidence.originalDelegationCid = saved.data.tinycloudSession.delegationCid;
   evidence.originalExpiresAt = saved.data.expiresAt;
   stage = "live-original-transcript-preflight";
   const preflight = await owner.kv.list({prefix: "xyz.tinycloud.tinychat/connectors/"});
