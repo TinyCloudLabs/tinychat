@@ -1,5 +1,8 @@
-import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { FOREGROUND_COUNT_MAX_MS, FOREGROUND_QUIET_MS, foregroundDatabase, inBackground, inForeground, laneSnapshot, resetLanesForTests, whenForegroundIdle } from "./requestLanes";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import {
+  afterFeedFirst, FEED_FIRST_MAX_MS, FOREGROUND_COUNT_MAX_MS, FOREGROUND_QUIET_MS, foregroundDatabase, inBackground, inForeground,
+  laneSnapshot, markFeedFresh, noteScreen, resetLanesForTests, whenForegroundIdle,
+} from "./requestLanes";
 
 function gate() {
   let open!: () => void;
@@ -108,4 +111,119 @@ test("a foreground call that never answers stops holding background work after t
   jest.advanceTimersByTime(1 + FOREGROUND_QUIET_MS);
   await flush();
   expect(started).toEqual(["copy"]);
+});
+
+describe("Feed first", () => {
+  /** A startup read: counts the node requests it issues, in the lane it uses today. */
+  function startupReads() {
+    const issued: string[] = [];
+    const read = (name: string) => afterFeedFirst(() => inForeground(async () => { issued.push(name); }));
+    return { issued, read };
+  }
+
+  test("on a Feed open, startup reads issue no node request until the Feed reports, then run in their lane", async () => {
+    noteScreen(true);
+    const { issued, read } = startupReads();
+    const list = read("threads list");
+    void read("settings home-first-screen");
+    void read("settings word-fixes");
+    const copied: string[] = [];
+    void inBackground(async () => { copied.push("history copy"); });
+    jest.advanceTimersByTime(FEED_FIRST_MAX_MS - 1);
+    await flush();
+    expect(issued).toEqual([]);
+    expect(copied).toEqual([]);
+
+    let foregroundDuringRead = -1;
+    void afterFeedFirst(() => inForeground(async () => { foregroundDuringRead = laneSnapshot().foreground; }));
+    markFeedFresh();
+    await flush();
+    expect(copied).toEqual([]); // the held copy does not start ahead of the released reads
+    await list;
+    await flush();
+    expect(issued).toEqual(["threads list", "settings home-first-screen", "settings word-fixes"]);
+    expect(foregroundDuringRead).toBe(4); // all four released reads run at once, counted as foreground
+    jest.advanceTimersByTime(FOREGROUND_QUIET_MS);
+    await flush();
+    expect(copied).toEqual(["history copy"]); // the background lane opens after the foreground's quiet gap
+
+    markFeedFresh(); // idempotent
+    await read("later");
+    expect(issued).toContain("later");
+  });
+
+  test("on a Chat open, startup reads run at once", async () => {
+    noteScreen(false);
+    const { issued, read } = startupReads();
+    await read("threads list");
+    expect(issued).toEqual(["threads list"]);
+    noteScreen(true); // a later move to the Feed holds nothing: only the open's landing does
+    await read("settings");
+    expect(issued).toEqual(["threads list", "settings"]);
+  });
+
+  test("before App names the first screen, nothing is held", async () => {
+    const { issued, read } = startupReads();
+    await read("threads list");
+    expect(issued).toEqual(["threads list"]);
+  });
+
+  test("the cap releases held reads when the Feed never reports", async () => {
+    noteScreen(true);
+    const { issued, read } = startupReads();
+    void read("threads list");
+    jest.advanceTimersByTime(FEED_FIRST_MAX_MS - 1);
+    await flush();
+    expect(issued).toEqual([]);
+    jest.advanceTimersByTime(1);
+    await flush();
+    expect(issued).toEqual(["threads list"]);
+  });
+
+  test("released reads start before held background work, whether the cap or a screen change releases them", async () => {
+    for (const release of [() => jest.advanceTimersByTime(FEED_FIRST_MAX_MS), () => noteScreen(false)]) {
+      resetLanesForTests();
+      noteScreen(true);
+      const order: string[] = [];
+      const read = gate();
+      void inBackground(async () => { order.push("history copy"); });
+      void afterFeedFirst(() => inForeground(async () => { order.push("threads list"); await read.promise; }));
+      await flush();
+      expect(order).toEqual([]);
+      release();
+      await flush();
+      expect(order).toEqual(["threads list"]);
+      read.open();
+      await flush();
+      jest.advanceTimersByTime(FOREGROUND_QUIET_MS);
+      await flush();
+      expect(order).toEqual(["threads list", "history copy"]);
+    }
+  });
+
+  test("leaving the Feed releases held reads at once", async () => {
+    noteScreen(true);
+    const { issued, read } = startupReads();
+    void read("threads list");
+    noteScreen(true); // a re-render on the Feed changes nothing
+    await flush();
+    expect(issued).toEqual([]);
+    noteScreen(false); // the user opened Chat
+    await flush();
+    expect(issued).toEqual(["threads list"]);
+  });
+
+  test("a release with no held reads opens no quiet gap: background work and idle waits go at once", async () => {
+    noteScreen(true);
+    const copied: string[] = [];
+    void inBackground(async () => { copied.push("history copy"); });
+    let idle = false;
+    void whenForegroundIdle().then(() => { idle = true; });
+    await flush();
+    expect(copied).toEqual([]);
+    noteScreen(false); // e.g. the open settled signed out: no Feed load to wait for
+    await flush();
+    expect(copied).toEqual(["history copy"]);
+    expect(idle).toBe(true);
+  });
 });

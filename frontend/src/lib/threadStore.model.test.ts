@@ -521,6 +521,60 @@ test("client deadline includes a nonsettling body parser and never accepts its l
   }
 });
 
+test("overlapping automatic lookups share one model-selection request; a settled one is not reused", async () => {
+  const previousFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = (async () => {
+    requests++;
+    return Response.json({ model: OFFERED_CHAT_MODELS[1].id, reason: "healthy" });
+  }) as typeof fetch;
+  // On open a render React discards can leave a second coordinator looking up beside the mounted one.
+  const discarded = coordinator(tcw(new SqlService()));
+  const mounted = coordinator(tcw(new SqlService()));
+  const later = coordinator(tcw(new SqlService()));
+  try {
+    discarded.activate("draft-1", "new");
+    mounted.activate("draft-2", "new");
+    expect((await mounted.beginTurn("draft-2", "send")).model).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect((await discarded.beginTurn("draft-1", "send")).model).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect(requests).toBe(1);
+    later.activate("draft-3", "new");
+    expect((await later.beginTurn("draft-3", "send")).model).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect(requests).toBe(2);
+  } finally {
+    discarded.dispose(); mounted.dispose(); later.dispose();
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("a lookup that joins a shared request keeps its own deadline; the request stays open for it", async () => {
+  const previousFetch = globalThis.fetch;
+  let requests = 0;
+  let signal!: AbortSignal;
+  let answer!: (response: Response) => void;
+  globalThis.fetch = ((_input: unknown, init?: RequestInit) => {
+    requests++;
+    signal = init!.signal!;
+    return new Promise<Response>((resolve) => { answer = resolve; });
+  }) as typeof fetch;
+  const first = coordinator(tcw(new SqlService()));
+  const joiner = coordinator(tcw(new SqlService()));
+  try {
+    first.activate("draft-1", "new");
+    await Bun.sleep(2_000);
+    joiner.activate("draft-2", "new"); // a new chat late in the first lookup's window
+    const fellBack = await first.beginTurn("draft-1", "send");
+    expect(fellBack.model).toBe(OFFERED_CHAT_MODELS[0].id); // the first lookup's 3 s passed
+    expect(signal.aborted).toBe(false); // the joiner still waits on the same request
+    answer(Response.json({ model: OFFERED_CHAT_MODELS[1].id, reason: "healthy" }));
+    expect((await joiner.beginTurn("draft-2", "send")).model).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect(requests).toBe(1);
+  } finally {
+    first.dispose(); joiner.dispose();
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("client malformed and 5xx results become unverified; authentication blocks manual override", async () => {
   const previousFetch = globalThis.fetch;
   try {
