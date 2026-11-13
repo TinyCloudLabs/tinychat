@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.41
+
+### Patch Changes
+
+- 94fbf3b: TinyCloud Home starts with less JavaScript. The startup script drops from 10.1 MB to 7.4 MB. The TinyCloud SDK's WebAssembly is now a separate file in the app bundle, fetched while the page loads, instead of 1.9 MB of base64 decoded at startup. Chat, Recording, Connectors, Apps, Settings and How it works load from their own files once Feed is up. The web app precaches everything an offline launch needs, and the desktop and phone apps load it all from the app bundle. An installed web app opened offline loads again: since the desktop quit guard (October), the startup script imported a desktop-only file the offline cache leaves out, so the page stayed blank. One copy of `@tinycloud/replica` (0.4.4, the SDK's) is installed instead of two. CI fails a build whose startup script goes over 7.6 MB or inlines WebAssembly again. Details: TC-2882
+
 ## 0.14.0-beta.40
 
 ### Patch Changes
