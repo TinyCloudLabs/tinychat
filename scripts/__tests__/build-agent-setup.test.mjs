@@ -120,7 +120,7 @@ test('first-install activation is a separate final native call with explicit sup
 test('pack and installed reference describe activation while preserving the plain installer distinction', async () => {
   const pack = JSON.parse(await readFile(new URL('agent-skills/tinychat-retrieval/pack.json', root), 'utf8'));
   const config = JSON.parse(await readFile(new URL('frontend/src/lib/agent-setup.json', root), 'utf8'));
-  assert.equal(pack.version, '0.1.1-onboarding.26');
+  assert.equal(pack.version, '0.1.1-onboarding.27');
   assert.equal(config.packVersion, pack.version);
   assert.equal(pack.runtime.node, '>=22.20.0');
   assert.equal(pack.opencode.activation, 'automatic-first-install');
