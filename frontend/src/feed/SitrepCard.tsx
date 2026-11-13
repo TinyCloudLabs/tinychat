@@ -465,6 +465,7 @@ export function SitrepCard(props: Props) {
           ["Type", `${kindWord(record.kind)} · ${record.status}${pinned ? ` · Priority (${pinned.reason})` : ""}`],
           ...(typeof entry.state.card.payload?.project === "string" && entry.state.card.payload.project ? [["Project", entry.state.card.payload.project] as [string, ReactNode]] : []),
           ["Reference", <code className="block truncate select-all text-xs">{record.id}</code>],
+          ...(reference ? [["Card ID", reference] as FactRow] : []),
           ...sourceRow(entry.state.card.payload),
         ] as FactRow[]} />
         {receipt && <p>{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
@@ -473,7 +474,6 @@ export function SitrepCard(props: Props) {
         {/* Pin to top puts the card first in your list. Only you see it; it is not sent to any agent. */}
         <div><button type="button" className={`${buttonClass} aria-pressed:bg-muted`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Unpin" : "Pin to top"}</button>
           <p className={fineClass}>Your agents don't see this.</p></div>
-        {reference}
         <section aria-label="Card history" className="mt-2"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p><HistoryTimeline items={history} /></section>
         {(error || notice) && <p role={error ? "alert" : "status"}>{error ?? notice}</p>}
       </CardDetails>

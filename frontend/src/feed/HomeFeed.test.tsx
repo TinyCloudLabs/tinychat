@@ -684,9 +684,9 @@ test("the last card leaving with a decision counts as gone: Nothing needs you wh
   expect(needsLine(view.host)).toContain("1 needs you.");
   await act(async () => option(view.host, "Hold").click());
   expect(needsLine(view.host)).toContain("Nothing needs you.");
-  // Once its space has closed, the empty state takes its place.
+  // Once its space has closed, the empty state takes its place, saying when the last card came (not the summary again).
   await clock!.advance(200);
-  expect(view.host.querySelector("[data-feed-empty]")?.textContent).toBe("Nothing needs you.");
+  expect(view.host.querySelector("[data-feed-empty]")?.textContent).toMatch(/^All caught up\. Last card (at \d{1,2}:\d{2}\s[AP]M|yesterday|on \d{1,2} [A-Z][a-z]{2}( \d{4})?)\.$/);
   await act(async () => undoButton(view.host)!.click());
   expect(needsLine(view.host)).toContain("1 needs you.");
   expect(view.host.querySelector("[data-feed-empty]")).toBeNull();
