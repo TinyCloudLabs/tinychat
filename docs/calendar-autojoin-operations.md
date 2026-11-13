@@ -57,7 +57,8 @@ Consent is always read from the node: before each Google scan, before each recor
 check, at dispatch, by request handlers and by the restart grant backfill.
 
 Every calendar row write and delete is a compare-and-set on the node: `If-Match` on the row's ETag,
-or `If-None-Match: *` for a new row. Each write decides on the stored row (connection writes, the
+or `If-None-Match: *` for a new row. (The status projection, rebuilt from those rows, is written
+without a condition.) Each write decides on the stored row (connection writes, the
 enable and the OAuth setup re-read it from the node); a row changed in between makes the node answer
 412, and the backend reads it again and decides again, never reusing a decision made on an older row.
 A disable, a new generation or a deletion stored by another writer is therefore not overwritten, an
@@ -67,7 +68,9 @@ backend refuses (`calendar_row_unversioned`, `credential_unversioned`) rather th
 
 The node's ETag is a hash of the stored bytes, so a row changed and changed back would carry the same
 ETag. Every calendar row and credential row therefore holds a revision (`rev`, `revision`) that every
-write increases: no two versions of a row have the same bytes.
+write increases: no two versions of a row have the same bytes. A row written before revisions existed binds a
+decision made on it like any other version; a scan write refused because a due-time timer moved the
+row on is skipped, and the next scan decides on the stored row.
 
 Credential custody follows the same rule. Store, rotate, markUsed and delete are conditional
 (`If-Match`, `If-None-Match` to create); markUsed never creates a credential. A token refresh is bound

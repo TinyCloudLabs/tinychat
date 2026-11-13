@@ -2,7 +2,7 @@ import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./c
 import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import { logCalendarAutojoinFailure } from "./calendar-autojoin-diagnostics.js";
 import {
-  type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, stableJson, TenantCoordinator,
+  CalendarRowChanged, decidedRev, type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, stableJson, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
 import {
   calendarMeetEvent, calendarOccurrenceIdentity, dispatchCutoff, eligibleCalendarEvent, ExternalOperationLimiter,
@@ -369,7 +369,7 @@ export class CalendarAutojoinWorker {
           phase: "pending", nextAttemptAt: Math.max(this.now(), candidate.start - 60_000),
           attemptCount: 0, stopRequested: false, updatedAt: this.now(),
           // Written only on the stored version this was decided on (putOccurrence).
-          rev: old?.id === id ? old.rev : 0,
+          rev: decidedRev(old?.id === id ? old : null),
         };
         // Preserve backoff when discovery has not changed the occurrence.
         if (old?.phase === "pending" && old.start === next.start && old.end === next.end && old.meetingUrl === next.meetingUrl) {
@@ -392,7 +392,10 @@ export class CalendarAutojoinWorker {
           const comparable = (row: CalendarOccurrence) => stableJson({ ...row, updatedAt: undefined, nextAttemptAt: terminal ? undefined : row.nextAttemptAt });
           if (comparable(old) === comparable(next)) continue;
         }
-        await store.putOccurrence(next);
+        // Refused when another write (a due-time timer's, outside the tenant lock) moved the row on
+        // since it was listed: that write stands, and the next scan decides on it.
+        try { await store.putOccurrence(next); }
+        catch (error) { if (!(error instanceof CalendarRowChanged)) throw error; }
       }
       // TC-1047: a timer's dispatch records lastDispatchLag outside this lock; keep the latest one.
       // Scan bookkeeping only, onto the row as stored: an update that reaches the node re-reads it
@@ -503,7 +506,7 @@ export class CalendarAutojoinWorker {
           }
           // The one attemptCount increment for this attempt (TC-907): defer() does not count it again.
           // Written only on the version just read and decided on (`latest`'s rev).
-          row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, capacityExhausted: undefined, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000, rev: latest.rev };
+          row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, capacityExhausted: undefined, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000, rev: decidedRev(latest) };
           await this.dispatchStore.putOccurrence(row); // Failure here MUST imply zero POSTs.
           // Durable storage can take us past the deadline. Do not send a now-ineligible
           // request; keep its frozen intent so a restart can conservatively recover it.

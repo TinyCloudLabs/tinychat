@@ -234,9 +234,10 @@ export class CalendarAutojoinConnection {
       const current = await this.readConnection(tenant);
       if (transaction.expiresAt <= this.now()) throw new CalendarAutojoinError("invalid_oauth_transaction", 400);
       if ((current?.generation ?? 0) !== transaction.generation) throw new CalendarAutojoinError("connection_changed");
-      // Persist disabled scheduling and stop intent in the old subject namespace first.
-      // The default `when` always disables, so a row is written.
-      const disabled = (await this.disableLocked(tenant, "setup_pending"))!;
+      // Persist disabled scheduling and stop intent in the old subject namespace first, deciding on
+      // the stored row: a generation stored since this transaction began (a disable elsewhere) stands.
+      const disabled = await this.disableLocked(tenant, "setup_pending", stored => (stored?.generation ?? 0) === transaction.generation);
+      if (!disabled) throw new CalendarAutojoinError("connection_changed");
       const enablingFrom = (row: CalendarConnection): CalendarConnection => ({
         ...row, subject: tokens.subject!, state: "enabling", consentAt: transaction.consentAt,
         scopes, credentialRef: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, setupId,

@@ -224,16 +224,23 @@ const CONNECTION_WRITE_ATTEMPTS = 3;
 function sameContent(stored: unknown, next: unknown): boolean {
   return stableJson({ ...(stored as object), rev: undefined }) === stableJson({ ...(next as object), rev: undefined });
 }
+/** The `rev` a stored row written before revisions existed is decided on (see builtOn). */
+const UNREVISED = -1;
+/** The `rev` to put a row decided on `read` at: its stored `rev` (UNREVISED for a row written before
+ *  revisions), or 0 for a new row (`read` null). */
+export function decidedRev(read: { rev?: number } | null | undefined): number {
+  return read ? read.rev ?? UNREVISED : 0;
+}
 /**
- * A row put without a `rebuild` is written only on the version it was decided on, named by its `rev`:
- * a row read from the store carries the stored `rev`, and is refused once the stored row has moved
- * on or gone; `rev: 0` is a new row, written only where none is stored. A row with no `rev` was not
- * built from a read (a seed or an administrative write) and replaces whatever is stored, still
- * conditionally on the version read. Writes that decide on what is stored pass `rebuild` instead.
+ * A row put without a `rebuild` is written only on the version it was decided on, named by its `rev`
+ * (decidedRev): refused once the stored row has moved on or gone, and `rev: 0` (a new row) only where
+ * none is stored. A row with no `rev` was not built from a read (a seed or an administrative write)
+ * and replaces whatever is stored, still conditionally on the version read. Writes that decide on
+ * what is stored pass `rebuild` instead.
  */
 function builtOn(stored: { rev?: number } | null, row: { rev?: number }): boolean {
   if (row.rev === undefined) return true;
-  return stored === null ? row.rev === 0 : stored.rev === row.rev;
+  return stored === null ? row.rev === 0 : (stored.rev ?? UNREVISED) === row.rev;
 }
 /** Fields every scan rewrites. Alone, they reach the node once per hour (see updateConnection). */
 const SCAN_BOOKKEEPING_PERSIST_MS = 3_600_000;

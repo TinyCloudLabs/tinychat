@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { ACCESS_TOKEN_TTL_MS, CalendarAutojoinConnection, GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE } from "../services/calendar-autojoin-connection.js";
-import { KvCalendarAutojoinStore, kvCalendarAutojoinStores, TenantCoordinator, type CalendarConnection, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
+import { decidedRev, KvCalendarAutojoinStore, kvCalendarAutojoinStores, TenantCoordinator, type CalendarConnection, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { CalendarAutojoinWorker } from "../services/calendar-autojoin-worker.js";
 import { CredentialCustody, CredentialStore, KvCredentialRowStore } from "../services/credential-store.js";
 import { fakeBackendNode } from "./helpers/fake-backend-node.js";
@@ -879,6 +879,20 @@ describe("TC-2917 two backend processes on one node (Bobbie's #697 round 5)", ()
     expect(await B.credentials.status(SOURCE, owner)).toBeNull();
   });
 
+  test("a row written before revisions is still bound to the version read: a stale put over B's write is refused", async () => {
+    const world = outside(); const { A, B, values } = twoProcesses(world); const owner = tenant(1);
+    const legacy: CalendarOccurrence = { ...terminalRow(owner, 1), phase: "pending", disposition: undefined };
+    await A.stores.request.putOccurrence(legacy);
+    const key = [...values.keys()].find(k => k.includes("/occurrences/"))!;
+    const { rev: _rev, ...unrevised } = values.get(key) as CalendarOccurrence;
+    values.set(key, unrevised); // as #693 and earlier wrote it
+    const readA = (await A.stores.dispatch.getOccurrence(owner, legacy.id))!;
+    await B.stores.dispatch.updateOccurrence(owner, legacy.id, row => row && { ...row, phase: "outcome_unknown", idempotencyKey: "from-B" });
+    await expect(A.stores.dispatch.putOccurrence({ ...readA, phase: "outcome_unknown", idempotencyKey: "from-A", rev: decidedRev(readA) }))
+      .rejects.toThrow("calendar_row_changed");
+    expect(values.get(key)).toMatchObject({ idempotencyKey: "from-B" });
+  });
+
   test("ABA: a row changed and changed back since it was read is still a changed row; the write is decided again", async () => {
     const world = outside(); const { A, B, nodeA } = twoProcesses(world); const owner = tenant(1);
     const row: CalendarOccurrence = { ...terminalRow(owner, 1), phase: "pending", disposition: undefined, nextAttemptAt: T0 + 3_600_000 };
@@ -940,6 +954,49 @@ describe("TC-2917 decisions are made on the stored row (Bobbie's #697 round 5)",
       expect(v.value(key)).toMatchObject({ state: "disabled", generation: 9, offReason: "user_disabled" });
       expect(await b.credentials.status(SOURCE, owner)).toBeNull();
     } finally { exchange.mockRestore(); }
+  });
+
+  test("an OAuth exchange whose connection was disabled elsewhere after its generation check changes nothing", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 3_600_000);
+    const verifier = "v".repeat(43);
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const exchange = spyOn(world.oauth, "exchangeCode").mockResolvedValue({ access_token: `access-${owner}-x`, refresh_token: "refresh-x",
+      expires_in: 3_600, scope: GOOGLE_AUTOJOIN_SCOPES, subject: SUBJECT });
+    try {
+      await b.connection.begin(owner, { state: "synthetic-state-0002", challenge, consent: true });
+      const key = v.keyOf(CONNECTIONS);
+      let reads = 0;
+      // Read 1: the exchange's generation check. Right after it, another writer disables at generation 9.
+      v.hooks.afterGet = k => { if (k === key && ++reads === 1) v.set(key, { ...(v.value(key) as CalendarConnection), state: "disabled", generation: 9, offReason: "user_disabled" }); };
+      await expect(b.connection.exchange(owner, { state: "synthetic-state-0002", code: "code", verifier })).rejects.toThrow("connection_changed");
+      expect(v.value(key)).toMatchObject({ state: "disabled", generation: 9, offReason: "user_disabled" });
+      expect(await b.credentials.getCredential(SOURCE, owner, "fetch-worker")).toMatchObject({ refreshToken: `refresh-${owner}` });
+    } finally { exchange.mockRestore(); }
+  });
+
+  test("an occurrence write landing between a scan's listing and its put does not fail the scan", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 50 * 60_000);
+    const e1 = meetEvent(owner, "aaaa", T0 + 3 * 3_600_000);
+    const e2 = meetEvent(owner, "bbbb", T0 + 4 * 3_600_000);
+    world.events.set(owner, [e1, e2]);
+    await ticks(b, world, 1);
+    const id1 = occurrenceId(owner, e1); const id2 = occurrenceId(owner, e2);
+    world.events.set(owner, [{ ...e1, summary: "renamed 1" }, { ...e2, summary: "renamed 2" }]);
+    // While the scan writes row 1, a writer outside the tenant lock (a due-time timer) moves row 2 on.
+    let fired = false;
+    v.hooks.beforePut = key => {
+      if (key.endsWith(id1) && !fired) { fired = true; void b.stores.worker.updateOccurrence(owner, id2, row => row && { ...row, nextAttemptAt: row.nextAttemptAt + 1 }); }
+    };
+    world.clock.now += 3_600_000;
+    await b.worker.tick();
+    v.hooks.beforePut = undefined;
+    expect(fired).toBe(true);
+    expect(await b.stores.request.getConnection(owner)).toMatchObject({ scanComplete: true, errorCode: undefined });
+    expect((await b.stores.request.getOccurrence(owner, id1))?.title).toBe("renamed 1");
+    await ticks(b, world, 4);
+    expect((await b.stores.request.getOccurrence(owner, id2))?.title).toBe("renamed 2");
   });
 
   test("T1: a disable builds on the row its compare-and-set read", async () => {
