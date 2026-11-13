@@ -18,6 +18,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json bun.lock tsconfig.base.json turbo.json ./
+COPY patches ./patches
 COPY manifest.json ./
 COPY packages ./packages
 COPY backend ./backend
