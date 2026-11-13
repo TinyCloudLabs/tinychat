@@ -1,4 +1,4 @@
-import type { FeedResponse } from "@tinycloud/sdk-services/feed";
+import type { FeedCardState, FeedResponse, FeedResponseHandling, FeedResponsePayload } from "@tinycloud/sdk-services/feed";
 import { cardGroup, emptySitrepOwnerData, ownerThreadResponseKey, parseSitrepCardPayload, mergeSitrepStates, validateState, type GroupPriority, type SitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
 import { addCanonicalOwnerEvent, combineOwnerData } from "./sitrepOwnerStore";
 import { homeGroupScope, ownerCardKey } from "./feedIdentity";
@@ -7,18 +7,47 @@ import type { HomeFeedEntry } from "./feedStoreTypes";
 import type { OwnerArchiveProjection } from "./sitrepArchiveStore";
 
 const TYPED_PAYLOADS = new Set(["sitrep.answer", "sitrep.claim", "sitrep.state", "sitrep.thread", "sitrep.note", "sitrep.hold-notice"]);
+/** A plain card's private payloads Home reads back: a post's answers. */
+const PLAIN_PAYLOADS = new Set(["feed.page"]);
 
-/** A typed card's owner history, from the payloads and handling its agent's read already holds. */
+/**
+ * The agent's handling of each response, by responseId, from its agent's read. The card's newest answer or
+ * follow-up reuses the handling its state already holds. A response the agent has not handled yet has no key.
+ */
+function handlingOf(read: Pick<AgentRead, "handling">, state: FeedCardState, responses: readonly FeedResponse[]): Record<string, FeedResponseHandling> {
+  const handling: Record<string, FeedResponseHandling> = {};
+  for (const response of responses) {
+    if (state.response?.responseId === response.responseId && state.response.sequence === response.sequence) {
+      if (state.acknowledgement || state.outcome) handling[response.responseId] = { acknowledgement: state.acknowledgement, outcome: state.outcome };
+      continue;
+    }
+    const receipt = read.handling(response);
+    if (receipt) handling[response.responseId] = receipt;
+  }
+  return handling;
+}
+
+/**
+ * A card's owner history, from the payloads and handling its agent's read already holds. A plain card gets what
+ * the agent did with each response ("Received") and a post's answers; a typed card its full owner history.
+ */
 export function enrichTypedEntry(entry: HomeFeedEntry, read: Pick<AgentRead, "payload" | "handling">, history: readonly FeedResponse[], privateOwners: Record<string, SitrepOwnerData>, archives: OwnerArchiveProjection, groupPriorities: ReadonlyMap<string, GroupPriority>): HomeFeedEntry {
   const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);
-  if (!typed || typed.record.kind !== entry.state.card.kind) return entry;
+  if (!typed || typed.record.kind !== entry.state.card.kind) {
+    const responsePayloads: Record<string, FeedResponsePayload> = {};
+    for (const response of history) {
+      if (!PLAIN_PAYLOADS.has(response.payloadType ?? "")) continue;
+      const payload = read.payload(response);
+      if (payload) responsePayloads[response.responseId] = payload;
+    }
+    return { ...entry, responseHandling: handlingOf(read, entry.state, history), ...(Object.keys(responsePayloads).length ? { responsePayloads } : {}) };
+  }
   const key = ownerCardKey(entry.source.sourceId, entry.state.card);
   const privateOwner = privateOwners[key];
   if (privateOwner?.states.some((state) => state.kind !== typed.record.kind || state.id !== typed.record.id) || (privateOwner?.groupPriority && Object.keys(privateOwner.groupPriority.groups).some((group) => group !== cardGroup(typed.record)))) throw new Error("Private owner state does not address its canonical typed card");
   const archivedOwner = archives.owners.get(key);
   const owner = combineOwnerData([archivedOwner ?? emptySitrepOwnerData(), privateOwner ?? emptySitrepOwnerData()]);
   const relevant = history.filter((response) => response.cardId === entry.state.card.cardId && response.revision === entry.state.card.revision && response.issuanceId === entry.state.card.issuanceId);
-  const handling: NonNullable<HomeFeedEntry["responseHandling"]> = {};
   const threadRoutes: NonNullable<HomeFeedEntry["threadRoutes"]> = { ...archives.threadRoutes.get(key) };
   for (const response of relevant) {
     if (TYPED_PAYLOADS.has(response.payloadType ?? "")) {
@@ -37,9 +66,8 @@ export function enrichTypedEntry(entry: HomeFeedEntry, read: Pick<AgentRead, "pa
         }
       }
     }
-    const receipt = read.handling(response);
-    if (receipt) handling[response.responseId] = receipt;
   }
+  const handling = handlingOf(read, entry.state, relevant);
   owner.states = mergeSitrepStates(owner.states, "provided");
   const previous = owner.states.find((state) => state.kind === typed.record.kind && state.id === typed.record.id);
   const snoozes = [...(previous?.snoozes ?? []), ...(entry.viewEvents ?? []).flatMap((event) => event.kind === "snoozed" && event.snoozedUntil ? [{ at: event.createdAt, until: event.snoozedUntil }] : [])];

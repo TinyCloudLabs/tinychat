@@ -1,7 +1,8 @@
 export type FeedCard = {
   key: string;
   at: string;
-  author: { name: string; avatar?: string };
+  /** `via`: the agent whose connection posted a card for the named author. */
+  author: { name: string; avatar?: string; via?: string };
   render: "post" | "image" | "thread" | "article" | "link" | "unknown";
   lead: { text: string; image?: string };
   replies?: { text: string }[];
