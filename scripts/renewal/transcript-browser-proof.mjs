@@ -144,6 +144,19 @@ try {
   for (const pkg of ["@tinycloud/web-sdk", "@tinycloud/sdk-core", "@tinycloud/node-sdk"]) {
     evidence.sdk.artifactsSha256[pkg] = sha256(frontendRequire.resolve(pkg));
   }
+  const webDist = dirname(frontendRequire.resolve("@tinycloud/web-sdk"));
+  const nodeDist = dirname(frontendRequire.resolve("@tinycloud/node-sdk"));
+  const coreDist = dirname(frontendRequire.resolve("@tinycloud/sdk-core"));
+  const executedModules = {
+    "web-sdk/index.mjs": join(webDist, "index.mjs"),
+    "web-sdk/delegations-renewal.mjs": join(webDist, "delegations-renewal.mjs"),
+    "node-sdk/index.js": join(nodeDist, "index.js"),
+    "sdk-core/index.js": join(coreDist, "index.js"),
+    "sdk-core/delegations/renewal.js": join(coreDist, "delegations/renewal.js"),
+  };
+  evidence.sdk.executedModulesSha256 = Object.fromEntries(
+    Object.entries(executedModules).map(([name, path]) => [name, sha256(path)]),
+  );
   evidence.wrapperSha256 = sha256(join(worktree, "packages/client/src/tinycloud.ts"));
   stage = "loopback-listeners";
   nodePort = await freePort();

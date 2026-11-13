@@ -8,7 +8,9 @@ import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 /** Minified bytes. Raise it only with a reason in the PR: what the entry chunk now needs at boot that it can't load later. */
-const ENTRY_CHUNK_BUDGET = 7_600_000;
+// Temporary SDK graph allowance: +178,625 bytes; wrapper +301. Details: TC-2872
+// Restore the 7,600,000-byte ceiling after the SDK root split. Details: TC-2935
+const ENTRY_CHUNK_BUDGET = 7_731_167;
 
 const dist = path.resolve(process.argv[2] ?? path.join(import.meta.dir, "../dist"));
 const html = readFileSync(path.join(dist, "index.html"), "utf8");

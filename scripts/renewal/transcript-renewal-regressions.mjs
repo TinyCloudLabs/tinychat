@@ -150,7 +150,7 @@ globalThis.fetch = async (input, init) => {
       cid: proof.delegationCid,
       status: "active",
       exists: true,
-      active: true,
+      active: mode !== "revoked",
       revoked: mode === "revoked",
       expired: false,
       effective_expiry: stampEnd,
