@@ -861,15 +861,17 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // Filter's and View's panels float under the toolbar, right-aligned, over the cards (QA cb784d4, P5).
   const popoverClass = "absolute right-0 top-full z-30 mt-2 max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-card p-3 text-card-foreground shadow-lg";
   // No browser scroll anchoring: it would hold the end of the list in view as cards land, loading more forever.
+  // While undo bars show, the scroll container itself grows at its end by their height, their offset from the bottom
+  // edge and the safe-area inset, so its last cards can scroll clear of them (Clarissa, 75eebec).
   return <main ref={mainRef} onScroll={measureHistory} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
+    style={undoBar.height ? { paddingBottom: `calc(${undoBar.height + 32}px + env(safe-area-inset-bottom))` } : undefined}
     onTouchStart={(event) => { pullStart.current = (mainRef.current?.scrollTop ?? 1) <= 0 && source.loadAnswered ? event.touches[0]!.clientY : null; }}
     onTouchMove={(event) => { if (pullStart.current !== null) setPull(Math.max(0, Math.min((event.touches[0]!.clientY - pullStart.current) / 2, 80))); }}
     onTouchEnd={() => { if (pull >= PULL_PX) void loadEarlier(); pullStart.current = null; setPull(0); }}>
     {/* Feed lab: pull down at the top for the cards you answered earlier (or use the button, without touch). */}
     {source.loadAnswered && <div aria-hidden style={{ height: pull }} className="flex items-end justify-center overflow-hidden text-xs text-muted-foreground">{pull >= PULL_PX ? "Release for earlier answers" : "Pull for earlier answers"}</div>}
-    {/* While a post's page is open, the feed behind it takes no focus or taps (design critique #3). While undo bars
-        show, the end of the feed gets their height (and a gap) more room, so its last cards scroll clear of them. */}
-    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5" inert={!!pageEntry} style={undoBar.height ? { paddingBottom: `calc(1.5rem + ${undoBar.height + 8}px)` } : undefined}>
+    {/* While a post's page is open, the feed behind it takes no focus or taps (design critique #3). */}
+    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5" inert={!!pageEntry}>
     <MorphConfig>
       {/* Feed lab (Sam, 11-12): in earlier answers, a pill floats at the top with when the ones in view were sent.
           Its look is uiverse.io "quiet-rat-82" by ahkamboh (MIT), in the app's styling. */}

@@ -12,7 +12,7 @@ import { CardConversation, typedConversation } from "./CardConversation";
 import { HistoryTimeline } from "./HistoryTimeline";
 import { shortTime } from "./ShortTime";
 
-const buttonClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
+const buttonClass = "min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10";
 const primaryClass = "min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50";
 const inputClass = "mt-2 w-full rounded-xl border border-border bg-background p-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-2">{part.label}</a> : part.text); }

@@ -85,7 +85,7 @@ export function FeedCardView({ card, sample = true, readBody, status, onAuthor, 
           <span data-agent-line className="flex min-w-0 items-center gap-1.5">
             {/* On touch the name's own box is 44px tall; its negative margins keep the line 24px (QA cb784d4, P1). */}
             {onAuthor
-              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="-my-2.5 flex min-h-11 min-w-0 items-center text-left font-semibold text-foreground fine:my-0 fine:min-h-6"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
+              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="-my-2.5 flex min-h-11 min-w-11 items-center text-left font-semibold text-foreground fine:my-0 fine:min-h-6 fine:min-w-0"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
               : <span className="min-w-0 truncate font-semibold text-foreground">{card.author.name}</span>}
             {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
           </span>
