@@ -599,6 +599,50 @@ describe("TC-2917 writers outside the worker (Bobbie's #697 probes)", () => {
     expect(world.scans).toEqual([]);
   });
 
+  test("a credential stored by another CredentialStore during an in-flight refresh is kept; the refresh is refused", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 30_000);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const refresh = world.oauth.refresh.bind(world.oauth);
+    const spy = spyOn(world.oauth, "refresh").mockImplementation(async token => { entered.resolve(); await release.promise; return refresh(token); });
+    const other = b.otherCredentials();
+    try {
+      const served = b.connection.accessToken(owner);
+      await entered.promise;
+      await other.store({ source: SOURCE, address: owner, secret: { kind: "oauth", accessToken: `access-${owner}-new`, refreshToken: "refresh-new",
+        expiresAt: new Date(world.clock.now + 3_600_000).toISOString(), scope: GOOGLE_AUTOJOIN_SCOPES } });
+      release.resolve();
+      await expect(served).rejects.toThrow("connection_changed");
+    } finally { spy.mockRestore(); }
+    const stored = await other.getCredential(SOURCE, owner, "fetch-worker");
+    expect(stored).toMatchObject({ refreshToken: "refresh-new", accessToken: `access-${owner}-new` });
+    expect(tokenMap(b.connection).size).toBe(0);
+  });
+
+  test("a token read while a delete elsewhere is in flight is not served once the delete settles", async () => {
+    const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 50 * 60_000);
+    const gate = Promise.withResolvers<void>();
+    const kv = v.node.kv;
+    const remove = kv.delete.bind(kv);
+    const spy = spyOn(kv, "delete").mockImplementation(async (key: string) => {
+      if (key === credentialKey(owner)) await gate.promise;
+      return remove(key);
+    });
+    // A CredentialStore on another lane: its delete is requested, then held at the node.
+    const elsewhere = new CredentialStore(new KvCredentialRowStore(v.node, new BackendStorageLane()), { master: () => MASTER, previousMaster: () => null });
+    try {
+      const deleted = elsewhere.delete(SOURCE, owner);
+      await b.connection.accessToken(owner).catch(() => undefined); // may read and cache the old secret
+      gate.resolve();
+      await deleted;
+    } finally { spy.mockRestore(); }
+    expect(await elsewhere.status(SOURCE, owner)).toBeNull();
+    await expect(b.connection.accessToken(owner)).rejects.toThrow();
+    expect(tokenMap(b.connection).size).toBe(0);
+  });
+
   test("3a: an expired cached setup whose connection was deleted on the node stays deleted", async () => {
     const v = versionedNode(); const world = outside(); const b = wired(v.node, world); const owner = tenant(1);
     await b.stores.request.putConnection({ tenant: owner, subject: null, state: "enabling", generation: 1, scopes: [],

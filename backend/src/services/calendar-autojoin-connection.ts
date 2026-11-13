@@ -498,7 +498,7 @@ export class CalendarAutojoinConnection {
       if (!disabled) return;
       try {
         await this.options.store.putConnection({ ...disabled, state: "needs_reconnect", errorCode: "needs_reconnect" },
-          stored => sameConnectionVersion(stored, disabled));
+          stored => sameConnectionVersion(stored, disabled) ? { ...stored!, state: "needs_reconnect", errorCode: "needs_reconnect" } : null);
       } catch (error) { if (!(error instanceof CalendarRowChanged)) throw error; } // changed since: it stands
     });
   }
@@ -517,26 +517,29 @@ export class CalendarAutojoinConnection {
 
   /**
    * Caller holds tenant coordination. Generation persists before credential/occurrence mutation.
-   * The disable is a compare-and-set: it is computed from the row read here and written only while
-   * the node still holds that row (same existence, state and generation, and its ETag); a row that
-   * changed is read and decided again. `when` decides on the row read (the default, a user's own
-   * disable, also records one for a tenant with none). Null, with nothing written or torn down, when
-   * `when` refuses.
+   * The disable is a compare-and-set: `when` decides on the stored row, the disabled row is built
+   * from that same row, and it is written with If-Match on that row's ETag; a row that changed is read,
+   * decided and built again. The default `when` (a user's own disable) also records a row for a tenant
+   * with none. Null, with nothing written or torn down, when `when` refuses.
    */
   private async disableLocked(tenant: string, offReason: CalendarAutojoinOffReason,
     when: (current: CalendarConnection | null) => boolean = () => true): Promise<CalendarConnection | null> {
-    let disabled: CalendarConnection | undefined;
-    for (let attempt = 1; !disabled; attempt++) {
-      const current = await this.readConnection(tenant);
-      if (!when(current)) return null;
-      const next: CalendarConnection = { ...(current ?? { tenant, subject: null, scopes: [] }),
-        state: "disabled", generation: (current?.generation ?? 0) + 1, nextScanAt: 0,
-        credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, offReason, scanComplete: false };
-      try { await this.options.store.putConnection(next, stored => sameConnectionVersion(stored, current)); disabled = next; }
-      catch (error) {
-        if (error instanceof CalendarRowChanged && attempt < 3) continue;
-        this.grantIndex.invalidate(); throw error;
-      }
+    const disabledFrom = (row: CalendarConnection | null): CalendarConnection => ({ ...(row ?? { tenant, subject: null, scopes: [] }),
+      state: "disabled", generation: (row?.generation ?? 0) + 1, nextScanAt: 0,
+      credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, offReason, scanComplete: false });
+    // The lifecycle read keeps the grant index current; the write decides and builds on its own read.
+    const current = await this.readConnection(tenant);
+    if (!when(current)) return null;
+    let disabled = disabledFrom(current);
+    let refused = false;
+    try {
+      await this.options.store.putConnection(disabled, stored => {
+        refused = !when(stored);
+        return refused ? null : (disabled = disabledFrom(stored));
+      });
+    } catch (error) {
+      if (refused && error instanceof CalendarRowChanged) return null;
+      this.grantIndex.invalidate(); throw error;
     }
     try {
       this.grantIndex.detach(tenant);

@@ -124,9 +124,10 @@ export interface CalendarAutojoinReadMetrics { reads: number }
 export interface CalendarAutojoinStore {
   readonly statusCache: CalendarAutojoinStatusCache;
   getConnection(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarConnection | null>;
-  /** `when`: a compare-and-set, writing only while the stored row passes it; rejects with
-   *  CalendarRowChanged when it does not. */
-  putConnection(row: CalendarConnection, when?: (stored: CalendarConnection | null) => boolean): Promise<void>;
+  /** `rebuild`: a compare-and-set. The row written is `rebuild(stored)`, built on the stored row and
+   *  written with If-Match on its ETag; null refuses, rejecting with CalendarRowChanged. Without it,
+   *  `row` is written (still If-Match on the version read). */
+  putConnection(row: CalendarConnection, rebuild?: (stored: CalendarConnection | null) => CalendarConnection | null): Promise<void>;
   updateConnection(tenant: string, update: Update<CalendarConnection>): Promise<CalendarConnection | null>;
   /** The connection as the node stores it, even through the worker's cached store. Consent checks
    *  that gate a Google read or a running recording use this. */
@@ -393,8 +394,8 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     summaryWriteDigests.set(statusCache, this.summaryDigests);
   }
   getConnection(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) { return this.read(() => this.json.get<CalendarConnection>(connectionKey(tenant)), deadline, metrics); }
-  async putConnection(row: CalendarConnection, when?: (stored: CalendarConnection | null) => boolean) {
-    const written = await this.updateConnection(row.tenant, stored => !when || when(stored) ? row : null);
+  async putConnection(row: CalendarConnection, rebuild?: (stored: CalendarConnection | null) => CalendarConnection | null) {
+    const written = await this.updateConnection(row.tenant, stored => rebuild ? rebuild(stored) : row);
     if (written === null) throw new CalendarRowChanged();
   }
   updateConnection(tenant: string, fn: Update<CalendarConnection>) {
