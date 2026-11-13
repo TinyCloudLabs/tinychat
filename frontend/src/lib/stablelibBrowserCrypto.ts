@@ -14,7 +14,7 @@ export function stablelibBrowserCrypto(): Plugin {
     // Before Vite's resolver; the polyfills' alias has already turned `crypto` into crypto-browserify's path.
     enforce: "pre",
     resolveId(source, importer) {
-      if (!importer || !/[\\/]@stablelib[\\/]random[\\/]/.test(importer)) return null;
+      if (!importer || !/[\\/]node_modules[\\/]@stablelib[\\/]random[\\/]lib[\\/]/.test(importer)) return null;
       return source === "crypto" || /[\\/]crypto-browserify(?:[\\/]|$)/.test(source) ? EMPTY_CRYPTO : null;
     },
     load(id) {
