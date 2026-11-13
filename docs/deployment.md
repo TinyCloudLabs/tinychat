@@ -199,11 +199,13 @@ or host check that changes the product.
   (`HOME_WEB_ORIGIN`); anywhere else the state is untagged and returns to
   `FRONTEND_URL`, or to `https://tinycloud.chat` once `FRONTEND_URL` is
   home.tinycloud.xyz, so a flow started on tinycloud.chat finishes there.
-- **Backend:** the backend accepts both web origins through the
+- **Backend:** the backend accepts all three web origins through the
   `FRONTEND_ORIGINS` allowlist (default
-  `https://tinycloud.chat,https://home.tinycloud.xyz`, plus `FRONTEND_URL`) for
-  CORS, the SIWE domain check and the OAuth returns, whichever of the two
-  `FRONTEND_URL` names. See **CORS** under "Notes" in section 2.
+  `https://tinycloud.chat,https://home.tinycloud.xyz,https://tinycloud.one`,
+  plus `FRONTEND_URL`) for CORS, the SIWE domain check and the OAuth returns,
+  whichever of them `FRONTEND_URL` names. tinycloud.one serves the same web
+  build; a Google flow started there still returns to `FRONTEND_URL` until it
+  has its own `state` tag. See **CORS** under "Notes" in section 2.
 - **Cutover order (once):** this build drops the separate `tinycloud-home`
   Pages project. After the first production web deploy of it, move the custom
   domain `home.tinycloud.xyz` from `tinycloud-home` to `tinychat` (remove it
@@ -661,13 +663,13 @@ nothing below may be reported as done on its behalf.
   no HTTP response) and fails on any HTTP status.
 - **CORS:** the backend allows the web origins in `FRONTEND_ORIGINS`
   (comma-separated exact `http(s)` origins; unset means the built-in default
-  `https://tinycloud.chat,https://home.tinycloud.xyz`, `DEFAULT_FRONTEND_ORIGINS`
+  `https://tinycloud.chat,https://home.tinycloud.xyz,https://tinycloud.one`, `DEFAULT_FRONTEND_ORIGINS`
   in `backend/src/cors-origins.ts`) plus `FRONTEND_URL`, which is always added;
   TinyCloud Home's fixed Tauri and Capacitor origins; the TinyChat Cloudflare
   Pages project (`*.tinychat-4jq.pages.dev`); and the exact documented local
   origins on port `5186`. A malformed `FRONTEND_ORIGINS` entry stops startup.
   The Phala deploy does not pass `FRONTEND_ORIGINS`, so production uses the
-  default and accepts both web sites whichever one `FRONTEND_URL` names.
+  default and accepts all three web sites whichever one `FRONTEND_URL` names.
   Unrelated Pages projects, localhost ports, and lookalike domains remain
   blocked.
 - **Home manifest (TC-2043):** deploy the backend that serves revision 3's
@@ -690,7 +692,7 @@ nothing below may be reported as done on its behalf.
   on a one-label `tinychat-4jq.pages.dev` preview instead. Older clients signing the paired
   `https://<hostname>` URI remain accepted for those web domains. The
   production web domains are the hostnames of the `FRONTEND_ORIGINS` allowlist
-  (tinycloud.chat and home.tinycloud.xyz, both signing the same way; see
+  (tinycloud.chat, home.tinycloud.xyz and tinycloud.one, all signing the same way; see
   **CORS**); local and Pages hosts come from
   `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and Android)
   signs its configured issuer domain (`openkey.so` by default) and a canonical
