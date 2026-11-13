@@ -78,6 +78,11 @@ describe("PWA build config", () => {
     expect(config).toMatch(/globIgnores: \[[^\]]*"\*\*\/franken_markdown_bg\*\.wasm"[^\]]*\]/);
   });
 
+  test("the TinyCloud SDK's WASM (a separate asset, TC-2882) is precached: an offline launch can't start the SDK without it", () => {
+    expect(config).toMatch(/globPatterns: \[[^\]]*wasm[^\]]*\]/);
+    expect(config.match(/globIgnores: \[([^\]]*)\]/)![1]).not.toContain("tinycloud_web_sdk_rs_bg");
+  });
+
   test("an update waits for the user instead of swapping the shell under the page", () => {
     expect(config).toContain('registerType: "prompt"');
     expect(config).toContain("injectRegister: false");

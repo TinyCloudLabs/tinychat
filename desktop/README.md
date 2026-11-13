@@ -189,8 +189,9 @@ the Vite dev server directly and applies no CSP.
 
 - `script-src 'self' 'wasm-unsafe-eval'`: only the bundled scripts (Tauri adds
   a hash for each bundled script and for the inline theme script in
-  `index.html`); the TinyCloud SDK instantiates its inlined WASM, which needs
-  `'wasm-unsafe-eval'`. No `eval`, no remote scripts.
+  `index.html`); the TinyCloud SDK instantiates its WASM (a bundled asset,
+  fetched under `connect-src 'self'`), which needs `'wasm-unsafe-eval'`. No
+  `eval`, no remote scripts.
 - `style-src 'self' 'unsafe-inline'`: the OpenKey SDK and UI libraries insert
   `<style>` elements at runtime.
 - `connect-src` lists every origin the bundled frontend fetches: Tauri IPC

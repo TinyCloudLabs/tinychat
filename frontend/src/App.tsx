@@ -56,7 +56,6 @@ import {
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { createWebSignInPrefetch, WEB_APP_MANIFEST, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
-import { ChatWorkspace } from "./chat/ChatWorkspace";
 import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
 import { UsageIndicator } from "./chat/UsageIndicator";
 import { AgentAccessProvider } from "./chat/useAgentEnablement";
@@ -106,16 +105,11 @@ import {
   type RefetchTrigger,
 } from "./lib/billingConfigPolicy";
 import { Button } from "@/components/ui/button";
-import { SettingsPage } from "./chat/SettingsPage";
-import { AboutPage } from "./chat/AboutPage";
-import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
 import { clearHeldAnswers } from "./feed/answerOutbox";
 import { settleHeldAnswersForSignOut } from "./feed/feedStore";
-import { AppsPage } from "./home/AppsPage";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
-import { CaptureSurface } from "./capture/CaptureSurface";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
@@ -132,13 +126,7 @@ import {
 } from "./shell/routes";
 import { appPlatform, PlatformContext, sdkUiPlatform } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
-// W5 — the cohort meetings view. It renders NOTHING unless the backend's read
-// API answers for this address (dark flag / non-cohort = 404 = invisible), and
-// it needs neither the vault nor a connector key: a session is the whole
-// requirement, which is what makes the meetings readable on a device that has
-// never opened the app.
-import { MeetingsSection } from "./chat/MeetingsSection";
-// …and W6's headless counterpart: the same meetings copied into the user's OWN
+// …and W6's headless counterpart of MeetingsSection: the same meetings copied into the user's OWN
 // space whenever a session with an unlocked vault happens to be open. Separate
 // from the view on purpose — the view must keep working with no vault at all.
 import { BackendReconciler } from "./chat/BackendReconciler";
@@ -200,6 +188,22 @@ import { APP_NAME } from "./lib/homeSite";
 import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
+import { lazyTab } from "./shell/lazyTab";
+
+// Every screen but Feed loads from its own chunk (TC-2882): the entry chunk carries boot and Feed only.
+const ChatWorkspace = lazyTab("Chat", () => import("./chat/ChatWorkspace").then((m) => m.ChatWorkspace));
+const CaptureSurface = lazyTab("Recording", () => import("./capture/CaptureSurface").then((m) => m.CaptureSurface));
+// W5 — the cohort meetings view. It renders NOTHING unless the backend's read
+// API answers for this address (dark flag / non-cohort = 404 = invisible), and
+// it needs neither the vault nor a connector key: a session is the whole
+// requirement, which is what makes the meetings readable on a device that has
+// never opened the app.
+const MeetingsSection = lazyTab("Meetings", () => import("./chat/MeetingsSection").then((m) => m.MeetingsSection));
+const ConnectorsPage = lazyTab("Connectors", () => import("./chat/ConnectorsPage").then((m) => m.ConnectorsPage));
+const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.AppsPage));
+const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
+const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
+const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
@@ -1359,6 +1363,12 @@ export function App() {
   const isReady = state === "ready" && tcw !== null;
   useEffect(() => { setSignedIn(isReady); }, [isReady]);
   useEffect(() => { void bindSharedWithMe(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
+  // The other screens' chunks load once the signed-in shell has shown Feed, so opening one doesn't wait. A failed
+  // load is reported by the screen itself when it is opened: it loads again, or offers a reload when the browser may
+  // have kept the failed chunk (src/shell/lazyTab.tsx).
+  useEffect(() => {
+    if (isReady) for (const screen of LAZY_SCREENS) screen.preload().catch(() => {});
+  }, [isReady]);
   // The offline state still HOLDS a session, so its "Try again" re-runs the
   // restore. Only a settled signed-out state (no restorable session) starts the
   // full OpenKey sign-in.
