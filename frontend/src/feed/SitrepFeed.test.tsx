@@ -126,8 +126,8 @@ async function enter(scope: ParentNode, label: string, text: string) {
   });
 }
 /** Picks a tab of the feed's island ("Needs you", "All"), then opens every card again. */
-async function show(host: HTMLElement, label: "All" | "Needs action") {
-  const value = ({ All: "both", "Needs action": "needs-action" } as const)[label];
+async function show(host: HTMLElement, label: "All" | "Needs action" | "History") {
+  const value = ({ All: "both", "Needs action": "needs-action", History: "history" } as const)[label];
   const radio = host.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Feed view"] input[value="${value}"]`);
   expect(radio !== null).toBe(true);
   await act(async () => radio!.click());
@@ -716,5 +716,20 @@ test("an unresolved original thread destination is held instead of silently rese
   expect(thread?.textContent).toContain("UnmappedOwner");
   // No "Send again": the original destination isn't connected, so nothing may go to the publisher instead.
   expect(hasButton(thread!, "Send again")).toBe(false);
+  expect(fixture.saved).toEqual([]);
+});
+
+test("a card its agent closed leaves the live feed and shows in History, marked Closed", async () => {
+  const record = { ...syntheticRecord("ask"), status: "superseded", closedAt: SITREP_NOW };
+  const fixture = typedFixture(record);
+  const view = await mount(fixture.source);
+  const titled = () => [...view.host.querySelectorAll("article")].filter((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === record.title));
+  // Neither in All nor in Needs action.
+  expect(titled().length).toBe(0);
+  await show(view.host, "Needs action");
+  expect(titled().length).toBe(0);
+  await show(view.host, "History");
+  const closed = card(view.host, String(record.title));
+  expect(closed.querySelector("[data-status]")?.textContent).toBe("Closed");
   expect(fixture.saved).toEqual([]);
 });

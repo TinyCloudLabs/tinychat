@@ -545,7 +545,16 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const parent = typed.entries.find((candidate) => { const context = contextFor(candidate); return context?.record.kind === "ask" && context.record.id === typed.projection.foldedInto?.id; });
     return !!parent && matchesFilters(parent) && attention(parent);
   };
-  const inDone = (entry: HomeFeedEntry) => expired(entry) || !!closureOf(entry) || entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!answeredIn(entry) || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || snoozedNow(entry, clock);
+  /**
+   * A typed card its agent closed (answered, superseded, done, resolved…): it leaves the live views for History. Not
+   * while it carries an answer of the owner's that was never sent: its "Not sent" line must be seen where it was given.
+   */
+  const agentClosed = (entry: HomeFeedEntry) => {
+    const record = contextFor(entry)?.record;
+    const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]))?.outcome;
+    return !!record && isClosed(record) && held !== "closed" && held !== "refused";
+  };
+  const inDone = (entry: HomeFeedEntry) => expired(entry) || !!closureOf(entry) || agentClosed(entry) || entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!answeredIn(entry) || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || snoozedNow(entry, clock);
   // A card the owner touched in this view keeps its place, so an answer counting down (or a folded step he opened)
   // stays on screen. In All it stays, with "Change answer", until the view changes; in Needs you only until its
   // answer is saved, when it moves to Pending and the next card opens in its place.
@@ -555,7 +564,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   /**
    * Answered and still open (Sam, 11-13): Waiting on its agent, Answered (its agent got it), or Done (or Failed) and not
    * yet acknowledged. In Needs you and All these leave the main flow for the Pending card at its end, so only what needs
-   * him stays in it. In All, a card he answered keeps its place until the view changes (keepsNeeds).
+   * him stays in it. In All, a card he answered keeps its place until the view changes (keepsNeeds). A card its agent
+   * closed is in History instead, whatever it reads.
    */
   const pendingStatus = (entry: HomeFeedEntry) => {
     const status = statusOf(entry, cardAuthor(entry, contextFor(entry)?.record).name);
@@ -565,15 +575,15 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const visible = (entry: HomeFeedEntry) => matchesFilters(entry) && !undoBar.hidden(lineageKey(entry));
   // A card whose answer was held when the page closed keeps its place this session, so its "sent" or "not sent" line shows.
   const heldHere = (entry: HomeFeedEntry) => heldOutcomes.has(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
-  const pendingEntries = showsPending ? entries.filter((entry) => visible(entry) && !snoozedNow(entry, clock) && !expired(entry) && !closureOf(entry) && !attention(entry) && !keepsNeeds(entry) && !heldHere(entry) && !!pendingStatus(entry)).sort(compare) : [];
+  const pendingEntries = showsPending ? entries.filter((entry) => visible(entry) && !snoozedNow(entry, clock) && !expired(entry) && !closureOf(entry) && !agentClosed(entry) && !attention(entry) && !keepsNeeds(entry) && !heldHere(entry) && !!pendingStatus(entry)).sort(compare) : [];
   const pendingKeys = new Set(pendingEntries.map(keyOf));
   const matching = entries.filter((entry) => {
     if (!visible(entry) || pendingKeys.has(keyOf(entry))) return false;
     // A snoozed card is out of every view until its time comes, except the Filter's "Snoozed" list.
     if (snoozedOnly) return snoozedNow(entry, clock);
     if (history) return inDone(entry);
-    // Dropped, acknowledged or past its "matters until": only in History, marked so.
-    if (snoozedNow(entry, clock) || expired(entry) || closureOf(entry)) return false;
+    // Dropped, acknowledged, past its "matters until", or closed by its agent: only in History, marked so.
+    if (snoozedNow(entry, clock) || expired(entry) || closureOf(entry) || agentClosed(entry)) return false;
     return view === "both" || needing(entry);
   }).sort((a, b) => { const first = contextFor(a)?.waiting; const second = contextFor(b)?.waiting; return first && second ? compareWaiting(first, second) || compare(a, b) : compare(a, b); });
   const grouped = groupCards(matching, (entry) => {
