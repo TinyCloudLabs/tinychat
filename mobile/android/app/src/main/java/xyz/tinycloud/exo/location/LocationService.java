@@ -110,7 +110,7 @@ public class LocationService extends Service {
         );
         return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle("TinyCloud Home is recording your location")
+            .setContentTitle("TinyCloud One is recording your location")
             .setContentText("Saved to your TinyCloud space. Tap Stop to end it.")
             .setContentIntent(contentIntent)
             .setDeleteIntent(dismissedIntent)
@@ -129,7 +129,7 @@ public class LocationService extends Service {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return;
         NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Location", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Shown while TinyCloud Home is recording your location");
+        channel.setDescription("Shown while TinyCloud One is recording your location");
         manager.createNotificationChannel(channel);
     }
 }

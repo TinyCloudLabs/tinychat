@@ -1,6 +1,6 @@
-name: Desktop release (TinyCloud Home)
+name: Desktop release (TinyCloud One)
 
-# Builds and publishes the desktop app (TinyCloud Home; productName in desktop/src-tauri/tauri.conf.json) for one
+# Builds and publishes the desktop app (TinyCloud One; productName in desktop/src-tauri/tauri.conf.json) for one
 # exo-desktop@<version> tag. It always runs from main, so the workflow code is
 # main's, never a tag's: the Release workflow dispatches it for every new exo-desktop tag with
 #   gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>

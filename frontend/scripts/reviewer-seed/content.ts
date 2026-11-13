@@ -20,7 +20,7 @@ const at = (seededAt: string, minutesAgo: number) => new Date(Date.parse(seededA
 export const FEED_AGENT = {
   agentId: "home-tour",
   token: "home_tour",
-  label: "TinyCloud Home tour",
+  label: "TinyCloud One tour",
 } as const;
 
 export function feedCards(seededAt: string): FeedCard[] {
@@ -28,7 +28,7 @@ export function feedCards(seededAt: string): FeedCard[] {
   return [
     {
       cardId: "welcome", revision: 1, issuanceId: issuance("welcome"), kind: "update", needsResponse: false, urgency: 0,
-      title: "Welcome to TinyCloud Home",
+      title: "Welcome to TinyCloud One",
       body: "This is your Feed. Updates and questions from the tools you connect arrive here as cards. These sample cards show what that looks like.",
       createdAt: at(seededAt, 50),
     },
@@ -67,10 +67,10 @@ export function feedCards(seededAt: string): FeedCard[] {
 export const CHAT_THREAD_ID = `${SEED_NAME}-r${SEED_REVISION}-chat`;
 
 const CHAT_TURNS: readonly { role: "user" | "assistant"; text: string }[] = [
-  { role: "user", text: "What can I do in TinyCloud Home?" },
+  { role: "user", text: "What can I do in TinyCloud One?" },
   {
     role: "assistant",
-    text: "TinyCloud Home has three parts:\n\n- **Feed**: cards from the tools you connect, which you can read and answer.\n- **Chat**: conversations like this one.\n- **Voice notes**: record a note and get a transcript.\n\nEverything is saved in your own TinyCloud space.",
+    text: "TinyCloud One has three parts:\n\n- **One Feed**: cards from the tools you connect, which you can read and answer.\n- **Chat**: conversations like this one.\n- **Voice notes**: record a note and get a transcript.\n\nEverything is saved in your own TinyCloud space.",
   },
   { role: "user", text: "Give me a short checklist for trying it out." },
   {
@@ -101,9 +101,9 @@ export function chatMessages(seededAt: string): StoredMessageItem[] {
 /** A transcript-only voice note: the Library's paste path, so no audio is stored or played. */
 export const VOICE_NOTE = {
   sourceId: `${SEED_NAME}-r${SEED_REVISION}-voice-note`,
-  title: "Sample voice note: trying TinyCloud Home",
+  title: "Sample voice note: trying TinyCloud One",
   transcript: [
-    "Speaker 1: This is a sample voice note for trying TinyCloud Home.",
+    "Speaker 1: This is a sample voice note for trying TinyCloud One.",
     "Speaker 1: Notes you record appear in the Library with a transcript you can read and search.",
     "Speaker 1: Things to try: answer a card in the Feed, start a chat, and record a note of your own.",
   ].join("\n"),

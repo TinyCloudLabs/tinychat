@@ -68,7 +68,7 @@ pass "APK signed with the upload certificate"
 # --- APK identity and version.
 badging=$("$tools/aapt2" dump badging "$apk" 2>&1) || fail "aapt2 cannot read $apk:"$'\n'"$badging"
 require "APK is $package $version_name ($version_code)" "$badging" \
-  "package: name='$package' versionCode='$version_code' versionName='$version_name'" "application-label:'TinyCloud Home'" "application-icon-"
+  "package: name='$package' versionCode='$version_code' versionName='$version_name'" "application-label:'TinyCloud One'" "application-icon-"
 if grep -q '^application-debuggable' <<<"$badging"; then fail "APK is debuggable"; fi
 pass "APK is not debuggable"
 # The TC-524 location spike declares its permissions in the debug manifest only. A release asking for location

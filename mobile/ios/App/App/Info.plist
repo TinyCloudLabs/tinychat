@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>TinyCloud Home</string>
+        <string>TinyCloud One</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -55,9 +55,9 @@
     </dict>
 	</dict>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Unlock TinyCloud Home with Face ID</string>
+	<string>Unlock TinyCloud One with Face ID</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>TinyCloud Home records voice notes you start, and saves them to your TinyCloud space.</string>
+	<string>TinyCloud One records voice notes you start, and saves them to your TinyCloud space.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIBackgroundModes</key>

@@ -20,7 +20,7 @@ struct RecordControl: ControlWidget {
             }
         }
         .displayName("Record a Voice Note")
-        .description("Starts recording a voice note in TinyCloud Home.")
+        .description("Starts recording a voice note in TinyCloud One.")
     }
 }
 
@@ -69,7 +69,7 @@ struct RecordingActivityWidget: Widget {
                     .font(.title2)
                 VStack(alignment: .leading, spacing: 2) {
                     RecordingTitle(phase: context.state.phase).font(.headline)
-                    Text("TinyCloud Home").font(.caption).foregroundStyle(.secondary)
+                    Text("TinyCloud One").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 RecordingTime(state: context.state).font(.title2.weight(.semibold))
@@ -87,7 +87,7 @@ struct RecordingActivityWidget: Widget {
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     HStack {
-                        Text("TinyCloud Home").font(.caption).foregroundStyle(.secondary)
+                        Text("TinyCloud One").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         StopButton()
                     }

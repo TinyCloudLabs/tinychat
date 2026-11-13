@@ -51,7 +51,7 @@ const body = await response.text();
 if (response.status >= 500 || response.status === 429) unreachable(`HTTP ${response.status}`);
 if (response.status !== 201) {
   console.log(`::error title=Native sign-in would fail::OpenKey refused the native request from manifest.json: HTTP ${response.status} ${body.slice(0, 300)}`);
-  console.log("Widen the TinyCloud Home native client's ceiling (openkey docs/native-tinycloud-delegation.md) before shipping this manifest or native-request change.");
+  console.log("Widen the TinyCloud One native client's ceiling (openkey docs/native-tinycloud-delegation.md) before shipping this manifest or native-request change.");
   for (const permission of permissions) console.log(`  ${permission.service} ${permission.path || '""'} ${permission.actions.join(",")}`);
   process.exit(1);
 }
