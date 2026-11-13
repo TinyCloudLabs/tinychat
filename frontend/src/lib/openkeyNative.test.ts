@@ -3,7 +3,8 @@ import { stubSdkDomGlobals } from "../test/sdkDomGlobals";
 // They cover session/grant state changes, not a physical-device grant exercise.
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { OpenKeyNative as SdkOpenKeyNative, OpenKeyNativeError } from "@openkey/sdk-capacitor";
+import { OpenKeyNativeError } from "@openkey/sdk-capacitor";
+import { OpenKeyNative as SdkOpenKeyNative } from "@openkey/sdk-capacitor";
 import { UserFacingError } from "./authErrors";
 import type {
   NativeSession,
