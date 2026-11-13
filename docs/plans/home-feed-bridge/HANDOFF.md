@@ -2,6 +2,13 @@
 
 2026-11-12. For the Home team, to continue this work. Hunter set the direction. The branch, the spec and the mock were made with him in two days of fast iteration, so some of it is rough. This note says what is solid and what is not.
 
+## Update, 13 November
+
+- #610 merged as it was, and the Home feed is live on it. This branch is not to be merged whole. Its parts follow as one release on top of #610.
+- Hunter's picks for that release: one open card with the rest as rows; the count stays at 5 seconds, as in #610. The top row is not picked yet.
+- A new rule from Hunter, D10: a card on screen must still be needed. At the pace work moves, cards stay in the feed after the thing they ask about was approved or overtaken somewhere else. The spec's 1.8 and 11.11 to 11.15 say what follows from that.
+- The rest of this note describes the branch as it was handed over on 12 November.
+
 ## What is here
 
 - **The branch `bridge-feed`.** Three screen changes to the Home feed. It was last merged with `main` at 16:10 UTC on 11-12 (main at 6fdff2f6, which includes #630, #650 and #660). `main` moves fast, so check again. It changes the screen only: no store, schema, manifest or back-end file is touched, and it writes the same records as `main`.

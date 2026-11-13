@@ -3,7 +3,7 @@
 2026-11-12. It is for Hunter, who decides, and for Home's team, who own the code. It stays close to Home's and TinyCloud's architecture (section 15). Branch `bridge-feed` is pushed at ff075800: changes 1, 2 and 3, merged with Home's main of 11-12 (one Home build, the feed first). Hunter has not yet tried change 3. Checked against the existing architecture on 11-12 (summary in HANDOFF.md). "ADR" below means that check.
 
 **Tags.**
-- [D1] to [D9]: Hunter decided (section 16).
+- [D1] to [D10]: Hunter decided (section 16).
 - [C1] to [C3]: from the change specs. Tried in the lab, not decided one by one.
 - **PROPOSED**: not agreed. This covers P1 to P7, the builders' choices and rules invented here.
 
@@ -20,6 +20,7 @@ Goal: a feed that takes the person's full attention into their work. Today's car
 - 1.5 **Nothing lost**: no answer vanishes. Every agent's thread is easy to find [D4].
 - 1.6 **No explaining text** [D8]: no sentence under a control to say what it does. If a control needs one, rename or reshape the control.
 - 1.7 **Context at a glance** [D9]: a card sets the scene in one second, by showing the thing, not by adding sentences.
+- 1.8 **Still true** [D10]: a card on screen is still needed. When what it asks about is settled or changed somewhere else, the card closes or updates itself and says why.
 
 Why: in Hunter's own use, most answers took the agent's suggestion, and most answers in a sitting switched topic.
 
@@ -68,7 +69,7 @@ For each part: what it does, then where its data comes from.
 ## 5. Answering
 
 - 5.1 One tap on an option answers. There is no Save [D1].
-- 5.2 The option shows "Sending to Sprocket in 4s", Undo and a shrinking line. Other options dim. Nothing moves [D1].
+- 5.2 The option shows "Sending to Sprocket …", Undo and a count. Other options dim. Nothing moves [D1]. The count is 5 seconds, as approved in #610 (Hunter, 11-13). The branch has 4.
 - 5.3 If he taps Undo in time, nothing is sent [D1].
 - 5.4 Leaving during the count sends at once. **PROPOSED** (builder): an answer is never lost.
 - 5.5 Typed words go with the tapped option. **PROPOSED** (builder).
@@ -157,6 +158,11 @@ This is for agents that ask. It goes in Home's `tinycloud-feed` skill and in the
 When a card falls short:
 - 11.9 The screen guesses nothing: no suggestion, no "Suggested"; no detail, the label alone [C3]. **PROPOSED**: with no option and no reply route, "You can't answer this here."
 - 11.10 Agents check their cards before posting, so the screen shows him no warnings. **PROPOSED**: he shouldn't have to police cards.
+- 11.11 **A card says what it depends on** [D10]: the pull request, ticket, earlier card or date that could settle it. **PROPOSED** form.
+- 11.12 **When that thing changes, the agent that owns the card acts** [D10]. It closes the card with a reason, or issues it again with what is still open. The event alone never closes a card: on 11-12 a card with three open choices was closed because its pull request merged, and had to be raised again. **PROPOSED**.
+- 11.13 **An answer given anywhere closes every card that asks the same thing** [D10]: on another card, in chat, or in a message to the other team. This needs the shared decision record (15.9). **PROPOSED**.
+- 11.14 **The card shows when it was last checked** ("Checked 12:30"), and it is checked again before it is shown at the top (see 11.8). **PROPOSED**.
+- 11.15 **A card closed because things moved shows once in "Updates"**, with the reason. Nothing disappears silently. **PROPOSED**.
 
 ## 12. Later
 
@@ -277,12 +283,17 @@ When a card falls short:
 | 11.8 | PROPOSED | proposed | field (15.8) | extends |
 | 11.9 | C3; PROPOSED (wording) | built 98c495e7; main | has | screen only |
 | 11.10 | PROPOSED | proposed | rule (agents' guide) | fits |
+| 11.11 | D10; PROPOSED (form) | proposed | field (typed cards have `links`) | extends, small |
+| 11.12 | D10; PROPOSED (form) | proposed | has (a new revision, or a closing one) | fits |
+| 11.13 | D10; PROPOSED (form) | proposed | record (15.9) | extends |
+| 11.14 | D10; PROPOSED (form) | proposed | field (15.8) | extends |
+| 11.15 | D10; PROPOSED (form) | proposed | has | screen only |
 | 12.1 | PROPOSED P7 | proposed | record (15.9) | extends, medium (ADR item 20) |
 | 12.2 | PROPOSED | proposed | has (an update card) | fits |
 | 12.3 | PROPOSED | proposed | record (15.11) | extends |
 | 12.4 | PROPOSED | proposed | has | fits |
 
-Counts, by the first state in each row: 39 built on the branch (13 of them in change 3, not yet tried by Hunter), 12 in Home's main branch, 3 mock only (4.3, 4.13, 6.9; the role words in 8.1 are mock too), 40 proposed. 94 rules in all. Architecture, after the ADR record: 38 screen only, 41 fit, 12 extend, 3 depart. The three: 6.4b and 7.3 (small, both built) and 6.4c (medium, not built). The ADR record adds that nothing on the branch changes a store, a format or a back-end file.
+Counts, by the first state in each row: 39 built on the branch (13 of them in change 3, not yet tried by Hunter), 12 in Home's main branch, 3 mock only (4.3, 4.13, 6.9; the role words in 8.1 are mock too), 45 proposed. 99 rules in all. Architecture, after the ADR record: 39 screen only, 42 fit, 15 extend, 3 depart. The three: 6.4b and 7.3 (small, both built) and 6.4c (medium, not built). The ADR record adds that nothing on the branch changes a store, a format or a back-end file.
 
 ## 14. Open questions for Hunter
 
@@ -352,6 +363,8 @@ This section covers each rule that needs data or behaviour beyond what Home's fe
 | 11-12 | Stay close to the underlying architecture. Each rule is checked against it (sections 13 and 15) |
 | 11-12 | D8: no explaining text under a control. The comment control names who it is for: "Leave a comment for <agent>" (6.9) |
 | 11-12 | D9: a card gives context at a glance (form in 4.13) |
+| 11-13 | Layout: one open card with the rest as rows. Undo: keep #610's 5 seconds. Top row: no pick yet; the row should give the fastest decisions and still reach an agent's thread |
+| 11-13 | D10: a card on screen must still be needed. Cards settled or overtaken somewhere else close or update themselves and say why (1.8; form in 11.11 to 11.15) |
 
 ## 17. The draft redesign #610
 
@@ -372,3 +385,5 @@ Draft pull request #610 (TC-2600), "Home feed: a list of cards with one-tap answ
 | Tests | about 2,000 new lines, with a file that runs against the real store | 290 tests |
 
 **PROPOSED:** make #610 the base and put this branch's additions on top: the open card and rows, the agent's marks and details, the agent's page, the Agents list, the steps, and the lab. Where both do the same job (the count and Undo, keeping an answer, held notes, who receives a comment), take the draft's version.
+
+**What was decided after the handoff (11-12 and 11-13).** #610 merged as it was, and the Home feed went live on it on 11-13. This branch is not merged whole. Its parts follow as one release on top of #610: one open card with the rest as rows (Hunter's pick), agent marks and platform, the agent's page, and the receipt steps. The count stays at 5 seconds, as approved in #610. The top row is not picked: Hunter asked what each row has that the other lacks, and for the row that gives the fastest decisions while still reaching an agent's thread.
