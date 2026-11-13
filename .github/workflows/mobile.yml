@@ -110,6 +110,19 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
+      # The runner's Spotlight indexes the checkout, node_modules, every build product and the simulator's data
+      # directory, competing for the disk while the simulator's first boot pages in its runtime. On this 3-CPU,
+      # 7 GB runner the smoke has seen the whole VM stall for 30 s (TC-2880). Nothing in this job uses Spotlight.
+      # Best effort: mdutil exits 1 while a just-booted volume (often Preboot) is still changing state.
+      - name: Stop Spotlight indexing
+        run: |
+          for attempt in 1 2 3; do
+            sudo mdutil -a -i off && break
+            sleep 5
+          done
+          sudo mdutil -i off /System/Volumes/Data || true
+          mdutil -s /System/Volumes/Data || true
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
@@ -126,6 +139,16 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - name: Require pinned Xcode
         run: test -d "$DEVELOPER_DIR"
+
+      # Before the simulator boots: a booting simulator takes most of the runner's 3 CPUs and 7 GB, and vite build
+      # needs about 2 GB of heap, the default V8 limit on this runner (TC-2880).
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages and frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: bun run build:packages && bun run build:frontend
 
       # A first boot takes minutes on the runner; let it run while the app builds.
       - name: Start booting an iOS Simulator
@@ -150,12 +173,6 @@ jobs:
           cd mobile/ios/Packages/ReplicaStore
           xcodebuild -scheme ReplicaStore -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath "$RUNNER_TEMP/replicastore-tests" CODE_SIGNING_ALLOWED=NO test
-
-      - name: Install JS deps
-        run: bun install --frozen-lockfile
-
-      - name: Build workspace packages and frontend
-        run: bun run build:packages && bun run build:frontend
 
       - name: Sync Capacitor
         run: bun run --cwd mobile sync ios

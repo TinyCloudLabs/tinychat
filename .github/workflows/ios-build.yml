@@ -107,7 +107,10 @@ jobs:
 
       # VITE_EXO_CHANNEL tells the bundled frontend its channel (TC-840): the archive strips
       # "-beta.N" from CFBundleShortVersionString, so App.getInfo() alone would call a beta "stable".
+      # vite build needs about 2 GB of heap, the default V8 limit on the 7 GB macos-26 runner (TC-2880).
       - name: Build workspace packages and the production frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           version=$(node -p 'require("./frontend/package.json").version')
           case "$version" in
