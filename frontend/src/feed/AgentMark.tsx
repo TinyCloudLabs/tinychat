@@ -1,39 +1,31 @@
 // Which agent is acting, and on which platform. Each agent has its own mark, its first letter in its own colour, the
-// same on its cards, in the list, on its page and in the Agents list (AgentMark). The platform comes only from what
-// the agent says about itself, an optional `agent` object in a card's payload ({ kind, model, runsOn }); without one
-// there is no platform chip, and nothing is guessed from a name. A known platform shows its maker's mark, a file in
-// public/platforms (see SOURCES.txt there), unchanged; any other shows its name alone.
-import type { CSSProperties, ReactNode } from "react";
-import { publicUrl } from "@/lib/basePath";
+// same on its cards and its details (AgentMark). The platform comes only from what the agent says about itself, an
+// optional `agent` object in a card's payload ({ kind, model, runsOn, job }); without one there is no platform, and
+// nothing is guessed from a name. Platforms show by name: the makers' marks need each maker's permission first.
+import type { ReactNode } from "react";
 
-export interface Platform {
-  name: string;
-  /** A file in public/platforms. */
-  logo?: string;
-  /** The mark's own colour, where it reads on both themes; otherwise the mark takes the text colour. */
-  colour?: string;
-}
+export interface Platform { name: string }
 /** What an agent says it is: its platform (`kind`), its model and where it runs, each as the agent reports it. */
-/** `job`: what the agent is working on, as it says (payload.agent.job; Hunter and Sam, 11-12). */
+/** `job`: what the agent is working on, as it says (payload.agent.job). */
 export interface AgentProfile { platform?: Platform; model?: string; runsOn?: string; job?: string }
 
-// The platforms on agents.tinycloud.xyz, by the `kind` an agent reports. Those without a mark file show their name.
+// The platforms on agents.tinycloud.xyz, by the `kind` an agent reports, with their usual names.
 const PLATFORMS: Record<string, Platform> = {
-  claude: { name: "Claude", logo: "claude.svg", colour: "#D97757" },
-  "claude-code": { name: "Claude Code", logo: "claude.svg", colour: "#D97757" },
+  claude: { name: "Claude" },
+  "claude-code": { name: "Claude Code" },
   chatgpt: { name: "ChatGPT" },
   codex: { name: "Codex" },
-  cursor: { name: "Cursor", logo: "cursor.svg" },
-  gemini: { name: "Gemini", logo: "gemini.svg", colour: "#8E75B2" },
+  cursor: { name: "Cursor" },
+  gemini: { name: "Gemini" },
   grok: { name: "Grok" },
   hermes: { name: "Hermes" },
   muse: { name: "Muse" },
   openclaw: { name: "OpenClaw" },
-  opencode: { name: "OpenCode", logo: "opencode.svg" },
-  perplexity: { name: "Perplexity", logo: "perplexity.svg", colour: "#1FB8CD" },
+  opencode: { name: "OpenCode" },
+  perplexity: { name: "Perplexity" },
 };
 
-/** A reported platform: a known one by its usual name and mark, any other by the name the agent gave. */
+/** A reported platform: a known one by its usual name, any other by the name the agent gave. */
 export function platformOf(kind: string): Platform {
   return PLATFORMS[kind.trim().toLowerCase().replace(/[\s_]+/g, "-")] ?? { name: kind.trim() };
 }
@@ -69,22 +61,13 @@ export function AgentMark({ agentKey, name, small = false }: { agentKey: string;
   return <span aria-hidden data-agent-mark className={`inline-flex shrink-0 select-none items-center justify-center rounded-full font-semibold text-white ${small ? "size-7 text-xs" : "size-9 text-sm"} ${markColour(agentKey)}`}>{markLetter(name)}</span>;
 }
 
-/** A platform's mark, drawn from its file as a mask so it keeps its exact shape on either theme. */
-function PlatformLogo({ platform, logo }: { platform: Platform; logo: string }) {
-  const url = `url("${publicUrl(`platforms/${logo}`)}")`;
-  const style: CSSProperties = { maskImage: url, WebkitMaskImage: url, maskSize: "contain", WebkitMaskSize: "contain", maskRepeat: "no-repeat", WebkitMaskRepeat: "no-repeat", maskPosition: "center", WebkitMaskPosition: "center", ...(platform.colour ? { backgroundColor: platform.colour } : {}) };
-  return <span role="img" aria-label={platform.name} data-platform-logo={logo} className="inline-block size-3.5 shrink-0 bg-current" style={style} />;
-}
-
 /**
- * The platform: its mark and name. A screen reader hears the name once, from the mark when there is one.
- * `chip` draws it as the card's chip; otherwise it sits inline in a line of text. `logoOnly` (the compact card)
- * shows just the mark when there is one, its name as the tooltip.
+ * The platform's name. `chip` draws it as the card's chip; otherwise it sits inline in a line of text. `logoOnly`
+ * (the compact card's tight line) keeps the name; it is here so a maker's mark can replace it once permitted.
  */
-export function PlatformName({ platform, chip = false, logoOnly = false }: { platform: Platform; chip?: boolean; logoOnly?: boolean }) {
-  return <span data-platform={platform.name} title={logoOnly && platform.logo ? platform.name : undefined} className={`inline-flex min-w-0 items-center gap-1.5 ${chip ? "max-w-full shrink-0 rounded-full border border-border px-2 py-0.5 text-xs font-medium" : ""}`}>
-    {platform.logo && <PlatformLogo platform={platform} logo={platform.logo} />}
-    {!(logoOnly && platform.logo) && <span aria-hidden={platform.logo ? true : undefined} className="truncate">{platform.name}</span>}
+export function PlatformName({ platform, chip = false }: { platform: Platform; chip?: boolean; logoOnly?: boolean }) {
+  return <span data-platform={platform.name} className={`inline-flex min-w-0 items-center gap-1.5 ${chip ? "max-w-full shrink-0 rounded-full border border-border px-2 py-0.5 text-xs font-medium" : ""}`}>
+    <span className="truncate">{platform.name}</span>
   </span>;
 }
 

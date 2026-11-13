@@ -161,8 +161,14 @@ interface FootActions {
  * An untyped card's answer, conversation and foot. A decision: one tap on an option, or "Your own answer", sent after
  * the 5 s undo window and held in the outbox until it lands. An update: nothing to answer; it is acknowledged.
  */
-function AnswerForm({ entry, answered, revisions, source, now, attention, closed, reference, priority, stale = false, onRefused, onSaved, foot }: {
+function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now, attention, closed, reference, priority, stale = false, onRefused, onSaved, foot }: {
   entry: HomeFeedEntry; source: HomeFeedSource; now: number; attention: boolean; reference: ReactNode; priority?: number;
+  /**
+   * "Your own answer" drafts by card lineage (`draftKey`), owned by the feed: a card folded with "Show less" (it
+   * unmounts) keeps what was typed, and a new source (another owner) starts empty.
+   */
+  drafts: Map<string, string>;
+  draftKey: string;
   /**
    * The revision that holds the card's stored answer, when an earlier revision was answered and only agent replies
    * followed. The answer stays bound to that issuance: it is shown on this card, and a follow-up still names it.
@@ -179,9 +185,10 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, closed
   onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void;
   foot: FootActions;
 }) {
-  const [text, setText] = useState("");
+  const [text, setTextState] = useState(() => drafts.get(draftKey) ?? "");
+  const setText = (value: string) => { setTextState(value); if (value) drafts.set(draftKey, value); else drafts.delete(draftKey); };
   const [choice, setChoice] = useState<string>();
-  const [ownOpen, setOwnOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(() => drafts.has(draftKey));
   const [saving, setSaving] = useState(false);
   // The answer whose send failed: whether it is still held is read when the line renders.
   const [failed, setFailed] = useState<{ target: HomeFeedEntry; responseId: string } | null>(null);
@@ -264,7 +271,7 @@ function AnswerForm({ entry, answered, revisions, source, now, attention, closed
     {asking && followup && <p className="text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
     {asking && <AnswerOptions options={card.choices ?? []} pending={countdown.pending && choice ? { choiceId: choice, seconds: countdown.pending.seconds } : null}
       saving={saving ? choice : undefined} chosen={failed ? choice : undefined} disabled={stale} onChoose={choose} onUndo={undo}
-      own={{ open: ownOpen, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={!!countdown.pending || saving} onText={(value) => { setText(value); pendingResponse.current = null; }} onSend={sendOwn}
+      own={{ open: ownOpen, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={stale || !!countdown.pending || saving} onText={(value) => { setText(value); pendingResponse.current = null; }} onSend={sendOwn}
         state={choice === OWN_OPTION.id ? (saving ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void save(OWN_OPTION.id)} /> }} />}
     {thread}
     {failed ? <AnswerFailedLine held={!!source.holdsAnswer?.(failed.target, failed.responseId)} /> : error && <ErrorLine>{error}</ErrorLine>}
@@ -340,6 +347,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const activeRef = useRef<HomeFeedEntry | null>(null);
   const currentSource = useRef(source);
   const pendingSends = useRef(new Set<() => void>());
+  const ownDrafts = useRef(new Map<string, string>());
   currentSource.current = source;
   const mainRef = useRef<HTMLElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -361,7 +369,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     committed.current.clear();
     activeRef.current = null;
     setSnapshot(null); setSelector(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map());
-    setExpandedGroups(new Set());
+    setExpandedGroups(new Set()); ownDrafts.current.clear();
     const refresh = async () => {
       if (running) { dirty = true; return; }
       running = true;
@@ -594,7 +602,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const node = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((item) => item.dataset.cardKey === key);
     if (!node) return;
     const offset = node.getBoundingClientRect().top - root.getBoundingClientRect().top;
-    if (offset < 0 || offset > root.clientHeight - 80) root.scrollTo({ top: root.scrollTop + offset - 16, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    if (offset < 0 || offset > root.clientHeight - 80) root.scrollTo({ top: root.scrollTop + offset - 16, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   });
 
   const onSaved = useCallback((entry: HomeFeedEntry, response: FeedResponse) => {
@@ -785,7 +793,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const collapse = (size === "compact" || grid) && <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
     const wake = snoozedNow(entry, clock) ? <button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button> : undefined;
     const status = statusOf(entry, author.name);
-    return <HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
+    // Any touch or focus inside an open card engages it, in every view: a card being answered stays bound to its exact
+    // issuance (retained in place when a changed revision arrives mid-countdown, so the countdown is refused, never
+    // written to the old identity).
+    return <div className="min-w-0" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
       {...(status ? { status } : {})} {...(collapse ? { collapse } : {})}>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
         ? <NotSent label={refusedLabel} changed />
@@ -802,10 +813,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
           ? <p role="status" className="mt-3.5 text-sm">Ask your agent about this card.</p>
-          : <AnswerForm key={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
+          : <AnswerForm key={key} drafts={ownDrafts.current} draftKey={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
             attention={attention(entry)} closed={closed} stale={retained} reference={reference} onSaved={onSaved} {...(priority !== undefined ? { priority } : {})}
             foot={{ onClose: (kind) => closeCard(entry, kind), onLater: (until) => askLater(entry, until), ...(wake ? { wake } : {}) }} />}
-    </HomeCardView>;
+    </HomeCardView></div>;
   }
   /** A card in the list, short or open, or a tile in the grid (a card opened from the grid spans its row). */
   const cardItem = (entry: HomeFeedEntry, retained = false) => {
