@@ -31,6 +31,10 @@ const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
 const uploadResumerApi = await import("@/capture/upload/UploadResumer");
 const voiceNotesApi = await import("../src/lib/voiceNotes/nativeVoiceNotes");
 const storageDialogApi = await import("../src/chat/StorageFullDialog");
+const replicationSwitchApi = await import("../src/lib/replication/replicationSwitch");
+const replicationFlagApi = await import("../src/lib/replication/replicationFlag");
+const { REPLICATION_COPY_KEY } = await import("../src/lib/replication/replicationCopyMarker");
+const { REPLICA_PURGE_FAILED_WARNING } = await import("../src/lib/replication/replicationSignOut");
 
 let nativeMode = false;
 let captureInstallCalls = 0;
@@ -47,6 +51,9 @@ let widgetSawSessionsCleared: boolean | null = null;
 const deletedVoiceNoteIds: string[] = [];
 let clearAppSession: (() => void) | null = null;
 let cleanedClients = 0;
+const removeCopyCalls: unknown[][] = [];
+let bindPaused = false;
+let removeCopyOutcome: Promise<{ status: string; code?: string }> | { status: string; code?: string } = { status: "purged" };
 let restoreCalls = 0;
 let restorePause = false;
 let releaseRestore: (() => void) | null = null;
@@ -150,6 +157,11 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
   captureCapabilities: () => ({ offlineRecorder: false, micDeniedPresentation: false }),
   captureEngineAvailable: () => captureEngineInstalled,
   subscribeCaptureCapabilities: () => () => undefined,
+}));
+mock.module("../src/lib/replication/replicationFlag", () => ({ ...replicationFlagApi, isReplicationBindPaused: () => bindPaused }));
+mock.module("../src/lib/replication/replicationSwitch", () => ({
+  ...replicationSwitchApi,
+  removeLocalCopyNow: async (...args: unknown[]) => { removeCopyCalls.push(args); return removeCopyOutcome; },
 }));
 mock.module("../src/chat/ChatWorkspace", () => ({
   ChatWorkspace: ({ settings }: { settings: React.ReactNode }) => <div data-testid="authenticated-workspace">{settings}</div>,
@@ -273,6 +285,9 @@ beforeEach(() => {
   deletedVoiceNoteIds.length = 0;
   clearAppSession = null;
   restoreCalls = 0;
+  removeCopyCalls.length = 0;
+  bindPaused = false;
+  removeCopyOutcome = { status: "purged" };
   restorePause = false;
   releaseRestore = null;
   restoreStarted = null;
@@ -403,6 +418,35 @@ test("web sign-out clears SDK and app sessions before a hung OpenKey confirmatio
   expect(Boolean(host!.querySelector('[data-testid="authenticated-workspace"]'))).toBe(false);
   expect(host!.textContent).toContain("Sign in");
 });
+test("TC-2883 a production sign-out with binding paused erases the copy this client never bound, and warns when that fails", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  expect(lastTcw!.replication).toBeUndefined();
+  window.localStorage.setItem(REPLICATION_COPY_KEY, `did:pkh:eip155:1:${loginAddress}`);
+  let failRemoval!: () => void;
+  removeCopyOutcome = new Promise((resolve) => { failRemoval = () => resolve({ status: "failed", code: "DELETE_BLOCKED" }); });
+  bindPaused = true; // a production build
+  await click("Test sign out");
+  await settle();
+  expect(removeCopyCalls).toHaveLength(1);
+  expect(host!.textContent).toContain("Sign in");
+  expect(host!.textContent).not.toContain(REPLICA_PURGE_FAILED_WARNING);
+  await act(async () => { failRemoval(); await tick(); });
+  await settle();
+  expect(host!.textContent).toContain(REPLICA_PURGE_FAILED_WARNING);
+});
+
+test("TC-2883 with binding not paused (dev builds), sign-out leaves an unbound copy to the next page load", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  window.localStorage.setItem(REPLICATION_COPY_KEY, `did:pkh:eip155:1:${loginAddress}`);
+  await click("Test sign out");
+  await settle();
+  expect(removeCopyCalls).toHaveLength(0);
+});
+
 test("a restore finishing after local sign-out cannot restore the session", async () => {
   await mount("web");
   await click("Sign in");

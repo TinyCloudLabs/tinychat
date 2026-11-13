@@ -37,12 +37,14 @@ import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, t
 import { deferOriginMove } from "./lib/originMove";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { replicationConfigPatch, startReplicationFill, stopReplicationFill } from "./lib/replication/replicationClient";
-import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
+import { rememberReplicationPrincipal, replicationCopyMayExist } from "./lib/replication/replicationCopyMarker";
+import { isReplicationBindPaused } from "./lib/replication/replicationFlag";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
 import { replicationRestorePatch } from "./lib/replication/replicationRestore";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
-import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { clientHasReplication, REPLICA_PURGE_FAILED_WARNING, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { wipeNativeReplicaOnSignOut } from "./lib/replication/nativeReplicaStore";
+import { removeLocalCopyNow } from "./lib/replication/replicationSwitch";
 import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
 import { uploadRunner } from "./lib/audioUpload";
 import {
@@ -438,6 +440,14 @@ export function App() {
     if (tcw) {
       const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
       const localSignOut = signOutReplicaAware(tcw);
+      // Binding paused: this client never bound the saved copy, so its signOut cannot erase it. Erase it
+      // now instead of at the next page load (replicationOffPurge.ts); a failure warns like a bound
+      // sign-out's and leaves the retry markers for the next load.
+      if (!clientHasReplication(tcw) && isReplicationBindPaused() && replicationCopyMayExist()) {
+        void removeLocalCopyNow(tcw, undefined).then((outcome) => {
+          if (outcome.status === "failed") setError((current) => (current?.includes(REPLICA_PURGE_FAILED_WARNING) ? current : REPLICA_PURGE_FAILED_WARNING));
+        });
+      }
       void localSignOut
         .then((result) => {
           if (result && !result.ok) setError((current) => (current?.includes(result.message) ? current : result.message));
