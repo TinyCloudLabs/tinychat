@@ -61,6 +61,9 @@ function releaseFeedFirst(): void {
   clearTimeout(feedFirstCap);
   feedFirstCap = undefined;
   for (const resolve of feedFirstWaiters.splice(0)) resolve();
+  // The released reads start a microtask later: open a quiet gap now so
+  // background work cannot start ahead of them.
+  lastForegroundEnd = Date.now();
   pump();
 }
 

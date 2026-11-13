@@ -137,6 +137,8 @@ describe("Feed first", () => {
     let foregroundDuringRead = -1;
     void afterFeedFirst(() => inForeground(async () => { foregroundDuringRead = laneSnapshot().foreground; }));
     markFeedFresh();
+    await flush();
+    expect(copied).toEqual([]); // the held copy does not start ahead of the released reads
     await list;
     await flush();
     expect(issued).toEqual(["threads list", "settings home-first-screen", "settings word-fixes"]);
@@ -176,6 +178,27 @@ describe("Feed first", () => {
     jest.advanceTimersByTime(1);
     await flush();
     expect(issued).toEqual(["threads list"]);
+  });
+
+  test("released reads start before held background work, whether the cap or a screen change releases them", async () => {
+    for (const release of [() => jest.advanceTimersByTime(FEED_FIRST_MAX_MS), () => noteScreen(false)]) {
+      resetLanesForTests();
+      noteScreen(true);
+      const order: string[] = [];
+      const read = gate();
+      void inBackground(async () => { order.push("history copy"); });
+      void afterFeedFirst(() => inForeground(async () => { order.push("threads list"); await read.promise; }));
+      await flush();
+      expect(order).toEqual([]);
+      release();
+      await flush();
+      expect(order).toEqual(["threads list"]);
+      read.open();
+      await flush();
+      jest.advanceTimersByTime(FOREGROUND_QUIET_MS);
+      await flush();
+      expect(order).toEqual(["threads list", "history copy"]);
+    }
   });
 
   test("leaving the Feed releases held reads at once", async () => {

@@ -122,21 +122,39 @@ function spaceOf(tcw: TinyCloudWeb): string {
   );
 }
 
+/** How long one automatic lookup waits for the server's choice. */
+const LOOKUP_DEADLINE_MS = 3_000;
+
+type AutomaticChoiceBody = { model?: unknown; reason?: unknown } | null;
+interface SharedLookup {
+  request: Promise<AutomaticChoiceBody>;
+  /** Keep the request open until at least `deadline` (epoch ms) for a lookup that joined it. */
+  holdUntil(deadline: number): void;
+}
+
 /**
  * Lookups in flight, by backend and session token. Lookups that overlap share
  * one request: on open, a render React discards can start a lookup in a
  * coordinator that never mounts, beside the mounted one's identical lookup.
- * A settled lookup is forgotten, so the next new chat asks again.
+ * Each lookup keeps its own deadline; the request is aborted only once the
+ * latest one has passed. A settled lookup is forgotten, so the next new chat
+ * asks again.
  */
-type AutomaticChoiceBody = { model?: unknown; reason?: unknown } | null;
-const lookupsInFlight = new Map<string, Promise<AutomaticChoiceBody>>();
+const lookupsInFlight = new Map<string, SharedLookup>();
 
-function requestAutomaticChoice(backendUrl: string, token: string | null): Promise<AutomaticChoiceBody> {
+function requestAutomaticChoice(backendUrl: string, token: string | null): SharedLookup {
   const key = `${backendUrl}\u0000${token ?? ""}`;
   const shared = lookupsInFlight.get(key);
   if (shared) return shared;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3_000);
+  let abortAt = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const holdUntil = (deadline: number) => {
+    if (deadline <= abortAt) return;
+    abortAt = deadline;
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), deadline - Date.now());
+  };
   const request: Promise<AutomaticChoiceBody> = Promise.race([
     (async () => {
       const response = await fetch(`${backendUrl}/api/chat/model-selection`, {
@@ -156,10 +174,11 @@ function requestAutomaticChoice(backendUrl: string, token: string | null): Promi
     }),
   ]).finally(() => {
     clearTimeout(timer);
-    if (lookupsInFlight.get(key) === request) lookupsInFlight.delete(key);
+    if (lookupsInFlight.get(key)?.request === request) lookupsInFlight.delete(key);
   });
-  lookupsInFlight.set(key, request);
-  return request;
+  const lookup = { request, holdUntil };
+  lookupsInFlight.set(key, lookup);
+  return lookup;
 }
 
 async function fetchAutomaticChoice(
@@ -168,10 +187,16 @@ async function fetchAutomaticChoice(
   signal: AbortSignal,
 ): Promise<{ model: OfferedModelId; reason: "healthy" | "health-unverified" } | null> {
   let cancelled = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    const lookup = requestAutomaticChoice(backendUrl, sessionStore.getToken());
+    lookup.holdUntil(Date.now() + LOOKUP_DEADLINE_MS);
     // A cancelled lookup stops waiting; the shared request still ends at its own deadline.
     const body = await Promise.race([
-      requestAutomaticChoice(backendUrl, sessionStore.getToken()),
+      lookup.request,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Health lookup timed out")), LOOKUP_DEADLINE_MS);
+      }),
       new Promise<never>((_, reject) => {
         cancelled = () => reject(new TurnCancelledError());
         if (signal.aborted) cancelled();
@@ -196,6 +221,7 @@ async function fetchAutomaticChoice(
     if (signal.aborted) throw new TurnCancelledError();
     return { model: DEFAULT_CHAT_MODEL, reason: "health-unverified" };
   } finally {
+    clearTimeout(timer);
     signal.removeEventListener("abort", cancelled);
   }
 }
