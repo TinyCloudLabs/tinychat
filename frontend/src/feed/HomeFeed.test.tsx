@@ -36,8 +36,10 @@ function information(): HomeFeedEntry {
 
 // Only the remote persistence/notification boundary is substituted. The actual
 // FeedViewEntries owns rendering, drafts, focus, filtering, and save transitions.
+// The saved view is All unless a test says otherwise: every card a row, an answered card keeping its place. Needs
+// you (its first card open, an answered card moving to Pending) has tests of its own.
 function persistence(entries: HomeFeedEntry[], options: { beforeSave?: () => Promise<void>; defaultSelector?: FeedSelector } = {}) {
-  const durable: HomeFeedSnapshot = { entries: structuredClone(entries), settings: { defaultSelector: options.defaultSelector ?? "needs-action" } };
+  const durable: HomeFeedSnapshot = { entries: structuredClone(entries), settings: { defaultSelector: options.defaultSelector ?? "both" } };
   const archive = [...durable.entries];
   const listeners = new Set<() => void>();
   const responses: FeedResponse[] = [];
@@ -138,11 +140,19 @@ function hasButton(host: ParentNode, label: string) {
 function item(host: ParentNode, title: string) {
   return [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => node.textContent?.includes(title)) ?? null;
 }
-/** Opens a short card in place by tapping it (the compact view is the default). */
+/**
+ * Opens a card in place by tapping its row; Needs you's first card is open already. An answered card still waiting
+ * or done sits in the Pending card at the end of the list (Sam, 11-13), so that opens first when the card isn't listed.
+ */
 async function open(host: ParentNode, title = "Question decision-one") {
-  const compact = [...(item(host, title)?.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]') ?? [])].filter(live)[0];
-  expect(compact).toBeDefined();
-  await act(async () => compact!.click());
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (!item(host, title) && pending) await act(async () => pending.click());
+  const already = [...host.querySelectorAll<HTMLElement>("article")].filter(live).some((candidate) => candidate.querySelector("h2")?.textContent === title);
+  if (!already) {
+    const row = [...(item(host, title)?.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]') ?? [])].filter(live)[0];
+    expect(row).toBeDefined();
+    await act(async () => row!.click());
+  }
   expect(card(host, title)).toBeDefined();
 }
 /** An open card, by the title it shows. */
@@ -222,9 +232,9 @@ async function comment(host: ParentNode, value: string) {
   await type(input!, value);
   await act(async () => input!.nextElementSibling!.querySelector<HTMLButtonElement>("button")!.click());
 }
-type View = "Information" | "All" | "Needs action";
+type View = "Needs you" | "All" | "History";
 function viewRadio(host: HTMLElement, label: View) {
-  const value = ({ Information: "information", All: "both", "Needs action": "needs-action" } as const)[label];
+  const value = ({ "Needs you": "needs-action", All: "both", History: "history" } as const)[label];
   const node = host.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Feed view"] input[value="${value}"]`);
   expect(node).not.toBeNull();
   return node!;
@@ -232,8 +242,9 @@ function viewRadio(host: HTMLElement, label: View) {
 async function chooseView(host: HTMLElement, label: View) {
   await act(async () => viewRadio(host, label).click());
 }
-/** Filter → History or Snoozed (the Filter panel opens the first time). */
+/** History (the island's third tab), or Filter → Snoozed (the Filter panel opens the first time). */
 async function filter(host: HTMLElement, label: "History" | "Snoozed") {
+  if (label === "History") { await chooseView(host, "History"); return; }
   if (!hasButton(host, label)) await act(async () => button(host, "Filter").click());
   await act(async () => button(host, label).click());
 }
@@ -339,47 +350,64 @@ test("a retried tap after a failed write reuses its response identity", async ()
   expect(store.responses).toHaveLength(1);
 });
 
-test("information is nonactionable, All mixes it with decisions, and seen is not answered", async () => {
-  const store = persistence([decision(), information()]);
+test("Needs you shows what needs you with its first card open; All adds updates as rows; information is nonactionable", async () => {
+  const store = persistence([decision(), information()], { defaultSelector: "needs-action" });
   const view = await mount(store.source());
-  expect(viewRadio(view.host, "Needs action").checked).toBe(true);
-  expect(view.host.textContent).toContain("Question decision-one");
+  expect(viewRadio(view.host, "Needs you").checked).toBe(true);
+  // The first card is open without a tap, and that counts as seen.
+  expect(answers(card(view.host, "Question decision-one"))).not.toBeNull();
+  expect(store.durable.entries[0]!.view.seenAt).toBeDefined();
   expect(view.host.textContent).not.toContain("Informational update");
-  await chooseView(view.host, "Information");
-  expect(view.host.textContent).toContain("Informational update");
-  expect(view.host.textContent).not.toContain("Question decision-one");
   await chooseView(view.host, "All");
   expect(viewRadio(view.host, "All").checked).toBe(true);
-  expect(viewRadio(view.host, "Needs action").checked).toBe(false);
-  expect(view.host.textContent).toContain("Informational update");
-  expect(view.host.textContent).toContain("Question decision-one");
+  expect(view.host.querySelector('section[aria-label="Needs you"]')?.textContent).toContain("Question decision-one");
+  expect(view.host.querySelector('section[aria-label="Updates"]')?.textContent).toContain("Informational update");
+  // Rows in All: a row isn't seen; opening it is.
+  expect(view.host.querySelector('section[aria-label="Updates"] article')).toBeNull();
+  expect(store.durable.entries[1]!.view.seenAt).toBeUndefined();
   await open(view.host, "Informational update");
+  expect(store.durable.entries[1]!.view.seenAt).toBeDefined();
   const info = card(view.host, "Informational update");
   expect(info.querySelector("textarea")).toBeNull();
   expect(answers(info)).toBeNull();
   expect(hasButton(info, "Acknowledge")).toBe(true);
-  await chooseView(view.host, "Needs action");
+  await chooseView(view.host, "Needs you");
   expect(view.host.textContent).not.toContain("Informational update");
-  // A short card isn't seen; opening it is.
-  expect(store.durable.entries[0]!.view.seenAt).toBeUndefined();
-  await open(view.host);
-  expect(store.durable.entries[0]!.view.seenAt).toBeDefined();
   expect(store.responses).toEqual([]);
+});
+
+test("an answer in Needs you leaves once it is saved, to Pending, and the next card opens in its place", async () => {
+  const store = persistence([decision("first", 1, 3), decision("second", 1, 2)], { defaultSelector: "needs-action" });
+  const view = await mount(store.source());
+  expect(answers(card(view.host, "Question first"))).not.toBeNull();
+  expect(item(view.host, "Question second")!.querySelector("article")).toBeNull();
+  await choose(view.host, "Hold");
+  expect(store.responses).toEqual([expect.objectContaining({ cardId: "first", choiceId: "hold" })]);
+  await act(async () => store.notify());
+  expect(item(view.host, "Question first")).toBeNull();
+  expect(pendingToggle(view.host)?.textContent).toContain("1 · answered, not closed yet");
+  expect(answers(card(view.host, "Question second"))).not.toBeNull();
+  // Folded by the owner, the first card stays a row.
+  await act(async () => card(view.host, "Question second").querySelector<HTMLButtonElement>('button[aria-label="Show less"]')!.click());
+  expect(item(view.host, "Question second")!.querySelector("article")).toBeNull();
 });
 
 test("a short card opens in place, and folds back without writing anything", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  // A row lives in the bordered list of rows; open, the card stands on its own in the same place.
   const row = item(view.host, "Question decision-one")!;
   expect(row.querySelector("a[href='https://example.org/source']")).toBeNull();
   expect(answers(row)).toBeNull();
   await open(view.host);
-  expect(item(view.host, "Question decision-one") === row).toBe(true);
-  expect(row.querySelector("a[href='https://example.org/source']")).not.toBeNull();
-  expect(answers(row)).not.toBeNull();
-  await act(async () => row.querySelector<HTMLButtonElement>('button[aria-label="Show less"]')!.click());
-  expect(answers(row)).toBeNull();
-  expect([...row.querySelectorAll('button[aria-expanded="false"]')].some(live)).toBe(true);
+  const opened = item(view.host, "Question decision-one")!;
+  expect(opened.dataset.cardKey).toBe(row.dataset.cardKey);
+  expect(opened.querySelector("a[href='https://example.org/source']")).not.toBeNull();
+  expect(answers(opened)).not.toBeNull();
+  await act(async () => opened.querySelector<HTMLButtonElement>('button[aria-label="Show less"]')!.click());
+  const folded = item(view.host, "Question decision-one")!;
+  expect(answers(folded)).toBeNull();
+  expect([...folded.querySelectorAll('button[aria-expanded="false"]')].some(live)).toBe(true);
   expect(store.responses).toEqual([]);
 });
 
@@ -477,12 +505,15 @@ test("the last view is remembered for the next session; History is not", async (
   const view = await mount(store.source());
   await chooseView(view.host, "All");
   expect(store.durable.settings.defaultSelector).toBe("both");
-  await filter(view.host, "History");
-  expect(store.durable.settings.defaultSelector).toBe("both");
+  await chooseView(view.host, "Needs you");
+  expect(store.durable.settings.defaultSelector).toBe("needs-action");
+  await chooseView(view.host, "History");
+  expect(store.durable.settings.defaultSelector).toBe("needs-action");
   await view.unmount();
   const secondSession = await mount(store.source());
-  expect(viewRadio(secondSession.host, "All").checked).toBe(true);
-  expect(secondSession.host.textContent).toContain("Informational update");
+  expect(viewRadio(secondSession.host, "Needs you").checked).toBe(true);
+  expect(secondSession.host.textContent).toContain("Question decision-one");
+  expect(secondSession.host.textContent).not.toContain("Informational update");
   expect(secondSession.host.querySelector('section[aria-label="History"]')).toBeNull();
 });
 
@@ -500,7 +531,7 @@ test("a failed outcome stays distinct from an unsaved answer and keeps source/re
   expect(status(view.host)).toContain("Action failed safely");
   expect(view.host.querySelector("a[href='https://example.org/report']")).not.toBeNull();
   expect(view.host.querySelector("a[href='https://example.org/source']")).not.toBeNull();
-  await chooseView(view.host, "Needs action");
+  await chooseView(view.host, "Needs you");
   expect(view.host.querySelector("textarea")).toBeNull();
   expect(store.responses).toEqual([]);
 });
@@ -678,7 +709,7 @@ test("leaving the view mid-countdown sends the answer at once, exactly once", as
   await act(async () => option(view.host, "Hold").click());
   await clock!.advance(1000);
   expect(store.responses).toEqual([]);
-  await chooseView(view.host, "All");
+  await chooseView(view.host, "History");
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ kind: "answer", choiceId: "hold" });
   await clock!.advance(10_000);
@@ -967,4 +998,94 @@ test("a comment doesn't answer the card: no response is written and it still nee
   const fresh = await mount(store.source());
   expect(item(fresh.host, "Plain question")).not.toBeNull();
   expect(needsLine(fresh.host)).toContain("1 needs you.");
+});
+
+/** A decision answered with Hold: waiting on its agent, or done once the agent reports it. */
+function answered(cardId: string, done: boolean): HomeFeedEntry {
+  const entry = decision(cardId);
+  const response: FeedResponse = { cardId, revision: 1, issuanceId: "issuance-1", responseId: `answer-${cardId}`, sequence: 1, kind: "answer", choiceId: "hold", createdAt };
+  entry.state.response = response;
+  if (done) { entry.state.acknowledgement = handling(response, "acknowledged"); entry.state.outcome = handling(response, "succeeded"); }
+  return entry;
+}
+const pendingToggle = (host: ParentNode) => host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button');
+
+test("answered cards waiting on their agent or done but not acknowledged fold into one Pending card at the end; only what needs you stays in the flow", async () => {
+  for (const selector of ["needs-action", "both"] as const) {
+    const store = persistence([answered("waiting-one", false), decision("open-one"), answered("done-one", true)], { defaultSelector: selector });
+    const view = await mount(store.source());
+    expect(item(view.host, "Question open-one")).not.toBeNull();
+    expect(item(view.host, "Question waiting-one")).toBeNull();
+    expect(item(view.host, "Question done-one")).toBeNull();
+    const toggle = pendingToggle(view.host)!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toContain("Pending");
+    expect(toggle.textContent).toContain("2 · answered, not closed yet");
+    // The Pending card is the last thing in the list.
+    expect(item(view.host, "Question open-one")!.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => toggle.click());
+    const waiting = item(view.host, "Question waiting-one")!, done = item(view.host, "Question done-one")!;
+    expect(waiting.textContent).toContain("You chose Hold");
+    expect(waiting.textContent).toContain("Waiting");
+    expect(hasButton(waiting, "Acknowledge")).toBe(false);
+    expect(done.textContent).toContain("Done");
+    // A row opens its card in place, inside the Pending card.
+    await open(view.host, "Question waiting-one");
+    expect(status(view.host)).toContain("You chose Hold.");
+    await view.unmount();
+  }
+  // History lists what is done: no Pending card.
+  const store = persistence([answered("waiting-one", false), information()]);
+  const view = await mount(store.source());
+  await chooseView(view.host, "History");
+  expect(pendingToggle(view.host)).toBeNull();
+});
+
+test("Acknowledge on a done row takes it out of Pending through the undo bar", async () => {
+  const store = persistence([decision("open-one"), answered("done-one", true)], { defaultSelector: "both" });
+  const view = await mount(store.source());
+  await act(async () => pendingToggle(view.host)!.click());
+  await act(async () => button(item(view.host, "Question done-one")!, "Acknowledge").click());
+  expect(item(view.host, "Question done-one")).toBeNull();
+  expect(pendingToggle(view.host)).toBeNull();
+  expect(undoButton(view.host)).not.toBeNull();
+  await act(async () => undoButton(view.host)!.click());
+  expect(pendingToggle(view.host)?.textContent).toContain("1 · answered, not closed yet");
+});
+
+test("the top row is Needs you · All · History and a Filter icon; Filter shows its dropdowns first and Snoozed under them", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  const filterButton = view.host.querySelector<HTMLButtonElement>('button[aria-controls="home-feed-filters"]')!;
+  const row = filterButton.parentElement!;
+  expect([...row.querySelectorAll<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input')].map((input) => input.parentElement!.textContent)).toEqual(["Needs you1", "All", "History"]);
+  expect([...row.children].filter((node) => node.tagName === "BUTTON").map((node) => node.textContent)).toEqual(["Filter"]);
+  expect(view.host.querySelector('button[aria-controls="home-feed-view"]')).toBeNull();
+  await act(async () => filterButton.click());
+  const panel = view.host.querySelector<HTMLElement>("#home-feed-filters")!;
+  const controls = [...panel.querySelectorAll<HTMLElement>("select, button")].map((node) => node.tagName === "SELECT" ? node.getAttribute("aria-label") : node.textContent);
+  expect(controls).toEqual(["Filter by type", "Filter by priority", "Order", "Snoozed"]);
+  await act(async () => button(panel, "Snoozed").click());
+  expect(button(view.host.querySelector<HTMLElement>("#home-feed-filters") ?? view.host, "Clear filter")).toBeDefined();
+});
+
+test("the Agents pill opens every agent; an agent's page lists its cards and a card opens back in the feed", async () => {
+  const store = persistence([decision("open-one"), answered("waiting-one", false)]);
+  const view = await mount(store.source());
+  await act(async () => view.host.querySelector<HTMLButtonElement>('header button[aria-label^="Agents"]')!.click());
+  const list = view.host.querySelector<HTMLElement>('section[aria-label="Your agents"]')!;
+  expect(list.textContent).toContain("Test agent");
+  expect(list.textContent).toContain("Needs you: 1 card");
+  await act(async () => [...list.querySelectorAll("button")].find((node) => node.textContent?.includes("Test agent"))!.click());
+  const page = view.host.querySelector<HTMLElement>('section[aria-label="Conversation with Test agent"]')!;
+  expect(page.textContent).toContain("Question open-one");
+  expect(page.textContent).toContain("You chose Hold");
+  // A card line goes back to the feed with that card open: the waiting one, inside the Pending card.
+  await act(async () => [...page.querySelectorAll("button")].find((node) => node.textContent?.includes("Question waiting-one"))!.click());
+  expect(view.host.querySelector('section[aria-label="Conversation with Test agent"]')).toBeNull();
+  expect(card(view.host, "Question waiting-one")).toBeDefined();
+  // And from a card: its agent's name, then "Open conversation".
+  await act(async () => button(card(view.host, "Question waiting-one"), "Test agent").click());
+  await act(async () => button(view.host, "Open conversation").click());
+  expect(view.host.querySelector('section[aria-label="Conversation with Test agent"]')).not.toBeNull();
 });

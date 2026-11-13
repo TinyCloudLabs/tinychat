@@ -19,7 +19,6 @@ import {
   answeredCount, clearPostDraft, EMPTY_ANSWER, pageAnswerPayload, pageSummary, postDraft, rememberPageAnswer, sameAnswers, savedPageAnswers, savePostDraft,
   type LabPage, type LabPageMedia, type LabPageQuestion, type PageAnswer, type PageAnswers,
 } from "./postAnswers";
-import { morphImageId, morphTitleId, postMorphId, useMorphTransition } from "./PostTile";
 
 function Media({ media }: { media: LabPageMedia }) {
   return <figure className="min-w-0">
@@ -86,12 +85,9 @@ const isWide = () => typeof matchMedia === "function" && matchMedia(WIDE).matche
  * answer together, after the feed's undo window, held in the page-close outbox until it lands. Back, or the
  * phone's back, returns to the feed where you were. A phone gets the whole screen; from 640px up it is a dialog
  * over the dimmed feed. Unsent answers stay on the device (postAnswers.ts), so leaving the page loses none.
- *
- * Opened from a grid tile (`morphFrom`, the tile's postMorphId), the tile grows into the page: its surface, picture
- * and title become the page's, and shrink back into it on the way out. The picture and title then sit above the
- * card, so `card` is told to leave its own title out. Opened from the list, the page fades in.
+ * It rises a little as it fades in.
  */
-export function PostPage({ entry, answered, page, source, author, card, status, footer, morphFrom, stale = false, onRefused, onSaved, onClose }: {
+export function PostPage({ entry, answered, page, source, author, card, status, footer, stale = false, onRefused, onSaved, onClose }: {
   entry: HomeFeedEntry;
   /**
    * The revision that holds the card's stored answer, when an earlier revision was answered and only agent
@@ -99,11 +95,9 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
    */
   answered?: HomeFeedEntry;
   page: LabPage; source: HomeFeedSource; author: string;
-  /** The card around the page. `showTitle` is false when the page already shows the title above the card. */
-  card: (children: ReactNode, options: { showTitle: boolean }) => ReactNode;
+  /** The card around the page. */
+  card: (children: ReactNode) => ReactNode;
   status: ReactNode; footer: ReactNode;
-  /** The grid tile's postMorphId, when the page opens from one. */
-  morphFrom?: string;
   /** A newer issuance replaced this card: its answers stay, but they can no longer be sent. */
   stale?: boolean;
   /** Answers whose countdown ended after the card was replaced: nothing was written. */
@@ -146,10 +140,9 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
   const homeRef = useRef<HTMLButtonElement>(null);
   const firstNote = useRef<HTMLDivElement>(null);
   const leaving = useRef(false);
-  const transition = useMorphTransition();
   const reduce = useReducedMotion();
   const wide = useSyncExternalStore(subscribeWide, isWide, () => false);
-  const step = postMorphId(entry);
+  const step = `post:${entry.source.sourceId}:${entry.state.card.cardId}`;
   // The page is a step in the browser's history, so a phone's back gesture closes it. Home, Escape and a tap on the
   // dimmed feed all go back that one step; the step's undoing is what closes the page.
   useEffect(() => {
@@ -205,16 +198,7 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
   const handling = sent && (target.responseHandling?.[sent.responseId] ?? target.state);
   const title = entry.state.card.title;
   const fade = reduce ? { duration: 0 } : { duration: 0.2, ease: [0.2, 0, 0, 1] as const };
-  // Grown from a tile: the surface is the tile's. From the list: it rises a little as it fades in.
-  const surface = morphFrom ? { layoutId: morphFrom, transition }
-    : { initial: { opacity: 0, y: reduce ? 0 : 24 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: reduce ? 0 : 24 }, transition: fade };
-  // What only the page has fades in once the tile has mostly grown, and goes first on the way back, so it is never
-  // seen squeezed into the tile's size.
-  const reveal = morphFrom ? {
-    initial: { opacity: 0 },
-    animate: { opacity: 1, transition: reduce ? { duration: 0 } : { delay: 0.12, duration: 0.25 } },
-    exit: { opacity: 0, transition: reduce ? { duration: 0 } : { duration: 0.08 } },
-  } : {};
+  const surface = { initial: { opacity: 0, y: reduce ? 0 : 24 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: reduce ? 0 : 24 }, transition: fade };
   return <Dialog.Root open={open} onOpenChange={(next) => { if (!next) leave(); }}>
     <AnimatePresence onExitComplete={() => closeRef.current()}>
       {open && <Dialog.Portal key="page" forceMount>
@@ -225,41 +209,27 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
           <Dialog.Content asChild forceMount aria-describedby={undefined}
             onOpenAutoFocus={(event) => { event.preventDefault(); homeRef.current?.focus({ preventScroll: true }); }}
             onCloseAutoFocus={(event) => { event.preventDefault(); if (opener?.isConnected) opener.focus(); }}>
-            {/* Motion keeps corners right while it scales only when the radius is in `style`. */}
+            {/* Motion keeps corners right while it moves only when the radius is in `style`. */}
             <m.div {...surface} style={{ borderRadius: wide ? 16 : 0 }}
               className="pointer-events-auto relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-background text-foreground outline-none sm:h-auto sm:max-h-full sm:max-w-2xl sm:border sm:border-border sm:shadow-float">
-              {/* "position" only, so the page is never stretched while the surface grows; it scrolls on its own. */}
-              <m.div layout="position" layoutScroll transition={transition} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 <div className="mx-auto w-full min-w-0 px-3 pb-6 pt-4 sm:px-5">
-                  <m.div {...reveal}>
-                    <Dialog.Close asChild>
-                      <button ref={homeRef} type="button" className="mb-4 inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-10"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
-                    </Dialog.Close>
-                  </m.div>
-                  {morphFrom ? <>
-                    {/* The tile's picture and title, grown: above the card, in the order the tile had them. */}
-                    <m.div layoutId={morphImageId(morphFrom)} transition={transition} style={{ borderRadius: 12 }}
-                      className="relative mb-3 aspect-[4/3] w-full overflow-hidden border border-border bg-muted sm:aspect-video">
-                      <img src={page.image} alt={page.imageAlt} className="absolute inset-0 size-full object-cover" />
-                    </m.div>
-                    <Dialog.Title asChild>
-                      <m.h2 layoutId={morphTitleId(morphFrom)} layout="position" transition={transition} className="mb-4 break-words font-display text-title-2">{title}</m.h2>
-                    </Dialog.Title>
-                  </> : <Dialog.Title className="sr-only">{title}</Dialog.Title>}
-                  <m.div {...reveal}>
-                    {card(<div className="mt-4 space-y-5">
-                      {/* The page's picture, unless it is already above the card or its first question shows its own media (design critique #7). */}
-                      {!morphFrom && !page.questions[0]?.media?.length && <img src={page.image} alt={page.imageAlt} className="block aspect-video w-full rounded-xl border border-border bg-muted object-cover" />}
-                      {status}
-                      <div ref={firstNote} className="space-y-5">{page.questions.map((question, index) => <PageQuestionView key={question.id} question={question} index={index} count={page.questions.length}
-                        answer={answers[question.id] ?? EMPTY_ANSWER} disabled={waiting} onChange={(answer) => change(question.id, answer)} />)}</div>
-                      {footer}
-                    </div>, { showTitle: !morphFrom })}
-                  </m.div>
+                  <Dialog.Close asChild>
+                    <button ref={homeRef} type="button" className="mb-4 inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-10"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
+                  </Dialog.Close>
+                  <Dialog.Title className="sr-only">{title}</Dialog.Title>
+                  {card(<div className="mt-4 space-y-5">
+                    {/* The page's picture, unless its first question shows its own media (design critique #7). */}
+                    {!page.questions[0]?.media?.length && <img src={page.image} alt={page.imageAlt} className="block aspect-video w-full rounded-xl border border-border bg-muted object-cover" />}
+                    {status}
+                    <div ref={firstNote} className="space-y-5">{page.questions.map((question, index) => <PageQuestionView key={question.id} question={question} index={index} count={page.questions.length}
+                      answer={answers[question.id] ?? EMPTY_ANSWER} disabled={waiting} onChange={(answer) => change(question.id, answer)} />)}</div>
+                    {footer}
+                  </div>)}
                 </div>
-              </m.div>
+              </div>
               {/* One send for the whole page, at the bottom where the answers are. */}
-              <m.div {...reveal} className="shrink-0 border-t border-border bg-background px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-3">
+              <div className="shrink-0 border-t border-border bg-background px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-3">
                 <div className="mx-auto flex w-full max-w-2xl items-center gap-3">
                   {/* Once sent, where the person is: Sent, then "{agent} received it", then Done (QA, 1f17120: the
                       status at the top of the page was off-screen after sending from the bottom). */}
@@ -274,7 +244,7 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
                     : <Button type="button" disabled={!count || saving || stale} onClick={hold} className="min-h-11">{sent ? "Send again" : "Send answers"}</Button>}
                 </div>
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announce}</p>
-              </m.div>
+              </div>
             </m.div>
           </Dialog.Content>
         </div>
