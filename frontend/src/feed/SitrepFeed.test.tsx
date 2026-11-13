@@ -446,11 +446,11 @@ test("a typed question's foot is one row (Ask me later, Drop this card, Details)
   expect([...foot!.querySelectorAll("button")].map((node) => node.textContent?.replace(/\+\d+$/, ""))).toEqual(["Ask me later", "Drop this card", "Details"]);
   const comment = button(article, "Leave a comment for SyntheticOfficer");
   expect(comment.compareDocumentPosition(foot!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  // The context sits in its panel above the options, then the lab's expiry line (this fixture has a legacy expiry).
+  // The context sits in its panel above the options, then the card's timing line (this fixture expires).
   const options = article.querySelector("fieldset");
   const why = [...article.querySelectorAll("strong")].find((node) => node.textContent === "Why now: ");
   expect(why && options && why.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const expiry = [...article.querySelectorAll("p")].find((node) => node.textContent?.startsWith("Legacy expiry "));
+  const expiry = [...article.querySelectorAll("p")].find((node) => node.textContent?.startsWith("Expires "));
   expect(expiry && options && expiry.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
@@ -733,4 +733,17 @@ test("a card its agent closed leaves the live feed and shows in History, marked 
   const closed = card(view.host, String(record.title));
   expect(closed.querySelector("[data-status]")?.textContent).toBe("Closed");
   expect(fixture.saved).toEqual([]);
+});
+
+test("a typed ask's timing line says Due and Expires in the feed's words; one that never expires says nothing of it", async () => {
+  const due = typedFixture({ ...syntheticRecord("ask"), deadline: SITREP_NOW });
+  const dueView = await mount(due.source);
+  const dueLine = [...card(dueView.host, String(due.entry.state.card.title)).querySelectorAll("p")].find((node) => node.textContent?.startsWith("Due "));
+  expect(dueLine?.textContent).toContain(" · Expires ");
+  await dueView.unmount();
+  const never = typedFixture({ ...syntheticRecord("ask"), expiresAt: "never" });
+  const neverView = await mount(never.source);
+  const text = card(neverView.host, String(never.entry.state.card.title)).textContent ?? "";
+  expect(text).not.toContain("Expires");
+  expect(text).not.toContain("expiry");
 });

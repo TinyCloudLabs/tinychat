@@ -11,6 +11,7 @@ import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedSt
 import { HomeCardThread } from "./HomeCardThread";
 import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
 import { cardUnshown } from "./unshownCard";
+import { shortTime } from "./ShortTime";
 
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
 const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
@@ -279,6 +280,11 @@ export function SitrepCard(props: Props) {
   const asking = record.kind === "ask" && responds && (!projection.answer || followup || !!text.trim());
   const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > now;
   const hint = expiryHint(record, now, state);
+  // An ask's or task's timing under its body, in the feed's words (Monica, TC-2982): "Due 13 Nov, 6:00 PM · Expires
+  // 14 Nov, 2:48 PM · in 2 h". A card that never expires says nothing about it.
+  const timing = record.kind === "ask" || record.kind === "task"
+    ? [record.deadline && `Due ${shortTime(record.deadline, now)}`, projection.expiryAt && `Expires ${shortTime(new Date(projection.expiryAt).toISOString(), now)}`, hint?.replace(/^expires in (\d+)h$/, "in $1 h")].filter(Boolean).join(" · ")
+    : "";
   const receipt = projection.answer && answerReceipt(entry, owner, projection.answer);
   const options: AnswerOption[] = record.kind === "ask" ? record.options.map((option) => ({ id: option.id, label: option.label, ...(option.detail ? { detail: option.detail } : {}), ...(option.cost ? { cost: option.cost } : {}) })) : [];
   const steer = record.kind === "ask" && record.mode === "proceeding" ? steerState(record, now, answers) : undefined;
@@ -313,7 +319,7 @@ export function SitrepCard(props: Props) {
   return <div className="text-[15px]" aria-label={`${kindWord(record.kind)} details`}>
     {/* The agent's context in a shaded panel, ahead of what it asks of you. */}
     {"context" in record && <div className="mt-4 space-y-2 rounded-xl bg-muted/30 p-4 text-sm"><p>{prose(record.context.background, record.repo)}</p>{record.context.whyNow && <p><strong className="font-semibold">Why now: </strong>{prose(record.context.whyNow, record.repo)}</p>}{record.context.ifNoAnswer && <p><strong className="font-semibold">If no answer: </strong>{prose(record.context.ifNoAnswer, record.repo)}</p>}{!!record.context.known.length && <ul className="list-disc space-y-1 pl-5">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul>}{!!record.context.related.length && <p>Earlier questions: {record.context.related.join(", ")}</p>}</div>}
-    {(record.kind === "ask" || record.kind === "task") && <p className="mt-3 text-xs text-muted-foreground">{record.deadline && `Deadline ${stamp(record.deadline)} · `}{projection.expiryAt === null ? "No automatic expiry" : projection.expiryAt ? `Legacy expiry ${stamp(new Date(projection.expiryAt).toISOString())}` : ""}{hint && ` · ${hint}`}</p>}
+    {timing && <p className="mt-3 text-xs text-muted-foreground">{timing}</p>}
     {record.kind !== "ask" && record.kind !== "task" && hint && <p className="mt-2 text-[13px] font-medium text-warning">{hint.replace(/^expires/, "Expires")}</p>}
 
     {record.kind === "ask" && <>
