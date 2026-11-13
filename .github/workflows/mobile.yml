@@ -40,7 +40,63 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR supersedes its running iOS jobs (a run is ~30 macOS minutes). Pushes to main and manual runs
+# get a group of their own, so they are never cancelled and never replace each other.
+concurrency:
+  group: mobile-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Decides, from the PR's changed paths, which macOS work can be affected. Pushes to main and manual runs always run
+  # everything. Any doubt (not a merge ref, the diff fails or is empty) also runs everything.
+  # - ios: false only when EVERY changed path is on the explicit ignore list below: Android-only, mobile docs, frontend
+  #   unit tests (excluded from the frontend tsc build, never bundled), changesets and non-iOS workflows. Any other
+  #   path (frontend and packages included, listed in on.pull_request.paths or not) runs iOS.
+  # - swift: true only when a path the Swift package tests read changed (the packages, and mobile/fixtures/capture
+  #   loaded through #filePath). The iOS build and smoke test still run; only these test steps are skipped.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ios: ${{ steps.paths.outputs.ios }}
+      swift: ${{ steps.paths.outputs.swift }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: paths
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          ios=true
+          swift=true
+          changed="$RUNNER_TEMP/changed.z"
+          # HEAD is the PR's merge commit: HEAD^1 is the base it was merged into. --no-renames, so a file moved out of
+          # a watched directory is seen at its old path too.
+          if [ "$EVENT" = pull_request ] && git rev-parse -q --verify 'HEAD^2' >/dev/null \
+            && git diff --no-renames --name-only -z HEAD^1 HEAD > "$changed" && [ -s "$changed" ]; then
+            ios=false
+            swift=false
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                .github/workflows/mobile.yml|.github/workflows/ios-build.yml|.github/workflows/ios-testflight.yml) ios=true ;;
+                mobile/android/*|mobile/docs/*|mobile/scripts/android-dev/*|mobile/README.md|frontend/*.test.ts|frontend/*.test.tsx) ;;
+                .changeset/*|.github/*) ;;
+                *) ios=true ;;
+              esac
+              case "$path" in
+                mobile/ios/Packages/*|mobile/ios/App/*|mobile/ios/scripts/*|mobile/fixtures/*|mobile/stt-fixtures.lock|mobile/scripts/stt-fixtures/*|.github/workflows/mobile.yml)
+                  swift=true ;;
+              esac
+            done < "$changed"
+          fi
+          echo "ios=$ios" >> "$GITHUB_OUTPUT"
+          echo "swift=$swift" >> "$GITHUB_OUTPUT"
+          echo "ios=$ios swift=$swift"
+
   android:
     name: Android (debug APK)
     runs-on: ubuntu-latest
@@ -104,6 +160,8 @@ jobs:
 
   ios:
     name: iOS (simulator build and smoke test)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     # Same pin as the iOS release build (ios-build.yml) and desktop: macos-26 runner, Xcode 26.6.
     runs-on: macos-26
     timeout-minutes: 45
@@ -128,6 +186,7 @@ jobs:
           persist-credentials: false
 
       - name: Test iOS CaptureCore
+        if: needs.changes.outputs.swift == 'true'
         run: swift test --package-path mobile/ios/Packages/CaptureCore
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -155,12 +214,14 @@ jobs:
         run: mobile/scripts/ios-simulator-smoke.sh boot "$RUNNER_TEMP/ios-smoke"
 
       - name: Test iOS capture writer
+        if: needs.changes.outputs.swift == 'true'
         run: |
           simulator_id=$(awk '{print $2}' "$RUNNER_TEMP/ios-smoke/device.txt")
           cd mobile/ios/Packages/ExoCapture
           xcodebuild -scheme ExoCapture -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath "$RUNNER_TEMP/capture-tests" CODE_SIGNING_ALLOWED=NO test
       - name: Test ExoStt
+        if: needs.changes.outputs.swift == 'true'
         run: |
           simulator_id=$(awk '{print $2}' "$RUNNER_TEMP/ios-smoke/device.txt")
           cd mobile/ios/Packages/ExoStt
@@ -217,7 +278,8 @@ jobs:
       # mobile/scripts/ios-health-probe.sh drives the Health plugin and answers the Health sheet with AXe.
       - name: "HealthKit spike: ad-hoc signed simulator build"
         id: health-build
-        if: always() && steps.smoke.outcome != 'skipped'
+        # Never fails the job (continue-on-error), so it gates nothing on a PR: pushes to main and manual runs keep it.
+        if: github.event_name != 'pull_request' && always() && steps.smoke.outcome != 'skipped'
         continue-on-error: true
         working-directory: mobile/ios/App
         run: |
@@ -256,6 +318,8 @@ jobs:
   # and upload in that job.
   ios-release:
     name: iOS release
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     uses: ./.github/workflows/ios-build.yml
     with:
       build-number: ${{ github.run_number }}

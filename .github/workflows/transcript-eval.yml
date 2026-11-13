@@ -214,7 +214,11 @@ jobs:
         run: cargo check --release --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner --features metal
       - name: Check exact Metal transcription feature parity
         run: bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos "$RUNNER_TEMP/closure-metal.json"
+      # The same `cargo test --release --lib --locked` in desktop/src-tauri runs in desktop.yml's build job (with its
+      # build cache) on every PR and push that reaches this job: all of this workflow's native inputs are desktop.yml
+      # paths, except edits to this workflow file. Only a manual run, where no desktop build runs, repeats it here.
       # The Tauri app enables Metal by default; Foundation is unavailable on Linux.
       - name: Recorder files and request-parity unit tests (macOS app)
+        if: github.event_name == 'workflow_dispatch'
         working-directory: desktop/src-tauri
         run: cargo test --release --lib --locked

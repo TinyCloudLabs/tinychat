@@ -24,6 +24,12 @@ on:
       - ".github/workflows/desktop-build.yml"
       - "scripts/release/desktop-*"
       - "scripts/release/verify-desktop-signing.sh"
+      # Pull requests only, last so they win: desktop notes and frontend unit tests are not in the app. The frontend
+      # tsconfig excludes tests and nothing imports them, so the bundle cannot change; frontend.yml still runs them.
+      # frontend/public/**/*.md ARE bundled (served assets), so only desktop/** markdown is excluded.
+      - "!desktop/**/*.md"
+      - "!frontend/**/*.test.ts"
+      - "!frontend/**/*.test.tsx"
   push:
     branches: [main]
     paths:
