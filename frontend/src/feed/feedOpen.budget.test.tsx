@@ -37,7 +37,7 @@ const RECONNECT_REQUESTS = 2 + 4;
  * The budgets (home-perf data-2026-11 §6). Idle: a Feed minute spans one
  * stream reconnect, so it costs that reconnect and nothing else.
  */
-const BUDGET = { warmBeforeFresh: 8, newDeviceBeforeFirstCard: 10, newDeviceBeforeFresh: 8, rounds: 2, idle: RECONNECT_REQUESTS, idleMs: 60_000 };
+const BUDGET = { warmBeforeFresh: 8, warmRounds: 1, newDeviceBeforeFirstCard: 10, newDeviceBeforeFresh: 8, rounds: 2, idle: RECONNECT_REQUESTS, idleMs: 60_000 };
 
 type SqlValue = string | number | null | Uint8Array;
 type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } };
@@ -415,10 +415,12 @@ test("warm open: the device copy shows the first card before any answer; the Fee
   const detail = describeRequests(beforeFresh);
   if (process.env.FEED_BUDGET_DETAIL) console.log(detail);
   expect({ requests: beforeFresh.length, detail }).toEqual({ requests: Math.min(beforeFresh.length, BUDGET.warmBeforeFresh), detail });
-  expect({ rounds: rounds(beforeFresh), detail }).toEqual({ rounds: Math.min(rounds(beforeFresh), BUDGET.rounds), detail });
+  // The device copy names the agents: one round, read beside the registry, over one stream.
+  expect({ rounds: rounds(beforeFresh), detail }).toEqual({ rounds: Math.min(rounds(beforeFresh), BUDGET.warmRounds), detail });
   await answerAll(node, open);
   expectWholeFeed(open);
   expect(node.requests.filter(isFullLoad)).toHaveLength(1);
+  expect({ streams: node.requests.filter(isTicket).length, detail: describeRequests(node.requests) }).toEqual({ streams: 1, detail: describeRequests(node.requests) });
 });
 
 test("new device: an empty device copy shows the first card and is fresh within budget, loaded once over one stream, with no schema DDL first", async () => {
@@ -469,6 +471,7 @@ test("first ready after the load: the stream's freshness check reloads nothing",
   await answerUntil(node, open, () => open.fresh !== undefined);
   // The stream subscribed with the load becomes ready once the load's answers have landed.
   await answerAll(node, open);
+  await advance(node, open, 50); // a wake from the check would reload after the notification debounce
   const check = node.since(open.fresh ?? 0);
   observed["first ready"] = { requests: check.length, rounds: new Set(check.map((request) => request.round)).size, fullLoads: check.filter(isFullLoad).length };
   expect({ fullLoads: check.filter(isFullLoad).length, detail: describeRequests(check) }).toEqual({ fullLoads: 0, detail: describeRequests(check) });
