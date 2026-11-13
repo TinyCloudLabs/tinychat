@@ -26,6 +26,7 @@ import { AgentsPill } from "./AgentMarks";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
 import { useUndoBar } from "./UndoBar";
+import { CardLeaveContext, useLeave, type Leaving } from "./leaveCard";
 import { BriefButton, LazyBriefSheet } from "./BriefButton";
 import { briefOf } from "./brief";
 import { shortTime } from "./ShortTime";
@@ -212,7 +213,15 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
   const [later, setLater] = useState(false);
   const [commenting, setCommenting] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
-  const countdown = usePendingSend({ stale, onRefused });
+  // A decision takes the card away while it counts and is written (leaveCard.ts); Undo, a failed write or a refusal
+  // brings it back with its line. After the write it stays away until the list moves it (to Pending), or 8 s at most.
+  const [decided, setDecided] = useState(false);
+  const countdown = usePendingSend({ stale, onRefused: (label) => { setDecided(false); onRefused(label); } });
+  useEffect(() => {
+    if (!decided || countdown.pending || saving) return;
+    const timer = window.setTimeout(() => setDecided(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [decided, countdown.pending, saving]);
   const pendingResponse = useRef<{ key: string; response: NewFeedResponse } | null>(null);
   const pendingMessage = useRef<{ text: string; message: NewFeedMessage } | null>(null);
   const card = entry.state.card;
@@ -246,6 +255,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
       pendingResponse.current = null;
       setText(""); setChoice(undefined); setOwnOpen(false); setFollowup(false); setJustSaved(true);
     } catch {
+      setDecided(false);
       setFailed({ target, responseId: response.responseId });
     } finally { setSaving(false); }
   }
@@ -266,15 +276,19 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
   const asking = !info && (!saved || followup);
   function choose(id: string, label: string) {
     if (stale || saving || countdown.pending) return;
-    setChoice(id);
+    setChoice(id); setDecided(true);
     countdown.start(label, () => void save(id));
   }
   function sendOwn() {
     if (stale || saving || countdown.pending || !text.trim()) return;
-    setChoice(OWN_OPTION.id);
+    setChoice(OWN_OPTION.id); setDecided(true);
     countdown.start(NOT_SENT_COPY.yourAnswer, () => void save(OWN_OPTION.id));
   }
-  function undo() { countdown.undo(); setChoice(undefined); }
+  function undo() { countdown.undo(); setChoice(undefined); setDecided(false); }
+  const pageBar = useLeave(decided ? {
+    away: true,
+    ...(countdown.pending ? { bar: { text: "Answered", ...(choice && choice !== OWN_OPTION.id ? { choice: countdown.pending.label, focusOption: choice } : {}), endsAt: countdown.pending.endsAt, undo } } : {}),
+  } : null);
   const timing = cardTiming(entry);
   const timingLine = [timing.deadline && `Due ${shortTime(timing.deadline, now)}`, timing.expiresAt && `Matters until ${shortTime(timing.expiresAt, now)}`, timing.priority !== undefined && `Priority P${timing.priority}`].filter(Boolean).join(" · ");
   const thread = <CardConversation lines={plainConversation(entry, revisions)} to={source.sendMessage ? entry.source.label : undefined} stale={stale}
@@ -284,7 +298,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     {timingLine && <p className="text-xs text-muted-foreground">{timingLine}</p>}
     {!info && saved && !asking && <ResponseStatus entry={target} focusOnMount={justSaved} />}
     {asking && followup && <p className="text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
-    {asking && <AnswerOptions options={card.choices ?? []} pending={countdown.pending && choice ? { choiceId: choice, seconds: countdown.pending.seconds } : null}
+    {asking && <AnswerOptions options={card.choices ?? []} pending={!pageBar && countdown.pending && choice ? { choiceId: choice, seconds: countdown.pending.seconds } : null}
       saving={saving ? choice : undefined} chosen={failed ? choice : undefined} disabled={stale} onChoose={choose} onUndo={undo}
       own={{ open: ownOpen, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={stale || !!countdown.pending || saving} onText={(value) => { setText(value); pendingResponse.current = null; }} onSend={sendOwn} onCancel={() => { setText(""); setOwnOpen(false); pendingResponse.current = null; }}
         state={choice === OWN_OPTION.id ? (saving ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void save(OWN_OPTION.id)} /> }} />}
@@ -389,6 +403,45 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // Drop this card, Acknowledge, Ask me later and Show me later take the card away at once; a bar at the bottom
   // counts the same 5 s as every send, with Undo, and only then is the action written (held in the outbox).
   const undoBar = useUndoBar((message) => setError({ lead: message, text: "Try again." }));
+  const { showHeld, dropHeld } = undoBar;
+  // Sam, 11-14: a decision takes its card away gracefully, with Undo in the bar (leaveCard.ts). The card reports it;
+  // the page fades it (120 ms), then closes its space (`gone`), so the cards below slide up (MorphItem's layout). Undo
+  // reverses it: the space opens, then the card fades back in, focus on the option that was tapped.
+  const [leaving, setLeaving] = useState<ReadonlyMap<string, Leaving>>(() => new Map());
+  const [gone, setGone] = useState<ReadonlySet<string>>(() => new Set());
+  const leavingRef = useRef(leaving);
+  const reporters = useRef(new Map<string, (next: Leaving | null) => void>());
+  const reporterFor = (key: string) => {
+    let report = reporters.current.get(key);
+    if (!report) {
+      report = (next) => {
+        const was = leavingRef.current.get(key);
+        const map = new Map(leavingRef.current);
+        if (next) map.set(key, next); else map.delete(key);
+        leavingRef.current = map;
+        setLeaving(map);
+        if (next?.bar) showHeld(key, next.bar); else dropHeld(key);
+        // Keys are JSON (quotes and brackets), so they are matched by value, not in a selector.
+        const frame = () => [...document.querySelectorAll<HTMLElement>("[data-leave-key]")].find((node) => node.dataset.leaveKey === key);
+        if (next?.away && !was?.away) {
+          // Its answer is on its way: once saved it goes to Pending, not back to its place in All (keepsNeeds).
+          setSticky((current) => new Map(current).set(key, false));
+          // Focus leaves with the card, to the next card in the list.
+          const node = frame();
+          if (node?.contains(document.activeElement)) node.closest("li")?.nextElementSibling?.querySelector<HTMLElement>("button")?.focus();
+          const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+          window.setTimeout(() => { if (leavingRef.current.get(key)?.away) setGone((current) => new Set(current).add(key)); }, reduce ? 0 : 100);
+        }
+        if (!next?.away && was?.away) {
+          setGone((current) => { const after = new Set(current); after.delete(key); return after; });
+          const option = was.bar?.focusOption;
+          if (option && next?.bar === undefined) window.requestAnimationFrame(() => [...frame()?.querySelectorAll<HTMLElement>("[data-option-id]") ?? []].find((node) => node.dataset.optionId === option)?.focus());
+        }
+      };
+      reporters.current.set(key, report);
+    }
+    return report;
+  };
   // An open popover closes on a tap anywhere outside the toolbar and its popovers (Escape: onKeyDown below).
   useEffect(() => {
     if (!panel) return;
@@ -694,6 +747,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     if (offset < 0 || offset > root.clientHeight - 80) root.scrollTo({ top: root.scrollTop + offset - 16, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   });
 
+  const lineageKeyRef = useRef(lineageKey);
+  lineageKeyRef.current = lineageKey;
   const onSaved = useCallback((entry: HomeFeedEntry, response: FeedResponse) => {
     if (currentSource.current !== source) return;
     if (response.kind === "message") { refreshRef.current(); return; }
@@ -701,7 +756,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const key = keyOf(entry);
     const update = (candidate: HomeFeedEntry): HomeFeedEntry => ({ ...candidate, state: { ...candidate.state, response, acknowledgement: null, outcome: null } });
     setSnapshot((current) => updateSnapshotEntry(current, key, update));
-    setActive((current) => current && keyOf(current) === key ? update(current) : current);
+    // A card that left with its decision is let go: it lives in Pending now, not held in place for a newer revision.
+    const left = leavingRef.current.get(lineageKeyRef.current(entry))?.away === true;
+    setActive((current) => current && keyOf(current) === key ? left ? null : update(current) : current);
     refreshRef.current();
   }, [source]);
   /** Every change of what the list shows: answers still counting down are sent now (the owner chose them). */
@@ -893,7 +950,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     // Any touch or focus inside an open card engages it, in every view: a card being answered stays bound to its exact
     // issuance (retained in place when a changed revision arrives mid-countdown, so the countdown is refused, never
     // written to the old identity).
-    return <div className="min-w-0" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
+    return <CardLeaveContext.Provider value={reporterFor(key)}><div className="min-w-0" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
       {...(unsupported ? {} : { onAuthor: () => { leaveView(); setAgentPage(agentKey(entry, context?.record)); mainRef.current?.scrollTo({ top: 0 }); } })}
       {...(status ? { status } : {})} collapse={collapse}>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
@@ -917,7 +974,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           : <AnswerForm key={key} drafts={ownDrafts.current} draftKey={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
             attention={attention(entry)} closed={closed} stale={retained} reference={reference} onSaved={onSaved} {...(priority !== undefined ? { priority } : {})}
             foot={{ onClose: (kind) => closeCard(entry, kind), onLater: (until) => askLater(entry, until), ...(wake ? { wake } : {}) }} />}
-    </HomeCardView></div>;
+    </HomeCardView></div></CardLeaveContext.Provider>;
   }
   /** A card in the list: a row, or open in place (Needs you's first card is open). A post is a row opening its page. */
   const cardItem = (entry: HomeFeedEntry, retained = false) => {
@@ -925,8 +982,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const page = labPageOf(entry);
     // Each card morphs between a row and its open shape as one item: its box moves and resizes while its content
     // crossfades (densityMorph.tsx).
+    const away = leaving.get(key)?.away === true;
     return <MorphItem key={key} contentKey={page ? "post" : isOpen(entry) || retained ? "full" : "compact"} data-card-key={keyOf(entry)} className="min-w-0 scroll-mt-4">
-      {page ? postCard(entry) : isOpen(entry) || retained ? fullCard(entry, retained) : compactCard(entry)}
+      {/* A card leaving after a decision: its content fades and lifts 4px first, then its space closes (`gone`); on
+          Undo the space opens first and the content fades in last. Taps and focus skip it meanwhile. */}
+      <div data-leave-key={key} inert={away} className={`transition-[opacity,transform] duration-[120ms] ease-[cubic-bezier(.2,0,0,1)] motion-reduce:transition-none ${away ? "-translate-y-1 opacity-0" : "delay-[120ms]"} ${gone.has(key) ? "h-0 overflow-hidden" : ""}`}>
+        {page ? postCard(entry) : isOpen(entry) || retained ? fullCard(entry, retained) : compactCard(entry)}
+      </div>
       {/* The Snoozed list: each card can come back now without opening it. */}
       {snoozedOnly && !isOpen(entry) && snoozedNow(entry, clock) && <div className="flex justify-end px-2 pb-2"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}
     </MorphItem>;

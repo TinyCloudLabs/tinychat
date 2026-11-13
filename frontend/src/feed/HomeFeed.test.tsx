@@ -173,6 +173,10 @@ function option(host: ParentNode, label: string) {
 function undoButton(host: ParentNode) {
   return [...host.querySelectorAll<HTMLButtonElement>("button")].filter(live).find((candidate) => candidate.textContent === "Undo") ?? null;
 }
+/** The bottom bar's line for a decision counting down ("Answered: Hold · 5s"), as a screen reader hears it. */
+function bar(host: ParentNode) {
+  return [...host.querySelectorAll('[role="status"]')].find((node) => node.querySelector("button")?.textContent === "Undo")?.querySelector(".sr-only")?.textContent ?? null;
+}
 function answer(host: ParentNode) {
   const node = [...host.querySelectorAll<HTMLTextAreaElement>('textarea[aria-label="Your own answer"]')].filter(live)[0];
   expect(node).toBeDefined();
@@ -260,11 +264,13 @@ test("saving an answer waits for durability, then distinguishes saved, received,
   await openNote(view.host);
   await typeAnswer(view.host, "Proceed with the isolated action");
   await sendReply(view.host);
-  expect(answer(view.host).value).toBe("Proceed with the isolated action");
+  // The card is away while its write is pending (TC-2998): nothing is shown as saved, and nothing is recorded yet.
   expect(store.responses).toEqual([]);
   expect(status(view.host)).toBeNull();
   await act(async () => write.resolve());
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", text: "Proceed with the isolated action" });
+  // Saved, it sits in Pending; opened there, it shows the answer.
+  await open(view.host);
   expect(status(view.host)).toContain("Proceed with the isolated action");
   expect(status(view.host)).not.toContain("got it");
   expect(status(view.host)).not.toContain("finished it");
@@ -292,13 +298,15 @@ test("one tap saves the option once, and Change answer saves a follow-up that re
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", choiceId: "hold" });
   expect(store.responses[0]!.supersedesResponseId).toBeUndefined();
-  // The answered card stays in Needs action, showing the label (never the id) and Change answer.
+  // The answered card moves to Pending (TC-2998); opened there, it shows the label (never the id) and Change answer.
+  await open(view.host);
   expect(status(view.host)).toContain("You chose Hold.");
   expect(answers(view.host)).toBeNull();
   await act(async () => button(view.host, "Change answer").click());
   await choose(view.host, "Proceed");
   expect(store.responses).toHaveLength(2);
   expect(store.responses[1]).toMatchObject({ kind: "followup", choiceId: "proceed", supersedesResponseId: store.responses[0]!.responseId });
+  await open(view.host);
   expect(status(view.host)).toContain("You chose Proceed.");
 });
 
@@ -307,6 +315,7 @@ test("Keep my answer leaves the saved answer untouched", async () => {
   const view = await mount(store.source());
   await open(view.host);
   await choose(view.host, "Hold");
+  await open(view.host);
   await act(async () => button(view.host, "Change answer").click());
   await act(async () => button(view.host, "Keep my answer").click());
   expect(store.responses).toHaveLength(1);
@@ -452,22 +461,23 @@ test("an in-flight answer retains its exact issuance and loads its outcome after
   await openNote(view.host);
   await typeAnswer(view.host, "Answer for revision one only");
   await sendReply(view.host);
-  // The write is in flight once the undo window closes; the draft stays in its field.
-  const originalInput = answer(view.host);
+  // The write is in flight once the undo window closes, the card away meanwhile (TC-2998); then a newer revision lands.
   store.durable.entries = [decision("decision-one", 2)];
+  // As the store does, the replaced revision stays in History with its answer.
+  store.durable.historicalEntries = [store.archive[0]!];
   await act(async () => store.notify());
-  expect(answer(view.host) === originalInput).toBe(true);
-  expect(originalInput.value).toBe("Answer for revision one only");
   await act(async () => write.resolve());
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1" });
   expect(store.durable.entries[0]!.state.response).toBeNull();
   store.archive[0]!.state.acknowledgement = handling(store.responses[0]!, "acknowledged");
   store.archive[0]!.state.outcome = handling(store.responses[0]!, "succeeded");
   await act(async () => store.notify());
+  // The answered revision carries its outcome, in History; the newer one still asks.
+  await chooseView(view.host, "History");
+  await open(view.host);
   expect(status(view.host)).toContain("finished it");
   expect(status(view.host)).toContain("Answer for revision one only");
-  await act(async () => button(view.host, "Show the newer version").click());
-  expect(status(view.host)).toBeNull();
+  await chooseView(view.host, "Needs you");
   await open(view.host);
   expect(status(view.host)).toBeNull();
   await openNote(view.host);
@@ -581,6 +591,7 @@ test("a (Recommended) label shows without the marker and with the Suggested tag,
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ kind: "answer", choiceId: "proceed" });
   expect(store.durable.entries[0]!.state.card.choices?.[0]?.label).toBe("Proceed (Recommended)");
+  await open(view.host);
   expect(status(view.host)).toContain("You chose Proceed.");
 });
 
@@ -632,24 +643,25 @@ test("an answer waits 5 seconds: nothing is written before, exactly one write at
   const view = await mount(store.source());
   await open(view.host);
   await act(async () => option(view.host, "Hold").click());
-  const undo = undoButton(view.host);
-  expect(undo).not.toBeNull();
-  expect(document.activeElement === undo).toBe(true);
-  expect(answers(view.host)!.textContent).toContain("Sending · 5s");
-  expect(view.host.textContent).toContain("Sending Hold in 5 seconds. Undo is available until then.");
+  // The card leaves at once (TC-2998); the bottom bar counts the wait, with Undo.
+  expect(answers(view.host)).toBeNull();
+  expect(undoButton(view.host)).not.toBeNull();
+  expect(bar(view.host)).toBe("Answered: Hold · 5s");
   await clock!.advance(2000);
-  expect(answers(view.host)!.textContent).toContain("Sending · 3s");
+  expect(bar(view.host)).toBe("Answered: Hold · 3s");
   await clock!.advance(2900);
   expect(store.responses).toEqual([]);
   await clock!.advance(100);
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", choiceId: "hold" });
+  expect(bar(view.host)).toBeNull();
+  await open(view.host);
   expect(status(view.host)).toContain("You chose Hold.");
   await clock!.advance(10_000);
   expect(store.responses).toHaveLength(1);
 });
 
-test("undo at 3 seconds writes nothing and brings the options back; so does Escape", async () => {
+test("undo at 3 seconds writes nothing and brings the card and its options back", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
   await open(view.host);
@@ -658,10 +670,8 @@ test("undo at 3 seconds writes nothing and brings the options back; so does Esca
   await act(async () => undoButton(view.host)!.click());
   expect(undoButton(view.host)).toBeNull();
   expect(option(view.host, "Hold").disabled).toBe(false);
-  expect(view.host.textContent).toContain("Undone. Nothing was sent.");
   await act(async () => option(view.host, "Proceed").click());
-  await act(async () => { document.activeElement!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
-  expect(undoButton(view.host)).toBeNull();
+  await act(async () => undoButton(view.host)!.click());
   expect(option(view.host, "Proceed").disabled).toBe(false);
   await clock!.advance(10_000);
   expect(store.responses).toEqual([]);
@@ -805,6 +815,8 @@ test("reply-only revision after an answer: no banner, the answer shows, nothing 
   store.reply("plain-one", "Noted, holding.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
   expect(view.host.textContent).not.toContain(BANNER);
+  // The answered card is in Pending (TC-2998); opened there, it is one card showing the answer and the reply.
+  await open(view.host, "Plain question");
   expect(view.host.querySelectorAll("li[data-card-key]")).toHaveLength(1);
   expect(status(view.host)).toContain("You chose Hold.");
   expect(comments(view.host)?.textContent).toContain("Noted, holding.");
@@ -826,6 +838,7 @@ test("Change answer after a reply-only revision writes a follow-up that names re
   await choose(view.host, "Hold");
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
+  await open(view.host, "Plain question");
   await act(async () => button(view.host, "Change answer").click());
   await choose(view.host, "Proceed");
   expect(store.responses).toHaveLength(2);
@@ -841,7 +854,7 @@ test("a reply-only revision during the countdown re-targets the unanswered answe
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
   expect(view.host.textContent).not.toContain(BANNER);
-  expect(answers(view.host)!.textContent).toContain("Sending · 3s");
+  expect(bar(view.host)).toBe("Answered: Hold · 3s");
   await clock!.advance(3000);
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
@@ -917,6 +930,7 @@ test("a reply-only revision after the answer re-targets nothing: the answer and 
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   store.reply("plain-one", "Booked.", "2026-10-28T12:20:00Z");
   await act(async () => store.notify());
+  await open(view.host, "Plain question");
   await act(async () => button(view.host, "Change answer").click());
   await openNote(view.host);
   await typeAnswer(view.host, "Actually, proceed");
@@ -963,6 +977,7 @@ test("a post card's first reply (post → thread) swaps in place and keeps the a
   await act(async () => store.notify());
   expect(store.durable.entries[0]!.state.card.payload?.render).toBe("thread");
   expect(view.host.textContent).not.toContain(BANNER);
+  await open(view.host, "Plain question");
   expect(status(view.host)).toContain("You chose Hold.");
   expect(comments(view.host)?.textContent).toContain("Noted, holding.");
   expect(writes(store.responses)).toEqual(["1:hold"]);

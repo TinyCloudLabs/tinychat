@@ -5,8 +5,11 @@
 // until the count ends. Several actions in a row stack, newest at the bottom; a page that closes or hides sends them
 // at once, as an answer's count does. A commit is the caller's held send (sendOwnerAction with { hold: true }): it
 // lands in the page-close outbox before its first await, so a page that closes mid-write still sends it next launch.
+// A decision (an answer, or Drop on an agent's question) shows here too ("Answered: 08:15 direct"), but the card keeps
+// its own countdown and write (leaveCard.ts): the bar shows it and its Undo, and the card sends it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UNDO_SECONDS } from "./cardKit";
+import type { LeaveBar } from "./leaveCard";
 
 export interface UndoItem {
   /** The card it takes away, hidden from the list while the bar counts. */
@@ -28,6 +31,8 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
   // Cards whose commit is still being written: hidden until it lands (or fails), not only while the bar counts. A card
   // that came back as an open row in the seconds a slow write took was Clarissa's "Acknowledge" finding (production).
   const [committing, setCommitting] = useState<ReadonlyMap<string, number>>(() => new Map());
+  // A card's decision counting down in the card itself (leaveCard.ts): shown here, sent by the card, not by the bar.
+  const [held, setHeld] = useState<ReadonlyMap<string, LeaveBar>>(() => new Map());
   const [now, setNow] = useState(() => Date.now());
   const live = useRef<Pending[]>([]);
   const nextId = useRef(1);
@@ -49,14 +54,14 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
   }, []);
   // One tick a second while anything counts; each bar ends on its own time.
   useEffect(() => {
-    if (!items.length) return;
+    if (!items.length && !held.size) return;
     const timer = setInterval(() => {
       const at = Date.now();
       setNow(at);
       for (const item of live.current.filter((pending) => pending.endsAt <= at)) commit(item);
     }, 250);
     return () => clearInterval(timer);
-  }, [items.length, commit]);
+  }, [items.length, held.size, commit]);
   // A closed or hidden page may never finish the count, so whatever waits is sent now; so on leaving the feed.
   useEffect(() => {
     const flush = () => { for (const item of [...live.current]) commit(item); };
@@ -80,6 +85,8 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
     item?.undo?.();
   }, []);
   const hidden = useCallback((key: string) => committing.has(key) || items.some((item) => item.key === key), [items, committing]);
+  const showHeld = useCallback((key: string, bar: LeaveBar) => { setNow(Date.now()); setHeld((current) => new Map(current).set(key, bar)); }, []);
+  const dropHeld = useCallback((key: string) => setHeld((current) => { if (!current.has(key)) return current; const next = new Map(current); next.delete(key); return next; }), []);
   // The stack's height (0 when no bar shows), so the feed can add it to its bottom padding and its last cards scroll
   // clear of the bars (QA cb784d4, P3).
   const [height, setHeight] = useState(0);
@@ -93,13 +100,20 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
     observer.current = new ResizeObserver(() => setHeight(node.offsetHeight));
     observer.current.observe(node);
   }, []);
+  const seconds = (endsAt: number) => Math.max(1, Math.ceil((endsAt - now) / 1000));
+  // A long choice is cut with "…" on screen; a screen reader hears it whole (Monica).
+  const row = (id: string, text: string, choice: string | undefined, endsAt: number, onUndo: () => void) => <p key={id} role="status" className="pointer-events-auto flex min-h-11 min-w-[15rem] max-w-[calc(100vw-1.5rem)] items-center justify-between gap-3 rounded-full bg-zinc-900 py-1 pl-4 pr-1 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900 fine:min-h-10">
+    {choice
+      ? <><span aria-hidden className="flex min-w-0 items-baseline whitespace-pre tabular-nums">{text}{": "}<span className="max-w-[12rem] truncate">{choice}</span>{` · ${seconds(endsAt)}s`}</span>
+        <span className="sr-only">{`${text}: ${choice} · ${seconds(endsAt)}s`}</span></>
+      : <span className="tabular-nums">{text} · {seconds(endsAt)}s</span>}
+    <button type="button" onClick={onUndo} className="min-h-9 shrink-0 rounded-full bg-zinc-100 px-3 font-semibold text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100">Undo</button>
+  </p>;
   // Clear of a phone's home indicator in the native shell (safe-area inset), 1.5rem above the edge elsewhere.
-  const bar = !!items.length && <div ref={stackRef} className="pointer-events-none fixed inset-x-0 bottom-[max(1.5rem,calc(env(safe-area-inset-bottom)+0.5rem))] z-30 flex flex-col items-center gap-2 px-3">
+  const bar = (!!items.length || !!held.size) && <div ref={stackRef} className="pointer-events-none fixed inset-x-0 bottom-[max(1.5rem,calc(env(safe-area-inset-bottom)+0.5rem))] z-30 flex flex-col items-center gap-2 px-3">
     {/* One width for every bar, so a stack lines up (the design agent). */}
-    {items.map((item) => <p key={item.id} role="status" className="pointer-events-auto flex min-h-11 min-w-[15rem] items-center justify-between gap-3 rounded-full bg-zinc-900 py-1 pl-4 pr-1 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900 fine:min-h-10">
-      <span className="tabular-nums">{item.text} · {Math.max(1, Math.ceil((item.endsAt - now) / 1000))}s</span>
-      <button type="button" onClick={() => undo(item.id)} className="min-h-9 rounded-full bg-zinc-100 px-3 font-semibold text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100">Undo</button>
-    </p>)}
+    {items.map((item) => row(`item-${item.id}`, item.text, undefined, item.endsAt, () => undo(item.id)))}
+    {[...held].map(([key, item]) => row(`held-${key}`, item.text, item.choice, item.endsAt, item.undo))}
   </div>;
-  return { push, hidden, bar, height };
+  return { push, hidden, showHeld, dropHeld, bar, height };
 }
