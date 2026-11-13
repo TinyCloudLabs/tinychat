@@ -71,6 +71,7 @@ const refusalMessages = [
   "This response is not deliverable to this runner",
   "This handoff ledger belongs to another Home feed source",
   "The board already holds a different answer for this response",
+  "The board already holds a different message for this response",
   "Answer runner requires a source, a recipient, spaces and a response on stdin",
 ] as const;
 export type HomeMirrorRefusalMessage = (typeof refusalMessages)[number];

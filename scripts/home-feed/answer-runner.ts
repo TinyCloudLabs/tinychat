@@ -2,8 +2,10 @@
 // where the board's watcher already reads Sam's answers, then tells Home the response was received:
 //   sitrep.answer → xyz.tinycloud.rocinante/sam/answers/<askId>/<stamp>.json (answerKey), as the sitrep UI writes it
 //   sitrep.state  → xyz.tinycloud.rocinante/sam/state/<kind>/<id>.json (stateKey), merged into what is there
-// then a feed_handling "acknowledged". It exits 0 only after both writes are read back. Anything else (a comment, a
-// card action) is not written through and exits non-zero, so it stays unconfirmed in the handoff ledger.
+//   sitrep.thread → xyz.tinycloud.rocinante/sam/thread/<kind>/<id>/<messageId>.json (threadKey), the card message the
+//                   sitrep UI writes and the board's card-thread relay delivers to the card's owner
+// then a feed_handling "acknowledged". It exits 0 only after both writes are read back. Anything else (a card action)
+// is not written through and exits non-zero, so it stays unconfirmed in the handoff ledger.
 //
 // The header on stdin names a response and grants nothing. The runner reads the response from the owner's storage
 // and, immediately before its first write, checks that the owner's delivery policy releases it to the recipient this
@@ -16,9 +18,10 @@ import { isDeepStrictEqual } from "node:util";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { ErrorCodes } from "@tinycloud/sdk-services";
-import { answerKey, mergeSitrepStates, stateKey, validateAnswer, validateState } from "@tinyboilerplate/core/feed/sitrep";
-import type { SamState } from "@tinyboilerplate/core/feed/sitrep";
+import { answerKey, decodeOwnerThreadMessage, mergeSitrepStates, stateKey, threadKey, validateAnswer, validateState } from "@tinyboilerplate/core/feed/sitrep";
+import type { OwnerThreadMessage, SamState } from "@tinyboilerplate/core/feed/sitrep";
 import { acknowledgeHomeMirrorResponse, homeMirrorDiagnostic, homeMirrorFailure, homeMirrorRefusal, readHomeMirrorBinding, readHomeMirrorDelivery, readHomeMirrorResponse } from "./bridge";
+import type { HomeMirrorRefusalMessage } from "./bridge";
 import type { HomeMirrorContext } from "./bridge-types";
 import { openOwnerSession, withStopSignal } from "./owner-session";
 
@@ -35,7 +38,7 @@ export const handedOffResponse = z.object({
 });
 export type HandedOffResponse = z.infer<typeof handedOffResponse>;
 
-export interface WriteThroughResult { wrote: "answer" | "state"; key: string; stored: "written" | "already"; received: "recorded" | "already" }
+export interface WriteThroughResult { wrote: "answer" | "state" | "thread"; key: string; stored: "written" | "already"; received: "recorded" | "already" }
 /** What the log may hold about a response: taken from the stored row, never from the header. */
 export interface RunnerLogIds { responseId: string; cardId: string; createdAt: string }
 
@@ -54,11 +57,12 @@ async function read(kv: Kv, key: string, signal?: AbortSignal): Promise<Read> {
 }
 const sameJson = (text: string, value: unknown) => { try { return isDeepStrictEqual(JSON.parse(text), value); } catch { return false; } };
 
-async function writeAnswer(kv: Kv, key: string, value: unknown, signal?: AbortSignal): Promise<"written" | "already"> {
+/** Put-if-absent and read back: an identical value already there counts as written, a different one is refused. */
+async function writeOnce(kv: Kv, key: string, value: unknown, conflict: HomeMirrorRefusalMessage, signal?: AbortSignal): Promise<"written" | "already"> {
   const existing = await read(kv, key, signal);
   if (existing) {
     if (sameJson(existing.text, value)) return "already";
-    throw homeMirrorRefusal("The board already holds a different answer for this response");
+    throw homeMirrorRefusal(conflict);
   }
   const put = await kv.put(key, JSON.stringify(value), { ifNoneMatch: "*", prefix: "", contentType: "application/json", signal });
   if (!put.ok) {
@@ -114,13 +118,21 @@ export async function writeThroughResponse(ctx: HomeMirrorContext, options: { so
       const answer = validateAnswer(payload.data);
       if (!answer.ok || answer.value.askId !== binding.legacy.id) throw homeMirrorRefusal("Home mirror operation refused");
       wrote = "answer"; key = answerKey(answer.value.askId, answer.value.at);
-      write = () => writeAnswer(ctx.legacy, key, payload.data, ctx.signal);
+      write = () => writeOnce(ctx.legacy, key, payload.data, "The board already holds a different answer for this response", ctx.signal);
     } else if (payload?.type === "sitrep.state" && payload.version === 1 && response.kind === "message" && (binding.legacy.kind === "task" || binding.legacy.kind === "hold")) {
       const state = validateState(payload.data);
       if (!state.ok || state.value.kind !== binding.legacy.kind || state.value.id !== binding.legacy.id) throw homeMirrorRefusal("Home mirror operation refused");
       wrote = "state"; key = stateKey(state.value.kind, state.value.id);
       const delta = state.value;
       write = () => writeState(ctx.legacy, key, delta, ctx.signal);
+    } else if (payload?.type === "sitrep.thread" && payload.version === 1 && response.kind === "message") {
+      // Home's message carries its id and an owner-approved route; the board stores only the sitrep UI's message fields,
+      // under that id, and its relay routes by the card's owner.
+      let owned: OwnerThreadMessage;
+      try { owned = decodeOwnerThreadMessage({ kind: binding.legacy.kind, id: binding.legacy.id }, payload.data).message; } catch { throw homeMirrorRefusal("Home mirror operation refused"); }
+      const { side: _side, messageId, ...message } = owned;
+      wrote = "thread"; key = threadKey("sam", message.kind, message.id, message.at, messageId.slice(-32));
+      write = () => writeOnce(ctx.legacy, key, message, "The board already holds a different message for this response", ctx.signal);
     } else throw homeMirrorRefusal("This response is not one the runner writes through");
     // The delivery gate, immediately before the first write: the owner's stored policy for this recipient, and its deadline.
     if (!await readHomeMirrorDelivery(ctx, binding, response, recipient)) throw homeMirrorRefusal("This response is not deliverable to this runner", ErrorCodes.PERMISSION_DENIED);
