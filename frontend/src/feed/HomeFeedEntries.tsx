@@ -853,12 +853,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       </FloatingHeader>
       {ask}
       {!bare && <>
-      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <span className="ml-auto flex items-center gap-2">
-          <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
-          {!agentView && <button type="button" aria-expanded={viewOpen} aria-controls="home-feed-view" onClick={() => setViewOpen(!viewOpen)} className={`min-h-11 rounded-lg border px-3 text-sm fine:min-h-10 ${view === "compact" ? "border-border" : "border-primary bg-primary/10 font-medium"}`}>{view === "compact" ? "View" : `View · ${view === "full" ? "Full" : "Grid"}`}</button>}
-          {!agentView && <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-11 rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>}
-        </span>
+      {/* One row on a phone (Sam, 00:1xZ: "fix on mobile"): Agents, Filter, View; each opens its own panel below. */}
+      <div className="mb-4 flex flex-nowrap items-center justify-end gap-2">
+          <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-11 shrink-0 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
+          {!agentView && <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>}
+          {!agentView && <button type="button" aria-expanded={viewOpen} aria-controls="home-feed-view" onClick={() => setViewOpen(!viewOpen)} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${view === "compact" ? "border-border" : "border-primary bg-primary/10 font-medium"}`}>{view === "compact" ? "View" : `View · ${view === "full" ? "Full" : "Grid"}`}</button>}
       </div>
       {/* Feed lab (Sam, 11-12): every card short, like a list of posts; every card open; or a grid of tiles. Each keeps
           your place and morphs the cards on screen (anchoredToggle). The panel stays open until View is tapped again. */}
