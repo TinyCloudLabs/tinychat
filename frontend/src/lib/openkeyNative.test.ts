@@ -46,7 +46,8 @@ import {
 import APP_MANIFEST from "../../../manifest.json";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111";
-const HOST = "https://tee.node.tinycloud.xyz";
+const HOST = "https://node.tinycloud.xyz";
+const TEE_HOST = "https://tee.node.tinycloud.xyz";
 const SPACE_ID = "did:pkh:eip155:1:" + ADDRESS + "/applications";
 
 const delegation: TinyCloudDelegation = {
@@ -664,7 +665,7 @@ describe("native boot", () => {
     }
   });
 
-  test("restores a recent tee.node delegation without a host-migration renewal", async () => {
+  test("restores a recent delegation without a host-migration renewal", async () => {
     const flow = makeFlow();
     const recent = { ...delegation, issuedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 295_000).toISOString() };
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: recent, sessionKey });
@@ -675,7 +676,7 @@ describe("native boot", () => {
     expect(flow.restore[0]?.config.tinycloudHosts).toEqual([HOST]);
   });
 
-  test("renews an expiring tee.node delegation on the same host", async () => {
+  test("renews an expiring delegation on the same host", async () => {
     const flow = makeFlow();
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
     flow.openkey.renew = async () => ({ tokens: { accessToken: "a", refreshToken: "new" }, delegation, sessionKey });
@@ -797,7 +798,7 @@ describe("activation on restore (TC-2865)", () => {
   });
 
   test("a marker for another delegation or host does not skip the wait", async () => {
-    for (const stale of [`${HOST} bafyold`, `https://node.tinycloud.xyz ${delegation.delegationCid}`]) {
+    for (const stale of [`${HOST} bafyold`, `https://other.node.example ${delegation.delegationCid}`]) {
       resetNativeOpenKeyClientForTests();
       const { flow, marker } = restoreFlow(stale);
       flow.deps.activateSession = async () => ({ success: false, status: 401, error: "unknown delegation" });
@@ -852,6 +853,25 @@ test("renewed handoff saves the new CID, activates it, then restores on the live
   expect(flow.order).toEqual(["save", "activate", "liveRestore"]);
   expect(flow.storage.saved.at(-1)?.record.tinycloudSession?.delegationCid).toBe("bafyrenewed");
   expect(flow.activation.at(-1)?.header.Authorization).toBe("Bearer renewed");
+});
+
+test("a delegation on the node's previous name keeps working under the node.tinycloud.xyz config (TC-2923)", async () => {
+  const tee = { ...delegation, tinycloudHost: TEE_HOST };
+  const flow = makeFlow();
+  const recent = { ...tee, issuedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 295_000).toISOString() };
+  flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: recent, sessionKey });
+  expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
+  expect(flow.activation[0]?.host).toBe(TEE_HOST);
+  expect(flow.restore[0]?.config.tinycloudHosts).toEqual([TEE_HOST, HOST]);
+
+  const live = { restoreSession: async () => { flow.order.push("liveRestore"); return { status: "restored" }; } } as never;
+  const renewed = { tokens: { accessToken: "a", refreshToken: "new" }, sessionKey, delegation: { ...tee, delegationCid: "bafyrenewed" } } as NativeSession;
+  await installNativeSession(flow.openkey, renewed, config, flow.deps, live);
+  expect(flow.order.at(-1)).toBe("liveRestore");
+  expect(flow.activation.at(-1)?.host).toBe(TEE_HOST);
+
+  const foreign = { ...renewed, delegation: { ...renewed.delegation, tinycloudHost: "https://other.node.example" } };
+  await expect(installNativeSession(flow.openkey, foreign, config, flow.deps, live)).rejects.toThrow("different TinyCloud node");
 });
 
 describe("error message mapping", () => {

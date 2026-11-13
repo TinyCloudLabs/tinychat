@@ -50,7 +50,7 @@ describe("voice-note network error copy", () => {
     const original = console.warn;
     console.warn = () => {};
     try {
-      const error = new TypeError("Fetch API cannot load https://tee.node.tinycloud.xyz/kv?token=secret due to access control checks.");
+      const error = new TypeError("Fetch API cannot load https://node.tinycloud.xyz/kv?token=secret due to access control checks.");
       expect(saves.messageOf(error)).toBe(saves.TINYCLOUD_UPLOAD_REJECTED_MESSAGE);
       expect(saves.classifyNoteFailure(error)).toBe("rejected");
     } finally { console.warn = original; }

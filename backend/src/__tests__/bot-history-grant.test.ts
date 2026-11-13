@@ -29,6 +29,12 @@ test("history has its own exact get+put subtree schema and rejects additional au
   await expect(projectBotHistoryGrant(node, host, "0x" + "22".repeat(20), await fixture())).rejects.toThrow();
   await expect(projectBotHistoryGrant(node, "http://other", address, await fixture())).rejects.toThrow();
 });
+test("a history grant minted under the node's other production name is accepted (TC-2923)", async () => {
+  const grant = await makeSignedTranscriptGrant({ privateKey: key, att: { [uri]: actions }, host: "https://tee.node.tinycloud.xyz" });
+  const envelope = { serialized: grant.serialized, siwe: grant.siwe, signature: grant.signature };
+  expect((await projectBotHistoryGrant(node, "https://node.tinycloud.xyz", address, envelope)).cid).toBe(grant.cid);
+  await expect(projectBotHistoryGrant(node, host, address, envelope)).rejects.toThrow();
+});
 test("node activation must verify the proof chain before a grant is stored, and stored grants are encrypted", async () => {
   const values: unknown[] = [];
   let refuse = true;

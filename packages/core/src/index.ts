@@ -252,3 +252,6 @@ export {
 
 // ── Notetaker meeting links ──────────────────────────────────────────
 export { meetingLinkFromInput } from "./meeting-link.js";
+
+// ── TinyCloud node hosts ─────────────────────────────────────────────
+export { sameTinyCloudNode } from "./tinycloud-node.js";

@@ -25,7 +25,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 import { withAbortTimeout } from "./abortTimeout";
-import { manifestCarriesBundle } from "@tinyboilerplate/core";
+import { manifestCarriesBundle, sameTinyCloudNode } from "@tinyboilerplate/core";
 import APP_MANIFEST from "../../../manifest.json";
 
 // ── Gate ──────────────────────────────────────────────────────────────
@@ -710,7 +710,8 @@ export async function installNativeSession(
     !delegation.delegationHeader ||
     !delegation.delegationCid ||
     !delegation.spaceId ||
-    (!restoringExisting && delegation.tinycloudHost !== config.tinycloudHost)
+    // A renewal may keep the delegation on the node's previous name (tee.node.tinycloud.xyz before TC-2923): same node.
+    (!restoringExisting && (!delegation.tinycloudHost || !sameTinyCloudNode(delegation.tinycloudHost, config.tinycloudHost)))
   ) {
     throw new Error("OpenKey returned an incomplete delegation for a different TinyCloud node.");
   }

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "name": "tinychat-retrieval",
+  "version": "0.1.1-onboarding.26",
+  "archive": "tinychat-retrieval-0.1.1-onboarding.26.tgz",
+  "sha256": "c606d44747c22e8194129edf8212bd6cefdccd0976e5ade039b730177e6e703b",
+  "files": {
+    "SKILL.md": "195d21cb936e922a3198c2bb74a17268004400ede321f392c00d67eac6637842",
+    "assets/permissions.json": "87e584e77f17daf281a0ec0317920868e429f75be25dc53db725dfe3c6a9793c",
+    "lib/consumer.mjs": "632762dc545ceb95a551b9702f6f5e0a8bc5cbf734def568a8d7b5adbec7356d",
+    "lib/evidence.mjs": "190043af703119b67f8a8a0152e5d1f3bc49834f46ff3544ccb4677071997bd9",
+    "lib/login.mjs": "fe32f27a7199581abc33bab8ad52e9d7f04bfc518b45cc94300d9f4e63d01aae",
+    "lib/opencode-activation.mjs": "828c7d91acaf28f9db4a59e4d5da2d1d4004b63da0f22eb4d20310cc4c3d833b",
+    "lib/opencode-continuation.mjs": "3745da4b7c2817569135f85ad99f54e1f718c0c6cf447006cbf4b81cbc202a83",
+    "lib/opencode-plugin.mjs": "5674871dca58ffae22d97c1f957356757bbb661ad8525a14432a956438460a47",
+    "lib/retrieval.mjs": "6fb710241883d3a17c23c3b201b6f3aa11c0da78217f2a0793744b84c541e943",
+    "lib/session-handoff.mjs": "bef1bcd69be534f2132f117fd2050289c37f6c9e162acdf5516686e9e105dd9a",
+    "lib/setup.mjs": "fc04f267736035260998254e7ee4f3d92b171788119d1701779c1163a2eb5b03",
+    "pack.json": "067b1fa76348336c3dd4dec0185b8c67f898c2b405a0652abdc954f39c9603db",
+    "package.json": "852c35a0960570af4bf8099323dc45acee2e4ebde89d0008e1e935e1ef19ef75",
+    "references/meetings.md": "91192e4467aa6e535824227d66e49eefa55ea2b1b033fb34057841c7bce812d5",
+    "references/session-handoff.md": "461113303e0e7b8b3c429000ce5ccf0dcf9d6f7f3ae3dc8c41038133708d3164",
+    "references/setup.md": "600dfe82bbc6a52c4d89db02193e8da1425de5f68d0756a5252c73ff44109847",
+    "scripts/consume.mjs": "90b5d924a487931479465151484572826d23c4dad6d5f765117c47b7820833ca",
+    "scripts/install-opencode.mjs": "80d5b48d380ebd71fc85e13bf68b658590bd2cad91b371ddd1d35b64d20a5dd1",
+    "scripts/retrieve.mjs": "a43e765f7e2e1710a78c86cf47145b11ab0916eb3a33824e2d4b72ba790b6a7c",
+    "scripts/setup.mjs": "0c085cf81d483a44179501e6aa62e7ccc839415491fb3d7a0806fd5039c8d4f1"
+  }
+}

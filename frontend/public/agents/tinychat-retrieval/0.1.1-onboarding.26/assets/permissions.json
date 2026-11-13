@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "app_id": "xyz.tinycloud.tinychat.retrieval",
+  "name": "TinyChat retrieval",
+  "description": "Read existing TinyChat meeting metadata and stored transcript bodies.",
+  "defaults": false,
+  "includePublicSpace": false,
+  "space": "applications",
+  "permissions": [
+    { "service": "tinycloud.capabilities", "path": "", "actions": ["read"], "skipPrefix": true },
+    { "service": "tinycloud.sql", "path": "xyz.tinycloud.tinychat/connectors", "actions": ["read"], "skipPrefix": true },
+    { "service": "tinycloud.kv", "path": "xyz.tinycloud.tinychat/connectors/", "actions": ["get"], "skipPrefix": true }
+  ]
+}

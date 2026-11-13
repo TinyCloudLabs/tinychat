@@ -4,7 +4,7 @@ import { makePkhSpaceId } from "@tinycloud/node-sdk/core";
 import { verifyDidKeyEd25519Signature } from "@tinycloud/sdk-core";
 import { siweToDelegationHeaders } from "@tinycloud/node-sdk-wasm";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
-import { APP_ID } from "@tinyboilerplate/core";
+import { APP_ID, sameTinyCloudNode } from "@tinyboilerplate/core";
 import { backendDelegationPolicyHash } from "./manifest.js";
 
 export interface VerifiedTranscriptWriter {
@@ -73,11 +73,8 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
   let bundle: unknown;
   try { bundle = JSON.parse(input.serialized); } catch { return failure("unsupported_bundle_shape"); }
   if (!isRecord(bundle) || bundle.format === "tinycloud.delegation-bundle" || Array.isArray(bundle.delegations)) return failure("unsupported_bundle_shape");
-  if (bundle.host !== undefined) {
-    try {
-      if (typeof bundle.host !== "string" || new URL(bundle.host).origin !== new URL(input.configuredHost).origin) return failure("untrusted_host");
-    } catch { return failure("untrusted_host"); }
-  }
+  // A grant minted under the node's other production name (tee.node.tinycloud.xyz before TC-2923) is for the same node.
+  if (bundle.host !== undefined && (typeof bundle.host !== "string" || !sameTinyCloudNode(bundle.host, input.configuredHost))) return failure("untrusted_host");
   const header = bundle.delegationHeader;
   if (!isRecord(header) || typeof header.Authorization !== "string") return failure("unsupported_delegation_format");
   const authorization = header.Authorization;
