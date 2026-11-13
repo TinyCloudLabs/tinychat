@@ -7,7 +7,7 @@
 import { useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import type { UnshownField } from "./unshown";
-import { CardData, detailsSectionTitle, UnshownList } from "./UnshownList";
+import { CardData, detailsSectionTitle, FeedUsedList, UnshownList } from "./UnshownList";
 
 /** The class of a small action on a card: 44px on touch (QA cb784d4), 40px with a mouse. */
 export const actionClass = "min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10";
@@ -31,7 +31,6 @@ export function CardDetails({ children, actions, secondary, close, unshown, card
   const [open, setOpen] = useState(false);
   // Only fields meant to be read count; the feed's own bookkeeping is listed in Details but not counted.
   const count = unshown.filter((field) => !field.quiet).length;
-  const listed = unshown.length > 0;
   const details = <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}
     {...(count ? { "aria-label": `Details, ${count} ${count === 1 ? "field" : "fields"} not shown on the card` } : {})}
     className={`ml-auto inline-flex min-h-11 items-center gap-1 whitespace-nowrap rounded-[10px] pl-2 pr-1 text-sm transition-colors fine:min-h-9 ${open ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-surface-2 hover:text-foreground"}`}>
@@ -51,10 +50,13 @@ export function CardDetails({ children, actions, secondary, close, unshown, card
         ? <><div className="flex flex-wrap items-center gap-0.5">{leading}</div><div className="mt-1 flex items-center gap-0.5">{secondary}{details}</div></>
         : <div className="flex flex-wrap items-center gap-0.5">{leading}{details}</div>}
     </div>
-    {open && <div aria-label="Details" className={`mt-2 grid gap-[18px] break-words rounded-[14px] bg-muted/60 p-3.5 ${listed ? "min-[900px]:grid-cols-[240px_minmax(0,1fr)] min-[900px]:gap-x-5" : ""}`}>
-      {listed && <div className="min-w-0 min-[900px]:col-start-2 min-[900px]:row-span-3 min-[900px]:row-start-1"><UnshownList fields={unshown} agent={agent} /></div>}
+    {/* Not shown on the card (only when there is any), then This card with its history, then the feed's folded
+        bookkeeping, then the card as sent. From 900px the list sits right of a 240px rail holding the rest. */}
+    {open && <div aria-label="Details" className={`mt-2 grid gap-[18px] break-words rounded-[14px] bg-muted/60 p-3.5 ${count ? "min-[900px]:grid-cols-[240px_minmax(0,1fr)] min-[900px]:gap-x-5" : ""}`}>
+      {count > 0 && <div className="min-w-0 min-[900px]:col-start-2 min-[900px]:row-span-3 min-[900px]:row-start-1"><UnshownList fields={unshown.filter((field) => !field.quiet)} agent={agent} /></div>}
       <div className="grid min-w-0 content-start gap-[18px]">
         <section aria-label="This card"><h3 className={detailsSectionTitle}>This card</h3>{children}</section>
+        <FeedUsedList fields={unshown.filter((field) => field.quiet)} />
         <CardData card={card} />
       </div>
     </div>}
