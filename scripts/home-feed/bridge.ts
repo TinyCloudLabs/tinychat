@@ -72,6 +72,8 @@ const refusalMessages = [
   "This handoff ledger belongs to another Home feed source",
   "The board already holds a different answer for this response",
   "The board already holds a different message for this response",
+  "This card is closed; the note was not passed on",
+  "This note names recipients the board's card thread cannot route to",
   "Answer runner requires a source, a recipient, spaces and a response on stdin",
 ] as const;
 export type HomeMirrorRefusalMessage = (typeof refusalMessages)[number];
@@ -222,6 +224,10 @@ async function readLegacy(ctx: HomeMirrorContext, kind: BoardRecord["kind"], key
   const checked = validateRecord(kind, body);
   if (!checked.ok) throw failure();
   return { raw, record: checked.value, etag: headers.etag, sha256: hash(data) };
+}
+/** The board's current copy of a mirrored card, without its Home marker; undefined once it is gone. */
+export async function readHomeMirrorBoardRecord(ctx: HomeMirrorContext, binding: HomeMirrorBinding): Promise<BoardRecord | undefined> {
+  try { return (await readLegacy(ctx, binding.legacy.kind, binding.legacy.fullKey))?.record; } catch (error) { throw safeFailure(error); }
 }
 
 export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown): Promise<HomeMirrorBinding> {

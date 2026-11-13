@@ -18,9 +18,9 @@ import { isDeepStrictEqual } from "node:util";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { ErrorCodes } from "@tinycloud/sdk-services";
-import { answerKey, decodeOwnerThreadMessage, mergeSitrepStates, stateKey, threadKey, validateAnswer, validateState } from "@tinyboilerplate/core/feed/sitrep";
-import type { OwnerThreadMessage, SamState } from "@tinyboilerplate/core/feed/sitrep";
-import { acknowledgeHomeMirrorResponse, homeMirrorDiagnostic, homeMirrorFailure, homeMirrorRefusal, readHomeMirrorBinding, readHomeMirrorDelivery, readHomeMirrorResponse } from "./bridge";
+import { answerKey, decodeOwnerThreadMessage, isClosed, mergeSitrepStates, stateKey, threadKey, validateAnswer, validateState } from "@tinyboilerplate/core/feed/sitrep";
+import type { SamState } from "@tinyboilerplate/core/feed/sitrep";
+import { acknowledgeHomeMirrorResponse, homeMirrorDiagnostic, homeMirrorFailure, homeMirrorRefusal, readHomeMirrorBinding, readHomeMirrorBoardRecord, readHomeMirrorDelivery, readHomeMirrorResponse } from "./bridge";
 import type { HomeMirrorRefusalMessage } from "./bridge";
 import type { HomeMirrorContext } from "./bridge-types";
 import { openOwnerSession, withStopSignal } from "./owner-session";
@@ -126,11 +126,15 @@ export async function writeThroughResponse(ctx: HomeMirrorContext, options: { so
       const delta = state.value;
       write = () => writeState(ctx.legacy, key, delta, ctx.signal);
     } else if (payload?.type === "sitrep.thread" && payload.version === 1 && response.kind === "message") {
-      // Home's message carries its id and an owner-approved route; the board stores only the sitrep UI's message fields,
-      // under that id, and its relay routes by the card's owner.
-      let owned: OwnerThreadMessage;
-      try { owned = decodeOwnerThreadMessage({ kind: binding.legacy.kind, id: binding.legacy.id }, payload.data).message; } catch { throw homeMirrorRefusal("Home mirror operation refused"); }
-      const { side: _side, messageId, ...message } = owned;
+      // Home's message carries its id; the board stores only the sitrep UI's message fields under that id, and its relay
+      // sends them to the card's owner (or the XO). A note Home routed to named recipients is refused, never re-routed:
+      // the board cannot honour that route, and Sam was shown it. A card closed since Sam wrote is refused too, so Home
+      // does not say "received" for a note the relay would drop.
+      const decoded = (() => { try { return decodeOwnerThreadMessage({ kind: binding.legacy.kind, id: binding.legacy.id }, payload.data); } catch { throw homeMirrorRefusal("Home mirror operation refused"); } })();
+      if (decoded.delivery) throw homeMirrorRefusal("This note names recipients the board's card thread cannot route to");
+      const card = await readHomeMirrorBoardRecord(ctx, binding);
+      if (!card || card.id !== binding.legacy.id || isClosed(card)) throw homeMirrorRefusal("This card is closed; the note was not passed on");
+      const { side: _side, messageId, ...message } = decoded.message;
       wrote = "thread"; key = threadKey("sam", message.kind, message.id, message.at, messageId.slice(-32));
       write = () => writeOnce(ctx.legacy, key, message, "The board already holds a different message for this response", ctx.signal);
     } else throw homeMirrorRefusal("This response is not one the runner writes through");
