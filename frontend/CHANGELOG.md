@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.43
+
+### Patch Changes
+
+- 749f7bf: Keep TinyCloud permission prompts accessible while Main's chat is open, then restore chat focus without losing the draft. Details: TC-2835.
+
 ## 0.14.0-beta.42
 
 ### Minor Changes
