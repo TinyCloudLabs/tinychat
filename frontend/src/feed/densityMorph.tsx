@@ -13,7 +13,7 @@
 //   anchoredToggle(() => { setSize(next); });
 import { type ReactNode, type Ref, type RefObject, useCallback, useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
-import { AnimatePresence, LayoutGroup, MotionConfig, type Transition, cancelFrame, cubicBezier, frame, motion, useIsPresent, useReducedMotion } from "motion/react";
+import { AnimatePresence, LayoutGroup, LazyMotion, MotionConfig, type Transition, cancelFrame, cubicBezier, frame, m, useIsPresent, useReducedMotion } from "motion/react";
 
 import { cn } from "@/lib/utils";
 
@@ -34,6 +34,17 @@ const easeMorph = cubicBezier(...MORPH_EASE);
 /** A card counts as "the one you are reading" once this much of it shows below the top edge. */
 const MIN_VISIBLE_PX = 24;
 
+/** motion's animation features (motionFeatures.ts), fetched once Home has rendered. */
+const loadMotionFeatures = () => import("./motionFeatures").then((module) => module.default);
+
+/**
+ * Around the whole feed: its `m` components render at once and start animating when motion's features arrive, so
+ * that code is not in the entry chunk the app boots from (TC-2882).
+ */
+export function MotionFeatures({ children }: { children: ReactNode }) {
+  return <LazyMotion features={loadMotionFeatures}>{children}</LazyMotion>;
+}
+
 /**
  * Wrap every list of cards in one of these (one wrapper around all of them, not one per list).
  * - `LayoutGroup`: when any card changes, every card in the group measures itself, so cards in other lists and
@@ -53,7 +64,7 @@ export function MorphConfig({ children }: { children: ReactNode }) {
  */
 export function MorphShift({ children, className }: { children: ReactNode; className?: string }) {
   const reduce = useReducedMotion();
-  return <motion.div layout="position" transition={{ layout: reduce ? INSTANT : LAYOUT_TWEEN }} className={className}>{children}</motion.div>;
+  return <m.div layout="position" transition={{ layout: reduce ? INSTANT : LAYOUT_TWEEN }} className={className}>{children}</m.div>;
 }
 
 export type MorphItemProps = {
@@ -76,7 +87,7 @@ export type MorphItemProps = {
 export function MorphItem({ contentKey, children, className, ...attributes }: MorphItemProps) {
   const reduce = useReducedMotion();
   const ref = useRef<HTMLLIElement>(null);
-  return <motion.li ref={ref} {...attributes} layout transition={{ layout: reduce ? INSTANT : LAYOUT_TWEEN }}
+  return <m.li ref={ref} {...attributes} layout transition={{ layout: reduce ? INSTANT : LAYOUT_TWEEN }}
     onLayoutAnimationStart={() => ref.current?.setAttribute("data-morphing", "")}
     onLayoutAnimationComplete={() => ref.current?.removeAttribute("data-morphing")}
     // `relative`: the leaving content is positioned against the item while it fades.
@@ -84,7 +95,7 @@ export function MorphItem({ contentKey, children, className, ...attributes }: Mo
     <AnimatePresence initial={false} mode="popLayout">
       <MorphContent key={contentKey} reduce={!!reduce}>{children}</MorphContent>
     </AnimatePresence>
-  </motion.li>;
+  </m.li>;
 }
 
 /**
@@ -95,11 +106,11 @@ export function MorphItem({ contentKey, children, className, ...attributes }: Mo
  */
 function MorphContent({ children, reduce, ref }: { children: ReactNode; reduce: boolean; ref?: Ref<HTMLDivElement> }) {
   const present = useIsPresent();
-  return <motion.div ref={ref} layout="position" inert={!present} className="h-full"
+  return <m.div ref={ref} layout="position" inert={!present} className="h-full"
     transition={{ layout: reduce ? INSTANT : LAYOUT_TWEEN }}
     initial={{ opacity: 0 }} animate={{ opacity: 1, transition: FADE_IN }} exit={{ opacity: 0, transition: reduce ? INSTANT : FADE_OUT }}>
     {children}
-  </motion.div>;
+  </m.div>;
 }
 
 export type AnchorOptions = {

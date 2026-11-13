@@ -8,53 +8,18 @@
 // the agent to read, and each question's answer in a private `feed.page` payload for its program.
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { CheckIcon, ChevronLeftIcon, PlayIcon } from "lucide-react";
+import { AnimatePresence, m, useReducedMotion } from "motion/react";
+import { CheckIcon, ChevronLeftIcon } from "lucide-react";
 import type { FeedResponse, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 
 import { Button } from "@/components/ui/button";
-import { AgentMark, PlatformName, type Platform } from "./AgentMark";
 import { ANSWER_FAILED_COPY, ANSWER_HELD_COPY, NOT_SENT_COPY, UNDO_SECONDS, usePendingSend } from "./cardKit";
-import { CompactCard, StatusMark } from "./CompactCard";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
 import {
   answeredCount, clearPostDraft, EMPTY_ANSWER, pageAnswerPayload, pageSummary, postDraft, rememberPageAnswer, sameAnswers, savedPageAnswers, savePostDraft,
   type LabPage, type LabPageMedia, type LabPageQuestion, type PageAnswer, type PageAnswers,
 } from "./postAnswers";
 import { morphImageId, morphTitleId, postMorphId, useMorphTransition } from "./PostTile";
-import { ShortTime } from "./ShortTime";
-
-/**
- * A post in the feed. Compact: the feed's compact card with a thumbnail of the page. Full: the header row, title,
- * blurb and the page's image, with how many questions it asks. Either way the whole card opens the page.
- */
-export function PostPreview({ entry, page, author, agentKey, platform, status, full, onOpen }: {
-  entry: HomeFeedEntry; page: LabPage; author: string; agentKey: string; platform?: Platform; status?: string; full: boolean; onOpen: () => void;
-}) {
-  const card = entry.state.card;
-  const blurb = typeof card.payload?.summary === "string" ? card.payload.summary : card.body;
-  const films = page.questions.some((question) => question.media?.some((media) => media.type === "video"));
-  if (!full) return <CompactCard agentKey={agentKey} author={author} platform={platform} createdAt={card.createdAt} status={status} title={card.title} description={blurb}
-    thumb={{ src: page.image, video: films }} onOpen={onOpen} opensPage />;
-  return <button type="button" onClick={onOpen} aria-haspopup="dialog"
-    className="block w-full min-w-0 rounded-2xl border border-border bg-card p-4 text-left text-card-foreground shadow-sm active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-5">
-    <span className="flex min-w-0 items-start gap-3">
-      <AgentMark agentKey={agentKey} name={author} />
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground"><span className="max-w-[58%] shrink-0 truncate font-semibold text-foreground">{author}</span>{platform && <PlatformName platform={platform} logoOnly />}<ShortTime at={card.createdAt} className="shrink-0 before:mr-1.5 before:content-['·']" />
-          <span className="ml-auto flex shrink-0 items-center"><StatusMark status={status} /></span></span>
-        <span className="mt-1 block break-words font-display text-xl font-semibold leading-snug">{card.title}</span>
-        {blurb && <span className="mt-0.5 block break-words text-sm text-muted-foreground">{blurb}</span>}
-      </span>
-    </span>
-    {/* The one thing a post adds: a look at the page. */}
-    <span className="relative mt-3 block overflow-hidden rounded-xl border border-border bg-muted">
-      <img src={page.image} alt={page.imageAlt} loading="lazy" className="block aspect-video w-full object-cover" />
-      {films && <span aria-hidden className="absolute bottom-2 left-2 flex size-8 items-center justify-center rounded-full bg-background/90 text-foreground shadow-sm"><PlayIcon className="size-4" /></span>}
-    </span>
-    <span className="mt-3 flex items-center justify-between gap-3 text-sm"><span className="text-muted-foreground">{page.questions.length === 1 ? "1 question" : `${page.questions.length} questions`}</span><span className="font-medium underline decoration-border underline-offset-4">Answer</span></span>
-  </button>;
-}
 
 function Media({ media }: { media: LabPageMedia }) {
   return <figure className="min-w-0">
@@ -254,34 +219,34 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
     <AnimatePresence onExitComplete={() => closeRef.current()}>
       {open && <Dialog.Portal key="page" forceMount>
         <Dialog.Overlay asChild forceMount>
-          <motion.div className="fixed inset-0 z-40 bg-black/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={fade} />
+          <m.div className="fixed inset-0 z-40 bg-black/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={fade} />
         </Dialog.Overlay>
         <div className="pointer-events-none fixed inset-0 z-40 flex sm:items-center sm:justify-center sm:p-6">
           <Dialog.Content asChild forceMount aria-describedby={undefined}
             onOpenAutoFocus={(event) => { event.preventDefault(); homeRef.current?.focus({ preventScroll: true }); }}
             onCloseAutoFocus={(event) => { event.preventDefault(); if (opener?.isConnected) opener.focus(); }}>
             {/* Motion keeps corners right while it scales only when the radius is in `style`. */}
-            <motion.div {...surface} style={{ borderRadius: wide ? 16 : 0 }}
+            <m.div {...surface} style={{ borderRadius: wide ? 16 : 0 }}
               className="pointer-events-auto relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-background text-foreground outline-none sm:h-auto sm:max-h-full sm:max-w-2xl sm:border sm:border-border sm:shadow-float">
               {/* "position" only, so the page is never stretched while the surface grows; it scrolls on its own. */}
-              <motion.div layout="position" layoutScroll transition={transition} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              <m.div layout="position" layoutScroll transition={transition} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 <div className="mx-auto w-full min-w-0 px-3 pb-6 pt-4 sm:px-5">
-                  <motion.div {...reveal}>
+                  <m.div {...reveal}>
                     <Dialog.Close asChild>
                       <button ref={homeRef} type="button" className="mb-4 inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-10"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
                     </Dialog.Close>
-                  </motion.div>
+                  </m.div>
                   {morphFrom ? <>
                     {/* The tile's picture and title, grown: above the card, in the order the tile had them. */}
-                    <motion.div layoutId={morphImageId(morphFrom)} transition={transition} style={{ borderRadius: 12 }}
+                    <m.div layoutId={morphImageId(morphFrom)} transition={transition} style={{ borderRadius: 12 }}
                       className="relative mb-3 aspect-[4/3] w-full overflow-hidden border border-border bg-muted sm:aspect-video">
                       <img src={page.image} alt={page.imageAlt} className="absolute inset-0 size-full object-cover" />
-                    </motion.div>
+                    </m.div>
                     <Dialog.Title asChild>
-                      <motion.h2 layoutId={morphTitleId(morphFrom)} layout="position" transition={transition} className="mb-4 break-words font-display text-title-2">{title}</motion.h2>
+                      <m.h2 layoutId={morphTitleId(morphFrom)} layout="position" transition={transition} className="mb-4 break-words font-display text-title-2">{title}</m.h2>
                     </Dialog.Title>
                   </> : <Dialog.Title className="sr-only">{title}</Dialog.Title>}
-                  <motion.div {...reveal}>
+                  <m.div {...reveal}>
                     {card(<div className="mt-4 space-y-5">
                       {/* The page's picture, unless it is already above the card or its first question shows its own media (design critique #7). */}
                       {!morphFrom && !page.questions[0]?.media?.length && <img src={page.image} alt={page.imageAlt} className="block aspect-video w-full rounded-xl border border-border bg-muted object-cover" />}
@@ -290,11 +255,11 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
                         answer={answers[question.id] ?? EMPTY_ANSWER} disabled={waiting} onChange={(answer) => change(question.id, answer)} />)}</div>
                       {footer}
                     </div>, { showTitle: !morphFrom })}
-                  </motion.div>
+                  </m.div>
                 </div>
-              </motion.div>
+              </m.div>
               {/* One send for the whole page, at the bottom where the answers are. */}
-              <motion.div {...reveal} className="shrink-0 border-t border-border bg-background px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-3">
+              <m.div {...reveal} className="shrink-0 border-t border-border bg-background px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-3">
                 <div className="mx-auto flex w-full max-w-2xl items-center gap-3">
                   {/* Once sent, where the person is: Sent, then "{agent} received it", then Done (QA, 1f17120: the
                       status at the top of the page was off-screen after sending from the bottom). */}
@@ -309,8 +274,8 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
                     : <Button type="button" disabled={!count || saving || stale} onClick={hold} className="min-h-11">{sent ? "Send again" : "Send answers"}</Button>}
                 </div>
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announce}</p>
-              </motion.div>
-            </motion.div>
+              </m.div>
+            </m.div>
           </Dialog.Content>
         </div>
       </Dialog.Portal>}
