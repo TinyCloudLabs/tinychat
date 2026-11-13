@@ -677,6 +677,24 @@ test("undo at 3 seconds writes nothing and brings the card and its options back"
   expect(store.responses).toEqual([]);
 });
 
+test("the last card leaving with a decision counts as gone: Nothing needs you while the bar counts, and Undo brings the card and its count back", async () => {
+  const store = persistence([decision()], { defaultSelector: "needs-action" });
+  const view = await mount(store.source());
+  await open(view.host);
+  expect(needsLine(view.host)).toContain("1 needs you.");
+  await act(async () => option(view.host, "Hold").click());
+  expect(needsLine(view.host)).toContain("Nothing needs you.");
+  // Once its space has closed, the empty state takes its place.
+  await clock!.advance(200);
+  expect(view.host.querySelector("[data-feed-empty]")?.textContent).toBe("Nothing needs you.");
+  await act(async () => undoButton(view.host)!.click());
+  expect(needsLine(view.host)).toContain("1 needs you.");
+  expect(view.host.querySelector("[data-feed-empty]")).toBeNull();
+  expect(option(view.host, "Hold").disabled).toBe(false);
+  await clock!.advance(10_000);
+  expect(store.responses).toEqual([]);
+});
+
 test("a reply in words waits too, and undo keeps the draft", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());

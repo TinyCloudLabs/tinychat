@@ -362,8 +362,19 @@ export function sourceRef(payload: Record<string, unknown> | undefined): string 
   const ref = source && typeof source === "object" ? (source as Record<string, unknown>).ref : undefined;
   return typeof ref === "string" && ref ? ref : undefined;
 }
-/** Details' "Source" row for a card whose source carries a path. */
-export function sourceRow(payload: Record<string, unknown> | undefined): [string, ReactNode][] {
+/** Details' "Source" row for a card whose source carries a path; a path past 28 characters stacks under its label. */
+export function sourceRow(payload: Record<string, unknown> | undefined): FactRow[] {
   const ref = sourceRef(payload);
-  return ref ? [["Source", <code className="block select-all text-xs [overflow-wrap:anywhere]">{ref}</code>]] : [];
+  return ref ? [["Source", <code className="block select-all text-xs [overflow-wrap:anywhere]">{ref}</code>, ref.length > 28]] : [];
+}
+/** A fact under Details: its label, its value, and whether the value is long enough to stack under the label. */
+export type FactRow = [term: string, value: ReactNode, stack?: boolean];
+/**
+ * A card's facts under Details: label and value on one line, the value at the right; a long value (a path) stacks under
+ * its label instead, left-aligned and full width, rather than a ragged right-aligned column (the design agent).
+ */
+export function FactRows({ rows }: { rows: readonly FactRow[] }) {
+  return <dl>{rows.map(([term, value, stack]) => <div key={term} className={`border-t border-border py-2 first:border-t-0 first:pt-0 ${stack ? "" : "flex items-baseline justify-between gap-4"}`}>
+    <dt className="shrink-0 text-muted-foreground">{term}</dt><dd className={stack ? "mt-1 min-w-0" : "min-w-0 text-right"}>{value}</dd>
+  </div>)}</dl>;
 }

@@ -12,7 +12,7 @@ import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { CardConversation, plainConversation } from "./CardConversation";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, Reference, sourceRow, usePendingSend } from "./cardKit";
+import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, FactRows, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, Reference, sourceRow, usePendingSend, type FactRow } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
@@ -146,7 +146,7 @@ function ResponseStatus({ entry, focusOnMount }: { entry: HomeFeedEntry; focusOn
 function CardFacts({ entry, reference, priority }: { entry: HomeFeedEntry; reference: ReactNode; priority?: number }) {
   const agent = entry.state.card.payload?.agent;
   const job = agent && typeof agent === "object" && typeof (agent as Record<string, unknown>).job === "string" ? (agent as Record<string, string>).job : undefined;
-  const rows: [string, ReactNode][] = [
+  const rows: FactRow[] = [
     ["Agent", entry.source.label],
     ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
     ["Type", entry.state.card.kind.charAt(0).toUpperCase() + entry.state.card.kind.slice(1)],
@@ -158,7 +158,7 @@ function CardFacts({ entry, reference, priority }: { entry: HomeFeedEntry; refer
     ...(priority !== undefined ? [["Priority", `P${priority}`] as [string, ReactNode]] : []),
   ];
   return <>
-    <dl>{rows.map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>
+    <FactRows rows={rows} />
     <section aria-label="Card history" className="mt-4"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p><HistoryTimeline items={historyFromEntry({ ...entry, responses: (entry.responses ?? []).filter((response) => !isOwnerAction(response)) })} /></section>
   </>;
 }
@@ -426,11 +426,18 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         if (next?.away && !was?.away) {
           // Its answer is on its way: once saved it goes to Pending, not back to its place in All (keepsNeeds).
           setSticky((current) => new Map(current).set(key, false));
-          // Focus leaves with the card, to the next card in the list.
+          // Focus leaves with the card: to the next card in the list or, when it was the last, to the empty state that
+          // takes its place once its space has closed (the design agent), never to the page itself.
           const node = frame();
-          if (node?.contains(document.activeElement)) node.closest("li")?.nextElementSibling?.querySelector<HTMLElement>("button")?.focus();
+          const focused = !!node?.contains(document.activeElement);
+          const nextButton = focused ? node?.closest("li")?.nextElementSibling?.querySelector<HTMLElement>("button") : undefined;
+          nextButton?.focus();
           const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-          window.setTimeout(() => { if (leavingRef.current.get(key)?.away) setGone((current) => new Set(current).add(key)); }, reduce ? 0 : 100);
+          window.setTimeout(() => {
+            if (!leavingRef.current.get(key)?.away) return;
+            setGone((current) => new Set(current).add(key));
+            if (focused && !nextButton) window.requestAnimationFrame(() => document.querySelector<HTMLElement>("[data-feed-empty]")?.focus());
+          }, reduce ? 0 : 100);
         }
         if (!next?.away && was?.away) {
           setGone((current) => { const after = new Set(current); after.delete(key); return after; });
@@ -634,7 +641,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // answer is saved, when it moves to Pending and the next card opens in its place.
   const keepsNeeds = (entry: HomeFeedEntry) => sticky.get(lineageKey(entry)) === true && (history || view !== "needs-action" || attention(entry));
   const needing = (entry: HomeFeedEntry) => (attention(entry) && !folded(entry)) || keepsNeeds(entry);
-  const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry)).length;
+  // A card leaving with its decision counts as gone (the design agent): "Nothing needs you." while the bar runs, back on Undo.
+  const leavingNow = (entry: HomeFeedEntry) => leaving.get(lineageKey(entry))?.away === true;
+  const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry) && !leavingNow(entry)).length;
   /**
    * Answered and still open (Sam, 11-13): Waiting on its agent, Answered (its agent got it), or Done (or Failed) and not
    * yet acknowledged. In Needs you and All these leave the main flow for the Pending card at its end, so only what needs
@@ -713,6 +722,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       : [["", ordered([...rows].sort((first, second) => newest(second) - newest(first)))]];
   // The cards in the order this view shows them, top to bottom (where focus goes when one is taken away), Pending last.
   const listed = sections.flatMap(([, list]) => list.flatMap((row) => row.kind === "card" ? [row.item] : row.items));
+  // What is still on screen: a card whose space has closed after a decision stays mounted (its answer counts down) but
+  // is gone from the list, so the empty state can show under it.
+  const present = (list: Row[]) => list.reduce((count, row) => count + (row.kind === "card" ? [row.item] : row.items).filter((entry) => !gone.has(lineageKey(entry))).length, 0);
   const shown = [...listed, ...pendingEntries];
   // Needs you opens its first card (not a post, which has a page of its own) while no card in it is open and the owner
   // has folded none. The card it opens stays open (it joins `opened`), so cards moving around it never fold it; once
@@ -1097,7 +1109,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {snapshot && agentPage !== null && <LazyAgentView entries={all} page={agentPage} contextFor={contextFor} author={cardAuthor}
         agentKey={agentKey} lineageKey={lineageKey} needsYou={(entry) => attention(entry) && !folded(entry)}
         unread={(entry) => repliesOf(entry)?.unread ?? 0} now={clock} onPage={setAgentPage} onOpenCard={openFromAgent} />}
-      {snapshot && agentPage === null && !listed.length && (bare
+      {snapshot && agentPage === null && !present(sections.flatMap(([, list]) => list)) && (bare
         ? <section aria-labelledby="home-empty-title" className={cardClass}>
           <h2 id="home-empty-title" className="font-display text-[1.375rem] font-normal leading-[1.2]">{HOME_EMPTY_TITLE}</h2>
           <p className="mt-2 max-w-[60ch] text-base leading-[1.5]">{HOME_EMPTY_BODY}</p>
@@ -1105,13 +1117,14 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           <AgentPrompt copyButton={({ onClick, children }) => <button type="button" className={primaryPillClass} onClick={onClick}>{children}</button>}
             aside={<a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className={quietClass}>{HOME_EMPTY_HOW}</a>} />
         </section>
-        : <div className="mb-4 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
-          <p>{snoozedOnly ? "No snoozed cards." : history ? "Nothing answered or snoozed yet." : filtersOn ? "No cards match this filter." : view === "needs-action" ? "Nothing needs you." : "No cards yet."}</p>
+        : <div className="mb-4 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))] motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+          {/* Focusable (not a tab stop), so focus lands here when the last card leaves (the design agent). */}
+          <p data-feed-empty tabIndex={-1} className="outline-none">{snoozedOnly ? "No snoozed cards." : history ? "Nothing answered or snoozed yet." : filtersOn ? "No cards match this filter." : view === "needs-action" ? "Nothing needs you." : "No cards yet."}</p>
           {!!filtersOn && <button type="button" className="mt-2 inline-flex min-h-11 items-center rounded-xl border border-border px-3 text-sm text-foreground" onClick={clearFilters}>Clear filter</button>}
         </div>)}
       {agentPage === null && !!listed.length && <div className="mb-4 space-y-6">
         {sections.map(([heading, list]) => !!list.length && <section key={heading || "cards"} aria-label={heading || (history ? "History" : snoozedOnly ? "Snoozed" : "Cards")}>
-          {heading && <h2 className="mb-2 flex items-baseline justify-between px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>{heading}</span><span className="tabular-nums">{list.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0)}</span></h2>}
+          {heading && !!present(list) && <h2 className="mb-2 flex items-baseline justify-between px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>{heading}</span><span className="tabular-nums">{present(list)}</span></h2>}
           <ul className="space-y-2">{renderList(list)}</ul>
         </section>)}
       </div>}
