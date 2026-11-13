@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.52
+
+### Patch Changes
+
+- a6240ab: Home's top bar, rebuilt: Needs you · All · History with a Filter icon. Needs you opens its first card, the rest are rows by urgency, and an answered card makes way for the next. All shows Needs you, Updates and Done today. The chat box shows only when Main's chat works, Filter lists its dropdowns first, answered cards that are waiting or done wait in one Pending card at the end, and the Agents pill opens each agent's page. Details: TC-2941.
+
 ## 0.14.0-beta.51
 
 ### Patch Changes
