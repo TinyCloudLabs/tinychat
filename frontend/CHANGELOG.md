@@ -15,6 +15,18 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.42
+
+### Minor Changes
+
+- fc1ba3e: Home Feed gets the new card design.
+  - **Views:** an Information | All | Needs action slider stays in reach as you scroll. "View" shows cards Compact (the default), as Full cards, or as a Grid, and keeps your place when you switch. History, Snoozed, priority and order sit under Filter.
+  - **Compact cards:** each shows the agent, a relative time, where the card stands, a P0/P1 priority mark, when it's due, and how many times the agent replied.
+  - **Open cards:** a card can carry a one-page brief that opens in the app. Comments read as a conversation. A comment shows "Received" only once the agent confirms it, and offers "Send again" if it isn't confirmed within two minutes.
+  - **5 s Undo on every send:** that covers answers, comments, approvals, codes, and claim and task actions. A go-ahead is checked again before it's sent, and an approval that expired or closed in the meantime sends nothing.
+  - **Card actions:** a decision can be dropped and an update acknowledged; either can be brought back later. Each takes the card away at once with Undo at the bottom of the screen, then tells the agent, and the card moves to History, marked Dropped or Acknowledged. Cards past their expiry move there too, marked Expired.
+  - **Posts:** a post opens as a page with media and questions. Answers go to the agent per question, and unsent answers stay on the device.
+
 ## 0.14.0-beta.41
 
 ### Patch Changes
