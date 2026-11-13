@@ -718,3 +718,19 @@ test("an unresolved original thread destination is held instead of silently rese
   expect(hasButton(thread!, "Send again")).toBe(false);
   expect(fixture.saved).toEqual([]);
 });
+
+test("a card its agent closed leaves the live feed and shows in History, marked Closed", async () => {
+  const record = { ...syntheticRecord("ask"), status: "superseded", closedAt: SITREP_NOW };
+  const fixture = typedFixture(record);
+  const view = await mount(fixture.source);
+  const titled = () => [...view.host.querySelectorAll("article")].filter((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === record.title));
+  // Neither in All nor in Needs action.
+  expect(titled().length).toBe(0);
+  await show(view.host, "Needs action");
+  expect(titled().length).toBe(0);
+  await act(async () => button(view.host, "Filter").click());
+  await act(async () => button(view.host, "History").click());
+  const closed = card(view.host, String(record.title));
+  expect(closed.querySelector("[data-status]")?.textContent).toBe("Closed");
+  expect(fixture.saved).toEqual([]);
+});
