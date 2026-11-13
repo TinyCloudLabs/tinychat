@@ -243,7 +243,8 @@ export async function restoreTinyCloudWebSession(
       ? tcw.restoreSessionWithRenewal(config.renewalLeaseAuthorization, address)
       : tcw.restoreSession(address));
     if (result.status === "restored") {
-      if (record && recording.storage.isSignedOut?.(address, record.signature)) {
+      // Custom storage without isSignedOut has no persisted fence to recheck. Details: TC-2872
+      if (!record || recording.storage.isSignedOut?.(address, record.signature)) {
         tcw.cleanup();
         return { tcw: null, status: "missing" };
       }

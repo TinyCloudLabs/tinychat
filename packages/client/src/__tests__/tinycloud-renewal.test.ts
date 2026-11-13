@@ -2,15 +2,16 @@ import { afterEach, expect, mock, test } from "bun:test";
 
 const calls: unknown[][] = [];
 let lastConfig: any;
+let sdkSpaceId: string | undefined;
 let afterSdkFenceRead: (() => void) | undefined;
-afterEach(() => { afterSdkFenceRead = undefined; });
+afterEach(() => { afterSdkFenceRead = undefined; sdkSpaceId = undefined; });
 let result = { status: "restored", session: {} };
 mock.module("@tinycloud/web-sdk", () => ({
   serializeDelegation: (delegation: any) => delegation.serialized ?? "serialized-delegation",
   BrowserSessionStorage: class {},
   TinyCloudWeb: class {
     constructor(private config: any) { lastConfig = config; }
-    get spaceId() { return undefined; }
+    get spaceId() { return sdkSpaceId; }
     cleanup() { calls.push(["cleanup"]); }
     async restoreSession(address: string) {
       calls.push(["ordinary", address]);
@@ -97,6 +98,23 @@ for (const lease of [undefined, "owner-signed-lease"]) {
       isSignedOut: (address: string, signature: string) => signedOut && address === "alice" && signature === "signed",
     } as any;
     const restored = await restoreTinyCloudWebSession("alice", { sessionStorage: fencedStorage, renewalLeaseAuthorization: lease });
+    expect(restored.tcw).toBeNull();
+    expect(restored.status).toBe("missing");
+    expect(calls.at(-1)).toEqual(["cleanup"]);
+  });
+}
+
+
+for (const lease of [undefined, "owner-signed-lease"]) {
+  test(`refuses SDK success without a captured record with lease ${lease !== undefined}`, async () => {
+    calls.length = 0;
+    result = { status: "restored", session: {} };
+    sdkSpaceId = "sdk-space";
+    const emptyStorage = {
+      loadWithStatus: async () => ({ status: "missing", data: null }),
+      loadRenewalCandidate: async () => ({ status: "missing", data: null }),
+    } as any;
+    const restored = await restoreTinyCloudWebSession("alice", { sessionStorage: emptyStorage, renewalLeaseAuthorization: lease });
     expect(restored.tcw).toBeNull();
     expect(restored.status).toBe("missing");
     expect(calls.at(-1)).toEqual(["cleanup"]);
