@@ -1,7 +1,7 @@
 {
   "setupUrl": "https://tinycloud.chat/agents/",
   "instructionsUrl": "https://agents.tinycloud.xyz/chat",
-  "dataHost": "https://tee.node.tinycloud.xyz",
+  "dataHost": "https://node.tinycloud.xyz",
   "installerVersion": "1.7.0",
   "packVersion": "0.1.1-onboarding.26"
 }

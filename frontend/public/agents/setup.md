@@ -35,7 +35,7 @@ TinyChat uses your TinyCloud onboarding sign-in. The app configuration for this 
 ```json
 {
   "schemaVersion": 1,
-  "host": "https://tee.node.tinycloud.xyz",
+  "host": "https://node.tinycloud.xyz",
   "space": "applications"
 }
 ```

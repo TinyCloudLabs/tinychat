@@ -50,7 +50,7 @@ In the Cloudflare dashboard → **Workers & Pages → Create → Pages → Conne
 - Environment variables (Production) — **required**, this is how Git builds get
   `VITE_*`: `VITE_OPENKEY_HOST=https://openkey.so`,
   `VITE_BACKEND_URL=https://api.tinycloud.chat`,
-  `VITE_TINYCLOUD_HOST=https://tee.node.tinycloud.xyz`
+  `VITE_TINYCLOUD_HOST=https://node.tinycloud.xyz`
 
 ### Option B — Direct upload from your machine
 
