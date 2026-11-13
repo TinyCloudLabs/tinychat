@@ -395,7 +395,7 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
       }
     } finally { params.signal?.removeEventListener("abort", parentAbort); }
     abortCheck(params.signal);
-    if (delegationCode) { trace.terminal = "delegation_error"; await params.write(params.delegationErrorFrame(delegationCode)); return await deliver("Meeting access changed during this request. Please reconnect transcript access before trying again."); }
+    if (delegationCode) { trace.terminal = "delegation_error"; await params.write(params.delegationErrorFrame(delegationCode)); return await deliver("Meeting access changed during this request. Reconnect the agent in Settings > Agent access."); }
     if (accessDenied) { trace.terminal = "access_denied"; return await deliver("Access to the requested meeting evidence was denied. No private meeting answer could be completed."); }
     if (resultSizeLimit) return await deliver("The response was too large to process safely. Try a smaller request or fewer meetings.", "result_size_limit");
     if (!data) {

@@ -18,7 +18,7 @@ const db = new Database(":memory:");
 for (const { sql } of CONNECTOR_SCHEMA) db.run(sql);
 db.run("CREATE TABLE voice_note_transcript (source_id TEXT PRIMARY KEY, rev INTEGER, hash TEXT, body_key TEXT, outcome TEXT, preview TEXT)");
 const kv = new Map<string, string>();
-let grantMode: "ok" | "none" | "expired" | "rejected" = "ok";
+let grantMode: "ok" | "none" | "expired" | "rejected" | "revoked" = "ok";
 let sqlCalls: string[] = [];
 let server: ReturnType<typeof Bun.serve>;
 let url = "";
@@ -53,6 +53,10 @@ beforeAll(() => {
     async fetch(request) {
       if (request.headers.get(CREDENTIAL_HEADER) !== CREDENTIAL || !request.headers.get(OWNER_HEADER)) return Response.json({ error: "missing" }, { status: 401 });
       seenOwners.add(request.headers.get(OWNER_HEADER)!);
+      if (grantMode === "revoked") {
+        const { id: revokedId } = await request.json() as { id: number };
+        return Response.json({ jsonrpc: "2.0", id: revokedId, result: { content: [{ type: "text", text: "" }], structuredContent: { status: "error", error: { code: "AUTH_REQUIRED", message: "This grant was revoked.", retryable: false, details: { reason: "delegation_revoked", revokedCid: "bafy-test" } } } } });
+      }
       if (grantMode === "none") return Response.json({ error: "grant_missing_test" }, { status: 401 });
       if (grantMode === "expired") return Response.json({ error: "grant_expired_test" }, { status: 401 });
       if (grantMode === "rejected") return Response.json({ error: "grant_rejected_test" }, { status: 401 });
@@ -184,6 +188,15 @@ describe("meeting tools over the MCP", () => {
     expect(missing).toEqual({ status: 409, body: { error: "delegation_required" } });
     expect(expired).toEqual({ status: 409, body: { error: "delegation_expired" } });
     expect(rejected).toEqual({ status: 409, body: { error: "delegation_revoked" } });
+  });
+
+  test("a grant the owner revoked on the node reads as not connected, for chat turns and for the status the Settings card shows", async () => {
+    grantMode = "revoked";
+    const turn = await run("tinycloud_find_meetings", {});
+    const status = await tools().status(OWNER);
+    grantMode = "ok";
+    expect(turn).toEqual({ status: 409, body: { error: "delegation_required" } });
+    expect(status).toEqual({ status: "none", transcriptStatus: "none", revision: "mcp" });
   });
 
   test("a wrong service credential never yields meeting data", async () => {

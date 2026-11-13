@@ -457,6 +457,39 @@ export async function mintMcpSessionDelegation(
   return { mcp: { delegation: await mintTranscriptDelegation(tcw, { delegateDID: serviceDid, ...options }) } };
 }
 
+/** The chat's MCP grant covers exactly SQL and KV on the TinyChat connectors data, and nothing else. */
+const MCP_CHAT_GRANT_RESOURCE = /:applications\/(?:sql|kv)\/xyz\.tinycloud\.tinychat\/connectors\/?$/;
+const MCP_GRANT_QUERY_PAGES = 20;
+
+/**
+ * Revoke, from the owner's own session, every active grant this owner gave the MCP service DID for chat. The MCP has no
+ * revoke of its own; the node refuses the MCP's next call with a revoked grant. Only a grant delegated to that exact
+ * service DID whose resources are all the connectors data is touched, so another app's grant (or another purpose for
+ * the same DID) survives. Each revoke is one owner signature, so a user is prompted once per active matching grant,
+ * usually one. Throws on any failure to list or revoke, and when the listing could not be read to its end; resolves with
+ * the number revoked (zero when no matching active grant exists).
+ */
+export async function revokeMcpGrants(tcw: TinyCloudWeb, serviceDid: string): Promise<number> {
+  const matches: string[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; ; page++) {
+    if (page >= MCP_GRANT_QUERY_PAGES) throw new Error("Disconnection was not confirmed. Please retry.");
+    const listing = await tcw.delegations.query({ direction: "granted", status: "active", limit: 100, ...(cursor ? { cursor } : {}) });
+    if (!listing.ok) throw new Error("Disconnection was not confirmed. Please retry.");
+    for (const item of listing.data.items) {
+      if (item.delegateDid === serviceDid && item.status === "active" && item.resources.length > 0
+        && item.resources.every(entry => MCP_CHAT_GRANT_RESOURCE.test(entry.resource))) matches.push(item.cid);
+    }
+    cursor = listing.data.nextCursor;
+    if (!cursor) break;
+  }
+  for (const cid of matches) {
+    const revoked = await tcw.revokeDelegation(cid);
+    if (!revoked.ok) throw new Error("Disconnection was not confirmed. Please retry.");
+  }
+  return matches.length;
+}
+
 export interface EnsureAgentSessionDeps {
   tcw: TinyCloudWeb;
   backendUrl: string;

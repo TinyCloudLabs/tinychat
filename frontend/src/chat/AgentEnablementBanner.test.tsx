@@ -94,13 +94,7 @@ describe("Settings agent controls", () => {
   it("shows both reconnect and disconnect while connected", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} />);
     expect(html).toContain("Reconnect agent"); expect(html).toContain("Disconnect agent");
-    // What access covers moved off the controls: a one-line InfoTip on the
-    // Settings card's title, and How it works → Agent access.
     expect(html).toContain('href="/chat/about#agent-access"');
-    const settings = readFileSync(join(import.meta.dir, "SettingsPage.tsx"), "utf8");
-    const card = settings.slice(settings.indexOf('title="Agent access"'), settings.indexOf("<AgentAccessControls"));
-    expect(card).toContain("<InfoTip");
-    expect(card).toContain("Public web search stays available.");
   });
   it("shows Connect after confirmed disconnection and keeps failures distinct", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status="none" />);

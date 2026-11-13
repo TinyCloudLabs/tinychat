@@ -9,6 +9,7 @@ import {
   isActiveAgentBundle,
   MCP_CONSENT_MANIFEST,
   mintMcpSessionDelegation,
+  revokeMcpGrants,
   TRANSCRIPT_PERMISSIONS,
 } from "./agentDelegation.js";
 
@@ -83,5 +84,50 @@ describe("ensureAgentSession for an MCP account", () => {
   it("treats the MCP's active status as an active bundle", () => {
     expect(isActiveAgentBundle({ status: "active", transcriptStatus: "active", revision: "mcp" })).toBe(true);
     expect(isActiveAgentBundle({ status: "expired", transcriptStatus: "expired", revision: "mcp" })).toBe(false);
+  });
+});
+
+describe("revokeMcpGrants", () => {
+  const connectors = (service: string) => `tinycloud:pkh:eip155:1:0xUSER:applications/${service}/xyz.tinycloud.tinychat/connectors${service === "kv" ? "/" : ""}`;
+  const item = (cid: string, delegateDid = SERVICE_DID) => ({ cid, delegateDid, status: "active", resources: [{ resource: connectors("kv") }, { resource: connectors("sql") }] });
+  const tcwWith = (pages: Array<{ items: unknown[]; nextCursor?: string }>, revoked: string[], failOn?: string) => ({
+    delegations: {
+      query: async (options: { cursor?: string }) => ({ ok: true, data: pages[options.cursor ? Number(options.cursor) : 0] }),
+    },
+    revokeDelegation: async (cid: string) => { if (cid === failOn) return { ok: false, error: {} }; revoked.push(cid); return { ok: true, data: { revoked: true, cid } }; },
+  }) as unknown as TinyCloudWeb;
+
+  it("finds grants on every page and revokes each, one revoke per grant", async () => {
+    const revoked: string[] = [];
+    const tcw = tcwWith([{ items: [item("A"), item("OTHER", "did:key:z6MkOther")], nextCursor: "1" }, { items: [item("B")] }], revoked);
+    expect(await revokeMcpGrants(tcw, SERVICE_DID)).toBe(2);
+    expect(revoked).toEqual(["A", "B"]);
+  });
+
+  it("resolves with zero when no matching grant is active, and throws when a revoke fails", async () => {
+    expect(await revokeMcpGrants(tcwWith([{ items: [item("OTHER", "did:key:z6MkOther")] }], []), SERVICE_DID)).toBe(0);
+    await expect(revokeMcpGrants(tcwWith([{ items: [item("A")] }], [], "A"), SERVICE_DID)).rejects.toThrow("not confirmed");
+  });
+
+  it("leaves a grant to the same DID alone when it also covers data beyond the connectors", async () => {
+    const revoked: string[] = [];
+    const broad = { ...item("BROAD"), resources: [...item("BROAD").resources, { resource: "tinycloud:pkh:eip155:1:0xUSER:applications/kv/xyz.other.app/notes/" }] };
+    expect(await revokeMcpGrants(tcwWith([{ items: [broad, item("A")] }], revoked), SERVICE_DID)).toBe(1);
+    expect(revoked).toEqual(["A"]);
+  });
+
+  it("never reports a partial listing as done: a failed page or a listing that does not end throws before any revoke", async () => {
+    const revoked: string[] = [];
+    const failing = {
+      delegations: { query: async (options: { cursor?: string }) => options.cursor ? { ok: false, error: {} } : { ok: true, data: { items: [item("A")], nextCursor: "1" } } },
+      revokeDelegation: async (cid: string) => { revoked.push(cid); return { ok: true, data: { revoked: true, cid } }; },
+    } as unknown as TinyCloudWeb;
+    await expect(revokeMcpGrants(failing, SERVICE_DID)).rejects.toThrow("not confirmed");
+    const endless = {
+      delegations: { query: async () => ({ ok: true, data: { items: [item("A")], nextCursor: "again" } }) },
+      revokeDelegation: async (cid: string) => { revoked.push(cid); return { ok: true, data: { revoked: true, cid } }; },
+    } as unknown as TinyCloudWeb;
+    await expect(revokeMcpGrants(endless, SERVICE_DID)).rejects.toThrow("not confirmed");
+    expect(revoked).toEqual([]);
   });
 });
