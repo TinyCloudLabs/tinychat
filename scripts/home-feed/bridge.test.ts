@@ -255,6 +255,59 @@ test("a newer legacy publication wins an actual conditional-PUT race", async () 
   expect(inspect(result, { depth: 20 })).not.toContain(PRIVATE);
 });
 
+/** An ask published, answered in Home and closed, plus its next revision built from the closed board copy. */
+async function closedRevision() {
+  const f = await fixture(), binding = await publishHomeMirror(f.ctx, f.input);
+  await f.answer({ askId: f.input.legacy.record.id, action: "answer", choice: "yes", text: "", at: T2 });
+  const receipt = await closeHomeMirror(f.ctx, f.identity);
+  if (!receipt) throw new Error("Expected a close receipt");
+  const raw = f.legacyRecord(); if (!object(raw)) throw new Error("Invalid mirror value");
+  const { cardUuid: _cardUuid, ...closed } = raw;
+  const checked = validateRecord("ask", { ...closed, body: "Revised synthetic public card body.", updatedAt: NOW });
+  if (!checked.ok) throw new Error("Invalid revision fixture");
+  const revised: HomeMirrorPublishInput = {
+    ...f.input,
+    card: { ...f.input.card, revision: 2, issuanceId: randomUUID(), body: checked.value.body ?? "", needsResponse: false, payload: { ...f.input.card.payload, sitrep: { version: 1, record: checked.value } } },
+    legacy: { ...f.input.legacy, record: checked.value },
+  };
+  return { f, binding, receipt, revised };
+}
+
+test("a revision after a Home close publishes over the closed head its receipt records", async () => {
+  for (const orphaned of [false, true]) {
+    const { f, binding, receipt, revised } = await closedRevision();
+    expect(receipt.closedETag).not.toBe(binding.legacy.publishedETag);
+    if (orphaned) {
+      // An earlier revise Home took before the board refused it: unbound, and its number is spent.
+      take(await publishFeedCard(f.output, { ...revised.card, body: "Refused earlier revision" }));
+      revised.card = { ...revised.card, revision: 3, issuanceId: randomUUID() };
+    }
+    const next = await publishHomeMirror(f.ctx, revised);
+    expect(next).toMatchObject({ identity: tuple(revised.card), cardUuid: binding.cardUuid, legacy: { fullKey: f.key, publishedETag: f.values.get(f.key)?.etag } });
+    expect(f.writes.at(-1)?.ifMatch).toBe(receipt.closedETag);
+    expect(f.legacyRecord()).toEqual({ ...revised.legacy.record, cardUuid: binding.cardUuid });
+  }
+});
+
+test("a revision after a Home close still refuses a head that is neither published nor closed", async () => {
+  const { f, binding, revised } = await closedRevision();
+  const concurrent = { ...f.input.legacy.record, title: "Concurrent legacy change", cardUuid: binding.cardUuid };
+  take(await f.legacy.put(f.key, concurrent));
+  const before = f.values.get(f.key), rows = take(await f.owner.query("SELECT * FROM feed_sitrep_mirrors")).rows;
+  expect((await refused(publishHomeMirror(f.ctx, revised))).code).toBe("KV_PRECONDITION_FAILED");
+  expect(f.values.get(f.key)).toEqual(before);
+  expect(take(await f.owner.query("SELECT * FROM feed_sitrep_mirrors")).rows).toEqual(rows);
+});
+
+test("a revision after a Home close loses a conditional-PUT race to a concurrent change", async () => {
+  const { f, binding, revised } = await closedRevision();
+  const concurrent = { ...f.input.legacy.record, title: "Concurrent legacy change", cardUuid: binding.cardUuid };
+  f.interceptPut(async () => { take(await f.legacy.put(f.key, concurrent)); });
+  await refused(publishHomeMirror(f.ctx, revised));
+  expect(f.legacyRecord()).toEqual(concurrent);
+  expect(take(await f.owner.query("SELECT revision FROM feed_sitrep_mirrors")).rows).toEqual([[1]]);
+});
+
 test("an approval closes from its original valid issuance-time answer even when relay time is later", async () => {
   const f = await fixture("approval"); await publishHomeMirror(f.ctx, f.input);
   f.ctx.now = () => "2026-10-30T12:00:00.000Z";
