@@ -370,7 +370,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     feedLoad = load;
     try {
       const { snapshot, fingerprint } = await load;
-      shown = fingerprint;
+      // A load the Feed abandoned for a newer one (it unmounted and mounted again) shows nothing.
+      if (feedLoad === load) shown = fingerprint;
       // A device that has not yet run this schema version's batch runs it now,
       // behind the first paint and every foreground read.
       if (!hasLocalMarker(schemaMarker)) void inBackground(() => ensureSchema(privateFeedDatabase(trackStorageWrites(tcw.sql.db(HOME_FEED_RESOURCE), scope), assertAccount))).catch(() => {});

@@ -13,7 +13,7 @@ import type { HomeFeedSource } from "./feedStoreTypes";
 const databases: Database[] = [];
 const cleanups: (() => void)[] = [];
 
-/** The source's own timers (notification debounce, cover and hidden windows, renewal) run only when a test fires them. */
+/** The source's own timers (notification debounce, hidden window, renewal) run only when a test fires them. */
 let timers: Map<number, { delay: number; run: () => void }>;
 let stored: Map<string, string>;
 const localStorageItems = () => Object.fromEntries(stored);
@@ -228,7 +228,7 @@ test("a new device reads before it creates: the registry, then the agents, then 
   Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: new IDBFactory() });
   const { first } = await openFeed(fixture);
   expect(titles(await first)).toEqual(["Already on the feed"]);
-  expect(fixture.requests.map((sql) => sql.slice(0, 11))).toEqual(["SELECT 'a',", "SELECT 'c',", "SELECT 'r',"]);
+  expect(fixture.requests.map((sql) => sql.match(/SELECT '(\w)'/)?.[1])).toEqual(["a", "c", "r"]);
   expect(fixture.requests.filter((sql) => sql.startsWith("batch("))).toEqual([]);
   // The background lane starts once the foreground has been quiet for FOREGROUND_QUIET_MS.
   await Bun.sleep(FOREGROUND_QUIET_MS + 50);

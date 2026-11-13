@@ -60,7 +60,7 @@ export interface RegistryRead {
   agents: unknown[][];
   /** agent_id, card_id, revision, issuance_id, kind, created_at, snoozed_until, seq; by seq. */
   views: unknown[][];
-  /** The rows `readPrivateOwnerState` reads, in rowid order. */
+  /** `feed_owner_events` rows (event_id … created_at), in rowid order. */
   ownerEvents: unknown[][];
   /** The archive metadata `OwnerArchiveCache` reads, in rowid order. */
   archives: unknown[][];
@@ -81,15 +81,59 @@ export async function readRegistry(registry: FeedReadDatabase): Promise<Registry
   return read;
 }
 
-const OUTPUT_SQL = `SELECT 'c', card_id, revision, issuance_id, sequence, card_json, NULL, NULL, NULL FROM feed_cards
-UNION ALL SELECT 'h', response_id, card_id, revision, issuance_id, sequence, handling_json, NULL, NULL FROM feed_handling
-UNION ALL SELECT 't', NULL, NULL, NULL, NULL, NULL, ${pad(OUTPUT_TALLY, 3)}
-ORDER BY 1, 2, 3, 4, 5, 6`;
+/**
+ * Rows per table per request, as the SDK's own list reads page them: the node
+ * refuses a result over 10 MB. Paging follows `sequence`, which only grows, so
+ * a later page also holds every row the first page's tally counts.
+ */
+export const FEED_READ_PAGE = 1000;
 
-const RESPONSES_SQL = `SELECT 'r', r.sequence, r.response_json, p.payload_type, p.payload_version, p.payload_json, r.response_id, r.card_id, r.revision, r.issuance_id
-  FROM feed_responses r LEFT JOIN feed_response_payloads p ON p.response_id = r.response_id
+// Every branch: kind, sequence, then up to 7 values. Parameters: the sequence to start after, per table.
+const OUTPUT_SQL = `SELECT * FROM (SELECT 'c', sequence, card_id, revision, issuance_id, card_json, NULL, NULL, NULL FROM feed_cards WHERE sequence > ? ORDER BY sequence LIMIT ${FEED_READ_PAGE})
+UNION ALL SELECT * FROM (SELECT 'h', sequence, response_id, card_id, revision, issuance_id, handling_json, NULL, NULL FROM feed_handling WHERE sequence > ? ORDER BY sequence LIMIT ${FEED_READ_PAGE})
+UNION ALL SELECT 't', NULL, NULL, NULL, NULL, NULL, NULL, ${pad(OUTPUT_TALLY, 2)}
+ORDER BY 1, 2`;
+
+const RESPONSES_SQL = `SELECT * FROM (SELECT 'r', r.sequence, r.response_json, p.payload_type, p.payload_version, p.payload_json, r.response_id, r.card_id, r.revision, r.issuance_id
+  FROM feed_responses r LEFT JOIN feed_response_payloads p ON p.response_id = r.response_id WHERE r.sequence > ? ORDER BY r.sequence LIMIT ${FEED_READ_PAGE})
 UNION ALL SELECT 't', NULL, ${pad(RESPONSES_TALLY, 8)}
 ORDER BY 1, 2`;
+
+/** SQLite's BINARY order (UTF-8 bytes), which is code point order, not UTF-16 unit order. */
+function binaryCompare(a: string, b: string): number {
+  const left = [...a], right = [...b];
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    const difference = left[index]!.codePointAt(0)! - right[index]!.codePointAt(0)!;
+    if (difference) return difference;
+  }
+  return left.length - right.length;
+}
+
+/**
+ * Pages one statement until each table it reads returns a short page. The
+ * tally comes from the first page: every later page reads a newer snapshot of
+ * append-only tables, so the rows hold at least what it counts.
+ */
+async function pagedRows(database: FeedReadDatabase, sql: string, kinds: readonly string[]): Promise<{ rows: unknown[][]; tally: unknown[] }> {
+  const rows: unknown[][] = [];
+  let tally: unknown[] | undefined;
+  const after = kinds.map(() => 0);
+  let pending = kinds.map((_, index) => index);
+  while (pending.length) {
+    const page = unwrap(await database.query(sql, after)).rows as unknown[][];
+    const counts = kinds.map(() => 0);
+    for (const row of page) {
+      const index = kinds.indexOf(String(row[0]));
+      if (index < 0) { tally ??= row; continue; }
+      // A table already read in full returns only rows written since: newer rows are welcome.
+      counts[index]!++;
+      rows.push(row);
+      after[index] = Math.max(after[index]!, Number(row[1]));
+    }
+    pending = kinds.flatMap((_, index) => counts[index] === FEED_READ_PAGE ? [index] : []);
+  }
+  return { rows, tally: tally ?? [] };
+}
 
 export interface AgentRead {
   /** The newest stored revision of each card, newest first (`listFeedCards`). */
@@ -119,43 +163,41 @@ function responseHeader(json: unknown) {
 
 /** One agent's output and response databases: two requests, sent together. */
 export async function readAgent(output: FeedReadDatabase, responsesDatabase: FeedReadDatabase): Promise<AgentRead> {
-  const [outputRows, responseRows] = await Promise.all([
-    output.query(OUTPUT_SQL, []).then((result) => unwrap(result).rows as unknown[][]),
-    responsesDatabase.query(RESPONSES_SQL, []).then((result) => unwrap(result).rows as unknown[][]),
+  const [outputRead, responsesRead] = await Promise.all([
+    pagedRows(output, OUTPUT_SQL, ["c", "h"]),
+    pagedRows(responsesDatabase, RESPONSES_SQL, ["r"]),
   ]);
 
   const history: FeedCard[] = [];
   const newest = new Map<string, { sequence: number; card: FeedCard }>();
   const handlingRows = new Map<string, unknown[]>();
-  let outputTally: unknown[] = [];
   try {
-    for (const row of outputRows) {
+    // Rows arrive by sequence: handling stays in sequence order per response.
+    for (const row of outputRead.rows) {
       if (row[0] === "c") {
         if (typeof row[5] !== "string") throw new Error("Stored card envelope is invalid");
         const card = JSON.parse(row[5]) as FeedCard;
         feedCardSchema.parse(card);
-        if (row[1] !== card.cardId || row[2] !== card.revision || row[3] !== card.issuanceId) throw new Error("Stored card identity does not match its key");
+        if (row[2] !== card.cardId || row[3] !== card.revision || row[4] !== card.issuanceId) throw new Error("Stored card identity does not match its key");
         history.push(card);
-        const sequence = Number(row[4]);
-        if ((newest.get(card.cardId)?.sequence ?? -Infinity) < sequence) newest.set(card.cardId, { sequence, card });
-      } else if (row[0] === "h") {
-        const key = identityKey({ responseId: String(row[1]), cardId: String(row[2]), revision: Number(row[3]), issuanceId: String(row[4]) });
+        newest.set(card.cardId, { sequence: Number(row[1]), card });
+      } else {
+        const key = identityKey({ responseId: String(row[2]), cardId: String(row[3]), revision: Number(row[4]), issuanceId: String(row[5]) });
         const rows = handlingRows.get(key) ?? [];
         rows.push(row[6]);
         handlingRows.set(key, rows);
-      } else if (row[0] === "t") outputTally = row.slice(6, 6 + OUTPUT_TALLY.length);
+      }
     }
   } catch {
     throw new Error("Could not verify feed card history");
   }
+  history.sort((a, b) => binaryCompare(a.cardId, b.cardId) || a.revision - b.revision || binaryCompare(a.issuanceId, b.issuanceId));
   const cards = [...newest.values()].sort((a, b) => b.sequence - a.sequence).map(({ card }) => card);
 
   const responses: FeedResponse[] = [];
   const payloads = new Map<string, { key: string; type: unknown; version: unknown; json: unknown }>();
-  let responsesTally: unknown[] = [];
   try {
-    for (const row of responseRows) {
-      if (row[0] === "t") { responsesTally = row.slice(2, 2 + RESPONSES_TALLY.length); continue; }
+    for (const row of responsesRead.rows) {
       const response: FeedResponse = { ...responseHeader(row[2]), sequence: Number(row[1]) };
       if (row[3] !== null && row[3] !== undefined) {
         response.payloadType = String(row[3]);
@@ -210,6 +252,6 @@ export async function readAgent(output: FeedReadDatabase, responsesDatabase: Fee
       const state = response ? handling(response) : undefined;
       return { card, response, acknowledgement: state?.acknowledgement ?? null, outcome: state?.outcome ?? null };
     },
-    tally: [...outputTally, ...responsesTally],
+    tally: [...outputRead.tally.slice(7, 7 + OUTPUT_TALLY.length), ...responsesRead.tally.slice(2, 2 + RESPONSES_TALLY.length)],
   };
 }

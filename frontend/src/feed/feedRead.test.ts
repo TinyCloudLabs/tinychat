@@ -15,7 +15,7 @@ import {
   type FeedCard,
   type FeedDatabase,
 } from "@tinycloud/sdk-services/feed";
-import { OUTPUT_TALLY, readAgent, readTally, RESPONSES_TALLY } from "./feedRead";
+import { FEED_READ_PAGE, OUTPUT_TALLY, readAgent, readTally, RESPONSES_TALLY } from "./feedRead";
 
 const databases: Database[] = [];
 afterEach(() => { for (const database of databases.splice(0)) database.close(); });
@@ -92,6 +92,22 @@ test("the read's tally is the fingerprint's, from the same snapshot", async () =
   expect(read.tally).toEqual([...await readTally(output, OUTPUT_TALLY), ...await readTally(responses, RESPONSES_TALLY)]);
   value(await publishFeedCard(output, card("c-card", 1, "C one")));
   expect((await readAgent(output, responses)).tally).not.toEqual(read.tally);
+});
+
+test("past a page of rows, the read pages as the SDK's list reads do and still matches them", async () => {
+  const requests: string[] = [];
+  const output = sqlite(requests);
+  const responses = sqlite(requests);
+  value(await initializeFeedDatabases({ output, responses }));
+  for (let index = 0; index <= FEED_READ_PAGE; index++) value(await publishFeedCard(output, card(`card-${String(index).padStart(4, "0")}`, 1, `Card ${index}`)));
+  requests.length = 0;
+  const read = await readAgent(output, responses);
+  // Output: a full page of cards, then the rest; responses: one short page.
+  expect(requests).toHaveLength(3);
+  const history = [...value(await listFeedCardHistory(output, { limit: 1000 })).cards, ...value(await listFeedCardHistory(output, { limit: 1000, afterIdentity: { cardId: "card-0999", revision: 1, issuanceId: "card-0999-issuance" } })).cards];
+  expect(read.history).toEqual(history);
+  expect(read.cards).toEqual(value(await listFeedCards(output)));
+  expect(read.tally).toEqual([...await readTally(output, OUTPUT_TALLY), ...await readTally(responses, RESPONSES_TALLY)]);
 });
 
 test("a payload read for a response the database does not hold fails as the SDK's does", async () => {
