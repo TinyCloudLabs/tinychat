@@ -796,3 +796,13 @@ test("Drop this card on a typed ask sends one drop answer for its agent, and the
   await show(view.host, "History");
   expect(card(view.host, String(fixture.entry.state.card.title)).querySelector("[data-status]")?.textContent).toBe("Dropped");
 });
+
+test("an ask Sam dropped that its agent then closes in a new revision is one card in History, still Dropped", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Drop this card").click());
+  await timer.advance(5000);
+  expect(fixture.saved).toHaveLength(1);
+  expect(await closeInNewRevision(fixture, view.host, "dropped")).toEqual(["Dropped"]);
+});
