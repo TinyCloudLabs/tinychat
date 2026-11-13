@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { ArrowDownIcon, CheckIcon, ChevronRightIcon, ChevronUpIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
@@ -8,7 +8,7 @@ import { AgentConversation, AgentList, agentKey, agentThreads } from "./AgentCon
 import { agentProfile, AgentMark } from "./AgentMark";
 import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { CardConversation, plainConversation, typedConversation } from "./CardConversation";
-import { actionClass, CardDetails, closedAs, footActionClass, sendOwnerAction } from "./CardActions";
+import { actionClass, CardDetails, closedAs, closedEvent, footActionClass, sendOwnerAction } from "./CardActions";
 import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
 import { PostTile, postMorphId } from "./PostTile";
@@ -235,6 +235,28 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
   };
 }
 
+/**
+ * A toolbar popover (Filter, View) closes on a tap outside it and its button, or on Escape, which hands focus back to
+ * the button. Its button toggles it as before.
+ */
+function usePopover(open: boolean, setOpen: (open: boolean) => void, button: RefObject<HTMLButtonElement | null>, panel: RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!panel.current?.contains(target) && !button.current?.contains(target)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      button.current?.focus();
+    };
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", escape); };
+  }, [open, setOpen, button, panel]);
+}
+
 /** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
 export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
@@ -260,6 +282,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [filtersOpen, setFiltersOpen] = useState(false);
   // Feed lab (Sam, 11-12): "View" opens the choice of compact cards, full cards, or the grid, next to Filter.
   const [viewOpen, setViewOpen] = useState(false);
+  const filtersButton = useRef<HTMLButtonElement>(null), filtersPanel = useRef<HTMLDivElement>(null);
+  const viewButton = useRef<HTMLButtonElement>(null), viewPanel = useRef<HTMLDivElement>(null);
+  usePopover(filtersOpen, setFiltersOpen, filtersButton, filtersPanel);
+  usePopover(viewOpen, setViewOpen, viewButton, viewPanel);
   // The agents list ("list") or one agent's conversation (its key), shown instead of the cards.
   const [agentView, setAgentView] = useState<string | null>(null);
   // Which card's "Ask me later" times are showing.
@@ -684,6 +710,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const response = entry.state.response;
     if (response && !needsAttention(entry, clock, contextFor(entry)?.projection)) {
       const label = response.choiceId ? entry.state.card.choices?.find((choice) => choice.id === response.choiceId)?.label : undefined;
+      // A skipped typed ask keeps the agent-facing summary core writes ("Question dropped", frozen in archives); the
+      // owner reads it as Monica's "Skip this question" wording.
+      if (response.payloadType === "sitrep.answer" && response.text === "Question dropped") return "You skipped this question";
       if (label || response.text) return answerSummary(label, response.text);
     }
     return typeof entry.state.card.payload?.summary === "string" ? entry.state.card.payload.summary : entry.state.card.body;
@@ -780,21 +809,38 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   }
   /**
    * A card in the list, short or open, or a tile in the grid (a card opened from the grid spans its row).
-   * `answered`: one of the answers above the feed, marked with when it was sent.
+   * `at`: one of the cards above the feed (an earlier answer, or a card you dropped or acknowledged), marked with
+   * when you did that.
    */
-  const cardItem = (entry: HomeFeedEntry, answered = false) => {
+  const cardItem = (entry: HomeFeedEntry, at?: string) => {
     const key = keyOf(entry);
     const page = labPageOf(entry);
     const wide = grid && !page && opened.has(key);
     // Each card morphs between its shapes (compact, full, tile) as one item: its box moves and resizes while its
     // content crossfades (densityMorph.tsx, Sam 22:44Z).
     return <MorphItem key={key} contentKey={grid && !wide ? "tile" : page ? "post" : isOpen(entry) ? "full" : "compact"}
-      data-card-key={key} data-sent-at={answered ? entry.state.response?.createdAt : undefined} className={`min-w-0 scroll-mt-4 ${wide ? "col-span-full" : ""}`}>
+      data-card-key={key} data-sent-at={at} className={`min-w-0 scroll-mt-4 ${wide ? "col-span-full" : ""}`}>
       {grid && !wide ? gridTile(entry) : page ? postCard(entry) : isOpen(entry) ? fullCard(entry) : compactCard(entry)}
       {/* The Snoozed list: each card can come back now without opening it (QA, 1f17120). */}
       {snoozedOnly && !isOpen(entry) && Date.parse(entry.view.snoozedUntil ?? "") > clock && <div className="mt-1 flex justify-end"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}</MorphItem>;
   };
   const listClass = grid ? "grid grid-cols-2 content-start gap-3 sm:grid-cols-3" : size === "compact" ? "space-y-2" : "space-y-4";
+  // History above the feed, oldest first (Holden's call, QA cb784d4 B-H): the earlier answers loaded so far, and the
+  // cards you dropped or acknowledged, each at the time you did so, back to the oldest earlier answer shown.
+  const timeline = (() => {
+    if (!earlier.length) return [];
+    const loaded = [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()];
+    const answered = earlier.map((entry) => {
+      const current = snapshot?.historicalEntries?.find((candidate) => keyOf(candidate) === keyOf(entry)) ?? entry;
+      return { entry: current, at: current.state.response?.createdAt ?? "" };
+    });
+    const since = Date.parse(answered[0]?.at ?? ""), shown = new Set(answered.map(({ entry }) => keyOf(entry)));
+    const closed = loaded.flatMap((entry) => {
+      const event = closedEvent(entry);
+      return event && !(Date.parse(event.at) < since) && !shown.has(keyOf(entry)) ? [{ entry, at: event.at }] : [];
+    });
+    return [...answered, ...closed].sort((first, second) => Date.parse(first.at) - Date.parse(second.at));
+  })();
   const pageEntry = pageKey ? [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].find((entry) => keyOf(entry) === pageKey) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
 
@@ -812,6 +858,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const filtersOn = [agent, kind, project, priorityMax, sortBy].filter(Boolean).length + (history ? 1 : 0) + (snoozedOnly ? 1 : 0);
   const view = grid ? "grid" : size;
   const selectClass = "min-h-11 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm fine:min-h-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  // Filter's and View's panels float under the toolbar, right-aligned, over the cards (QA cb784d4, P5).
+  const popoverClass = "absolute right-0 top-full z-30 mt-2 max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-card p-3 text-card-foreground shadow-lg";
   // No browser scroll anchoring: it would hold the end of the list in view as cards land, loading more forever.
   return <main ref={mainRef} onScroll={measureHistory} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
     onTouchStart={(event) => { pullStart.current = (mainRef.current?.scrollTop ?? 1) <= 0 && source.loadAnswered ? event.touches[0]!.clientY : null; }}
@@ -819,8 +867,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     onTouchEnd={() => { if (pull >= PULL_PX) void loadEarlier(); pullStart.current = null; setPull(0); }}>
     {/* Feed lab: pull down at the top for the cards you answered earlier (or use the button, without touch). */}
     {source.loadAnswered && <div aria-hidden style={{ height: pull }} className="flex items-end justify-center overflow-hidden text-xs text-muted-foreground">{pull >= PULL_PX ? "Release for earlier answers" : "Pull for earlier answers"}</div>}
-    {/* While a post's page is open, the feed behind it takes no focus or taps (design critique #3). */}
-    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5" inert={!!pageEntry}>
+    {/* While a post's page is open, the feed behind it takes no focus or taps (design critique #3). While undo bars
+        show, the end of the feed gets their height (and a gap) more room, so its last cards scroll clear of them. */}
+    <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-6 pt-6 sm:px-5" inert={!!pageEntry} style={undoBar.height ? { paddingBottom: `calc(1.5rem + ${undoBar.height + 8}px)` } : undefined}>
     <MorphConfig>
       {/* Feed lab (Sam, 11-12): in earlier answers, a pill floats at the top with when the ones in view were sent.
           Its look is uiverse.io "quiet-rat-82" by ahkamboh (MIT), in the app's styling. */}
@@ -838,46 +887,52 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {!!earlier.length && <section aria-label="Answered earlier" className="mb-6">
         <div ref={topSentinel} aria-hidden className="h-px" />
         <h2 className="mb-2 px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground">Answered earlier</h2>
-        <ul className={listClass}>{earlier.map((loaded) => cardItem(snapshot?.historicalEntries?.find((candidate) => keyOf(candidate) === keyOf(loaded)) ?? loaded, true))}</ul>
+        <ul className={listClass}>{timeline.map(({ entry, at }) => cardItem(entry, at))}</ul>
       </section>}
       {/* Feed lab (Sam, 11-12, Aceternity floating navbar as inspiration): Home and the slider stay in reach, hiding as
-          you scroll down and coming back as you scroll up. */}
-      <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-3 pt-2 sm:-mx-5 sm:px-5">
-        {/* Stuck over the cards, the header comes back as the slider alone (FloatingHeader slides "Home" up out of view
-            and keeps its height, so nothing below jumps). */}
+          you scroll down (the toolbar stays) and coming back as you scroll up. */}
+      <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-5 sm:px-5">
+        {/* Stuck over the cards, the header comes back as the slider and the toolbar alone (FloatingHeader slides "Home"
+            up out of view and keeps its height, so nothing below jumps). Scrolling down, the slider goes too and the
+            toolbar stays pinned at the top (Sam via Holden, QA cb784d4 B1). */}
         <header ref={headerRef} className="scroll-mt-4"><h1 className="font-display text-3xl font-semibold tracking-tight">{NAV_LABEL_HOME}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
-        {/* While Agents is open the view controls do nothing, so they step aside (design critique #5). */}
-        {!bare && !agentView && <div data-float-keep className="mt-3"><FeedViewSlider value={selector} onValueChange={changeSelector} /></div>}
+        {/* While Agents is open the view controls do nothing, so they step aside (design critique #5). The toolbar
+            (Agents, Filter, View) sits under the slider in the header (QA cb784d4, B1) and stays pinned while you
+            scroll, so View is in reach mid-feed and the page never scrolls up to reach it. */}
+        {!bare && <div data-float-keep className="mt-3 space-y-3">
+          {!agentView && <FeedViewSlider value={selector} onValueChange={changeSelector} />}
+          {/* One row on a phone (Sam, 00:1xZ: "fix on mobile"): Agents, Filter, View. Filter and View open as popovers
+              under the row (QA cb784d4, P5), so opening one never moves the cards. */}
+          <div data-float-pin className="relative flex flex-nowrap items-center justify-end gap-2">
+            <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-11 shrink-0 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
+            {!agentView && <button ref={filtersButton} type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>}
+            {!agentView && <button ref={viewButton} type="button" aria-expanded={viewOpen} aria-controls="home-feed-view" onClick={() => setViewOpen(!viewOpen)} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${view === "compact" ? "border-border" : "border-primary bg-primary/10 font-medium"}`}>{view === "compact" ? "View" : `View · ${view === "full" ? "Full" : "Grid"}`}</button>}
+            {/* Feed lab (Sam, 11-12): every card short, like a list of posts; every card open; or a grid of tiles. Each
+                keeps your place and morphs the cards on screen (anchoredToggle). It stays open until View is tapped
+                again, a tap lands outside it, or Escape. */}
+            {viewOpen && !agentView && <div ref={viewPanel} id="home-feed-view" role="radiogroup" aria-label="View" className={`${popoverClass} flex gap-2`}>
+              {(["compact", "full", "grid"] as const).map((option) => <button key={option} type="button" role="radio" aria-checked={view === option}
+                onClick={() => { if (option !== view) anchoredToggle(() => { setSize(option === "full" ? "full" : "compact"); setGrid(option === "grid"); setOpened(new Set()); }); }}
+                className="min-h-11 whitespace-nowrap rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-checked:border-primary aria-checked:bg-primary/10">{option === "compact" ? "Compact" : option === "full" ? "Full cards" : "Grid"}</button>)}
+            </div>}
+            {filtersOpen && !agentView && <div ref={filtersPanel} id="home-feed-filters" className={`${popoverClass} flex max-h-[70dvh] w-[22rem] flex-wrap gap-2 overflow-y-auto`}>
+              <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">All agents</option>{[...new Map(entries.map((entry) => [entry.source.sourceId, entry.source.label])).entries()].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>
+              <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => setKind(event.target.value)}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
+              <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => setProject(event.target.value)}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
+              <button type="button" aria-pressed={history} onClick={() => setHistory(!history)} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
+              <button type="button" aria-pressed={snoozedOnly} onClick={() => setSnoozedOnly(!snoozedOnly)} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-primary aria-pressed:bg-primary/10">Snoozed</button>
+              <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => setPriorityMax(event.target.value)}>
+                <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
+              </select>
+              <select aria-label="Order" className={selectClass} value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
+                <option value="">Usual order</option><option value="priority">Priority first</option><option value="due">Due first</option><option value="expires">Expires first</option>
+              </select>
+              {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10">{savingDefault ? "Saving default…" : "Use as default"}</button>}
+            </div>}
+          </div>
+        </div>}
       </FloatingHeader>
       {ask}
-      {!bare && <>
-      {/* One row on a phone (Sam, 00:1xZ: "fix on mobile"): Agents, Filter, View; each opens its own panel below. */}
-      <div className="mb-4 flex flex-nowrap items-center justify-end gap-2">
-          <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-11 shrink-0 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
-          {!agentView && <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>}
-          {!agentView && <button type="button" aria-expanded={viewOpen} aria-controls="home-feed-view" onClick={() => setViewOpen(!viewOpen)} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${view === "compact" ? "border-border" : "border-primary bg-primary/10 font-medium"}`}>{view === "compact" ? "View" : `View · ${view === "full" ? "Full" : "Grid"}`}</button>}
-      </div>
-      {/* Feed lab (Sam, 11-12): every card short, like a list of posts; every card open; or a grid of tiles. Each keeps
-          your place and morphs the cards on screen (anchoredToggle). The panel stays open until View is tapped again. */}
-      {viewOpen && !agentView && <div id="home-feed-view" role="radiogroup" aria-label="View" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
-        {(["compact", "full", "grid"] as const).map((option) => <button key={option} type="button" role="radio" aria-checked={view === option}
-          onClick={() => { if (option !== view) anchoredToggle(() => { setSize(option === "full" ? "full" : "compact"); setGrid(option === "grid"); setOpened(new Set()); }); }}
-          className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-checked:border-primary aria-checked:bg-primary/10">{option === "compact" ? "Compact" : option === "full" ? "Full cards" : "Grid"}</button>)}
-      </div>}
-      {filtersOpen && <div id="home-feed-filters" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
-        <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">All agents</option>{[...new Map(entries.map((entry) => [entry.source.sourceId, entry.source.label])).entries()].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>
-        <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => setKind(event.target.value)}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => setProject(event.target.value)}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <button type="button" aria-pressed={history} onClick={() => setHistory(!history)} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
-        <button type="button" aria-pressed={snoozedOnly} onClick={() => setSnoozedOnly(!snoozedOnly)} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-primary aria-pressed:bg-primary/10">Snoozed</button>
-        <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => setPriorityMax(event.target.value)}>
-          <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
-        </select>
-        <select aria-label="Order" className={selectClass} value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
-          <option value="">Usual order</option><option value="priority">Priority first</option><option value="due">Due first</option><option value="expires">Expires first</option>
-        </select>
-        {(savingDefault || (!!snapshot && snapshot.settings.defaultSelector !== selector)) && <button type="button" disabled={savingDefault} onClick={() => void saveDefault()} className="min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10">{savingDefault ? "Saving default…" : "Use as default"}</button>}
-      </div>}</>}
       {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
       {!snapshot && !error && <p className="text-sm text-muted-foreground">Loading your feed…</p>}
       {agentView && snapshot && (openAgent

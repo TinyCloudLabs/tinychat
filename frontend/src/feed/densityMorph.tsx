@@ -111,25 +111,25 @@ export type AnchorOptions = {
   stickyTop?: RefObject<HTMLElement | null> | number;
 };
 
-/** The box of the sticky element `node` is in (or is), below `container`; `node`'s own box if there is none. */
-function stickyBox(node: HTMLElement, container: HTMLElement): DOMRect {
+/** The sticky element `node` is in (or is), below `container`; `node` itself if there is none. */
+function stickyOf(node: HTMLElement, container: HTMLElement): HTMLElement {
   for (let at: HTMLElement | null = node; at && at !== container; at = at.parentElement) {
-    if (getComputedStyle(at).position === "sticky") return at.getBoundingClientRect();
+    if (getComputedStyle(at).position === "sticky") return at;
   }
-  return node.getBoundingClientRect();
+  return node;
 }
 
 /**
  * Changes the feed's density (or anything else that resizes every card) without losing your place: the card you
  * are reading stays where it is on screen, the cards above it grow or shrink upwards and the cards below move down.
  *
- * Returns `anchoredToggle(change)`. It finds the first card (`li[data-card-key]` in the scroll container) whose top
- * shows below the top (below `stickyTop`), notes where it is on screen, holds the content's height so the container
- * cannot shrink and clamp the scroll mid-morph, and applies `change` straight away (flushSync). Then, every frame
- * after motion has drawn, it scrolls the container by however far that card has moved, until the card's own
- * animation has finished. When one card fills the view and no top shows, that card (with at least 24px showing) is
- * the one held: it eases down to just below the top instead (its `scroll-margin-top`, or 8px), so a long card that
- * shrinks lands in view.
+ * Returns `anchoredToggle(change)`. It finds the first card (`li[data-card-key]` in the scroll container) that shows
+ * whole below the top (below `stickyTop`), else the first whose top shows there, notes where it is on screen, holds
+ * the content's height so the container cannot shrink and clamp the scroll mid-morph, and applies `change` straight
+ * away (flushSync). Then, every frame after motion has drawn, it scrolls the container by however far that card has
+ * moved, until the card's own animation has finished. When one card fills the view and no top shows, that card
+ * (with at least 24px showing) is the one held: it eases down to just below the top instead (its
+ * `scroll-margin-top`, or 8px), so a long card that shrinks lands in view.
  *
  * Why every frame, not once: motion starts the morph a frame or two after the change and moves the card over
  * about 400ms, so a single correction (or a timer) would leave it drifting. Scrolling or touching the feed during
@@ -152,18 +152,16 @@ export function useAnchoredToggle(mainRef: RefObject<HTMLElement | null>, option
     if (!main || main.scrollTop <= 0) { change(); return; }
 
     const mainBox = main.getBoundingClientRect();
-    const line = typeof stickyTop === "number" ? mainBox.top + stickyTop
-      : stickyTop?.current ? Math.max(mainBox.top, stickyBox(stickyTop.current, main).bottom) : mainBox.top;
-    // The card you are reading: the first whose top shows, so it and everything below it hold still while the
-    // cards above it change size. Only when one card fills the view (no top shows) is that card the anchor.
+    const header = typeof stickyTop === "object" && stickyTop.current ? stickyOf(stickyTop.current, main) : null;
+    const line = typeof stickyTop === "number" ? mainBox.top + stickyTop : header ? Math.max(mainBox.top, header.getBoundingClientRect().bottom) : mainBox.top;
+    // The card you are reading: the first that shows whole (QA cb784d4, B1), else the first whose top shows, so it
+    // and everything below it hold still while the cards above it change size. Only when one card fills the view (no
+    // top shows) is that card the anchor.
     const cards = [...main.querySelectorAll<HTMLElement>("li[data-card-key]")];
-    const anchor = cards.find((node) => {
-      const box = node.getBoundingClientRect();
-      return box.top >= line && box.top < mainBox.bottom;
-    }) ?? cards.find((node) => {
-      const box = node.getBoundingClientRect();
-      return box.bottom >= line + MIN_VISIBLE_PX && box.top < mainBox.bottom;
-    });
+    const boxes = cards.map((node) => ({ node, box: node.getBoundingClientRect() }));
+    const anchor = (boxes.find(({ box }) => box.top >= line && box.bottom <= mainBox.bottom)
+      ?? boxes.find(({ box }) => box.top >= line && box.top < mainBox.bottom)
+      ?? boxes.find(({ box }) => box.bottom >= line + MIN_VISIBLE_PX && box.top < mainBox.bottom))?.node;
     const key = anchor?.dataset.cardKey;
     if (!anchor || key === undefined) { change(); return; }
 
@@ -173,10 +171,15 @@ export function useAnchoredToggle(mainRef: RefObject<HTMLElement | null>, option
     const find = (current: HTMLElement) => current.isConnected ? current
       : [...main.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => node.dataset.cardKey === key);
 
+    // While it scrolls to hold the card, the container carries `data-anchoring`, so a header that follows the scroll
+    // direction (FloatingHeader) ignores those scrolls. It goes a frame after the last one, once its scroll event ran.
+    main.setAttribute("data-anchoring", "");
+    const release = () => requestAnimationFrame(() => { if (!stopRef.current) main.removeAttribute("data-anchoring"); });
     if (reduce) {
       flushSync(change);
       const after = find(anchor);
       if (after) main.scrollBy({ top: after.getBoundingClientRect().top - endTop, behavior: "instant" });
+      release();
       return;
     }
 
@@ -211,11 +214,14 @@ export function useAnchoredToggle(mainRef: RefObject<HTMLElement | null>, option
       cancelFrame(follow);
       content.style.minHeight = heldMinHeight;
       main.removeEventListener("wheel", stop);
-      main.removeEventListener("pointerdown", stop);
+      main.removeEventListener("pointerdown", touched);
       stopRef.current = null;
+      release();
     };
+    // A touch on the cards hands the scroll back to you; a tap in the header (closing View) does not.
+    const touched = (event: PointerEvent) => { if (!header?.contains(event.target as Node)) stop(); };
     main.addEventListener("wheel", stop, { passive: true });
-    main.addEventListener("pointerdown", stop, { passive: true });
+    main.addEventListener("pointerdown", touched, { passive: true });
     stopRef.current = stop;
     frame.postRender(follow, true);
   }, [mainRef, stickyTop, reduce]);

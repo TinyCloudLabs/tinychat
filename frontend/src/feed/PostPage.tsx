@@ -95,8 +95,11 @@ export function PostPreview({ entry, page, author, agentKey, platform, status, f
 function Media({ media }: { media: LabPageMedia }) {
   return <figure className="min-w-0">
     {media.type === "video"
-      // A video's native controls don't match :focus-visible, so its ring shows on any focus (QA, 1f17120).
-      ? <video src={media.src} poster={media.poster} controls playsInline preload="metadata" className="block aspect-video w-full rounded-xl border border-border bg-black object-contain focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background" />
+      // A video's native controls live in its shadow DOM and show no ring of their own, so the wrapper draws one
+      // while focus is anywhere in the video (QA cb784d4, P2); the video's own ring stays for focus on the video itself.
+      ? <div className="rounded-xl focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
+        <video src={media.src} poster={media.poster} controls playsInline preload="metadata" className="block aspect-video w-full rounded-xl border border-border bg-black object-contain focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background" />
+      </div>
       : <a href={media.src} target="_blank" rel="noopener noreferrer"><img src={media.src} alt={media.caption ?? ""} loading="lazy" className="block w-full rounded-xl border border-border bg-muted" /></a>}
     {media.caption && <figcaption className="mt-1 text-xs text-muted-foreground">{media.caption}</figcaption>}
   </figure>;

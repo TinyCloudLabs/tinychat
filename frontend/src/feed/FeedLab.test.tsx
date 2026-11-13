@@ -221,10 +221,10 @@ test("in the lab the open card is one surface: the agent line, question, options
   const option = [...host.querySelectorAll<HTMLButtonElement>("fieldset button")].find((node) => node.textContent?.startsWith("Short version"))!;
   expect(option.textContent).toBe("Short versionSuggestedThree paragraphs and the dates. Ready to send today.");
   expect([...host.querySelectorAll<HTMLButtonElement>("fieldset button")].filter((node) => node.textContent?.includes("Suggested"))).toHaveLength(1);
-  // Private priority waits under Details.
+  // Pin to top waits under Details.
   const details = host.querySelector<HTMLDetailsElement>('[aria-label="Focused card"] [aria-label="Card details"]')!;
   expect(details.open).toBe(false);
-  expect(details.textContent).toContain("Mark private priority");
+  expect(details.textContent).toContain("Pin to top");
   expect([...host.querySelectorAll('[aria-label="Focused card"] [aria-label="Card actions"] > button')].map((node) => node.textContent)).toEqual(["Ask me later", "Next card"]);
 });
 

@@ -295,7 +295,7 @@ export function CardConversation({ lines, to, reason, disabled = false, onSend, 
           {item.state === "sending" && <p className="mt-1 text-xs text-muted-foreground">Sending…</p>}
           {item.state === "error" && <p className="mt-1 flex items-center justify-end gap-x-1.5 text-xs text-destructive">
             <span role="alert">Couldn't send</span><span aria-hidden>·</span>
-            <button type="button" onClick={() => void deliver(item)} disabled={disabled} className="relative rounded-sm font-medium underline underline-offset-2 after:absolute after:-inset-x-2 after:-inset-y-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 fine:after:-inset-y-3">Try again</button>
+            <button type="button" onClick={() => void deliver(item)} disabled={disabled} className="relative rounded-sm font-medium underline underline-offset-2 after:absolute after:-inset-x-2 after:-inset-y-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 fine:after:-inset-y-3">Retry</button>
           </p>}
         </li>;
       })}

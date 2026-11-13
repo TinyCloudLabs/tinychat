@@ -57,7 +57,7 @@ function linesOf(entry: HomeFeedEntry, context: TypedCardContext | undefined, ag
   const { record, owner } = context;
   for (const { value } of owner.answers.filter((answer) => answer.card.kind === record.kind && answer.card.id === record.id)) {
     const label = record.kind === "ask" ? record.options.find((option) => option.id === value.choice)?.label ?? value.choice : value.choice;
-    const text = value.action === "drop" ? "You dropped this question" : value.action === "code" ? "You saved the approval code" : value.action === "done" ? "You gave the go" : answerSummary(label, value.text);
+    const text = value.action === "drop" ? "You skipped this question" : value.action === "code" ? "You saved the approval code" : value.action === "done" ? "You gave the go" : answerSummary(label, value.text);
     lines.push({ at: value.at, side: "you", text, note: `Sent to ${agent}`, entry });
   }
   for (const decision of owner.claimDecisions.filter((row) => row.card.kind === record.kind && row.card.id === record.id)) lines.push({ at: decision.value.at, side: "you", text: `You chose to ${decision.value.choice} this claim`, entry });

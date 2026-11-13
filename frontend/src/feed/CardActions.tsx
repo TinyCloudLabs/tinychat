@@ -27,10 +27,16 @@ export async function sendOwnerAction(entry: HomeFeedEntry, source: HomeFeedSour
   return source.sendMessage(entry, { responseId: crypto.randomUUID(), cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, kind: "message", text, createdAt: new Date().toISOString() }, payload);
 }
 
-/** How you closed a card, if you did: its latest drop or acknowledgement. A closed card shows only in History. */
-export function closedAs(entry: HomeFeedEntry): "Dropped" | "Acknowledged" | undefined {
+/**
+ * How and when you closed a card, if you did: its latest drop or acknowledgement. A closed card leaves the feed for
+ * History (Filter → History, and the earlier answers' timeline at the time you closed it).
+ */
+export function closedEvent(entry: HomeFeedEntry): { as: "Dropped" | "Acknowledged"; at: string } | undefined {
   const last = [...(entry.responses ?? [])].reverse().find((response) => response.payloadType === "feed.drop" || response.payloadType === "feed.acknowledge");
-  return !last ? undefined : last.payloadType === "feed.drop" ? "Dropped" : "Acknowledged";
+  return last && { as: last.payloadType === "feed.drop" ? "Dropped" : "Acknowledged", at: last.createdAt };
+}
+export function closedAs(entry: HomeFeedEntry): "Dropped" | "Acknowledged" | undefined {
+  return closedEvent(entry)?.as;
 }
 
 /** A card's closing action: which one, and what a tap does (the page takes the card away and shows the undo bar). */

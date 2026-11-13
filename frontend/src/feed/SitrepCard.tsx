@@ -43,6 +43,13 @@ interface Props {
   onSnoozed?: (until: string) => void;
 }
 type AskAnswer = { action: "answer" | "drop" | "accept-default"; choice?: string };
+/** An approval's kind in words (Monica): never the raw `approvalType`/`approvalKind`; an unknown value says nothing. */
+const APPROVAL_WORDS: Partial<Record<string, string>> = { openkey: "Approval in OpenKey", delegation: "Delegated access", claude: "Access for Claude", secret: "Access to a secret" };
+function approvalWords(approval: Approval): string | undefined {
+  // `approvalKind` is one of the schema's GO_KINDS: release, deploy, spend, publish.
+  if (approval.approvalType === "go") return approval.approvalKind ? `Go-ahead to ${approval.approvalKind}` : "Go-ahead";
+  return Object.hasOwn(APPROVAL_WORDS, approval.approvalType) ? APPROVAL_WORDS[approval.approvalType] : undefined;
+}
 
 function TypedAnswerStatus({ entry, owner, answer }: { entry: HomeFeedEntry; owner: SitrepOwnerData; answer?: Answer }) {
   if (!answer) return null;
@@ -142,7 +149,7 @@ export function SitrepCard(props: Props) {
     const words = choice ? "" : text;
     const result = await send("sitrep.answer", { askId: record.id, action, ...(choice ? { choice } : {}), text: words, at: new Date().toISOString() }, `ask:${action}:${choice ?? ""}:${words}`);
     setText(""); setChosen(undefined); setOwnOpen(false); setFollowup(false); setEngaged(false);
-    props.onAnswered(result, action === "drop" ? "You dropped this question" : answerSummary(record.options.find((option) => option.id === choice)?.label, words.trim()));
+    props.onAnswered(result, action === "drop" ? "You skipped this question" : answerSummary(record.options.find((option) => option.id === choice)?.label, words.trim()));
   }
   // One tap chooses: the answer waits out the undo window, then is saved with any typed answer.
   function holdAnswer(answer: AskAnswer) {
@@ -150,7 +157,7 @@ export function SitrepCard(props: Props) {
     setHeld(undefined); setChosen(answer); hold.start();
   }
   function undoAnswer() { hold.undo(); setChosen(undefined); setHeld(undefined); }
-  const sendingAs = (action: AskAnswer["action"]) => busy && chosen?.action === action && !chosen.choice ? sendingLabel(hold.seconds, action === "drop" ? "Dropping" : undefined, action === "drop" ? undefined : author) : undefined;
+  const sendingAs = (action: AskAnswer["action"]) => busy && chosen?.action === action && !chosen.choice ? sendingLabel(hold.seconds, action === "drop" ? "Skipping" : undefined, action === "drop" ? undefined : author) : undefined;
   // A command button taps like an option: it reads "Sending to {agent} in 4s" with Undo beside it, then writes.
   // `run` makes its timestamps when the window ends, so a command is stamped when it is written, not at the tap.
   function heldButton(key: string, label: string, run: () => Promise<unknown>, options: { disabled?: boolean; pressed?: boolean } = {}) {
@@ -200,7 +207,7 @@ export function SitrepCard(props: Props) {
           onChoose={(option) => option.id === OWN_OPTION.id ? setOwnOpen(!ownOpen) : holdAnswer({ action: "answer", choice: option.id })}
           own={{ open: ownOpen, box: <OwnAnswerBox text={text} disabled={busy} onText={setText} onSend={() => { if (text.trim()) holdAnswer({ action: "answer" }); }} /> }} />
         {error && chosen && !busy && <div role="alert" className="text-destructive"><p>{error}</p><button type="button" className="mt-1 min-h-9 underline" onClick={() => void perform(() => askAnswer(chosen))}>Try again</button></div>}
-        <div className="flex flex-wrap gap-2">{record.mode === "proceeding" && record.default && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.default })}>Fine, go ahead</button>}{record.recommend && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.recommend })}>Accept recommendation</button>}<button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "drop" })}>{sendingAs("drop") ?? "Drop question"}</button>{hold.seconds !== null && chosen?.action !== "answer" && <button type="button" className={buttonClass} onClick={undoAnswer}>Undo</button>}</div>
+        <div className="flex flex-wrap gap-2">{record.mode === "proceeding" && record.default && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.default })}>Fine, go ahead</button>}{record.recommend && <button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "accept-default", choice: record.recommend })}>Accept recommendation</button>}<button type="button" className={buttonClass} disabled={busy} onClick={() => holdAnswer({ action: "drop" })}>{sendingAs("drop") ?? "Skip this question"}</button>{hold.seconds !== null && chosen?.action !== "answer" && <button type="button" className={buttonClass} onClick={undoAnswer}>Undo</button>}</div>
       </div>}
       {projection.parts.map((part) => <section key={part.view.approval.id} className="space-y-3 rounded-xl border border-border p-3" aria-label="Folded approval step">{partSteps(part).map((step) => {
         const matches = entries.filter((candidate) => { const typed = parseSitrepCardPayload(candidate.state.card.payload?.sitrep); return typed?.record.kind === "approval" && typed.record.id === step.approval.id; });
@@ -287,8 +294,9 @@ export function SitrepCard(props: Props) {
         {"detail" in route && <p>{route.detail}</p>}
         {record.kind === "task" && <p>Marking the task done asks {entry.source.label} to complete it; it is done when the agent reports so.</p>}
         {record.kind === "claim" && <p>A decision goes to {entry.source.label}. Each agent it reaches confirms with its own receipt.</p>}
-        {/* Private priority puts the card first in your list. Only you see it; it is not sent to any agent. */}
-        <button type="button" className={`${buttonClass} bg-background`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Clear private priority" : "Mark private priority"}</button>
+        {/* Pin to top puts the card first in your list. Only you see it; it is not sent to any agent (Monica's words). */}
+        <div><button type="button" className={`${buttonClass} bg-background`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Unpin" : "Pin to top"}</button>
+          <p className="mt-1 text-xs text-muted-foreground">Your agents don't see this.</p></div>
         {props.reference}
         {/* The card's history as a rail with dots (Sam, 11-12): posted, then what you did, oldest first. */}
         <section aria-label="Card history" className="mt-2"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p>
@@ -407,14 +415,14 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   return <div className="space-y-3" onFocusCapture={() => { engagedOnce.current = true; }}>
     {superseded && <div role="status" className="rounded-xl border border-border p-3 text-xs"><p>Re-issued. This view and any code draft remain bound to <code className="break-all">{entry.state.card.cardId}/{entry.state.card.revision}/{entry.state.card.issuanceId}</code>. Codes are not transferred to the new request.</p><button type="button" className={buttonClass} disabled={busy} onClick={() => void openCurrent()}>Open current approval</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} />}
-    <p>{approval.approvalType}{approval.approvalKind && ` · ${approval.approvalKind}`}{expired && " · Expired"} · Issued {stamp(approval.issuedAt)}{approval.expiresAt && ` · Expires ${stamp(approval.expiresAt)}`}</p>
+    <p>{[approvalWords(approval), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`].filter(Boolean).join(" · ")}</p>
     {approval.permissions && <p><strong>Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
     {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.grantMode && <p>Grant mode: {approval.grantMode}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
     {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
     {approval.url && safeUrl(approval.url) && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center underline underline-offset-2">Open approval · {new URL(approval.url).hostname}</a>}
     {visibleForm && approval.codeExpected && <label className="block font-medium">Approval code<input aria-label="Approval code" type="password" autoComplete="off" value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className="mt-1 block text-xs text-muted-foreground">Exact code, without spaces. Stored in the private payload for the intended agent; never the answer text.</span></label>}
     {visibleForm && <div className="flex flex-wrap items-center gap-2">
-      <button type="button" disabled={disabled || (approval.codeExpected && !validCode)} className={primaryClass} onClick={holdApproval}>{waiting ? sendingLabel(hold.seconds, undefined, author) : busy ? "Saving approval…" : approval.approvalType === "go" ? "Give the go" : approval.codeExpected ? "Save code" : "I completed this step"}</button>
+      <button type="button" disabled={disabled || (approval.codeExpected && !validCode)} className={primaryClass} onClick={holdApproval}>{waiting ? sendingLabel(hold.seconds, approval.approvalType === "go" ? "Sending your go-ahead" : "Sending", author) : busy ? "Saving approval…" : approval.approvalType === "go" ? "Give the go" : approval.codeExpected ? "Save code" : "I completed this step"}</button>
       {waiting && <button type="button" onClick={hold.undo} className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium fine:min-h-10">Undo</button>}
     </div>}
     {notSent && <p role="status" className="text-muted-foreground">{notSent}</p>}

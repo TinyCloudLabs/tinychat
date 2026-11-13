@@ -593,7 +593,7 @@ test("a typed ask is answered with one tap once the undo window runs out, and Un
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", version: 1, data: { askId: "ask-synthetic", action: "answer", choice: "careful", text: "" } });
 });
 
-test("a typed answer keeps its own Send, and Accept recommendation and Drop question wait out the same undo window", async () => {
+test("a typed answer keeps its own Send, and Accept recommendation and Skip this question wait out the same undo window", async () => {
   jest.useFakeTimers();
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
@@ -601,8 +601,8 @@ test("a typed answer keeps its own Send, and Accept recommendation and Drop ques
   await act(async () => button(view.host, "Accept recommendation").click());
   expect(option(view.host, "Careful option").getAttribute("aria-pressed")).toBe("true");
   await act(async () => button(view.host, "Undo").click());
-  await act(async () => button(view.host, "Drop question").click());
-  expect(button(view.host, `Dropping in ${ANSWER_UNDO_SECONDS}s`).disabled).toBe(true);
+  await act(async () => button(view.host, "Skip this question").click());
+  expect(button(view.host, `Skipping in ${ANSWER_UNDO_SECONDS}s`).disabled).toBe(true);
   await act(async () => button(view.host, "Undo").click());
   await wait(ANSWER_UNDO_SECONDS * 3);
   expect(fixture.saved).toEqual([]);
@@ -663,7 +663,7 @@ function holdLoads(source: HomeFeedSource) {
   return { release: () => act(async () => gate.resolve()) };
 }
 
-test("a typed ask folds to the chosen option's label once sent, and a dropped one says so", async () => {
+test("a typed ask folds to the chosen option's label once sent, and a skipped one says so", async () => {
   jest.useFakeTimers();
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
@@ -682,10 +682,10 @@ test("a typed ask folds to the chosen option's label once sent, and a dropped on
   await act(async () => button(view.host, "Show card").click());
   expect(folded(view.host)).toBe(false);
   await act(async () => button(view.host, "Add follow-up").click());
-  await act(async () => button(view.host, "Drop question").click());
+  await act(async () => button(view.host, "Skip this question").click());
   await wait();
   expect(fixture.saved[1]?.payload).toMatchObject({ type: "sitrep.answer", data: { action: "drop" } });
-  expect(fold(view.host)!.textContent).toContain("You dropped this question");
+  expect(fold(view.host)!.textContent).toContain("You skipped this question");
   expect(folded(view.host)).toBe(true);
 });
 

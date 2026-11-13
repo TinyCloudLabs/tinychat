@@ -22,6 +22,9 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
   // below never jump.
   const [stuck, setStuck] = useState(false);
   const [keepAt, setKeepAt] = useState(0);
+  // Scrolled down, it slides away up to the part marked `data-float-pin` (the toolbar, QA cb784d4 B1), which stays at
+  // the top so its controls are in reach mid-feed without scrolling; with nothing pinned it slides away whole.
+  const [pinAt, setPinAt] = useState<number | null>(null);
   const [focusInside, setFocusInside] = useState(false);
 
   useEffect(() => {
@@ -39,6 +42,9 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
       setStuck(!!spot && spot.getBoundingClientRect().top < scroller.getBoundingClientRect().top - 1);
       const keep = headerRef.current?.querySelector<HTMLElement>("[data-float-keep]");
       setKeepAt(keep ? Math.max(0, keep.offsetTop - 8) : 0);
+      // 4px above the pinned row, so with the row and the header's bottom padding the band is 56px on touch.
+      const pin = headerRef.current?.querySelector<HTMLElement>("[data-float-pin]");
+      setPinAt(pin ? Math.max(0, pin.offsetTop - 4) : null);
       // Near the top there's room for the header without covering anything, so it always shows. This also covers
       // iOS rubber-banding, where scrollTop briefly goes negative.
       if (top < (headerRef.current?.offsetHeight ?? 0)) {
@@ -46,6 +52,8 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
         setHiddenByScroll(false);
         return;
       }
+      // The density morph scrolling to hold your card (densityMorph.tsx) is not you scrolling: the header stays as it is.
+      if (scroller.hasAttribute("data-anchoring")) { travel = 0; return; }
       if (delta === 0) return;
       travel = Math.sign(delta) === Math.sign(travel) ? travel + delta : delta;
       if (travel > THRESHOLD_PX) setHiddenByScroll(true);
@@ -63,7 +71,7 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
   return <>
     <div ref={spotRef} aria-hidden className="h-0" />
     <div ref={headerRef} data-hidden={hidden || undefined} data-stuck={stuck || undefined}
-      style={!hidden && stuck && keepAt ? { transform: `translateY(-${keepAt}px)` } : undefined}
+      style={hidden && pinAt !== null ? { transform: `translateY(-${pinAt}px)` } : !hidden && stuck && keepAt ? { transform: `translateY(-${keepAt}px)` } : undefined}
       onFocus={(event) => setFocusInside((event.target as HTMLElement).matches(":focus-visible"))}
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusInside(false); }}
       className={cn(
@@ -72,7 +80,7 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
         // The hairline and soft shadow only appear once cards are passing under the header; at rest it sits flat on
         // the page.
         scrolled ? "border-border shadow-[0_1px_8px_-4px_rgb(0_0_0/0.12)] dark:shadow-[0_1px_8px_-4px_rgb(0_0_0/0.5)]" : "border-transparent",
-        hidden ? "-translate-y-full" : "translate-y-0",
+        hidden && pinAt === null ? "-translate-y-full" : "translate-y-0",
         className,
       )}>
       {children}
