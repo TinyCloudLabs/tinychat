@@ -69,7 +69,7 @@ describe("issue copy", () => {
   test("the recovery sheet says what happens next and offers no action but Close", () => {
     expect(issueSheetCopy(failed)).toEqual({
       title: "Couldn't recover this recording",
-      body: "TinyCloud Home couldn't finish saving this recording. It will try again when it next opens.",
+      body: "TinyCloud One couldn't finish saving this recording. It will try again when it next opens.",
     });
     expect(HOME_COPY.close).toBe("Close");
     // Try again and Delete wait for TC-868 (native retry and discard).
@@ -85,7 +85,7 @@ describe("issue copy", () => {
     const copy = issueSheetCopy(timedOut);
     expect(copy.title).toBe("Saving this recording");
     expect(copy.body).toBe(
-      "Kept on this browser. TinyCloud Home will finish it automatically.",
+      "Kept on this browser. TinyCloud One will finish it automatically.",
     );
     expect(JSON.stringify(copy)).not.toMatch(/Try again|Delete/);
   });
@@ -133,7 +133,7 @@ describe("issue copy", () => {
     const merged = withQuarantine({ a: partial, b: partial }, [{ id: "a", reason: "corrupt_journal" }], new Set());
     expect(merged.a).toEqual({ kind: "quarantined" });
     expect(merged.b).toBe(partial);
-    expect(cardNote({ a: partial, b: failed }, null)).toBe("Not in your space yet · TinyCloud Home will retry when it next opens");
+    expect(cardNote({ a: partial, b: failed }, null)).toBe("Not in your space yet · TinyCloud One will retry when it next opens");
   });
 
   test("Dismiss: gone on success; otherwise the failure is logged and a line is returned", () => {
@@ -219,13 +219,13 @@ describe("matching rows", () => {
 });
 
 describe("the on-this-phone card's note", () => {
-  const pending = "Kept on this browser. TinyCloud Home will finish it automatically.";
-  const retry = "Not in your space yet · TinyCloud Home will retry when it next opens";
+  const pending = "Kept on this browser. TinyCloud One will finish it automatically.";
+  const retry = "Not in your space yet · TinyCloud One will retry when it next opens";
   const parkedNote = "Not in your space yet · Couldn't recover · audio kept";
   const kept = "Not in your space yet · Couldn't save all of this recording";
   const cases: [string, Record<string, HomeIssue>, string | null, string][] = [
     ["nothing wrong keeps the plain line", {}, null, "Not in your space yet"],
-    ["a timed-out recording says TinyCloud Home will finish it", { a: timedOut }, null, pending],
+    ["a timed-out recording says TinyCloud One will finish it", { a: timedOut }, null, pending],
     ["recoveryFailed overrides it: never both", { a: timedOut, b: failed }, null, retry],
     ["recoveryFailed alone", { b: failed }, null, retry],
     ["quarantined promises no retry", { b: { kind: "quarantined" } }, null, parkedNote],

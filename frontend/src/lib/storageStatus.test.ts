@@ -39,7 +39,7 @@ const STORAGE_COPY = [
 ];
 
 describe("storage-full copy", () => {
-  test("never tells a user to free up space or make room, never calls TinyCloud Home read-only, never says deleting does or does not lower usage", () => {
+  test("never tells a user to free up space or make room, never calls TinyCloud One read-only, never says deleting does or does not lower usage", () => {
     const banned = [
       /free up/i,
       /make room/i,

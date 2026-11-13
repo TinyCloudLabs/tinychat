@@ -89,17 +89,17 @@ describe("`/` on every platform", () => {
 });
 
 describe("the sign-in surface", () => {
-  test("Home on the web shows the TinyCloud Home sign-in heading (TC-2050) and adds a plain link to /about", () => {
+  test("Home on the web shows the TinyCloud One sign-in heading (TC-2050) and adds a plain link to /about", () => {
     const markup = renderToStaticMarkup(<BootSurface state="unauthenticated" error={null} onAction={() => {}} home />);
-    expect(markup).toContain("TinyCloud Home</h1>");
+    expect(markup).toContain("TinyCloud One</h1>");
     expect(markup).not.toContain("Exo</h1>");
     expect(markup).toContain('href="/about"');
-    expect(markup).toContain("About TinyCloud Home</a>");
+    expect(markup).toContain("About TinyCloud One</a>");
   });
 
   test("without Home (native) it has no /about link", () => {
     const markup = renderToStaticMarkup(<BootSurface state="unauthenticated" error={null} onAction={() => {}} />);
-    expect(markup).toContain("TinyCloud Home</h1>");
+    expect(markup).toContain("TinyCloud One</h1>");
     expect(markup).not.toContain("/about");
   });
 });

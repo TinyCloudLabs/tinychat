@@ -47,7 +47,7 @@ const PRINCIPAL = `did:pkh:eip155:1:${ADDRESS}`;
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
-const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
+const NOTICE = "Sign in once more so TinyCloud One can open your apps and your feed. Your data stays as it is.";
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];

@@ -1344,7 +1344,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.getByRole("button", { name: "Open Settings" }).click();
     // Generic copy; the cause is only logged, never shown (E1 iOS F1).
     const settingsAlert = alerts.filter({
-      hasText: "Couldn't open Settings. Open Settings › TinyCloud Home › Microphone.",
+      hasText: "Couldn't open Settings. Open Settings › TinyCloud One › Microphone.",
     });
     await shown(settingsAlert);
     expect(await settingsAlert.textContent()).not.toContain(

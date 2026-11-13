@@ -179,7 +179,7 @@ test("seeding writes through Home's paths, and Home's own readers show every ite
   expect(report.status).toBe("seeded");
 
   const readBack = await readBackSeed(fake.space);
-  expect(readBack.chats).toEqual([{ id: CHAT_THREAD_ID, title: "What can I do in TinyCloud Home?", messages: 4 }]);
+  expect(readBack.chats).toEqual([{ id: CHAT_THREAD_ID, title: "What can I do in TinyCloud One?", messages: 4 }]);
   expect(readBack.feedCards).toEqual(feedCards(report.seededAt).map((card) => card.cardId).sort());
   expect(readBack.voiceNotes).toEqual([{ sourceId: VOICE_NOTE.sourceId, title: VOICE_NOTE.title, transcriptSegments: 3 }]);
 
@@ -218,7 +218,7 @@ test("an interrupted run resumes to the same content, and another revision is re
   const resumed = await runReviewerSeed(fake.space, fake.target, write(fake.spaceId), () => new Date("2026-11-12T09:00:00Z"));
   expect(resumed).toMatchObject({ status: "resumed", seededAt: "2026-11-11T12:00:00.000Z" });
   const readBack = await readBackSeed(fake.space);
-  expect(readBack.chats).toEqual([{ id: CHAT_THREAD_ID, title: "What can I do in TinyCloud Home?", messages: 4 }]);
+  expect(readBack.chats).toEqual([{ id: CHAT_THREAD_ID, title: "What can I do in TinyCloud One?", messages: 4 }]);
   expect(readBack.feedCards).toHaveLength(4);
   expect(readBack.voiceNotes).toHaveLength(1);
 

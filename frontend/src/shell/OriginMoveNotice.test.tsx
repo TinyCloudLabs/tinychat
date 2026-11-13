@@ -7,7 +7,7 @@ import { isOriginMoveDeferred, NO_LOCAL_WORK, type LocalRecordingWork } from "@/
 import { OriginMoveHold, OriginMoveNotice, originMoveNoticeText, useOriginMoveDeferral } from "./OriginMoveNotice";
 
 const work = (patch: Partial<LocalRecordingWork>): LocalRecordingWork => ({ ...NO_LOCAL_WORK, signedIn: true, ...patch });
-const MOVED = "TinyCloud Home has moved to home.tinycloud.xyz.";
+const MOVED = "TinyCloud One has moved to home.tinycloud.xyz.";
 const CLOSER = "This tab stays here while these recordings are only in this browser.";
 
 function render(w: LocalRecordingWork): string {

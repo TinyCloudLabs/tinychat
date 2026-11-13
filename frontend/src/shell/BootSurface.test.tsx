@@ -7,7 +7,7 @@ test("ordinary signed-out screen keeps its default message", () => {
   const markup = renderToStaticMarkup(<BootSurface state="unauthenticated" error={null} onAction={() => {}} />);
   expect(markup).toContain("Sign in to continue.");
   expect(markup).toContain("<h1");
-  expect(markup).toContain(">TinyCloud Home</h1>");
+  expect(markup).toContain(">TinyCloud One</h1>");
   expect(markup).not.toContain("TinyCloud Chat");
 });
 
@@ -16,8 +16,8 @@ test("a failed sign-in or a local sign-out offers Sign in, never Try again", () 
     "Couldn't sign in. Try again.",
     "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.",
     "Couldn't sign in. Please try again.",
-    "OpenKey stayed signed in on this device. TinyCloud Home is signed out locally.",
-    "Signed out of TinyCloud Home. To use a different account, also sign out at openkey.so.",
+    "OpenKey stayed signed in on this device. TinyCloud One is signed out locally.",
+    "Signed out of TinyCloud One. To use a different account, also sign out at openkey.so.",
   ]) {
     const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error={error} onAction={() => {}} />);
     expect(markup).toContain(">Sign in</button>");
@@ -46,6 +46,6 @@ test("an ordinary error shows no link", () => {
 
 test("the booting screen shows the fixed product name", () => {
   const markup = renderToStaticMarkup(<BootSurface state="booting" error={null} onAction={() => {}} />);
-  expect(markup).toContain(">TinyCloud Home</h1>");
+  expect(markup).toContain(">TinyCloud One</h1>");
   expect(markup).not.toContain(">Exo</h1>");
 });
