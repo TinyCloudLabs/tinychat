@@ -444,12 +444,12 @@ test("a typed question's foot is one row (Ask me later, Drop this card, Details)
   expect(expiry && options && expiry.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-test("Accept recommendation and Drop question wait under Undo before anything is written", async () => {
+test("Accept recommendation and Skip this question wait under Undo before anything is written", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
-  await act(async () => button(article, "Drop question").click());
+  await act(async () => button(article, "Skip this question").click());
   expect(undoPill(article)?.textContent).toBe("Undo · 5");
   await act(async () => undoPill(article)!.click());
   await timer.advance(10_000);
@@ -543,7 +543,7 @@ test("matching display authors cannot fold an approval from a different register
   expect(card(view.host, approval.entry.state.card.title) !== parentCard).toBe(true);
 });
 
-test("a failed card message keeps its exact words until Try again saves them", async () => {
+test("a failed card message keeps its exact words until Retry saves them", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const send = fixture.source.sendMessage!;
   let fail = true;
@@ -558,7 +558,7 @@ test("a failed card message keeps its exact words until Try again saves them", a
   const failed = article.querySelector('[data-outgoing="error"]');
   expect(failed?.textContent).toContain("Keep this exact draft after the refused write.");
   expect(fixture.saved).toEqual([]);
-  await act(async () => button(failed!, "Try again").click());
+  await act(async () => button(failed!, "Retry").click());
   expect(article.querySelector('[data-outgoing="error"]')).toBeNull();
   expect(fixture.owner.answers).toEqual([]);
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "Keep this exact draft after the refused write." } });

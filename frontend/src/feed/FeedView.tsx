@@ -192,9 +192,9 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
         {agent ? <AgentMark agentKey={agent.key} name={card.author.name} small /> : avatar && <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />}
         <div className="flex min-h-6 min-w-0 flex-1 items-center gap-1.5 text-meta text-muted-foreground">
           <span data-agent-line className="flex min-w-0 items-center gap-1.5">
-            {/* The name is 24px tall; its ::after stretches the tap target to 44px without moving the line (critique #8). */}
+            {/* The name's own box is 44px tall on touch, pulled back by its negative margin so the line stays 24px (critique #8, QA cb784d4). */}
             {onAuthor
-              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="relative flex min-h-6 min-w-0 items-center text-left font-semibold text-foreground after:absolute after:-inset-x-1 after:-inset-y-2.5 fine:after:hidden"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
+              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="-my-2.5 flex min-h-11 min-w-0 items-center text-left font-semibold text-foreground fine:my-0 fine:min-h-6"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
               : <span className="min-w-0 truncate font-semibold text-foreground">{card.author.name}</span>}
             {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
           </span>

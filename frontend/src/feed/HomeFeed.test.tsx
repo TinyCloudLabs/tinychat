@@ -605,7 +605,7 @@ test("an answer waits 5 seconds: nothing is written before, exactly one write at
   expect(undo).not.toBeNull();
   expect(document.activeElement === undo).toBe(true);
   expect(answers(view.host)!.textContent).toContain("Sending · 5s");
-  expect(view.host.textContent).toContain("Sending Hold in 5 seconds. Undo available.");
+  expect(view.host.textContent).toContain("Sending Hold in 5 seconds. Undo is available until then.");
   await clock!.advance(2000);
   expect(answers(view.host)!.textContent).toContain("Sending · 3s");
   await clock!.advance(2900);
@@ -676,14 +676,39 @@ function plain(cardId = "plain-one"): HomeFeedEntry {
 const writes = (responses: FeedResponse[]) => responses.map((response) => `${response.revision}:${response.choiceId ?? response.text}`);
 const BANNER = "A newer version of this card arrived";
 
+test("a comment waits 5 s like every send: Undo writes nothing and puts the words back; left alone, one message at 5 s", async () => {
+  const store = persistence([plain()]);
+  const view = await mount(store.source());
+  await open(view.host, "Plain question");
+  await comment(view.host, "Is Friday too late?");
+  // Its Send sits inside the comment field (the helper tapped that one), and the count starts at once.
+  const field = view.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Leave a comment for Test agent"]')!;
+  expect(field.parentElement!.querySelector("button")).not.toBeNull();
+  expect(comments(view.host)?.textContent).toContain("Sending in 5s");
+  expect(field.value).toBe("");
+  await clock!.advance(3000);
+  await act(async () => undoButton(comments(view.host)!)!.click());
+  expect(field.value).toBe("Is Friday too late?");
+  expect(comments(view.host)?.textContent ?? "").not.toContain("Sending in");
+  await clock!.advance(10_000);
+  expect(store.messages).toEqual([]);
+  // Sent again from the field's own Send, left alone: nothing before 5 s, exactly one message at 5 s.
+  await act(async () => field.nextElementSibling!.querySelector<HTMLButtonElement>("button")!.click());
+  await clock!.advance(4900);
+  expect(store.messages).toEqual([]);
+  await clock!.advance(100);
+  expect(store.messages).toHaveLength(1);
+  expect(store.messages[0]).toMatchObject({ kind: "message", cardId: "plain-one", revision: 1, text: "Is Friday too late?" });
+  await clock!.advance(10_000);
+  expect(store.messages).toHaveLength(1);
+  expect(store.responses).toEqual([]);
+});
+
 test("a plain card's conversation interleaves the owner's messages and revision replies, oldest first", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
   await open(view.host, "Plain question");
   await comment(view.host, "Is Friday too late?");
-  // A comment waits out the same undo window as an answer.
-  expect(comments(view.host)?.textContent).toContain("Sending in 5s");
-  expect(store.messages).toEqual([]);
   await clock!.advance(5000);
   expect(store.messages).toHaveLength(1);
   expect(store.messages[0]).toMatchObject({ kind: "message", cardId: "plain-one", revision: 1, text: "Is Friday too late?" });

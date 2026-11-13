@@ -61,7 +61,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
     if (event.key !== "Escape" || !pending) return;
     event.preventDefault(); undo();
   }
-  const status = pending && waitingLabel ? `Sending ${waitingLabel} in ${UNDO_SECONDS} seconds. Undo available.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
+  const status = pending && waitingLabel ? `Sending ${waitingLabel} in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
   return <fieldset className="space-y-2 text-sm" onKeyDown={escape}><legend className="mb-2 text-xs font-medium text-muted-foreground">Choose an option</legend>
     {options.map((option) => {
       const held = waitingId === option.id;

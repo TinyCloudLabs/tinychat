@@ -173,10 +173,17 @@ export function useAnchoredToggle(mainRef: RefObject<HTMLElement | null>, option
     const find = (current: HTMLElement) => current.isConnected ? current
       : [...main.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => node.dataset.cardKey === key);
 
+    // While the feed scrolls itself to hold the card, `data-anchoring` on the container tells a floating header
+    // (FloatingHeader) that this is not the owner scrolling. Scroll events fire on the next frame, so the mark
+    // stays until the frame after the last correction.
+    main.setAttribute("data-anchoring", "");
+    const unmark = () => requestAnimationFrame(() => { if (stopRef.current === null) main.removeAttribute("data-anchoring"); });
+
     if (reduce) {
       flushSync(change);
       const after = find(anchor);
       if (after) main.scrollBy({ top: after.getBoundingClientRect().top - endTop, behavior: "instant" });
+      unmark();
       return;
     }
 
@@ -213,6 +220,7 @@ export function useAnchoredToggle(mainRef: RefObject<HTMLElement | null>, option
       main.removeEventListener("wheel", stop);
       main.removeEventListener("pointerdown", stop);
       stopRef.current = null;
+      unmark();
     };
     main.addEventListener("wheel", stop, { passive: true });
     main.addEventListener("pointerdown", stop, { passive: true });

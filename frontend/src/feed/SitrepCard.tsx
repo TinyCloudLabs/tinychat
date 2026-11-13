@@ -23,7 +23,7 @@ function stamp(at: string) {
 }
 // An approval's kind in an owner's words (Monica, 11-13); a value with no plain word is left out, never shown raw.
 const GO_WORDS: Record<string, string> = { release: "Go-ahead to release", deploy: "Go-ahead to deploy", spend: "Go-ahead to spend", publish: "Go-ahead to publish" };
-const APPROVAL_WORDS: Record<string, string> = { go: "Go-ahead", openkey: "Approval in OpenKey", delegation: "Delegated access", claude: "Access for Claude", secret: "A secret" };
+const APPROVAL_WORDS: Record<string, string> = { go: "Go-ahead", openkey: "Approval in OpenKey", delegation: "Delegated access", claude: "Access for Claude", secret: "Access to a secret" };
 function approvalWords(type: string, kind?: string): string | undefined {
   return type === "go" && kind && GO_WORDS[kind] ? GO_WORDS[kind] : APPROVAL_WORDS[type];
 }
@@ -105,7 +105,7 @@ function TypedAnswerStatus({ entry, owner, answer, record, focusOnMount = false 
   const choice = answer.choice && record.kind === "ask" ? record.options.find((option) => option.id === answer.choice) : undefined;
   const label = choice && optionText(choice.label);
   const lead = answer.action === "code" ? `Code saved privately for ${agent}. It isn't shown again.`
-    : answer.action === "drop" ? "You dropped this question."
+    : answer.action === "drop" ? "You skipped this question."
       : answer.action === "done" ? record.kind === "approval" && record.approvalType === "go" ? "You gave the go." : "You marked this step done."
         : label ? <>You chose <b className="font-semibold">{label}</b>.</>
           : answer.choice ? "You chose an option that is no longer listed." : "You answered.";
@@ -284,7 +284,7 @@ export function SitrepCard(props: Props) {
   const history: HistoryItem[] = [
     { key: "posted", at: entry.state.card.createdAt, title: "Posted" },
     ...answers.map((answer, index) => ({ key: `answer:${answer.at}:${index}`, at: answer.at,
-      title: answer.action === "code" ? "Code saved privately" : answer.action === "drop" ? "Dropped" : answer.action === "done" ? "Done" : `Chose ${optionLabel(answer.choice) ?? (answer.choice ? "an option no longer listed" : "a written answer")}`,
+      title: answer.action === "code" ? "Code saved privately" : answer.action === "drop" ? "Skipped" : answer.action === "done" ? "Done" : `Chose ${optionLabel(answer.choice) ?? (answer.choice ? "an option no longer listed" : "a written answer")}`,
       ...(answer.action !== "code" && answer.text ? { detail: answer.text } : {}) })),
     ...(state?.snoozes ?? []).map((snooze) => ({ key: `snooze:${snooze.at}:${snooze.until}`, at: snooze.at, title: `Snoozed until ${stamp(snooze.until)}` })),
   ].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).map((item, index, all) => ({ ...item, tone: index === all.length - 1 ? "current" as const : "done" as const }));
@@ -321,7 +321,8 @@ export function SitrepCard(props: Props) {
       {!waiting && asking && <div className="mt-3 flex flex-wrap gap-2">
         {steer === "open" && record.default && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>}
         {record.recommend && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.recommend) ?? "the recommendation", () => askAnswer("accept-default", record.recommend, true), true)}>Accept recommendation</button>}
-        <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo("Drop question", () => askAnswer("drop", undefined, true), true)}>Drop question</button>
+        {/* "Skip this question", not "Drop": "Drop this card" in the foot is a different action (Monica). */}
+        <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo("“Skip this question”", () => askAnswer("drop", undefined, true), true)}>Skip this question</button>
       </div>}
       {!waiting && asking && steer === "open" && record.default && <p className={`mt-2 ${fineClass}`}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</p>}
       {!waiting && responds && (!asking || followup) && <div className="mt-1 flex flex-wrap gap-x-[26px]">
@@ -417,7 +418,7 @@ export function SitrepCard(props: Props) {
 
     {thread}
     {/* The card's foot, one row: Ask me later, Drop this card (from the page), and Details at the right, which holds
-        who posted the card, its wiring, private priority and its history. */}
+        who posted the card, its wiring, Pin to top and its history. */}
     {!waiting && (projection.request || expanded) && <div className="mt-3 border-t border-border pt-1">
       <CardDetails close={props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
         <dl>{([
@@ -429,8 +430,9 @@ export function SitrepCard(props: Props) {
         {receipt && <p>{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
         {routeReady && <p className="text-[12.5px] leading-[1.4] text-muted-foreground">Messages on this card go to: {destinations.map((recipient) => <span key={recipient.recipientKey} className="block break-all font-mono">{recipient.legacyName} · {recipient.runtimeTarget.agentId}</span>)}</p>}
         {!!state?.notes?.length && <div aria-label="Your private notes" className="space-y-1"><p className={fineClass}>Your private notes. Only you can see them; they aren't sent to the agent.</p>{state.notes.map((note) => <p key={note.id} className="whitespace-pre-wrap">{note.text} <time className={fineClass} dateTime={note.at}>{stamp(note.at)}</time></p>)}</div>}
-        {/* Private priority puts the card first in your list. Only you see it; it is not sent to any agent. */}
-        <button type="button" className={`${buttonClass} aria-pressed:bg-muted`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Clear private priority" : "Mark private priority"}</button>
+        {/* Pin to top puts the card first in your list. Only you see it; it is not sent to any agent. */}
+        <div><button type="button" className={`${buttonClass} aria-pressed:bg-muted`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Unpin" : "Pin to top"}</button>
+          <p className={fineClass}>Your agents don't see this.</p></div>
         {reference}
         <section aria-label="Card history" className="mt-2"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p><HistoryTimeline items={history} /></section>
         {(error || notice) && <p role={error ? "alert" : "status"}>{error ?? notice}</p>}
@@ -558,7 +560,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     {visibleForm && approval.codeExpected && !codeShown && <button type="button" className={quietClass} disabled={disabled} onClick={() => { engagedOnce.current = true; setCodeOpen(true); }}>Got a code? Paste it</button>}
     {codeShown && <label className="block font-medium">Approval code<input aria-label="Approval code" type="password" autoComplete="off" autoFocus={codeOpen && !code} value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>}
     {!waiting && (action || codeShown) && <div className="flex flex-wrap items-center gap-2">
-      {action && <button type="button" disabled={disabled} className={approveClass} onClick={() => holdApproval(approval.approvalType === "go" ? "your go" : "“done”")}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}
+      {action && <button type="button" disabled={disabled} className={approveClass} onClick={() => holdApproval(approval.approvalType === "go" ? "your go-ahead" : "“done”")}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}
       {codeShown && <button type="button" disabled={disabled || !validCode} className={approveClass} onClick={() => holdApproval("your code")}>{busy ? "Saving…" : "Save code"}</button>}
     </div>}
     {countdown.pending && <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}><p>Sending {countdown.pending.label}…</p></PendingAnswer>}

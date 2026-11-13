@@ -308,7 +308,7 @@ export function PendingAnswer({ label, seconds, children, onUndo }: { label: str
       <button ref={pill} type="button" aria-label={`Undo, ${seconds} ${seconds === 1 ? "second" : "seconds"} left`} onClick={(event) => { event.stopPropagation(); onUndo(); }}
         className={`relative z-20 inline-flex h-11 shrink-0 items-center rounded-full bg-foreground px-4 text-[13.5px] font-bold tabular-nums text-background ${focusRing}`}>Undo · {seconds}</button>
     </div>
-    <p role="status" className="sr-only">Sending {label} in {UNDO_SECONDS} seconds. Undo available.</p>
+    <p role="status" className="sr-only">Sending {label} in {UNDO_SECONDS} seconds. Undo is available until then.</p>
   </>;
 }
 

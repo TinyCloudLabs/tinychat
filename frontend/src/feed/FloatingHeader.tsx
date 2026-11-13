@@ -18,10 +18,12 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
   const [hiddenByScroll, setHiddenByScroll] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   // Stuck over the cards, it comes back slimmer (design round 6): it slides up so the part marked `data-float-keep`
-  // (the slider) sits at the top and the rest (the title) is out of view. Its height never changes, so the cards
-  // below never jump.
+  // (the slider and the toolbar) sits at the top and the rest (the title) is out of view. Scrolled down, it slides
+  // further, so only the part marked `data-float-pin` (the toolbar) stays at the top: Filter and View stay in reach
+  // without moving the list (QA cb784d4, B1). Its height never changes, so the cards below never jump.
   const [stuck, setStuck] = useState(false);
   const [keepAt, setKeepAt] = useState(0);
+  const [pinAt, setPinAt] = useState(0);
   const [focusInside, setFocusInside] = useState(false);
 
   useEffect(() => {
@@ -39,6 +41,8 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
       setStuck(!!spot && spot.getBoundingClientRect().top < scroller.getBoundingClientRect().top - 1);
       const keep = headerRef.current?.querySelector<HTMLElement>("[data-float-keep]");
       setKeepAt(keep ? Math.max(0, keep.offsetTop - 8) : 0);
+      const pin = headerRef.current?.querySelector<HTMLElement>("[data-float-pin]");
+      setPinAt(pin ? Math.max(0, pin.offsetTop - 3) : 0);
       // Near the top there's room for the header without covering anything, so it always shows. This also covers
       // iOS rubber-banding, where scrollTop briefly goes negative.
       if (top < (headerRef.current?.offsetHeight ?? 0)) {
@@ -46,6 +50,9 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
         setHiddenByScroll(false);
         return;
       }
+      // The feed scrolling itself to hold a card in place while the cards morph (densityMorph marks it) is not you
+      // scrolling: the header stays as it is, so the card it holds stays clear of it.
+      if (scroller.hasAttribute("data-anchoring")) { travel = 0; return; }
       if (delta === 0) return;
       travel = Math.sign(delta) === Math.sign(travel) ? travel + delta : delta;
       if (travel > THRESHOLD_PX) setHiddenByScroll(true);
@@ -59,11 +66,14 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
   // Someone tabbing into the header must be able to see what they're on, so keyboard focus inside always shows it.
   // A tap on the slider also focuses it, but that must not pin the header for the rest of the scroll.
   const hidden = hiddenByScroll && !focusInside;
+  // Hidden with a pinned part: slid up just far enough that the pinned part sits at the top.
+  const pinned = hidden && stuck && pinAt > 0;
+  const shift = pinned ? pinAt : !hidden && stuck ? keepAt : 0;
 
   return <>
     <div ref={spotRef} aria-hidden className="h-0" />
     <div ref={headerRef} data-hidden={hidden || undefined} data-stuck={stuck || undefined}
-      style={!hidden && stuck && keepAt ? { transform: `translateY(-${keepAt}px)` } : undefined}
+      style={shift ? { transform: `translateY(-${shift}px)` } : undefined}
       onFocus={(event) => setFocusInside((event.target as HTMLElement).matches(":focus-visible"))}
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusInside(false); }}
       className={cn(
@@ -72,7 +82,7 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
         // The hairline and soft shadow only appear once cards are passing under the header; at rest it sits flat on
         // the page.
         scrolled ? "border-border shadow-[0_1px_8px_-4px_rgb(0_0_0/0.12)] dark:shadow-[0_1px_8px_-4px_rgb(0_0_0/0.5)]" : "border-transparent",
-        hidden ? "-translate-y-full" : "translate-y-0",
+        hidden && !pinned ? "-translate-y-full" : "translate-y-0",
         className,
       )}>
       {children}

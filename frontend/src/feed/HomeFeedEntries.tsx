@@ -329,9 +329,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  // "View": every card short ("compact", the default), every card open ("full"), or a grid of tiles.
-  const [viewOpen, setViewOpen] = useState(false);
+  // Filter and View each open a popover under the toolbar, one at a time. "View": every card short ("compact", the
+  // default), every card open ("full"), or a grid of tiles.
+  const [panel, setPanel] = useState<"filter" | "view" | null>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const filterButton = useRef<HTMLButtonElement>(null);
+  const viewButton = useRef<HTMLButtonElement>(null);
   const [size, setSize] = useState<"compact" | "full">("compact");
   const [grid, setGrid] = useState(false);
   // The post whose page is open over the feed.
@@ -358,6 +361,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // Drop this card, Acknowledge, Ask me later and Show me later take the card away at once; a bar at the bottom
   // counts the same 5 s as every send, with Undo, and only then is the action written (held in the outbox).
   const undoBar = useUndoBar((message) => setError({ lead: message, text: "Try again." }));
+  // An open popover closes on a tap anywhere outside the toolbar and its popovers (Escape: onKeyDown below).
+  useEffect(() => {
+    if (!panel) return;
+    const outside = (event: PointerEvent) => { if (!toolbarRef.current?.contains(event.target as Node)) setPanel(null); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [panel]);
 
   useEffect(() => {
     let alive = true;
@@ -859,53 +869,63 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const layout = grid ? "grid" : size;
   const selectClass = "min-h-11 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm fine:min-h-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const toggleClass = "min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-primary aria-pressed:bg-primary/10";
+  // A popover under the toolbar, right-aligned, over the cards.
+  const popoverClass = "absolute right-0 top-full z-30 mt-2 flex w-max max-w-[calc(100vw-1.5rem)] flex-wrap justify-end gap-2 rounded-xl border border-border bg-card p-3 text-card-foreground shadow-lg sm:max-w-[36rem]";
   const pageEntry = pageKey ? all.find((entry) => lineageKey(entry) === pageKey && !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === pageKey)) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
   const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setProject(""); setPriorityMax(""); setSortBy(""); setHistory(false); setSnoozedOnly(false); });
   // No browser scroll anchoring: the view change keeps the card in view itself (anchoredToggle).
   return <PendingSendContext.Provider value={pendingSends.current}><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}>
-    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}>
+    {/* While undo bars show, the list's end grows by their height, so its last cards can scroll clear of them. */}
+    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}
+      style={undoBar.height ? { paddingBottom: `calc(var(--tc-bottom-chrome) + 2rem + ${undoBar.height}px + 0.5rem)` } : undefined}>
     <MorphConfig>
-      {/* Home and the slider stay in reach: the header hides as you scroll down and comes back as you scroll up,
-          stuck over the cards as the slider alone. */}
-      <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-3 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      {/* Home, the slider and the toolbar stay in reach: scrolled down, only the toolbar (Filter · View) stays at the
+          top; scrolling up brings the slider back above it, stuck over the cards. */}
+      <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <header ref={headerRef} className="scroll-mt-4">
           <h1 className="font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
           <p className="mt-1 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
             ? <>{needsCount ? <b className="font-semibold text-foreground">{needsCount} {needsCount === 1 ? "needs" : "need"} you.</b> : <b className="font-semibold text-foreground">Nothing needs you.</b>}{today > 0 && ` ${today} ${today === 1 ? "update" : "updates"} today.`}</>
             : "Updates and decisions from your agents."}</p>
         </header>
-        {!bare && <div data-float-keep className="mt-3"><FeedViewSlider value={view} onValueChange={changeSelector} /></div>}
+        {/* The slider and the toolbar come back together on scroll up; the toolbar alone stays while you scroll down.
+            Filter and View open popovers over the cards, so the list never moves under them (QA cb784d4, B1/P5). */}
+        {!bare && <div data-float-keep className="mt-3">
+          <FeedViewSlider value={view} onValueChange={changeSelector} />
+          <div ref={toolbarRef} data-float-pin className="relative mt-3 flex flex-nowrap items-center justify-end gap-2" onKeyDown={(event) => {
+            if (event.key !== "Escape" || !panel) return;
+            event.preventDefault();
+            setPanel(null);
+            (panel === "view" ? viewButton : filterButton).current?.focus();
+          }}>
+            <button ref={filterButton} type="button" aria-expanded={panel === "filter"} aria-controls="home-feed-filters" onClick={() => setPanel(panel === "filter" ? null : "filter")} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>
+            <button ref={viewButton} type="button" aria-expanded={panel === "view"} aria-controls="home-feed-view" onClick={() => setPanel(panel === "view" ? null : "view")} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${layout === "compact" ? "border-border" : "border-primary bg-primary/10 font-medium"}`}>{layout === "compact" ? "View" : `View · ${layout === "full" ? "Full" : "Grid"}`}</button>
+            {/* Every card short, like a list of posts; every card open; or a grid of tiles. Each keeps your place and
+                morphs the cards on screen. The popover stays open until View is tapped again or you tap outside it. */}
+            {panel === "view" && <div id="home-feed-view" role="radiogroup" aria-label="View" className={popoverClass}>
+              {(["compact", "full", "grid"] as const).map((option) => <button key={option} type="button" role="radio" aria-checked={layout === option}
+                onClick={() => { if (option !== layout) anchoredToggle(() => { setSize(option === "full" ? "full" : "compact"); setGrid(option === "grid"); setOpened(new Set()); }); }}
+                className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-checked:border-primary aria-checked:bg-primary/10">{option === "compact" ? "Compact" : option === "full" ? "Full cards" : "Grid"}</button>)}
+            </div>}
+            {panel === "filter" && <div id="home-feed-filters" role="group" aria-label="Filter" className={popoverClass}>
+              {agents.length > 1 && <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { const value = event.target.value; setFilter(() => setAgent(value)); }}><option value="">All agents</option>{agents.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>}
+              <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { const value = event.target.value; setFilter(() => setKind(value)); }}><option value="">All types</option>{kinds.map((value) => <option key={value} value={value}>{value}</option>)}</select>
+              {projects.length > 0 && <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { const value = event.target.value; setFilter(() => setProject(value)); }}><option value="">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select>}
+              <button type="button" aria-pressed={history} onClick={() => setFilter(() => { setHistory(!history); setSnoozedOnly(false); })} className={toggleClass}>History</button>
+              <button type="button" aria-pressed={snoozedOnly} onClick={() => setFilter(() => { setSnoozedOnly(!snoozedOnly); setHistory(false); })} className={toggleClass}>Snoozed</button>
+              <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => { const value = event.target.value; setFilter(() => setPriorityMax(value)); }}>
+                <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
+              </select>
+              <select aria-label="Order" className={selectClass} value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
+                <option value="">Usual order</option><option value="priority">Priority first</option><option value="due">Due first</option><option value="expires">Expires first</option>
+              </select>
+              {!!filtersOn && <button type="button" className={toggleClass} onClick={clearFilters}>Clear filter</button>}
+            </div>}
+          </div>
+        </div>}
       </FloatingHeader>
       {ask}
-      {!bare && <>
-        {/* One row on a phone: Filter and View, each opening its own panel below. */}
-        <div className="mb-4 flex flex-nowrap items-center justify-end gap-2">
-          <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>
-          <button type="button" aria-expanded={viewOpen} aria-controls="home-feed-view" onClick={() => setViewOpen(!viewOpen)} className={`min-h-11 shrink-0 whitespace-nowrap rounded-lg border px-3 text-sm fine:min-h-10 ${layout === "compact" ? "border-border" : "border-primary bg-primary/10 font-medium"}`}>{layout === "compact" ? "View" : `View · ${layout === "full" ? "Full" : "Grid"}`}</button>
-        </div>
-        {/* Every card short, like a list of posts; every card open; or a grid of tiles. Each keeps your place and morphs
-            the cards on screen. The panel stays open until View is tapped again. */}
-        {viewOpen && <div id="home-feed-view" role="radiogroup" aria-label="View" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
-          {(["compact", "full", "grid"] as const).map((option) => <button key={option} type="button" role="radio" aria-checked={layout === option}
-            onClick={() => { if (option !== layout) anchoredToggle(() => { setSize(option === "full" ? "full" : "compact"); setGrid(option === "grid"); setOpened(new Set()); }); }}
-            className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-checked:border-primary aria-checked:bg-primary/10">{option === "compact" ? "Compact" : option === "full" ? "Full cards" : "Grid"}</button>)}
-        </div>}
-        {filtersOpen && <div id="home-feed-filters" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
-          {agents.length > 1 && <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { const value = event.target.value; setFilter(() => setAgent(value)); }}><option value="">All agents</option>{agents.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>}
-          <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { const value = event.target.value; setFilter(() => setKind(value)); }}><option value="">All types</option>{kinds.map((value) => <option key={value} value={value}>{value}</option>)}</select>
-          {projects.length > 0 && <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { const value = event.target.value; setFilter(() => setProject(value)); }}><option value="">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select>}
-          <button type="button" aria-pressed={history} onClick={() => setFilter(() => { setHistory(!history); setSnoozedOnly(false); })} className={toggleClass}>History</button>
-          <button type="button" aria-pressed={snoozedOnly} onClick={() => setFilter(() => { setSnoozedOnly(!snoozedOnly); setHistory(false); })} className={toggleClass}>Snoozed</button>
-          <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => { const value = event.target.value; setFilter(() => setPriorityMax(value)); }}>
-            <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
-          </select>
-          <select aria-label="Order" className={selectClass} value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
-            <option value="">Usual order</option><option value="priority">Priority first</option><option value="due">Due first</option><option value="expires">Expires first</option>
-          </select>
-          {!!filtersOn && <button type="button" className={toggleClass} onClick={clearFilters}>Clear filter</button>}
-        </div>}
-      </>}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>

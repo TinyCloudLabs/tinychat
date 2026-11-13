@@ -69,13 +69,26 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
     item?.undo?.();
   }, []);
   const hidden = useCallback((key: string) => items.some((item) => item.key === key), [items]);
+  // The stack's height (0 when no bar shows), so the feed can add it to its bottom padding and its last cards scroll
+  // clear of the bars (QA cb784d4, P3).
+  const [height, setHeight] = useState(0);
+  const observer = useRef<ResizeObserver | null>(null);
+  const stackRef = useCallback((node: HTMLDivElement | null) => {
+    observer.current?.disconnect();
+    observer.current = null;
+    if (!node) { setHeight(0); return; }
+    setHeight(node.offsetHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    observer.current = new ResizeObserver(() => setHeight(node.offsetHeight));
+    observer.current.observe(node);
+  }, []);
   // Clear of a phone's home indicator in the native shell (safe-area inset), 1.5rem above the edge elsewhere.
-  const bar = !!items.length && <div className="pointer-events-none fixed inset-x-0 bottom-[max(1.5rem,calc(env(safe-area-inset-bottom)+0.5rem))] z-30 flex flex-col items-center gap-2 px-3">
+  const bar = !!items.length && <div ref={stackRef} className="pointer-events-none fixed inset-x-0 bottom-[max(1.5rem,calc(env(safe-area-inset-bottom)+0.5rem))] z-30 flex flex-col items-center gap-2 px-3">
     {/* One width for every bar, so a stack lines up (the design agent). */}
     {items.map((item) => <p key={item.id} role="status" className="pointer-events-auto flex min-h-11 min-w-[15rem] items-center justify-between gap-3 rounded-full bg-zinc-900 py-1 pl-4 pr-1 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900 fine:min-h-10">
       <span className="tabular-nums">{item.text} · {Math.max(1, Math.ceil((item.endsAt - now) / 1000))}s</span>
       <button type="button" onClick={() => undo(item.id)} className="min-h-9 rounded-full bg-zinc-100 px-3 font-semibold text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100">Undo</button>
     </p>)}
   </div>;
-  return { push, hidden, bar };
+  return { push, hidden, bar, height };
 }
