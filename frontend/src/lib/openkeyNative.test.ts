@@ -255,11 +255,14 @@ describe("nativeClientOptions", () => {
   // host; patches/@openkey%2Fsdk-capacitor@0.2.0-beta.0.patch does that until
   // the SDK ships it.
   class LegacyChromiumURL extends URL {
+    private readonly input: string;
+    constructor(url: string | URL, base?: string | URL) { super(url, base); this.input = String(url); }
     private get opaque(): boolean { return !/^(https?|wss?|ftp|file):$/.test(this.protocol); }
     override get host(): string { return this.opaque ? "" : super.host; }
     override get hostname(): string { return this.opaque ? "" : super.hostname; }
+    // Everything after `scheme:` up to `?` or `#`, as Chrome 113 reports it.
     override get pathname(): string {
-      return this.opaque && super.host ? `//${super.host}${super.pathname}` : super.pathname;
+      return this.opaque ? this.input.slice(this.input.indexOf(":") + 1).split(/[?#]/)[0] : super.pathname;
     }
   }
   const secureStore = {
