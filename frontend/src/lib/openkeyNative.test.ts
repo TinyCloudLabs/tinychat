@@ -292,6 +292,13 @@ describe("nativeClientOptions", () => {
       .toThrow("Private-use redirect URI must have a host");
   });
 
+  test("a modern URL parse never reads a host from the path", () => {
+    // Host "" and path "//openkey/callback" here; only a Chromium < 130 parser may fall back.
+    expect(() => new SdkOpenKeyNative({ ...nativeClientOptions({ VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID }, HOST),
+      redirectUri: "xyz.tinycloud.exo:////openkey/callback", plugin: secureStore }))
+      .toThrow("Private-use redirect URI must have a host");
+  });
+
   const malformedHost = { ...config, env: { ...config.env, VITE_OPENKEY_HOST: "openkey.example.com" } };
 
   test("signInNative surfaces a malformed host as the configuration error, not a generic failure", async () => {
