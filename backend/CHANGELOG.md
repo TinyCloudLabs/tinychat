@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.8.0-beta.20
+
+### Patch Changes
+
+- be21a74: Google connections started on tinycloud.one return to tinycloud.one. The backend accepts two new `state` tags, `one.<nonce>` for the popup return and `onetab.<path>.<nonce>` for the same-tab return; both go to the fixed https://tinycloud.one origin when it is in the `FRONTEND_ORIGINS` allowlist (it is by default), and are refused like any unknown tag when it is not. Untagged, `tab.`, `home.`, `hometab.` and `native.` flows are unchanged.
+
 ## 0.8.0-beta.19
 
 ### Patch Changes
