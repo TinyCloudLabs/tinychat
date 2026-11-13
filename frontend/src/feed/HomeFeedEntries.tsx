@@ -22,18 +22,23 @@ import { agentProfile, AgentMark } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
 import { FeedViewSlider } from "./FeedViewSlider";
 import { FloatingHeader } from "./FloatingHeader";
-import { MorphConfig, MorphItem, useAnchoredToggle } from "./densityMorph";
+import { MorphConfig, MorphItem, MotionFeatures, useAnchoredToggle } from "./densityMorph";
 import { useUndoBar } from "./UndoBar";
-import { BriefButton, briefOf } from "./BriefSheet";
+import { BriefButton, LazyBriefSheet } from "./BriefButton";
+import { briefOf } from "./brief";
 import { shortTime, ShortTime } from "./ShortTime";
 import { PostTile, postMorphId } from "./PostTile";
-import { PostPage, PostPreview } from "./PostPage";
+import { PostPreview } from "./PostPreview";
+import { lazyTab } from "@/shell/lazyTab";
 import { labPageOf, postStatus } from "./postAnswers";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
 import { FEED_SKILL_URL } from "./strings";
+
+/** A post's page, in a chunk of its own: boot never needs it (TC-2882). */
+const LazyPostPage = lazyTab("the post", () => import("./PostPage").then((module) => module.PostPage));
 
 function keyOf(entry: HomeFeedEntry): string {
   const card = entry.state.card;
@@ -310,6 +315,13 @@ type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "
 /** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
 export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
+  // Once the feed has loaded, the parts only a tap opens (a post's page, a brief) load too, so a tap never waits.
+  const feedShown = snapshot !== null;
+  useEffect(() => {
+    if (!feedShown) return;
+    LazyPostPage.preload().catch(() => {});
+    LazyBriefSheet.preload().catch(() => {});
+  }, [feedShown]);
   // Information | All | Needs action. No position is chosen until the saved one arrives, so the slider never
   // flips while loading.
   const [selector, setSelector] = useState<FeedSelector | null>(null);
@@ -877,7 +889,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // No browser scroll anchoring: the view change keeps the card in view itself (anchoredToggle).
   // While undo bars show, the scroll container itself grows at its end by their height, their offset from the bottom
   // edge and the safe-area inset, so its last cards can scroll clear of them (Clarissa, 75eebec).
-  return <PendingSendContext.Provider value={pendingSends.current}><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
+  return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
     style={undoBar.height ? { paddingBottom: `calc(${undoBar.height + 32}px + env(safe-area-inset-bottom))` } : undefined}>
     <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}>
     <MorphConfig>
@@ -962,7 +974,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     {pageEntry && pageOpen && (() => {
       const author = cardAuthor(pageEntry).name;
       const status = statusOf(pageEntry, author);
-      return <PostPage key={pageKey} entry={pageEntry} answered={answeredIn(pageEntry)} page={pageOpen} source={source} author={author} onSaved={onSaved} onClose={() => setPageKey(null)}
+      return <LazyPostPage key={pageKey} entry={pageEntry} answered={answeredIn(pageEntry)} page={pageOpen} source={source} author={author} onSaved={onSaved} onClose={() => setPageKey(null)}
         onRefused={(label) => setRefused((current) => new Map(current).set(lineageKey(pageEntry), label))} {...(grid ? { morphFrom: postMorphId(pageEntry) } : {})}
         card={(children, options) => <HomeCardView plain card={options?.showTitle === false ? { ...cardView(pageEntry), title: "" } : cardView(pageEntry)} sample={false} readBody={source.readBody} agent={{ key: agentKey(pageEntry), profile: agentProfile(pageEntry.state.card.payload) }} {...(status ? { status } : {})}>{children}</HomeCardView>}
         status={(answeredIn(pageEntry) ?? pageEntry).state.response ? <ResponseStatus entry={answeredIn(pageEntry) ?? pageEntry} focusOnMount={false} /> : null}
@@ -974,5 +986,5 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
             catch { return false; }
           }} />} />;
     })()}
-  </main></PendingSendContext.Provider>;
+  </main></MotionFeatures></PendingSendContext.Provider>;
 }
