@@ -46,6 +46,27 @@ export function isNativeOpenKeySignIn(platform: AppPlatform = appPlatform()): bo
  */
 const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
 const NATIVE_SIGN_OUT_PENDING_KEY = "xyz.tinycloud.tinychat:native-signout-pending";
+/**
+ * `<host> <delegationCid>` of the last delegation this device saw the node accept
+ * (`/delegate` succeeded and hosted the space). Not secret: a CID names the
+ * delegation, it grants nothing (TC-2865).
+ */
+const NATIVE_ACTIVATED_KEY = "xyz.tinycloud.tinychat:native-activated";
+
+/** Durable "this node accepted this delegation" marker; web storage errors read as unmarked. */
+const localActivationMarker: NativeActivationMarker = {
+  read: () => {
+    try { return localStorage.getItem(NATIVE_ACTIVATED_KEY); } catch { return null; }
+  },
+  write: (value) => {
+    try {
+      if (value === null) localStorage.removeItem(NATIVE_ACTIVATED_KEY);
+      else localStorage.setItem(NATIVE_ACTIVATED_KEY, value);
+    } catch {
+      // Unmarked only costs the next restore an awaited activation.
+    }
+  },
+};
 let nativeSessionActive = false;
 
 export function setNativeSignOutPending(pending: boolean): boolean {
@@ -375,6 +396,13 @@ export interface NativeSignInDeps {
   ) => Promise<{ token: string; expiresIn: number; address: string }>;
   /** Optional test seam; production reads the durable local sign-out fence. */
   readSignOutFence?: () => boolean | null;
+  /** Optional test seam; production keeps the activation marker in localStorage. */
+  activationMarker?: NativeActivationMarker;
+}
+
+export interface NativeActivationMarker {
+  read: () => string | null;
+  write: (value: string | null) => void;
 }
 
 /** The client's registered redirect; the Exo app's own reverse-DNS scheme. */
@@ -707,14 +735,42 @@ export async function installNativeSession(
     tinycloudHosts: [delegation.tinycloudHost],
   });
 
-  const activation = await d.activateSession(delegation.tinycloudHost, delegation.delegationHeader);
-  if (!activation.success) {
-    throw new NativeHandoffRetryError(activation.error ?? "TinyCloud space activation failed");
-  }
-  // OpenKey may already have hosted the space during consent. In that case
-  // /delegate returns a successful reconciliation with activated: [].
-  if (activation.skipped?.includes(delegation.spaceId)) {
-    throw new NativeSpaceUnavailableError("TinyCloud could not host the delegated space");
+  // Activation registers the delegation with the node; every later invocation is
+  // still authorized by the node against it. A boot restore of the delegation
+  // this device already saw the node accept re-sends it without waiting, so the
+  // cached app is not held behind a round trip that the node answers with
+  // `activated: []` (TC-2865). Only boot restores read or write the marker: the
+  // first launch after a sign-in or renewal waits once and marks; a failure
+  // clears it, so the next launch waits again and surfaces the error. Sign-in
+  // and live renewal always wait and leave web storage untouched.
+  const marker = d.activationMarker ?? localActivationMarker;
+  const { delegationHeader, spaceId } = delegation;
+  const activationKey = `${delegation.tinycloudHost} ${delegation.delegationCid}`;
+  const bootRestore = restoringExisting && !liveTcw;
+  const activate = async () => {
+    const activation = await d.activateSession(delegation.tinycloudHost, delegationHeader);
+    if (!activation.success) {
+      throw new NativeHandoffRetryError(activation.error ?? "TinyCloud space activation failed");
+    }
+    // OpenKey may already have hosted the space during consent. In that case
+    // /delegate returns a successful reconciliation with activated: [].
+    if (activation.skipped?.includes(spaceId)) {
+      throw new NativeSpaceUnavailableError("TinyCloud could not host the delegated space");
+    }
+  };
+  if (bootRestore && stored?.tinycloudSession?.delegationCid === delegation.delegationCid && marker.read() === activationKey) {
+    void activate().catch((error: unknown) => {
+      marker.write(null);
+      logNativeOpenKeyError("background activation", error);
+    });
+  } else {
+    try {
+      await activate();
+    } catch (error) {
+      if (bootRestore) marker.write(null);
+      throw error;
+    }
+    if (bootRestore) marker.write(activationKey);
   }
 
   if (liveTcw) {

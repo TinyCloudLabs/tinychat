@@ -4,6 +4,8 @@ import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { augmentSignInEntriesWithReplication } from "@tinycloud/node-sdk/replication/authority";
 import { buildReplicationConfig, replicationConfigPatch, REPLICATION_MAX_BYTES, REPLICATION_SYNC_SCOPE, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
+import { REPLICATION_COPY_KEY } from "./replicationCopyMarker";
+import { purgeReplicaCopyWhenOff } from "./replicationOffPurge";
 import { replicationOptInKey } from "./replicationOptIn";
 import { trackStartupPurge } from "./replicationStartupPurge";
 import { replicationPrefixes } from "./replicationPrefixes";
@@ -100,6 +102,27 @@ describe("replicationClient", () => {
       expect(await replicationConfigPatch(BOB, loader)).toEqual({});
       expect(loader.calls).toEqual([]);
       expect((await replicationConfigPatch(ALICE, loader)).replication?.enabled).toBe(true);
+      expect(loader.calls).toEqual(["register", "storage"]);
+    });
+  });
+
+  describe("binding paused (production builds)", () => {
+    test("sign-in and restore bind nothing, and the page-load purge keeps the existing copy", async () => {
+      const store = installBrowser({ flag: true, optIn: [ALICE] });
+      store.set(REPLICATION_COPY_KEY, ALICE);
+      const loader = spyLoader();
+      expect(await buildReplicationConfig(ALICE, loader, true)).toBeUndefined();
+      expect(loader.calls).toEqual([]);
+      expect(await purgeReplicaCopyWhenOff({ principal: ALICE, loader })).toEqual({ status: "skipped", reason: "replication-on" });
+      expect(store.get(REPLICATION_COPY_KEY)).toBe(ALICE);
+    });
+
+    test("the same account binds when unpaused", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const loader = spyLoader();
+      expect(await buildReplicationConfig(ALICE, loader, true)).toBeUndefined();
+      expect(loader.calls).toEqual([]);
+      expect((await buildReplicationConfig(ALICE, loader, false))?.enabled).toBe(true);
       expect(loader.calls).toEqual(["register", "storage"]);
     });
   });

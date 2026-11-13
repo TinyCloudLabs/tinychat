@@ -4,6 +4,7 @@ import { Loader2Icon, PauseIcon, PlayIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatClockDuration } from "@/capture/library/formatters";
 import { playbackBlocked, playbackVisible, registerPlayback } from "@/lib/audio/playback";
+import { describeAudioSource, recordPlaybackDiagnostic, watchPlaybackDiagnostics } from "@/lib/audio/playbackDiagnostics";
 import { NotePlaybackContext } from "@/lib/audio/notePlayback";
 import { PHONE_AUDIO_UNAVAILABLE, isSeekable, playbackDuration, scrubTarget } from "./audioPlayback";
 
@@ -97,6 +98,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
     const audio = audioRef.current;
     if (!audio) return;
     let mounted = true;
+    const stopDiagnostics = watchPlaybackDiagnostics(audio);
     const unregister = registerPlayback(audio, () => {
       controllerRef.current?.abort();
       controllerRef.current = null;
@@ -110,6 +112,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
     });
     return () => {
       mounted = false;
+      stopDiagnostics();
       unregister();
       audio.removeAttribute("src");
       audio.load();
@@ -188,6 +191,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
     if (downmixRef.current?.state === "suspended") void downmixRef.current.resume();
     patchMedia({ loading: true });
     if (url) {
+      recordPlaybackDiagnostic("source", { via: "url", ...describeAudioSource(url) });
       if (audio.error) audio.load();
       setState({ phase: "ready", url });
       playNow(audio);
@@ -204,6 +208,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
     setState({ phase: "loading", percent: null });
     if (resolveUrl) {
       const next = await stateForResolvedUrl(resolveUrl);
+      recordPlaybackDiagnostic("source", { via: "resolveUrl", ...describeAudioSource(next.phase === "ready" ? next.url : null), phase: next.phase });
       if (controller.signal.aborted) return;
       playWhenSourceSet.current = next.phase === "ready";
       setState(next);
@@ -217,6 +222,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
         }
       });
       if (controller.signal.aborted) return;
+      recordPlaybackDiagnostic("source", { via: "load", ...describeAudioSource(blob) });
       if (!blob) {
         setState({ phase: "missing" });
         return;

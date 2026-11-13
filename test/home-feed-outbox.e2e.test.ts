@@ -159,6 +159,9 @@ async function stored(responses: FeedDatabase): Promise<FeedResponse[]> {
 async function firstVisit(context: BrowserContext, space: string, agent: Awaited<ReturnType<typeof seed>>) {
   const setup = await open(context, space);
   await setup.getByText("Updates and decisions from your agents.").or(setup.getByText("No cards yet")).first().waitFor();
+  // The page reads before it creates: on a new space the registry exists once its first read has failed and the batch has run.
+  const registry = database(space, HOME_FEED_RESOURCE);
+  for (let attempt = 0; attempt < 200 && !registry.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feed_agents'").get(); attempt++) await Bun.sleep(50);
   agent.register();
   await setup.close();
   const page = await open(context, space);

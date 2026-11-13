@@ -1,7 +1,8 @@
 // Settings → the per-user switch for the local copy and its wipe button (logic: replicationSwitch.ts).
 //
 // The switch is offered only when replication is available in this build and browser
-// (isReplicationAvailable: kill switch, build flag, platform). The wipe button is offered whenever
+// (isReplicationAvailable: kill switch, build flag, platform) and binding is not paused
+// (isReplicationBindPaused). The wipe button is offered whenever
 // a local copy may exist, even if the build flag has since turned OFF. With neither, nothing
 // renders: no DOM, no timers.
 import { useState, useSyncExternalStore } from "react";
@@ -19,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
 import { replicationCopyMayExist } from "./replicationCopyMarker";
-import { isReplicationAvailable } from "./replicationFlag";
+import { isReplicationAvailable, isReplicationBindPaused } from "./replicationFlag";
 import { readReplicationOptIn } from "./replicationOptIn";
 import { clientHasReplication } from "./replicationSignOut";
 import { getReplicationStatus, subscribeReplicationStatus } from "./replicationStatus";
@@ -39,7 +40,7 @@ type Pending = "off" | "wipe";
 
 export function ReplicationSettings({ tcw }: { tcw: TinyCloudWeb }) {
   const principal = tcw.did;
-  const [available] = useState(() => isReplicationAvailable());
+  const [available] = useState(() => isReplicationAvailable() && !isReplicationBindPaused());
   const [optedIn, setOptedIn] = useState(() => readReplicationOptIn(principal));
   // Set once this session's replica was stopped here: the status line stops polling it.
   const [stopped, setStopped] = useState(false);

@@ -40,6 +40,7 @@ fn main() {
             "google_oauth_cancel",
             "google_oauth_open_browser",
             "open_manage_storage",
+            "open_privacy_policy",
             "append_audio_chunk",
             "ptx_audio_metadata",
             "ptx_upload_audio",

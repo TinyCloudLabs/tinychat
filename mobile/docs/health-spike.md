@@ -42,7 +42,7 @@ enrollment lands. Leave background sync for a second step. Details in
 | Android plugin `Health` (Java, `androidx.health.connect:connect-client` 1.1.0) | `mobile/android/app/src/main/java/xyz/tinycloud/exo/health/`: `HealthPlugin.java` (availability, permissions, settings), `HealthConnectReader.java` (reads, sample data), `Suspend.java` (Kotlin `suspend` from Java), `HealthPermissionsRationaleActivity.java`; registered in `MainActivity` |
 | Android manifest, debug builds only | `mobile/android/app/src/debug/AndroidManifest.xml`: health permissions, `<queries>`, the privacy-policy activity and `activity-alias` Health Connect requires |
 | iOS plugin `Health` (Swift, HealthKit), Debug only | `mobile/ios/App/App/HealthPlugin.swift` (inside `#if EXO_HEALTH`), registered in `ExoBridgeViewController` |
-| iOS entitlements, Debug only | `mobile/ios/App/App/App.entitlements`, wired by `CODE_SIGN_ENTITLEMENTS` in the Debug configuration; `NSHealthShareUsageDescription` and `NSHealthUpdateUsageDescription` in `Info.plist` |
+| iOS entitlements, Debug only | `mobile/ios/App/App/App.entitlements`, wired by `CODE_SIGN_ENTITLEMENTS` in the Debug configuration; `NSHealthShareUsageDescription` and `NSHealthUpdateUsageDescription`, added to Debug builds only by the Run Script phase `App/debug-spikes-info-plist.sh` (`ios-build.yml` fails a Release archive that has them) |
 | JS contract | `frontend/src/lib/health/nativeHealth.ts` |
 | Storage | `frontend/src/lib/health/healthStore.ts` |
 | Dev-only UI | `frontend/src/chat/HealthSpikeSection.tsx`, lazy-loaded by `ConnectorsPage` only when `VITE_EXO_HEALTH_SPIKE=true` (a normal build has `HealthSpikeSection=null` and no chunk) |
@@ -208,7 +208,7 @@ Background and history permissions each need their own justification in the Play
   - `com.apple.developer.healthkit.access` = empty array (no clinical health records);
   - `com.apple.developer.healthkit.background-delivery` = true (required for background delivery
     since iOS 15).
-- `Info.plist` (all builds; harmless without the entitlement):
+- `Info.plist`, Debug builds only (added by the Run Script phase `App/debug-spikes-info-plist.sh`; `ios-build.yml` fails a Release archive that has them):
   - `NSHealthShareUsageDescription`: "TinyCloud Home reads the steps, sleep and heart rate you allow and saves
     a daily summary to your own TinyCloud space. It never uses health data for advertising."
   - `NSHealthUpdateUsageDescription`: "TinyCloud Home's development preview can add sample steps, sleep and

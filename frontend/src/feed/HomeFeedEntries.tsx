@@ -333,7 +333,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       do {
         dirty = false;
         try {
-          const next = await source.load(activeRef.current ?? undefined);
+          const next = await source.load(activeRef.current ?? undefined, { feed: true });
           if (!alive) return;
           const reconcile = (entry: HomeFeedEntry): HomeFeedEntry => {
             const local = committed.current.get(keyOf(entry));
@@ -372,18 +372,17 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     };
     refreshRef.current = () => { void refresh(); };
     // The device's last copy of the feed shows at once; the network load below
-    // replaces it. Subscribing after the local read lets the first live-update
-    // connection already cover every agent the copy knows.
-    let unsubscribe: (() => void) | undefined;
+    // replaces it, reading every agent the copy names beside the registry. The
+    // live-update stream opens beside it, and its first ready compares the
+    // load's fingerprint instead of loading again.
     void (source.cached?.() ?? Promise.resolve(null)).then((local) => {
       if (!alive || loaded || !local) return;
       setSnapshot(local); setClock(Date.now());
       if (!hasDefault.current && !chosenView.current) setView(local.settings.defaultSelector === "needs-action" ? "needs-you" : "all");
-    }).catch(() => {}).finally(() => {
-      if (alive) unsubscribe = source.subscribe(refreshRef.current);
-    });
+    }).catch(() => {});
+    const unsubscribe = source.subscribe(refreshRef.current);
     void refresh();
-    return () => { alive = false; unsubscribe?.(); refreshRef.current = () => {}; };
+    return () => { alive = false; unsubscribe(); refreshRef.current = () => {}; };
   }, [source]);
 
   /**

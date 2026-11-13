@@ -21,6 +21,7 @@ import xyz.tinycloud.exo.capture.VoiceNotesPlugin;
 import xyz.tinycloud.exo.capture.core.LaunchSource;
 import xyz.tinycloud.exo.health.HealthPlugin;
 import xyz.tinycloud.exo.location.LocationPlugin;
+import xyz.tinycloud.exo.replica.ReplicaStorePlugin;
 import xyz.tinycloud.exo.stt.OnDeviceSttPlugin;
 
 public class MainActivity extends BridgeActivity implements CaptureEngine.Listener {
@@ -52,6 +53,8 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         // TC-524 location spike. Registered in every build, but only the debug manifest declares
         // location permissions and the location foreground service; release cannot capture location.
         registerPlugin(LocationPlugin.class);
+        // TC-2862 native replica storage (flagged off in the web app until the SDK adapter lands).
+        registerPlugin(ReplicaStorePlugin.class);
         commands = new LaunchCommandStore(this);
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
         consumeIntent(getIntent());

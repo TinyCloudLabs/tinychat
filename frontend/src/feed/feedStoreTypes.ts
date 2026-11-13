@@ -95,8 +95,13 @@ export interface HomeFeedSaveOptions {
 }
 
 /** Owner-session persistence boundary; notifications invalidate durable reads. */
+export interface HomeFeedLoadOptions {
+  /** The Feed shows this snapshot and reloads on `subscribe`: live-update catch-up compares against it. */
+  feed?: boolean;
+}
+
 export interface HomeFeedSource {
-  load(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot>;
+  load(focused?: HomeFeedEntry, options?: HomeFeedLoadOptions): Promise<HomeFeedSnapshot>;
   /** Load the server snapshot before the initial local cache read, so a prior miss cannot mask a new answer. */
   cached?: () => Promise<HomeFeedSnapshot | null>;
   saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload, options?: HomeFeedSaveOptions): Promise<FeedResponse>;

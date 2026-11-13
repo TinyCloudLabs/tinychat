@@ -7,11 +7,9 @@ import {
   listFeedCards,
   listFeedCardHistory,
   listFeedResponses,
-  readFeedResponseHandling,
   type FeedDatabase,
   type FeedCardIdentity,
   type FeedCard,
-  type FeedCardState,
   type FeedReadDatabase,
   type FeedResponsePayload,
   type NewFeedResponse,
@@ -25,12 +23,13 @@ import { getSetting, setSetting } from "../lib/threadStore";
 import { storageScopeFor, trackStorageWrites } from "../lib/storageStatus";
 import { THREADS_SQL_DB_NAME } from "../lib/threadKeys";
 import { accountCacheKey, clearLocalMarker, hasLocalMarker, readLocal, setLocalMarker, writeLocal } from "../lib/localFirst/localCache";
-import { foregroundDatabase } from "../lib/localFirst/requestLanes";
-import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSaveOptions, HomeFeedSnapshot, HomeFeedSource, HomeFeedViewEvent } from "./feedStoreTypes";
+import { foregroundDatabase, inBackground } from "../lib/localFirst/requestLanes";
+import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedLoadOptions, HomeFeedSaveOptions, HomeFeedSnapshot, HomeFeedSource, HomeFeedViewEvent } from "./feedStoreTypes";
 import { emptySitrepOwnerData, isClosed, jsonValue, ownerThreadResponseKey, parseSitrepCardPayload, parseOfficerThreadEvent, validPreparedIdentity, validateSitrepAction, safeSitrepActionSummary, type SitrepAction } from "@tinyboilerplate/core/feed/sitrep";
-import { OWNER_EVENT_SCHEMA, readPrivateOwnerState, savePrivateOwnerState, savePrivateHeldNote, savePrivateGroupPriority, combineOwnerData } from "./sitrepOwnerStore";
+import { OWNER_EVENT_SCHEMA, privateOwnerStateFromRows, savePrivateOwnerState, savePrivateHeldNote, savePrivateGroupPriority, combineOwnerData } from "./sitrepOwnerStore";
 import { OWNER_IMPORT_SCHEMA, OwnerArchiveCache } from "./sitrepArchiveStore";
-import { TypedFeedHistory } from "./loadTypedFeed";
+import { enrichTypedEntry } from "./loadTypedFeed";
+import { OUTPUT_TALLY, readAgent, readRegistry, readTally, REGISTRY_TALLY, RESPONSES_TALLY, type AgentRead, type RegistryRead } from "./feedRead";
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
 import { clearHeldAnswers, heldAnswers, holdAnswer, isHeld, releaseAnswer, type HeldAnswer } from "./answerOutbox";
@@ -41,6 +40,8 @@ function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardI
 export const HOME_FEED_RESOURCE = "xyz.tinycloud.tinychat/home_feed";
 export const HOME_FEED_DEFAULT_KEY = "home-feed-default-view";
 const RECONCILE_MS = 5 * 60_000;
+/** How long a hidden page keeps its live-update stream; a shorter absence needs no catch-up of its own. */
+const FRESH_MS = 60_000;
 /** Bump when the registry schema batch below changes, so devices re-run it once. */
 const FEED_SCHEMA_VERSION = 1;
 
@@ -123,22 +124,6 @@ interface LocalFeed {
   sources: FeedSource[];
 }
 
-/**
- * The same state `getFeedCardState` reads, built from rows the load already
- * holds: the listed card, its newest answer or follow-up from the response
- * history, and that response's handling. Saves two reads per card.
- */
-async function stateFromLoaded(output: FeedDatabase, card: FeedCard, history: readonly FeedResponse[]): Promise<FeedCardState> {
-  let response: FeedResponse | null = null;
-  for (const candidate of history) {
-    if ((candidate.kind === "answer" || candidate.kind === "followup") && (!response || candidate.sequence > response.sequence)) response = candidate;
-  }
-  if (!response) return { card, response: null, acknowledgement: null, outcome: null };
-  const handling = await readFeedResponseHandling(output, response);
-  if (!handling.ok && handling.error.code !== "NOT_FOUND") throw new Error(handling.error.message);
-  return { card, response, acknowledgement: handling.ok ? handling.data.acknowledgement : null, outcome: handling.ok ? handling.data.outcome : null };
-}
-
 const sourcesByClient = new WeakMap<TinyCloudWeb, HomeFeedSource>();
 
 /**
@@ -163,7 +148,6 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   const db = (resource: string) => privateFeedDatabase(trackStorageWrites(foregroundDatabase(tcw.sql.db(resource)), scope), assertAccount);
   const registry = db(HOME_FEED_RESOURCE);
   const archives = new OwnerArchiveCache(registry);
-  const typedHistory = new TypedFeedHistory();
   const localKey = accountCacheKey(typeof tcw.did === "string" && tcw.did ? tcw.did : space, "home-feed");
   const schemaMarker = `tinychat:feed-schema:v${FEED_SCHEMA_VERSION}:${space}`;
   let schema: Promise<void> | undefined;
@@ -176,13 +160,24 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   let wakeTimer: number | undefined;
   let renewal: number | undefined;
   let streamError: Error | undefined;
+  let localReads = 0;
+  /** The device copy's read, which names the agents the first load reads beside the registry. */
+  let localRead: Promise<unknown> | undefined;
+  let hiddenAt: number | undefined;
+  let hiddenTimer: number | undefined;
+  // The fingerprint of the snapshot the Feed shows: its load read it from the
+  // same SQLite snapshots as the rows, so the Feed holds exactly the writes it
+  // counts. `feedLoad` is the Feed's load in flight, if any.
+  let shown: string | undefined;
+  let feedLoad: Promise<unknown> | undefined;
 
-  // The registry tables only ever need creating once per account: after the
-  // first success this device skips the write on every later open.
-  function ensureSchema(): Promise<void> {
+  // The registry tables only ever need creating once per account and schema
+  // version. Reads never wait for it: a new device runs it in the background
+  // after the first load, and a read that fails runs it before reading again.
+  function ensureSchema(database: FeedDatabase = registry): Promise<void> {
     if (!schema && hasLocalMarker(schemaMarker)) schema = Promise.resolve();
     schema ??= (async () => {
-      unwrap(await registry.batch([
+      unwrap(await database.batch([
         { sql: `CREATE TABLE IF NOT EXISTS feed_agents (
           agent_id TEXT PRIMARY KEY, agent_did TEXT NOT NULL, label TEXT NOT NULL,
           output_resource TEXT NOT NULL UNIQUE, response_resource TEXT NOT NULL UNIQUE,
@@ -210,8 +205,14 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     }, 50);
   }
 
+  function stop() {
+    controller?.abort(); controller = undefined;
+  }
+
   function connect(force = false) {
-    if (!listeners.size || document.visibilityState === "hidden") return;
+    // The device's copy names the agents to subscribe to; wait for it rather
+    // than open a stream that its answer would replace.
+    if (!listeners.size || document.visibilityState === "hidden" || localReads) return;
     const resources = [HOME_FEED_RESOURCE, THREADS_SQL_DB_NAME, ...sources.flatMap((source) => [source.output.database, source.responses.database])];
     const nextKey = JSON.stringify(resources);
     const hooks: FeedHooks = tcw.hooks;
@@ -226,7 +227,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         const subscriptions = resources.map((pathPrefix) => ({ space, service: "sql" as const, pathPrefix }));
         for await (const _event of hooks.subscribe(subscriptions, {
           signal: request.signal, ttlSeconds: 300,
-          onReady: () => { if (!request.signal.aborted) { streamError = undefined; wake(); } },
+          onReady: () => { if (!request.signal.aborted) void catchUp(request); },
         })) {
           if (!request.signal.aborted) wake();
         }
@@ -240,12 +241,61 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     })();
   }
 
+  /**
+   * One cheap read per database the feed shows, all in one round. Every feed
+   * table only appends (plain INSERTs, and the SDK's ON CONFLICT DO NOTHING),
+   * so a row count plus the highest rowid changes with any write; the agent
+   * registry and the default view are compared by value. `readFeed` builds the
+   * same value from its own reads (feedRead.ts): a table it starts reading
+   * belongs in both.
+   */
+  async function fingerprint(): Promise<string> {
+    return JSON.stringify(await Promise.all([
+      readTally(registry, REGISTRY_TALLY),
+      getSetting(tcw, HOME_FEED_DEFAULT_KEY),
+      ...sources.map(async (source) => (await Promise.all([
+        readTally(db(source.output.database), OUTPUT_TALLY),
+        readTally(db(source.responses.database), RESPONSES_TALLY),
+      ])).flat()),
+    ]));
+  }
+
+  /**
+   * Every ready stream (the first connection, the SDK's reconnects and ticket
+   * renewals, a resume) may follow a gap that no notification covers, since
+   * notifications are not replayed. Instead of reloading, compare the current
+   * fingerprint with the shown Feed's: a write the Feed lacks changes it.
+   * Writes while a stream is ready arrive as notifications and reload on their
+   * own. A Feed load still in flight is compared once it lands, whether it read
+   * before or after this stream became ready.
+   */
+  async function catchUp(request: AbortController) {
+    const recovering = streamError !== undefined;
+    streamError = undefined;
+    const pending = feedLoad;
+    const current = await fingerprint().catch(() => undefined);
+    await pending?.catch(() => {});
+    if (request.signal.aborted) return;
+    if (recovering || current === undefined || current !== shown) wake();
+  }
+
   function foreground() {
     if (document.visibilityState === "hidden") {
-      controller?.abort(); controller = undefined;
+      hiddenAt ??= Date.now();
+      window.clearTimeout(hiddenTimer);
+      hiddenTimer = window.setTimeout(() => {
+        hiddenTimer = undefined;
+        if (document.visibilityState === "hidden") stop();
+      }, FRESH_MS);
     } else {
-      connect(true);
-      wake();
+      window.clearTimeout(hiddenTimer); hiddenTimer = undefined;
+      const away = hiddenAt === undefined ? 0 : Date.now() - hiddenAt;
+      hiddenAt = undefined;
+      // A stream that outlived a short absence missed nothing, and one that
+      // broke reconnects and checks. After a long one, or once the stream has
+      // failed for good, start a new stream: its ready runs the single
+      // freshness check.
+      connect(away > FRESH_MS || streamError !== undefined);
     }
   }
 
@@ -313,33 +363,60 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     return held.supersedesResponseId ? answered : latest;
   }
 
-  async function loadFeed(focused?: HomeFeedEntry): Promise<HomeFeedSnapshot> {
+  async function loadFeed(focused?: HomeFeedEntry, options?: HomeFeedLoadOptions): Promise<HomeFeedSnapshot> {
     assertAccount();
-    const readRegistry = async () => {
-      await ensureSchema();
-      const [agents, events] = await Promise.all([
-        registry.query("SELECT agent_id,agent_did,label,output_resource,response_resource,authorization_json FROM feed_agents ORDER BY agent_id", []),
-        registry.query("SELECT agent_id,card_id,revision,issuance_id,kind,created_at,snoozed_until,seq FROM feed_view_events ORDER BY seq", []),
-      ]);
-      return { agents, events };
+    const load = readFeed(focused);
+    if (!options?.feed) return (await load).snapshot;
+    feedLoad = load;
+    try {
+      const { snapshot, fingerprint } = await load;
+      // A load the Feed abandoned for a newer one (it unmounted and mounted again) shows nothing.
+      if (feedLoad === load) shown = fingerprint;
+      // A device that has not yet run this schema version's batch runs it now,
+      // behind the first paint and every foreground read.
+      if (!hasLocalMarker(schemaMarker)) void inBackground(() => ensureSchema(privateFeedDatabase(trackStorageWrites(tcw.sql.db(HOME_FEED_RESOURCE), scope), assertAccount))).catch(() => {});
+      return snapshot;
+    } finally {
+      if (feedLoad === load) feedLoad = undefined;
+    }
+  }
+
+  /**
+   * One round on a device whose copy names the agents (the registry and every
+   * agent's databases at once); two on a new device, where the registry names
+   * them first. The returned fingerprint counts exactly the rows read.
+   */
+  async function readFeed(focused?: HomeFeedEntry): Promise<{ snapshot: HomeFeedSnapshot; fingerprint: string }> {
+    if (!loadedOnce) await localRead?.catch(() => {});
+    const agentReads = new Map<string, Promise<AgentRead>>();
+    const agentRead = (source: FeedSource) => {
+      const key = JSON.stringify([source.output.database, source.responses.database]);
+      let read = agentReads.get(key);
+      if (!read) {
+        read = readAgent(db(source.output.database), db(source.responses.database));
+        read.catch(() => {}); // awaited below while the registry still lists the agent
+        agentReads.set(key, read);
+      }
+      return read;
     };
-    await ensureSchema();
-    const [firstRows, savedDefault] = await Promise.all([readRegistry(), getSetting(tcw, HOME_FEED_DEFAULT_KEY)]);
-    let registryRows = firstRows;
-    // The device skipped the registry CREATE batch on its marker. Feed errors are
-    // redacted ("SQL operation failed"), so a missing table can't be told apart:
-    // when these reads fail, drop the marker and read once more after the batch.
-    if ((!registryRows.agents.ok || !registryRows.events.ok) && hasLocalMarker(schemaMarker)) {
+    for (const source of sources) void agentRead(source);
+    const savedDefault = getSetting(tcw, HOME_FEED_DEFAULT_KEY);
+    savedDefault.catch(() => {}); // awaited below
+    let registryRead: RegistryRead;
+    try {
+      registryRead = await readRegistry(registry);
+    } catch {
+      // Feed errors are redacted ("SQL operation failed"), so a missing table
+      // can't be told apart: run the CREATE batch, then read once more.
       clearLocalMarker(schemaMarker);
       schema = undefined;
-      registryRows = await readRegistry();
+      await ensureSchema();
+      registryRead = await readRegistry(registry);
     }
-    const agentResult = registryRows.agents;
-    const eventResult = registryRows.events;
     // The node authorizes the full resource but stores by basename. Reject
     // aliases here instead of accidentally merging two agents' databases.
     const basenames = new Set([HOME_FEED_RESOURCE.split("/").at(-1)!, THREADS_SQL_DB_NAME.split("/").at(-1)!]);
-    sources = unwrap(agentResult).rows.map((row) => {
+    sources = registryRead.agents.map((row) => {
       const [id, did, label, output, responses, provenance] = row as unknown[];
       if (![id, did, label, output, responses, provenance].every((value) => typeof value === "string" && value.length)) throw new Error("Invalid Home feed registry entry");
       // Provenance is retained for the connection owner, never interpreted as
@@ -361,13 +438,13 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       };
     });
     connect();
-    // Owner archives and private state run beside the per-agent card reads
-    // below instead of before them; both are needed only to assemble entries.
-    const ownerData = archives.load(sources).then(async (imported) => ({ imported, privateState: await readPrivateOwnerState(registry, imported.scopes) }));
+    // Archives this session has not validated yet are read beside the agents'
+    // rows; both are needed only to assemble entries.
+    const ownerData = archives.project(registryRead.archives, sources).then((imported) => ({ imported, privateState: privateOwnerStateFromRows(registryRead.ownerEvents, imported.scopes) }));
     ownerData.catch(() => {}); // awaited below; never an unhandled rejection meanwhile
     const views = new Map<string, FeedOwnerView>();
     const events = new Map<string, HomeFeedViewEvent[]>();
-    for (const row of unwrap(eventResult).rows) {
+    for (const row of registryRead.views) {
       const [sourceId, cardId, revision, issuanceId, kind, at, until, sequence] = row as unknown[];
       if (kind !== "seen" && kind !== "snoozed") throw new Error("Invalid Home feed view event");
       const key = JSON.stringify([sourceId, cardId, revision, issuanceId]);
@@ -380,38 +457,16 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       events.set(key, history);
     }
     const perAgent = await Promise.all(sources.map(async (source) => {
-      const output = db(source.output.database);
-      const responses = db(source.responses.database);
+      const read = await agentRead(source);
       const historyKey = (identity: FeedCardIdentity) => JSON.stringify([source.sourceId, identity.cardId, identity.revision, identity.issuanceId]);
-      const [cards, storedCards, histories] = await Promise.all([
-        listFeedCards(output).then(unwrap),
-        (async () => {
-          const stored: FeedCard[] = [];
-          let afterIdentity: FeedCardIdentity | undefined;
-          for (;;) {
-            const page = unwrap(await listFeedCardHistory(output, { afterIdentity, limit: 1000 }));
-            stored.push(...page.cards);
-            if (!page.hasMore) return stored;
-            if (!page.nextIdentity || (afterIdentity && sameIdentity(page.nextIdentity, afterIdentity))) throw new Error("Output history page did not advance its full identity");
-            afterIdentity = page.nextIdentity;
-          }
-        })(),
-        (async () => {
-          const byCard = new Map<string, FeedResponse[]>();
-          let afterSequence = 0;
-          for (;;) {
-            const page = unwrap(await listFeedResponses(responses, { afterSequence, limit: 1000 }));
-            for (const response of page) {
-              const key = historyKey(response);
-              const history = byCard.get(key) ?? [];
-              history.push(response);
-              byCard.set(key, history);
-            }
-            if (page.length < 1000) return byCard;
-            afterSequence = page[page.length - 1]!.sequence;
-          }
-        })(),
-      ]);
+      const { cards, history: storedCards } = read;
+      const histories = new Map<string, FeedResponse[]>();
+      for (const response of read.responses) {
+        const key = historyKey(response);
+        const history = histories.get(key) ?? [];
+        history.push(response);
+        histories.set(key, history);
+      }
       const revisionsByCard = new Map<string, FeedCard[]>();
       for (const card of storedCards) {
         const revisions = revisionsByCard.get(card.cardId) ?? [];
@@ -420,8 +475,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       }
       const { imported, privateState } = await ownerData;
       const latestKeys = new Set(cards.map((card) => ownerCardKey(source.sourceId, card)));
-      const loadCard = async (identity: FeedCardIdentity, providedState?: FeedCardState): Promise<HomeFeedEntry> => {
-        const state = providedState ?? unwrap(await getFeedCardState(output, responses, identity));
+      const loadCard = (identity: FeedCardIdentity): HomeFeedEntry => {
+        const state = read.cardState(identity);
+        if (!state) throw new Error("Card issuance not found");
         const key = JSON.stringify([source.sourceId, identity.cardId, identity.revision, identity.issuanceId]);
         const entry: HomeFeedEntry = {
           source, state,
@@ -431,16 +487,15 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           responses: histories.get(key) ?? [],
           viewEvents: events.get(key) ?? [],
         };
-        return typedHistory.enrich(entry, output, responses, histories.get(key) ?? [], privateState.byCard, imported, privateState.groupPriorities);
+        return enrichTypedEntry(entry, read, histories.get(key) ?? [], privateState.byCard, imported, privateState.groupPriorities);
       };
-      const loadListed = async (card: FeedCard) => loadCard(card, await stateFromLoaded(output, card, histories.get(historyKey(card)) ?? []));
-      const loadedEntries = await Promise.all(cards.map(loadListed));
-      loadedEntries.push(...await Promise.all(storedCards.filter((card) => {
+      const loadedEntries = cards.map(loadCard);
+      loadedEntries.push(...storedCards.filter((card) => {
         const key = ownerCardKey(source.sourceId, card);
         const owner = imported.owners.get(key);
         const archivedHistory = !!(owner && (owner.answers.length || owner.claimDecisions.length || owner.threads.length || owner.states.length || owner.outboundNotes?.length || owner.heldNotes?.length || owner.deliveries.length)) || !!imported.historicalCommands.get(key)?.length;
         return !latestKeys.has(key) && (archivedHistory || card.payload?.sitrepThread !== undefined || histories.has(key) || privateState.byCard[key] !== undefined || events.get(key)?.some((event) => event.kind === "snoozed"));
-      }).map(loadListed)));
+      }).map(loadCard));
       const entries: HomeFeedEntry[] = [];
       const historicalEntries: HomeFeedEntry[] = [];
       const retainedParents = new Map<string, HomeFeedEntry>();
@@ -456,12 +511,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         const parentKey = ownerCardKey(source.sourceId, event.parent);
         let parent = loadedEntries.find((candidate) => ownerCardKey(source.sourceId, candidate.state.card) === parentKey) ?? retainedParents.get(parentKey);
         if (!parent) {
-          const result = await getFeedCardState(output, responses, event.parent);
-          if (!result.ok) {
-            if (result.error.code === "NOT_FOUND") { entries.push(entry); continue; }
-            throw new Error(result.error.message);
-          }
-          parent = await loadCard(event.parent, result.data);
+          if (!read.cardState(event.parent)) { entries.push(entry); continue; }
+          parent = loadCard(event.parent);
           retainedParents.set(parentKey, parent);
         }
         const typed = parseSitrepCardPayload(parent.state.card.payload?.sitrep);
@@ -492,9 +543,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       if (focused?.source.sourceId === source.sourceId) {
         const identity = focused.state.card;
         focusedEntry = loadedEntries.find((entry) => sameIdentity(entry.state.card, identity))
-          ?? retainedParents.get(ownerCardKey(source.sourceId, identity)) ?? await loadCard(identity);
+          ?? retainedParents.get(ownerCardKey(source.sourceId, identity)) ?? loadCard(identity);
       }
-      return { sourceId: source.sourceId, entries, historicalEntries, focusedEntry, loadCard, retainedParents };
+      return { sourceId: source.sourceId, entries, historicalEntries, focusedEntry, loadCard, retainedParents, tally: read.tally };
     }));
     const focusedEntry = perAgent.find((group) => group.focusedEntry)?.focusedEntry;
     if (focused && !focusedEntry) throw new Error("Focused card source is no longer registered");
@@ -507,35 +558,44 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         const group = perAgent.find((candidate) => candidate.sourceId === member.sourceId);
         if (!group) throw new Error("Focused historical relationship has no registered source");
         const existing = [...group.entries, ...group.historicalEntries].find((entry) => ownerCardKey(entry.source.sourceId, entry.state.card) === key) ?? group.retainedParents.get(key);
-        const entry = existing ?? await group.loadCard(member.identity);
+        const entry = existing ?? group.loadCard(member.identity);
         related.set(key, { ...entry, modelScope: focusedEntry.modelScope });
       }
     }
     const all = new Map(perAgent.flatMap((group) => group.entries).map((entry) => [ownerCardKey(entry.source.sourceId, entry.state.card), entry]));
     if (focusedEntry) all.set(ownerCardKey(focusedEntry.source.sourceId, focusedEntry.state.card), focusedEntry);
     const sitrep = combineOwnerData([...all.values()].flatMap((entry) => entry.owner ? [entry.owner] : []));
-    const defaultSelector: FeedSelector = savedDefault === "information" || savedDefault === "both" ? savedDefault : "needs-action";
+    const savedSetting = await savedDefault;
+    const defaultSelector: FeedSelector = savedSetting === "information" || savedSetting === "both" ? savedSetting : "needs-action";
     const entries = perAgent.flatMap((group) => group.entries);
     const historicalEntries = perAgent.flatMap((group) => group.historicalEntries);
     loadedOnce = true;
     // The device's copy for the next open: the feed itself, not the card
     // the user happens to have open or a transient connection error.
     void writeLocal<LocalFeed>(localKey, { snapshot: { entries, historicalEntries, settings: { defaultSelector }, sitrep }, sources });
-    return { entries, historicalEntries, settings: { defaultSelector }, sitrep, relatedEntries: [...related.values()], ...(focusedEntry ? { focusedEntry } : {}), ...(streamError ? { connectionError: `Live updates unavailable: ${streamError.message}` } : {}) };
+    return {
+      snapshot: { entries, historicalEntries, settings: { defaultSelector }, sitrep, relatedEntries: [...related.values()], ...(focusedEntry ? { focusedEntry } : {}), ...(streamError ? { connectionError: `Live updates unavailable: ${streamError.message}` } : {}) },
+      fingerprint: JSON.stringify([registryRead.tally, savedSetting, ...perAgent.map((group) => group.tally)]),
+    };
   }
 
   return {
-    load: (focused) => loadFeed(focused),
+    load: (focused, options) => loadFeed(focused, options),
     async cached() {
-      const local = await readLocal<LocalFeed>(localKey);
-      if (!local) return null;
-      // Subscribe to every agent's databases from the first connection, so the
-      // first network load does not have to re-subscribe.
-      if (!loadedOnce && !sources.length) {
-        sources = local.value.sources;
+      localReads++;
+      try {
+        const read = readLocal<LocalFeed>(localKey).then((local) => {
+          // Subscribe to every agent's databases from the first connection, and
+          // let the first network load read them beside the registry.
+          if (local && !loadedOnce && !sources.length) sources = local.value.sources;
+          return local;
+        });
+        localRead = read;
+        return (await read)?.value.snapshot ?? null;
+      } finally {
+        localReads--;
         connect();
       }
-      return local.value.snapshot;
     },
     saveResponse,
     holdsAnswer(entry, responseId) {
@@ -625,14 +685,15 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       listeners.add(listener);
       if (listeners.size === 1) {
         document.addEventListener("visibilitychange", foreground);
-        renewal = window.setInterval(() => { if (document.visibilityState !== "hidden") { connect(true); wake(); } }, RECONCILE_MS);
+        renewal = window.setInterval(() => { if (document.visibilityState !== "hidden") connect(true); }, RECONCILE_MS);
         connect();
       }
       return () => {
         listeners.delete(listener);
         if (!listeners.size) {
-          controller?.abort(); controller = undefined;
+          stop();
           window.clearTimeout(wakeTimer); wakeTimer = undefined;
+          window.clearTimeout(hiddenTimer); hiddenTimer = undefined; hiddenAt = undefined;
           window.clearInterval(renewal); renewal = undefined;
           document.removeEventListener("visibilitychange", foreground);
         }

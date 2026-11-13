@@ -31,7 +31,7 @@ export interface VoiceInProgress {
   /** The last recording stopped itself at the limit. */
   limitNotice: string | null;
   onSaveNow: () => void;
-  /** Storage is full: the button adds storage instead of retrying the save. */
+  /** Storage is full and this app may open the storage page (never the iOS and Android apps): the button opens it instead of retrying the save. */
   storageFull?: boolean;
 }
 

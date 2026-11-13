@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { installDom } from "@/test/dom";
-import { reportStoragePlanTier, STORAGE_FULL_DETAIL, STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
+import { NATIVE_PLAN_NOTE, reportStoragePlanTier, STORAGE_FULL_DETAIL, STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
+import { PlatformContext } from "@/lib/platform";
 import { StorageFullActions, StorageFullMessage } from "./StorageFullDialog";
 
 afterEach(() => reportStoragePlanTier(null));
@@ -128,6 +129,35 @@ describe("StorageFullMessage", () => {
     } finally {
       await message.close();
       message.restore();
+    }
+  });
+});
+
+describe("StorageFullActions in the iOS and Android apps", () => {
+  for (const platform of ["ios", "android"] as const) {
+    test(`${platform}: no Manage storage or Upgrade, no button or link; the plan is managed on the web, said as text`, async () => {
+      reportStoragePlanTier("free");
+      const actions = await renderNode(<PlatformContext.Provider value={platform}><StorageFullActions paywallEnabled /></PlatformContext.Provider>);
+      try {
+        expect(actions.text()).toBe(NATIVE_PLAN_NOTE);
+        expect(document.querySelector("button")).toBeNull();
+        expect(document.querySelector("a")).toBeNull();
+      } finally {
+        await actions.close();
+        actions.restore();
+      }
+    });
+  }
+
+  test("desktop keeps Manage storage and Upgrade", async () => {
+    reportStoragePlanTier("free");
+    const actions = await renderNode(<PlatformContext.Provider value="tauri"><StorageFullActions paywallEnabled /></PlatformContext.Provider>);
+    try {
+      expect(actions.text()).toContain("Manage storage");
+      expect(actions.text()).toContain("Upgrade");
+    } finally {
+      await actions.close();
+      actions.restore();
     }
   });
 });

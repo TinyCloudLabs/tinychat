@@ -106,10 +106,24 @@ TC-524 prototype: a native `Location` plugin (Android `location/`, iOS `Location
 `LocationPlugin.swift`) that records samples and OS-reported state into an on-device queue, drained into the
 user's space by `frontend/src/lib/location/`. Off by default and absent from release builds: the Android
 permissions and foreground service are in the **debug** manifest only, the iOS code is `#if DEBUG` with its
-Info.plist keys added to Debug builds by `App/location-spike-info-plist.sh`, and the developer card in Connectors
+Info.plist keys added to Debug builds by `App/debug-spikes-info-plist.sh`, and the developer card in Connectors
 → Sources needs `VITE_EXO_LOCATION_SPIKE=true`. Release checks (`verify-android-release.sh`, `ios-build.yml`)
 refuse any location permission, key or code. Findings, store requirements and the recommendation:
 [`docs/location-spike.md`](docs/location-spike.md).
+
+## Native replica store (off by default)
+
+TC-2862: a native `TinyCloudReplicaStore` plugin (iOS `Packages/ReplicaStore` + `App/App/ReplicaStorePlugin.swift`,
+Android `replica/`) keeps the device's local copy of TinyCloud data outside the WebView: one SQLCipher file (raw
+256-bit key, HMAC on, `temp_store=MEMORY`) and one 256-bit secret per account (iOS Keychain
+`AfterFirstUnlockThisDeviceOnly`, not synchronizable; Android wrapped by a non-exportable Keystore key, StrongBox
+where available, no user authentication), rows also sealed with AES-256-GCM under HMAC-opaque keys, files excluded
+from backup (iOS Application Support, Android `noBackupFilesDir`). The JS contract is
+`frontend/src/lib/replication/nativeReplicaStore.ts`. Nothing reads
+or writes it until the SDK can (`VITE_EXO_NATIVE_REPLICA=true`); sign-out always wipes it. Debug smoke: launch with
+`EXO_REPLICA_SMOKE=write`, then `read` (after a restart), then `wipe`, and read the `EXO_REPLICA_SMOKE {json}` line.
+The iOS Keychain needs a signed build: an unsigned (`CODE_SIGNING_ALLOWED=NO`) simulator build rejects with
+`IO` (`-34018`); sign ad hoc (`CODE_SIGN_IDENTITY=-`) as the HealthKit spike step in `mobile.yml` does.
 
 ## Google connectors (OAuth)
 
@@ -402,8 +416,9 @@ which deletes TinyCloud Home's local data (sign-in, pending voice notes).
 - [ ] **Internal testing** track: create a release, upload the first `.aab` by
   hand (the Play API cannot create an app's first release), add a tester list
   (emails or a Google Group), share the opt-in link.
-- [ ] **Privacy policy URL.** Required for an app that records audio. TinyCloud Home has no
-  privacy policy page yet.
+- [ ] **Privacy policy URL.** Required for an app that records audio:
+  `https://tinycloud.xyz/privacy` (TC-2873). The app links it from Settings → Account and
+  How it works → Your data.
 - [ ] **Data safety.** Answer for the whole app, web view included:
   - Audio, voice or sound recordings: collected, not shared, for app
     functionality. Recording starts only when the user taps Record, and the
@@ -554,11 +569,15 @@ uses a required-reason API.
 |---|---|
 | `NSPrivacyTracking` false, no tracking domains | Exo does no tracking and has no analytics SDK. |
 | System boot time, reason `35F9.1` | `VoiceNotesPlugin` times recordings with `ProcessInfo.systemUptime`. Only in-app elapsed times (duration, silenced and no-signal spans) leave the device. `35F9.1` allows exactly that. |
-| No file-timestamp entry | The plugin reads a recording's size with `URLResourceValues.fileSize`, not `FileManager.attributesOfItem`, which is a file-timestamp API. Keep it that way, or declare `C617.1`. |
+| File timestamp, reason `C617.1` | Recovering a legacy recording reads the file's creation date (`mobile/docs/capture-format.md`). |
 | Audio Data: linked, not tracking, App Functionality | Voice notes are uploaded to the user's TinyCloud space. The upload is not end-to-end encrypted, so Apple counts it as collected even though the space belongs to the user. |
 | Other User Content: same | Chats, notes, meeting transcripts and voice-note metadata go to the Exo backend and the user's space. |
 | Email Address: same | Sign-in with OpenKey uses email + code. |
 | User ID: same | The account's DID/address that owns the space. |
+| Name: same | From Sign in with Apple or Google, or entered on OpenKey; optional. |
+| Purchase History: same | The plan, its renewal date and storage limits, linked to the account address. |
+| Product Interaction: same | Which feature each backend request used and its credits, keyed by a one-way account hash and sent to Better Stack; AI usage per account for plan limits. |
+| Performance Data: same | Backend request status and duration, keyed by the same hash. |
 
 The App Store Connect *App Privacy* answers must say the same. Update both
 whenever a feature sends new data off the device, for example crash reporting

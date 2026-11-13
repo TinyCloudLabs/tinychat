@@ -1,5 +1,51 @@
 # exo-desktop
 
+## 0.14.0-beta.38
+
+No changes in this release.
+
+## 0.14.0-beta.37
+
+No changes in this release.
+
+## 0.14.0-beta.36
+
+No changes in this release.
+
+## 0.14.0-beta.35
+
+### Patch Changes
+
+- f53e7c8: Home in a desktop Chromium browser opens to the Feed again without waiting about a second and a half for the node. Production web builds no longer bind the local copy of transcripts at sign-in or session restore, because web-sdk 3.11.2 holds the restore until that bind and the node's `/info` answer (TC-2773 removes the wait in web-sdk 3.12). A copy already on the device is kept, not deleted; signing out still erases it. The switch for the local copy is hidden while binding is paused. Details: TC-2883
+
+## 0.14.0-beta.34
+
+### Patch Changes
+
+- f8b488c: The iOS and Android apps get a native local store for your TinyCloud data: an encrypted SQLite copy kept outside the web view, with one file and one device-only key per account. Nothing uses it yet (it is switched off until the TinyCloud SDK can read from it), and signing out deletes that account's copy and its key. Details: TC-2862
+
+## 0.14.0-beta.33
+
+No changes in this release.
+
+## 0.14.0-beta.32
+
+### Patch Changes
+
+- 87f3e3f: The minimised recorder bar on the phone and in the browser is back to how it was before TC-2077: the timer, the moving level bars, the stop time under them, and the larger Pause and Stop. The small bar with "Stops in" and the stop time on hover stays on the desktop: the sidebar dock and the Mac app's floating bar. Details: TC-2077
+
+## 0.14.0-beta.31
+
+No changes in this release.
+
+## 0.14.0-beta.30
+
+No changes in this release.
+
+## 0.14.0-beta.29
+
+No changes in this release.
+
 ## 0.14.0-beta.28
 
 No changes in this release.

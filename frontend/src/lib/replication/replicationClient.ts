@@ -1,5 +1,6 @@
 // Builds the `replication` client option, only when replication is ON for the signed-in user
-// (build flag + platform + the user's own switch; replicationFlag.ts).
+// (build flag + platform + the user's own switch; replicationFlag.ts) and binding is not paused
+// (production builds, until web-sdk 3.12; isReplicationBindPaused).
 //
 // OFF (any gate): returns undefined and imports NOTHING. The optional plugin
 // (`@tinycloud/web-sdk/replica`, which in turn lazily loads the encrypted IndexedDB storage
@@ -14,7 +15,7 @@
 import type { TinyCloudWebConfig } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { noteReplicationCopyPossible } from "./replicationCopyMarker";
-import { isReplicationEnabled } from "./replicationFlag";
+import { isReplicationBindPaused, isReplicationEnabled } from "./replicationFlag";
 import { appFirstLoadSettled, resetAppFirstLoad } from "./replicationFirstLoad";
 import { startupPurgeSettled } from "./replicationStartupPurge";
 import { replicationPrefixes } from "./replicationPrefixes";
@@ -81,8 +82,11 @@ export const REPLICATION_SYNC_SCOPE = "prefixes" as const;
 export async function buildReplicationConfig(
   principal: string | undefined,
   loader: ReplicationPluginLoader = defaultReplicationLoader,
+  paused: boolean = isReplicationBindPaused(),
 ): Promise<ReplicationClientConfig | undefined> {
   if (!isReplicationEnabled({ principal })) return undefined;
+  // Paused (production builds): no bind, no kv/sync grant, nothing loaded; an existing copy is kept.
+  if (paused) return undefined;
   // A page-load purge may still be deleting the origin copy (a pending wipe): never build over it.
   await startupPurgeSettled();
   // Before any copy can exist: lets a later OFF load find it (replicationOffPurge.ts).

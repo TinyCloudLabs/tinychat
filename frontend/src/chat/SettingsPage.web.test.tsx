@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { BillingStatus } from "@/lib/billingApi";
-import { __resetStorageStatusForTests, reportStorageError, reportStoragePlanTier, STORAGE_FULL_DETAIL, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, NATIVE_PLAN_NOTE, reportStorageError, reportStoragePlanTier, STORAGE_FULL_DETAIL, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
 
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AgentAccessProvider } from "./useAgentEnablement";
@@ -201,3 +201,63 @@ test("Conversation Canvas toggle is off by default under Experimental Features f
 });
 
 afterEach(() => __resetStorageStatusForTests());
+
+for (const platform of ["web", "tauri", "ios", "android"] as const) {
+  const billingLinks = platform === "web" || platform === "tauri";
+  test(`${platform} Settings ${billingLinks ? "keeps Manage storage, Upgrade and Manage plan" : "shows usage only, with no link or button to a purchase page"}`, async () => {
+    __setVoiceNotesForTests(null, { available: false });
+    __resetStorageStatusForTests();
+    reportStoragePlanTier("free");
+    reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED" });
+    const { SettingsPage } = await import("./SettingsPage");
+    const tcw = { did: "did:example:account", spaceId: "space-1", address: () => "0x00000000000000000000000000000000000000a1" } as unknown as TinyCloudWeb;
+    const sessionStore = { getToken: () => "signed-in-token" } as unknown as SessionStore;
+    const billingStatus: BillingStatus = { tier: "free", usage: { used: 1200, limit: 5000, resetsAt: "" }, subscription: null };
+    const managePlan: string[] = [];
+    const noop = () => {};
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root: Root = createRoot(host);
+    try {
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <PlatformContext.Provider value={platform}>
+              <StaticRecorderProvider value={{ signedIn: true, available: false }}>
+                <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud Home" openkeyHost="http://localhost">
+                  <SettingsPage
+                    address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
+                    onSignOut={noop} signingOut={false} paywallEnabled onBack={noop}
+                    tcw={tcw} memoryRef={createRef<string | null>()} onMemoryUpdated={noop} onImported={noop}
+                    billingStatus={billingStatus} billingTierName="Free" onManagePlan={() => managePlan.push("open")} onOpenRates={noop}
+                    backendUrl="http://localhost" sessionStore={sessionStore}
+                  />
+                </AgentAccessProvider>
+              </StaticRecorderProvider>
+            </PlatformContext.Provider>
+          </MemoryRouter>,
+        );
+      });
+      const buttons = [...host.querySelectorAll("button")].map((button) => button.textContent?.trim());
+      const storage = host.querySelector('[role="region"][aria-label="Storage full"]');
+      expect(host.textContent).toContain("1,200 / ");
+      if (billingLinks) {
+        expect(buttons).toContain("Manage storage");
+        expect(buttons).toContain("Upgrade");
+        expect(buttons).toContain("Manage plan");
+        expect(host.textContent).not.toContain(NATIVE_PLAN_NOTE);
+      } else {
+        expect(buttons).not.toContain("Manage storage");
+        expect(buttons).not.toContain("Upgrade");
+        expect(buttons).not.toContain("Manage plan");
+        expect(storage?.textContent).toContain(NATIVE_PLAN_NOTE);
+        expect(host.querySelector('a[href*="account.tinycloud.xyz"]')).toBeNull();
+        expect(managePlan).toEqual([]);
+      }
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      __resetStorageStatusForTests();
+    }
+  });
+}

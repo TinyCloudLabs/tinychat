@@ -15,6 +15,68 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.38
+
+### Patch Changes
+
+- 2bfd082: Opening Home no longer runs schema checks or table creation in front of its first reads. The chat list and settings read at once on a new device; only a read that finds its table missing creates the tables and reads again, and the full schema check runs in the background after the open's reads. Voice-note setup (its two schema statements and definition check) runs once per account and schema version on each device, after the open's reads when there is nothing to save, instead of on every open; later opens only sweep archived duplicates in the background.
+
+## 0.14.0-beta.37
+
+### Patch Changes
+
+- 50e57be: The Home Feed refreshes in one round of requests instead of three or more. On open it reads the agent registry and every agent the device already knows at the same time, one request per database, and no longer waits for the live-update stream first: each read carries its own freshness fingerprint, so the stream's first ready compares instead of loading again. Answers, follow-ups and agent receipts come with those reads instead of one request each, in sequence. A new device reads the Feed before it creates its tables; the one-time schema batch runs after the first load.
+
+## 0.14.0-beta.36
+
+### Patch Changes
+
+- ee74379: Playback diagnostics (TC-2857): an opt-in, on-device log of how a note's audio plays, for diagnosing choppy playback. Off by default; Settings reveals it after seven taps on the build line. It records the iOS audio session (category, mode, route, interruptions, thermal state, Low Power Mode), the note player's events and its clock against the wall clock, the audio source type and size, and main-thread blocks during playback, and exports as JSON lines with Share or Copy. No note content or file path is recorded.
+
+## 0.14.0-beta.35
+
+### Patch Changes
+
+- f53e7c8: Home in a desktop Chromium browser opens to the Feed again without waiting about a second and a half for the node. Production web builds no longer bind the local copy of transcripts at sign-in or session restore, because web-sdk 3.11.2 holds the restore until that bind and the node's `/info` answer (TC-2773 removes the wait in web-sdk 3.12). A copy already on the device is kept, not deleted; signing out still erases it. The switch for the local copy is hidden while binding is paused. Details: TC-2883
+
+## 0.14.0-beta.34
+
+### Patch Changes
+
+- f8b488c: The iOS and Android apps get a native local store for your TinyCloud data: an encrypted SQLite copy kept outside the web view, with one file and one device-only key per account. Nothing uses it yet (it is switched off until the TinyCloud SDK can read from it), and signing out deletes that account's copy and its key. Details: TC-2862
+
+## 0.14.0-beta.33
+
+### Patch Changes
+
+- 273a4cb: Home Feed loads once per open. A live-update connect, reconnect or resume no longer reloads the whole Feed: the first load waits for the live-update stream, and each later stream compares a one-request-per-database fingerprint with the last one and reloads only when something changed. A resume within 60 s makes no requests.
+
+## 0.14.0-beta.32
+
+### Patch Changes
+
+- 87f3e3f: The minimised recorder bar on the phone and in the browser is back to how it was before TC-2077: the timer, the moving level bars, the stop time under them, and the larger Pause and Stop. The small bar with "Stops in" and the stop time on hover stays on the desktop: the sidebar dock and the Mac app's floating bar. Details: TC-2077
+
+## 0.14.0-beta.31
+
+### Patch Changes
+
+- 97dbe56: iOS and Android: a returning user's Feed no longer waits for the TinyCloud node to re-activate a delegation it already holds (TC-2865). Once a launch has seen the node accept the current delegation, later launches still send `/delegate`, but in the background. On the iOS simulator, the time to the first Feed card dropped from about 3.0 s to about 0.6 s. If a background activation fails, the next launch waits for activation again and shows its error. Sign-in and renewal still wait for activation.
+
+## 0.14.0-beta.30
+
+### Patch Changes
+
+- 85e83ce: The iOS and Android apps no longer link to or open a purchase page (App Store 3.1.1, Google Play Payments). Manage storage, Upgrade, Manage plan, the pricing dialog and the usage chip's plans link are gone there. Storage-full surfaces keep Save now and Transcribe again, and say "Manage your plan on the web at tinycloud.xyz." as plain text. The TinyCloud panel's storage link and its storage-full toast link are hidden too. Web and desktop are unchanged.
+
+## 0.14.0-beta.29
+
+### Minor Changes
+
+- cf05789: The app links TinyCloud's privacy policy, `https://tinycloud.xyz/privacy` (TC-2876, App Store 5.1.1(i), Play User Data policy). The link appears in Settings → Account (signed in, and the signed-out phone Settings) and in How it works → Your data. It opens in the in-app browser on iOS and Android, in the system browser on desktop (a fixed-URL Tauri command), and in a new tab on the web.
+
+  The iOS privacy manifest now also declares Name, Purchase History, Product Interaction and Performance Data, to match the App Store privacy answers. The HealthKit purpose strings are now added to Debug builds only, and `ios-build.yml` fails a Release archive that has them.
+
 ## 0.14.0-beta.28
 
 ### Minor Changes

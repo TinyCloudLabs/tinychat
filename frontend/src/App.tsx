@@ -37,11 +37,14 @@ import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, t
 import { deferOriginMove } from "./lib/originMove";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { replicationConfigPatch, startReplicationFill, stopReplicationFill } from "./lib/replication/replicationClient";
-import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
+import { rememberReplicationPrincipal, replicationCopyMayExist } from "./lib/replication/replicationCopyMarker";
+import { isReplicationBindPaused } from "./lib/replication/replicationFlag";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
 import { replicationRestorePatch } from "./lib/replication/replicationRestore";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
-import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { clientHasReplication, REPLICA_PURGE_FAILED_WARNING, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { wipeNativeReplicaOnSignOut } from "./lib/replication/nativeReplicaStore";
+import { removeLocalCopyNow } from "./lib/replication/replicationSwitch";
 import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
 import { uploadRunner } from "./lib/audioUpload";
 import {
@@ -70,8 +73,9 @@ import {
   subscribeStorageScopeRetired,
   reportStoragePlanTier,
   STORAGE_READ_ONLY_NOTICE,
+  NATIVE_PLAN_NOTE,
 } from "./lib/storageStatus";
-import { openManageStorage } from "./lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "./lib/openManageStorage";
 import { useStorageFreePlan } from "./lib/useStorageFreePlan";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
@@ -419,6 +423,10 @@ export function App() {
     if (accountSpace) clearHeldAnswers(accountSpace);
     if (storedAddress) clearPersistedSession(storedAddress);
     if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
+    // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.
+    void wipeNativeReplicaOnSignOut(accountDid).then((result) => {
+      if (!result.ok) console.warn("[Replica] Could not delete the native local copy at sign-out", result.code);
+    });
     sessionStoreRef.current.clear();
     if (storedAddress) clearSendIntentsForOwner(storedAddress);
     clearTranscriptDelegationSchedule(storedAddress);
@@ -432,6 +440,14 @@ export function App() {
     if (tcw) {
       const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
       const localSignOut = signOutReplicaAware(tcw);
+      // Binding paused: this client never bound the saved copy, so its signOut cannot erase it. Erase it
+      // now instead of at the next page load (replicationOffPurge.ts); a failure warns like a bound
+      // sign-out's and leaves the retry markers for the next load.
+      if (!clientHasReplication(tcw) && isReplicationBindPaused() && replicationCopyMayExist()) {
+        void removeLocalCopyNow(tcw, undefined).then((outcome) => {
+          if (outcome.status === "failed") setError((current) => (current?.includes(REPLICA_PURGE_FAILED_WARNING) ? current : REPLICA_PURGE_FAILED_WARNING));
+        });
+      }
       void localSignOut
         .then((result) => {
           if (result && !result.ok) setError((current) => (current?.includes(result.message) ? current : result.message));
@@ -505,6 +521,8 @@ export function App() {
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
+  // The iOS and Android apps open no purchase page: no pricing dialog, Manage storage or Upgrade (App Store 3.1.1, Play Payments).
+  const billingLinks = billingLinksAllowed(platform);
   const billingTierName = billingConfig?.tiers.find(
     (tier) => tier.id === billingStatus?.tier,
   )?.name ?? (billingStatus
@@ -1470,7 +1488,7 @@ export function App() {
         <UsageIndicator
           status={billingStatus}
           tierName={billingTierName}
-          onClick={openPricing}
+          onClick={billingLinks ? openPricing : undefined}
           onOpenRates={openRates}
         />
       )}
@@ -1637,18 +1655,22 @@ export function App() {
         <div data-testid="app-storage-read-only-notice" role="region" aria-label="Storage full" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full</strong>{" "}
           {STORAGE_READ_ONLY_NOTICE}{" "}
-          <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
-            Manage storage
-          </button>
-          {canUpgrade && (
-            <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
-              Upgrade
-            </button>
-          )}
+          {billingLinks ? (
+            <>
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+                Manage storage
+              </button>
+              {canUpgrade && (
+                <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+                  Upgrade
+                </button>
+              )}
+            </>
+          ) : NATIVE_PLAN_NOTE}
         </div>
       )}
 
-      {paywallEnabled && billingConfig && (
+      {billingLinks && paywallEnabled && billingConfig && (
         <PricingDialog
           open={pricingOpen}
           onOpenChange={setPricingOpen}
