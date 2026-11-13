@@ -707,7 +707,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       <span className="flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground"><AgentMark agentKey={agentKey(entry, context?.record)} name={author} small /><span className="min-w-0 truncate font-semibold text-foreground">{author}</span></span>
       <span className="line-clamp-3 break-words text-sm font-semibold leading-[18px]">{entry.state.card.title}</span>
       <span className="line-clamp-3 break-words text-xs leading-4 text-muted-foreground">{due && <><DueMark due={due} now={clock} /> · </>}{describe(entry)}</span>
-      <span className="mt-auto flex min-w-0 items-center justify-between gap-2 pt-1 text-meta text-muted-foreground"><ShortTime at={entry.state.card.createdAt} className="truncate" /><span className="flex shrink-0 items-center gap-2"><PriorityMark priority={timing.priority} /><ReplyCount replies={repliesOf(entry)} /><StatusMark status={status} /></span></span>
+      <span className="mt-auto flex min-w-0 items-center justify-between gap-2 pt-1 text-meta text-muted-foreground"><ShortTime relative at={entry.state.card.createdAt} className="truncate" /><span className="flex shrink-0 items-center gap-2"><PriorityMark priority={timing.priority} /><ReplyCount replies={repliesOf(entry)} /><StatusMark status={status} /></span></span>
     </button>;
   }
 
@@ -759,10 +759,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
                   Acknowledge, Show me later and Comment. Drop, Acknowledge and the later times take the card away
                   with the undo bar. The later times open under the row. */}
               <div className="border-t border-border pt-2"><CardDetails close={closedAs(entry) ? undefined : info ? { kind: "acknowledge", onTap: () => closeCard(entry, "acknowledge") } : needsAttention(entry, clock) ? { kind: "drop", onTap: () => closeCard(entry, "drop") } : undefined}
-                actions={<>
-                  {wake || ((info || needsAttention(entry, clock)) && <button type="button" aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={footActionClass}>{info ? "Show me later" : "Ask me later"}</button>)}
-                  {info && source.sendMessage && <button type="button" aria-expanded={commentKey === key} onClick={() => setCommentKey(commentKey === key ? null : key)} className={footActionClass}>Comment</button>}
-                </>}>
+                actions={wake || ((info || needsAttention(entry, clock)) && <button type="button" aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={footActionClass}>{info ? "Show me later" : "Ask me later"}</button>)}
+                secondary={info && source.sendMessage ? <button type="button" aria-expanded={commentKey === key} onClick={() => setCommentKey(commentKey === key ? null : key)} className={footActionClass}>Comment</button> : undefined}>
                 {facts}<CardHistory entry={entry} /></CardDetails></div>
               {later && (info || needsAttention(entry, clock)) && <section aria-label={info ? "Show me later" : "Ask me later"} className="space-y-2 rounded-xl border border-border p-3 text-sm"><p className="font-medium">{info ? "Show me again" : "Ask me again"}</p>
                 <div className="flex flex-wrap gap-2">{snoozePresets(clock).slice(0, 3).map((preset) => <button key={preset.id} type="button" onClick={() => askLater(entry, preset.until)} className={actionClass}>{preset.label}</button>)}</div>

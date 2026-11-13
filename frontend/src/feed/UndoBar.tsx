@@ -68,7 +68,8 @@ export function useUndoBar(onError: (message: string) => void) {
   }, []);
   const hidden = useCallback((key: string) => items.some((item) => item.key === key), [items]);
   const bar = !!items.length && <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex flex-col items-center gap-2 px-3">
-    {items.map((item) => <p key={item.id} role="status" className="pointer-events-auto flex min-h-11 items-center gap-3 rounded-full bg-zinc-900 py-1 pl-4 pr-1 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900 fine:min-h-10">
+    {/* One width for every bar, so a stack lines up (the design agent). */}
+    {items.map((item) => <p key={item.id} role="status" className="pointer-events-auto flex min-h-11 min-w-[15rem] items-center justify-between gap-3 rounded-full bg-zinc-900 py-1 pl-4 pr-1 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900 fine:min-h-10">
       <span className="tabular-nums">{item.text} · {Math.max(1, Math.ceil((item.endsAt - now) / 1000))}s</span>
       <button type="button" onClick={() => undo(item.id)} className="min-h-9 rounded-full bg-zinc-100 px-3 font-semibold text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100">Undo</button>
     </p>)}

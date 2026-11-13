@@ -37,18 +37,23 @@ export function closedAs(entry: HomeFeedEntry): "Dropped" | "Acknowledged" | und
 export interface CardClose { kind: "drop" | "acknowledge"; onTap: () => void }
 
 /**
- * The card's foot, one row, with "Details" (the card's facts, `children`, in a pop-up) in the bottom-right corner on
- * every card (Sam, 23:5xZ). A decision: its quiet `actions` (Ask me later) on the left, then "Drop this card" beside
- * Details at the right, away from Ask me later so a thumb doesn't hit it by mistake. An update: "Acknowledge", its
- * one real action, as the dark pill first, then its quiet actions (Show me later, Comment).
+ * The card's foot, with "Details" (the card's facts, `children`, in a pop-up) alone in the bottom-right corner on every
+ * card (Sam, 23:5xZ; the design agent's layout). A decision, one row: its quiet `actions` (Ask me later), then "Drop
+ * this card", both taking the card away through the undo bar. An update: "Acknowledge" (its one real action, the dark
+ * pill) and its quiet `actions` (Show me later), then a bottom row with `secondary` ("Comment") level with Details.
  */
-export function CardDetails({ children, actions, close }: { children: ReactNode; actions?: ReactNode; close?: CardClose }) {
+export function CardDetails({ children, actions, secondary, close }: { children: ReactNode; actions?: ReactNode; secondary?: ReactNode; close?: CardClose }) {
   const [open, setOpen] = useState(false);
-  return <div aria-label="Card actions" className="flex flex-wrap items-center gap-1 text-sm">
-    {close?.kind === "acknowledge" && <button type="button" onClick={close.onTap} className="mr-1 inline-flex min-h-11 items-center gap-1.5 rounded-full bg-foreground pl-3.5 pr-4 text-sm font-semibold text-background transition-transform active:scale-[.97] motion-reduce:transform-none fine:min-h-9"><CheckIcon aria-hidden className="size-4" />Acknowledge</button>}
+  const details = <button type="button" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)} className={`${footActionClass} ml-auto`}>Details</button>;
+  const leading = <>
+    {close?.kind === "acknowledge" && <button type="button" onClick={close.onTap} className="mr-1 inline-flex min-h-11 items-center gap-1 rounded-full bg-foreground pl-3 pr-3.5 text-sm font-semibold text-background transition-transform active:scale-[.97] motion-reduce:transform-none fine:min-h-9"><CheckIcon aria-hidden className="size-4" />Acknowledge</button>}
     {actions}
-    {close?.kind === "drop" && <button type="button" onClick={close.onTap} className={`${footActionClass} ml-auto hover:text-destructive`}>Drop this card</button>}
-    <button type="button" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)} className={`${footActionClass} ${close?.kind === "drop" ? "" : "ml-auto"}`}>Details</button>
+    {close?.kind === "drop" && <button type="button" onClick={close.onTap} className={`${footActionClass} hover:text-destructive`}>Drop this card</button>}
+  </>;
+  return <div aria-label="Card actions" className="text-sm">
+    {secondary
+      ? <><div className="flex flex-wrap items-center gap-1">{leading}</div><div className="mt-1 flex items-center gap-1">{secondary}{details}</div></>
+      : <div className="flex flex-wrap items-center gap-1">{leading}{details}</div>}
     <DetailsSheet open={open} onOpenChange={setOpen}>{children}</DetailsSheet>
   </div>;
 }

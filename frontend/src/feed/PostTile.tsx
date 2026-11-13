@@ -56,7 +56,7 @@ export function PostTile({ entry, page, author, agentKey, status, replies, onOpe
           className={`line-clamp-3 break-words text-sm leading-[18px] ${status === "Needs you" ? "font-semibold" : "font-medium"}`}>{card.title}</motion.span>
         {/* The status stays behind when the tile opens: shared, it crossed the title mid-morph (picks §2). The time sits
             beside it, as on the other tiles, so the agent's name has the top row to itself (QA, 1f17120). */}
-        <span className="mt-auto flex min-h-5 min-w-0 items-center justify-between gap-2 pt-0.5 text-meta text-muted-foreground"><ShortTime at={card.createdAt} className="truncate tabular-nums" /><span className="flex shrink-0 items-center gap-2"><ReplyCount replies={replies} /><StatusMark status={status} /></span></span>
+        <span className="mt-auto flex min-h-5 min-w-0 items-center justify-between gap-2 pt-0.5 text-meta text-muted-foreground"><ShortTime relative at={card.createdAt} className="truncate tabular-nums" /><span className="flex shrink-0 items-center gap-2"><ReplyCount replies={replies} /><StatusMark status={status} /></span></span>
       </motion.span>
     </motion.span>
   </button>;

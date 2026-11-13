@@ -93,10 +93,11 @@ export function CompactCard({ agentKey, author, platform, createdAt, priority, d
   return <button type="button" onClick={onOpen} {...(opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false })}
     className="grid w-full min-w-0 grid-cols-[1.75rem_minmax(0,1fr)_auto] gap-x-3 rounded-2xl border border-border bg-card px-3.5 pb-[13px] pt-3 text-left text-card-foreground transition-[transform,border-color] duration-150 ease-smooth active:scale-[.985] active:bg-muted/50 fine:hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:active:scale-100">
     <span className="row-span-3 -mt-1"><AgentMark agentKey={agentKey} name={author} small /></span>
-    <span className="col-span-2 flex h-5 min-w-0 items-center gap-1.5 text-meta text-muted-foreground">
-      <span className="max-w-[58%] shrink-0 truncate font-semibold text-foreground">{author}</span>
+    <span className="col-span-2 flex h-5 min-w-0 items-center gap-1.5 overflow-hidden text-meta text-muted-foreground">
+      {/* The status group on the right never shrinks; the name, then the time, give way first (QA: "Needs you" cut). */}
+      <span className="min-w-[3rem] max-w-[58%] shrink truncate font-semibold text-foreground">{author}</span>
       {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
-      <ShortTime at={createdAt} className="shrink-0 tabular-nums before:mr-1.5 before:content-['·']" />
+      <ShortTime relative at={createdAt} className="min-w-0 shrink-[2] truncate tabular-nums before:mr-1.5 before:content-['·']" />
       <span className="ml-auto flex shrink-0 items-center gap-2"><PriorityMark priority={priority} /><ReplyCount replies={replies} /><StatusMark status={status} /></span>
     </span>
     <span className={`${textColumns} mt-1 line-clamp-2 break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`}>{title}</span>
