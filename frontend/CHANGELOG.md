@@ -14,6 +14,15 @@
 - TC-2208: Keep focused approval controls, including code-less confirmations, and consent-link interactions bound to their original issuance until explicit navigation; retain archive-only answers, threads, claims, and commands in History; isolate group priority by registered source or validated archive origin.
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
+- TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
+
+## 0.14.0-beta.47
+
+### Patch Changes
+
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
 
 ## 0.14.0-beta.46
 
