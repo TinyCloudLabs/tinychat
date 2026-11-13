@@ -212,4 +212,18 @@ describe("Feed first", () => {
     await flush();
     expect(issued).toEqual(["threads list"]);
   });
+
+  test("a release with no held reads opens no quiet gap: background work and idle waits go at once", async () => {
+    noteScreen(true);
+    const copied: string[] = [];
+    void inBackground(async () => { copied.push("history copy"); });
+    let idle = false;
+    void whenForegroundIdle().then(() => { idle = true; });
+    await flush();
+    expect(copied).toEqual([]);
+    noteScreen(false); // e.g. the open settled signed out: no Feed load to wait for
+    await flush();
+    expect(copied).toEqual(["history copy"]);
+    expect(idle).toBe(true);
+  });
 });

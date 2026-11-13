@@ -60,10 +60,12 @@ function releaseFeedFirst(): void {
   feedFirst = "released";
   clearTimeout(feedFirstCap);
   feedFirstCap = undefined;
-  for (const resolve of feedFirstWaiters.splice(0)) resolve();
+  const held = feedFirstWaiters.splice(0);
+  for (const resolve of held) resolve();
   // The released reads start a microtask later: open a quiet gap now so
-  // background work cannot start ahead of them.
-  lastForegroundEnd = Date.now();
+  // background work cannot start ahead of them. With nothing released there
+  // is nothing to wait for.
+  if (held.length > 0) lastForegroundEnd = Date.now();
   pump();
 }
 
