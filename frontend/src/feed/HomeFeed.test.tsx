@@ -175,9 +175,9 @@ function hasAnswerBox(host: ParentNode) {
 function canSendOwn(host: ParentNode) {
   return !answer(host).disabled || !!answer(host).parentElement!.querySelector("button");
 }
-/** The Send control inside the "Your own answer" field. */
+/** The Send control inside the "Your own answer" field: after the words (Cancel sits before them). */
 function sendButton(host: ParentNode) {
-  const node = answer(host).parentElement!.querySelector("button");
+  const node = answer(host).nextElementSibling?.querySelector("button") ?? null;
   expect(node).not.toBeNull();
   return node!;
 }
@@ -652,6 +652,23 @@ test("a reply in words waits too, and undo keeps the draft", async () => {
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ kind: "answer", text: "Hold until Friday" });
   expect(store.responses[0]!.choiceId).toBeUndefined();
+});
+
+test("the own-answer field has Cancel inside it too: Cancel clears the words, closes the box and writes nothing", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await open(view.host);
+  await openNote(view.host);
+  await typeAnswer(view.host, "Hold until Friday");
+  const cancel = answer(view.host).parentElement!.querySelector<HTMLButtonElement>('button[aria-label="Cancel"]');
+  expect(cancel).not.toBeNull();
+  await act(async () => cancel!.click());
+  expect(hasAnswerBox(view.host)).toBe(false);
+  await clock!.advance(10_000);
+  expect(store.responses).toEqual([]);
+  // Opened again, the box is empty: Cancel dropped the draft too.
+  await openNote(view.host);
+  expect(answer(view.host).value).toBe("");
 });
 
 test("leaving the view mid-countdown sends the answer at once, exactly once", async () => {

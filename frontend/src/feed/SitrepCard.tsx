@@ -323,7 +323,7 @@ export function SitrepCard(props: Props) {
         pending={countdown.pending && chosen ? { choiceId: chosen, seconds: countdown.pending.seconds } : null}
         saving={busy ? chosen : undefined} chosen={failed ? chosen : undefined}
         onChoose={choose} onUndo={() => { countdown.undo(); setChosen(undefined); }}
-        own={{ open: ownOpen || !options.length, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={waiting || busy} onText={setText} onSend={() => { if (text.trim()) choose(OWN_OPTION.id, OWN_OPTION.label); }}
+        own={{ open: ownOpen || !options.length, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={waiting || busy} onText={setText} onSend={() => { if (text.trim()) choose(OWN_OPTION.id, OWN_OPTION.label); }} onCancel={() => { setText(""); setOwnOpen(false); }}
           state={chosen === OWN_OPTION.id ? (busy ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED_COPY, true)} /> }} /></div>}
       {!waiting && asking && <div className="mt-3 flex flex-wrap gap-2">
         {steer === "open" && record.default && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>}

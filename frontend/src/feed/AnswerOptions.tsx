@@ -92,17 +92,19 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
 }
 
 /**
- * What "Your own answer" opens: one field with Send inside it. Send starts the same countdown as a tap (the caller
- * calls `start` with `OWN_OPTION.id` as the pending choice); the real save runs later in the caller, so the caller
- * passes `state` for that save (sending/error) and `onRetry` to re-run it after a failure.
+ * What "Your own answer" opens: one field with Cancel and Send inside it (Sam, 23:35Z). Send starts the same countdown
+ * as a tap (the caller calls `start` with `OWN_OPTION.id` as the pending choice); the real save runs later in the
+ * caller, so the caller passes `state` for that save (sending/error) and `onRetry` to re-run it after a failure.
+ * `onCancel` clears the words and closes the box; it steps aside while the answer counts down or saves (Undo is how
+ * to take that back).
  */
-export function OwnAnswerBox({ text, disabled, onText, onSend, state = "idle", onRetry }: {
-  text: string; disabled: boolean; onText: (text: string) => void; onSend: () => void;
+export function OwnAnswerBox({ text, disabled, onText, onSend, onCancel, state = "idle", onRetry }: {
+  text: string; disabled: boolean; onText: (text: string) => void; onSend: () => void; onCancel?: () => void;
   state?: SendState; onRetry?: () => void;
 }) {
   // While the answer waits out its countdown, the option row above is the only status, so Send steps aside; it
   // comes back to show the save itself (sending, or "Couldn't send · Retry").
   const holding = disabled && state === "idle";
-  return <ComposerField autoFocus label={OWN_OPTION.label} value={text} onValue={onText} disabled={disabled}
+  return <ComposerField autoFocus label={OWN_OPTION.label} value={text} onValue={onText} disabled={disabled} onCancel={disabled ? undefined : onCancel}
     send={!holding && <StatefulSendButton compact state={state} disabled={disabled || !text.trim()} onSend={state === "error" ? (onRetry ?? onSend) : onSend} />} />;
 }
