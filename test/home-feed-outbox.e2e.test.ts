@@ -217,7 +217,7 @@ describe("Home's page-close outbox in Chromium", () => {
       await reopened.getByRole("radio", { name: "All", exact: true }).check();
       await reopened.getByRole("button", { name: /Book the Thursday flight\?/ }).click();
       await reopened.getByText("You chose Go.").waitFor();
-      await reopened.getByText("Sent when you opened Home again.").waitFor();
+      await reopened.getByText("Sent when you opened TinyCloud One again.").waitFor();
       const rows = await stored(agent.responses);
       console.log(`[${when}] stored after reopening: ${JSON.stringify(rows.map((row) => [row.responseId, row.kind, row.choiceId]))}`);
       expect(rows.map((row) => [row.responseId, row.kind, row.choiceId])).toEqual([[entry.responseId, "answer", "go"]]);

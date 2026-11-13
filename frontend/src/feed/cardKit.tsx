@@ -203,7 +203,7 @@ export const UNDO_SECONDS = 5;
 /** What a card says about an answer that was waiting to be sent when the page closed. */
 export const HELD_ANSWER_COPY = {
   /** It was sent at this launch, later than the owner chose it. */
-  sent: "Sent when you opened Home again.",
+  sent: "Sent when you opened TinyCloud One again.",
 } as const;
 
 /** A failed answer send: the answer is held in the outbox, so it goes at the next launch. */
