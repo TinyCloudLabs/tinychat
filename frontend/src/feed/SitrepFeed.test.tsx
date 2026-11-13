@@ -157,6 +157,14 @@ async function details(article: HTMLElement) {
 function undoPill(scope: ParentNode) {
   return scope.querySelector<HTMLButtonElement>('button[aria-label^="Undo,"]');
 }
+/** The bottom bar's row for a decision counting down, and its line as a screen reader hears it ("Dropped · 5s"). */
+function barRow(host: ParentNode) {
+  return [...host.querySelectorAll<HTMLElement>('[role="status"]')].find((node) => node.querySelector("button")?.textContent === "Undo") ?? null;
+}
+function barLine(host: ParentNode) {
+  const row = barRow(host);
+  return row ? (row.querySelector(".sr-only") ?? row.querySelector("span"))?.textContent ?? null : null;
+}
 
 const visibleFields = [
   ["ask", "Fast but limited."], ["task", "Verify the isolated result"],
@@ -460,8 +468,9 @@ test("Accept recommendation and Drop this card wait under Undo before anything i
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
   await act(async () => button(article, "Drop this card").click());
-  expect(article.textContent).toContain("Dropping in 5s");
-  await act(async () => button(article, "Undo").click());
+  // The card leaves at once (TC-2998); the bottom bar counts the wait, with Undo.
+  expect(barLine(view.host)).toBe("Dropped · 5s");
+  await act(async () => button(barRow(view.host)!, "Undo").click());
   await timer.advance(10_000);
   expect(fixture.saved).toEqual([]);
   await act(async () => button(article, "Accept recommendation").click());
@@ -597,15 +606,16 @@ test("open cards in one named group fold together without losing their separate 
   expect(first.saved).toEqual([]);
 });
 
-test("a tapped typed option counts down in its own row, Undo there writes nothing, and a written answer goes after 5 s", async () => {
+test("a tapped typed option takes the card away with Undo in the bottom bar, Undo writes nothing, and a written answer goes after 5 s", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
   await act(async () => option(article, "Quick option").click());
-  expect(answers(article)?.textContent).toContain("Sending · 5s");
+  // The card leaves at once (TC-2998): the bar names the choice and counts, with Undo.
+  expect(barLine(view.host)).toBe("Answered: Quick option · 5s");
   expect(undoPill(article)).toBeNull();
-  await act(async () => button(answers(article)!, "Undo").click());
+  await act(async () => button(barRow(view.host)!, "Undo").click());
   await timer.advance(10_000);
   expect(fixture.saved).toEqual([]);
   await act(async () => option(article, "Your own answer").click());

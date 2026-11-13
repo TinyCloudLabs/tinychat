@@ -11,6 +11,7 @@ import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedSt
 import { HomeCardThread } from "./HomeCardThread";
 import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
 import { shortTime } from "./ShortTime";
+import { useLeave } from "./leaveCard";
 
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
 const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
@@ -128,7 +129,11 @@ export function SitrepCard(props: Props) {
   // The option (or OWN_OPTION.id for a written answer) whose countdown or save is running, or whose save failed.
   const [chosen, setChosen] = useState<string>();
   const [justSaved, setJustSaved] = useState(false);
-  const countdown = usePendingSend({ stale, onRefused });
+  // A decision (an option, its default or recommendation, Drop on an ask) takes the card away while it counts and is
+  // written (leaveCard.ts); Undo, a failed write or a refusal brings it back. After the write it stays away until the
+  // list moves it, or 8 s at most.
+  const [decided, setDecided] = useState(false);
+  const countdown = usePendingSend({ stale, onRefused: (label) => { setDecided(false); onRefused(label); } });
   const [reason, setReason] = useState("");
   const [claimNote, setClaimNote] = useState("");
   const [followup, setFollowup] = useState(false);
@@ -143,6 +148,20 @@ export function SitrepCard(props: Props) {
   const privatePending = useRef<{ key: string; event: HomeFeedOwnerEvent } | undefined>(undefined);
   const heldPending = useRef<{ key: string; note: SitrepHeldNote } | undefined>(undefined);
   const busyRef = useRef(false);
+  useEffect(() => {
+    if (!decided || countdown.pending || busy) return;
+    const timer = window.setTimeout(() => setDecided(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [decided, countdown.pending, busy]);
+  const decisionUndo = () => { countdown.undo(); setChosen(undefined); setDecided(false); };
+  const counting = countdown.pending;
+  const words = !counting ? undefined
+    : counting.label === DROP_LABEL ? { text: "Dropped" }
+    : counting.label === NOT_SENT_COPY.yourAnswer ? { text: "Answered" }
+    : { text: "Answered", choice: counting.label, ...(chosen && chosen !== OWN_OPTION.id ? { focusOption: chosen } : {}) };
+  // An ask whose folded approval steps stay with Sam after its answer keeps its place; the bar still shows (the design agent).
+  const pageBar = useLeave(decided ? { away: !projection.parts.length, ...(counting && words ? { bar: { ...words, endsAt: counting.endsAt, undo: decisionUndo } } : {}) } : null);
+  const barred = pageBar && decided;
   const closed = isClosed(record);
   const answers = owner.answers.filter((answer) => answer.card.kind === record.kind && answer.card.id === record.id).map((answer) => answer.value);
   const claims = claimDecisionHistory(owner, record.id);
@@ -153,7 +172,7 @@ export function SitrepCard(props: Props) {
     setBusy(true); setError(undefined); setFailedAnswer(null); setNotice(undefined);
     if (answer) answerId.current = undefined;
     try { await work(); return true; }
-    catch { setError(failure); if (answer) setFailedAnswer(answerId.current ?? ""); return false; }
+    catch { setError(failure); if (answer) { setFailedAnswer(answerId.current ?? ""); setDecided(false); } return false; }
     finally { busyRef.current = false; setBusy(false); }
   }
   async function send(type: string, data: unknown, operationKey: string, message = false, responseId?: string, hold = false) {
@@ -205,7 +224,7 @@ export function SitrepCard(props: Props) {
   /** One tap (or Send under "Your own answer") chooses: the answer waits out the undo window in its row, then is held and sent. */
   function choose(choice: string, label: string) {
     if (stale || busyRef.current || countdown.pending) return;
-    setChosen(choice);
+    setChosen(choice); setDecided(true);
     const own = choice === OWN_OPTION.id;
     countdown.start(own ? NOT_SENT_COPY.yourAnswer : label, () => void perform(() => askAnswer("answer", own ? undefined : choice, true), ANSWER_FAILED_COPY, true));
   }
@@ -226,7 +245,9 @@ export function SitrepCard(props: Props) {
    */
   function afterUndo(label: string, run: () => Promise<unknown>, answer = false) {
     if (stale || busyRef.current || countdown.pending) return;
-    setChosen(undefined);
+    // An ask's decision (its default, its recommendation, Drop) leaves with the bar's "Answered"/"Dropped"; a claim's
+    // or an approval's keeps its countdown in the card (no bar wording for them yet).
+    setChosen(undefined); if (answer && record.kind === "ask") setDecided(true);
     countdown.start(label, () => void perform(run, answer ? ANSWER_FAILED_COPY : undefined, answer));
   }
   function threadMessage(value: string, resendOf?: string): ThreadMessage {
@@ -305,7 +326,7 @@ export function SitrepCard(props: Props) {
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own
   // countdown (`chosen`) shows in its row instead.
   // An ask's "Drop this card" says what is happening while it waits, with the same Undo as a comment's (Monica).
-  const pendingLine = countdown.pending && !chosen && (countdown.pending.label === DROP_LABEL
+  const pendingLine = countdown.pending && !chosen && !barred && (countdown.pending.label === DROP_LABEL
     ? <><p className="mt-3.5 flex items-center gap-x-1.5 text-sm text-muted-foreground"><span className="tabular-nums">Dropping in {countdown.pending.seconds}s</span><span aria-hidden>·</span>
       <button type="button" onClick={countdown.undo} className="relative min-h-11 rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9">Undo</button></p>
       <p role="status" className="sr-only">Dropping this card in {UNDO_SECONDS} seconds. Undo is available until then.</p></>
@@ -326,9 +347,9 @@ export function SitrepCard(props: Props) {
       {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
       {asking && <div className="mt-3.5"><AnswerOptions options={options} suggested={record.recommend} disabled={stale}
-        pending={countdown.pending && chosen ? { choiceId: chosen, seconds: countdown.pending.seconds } : null}
+        pending={!barred && countdown.pending && chosen ? { choiceId: chosen, seconds: countdown.pending.seconds } : null}
         saving={busy ? chosen : undefined} chosen={failed ? chosen : undefined}
-        onChoose={choose} onUndo={() => { countdown.undo(); setChosen(undefined); }}
+        onChoose={choose} onUndo={decisionUndo}
         own={{ open: ownOpen || !options.length, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={waiting || busy} onText={setText} onSend={() => { if (text.trim()) choose(OWN_OPTION.id, OWN_OPTION.label); }} onCancel={() => { setText(""); setOwnOpen(false); }}
           state={chosen === OWN_OPTION.id ? (busy ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED_COPY, true)} /> }} /></div>}
       {!waiting && asking && ((steer === "open" && record.default) || record.recommend) && <div className="mt-3 flex flex-wrap gap-2">
