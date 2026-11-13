@@ -94,7 +94,15 @@ async function mount(source: HomeFeedSource) {
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={source} />));
+  await fullCards(host);
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
+}
+/** View → Full cards: every card open, as these tests read and act on the open card. */
+async function fullCards(host: HTMLElement) {
+  await act(async () => button(host, "View").click());
+  const full = [...host.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="View"] [role="radio"]')].find((node) => node.textContent === "Full cards");
+  expect(full !== undefined).toBe(true);
+  await act(async () => full!.click());
 }
 /** Finds a button by its visible text in `scope`. */
 function button(scope: ParentNode, label: string) {
@@ -113,29 +121,18 @@ async function enter(scope: ParentNode, label: string, text: string) {
     input!.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-/** Picks a segment of the Show control ("Needs you", "All", "Done"). */
-async function show(host: HTMLElement, label: string) {
-  const segment = host.querySelector<HTMLButtonElement>(`[data-testid="feed-view-${({ "Needs you": "needs-you", All: "all", Done: "done" } as Record<string, string>)[label]}"]`);
-  expect(segment !== undefined).toBe(true);
-  await act(async () => segment!.click());
-  expect(segment!.getAttribute("aria-pressed")).toBe("true");
+/** Picks a position of the feed view slider ("Information", "All", "Needs action"). */
+async function show(host: HTMLElement, label: "Information" | "All" | "Needs action") {
+  const value = ({ Information: "information", All: "both", "Needs action": "needs-action" } as const)[label];
+  const radio = host.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Feed view"] input[value="${value}"]`);
+  expect(radio !== null).toBe(true);
+  await act(async () => radio!.click());
+  expect(radio!.checked).toBe(true);
 }
-/** Opens a collapsed card at its comments, through the comment count on the card. */
-async function openComments(article: Element) {
-  const count = article.querySelector<HTMLButtonElement>('button[aria-label$="Open comments"]');
-  expect(count).not.toBeNull();
-  await act(async () => count!.click());
-}
+/** An open card, by the title it shows. */
 function card(scope: ParentNode, title: string) {
-  const found = [...scope.querySelectorAll<HTMLElement>("article")].find((node) => node.getAttribute("aria-label") === title);
+  const found = [...scope.querySelectorAll<HTMLElement>("article")].find((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === title));
   expect(found !== undefined).toBe(true); return found!;
-}
-/** Expands a card in place by its title. */
-async function expand(article: HTMLElement) {
-  const toggle = article.querySelector<HTMLButtonElement>("h3 button[aria-expanded]");
-  expect(toggle?.getAttribute("aria-expanded")).toBe("false");
-  await act(async () => toggle!.click());
-  expect(toggle!.getAttribute("aria-expanded")).toBe("true");
 }
 /** The question's options (AnswerOptions): a fieldset whose legend is "Choose an option". */
 function answers(scope: ParentNode) { return [...scope.querySelectorAll("fieldset")].find((node) => node.querySelector("legend")?.textContent === "Choose an option") ?? null; }
@@ -165,7 +162,6 @@ test.each(visibleFields)("%s retains its type-specific content and private repor
   const fixture = typedFixture(syntheticRecord(kind));
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await expand(article);
   expect(article.textContent).toContain(content);
   expect(article.querySelector("a[href='https://reports.synthetic-example.ts.net/rehearsal.md']") !== null).toBe(true);
   if (["incident", "ship", "order", "progress"].includes(kind)) {
@@ -226,7 +222,10 @@ test("an expired go cannot be submitted and the earlier issuance is not treated 
   const fixture = typedFixture(record);
   fixture.owner.answers.push({ sourceKey: "legacy-stale-go", card: { kind: "approval", id: record.id }, value: { askId: record.id, action: "done", issuedAt: SITREP_CREATED, text: "", at: SITREP_CREATED } });
   const view = await mount(fixture.source);
-  expect(button(view.host, "Give the go").disabled).toBe(true);
+  // Past its expiry the card shows only in History.
+  await act(async () => button(view.host, "Filter").click());
+  await act(async () => button(view.host, "History").click());
+  expect(button(card(view.host, String(record.title)), "Give the go").disabled).toBe(true);
   expect(answeredPanel(view.host)).toBeNull();
   expect(fixture.saved).toEqual([]);
 });
@@ -237,7 +236,7 @@ test("a reasked question remains actionable when the last imported response belo
   fixture.owner.answers.push({ sourceKey: "old-answer", card: { kind: "ask", id: record.id }, value: { askId: record.id, action: "answer", choice: "quick", text: "Old owner answer", at: SITREP_CREATED } });
   fixture.entry.state.response = { cardId: fixture.entry.state.card.cardId, revision: 1, issuanceId: "synthetic-issuance", responseId: "imported-last", sequence: 999, kind: "answer", text: "Old owner answer", createdAt: SITREP_CREATED };
   const view = await mount(fixture.source);
-  await show(view.host, "Needs you");
+  await show(view.host, "Needs action");
   const article = card(view.host, String(record.title));
   expect(answers(article) !== null).toBe(true);
   expect(answeredPanel(article)).toBeNull();
@@ -264,23 +263,6 @@ test("typed code entry never trims invalid whitespace or copies a valid code int
   expect(view.host.textContent).not.toContain("SYNTHETIC-CODE");
 });
 
-test("\"Allows …\" shows on a collapsed approval with an OpenKey link or a code, never on a go/no-go", async () => {
-  const permissions = "read-only access to the synthetic calendar";
-  const cases: [Record<string, unknown>, boolean][] = [
-    [{ approvalType: "openkey", url: "https://openkey.so/delegate?fixture=synthetic", codeExpected: false }, true],
-    [{ approvalType: "claude", url: "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256&state=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", target: "Synthetic seat", codeExpected: true }, true],
-    [{ approvalType: "secret", url: "https://secrets.tinycloud.xyz/request?fixture=synthetic", name: "SYNTHETIC_KEY", codeExpected: false }, false],
-    [{}, false], // the synthetic approval is a go
-  ];
-  for (const [change, shown] of cases) {
-    const record: Record<string, unknown> = { ...syntheticRecord("approval"), ...change, permissions };
-    if (record.approvalType !== "go") delete record.approvalKind;
-    const view = await mount(typedFixture(record).source);
-    expect(view.host.textContent?.includes(`Allows ${permissions}`)).toBe(shown);
-    await view.unmount();
-  }
-});
-
 test("a task tick persists as owner state and an incomplete task stays in Needs action after reload", async () => {
   const fixture = typedFixture(syntheticRecord("task"));
   const view = await mount(fixture.source);
@@ -293,7 +275,7 @@ test("a task tick persists as owner state and an incomplete task stays in Needs 
   expect(fixture.owner.answers).toEqual([]);
   await view.unmount();
   const reopened = await mount(fixture.source);
-  await show(reopened.host, "Needs you");
+  await show(reopened.host, "Needs action");
   expect(reopened.host.textContent).toContain("Confirm the action is reversible");
   expect(answeredPanel(reopened.host)).toBeNull();
 });
@@ -352,7 +334,7 @@ test("existing private notes stay read-only under Details and are never sent or 
   expect(fixture.saved).toEqual([]);
   expect(fixture.ownerWrites).toEqual([]);
   expect(fixture.owner.answers).toEqual([]);
-  await show(view.host, "Needs you");
+  await show(view.host, "Needs action");
   expect(answers(card(view.host, String(fixture.entry.state.card.title))) !== null).toBe(true);
 });
 
@@ -366,7 +348,6 @@ test("unconfirmed thread delivery stays historical until an explicit resend crea
   fixture.entry.threadRoutes = { [JSON.stringify(["ask", "ask-synthetic", messageId])]: { kind: "recipients", delivery: { version: 1, targets: [target] } } };
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await expand(article);
   const thread = article.querySelector<HTMLElement>('section[aria-label="Comments"]');
   expect(thread?.textContent).toContain("Existing synthetic owner message");
   expect(thread?.textContent).toContain("Unconfirmed");
@@ -387,8 +368,8 @@ test("an unknown typed record is visibly unsupported and never receives an actio
   expect(article.querySelector('[role="status"]') !== null).toBe(true);
   expect(article.querySelector('[aria-label="Your own answer"]')).toBeNull();
   expect(answers(article)).toBeNull();
-  // Only the title's expand toggle: no answer, note, snooze or Details control.
-  expect([...article.querySelectorAll("button, input, textarea, select")].map((node) => node.getAttribute("aria-expanded"))).toEqual(["false"]);
+  // No answer, note, snooze or Details control.
+  expect(article.querySelectorAll("button, input, textarea, select").length).toBe(0);
   expect(fixture.saved).toEqual([]);
 });
 
@@ -444,7 +425,7 @@ test("a folded approval step opens its own card after an ambiguous snapshot is r
   fixture.snapshot.entries.pop();
   await act(async () => open.click());
 
-  expect([...view.host.querySelectorAll("article")].some((article) => article.getAttribute("aria-label") === approval.title)).toBe(true);
+  expect([...view.host.querySelectorAll("article")].some((article) => [...article.children].some((child) => child.tagName === "H2" && child.textContent === approval.title))).toBe(true);
 });
 
 test("typed Ask me later offers three presets and appends owner history without creating an answer", async () => {
@@ -475,7 +456,6 @@ test("matching display labels never turn an unresolved owner into an authenticat
   timer.restore(); clock = undefined;
   await view.unmount();
   const reopened = await mount(fixture.source);
-  await openComments(card(reopened.host, String(fixture.entry.state.card.title)));
   const thread = card(reopened.host, String(fixture.entry.state.card.title)).querySelector('section[aria-label="Comments"]');
   expect(thread?.textContent).toContain("Keep this held until its actual recipient is mapped.");
   expect(thread?.textContent).toContain("Not sent · saved until SyntheticOfficer can get it");
@@ -498,7 +478,7 @@ test("an explicit owner note shows its approved recipients and sends a message w
   expect(fixture.saved[0]?.response.kind).toBe("message");
   expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.thread", data: { text: "Explicitly send this update.", delivery: { version: 1, targets: [{ recipientKey: "approved-officer", agentId: "00000000-0000-4000-8000-000000000002", provider: "omp" }] } } });
   expect(fixture.owner.answers).toEqual([]);
-  await show(view.host, "Needs you");
+  await show(view.host, "Needs action");
   expect(answers(card(view.host, String(fixture.entry.state.card.title))) !== null).toBe(true);
 });
 
@@ -507,12 +487,8 @@ test("a typed information card cannot manufacture a human question from its exte
   fixture.entry.state.card.needsResponse = false;
   const view = await mount(fixture.source);
   const article = card(view.host, String(syntheticRecord("ask").title));
-  expect(view.host.querySelector('[aria-label="Your own answer"]') === null).toBe(true);
-  expect(answers(view.host)).toBeNull();
-  expect([...view.host.querySelectorAll("button")].some((button) => button.textContent === "Save answer")).toBe(false);
-  await expand(article);
-  expect(answers(view.host)).toBeNull();
-  expect([...view.host.querySelectorAll("button")].some((button) => button.textContent === "Save answer")).toBe(false);
+  expect(article.querySelector('[aria-label="Your own answer"]') === null).toBe(true);
+  expect(answers(article)).toBeNull();
   expect(fixture.saved).toEqual([]);
 });
 
@@ -529,7 +505,6 @@ test("matching display authors cannot fold an approval from a different register
   parent.snapshot.entries.push(approval.entry);
   const view = await mount(parent.source);
   const parentCard = card(view.host, parent.entry.state.card.title);
-  await expand(parentCard);
   expect(parentCard.querySelector('[aria-label="Folded approval step"]') === null).toBe(true);
   expect(card(view.host, approval.entry.state.card.title) !== parentCard).toBe(true);
 });
@@ -575,6 +550,28 @@ test("open cards in one named group fold together without losing their separate 
   expect(task.querySelector('input[type="checkbox"]') !== null).toBe(true);
   expect(ask.querySelector('input[type="checkbox"]')).toBeNull();
   expect(first.saved).toEqual([]);
+});
+
+test("a tapped typed option counts down in its own row, Undo there writes nothing, and a written answer goes after 5 s", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => option(article, "Quick option").click());
+  expect(answers(article)?.textContent).toContain("Sending · 5s");
+  expect(undoPill(article)).toBeNull();
+  await act(async () => button(answers(article)!, "Undo").click());
+  await timer.advance(10_000);
+  expect(fixture.saved).toEqual([]);
+  await act(async () => option(article, "Your own answer").click());
+  await enter(article, "Your own answer", "Only after the synthetic check.");
+  await act(async () => button(answers(article)!, "Send").click());
+  await timer.advance(4000);
+  expect(fixture.saved).toEqual([]);
+  await timer.advance(1000);
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: "ask-synthetic", action: "answer", text: "Only after the synthetic check." } });
+  expect(fixture.saved[0]?.response).not.toHaveProperty("choiceId");
 });
 
 test("a proceeding question accepts its actual default instead of silently substituting its recommendation", async () => {
@@ -656,7 +653,6 @@ test("an officer reply cannot inherit an owner's receipt merely by reusing its m
   fixture.entry.responseHandling = { "owner-message-response": { acknowledgement: { ...identity, responseId: "owner-message-response", handlingId: "owner-message-ack", phase: "acknowledged", createdAt: SITREP_NOW }, outcome: null } };
   Object.assign(fixture.owner, { threadResponses: { [JSON.stringify(["ask", "ask-synthetic", messageId])]: "owner-message-response" } });
   const view = await mount(fixture.source);
-  await openComments(card(view.host, posted.title));
   const items = [...card(view.host, posted.title).querySelectorAll('[aria-label="Comments"] li')];
   expect(items.find((item) => item.textContent?.includes("Original owner message"))?.textContent).toContain("Received");
   expect(items.find((item) => item.textContent?.includes("Separate incoming officer message"))?.textContent).not.toContain("Received");
@@ -670,7 +666,6 @@ test("an unresolved original thread destination is held instead of silently rese
   fixture.entry.threadRoutes = { [JSON.stringify(["ask", "ask-synthetic", messageId])]: { kind: "held", unresolved: ["UnmappedOwner"] } };
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  await expand(article);
   const thread = article.querySelector<HTMLElement>('section[aria-label="Comments"]');
   expect(thread?.textContent).toContain("Keep this original recipient intent.");
   expect(thread?.textContent).toContain("UnmappedOwner");

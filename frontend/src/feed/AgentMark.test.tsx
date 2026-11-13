@@ -1,7 +1,5 @@
 // Which agent is acting: its own mark, and its platform only as the agent reported it.
 import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AgentDetails, AgentMark, agentProfile, markColour, markLetter, PlatformName, platformOf } from "./AgentMark";
 
@@ -12,25 +10,16 @@ test("the platform comes only from payload.agent; without one there is none, and
   expect(agentProfile({ agent: ["claude"] })).toBeUndefined();
   expect(agentProfile({ agent: { kind: " ", model: 4 } })).toBeUndefined();
   expect(agentProfile({ title: "Claude agent", label: "Claude" })).toBeUndefined();
-  expect(agentProfile({ agent: { kind: "claude", model: "Claude Opus 5.5", runsOn: "Studio Mac mini" } })).toEqual({ platform: { name: "Claude", logo: "claude.svg", colour: "#D97757" }, model: "Claude Opus 5.5", runsOn: "Studio Mac mini" });
+  expect(agentProfile({ agent: { kind: "claude", model: "Claude Opus 5.5", runsOn: "Studio Mac mini" } })).toEqual({ platform: { name: "Claude" }, model: "Claude Opus 5.5", runsOn: "Studio Mac mini" });
   // A model or place with no kind is still shown, with no platform.
   expect(agentProfile({ agent: { model: "Some model" } })).toEqual({ model: "Some model" });
 });
 
-test("known platforms are matched by kind whatever the case or spacing; any other keeps the name the agent gave, with no mark", () => {
+test("known platforms are matched by kind whatever the case or spacing; any other keeps the name the agent gave", () => {
   expect(platformOf("Claude Code")).toEqual(platformOf("claude_code"));
-  expect(platformOf("GEMINI").logo).toBe("gemini.svg");
-  for (const kind of ["codex", "chatgpt", "grok", "muse", "openclaw", "hermes"]) expect(platformOf(kind).logo).toBeUndefined();
+  expect(platformOf("GEMINI").name).toBe("Gemini");
   expect(platformOf("Muse").name).toBe("Muse");
   expect(platformOf("Tiny Robot 2")).toEqual({ name: "Tiny Robot 2" });
-});
-
-test("every mark a platform names is a file in public/platforms", () => {
-  for (const kind of ["claude", "claude-code", "cursor", "gemini", "opencode", "perplexity"]) {
-    const logo = platformOf(kind).logo;
-    expect(logo).toBeDefined();
-    expect(existsSync(fileURLToPath(new URL(`../../public/platforms/${logo}`, import.meta.url)))).toBe(true);
-  }
 });
 
 test("an agent keeps one letter and one colour wherever it appears", () => {
@@ -44,16 +33,6 @@ test("an agent keeps one letter and one colour wherever it appears", () => {
   expect(html).toContain('aria-hidden="true"');
   expect(html).toContain(markColour(key));
   expect(html).toContain(">T<");
-});
-
-test("a platform with a mark is read out once, by its name; one without is plain text", () => {
-  const claude = renderToStaticMarkup(<PlatformName platform={platformOf("claude")} chip />);
-  expect(claude).toContain('role="img" aria-label="Claude"');
-  expect(claude).toContain("platforms/claude.svg");
-  expect(claude).toMatch(/<span aria-hidden="true"[^>]*>Claude<\/span>/);
-  const grok = renderToStaticMarkup(<PlatformName platform={platformOf("grok")} chip />);
-  expect(grok).not.toContain('role="img"');
-  expect(grok).toMatch(/<span class="truncate">Grok<\/span>/);
 });
 
 test("agent details show only what the page knows, and offer no Disconnect", () => {

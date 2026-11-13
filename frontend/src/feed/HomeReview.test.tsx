@@ -155,6 +155,11 @@ async function mount(transport: ReturnType<typeof observedSource>) {
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={transport.source} />));
   await transport.settle();
+  // View → Full cards: every card open, as these tests read and act on the open card.
+  await click(transport, button(host, "View"));
+  const full = [...host.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="View"] [role="radio"]')].find((candidate) => candidate.textContent === "Full cards");
+  if (!full) throw new Error("View → Full cards is missing");
+  await click(transport, full);
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
 }
 async function click(transport: ReturnType<typeof observedSource>, element: HTMLElement) {
@@ -174,31 +179,22 @@ function codeInput(host: ParentNode): HTMLInputElement {
   return input;
 }
 type Transport = { source: HomeFeedSource; settle(): Promise<void>; notify(): Promise<void> };
-// Every card is an article named by its title. `exclude` skips articles inside
+// Every open card is an article showing its title. `exclude` skips articles inside
 // another card (a folded approval step renders inside its question).
 function cardArticle(host: ParentNode, title: string, exclude?: Element): HTMLElement {
-  const matches = [...host.querySelectorAll<HTMLElement>("article")].filter((candidate) => candidate.getAttribute("aria-label") === title && !(exclude && exclude.contains(candidate)));
+  const matches = [...host.querySelectorAll<HTMLElement>("article")].filter((candidate) => [...candidate.children].some((child) => child.tagName === "H2" && child.textContent === title) && !(exclude && exclude.contains(candidate)));
   if (matches.length !== 1) throw new Error(`Expected exactly one visible card: ${title}`);
   return matches[0]!;
-}
-async function expandCard(transport: Transport, host: ParentNode, title: string): Promise<HTMLElement> {
-  const article = cardArticle(host, title);
-  const toggle = article.querySelector<HTMLButtonElement>("h3 > button[aria-expanded]");
-  if (!toggle) throw new Error(`Card title control is missing: ${title}`);
-  if (toggle.getAttribute("aria-expanded") !== "true") await click(transport, toggle);
-  return cardArticle(host, title);
 }
 function foldedStep(host: ParentNode, askTitle: string): HTMLElement {
   const section = cardArticle(host, askTitle).querySelector<HTMLElement>('[aria-label="Folded approval step"]');
   if (!section) throw new Error("Folded approval step is missing from its question");
   return section;
 }
-async function showView(transport: Transport, host: ParentNode, label: string) {
-  const control = host.querySelector('[role="group"][aria-label="Show"]');
-  if (!control) throw new Error("View control is missing");
-  const target = control.querySelector<HTMLButtonElement>(`[data-testid="feed-view-${({ "Needs you": "needs-you", All: "all", Done: "done" } as Record<string, string>)[label]}"]`);
-  if (!target) throw new Error("View segment missing");
-  await click(transport, target);
+/** Filter → History: answered, replaced and closed cards. */
+async function showHistory(transport: Transport, host: ParentNode) {
+  await click(transport, button(host, "Filter"));
+  await click(transport, button(host, "History"));
 }
 
 for (const engagement of ["empty field focus", "consent link activation"] as const) {
@@ -210,7 +206,6 @@ for (const engagement of ["empty field focus", "consent link activation"] as con
     const original = typedCard(grant, "folded-approval");
     value(await publishFeedCard(agent.output, ask)); value(await publishFeedCard(agent.output, original));
     const transport = owner.fresh(); const view = await mount(transport);
-    await expandCard(transport, view.host, ask.title);
     let input: HTMLInputElement | undefined;
     if (engagement === "empty field focus") {
       await click(transport, button(foldedStep(view.host, ask.title), "Got a code? Paste it"));
@@ -252,7 +247,6 @@ for (const engagement of ["empty field focus", "consent link activation"] as con
     await click(transport, button(foldedStep(view.host, ask.title), "Open the new request"));
     const askCard = cardArticle(view.host, ask.title);
     const current = cardArticle(view.host, original.title, askCard);
-    expect(current.querySelector("h3 > button")?.getAttribute("aria-expanded")).toBe("true");
     expect(current.querySelector('a[href="https://openkey.so/delegate?fixture=engagement-replacement"]') !== null).toBe(true);
     await click(transport, button(current, "Got a code? Paste it"));
     const currentInput = codeInput(current);
@@ -281,7 +275,6 @@ test("focused code-less folded confirmation keeps its original issuance until ex
   const original = typedCard(grant, "folded-confirmation");
   value(await publishFeedCard(agent.output, ask)); value(await publishFeedCard(agent.output, original));
   const transport = owner.fresh(); const view = await mount(transport);
-  await expandCard(transport, view.host, ask.title);
   const confirmation = button(foldedStep(view.host, ask.title), "I've done this step");
   await act(async () => confirmation.focus());
   expect(document.activeElement === confirmation).toBe(true);
@@ -294,7 +287,6 @@ test("focused code-less folded confirmation keeps its original issuance until ex
   expect(afterReissue.disabled).toBe(true);
   await click(transport, button(foldedStep(view.host, ask.title), "Open the new request"));
   const currentCard = cardArticle(view.host, original.title, cardArticle(view.host, ask.title));
-  expect(currentCard.querySelector("h3 > button")?.getAttribute("aria-expanded")).toBe("true");
   const current = button(currentCard, "I've done this step");
   expect(current === confirmation).toBe(false);
   expect(current.disabled).toBe(false);
@@ -375,8 +367,8 @@ for (const history of ["answer", "claim", "thread", "command"] as const) {
     expect(retained?.state.card).toMatchObject(identity(original));
     expect(retained?.state.response).toBeNull();
     expect(retained?.responses).toEqual([]);
-    const view = await mount(fresh); await showView(fresh, view.host, "Done");
-    const card = await expandCard(fresh, view.host, original.title);
+    const view = await mount(fresh); await showHistory(fresh, view.host);
+    const card = cardArticle(view.host, original.title);
     if (history === "answer") expect(card.textContent).toContain("Immutable archive-only answer");
     if (history === "claim") {
       expect(card.textContent).toContain("Immutable archive-only claim decision");
@@ -401,8 +393,8 @@ test("command-only archive history remains visible after mutable owner state res
   expect(loaded.owner?.states[0]?.doneAt).toBeUndefined();
   expect(loaded.owner?.answers).toEqual([]); expect(loaded.owner?.threads).toEqual([]);
   expect(await responseCount(agent.responses)).toBe(0);
-  const view = await mount(fresh); await showView(fresh, view.host, "Done");
-  const article = await expandCard(fresh, view.host, card.title);
+  const view = await mount(fresh); await showHistory(fresh, view.host);
+  const article = cardArticle(view.host, card.title);
   expect(article.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);
   expect(await responseCount(agent.responses)).toBe(0);
 });

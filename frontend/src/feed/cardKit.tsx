@@ -277,8 +277,12 @@ export function usePendingSend(guard: { stale: boolean; onRefused: (label: strin
     registry?.add(flush);
     // Closing the page mid-countdown sends at once; the write holds the answer until it lands.
     window.addEventListener("pagehide", flush);
+    // Switching apps is often the last event a phone gives a page before freezing or discarding it, and nothing is
+    // in the outbox until the write starts, so a hidden page sends now (and Undo ends with it).
+    const hidden = () => { if (document.visibilityState === "hidden") flush(); };
+    document.addEventListener("visibilitychange", hidden);
     // Unmounting mid-countdown sends: the owner chose this answer.
-    return () => { registry?.delete(flush); window.removeEventListener("pagehide", flush); flush(); };
+    return () => { registry?.delete(flush); window.removeEventListener("pagehide", flush); document.removeEventListener("visibilitychange", hidden); flush(); };
   }, [registry, flush]);
   return { pending, start, undo };
 }

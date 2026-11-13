@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { act } from "react";
+import { MotionGlobalConfig } from "motion/react";
 import { createRoot, type Root } from "react-dom/client";
 import type { FeedHandling, FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { installDom } from "@/test/dom";
@@ -101,6 +102,8 @@ afterEach(async () => {
   for (const root of roots) await act(async () => root.unmount());
   roots.clear();
   globalThis.fetch = originalFetch;
+  delete (globalThis as { matchMedia?: unknown }).matchMedia;
+  MotionGlobalConfig.skipAnimations = false;
   clock?.restore(); clock = undefined;
   restore?.(); restore = undefined;
 });
@@ -109,6 +112,10 @@ async function mount(source: HomeFeedSource) {
   clock ??= installFakeClock();
   // Legacy sample transport is inert, never used as evidence of real feed data.
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
+  // The DOM installs window.matchMedia only; an opened card's scroll-into-view reads the global.
+  globalThis.matchMedia = window.matchMedia.bind(window);
+  // The DOM's Web Animations reject a cancelled morph; these tests read the cards, not the motion.
+  MotionGlobalConfig.skipAnimations = true;
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -117,65 +124,118 @@ async function mount(source: HomeFeedSource) {
   await act(async () => root.render(<FeedViewEntries {...props} />));
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
 }
+/** Content still on screen: a card's shape on its way out of a morph is inert. */
+const live = (node: Element) => !node.closest("[inert]");
 function button(host: ParentNode, label: string) {
-  const node = [...host.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label);
+  const node = [...host.querySelectorAll("button")].filter(live).find((candidate) => candidate.textContent?.trim() === label);
   expect(node).toBeDefined();
   return node!;
 }
 function hasButton(host: ParentNode, label: string) {
-  return [...host.querySelectorAll("button")].some((candidate) => candidate.textContent?.trim() === label);
+  return [...host.querySelectorAll("button")].filter(live).some((candidate) => candidate.textContent?.trim() === label);
 }
-function answer(host: HTMLElement) {
-  const node = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
-  expect(node).not.toBeNull();
+/** A card in the list, short or open, by its title. */
+function item(host: ParentNode, title: string) {
+  return [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => node.textContent?.includes(title)) ?? null;
+}
+/** Opens a short card in place by tapping it (the compact view is the default). */
+async function open(host: ParentNode, title = "Question decision-one") {
+  const compact = [...(item(host, title)?.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]') ?? [])].filter(live)[0];
+  expect(compact).toBeDefined();
+  await act(async () => compact!.click());
+  expect(card(host, title)).toBeDefined();
+}
+/** An open card, by the title it shows. */
+function card(host: ParentNode, title: string) {
+  const node = [...host.querySelectorAll<HTMLElement>("article")].filter(live).find((candidate) => candidate.querySelector("h2")?.textContent === title);
+  expect(node).toBeDefined();
   return node!;
 }
-function option(host: ParentNode, label: string) {
-  const node = [...host.querySelectorAll('[role="group"][aria-label="Answers"] button')].find((candidate) => candidate.textContent?.includes(label));
-  expect(node).toBeDefined();
-  return node as HTMLButtonElement;
+/** The question's options: a fieldset whose legend is "Choose an option". */
+function answers(host: ParentNode) {
+  return [...host.querySelectorAll("fieldset")].filter(live).find((node) => node.querySelector("legend")?.textContent === "Choose an option") ?? null;
 }
-function card(host: HTMLElement, title: string) {
-  const node = host.querySelector<HTMLElement>(`article[aria-label="${title}"]`);
+function option(host: ParentNode, label: string) {
+  const node = [...(answers(host)?.querySelectorAll<HTMLButtonElement>("button[aria-pressed]") ?? [])].find((candidate) => candidate.textContent?.includes(label));
+  expect(node).toBeDefined();
+  return node!;
+}
+function undoButton(host: ParentNode) {
+  return [...host.querySelectorAll<HTMLButtonElement>("button")].filter(live).find((candidate) => candidate.textContent === "Undo") ?? null;
+}
+function answer(host: ParentNode) {
+  const node = [...host.querySelectorAll<HTMLTextAreaElement>('textarea[aria-label="Your own answer"]')].filter(live)[0];
+  expect(node).toBeDefined();
+  return node!;
+}
+function hasAnswerBox(host: ParentNode) {
+  return [...host.querySelectorAll('textarea[aria-label="Your own answer"]')].some(live);
+}
+/** Whether the "Your own answer" field offers any way to send: a replaced card's field is off and has no Send. */
+function canSendOwn(host: ParentNode) {
+  return !answer(host).disabled || !!answer(host).parentElement!.querySelector("button");
+}
+/** The Send control inside the "Your own answer" field. */
+function sendButton(host: ParentNode) {
+  const node = answer(host).parentElement!.querySelector("button");
   expect(node).not.toBeNull();
   return node!;
 }
 function status(host: ParentNode) {
-  return host.querySelector('[role="status"][aria-label="Your answer"]')?.textContent ?? null;
+  return [...host.querySelectorAll('[role="status"][aria-label="Your answer"]')].filter(live)[0]?.textContent ?? null;
 }
-/** Opens the (only) collapsed card at its comments, through its comment count. */
-async function openComments(host: ParentNode) {
-  const count = host.querySelector<HTMLButtonElement>('button[aria-label$="Open comments"]');
-  expect(count).not.toBeNull();
-  await act(async () => count!.click());
+/** The open card's conversation. */
+function comments(host: ParentNode) {
+  return [...host.querySelectorAll('section[aria-label="Comments"]')].filter(live)[0] ?? null;
+}
+/** The line under Home: how many cards need you. */
+function needsLine(host: HTMLElement) {
+  return host.querySelector("header p")?.textContent ?? "";
 }
 /** Taps an option, then lets its 5 s undo window run out so the answer is sent. */
 async function choose(host: ParentNode, label: string) {
   await act(async () => option(host, label).click());
   await clock!.advance(5000);
 }
-/** Sends the reply in words, then lets its undo window run out. */
+/** Sends the answer in words, then lets its undo window run out. */
 async function sendReply(host: ParentNode) {
-  await act(async () => button(host, "Send answer").click());
+  await act(async () => sendButton(host).click());
   await clock!.advance(5000);
 }
-async function openNote(host: HTMLElement) {
-  await act(async () => button(host, "Answer in your own words").click());
+async function openNote(host: ParentNode) {
+  await act(async () => option(host, "Your own answer").click());
 }
-async function typeAnswer(host: HTMLElement, value: string) {
-  const node = answer(host);
+async function type(node: HTMLTextAreaElement, value: string) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(node, value);
     node.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-function segment(host: HTMLElement, label: "Needs you" | "All" | "Done") {
-  const node = host.querySelector<HTMLButtonElement>(`[data-testid="feed-view-${({ "Needs you": "needs-you", All: "all", Done: "done" } as Record<string, string>)[label]}"]`);
-  expect(node).toBeDefined();
-  return node as HTMLButtonElement;
+async function typeAnswer(host: ParentNode, value: string) {
+  await type(answer(host), value);
 }
-async function chooseView(host: HTMLElement, label: "Needs you" | "All" | "Done") {
-  await act(async () => segment(host, label).click());
+/** Writes a comment to the card's agent and taps Send (its 5 s undo window starts). */
+async function comment(host: ParentNode, value: string) {
+  await act(async () => button(host, "Leave a comment for Test agent").click());
+  const input = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Leave a comment for Test agent"]');
+  expect(input).not.toBeNull();
+  await type(input!, value);
+  await act(async () => input!.nextElementSibling!.querySelector<HTMLButtonElement>("button")!.click());
+}
+type View = "Information" | "All" | "Needs action";
+function viewRadio(host: HTMLElement, label: View) {
+  const value = ({ Information: "information", All: "both", "Needs action": "needs-action" } as const)[label];
+  const node = host.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Feed view"] input[value="${value}"]`);
+  expect(node).not.toBeNull();
+  return node!;
+}
+async function chooseView(host: HTMLElement, label: View) {
+  await act(async () => viewRadio(host, label).click());
+}
+/** Filter → History or Snoozed (the Filter panel opens the first time). */
+async function filter(host: HTMLElement, label: "History" | "Snoozed") {
+  if (!hasButton(host, label)) await act(async () => button(host, "Filter").click());
+  await act(async () => button(host, label).click());
 }
 function handling(response: FeedResponse, phase: FeedHandling["phase"]): FeedHandling {
   return { cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId, handlingId: `handling-${phase}`, phase, createdAt, detail: { message: phase === "failed" ? "Action failed safely" : "Reversible action completed" } };
@@ -185,6 +245,7 @@ test("saving an answer waits for durability, then distinguishes saved, received,
   const write = Promise.withResolvers<void>();
   const store = persistence([decision()], { beforeSave: () => write.promise });
   const view = await mount(store.source());
+  await open(view.host);
   await openNote(view.host);
   await typeAnswer(view.host, "Proceed with the isolated action");
   await sendReply(view.host);
@@ -207,6 +268,7 @@ test("saving an answer waits for durability, then distinguishes saved, received,
   await view.unmount();
   const reopened = await mount(store.source());
   await chooseView(reopened.host, "All");
+  await open(reopened.host);
   expect(status(reopened.host)).toContain("Proceed with the isolated action");
   expect(status(reopened.host)).toContain("finished it");
 });
@@ -214,13 +276,14 @@ test("saving an answer waits for durability, then distinguishes saved, received,
 test("one tap saves the option once, and Change answer saves a follow-up that replaces it", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await open(view.host);
   await choose(view.host, "Hold");
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, issuanceId: "issuance-1", kind: "answer", choiceId: "hold" });
   expect(store.responses[0]!.supersedesResponseId).toBeUndefined();
-  // The answered card stays in Needs you, showing the label (never the id) and Change answer.
+  // The answered card stays in Needs action, showing the label (never the id) and Change answer.
   expect(status(view.host)).toContain("You chose Hold.");
-  expect(view.host.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
+  expect(answers(view.host)).toBeNull();
   await act(async () => button(view.host, "Change answer").click());
   await choose(view.host, "Proceed");
   expect(store.responses).toHaveLength(2);
@@ -231,6 +294,7 @@ test("one tap saves the option once, and Change answer saves a follow-up that re
 test("Keep my answer leaves the saved answer untouched", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await open(view.host);
   await choose(view.host, "Hold");
   await act(async () => button(view.host, "Change answer").click());
   await act(async () => button(view.host, "Keep my answer").click());
@@ -242,18 +306,19 @@ test("a rejected write keeps the draft actionable and does not imply receipt", a
   const write = Promise.withResolvers<void>();
   const store = persistence([decision()], { beforeSave: () => write.promise });
   const view = await mount(store.source());
+  await open(view.host);
   await openNote(view.host);
   await typeAnswer(view.host, "Keep this unsaved answer");
   await sendReply(view.host);
   await act(async () => write.reject(new Error("Isolated SQL write denied")));
   expect(answer(view.host).value).toBe("Keep this unsaved answer");
   expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
-  expect(button(view.host, "Send answer").disabled).toBe(false);
+  expect(sendButton(view.host).disabled).toBe(false);
   expect(status(view.host)).toBeNull();
   expect(store.responses).toEqual([]);
   await view.unmount();
   const reopened = await mount(store.source());
-  expect(card(reopened.host, "Question decision-one")).toBeDefined();
+  await open(reopened.host);
   await openNote(reopened.host);
   expect(answer(reopened.host).value).toBe("");
 });
@@ -264,6 +329,7 @@ test("a retried tap after a failed write reuses its response identity", async ()
   const ids: string[] = [];
   const base = store.source();
   const view = await mount({ ...base, async saveResponse(entry, response, payload) { ids.push(response.responseId); return base.saveResponse(entry, response, payload); } });
+  await open(view.host);
   await choose(view.host, "Hold");
   expect(store.responses).toEqual([]);
   fail = false;
@@ -276,55 +342,73 @@ test("a retried tap after a failed write reuses its response identity", async ()
 test("information is nonactionable, All mixes it with decisions, and seen is not answered", async () => {
   const store = persistence([decision(), information()]);
   const view = await mount(store.source());
-  expect(segment(view.host, "Needs you").getAttribute("aria-pressed")).toBe("true");
+  expect(viewRadio(view.host, "Needs action").checked).toBe(true);
   expect(view.host.textContent).toContain("Question decision-one");
   expect(view.host.textContent).not.toContain("Informational update");
+  await chooseView(view.host, "Information");
+  expect(view.host.textContent).toContain("Informational update");
+  expect(view.host.textContent).not.toContain("Question decision-one");
   await chooseView(view.host, "All");
-  expect(segment(view.host, "All").getAttribute("aria-pressed")).toBe("true");
-  expect(segment(view.host, "Needs you").getAttribute("aria-pressed")).toBe("false");
+  expect(viewRadio(view.host, "All").checked).toBe(true);
+  expect(viewRadio(view.host, "Needs action").checked).toBe(false);
   expect(view.host.textContent).toContain("Informational update");
   expect(view.host.textContent).toContain("Question decision-one");
+  await open(view.host, "Informational update");
   const info = card(view.host, "Informational update");
   expect(info.querySelector("textarea")).toBeNull();
-  expect(info.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
-  await chooseView(view.host, "Needs you");
+  expect(answers(info)).toBeNull();
+  expect(hasButton(info, "Acknowledge")).toBe(true);
+  await chooseView(view.host, "Needs action");
   expect(view.host.textContent).not.toContain("Informational update");
-  await act(async () => card(view.host, "Question decision-one").querySelector<HTMLButtonElement>("h3 button")!.click());
+  // A short card isn't seen; opening it is.
+  expect(store.durable.entries[0]!.view.seenAt).toBeUndefined();
+  await open(view.host);
   expect(store.durable.entries[0]!.view.seenAt).toBeDefined();
   expect(store.responses).toEqual([]);
 });
 
-test("a collapsed card expands in place and keeps its draft", async () => {
+test("a short card opens in place, and folds back without writing anything", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
-  const article = card(view.host, "Question decision-one");
-  const title = article.querySelector<HTMLButtonElement>("h3 button")!;
-  expect(title.getAttribute("aria-expanded")).toBe("false");
-  expect(article.querySelector("a[href='https://example.org/source']")).toBeNull();
+  const row = item(view.host, "Question decision-one")!;
+  expect(row.querySelector("a[href='https://example.org/source']")).toBeNull();
+  expect(answers(row)).toBeNull();
+  await open(view.host);
+  expect(item(view.host, "Question decision-one") === row).toBe(true);
+  expect(row.querySelector("a[href='https://example.org/source']")).not.toBeNull();
+  expect(answers(row)).not.toBeNull();
+  await act(async () => row.querySelector<HTMLButtonElement>('button[aria-label="Show less"]')!.click());
+  expect(answers(row)).toBeNull();
+  expect([...row.querySelectorAll('button[aria-expanded="false"]')].some(live)).toBe(true);
+  expect(store.responses).toEqual([]);
+});
+
+test("a typed own answer survives Show less: reopening shows the box with the text, and nothing is written", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await open(view.host);
   await openNote(view.host);
-  await typeAnswer(view.host, "Draft before expanding");
-  const input = answer(view.host);
-  await act(async () => title.click());
-  expect(title.getAttribute("aria-expanded")).toBe("true");
-  expect(card(view.host, "Question decision-one") === article).toBe(true);
-  expect(article.querySelector("a[href='https://example.org/source']")).not.toBeNull();
-  expect(answer(view.host) === input).toBe(true);
-  expect(input.value).toBe("Draft before expanding");
-  await act(async () => title.click());
-  expect(title.getAttribute("aria-expanded")).toBe("false");
+  await typeAnswer(view.host, "Draft kept while folded");
+  await act(async () => item(view.host, "Question decision-one")!.querySelector<HTMLButtonElement>('button[aria-label="Show less"]')!.click());
+  expect(hasAnswerBox(view.host)).toBe(false);
+  await open(view.host);
+  expect(hasAnswerBox(view.host)).toBe(true);
+  expect(answer(view.host).value).toBe("Draft kept while folded");
+  await clock!.advance(10_000);
   expect(store.responses).toEqual([]);
 });
 
 test("new urgent arrivals cannot replace the focused response or its input node", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await open(view.host);
   await openNote(view.host);
   await typeAnswer(view.host, "Still answering the original question");
   const activeInput = answer(view.host);
   activeInput.focus();
   store.durable.entries.unshift(decision("urgent-new", 1, 100));
   await act(async () => store.notify());
-  expect(card(view.host, "Question urgent-new")).toBeDefined();
+  expect(item(view.host, "Question urgent-new")).not.toBeNull();
   expect(answer(view.host) === activeInput).toBe(true);
   expect(document.activeElement === activeInput).toBe(true);
   expect(activeInput.value).toBe("Still answering the original question");
@@ -336,10 +420,11 @@ test("an in-flight answer retains its exact issuance and loads its outcome after
   const write = Promise.withResolvers<void>();
   const store = persistence([decision()], { beforeSave: () => write.promise });
   const view = await mount(store.source());
+  await open(view.host);
   await openNote(view.host);
   await typeAnswer(view.host, "Answer for revision one only");
   await sendReply(view.host);
-  // The draft's form returns once the undo window closes and the write is in flight.
+  // The write is in flight once the undo window closes; the draft stays in its field.
   const originalInput = answer(view.host);
   store.durable.entries = [decision("decision-one", 2)];
   await act(async () => store.notify());
@@ -355,40 +440,50 @@ test("an in-flight answer retains its exact issuance and loads its outcome after
   expect(status(view.host)).toContain("Answer for revision one only");
   await act(async () => button(view.host, "Show the newer version").click());
   expect(status(view.host)).toBeNull();
+  await open(view.host);
+  expect(status(view.host)).toBeNull();
   await openNote(view.host);
   expect(answer(view.host).value).toBe("");
   await view.unmount();
   const reopened = await mount(store.source());
+  await open(reopened.host);
   expect(status(reopened.host)).toBeNull();
 });
 
-test("snoozing removes attention without writing an answer and expiry restores it", async () => {
+test("Ask me later takes the card away without writing an answer, writes the snooze after its undo, and expiry restores it", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await open(view.host);
   await act(async () => button(view.host, "Ask me later").click());
-  const presets = view.host.querySelector('[role="group"][aria-label="Ask me later"]')!;
+  const presets = view.host.querySelector('section[aria-label="Ask me later"]')!;
   await act(async () => presets.querySelector("button")!.click());
+  expect(item(view.host, "Question decision-one")).toBeNull();
+  // Nothing is written while the bar's undo counts.
+  expect(store.durable.entries[0]!.view.snoozedUntil).toBeUndefined();
+  await clock!.advance(5_500);
   expect(store.responses).toEqual([]);
   expect(store.durable.entries[0]!.view.snoozedUntil).toBeDefined();
-  expect(view.host.querySelector("article")).toBeNull();
+  expect(item(view.host, "Question decision-one")).toBeNull();
   store.durable.entries[0]!.view.snoozedUntil = "2000-01-01T00:00:00Z";
   await act(async () => store.notify());
   expect(view.host.textContent).toContain("Question decision-one");
+  await open(view.host);
   expect(status(view.host)).toBeNull();
   expect(option(view.host, "Hold")).toBeDefined();
 });
 
-test("the last view is remembered for the next session; Done is not", async () => {
+test("the last view is remembered for the next session; History is not", async () => {
   const store = persistence([decision(), information()]);
   const view = await mount(store.source());
   await chooseView(view.host, "All");
   expect(store.durable.settings.defaultSelector).toBe("both");
-  await chooseView(view.host, "Done");
+  await filter(view.host, "History");
   expect(store.durable.settings.defaultSelector).toBe("both");
   await view.unmount();
   const secondSession = await mount(store.source());
-  expect(segment(secondSession.host, "All").getAttribute("aria-pressed")).toBe("true");
+  expect(viewRadio(secondSession.host, "All").checked).toBe(true);
   expect(secondSession.host.textContent).toContain("Informational update");
+  expect(secondSession.host.querySelector('section[aria-label="History"]')).toBeNull();
 });
 
 test("a failed outcome stays distinct from an unsaved answer and keeps source/report links", async () => {
@@ -398,14 +493,14 @@ test("a failed outcome stays distinct from an unsaved answer and keeps source/re
   entry.state.outcome = handling(entry.state.response, "failed");
   const store = persistence([entry], { defaultSelector: "both" });
   const view = await mount(store.source());
+  await open(view.host);
   expect(status(view.host)).toContain("You chose Hold.");
   expect(status(view.host)).toContain("Test agent got it.");
   expect(status(view.host)).toContain("couldn't finish it");
   expect(status(view.host)).toContain("Action failed safely");
   expect(view.host.querySelector("a[href='https://example.org/report']")).not.toBeNull();
-  await act(async () => card(view.host, "Question decision-one").querySelector<HTMLButtonElement>("h3 button")!.click());
   expect(view.host.querySelector("a[href='https://example.org/source']")).not.toBeNull();
-  await chooseView(view.host, "Needs you");
+  await chooseView(view.host, "Needs action");
   expect(view.host.querySelector("textarea")).toBeNull();
   expect(store.responses).toEqual([]);
 });
@@ -415,6 +510,7 @@ test("a true latest-issuance replacement preserves the draft until explicit navi
   original.state.card.title = "Original question";
   const store = persistence([original]);
   const view = await mount(store.source());
+  await open(view.host, "Original question");
   await openNote(view.host);
   await typeAnswer(view.host, "Unsubmitted original draft");
   const originalInput = answer(view.host);
@@ -426,12 +522,16 @@ test("a true latest-issuance replacement preserves the draft until explicit navi
   expect(answer(view.host) === originalInput).toBe(true);
   expect(document.activeElement === originalInput).toBe(true);
   expect(originalInput.value).toBe("Unsubmitted original draft");
-  expect(view.host.querySelector("article h3")?.textContent).toBe("Original question");
-  expect(view.host.querySelectorAll("article")).toHaveLength(1);
+  expect(card(view.host, "Original question")).toBeDefined();
+  expect(view.host.querySelectorAll("li[data-card-key]")).toHaveLength(1);
+  expect(view.host.textContent).not.toContain("Replacement question");
   await act(async () => button(view.host, "Show the newer version").click());
-  expect(view.host.querySelector("article h3")?.textContent).toBe("Replacement question");
-  expect(view.host.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
-  expect(hasButton(view.host, "Answer in your own words")).toBe(true);
+  expect(view.host.textContent).toContain("Replacement question");
+  expect(view.host.textContent).not.toContain("Original question");
+  expect(hasAnswerBox(view.host)).toBe(false);
+  await open(view.host, "Replacement question");
+  expect(hasAnswerBox(view.host)).toBe(false);
+  expect(option(view.host, "Your own answer")).toBeDefined();
   expect(store.responses).toEqual([]);
 });
 
@@ -440,8 +540,10 @@ test("a (Recommended) label shows without the marker and with the Suggested tag,
   entry.state.card.choices = [{ id: "proceed", label: "Proceed (Recommended)" }, { id: "hold", label: "Hold" }];
   const store = persistence([entry]);
   const view = await mount(store.source());
+  await open(view.host);
   const proceed = option(view.host, "Proceed");
-  expect(proceed.textContent).toBe("Proceed Suggested");
+  expect(proceed.textContent).toContain("Suggested");
+  expect(proceed.textContent).not.toContain("Recommended");
   expect(option(view.host, "Hold").textContent).toBe("Hold");
   await act(async () => proceed.click());
   await clock!.advance(5000);
@@ -454,6 +556,7 @@ test("a (Recommended) label shows without the marker and with the Suggested tag,
 test("a replaced issuance refuses new answers: no write ever carries the old identity", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await open(view.host);
   await openNote(view.host);
   await typeAnswer(view.host, "Drafted against revision one");
   store.durable.entries = [decision("decision-one", 2)];
@@ -461,27 +564,33 @@ test("a replaced issuance refuses new answers: no write ever carries the old ide
   // The old issuance stays on screen with its draft, but every way to answer it is refused.
   expect(answer(view.host).value).toBe("Drafted against revision one");
   expect(option(view.host, "Hold").disabled).toBe(true);
-  expect(button(view.host, "Send answer").disabled).toBe(true);
-  await choose(view.host, "Hold");
-  await act(async () => { answer(view.host).form!.requestSubmit(); });
+  expect(canSendOwn(view.host)).toBe(false);
+  await act(async () => option(view.host, "Hold").click());
+  await act(async () => { answer(view.host).dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  await clock!.advance(10_000);
   expect(store.responses).toEqual([]);
   await act(async () => button(view.host, "Show the newer version").click());
+  await open(view.host);
   await choose(view.host, "Hold");
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
   expect(store.responses.some((response) => response.revision === 1)).toBe(false);
 });
 
-test("a snoozed card shows no options until Answer now, then one tap saves once", async () => {
+test("a snoozed card stays out of the views and shows no options until it is brought back, then one tap saves once", async () => {
   const entry = decision();
   entry.view.snoozedUntil = "2099-01-01T00:00:00Z";
   const store = persistence([entry], { defaultSelector: "both" });
   const view = await mount(store.source());
-  const article = card(view.host, "Question decision-one");
-  expect(article.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
-  expect(article.textContent).toContain("Snoozed until");
-  expect(article.textContent).not.toContain("Choose a reversible action.");
-  await act(async () => button(article, "Answer now").click());
+  expect(item(view.host, "Question decision-one")).toBeNull();
+  await filter(view.host, "Snoozed");
+  const row = item(view.host, "Question decision-one")!;
+  expect(row.textContent).toContain("Back at");
+  expect(answers(row)).toBeNull();
+  await act(async () => button(row, "Bring back now").click());
+  expect(Date.parse(store.durable.entries[0]!.view.snoozedUntil!)).toBeLessThanOrEqual(Date.now());
+  await filter(view.host, "Snoozed");
+  await open(view.host);
   await choose(view.host, "Hold");
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 1, kind: "answer", choiceId: "hold" });
@@ -490,13 +599,15 @@ test("a snoozed card shows no options until Answer now, then one tap saves once"
 test("an answer waits 5 seconds: nothing is written before, exactly one write at 5", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await open(view.host);
   await act(async () => option(view.host, "Hold").click());
-  const undo = view.host.querySelector<HTMLButtonElement>('button[aria-label^="Undo"]');
-  expect(undo?.getAttribute("aria-label")).toBe("Undo, 5 seconds left");
+  const undo = undoButton(view.host);
+  expect(undo).not.toBeNull();
   expect(document.activeElement === undo).toBe(true);
+  expect(answers(view.host)!.textContent).toContain("Sending · 5s");
   expect(view.host.textContent).toContain("Sending Hold in 5 seconds. Undo available.");
   await clock!.advance(2000);
-  expect(undo?.getAttribute("aria-label")).toBe("Undo, 3 seconds left");
+  expect(answers(view.host)!.textContent).toContain("Sending · 3s");
   await clock!.advance(2900);
   expect(store.responses).toEqual([]);
   await clock!.advance(100);
@@ -507,19 +618,20 @@ test("an answer waits 5 seconds: nothing is written before, exactly one write at
   expect(store.responses).toHaveLength(1);
 });
 
-test("undo at 3 seconds writes nothing and brings the options back; so do a tap on the card and Escape", async () => {
+test("undo at 3 seconds writes nothing and brings the options back; so does Escape", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await open(view.host);
   await act(async () => option(view.host, "Hold").click());
   await clock!.advance(2000);
-  await act(async () => view.host.querySelector<HTMLButtonElement>('button[aria-label^="Undo"]')!.click());
-  expect(option(view.host, "Hold")).toBeDefined();
-  await act(async () => option(view.host, "Proceed").click());
-  await act(async () => card(view.host, "Question decision-one").querySelector<HTMLElement>("span.absolute")!.click());
-  expect(option(view.host, "Proceed")).toBeDefined();
+  await act(async () => undoButton(view.host)!.click());
+  expect(undoButton(view.host)).toBeNull();
+  expect(option(view.host, "Hold").disabled).toBe(false);
+  expect(view.host.textContent).toContain("Undone. Nothing was sent.");
   await act(async () => option(view.host, "Proceed").click());
   await act(async () => { document.activeElement!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
-  expect(option(view.host, "Proceed")).toBeDefined();
+  expect(undoButton(view.host)).toBeNull();
+  expect(option(view.host, "Proceed").disabled).toBe(false);
   await clock!.advance(10_000);
   expect(store.responses).toEqual([]);
 });
@@ -527,12 +639,15 @@ test("undo at 3 seconds writes nothing and brings the options back; so do a tap 
 test("a reply in words waits too, and undo keeps the draft", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
+  await open(view.host);
   await openNote(view.host);
   await typeAnswer(view.host, "Hold until Friday");
-  await act(async () => button(view.host, "Send answer").click());
-  expect(view.host.querySelector('button[aria-label^="Undo"]')).not.toBeNull();
-  await act(async () => view.host.querySelector<HTMLButtonElement>('button[aria-label^="Undo"]')!.click());
+  await act(async () => sendButton(view.host).click());
+  expect(undoButton(view.host)).not.toBeNull();
+  await act(async () => undoButton(view.host)!.click());
   expect(answer(view.host).value).toBe("Hold until Friday");
+  await clock!.advance(10_000);
+  expect(store.responses).toEqual([]);
   await sendReply(view.host);
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ kind: "answer", text: "Hold until Friday" });
@@ -542,6 +657,7 @@ test("a reply in words waits too, and undo keeps the draft", async () => {
 test("leaving the view mid-countdown sends the answer at once, exactly once", async () => {
   const store = persistence([decision(), information()]);
   const view = await mount(store.source());
+  await open(view.host);
   await act(async () => option(view.host, "Hold").click());
   await clock!.advance(1000);
   expect(store.responses).toEqual([]);
@@ -558,18 +674,17 @@ function plain(cardId = "plain-one"): HomeFeedEntry {
   return entry;
 }
 const writes = (responses: FeedResponse[]) => responses.map((response) => `${response.revision}:${response.choiceId ?? response.text}`);
+const BANNER = "A newer version of this card arrived";
 
 test("a plain card's conversation interleaves the owner's messages and revision replies, oldest first", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
-  await act(async () => button(view.host, "Comment").click());
-  expect(view.host.textContent).toContain("Only Test agent sees this.");
-  const input = view.host.querySelector<HTMLInputElement>('input[aria-label="Tell Test agent something"]')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, "Is Friday too late?");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  await act(async () => button(view.host, "Send").click());
+  await open(view.host, "Plain question");
+  await comment(view.host, "Is Friday too late?");
+  // A comment waits out the same undo window as an answer.
+  expect(comments(view.host)?.textContent).toContain("Sending in 5s");
+  expect(store.messages).toEqual([]);
+  await clock!.advance(5000);
   expect(store.messages).toHaveLength(1);
   expect(store.messages[0]).toMatchObject({ kind: "message", cardId: "plain-one", revision: 1, text: "Is Friday too late?" });
   store.messages[0]!.createdAt = "2026-10-28T12:05:00Z";
@@ -577,19 +692,13 @@ test("a plain card's conversation interleaves the owner's messages and revision 
   store.reply("plain-one", "Booked for Friday.", "2026-10-28T12:20:00Z");
   await act(async () => store.notify());
   // Reply-only revisions swap in place, even though sending the message engaged the card.
-  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
-  const items = [...view.host.querySelectorAll('[aria-label="Comments"] li')].map((item) => item.textContent);
-  expect(items).toHaveLength(2);
-  expect(items[0]).toContain("Friday is fine.");
-  expect(items[1]).toContain("Booked for Friday.");
-  // More than 2 messages: the earlier one waits behind "Show 1 earlier comment", and the answers sit above the thread.
-  await act(async () => button(view.host, "Show 1 earlier comment").click());
-  const all = [...view.host.querySelectorAll('[aria-label="Comments"] li')].map((item) => item.textContent);
-  expect(all[0]).toContain("You");
-  expect(all[0]).toContain("Is Friday too late?");
-  const answers = view.host.querySelector('[role="group"][aria-label="Answers"]')!;
-  const thread = view.host.querySelector('[aria-label="Comments"]')!;
-  expect(answers.compareDocumentPosition(thread) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(view.host.textContent).not.toContain(BANNER);
+  const thread = comments(view.host)!.textContent!;
+  const order = ["Is Friday too late?", "Friday is fine.", "Booked for Friday."].map((text) => thread.indexOf(text));
+  expect(order.every((index) => index >= 0)).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  // The answers sit above the thread.
+  expect(answers(view.host)!.compareDocumentPosition(comments(view.host)!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(store.responses).toEqual([]);
 });
 
@@ -608,30 +717,32 @@ function edit(store: { durable: HomeFeedSnapshot; archive: HomeFeedEntry[] }, ca
 
 // Answer state across revisions. A reply-only revision (only payload.replies appended) swaps
 // in place and carries the card's answer state; any other revision keeps the strict rule.
-test("reply-only revision after an answer: no banner, the answer shows, Needs you stays 0, one stored answer on revision 1", async () => {
+test("reply-only revision after an answer: no banner, the answer shows, nothing needs you, one stored answer on revision 1", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await choose(view.host, "Hold");
   store.reply("plain-one", "Noted, holding.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
-  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
-  expect(view.host.querySelectorAll("article")).toHaveLength(1);
+  expect(view.host.textContent).not.toContain(BANNER);
+  expect(view.host.querySelectorAll("li[data-card-key]")).toHaveLength(1);
   expect(status(view.host)).toContain("You chose Hold.");
-  await openComments(view.host);
-  expect(view.host.querySelector('[aria-label="Comments"]')?.textContent).toContain("Noted, holding.");
-  expect(segment(view.host, "Needs you").textContent).toBe("Needs you0");
+  expect(comments(view.host)?.textContent).toContain("Noted, holding.");
+  expect(needsLine(view.host)).toContain("Nothing needs you.");
   expect(writes(store.responses)).toEqual(["1:hold"]);
   // A fresh session shows the same: the answer stays bound to revision 1 and is displayed on revision 2.
   await view.unmount();
   const fresh = await mount(store.source());
   await chooseView(fresh.host, "All");
+  await open(fresh.host, "Plain question");
   expect(status(fresh.host)).toContain("You chose Hold.");
-  expect(segment(fresh.host, "Needs you").textContent).toBe("Needs you0");
+  expect(needsLine(fresh.host)).toContain("Nothing needs you.");
 });
 
 test("Change answer after a reply-only revision writes a follow-up that names revision 1", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await choose(view.host, "Hold");
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
@@ -644,12 +755,13 @@ test("Change answer after a reply-only revision writes a follow-up that names re
 test("a reply-only revision during the countdown re-targets the unanswered answer: one write, on revision 2", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await act(async () => option(view.host, "Hold").click());
   await clock!.advance(2000);
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
-  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
-  expect(view.host.querySelector('button[aria-label^="Undo"]')?.getAttribute("aria-label")).toBe("Undo, 3 seconds left");
+  expect(view.host.textContent).not.toContain(BANNER);
+  expect(answers(view.host)!.textContent).toContain("Sending · 3s");
   await clock!.advance(3000);
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
@@ -658,15 +770,17 @@ test("a reply-only revision during the countdown re-targets the unanswered answe
 test("any other revision during the countdown refuses the commit: nothing is written, the refusal shows", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await act(async () => option(view.host, "Hold").click());
   await clock!.advance(2000);
   edit(store, "plain-one", "The flight times changed.");
   await act(async () => store.notify());
-  expect(view.host.textContent).toContain("A newer version of this card arrived");
+  expect(view.host.textContent).toContain(BANNER);
   await clock!.advance(3000);
   expect(store.responses).toEqual([]);
   expect(view.host.querySelector('[role="alert"]')?.textContent).toContain("Not sent: Hold. This card changed. Answer the newer version.");
   await act(async () => button(view.host, "Show the newer version").click());
+  await open(view.host, "Plain question");
   await choose(view.host, "Hold");
   expect(writes(store.responses)).toEqual(["2:hold"]);
   expect(store.responses.some((response) => response.revision === 1)).toBe(false);
@@ -675,6 +789,7 @@ test("any other revision during the countdown refuses the commit: nothing is wri
 test("leaving the view mid-countdown after a non-reply-only revision writes nothing either", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await act(async () => option(view.host, "Hold").click());
   edit(store, "plain-one", "The flight times changed.");
   await act(async () => store.notify());
@@ -686,12 +801,13 @@ test("leaving the view mid-countdown after a non-reply-only revision writes noth
 test("an unsent written answer carries over to a reply-only revision and is sent on it", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await openNote(view.host);
   await typeAnswer(view.host, "Hold it until Friday");
   const input = answer(view.host);
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
-  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
+  expect(view.host.textContent).not.toContain(BANNER);
   expect(answer(view.host) === input).toBe(true);
   expect(input.value).toBe("Hold it until Friday");
   await sendReply(view.host);
@@ -702,18 +818,21 @@ test("an unsent written answer carries over to a reply-only revision and is sent
 test("an unsent written answer stays on the old revision when any other revision arrives", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await openNote(view.host);
   await typeAnswer(view.host, "Hold it until Friday");
   edit(store, "plain-one", "The flight times changed.");
   await act(async () => store.notify());
   expect(answer(view.host).value).toBe("Hold it until Friday");
-  expect(button(view.host, "Send answer").disabled).toBe(true);
+  expect(canSendOwn(view.host)).toBe(false);
+  await clock!.advance(10_000);
   expect(store.responses).toEqual([]);
 });
 
 test("a reply-only revision after the answer re-targets nothing: the answer and its follow-ups stay on revision 1", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await choose(view.host, "Hold");
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   store.reply("plain-one", "Booked.", "2026-10-28T12:20:00Z");
@@ -731,18 +850,20 @@ test("revision reply on an untouched card replaces it in place with the reply", 
   const view = await mount(store.source());
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
-  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
-  await openComments(view.host);
-  expect(view.host.querySelector('[aria-label="Comments"]')?.textContent).toContain("Noted.");
-  expect(view.host.querySelectorAll("article")).toHaveLength(1);
+  expect(view.host.textContent).not.toContain(BANNER);
+  expect(view.host.querySelectorAll("li[data-card-key]")).toHaveLength(1);
+  await open(view.host, "Plain question");
+  expect(comments(view.host)?.textContent).toContain("Noted.");
+  expect(view.host.querySelectorAll("li[data-card-key]")).toHaveLength(1);
 });
 
 test("a written answer counting down when any other revision arrives is refused and its draft stays", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await openNote(view.host);
   await typeAnswer(view.host, "Hold it until Friday");
-  await act(async () => button(view.host, "Send answer").click());
+  await act(async () => sendButton(view.host).click());
   edit(store, "plain-one", "The flight times changed.");
   await act(async () => store.notify());
   await clock!.advance(5000);
@@ -756,55 +877,45 @@ test("a post card's first reply (post → thread) swaps in place and keeps the a
   entry.state.card.payload = { render: "post" };
   const store = persistence([entry]);
   const view = await mount(store.source());
+  await open(view.host, "Plain question");
   await choose(view.host, "Hold");
   store.reply("plain-one", "Noted, holding.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
   expect(store.durable.entries[0]!.state.card.payload?.render).toBe("thread");
-  expect(view.host.textContent).not.toContain("A newer version of this card arrived");
+  expect(view.host.textContent).not.toContain(BANNER);
   expect(status(view.host)).toContain("You chose Hold.");
-  await openComments(view.host);
-  expect(view.host.querySelector('[aria-label="Comments"]')?.textContent).toContain("Noted, holding.");
+  expect(comments(view.host)?.textContent).toContain("Noted, holding.");
   expect(writes(store.responses)).toEqual(["1:hold"]);
 });
 
-test("a collapsed card shows its comment count, opens at its comments, and shows nothing at 0", async () => {
+test("a short card shows its agent's reply count, none at 0, and opens to the conversation", async () => {
+  const busy = plain();
+  busy.state.card.payload = { render: "thread", replies: [{ text: "Friday is fine.", at: "2026-10-28T12:10:00Z" }] };
   const quiet = plain("plain-two");
   quiet.state.card.title = "Quiet question";
-  const store = persistence([plain(), quiet]);
-  store.durable.entries[0]!.responses = [{ responseId: "c-1", cardId: "plain-one", revision: 1, issuanceId: "issuance-1", kind: "message", text: "Is Friday too late?", createdAt: "2026-10-28T12:05:00Z", sequence: 1 }];
+  const store = persistence([busy, quiet]);
   const view = await mount(store.source());
-  const busy = card(view.host, "Plain question");
-  const count = busy.querySelector<HTMLButtonElement>('button[aria-label$="Open comments"]')!;
-  expect(count.getAttribute("aria-label")).toBe("1 comment. Open comments");
-  expect(count.textContent).toBe("1");
-  expect(busy.querySelector('[aria-label="Comments"]')).toBeNull();
-  expect(card(view.host, "Quiet question").querySelector('button[aria-label$="Open comments"]')).toBeNull();
-  await act(async () => count.click());
-  expect(busy.querySelector("h3 button")?.getAttribute("aria-expanded")).toBe("true");
-  expect(busy.querySelector('[aria-label="Comments"]')?.textContent).toContain("Is Friday too late?");
-  expect(busy.querySelector('button[aria-label$="Open comments"]')).toBeNull();
+  expect(item(view.host, "Plain question")!.textContent).toContain("1 reply from Test agent, 1 new");
+  expect(item(view.host, "Quiet question")!.textContent).not.toContain("reply from");
+  expect(comments(view.host)).toBeNull();
+  await open(view.host, "Plain question");
+  expect(comments(card(view.host, "Plain question"))?.textContent).toContain("Friday is fine.");
 });
 
-test("a comment doesn't answer the card: no response is written and it stays in Needs you", async () => {
+test("a comment doesn't answer the card: no response is written and it still needs you", async () => {
   const store = persistence([plain()]);
   const view = await mount(store.source());
-  await act(async () => button(view.host, "Comment").click());
-  expect(view.host.textContent).toContain("This doesn't answer the card. Only Test agent sees this.");
-  const input = view.host.querySelector<HTMLInputElement>('input[aria-label="Tell Test agent something"]')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, "Is Friday too late?");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  await act(async () => button(view.host, "Send").click());
+  await open(view.host, "Plain question");
+  await comment(view.host, "Is Friday too late?");
   await clock!.advance(10_000);
   expect(store.messages).toHaveLength(1);
   expect(store.messages[0]).toMatchObject({ kind: "message", text: "Is Friday too late?" });
   expect(store.responses).toEqual([]);
-  expect(segment(view.host, "Needs you").textContent).toBe("Needs you1");
+  expect(needsLine(view.host)).toContain("1 needs you.");
   expect(status(view.host)).toBeNull();
-  expect([...view.host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Answers"] button')].every((node) => !node.disabled)).toBe(true);
+  expect([...answers(view.host)!.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].every((node) => !node.disabled)).toBe(true);
   await view.unmount();
   const fresh = await mount(store.source());
-  expect(card(fresh.host, "Plain question")).toBeDefined();
-  expect(segment(fresh.host, "Needs you").textContent).toBe("Needs you1");
+  expect(item(fresh.host, "Plain question")).not.toBeNull();
+  expect(needsLine(fresh.host)).toContain("1 needs you.");
 });
