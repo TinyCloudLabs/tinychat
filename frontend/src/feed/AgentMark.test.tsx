@@ -1,7 +1,7 @@
 // Which agent is acting: its own mark, and its platform only as the agent reported it.
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AgentDetails, AgentMark, agentProfile, markColour, markLetter, PlatformName, platformOf } from "./AgentMark";
+import { AgentDetails, AgentMark, agentProfile, markColour, markLetter, platformOf } from "./AgentMark";
 
 test("the platform comes only from payload.agent; without one there is none, and nothing is guessed from a name", () => {
   expect(agentProfile(undefined)).toBeUndefined();
