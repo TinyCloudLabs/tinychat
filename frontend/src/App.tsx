@@ -706,7 +706,7 @@ export function App() {
         if (boot.kind === "unavailable") {
           logSession("restore", "unavailable");
           restoreRetryAfterRef.current = Date.now() + 15_000;
-          setError("TinyCloud Home can't connect right now. Your recordings stay on this phone.");
+          setError(`${APP_NAME} can't connect right now. Your recordings stay on this phone.`);
           setState("offline");
           return;
         }
@@ -1668,7 +1668,7 @@ export function App() {
       {/* Face ID / passcode over everything in the phone app (TC-2738); the app keeps loading underneath. */}
       <AppLockGate />
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
-        Recordings are being kept unassigned until TinyCloud Home can update this phone.
+        Recordings are being kept unassigned until TinyCloud One can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
       </div>}
       <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={nativeSignInFlow.micRecoveryContinue} />
@@ -1829,7 +1829,7 @@ function SharedThreadSurface(props: { token: string; onClose: () => void }) {
         <div className="min-w-0">
           <div className="text-xs font-medium text-muted-foreground">Shared chat</div>
           <h1 className="truncate text-sm font-semibold text-foreground">
-            {thread?.title ?? "TinyCloud Home"}
+            {thread?.title ?? APP_NAME}
           </h1>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={props.onClose}>
@@ -1891,7 +1891,7 @@ function SharedMessage({ item }: { item: StoredMessageItem }) {
         <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
           T
         </span>
-        <span>TinyCloud Home</span>
+        <span>TinyCloud One</span>
       </div>
       <div className="whitespace-pre-wrap break-words pl-7 text-sm leading-relaxed text-foreground">
         {text}

@@ -30,8 +30,8 @@ export const DESKTOP_HOME_COPY = {
   notInSpace: "Not in your space yet",
   saveNow: "Save now",
   manageStorage: "Manage storage",
-  willFinish: (where: string) => `Kept ${where}. TinyCloud Home will finish it automatically.`,
-  willRetry: "TinyCloud Home will retry when it next opens",
+  willFinish: (where: string) => `Kept ${where}. TinyCloud One will finish it automatically.`,
+  willRetry: "TinyCloud One will retry when it next opens",
   timedOut: (where: string) => `Saving… · kept ${where}`,
   recoveryFailed: "Couldn't recover this recording",
   writeFailed: WRITE_FAILED,
@@ -41,7 +41,7 @@ export const DESKTOP_HOME_COPY = {
   retry: "Retry",
   retryLabel: (title: string) => `Retry transcribing ${title} on this Mac`,
   scanFailure:
-    "TinyCloud Home couldn't check for unfinished recordings. It will try again when it next opens.",
+    "TinyCloud One couldn't check for unfinished recordings. It will try again when it next opens.",
 } as const;
 
 /** Where an unsaved recording is kept: the desktop app's Mac, a browser, or a phone or tablet app. */

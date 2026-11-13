@@ -178,7 +178,7 @@ export function clockTime(at: number): string {
 
 export const RECEIPT_KEPT = `Kept on ${deviceName()}`;
 export const FINALIZATION_PENDING =
-  `Kept on ${deviceName()}. TinyCloud Home will finish it automatically.`;
+  `Kept on ${deviceName()}. TinyCloud One will finish it automatically.`;
 export const ISLAND_SAVED = `Saved on ${deviceName()}`;
 export const ISLAND_KEPT = `Kept on ${deviceName()}`;
 export const DISCARD_PROMPT = "Discard?";

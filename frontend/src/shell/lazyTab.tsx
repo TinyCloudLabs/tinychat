@@ -28,7 +28,7 @@ export function LoadFailed({ name, reload, onRetry }: { name: string; reload: bo
       {confirming ? (
         <>
           <p className="m-0">
-            Reloading stops this recording in the browser. TinyCloud Home recovers what was recorded when the page
+            Reloading stops this recording in the browser. TinyCloud One recovers what was recorded when the page
             reopens.
           </p>
           <button type="button" className={button} onClick={() => setConfirming(false)}>
@@ -40,7 +40,7 @@ export function LoadFailed({ name, reload, onRetry }: { name: string; reload: bo
         </>
       ) : (
         <button type="button" className={button} onClick={asks ? () => setConfirming(true) : onRetry}>
-          {reload ? "Reload TinyCloud Home" : "Try again"}
+          {reload ? "Reload TinyCloud One" : "Try again"}
         </button>
       )}
     </div>

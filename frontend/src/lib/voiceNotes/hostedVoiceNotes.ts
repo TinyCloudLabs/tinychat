@@ -98,7 +98,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       try {
         const job = await client.lookupJob(id);
         if (job.status === "submitted" && job.id) {
-          jobs.set(id, { kind: "failed", message: "TinyCloud Home reconciled the earlier attempt. Try again.", retryable: true, reference: null, code: "reconciled" });
+          jobs.set(id, { kind: "failed", message: "TinyCloud One reconciled the earlier attempt. Try again.", retryable: true, reference: null, code: "reconciled" });
           notify();
           return;
         }
@@ -239,7 +239,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         const reconcile = async () => {
           const job = await client.lookupJob(id);
           if (job.status === "needs_reconciliation" || job.status === "unresolved")
-            throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. TinyCloud Home is checking with the transcription service.");
+            throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. TinyCloud One is checking with the transcription service.");
           if (job.status === "deleted")
             throw new AssemblyAiError("rejected", "This note's earlier transcript was deleted. Contact support before retrying.");
           reconciled = job;

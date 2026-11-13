@@ -39,7 +39,7 @@ export function HowItWorks() {
             <span className="text-primary">any model.</span>
           </h2>
           <p className="mt-4 text-muted-foreground">
-            TinyCloud Home is a thin client over a stack you own end to end.
+            TinyCloud One is a thin client over a stack you own end to end.
           </p>
         </div>
 

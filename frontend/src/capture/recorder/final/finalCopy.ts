@@ -16,9 +16,9 @@ export const POWERFUL_CONSENT_ACTION = "Use Powerful transcription";
 /** The Powerful provider's name. The ONE place it is written: it appears only in the consent small print and About; change a provider here. */
 export const POWERFUL_PROVIDER_NAME = "AssemblyAI";
 /** The one "not private" line every Powerful explanation uses: recorder mode scale, upload route text, Settings. */
-export const POWERFUL_NOT_PRIVATE_LINE = "Not private: Powerful sends your audio through TinyCloud Home's server to an outside transcription service. TinyCloud Home deletes the service's copy once the transcript is saved.";
+export const POWERFUL_NOT_PRIVATE_LINE = "Not private: Powerful sends your audio through TinyCloud One's server to an outside transcription service. TinyCloud One deletes the service's copy once the transcript is saved.";
 function powerfulConsentBody(audio: string): string {
-  return `Powerful sends ${audio} through TinyCloud Home's server to an outside transcription service, for the most accurate transcript with speaker labels. It isn't private. TinyCloud Home deletes the service's copy as soon as the transcript is saved.`;
+  return `Powerful sends ${audio} through TinyCloud One's server to an outside transcription service, for the most accurate transcript with speaker labels. It isn't private. TinyCloud One deletes the service's copy as soon as the transcript is saved.`;
 }
 export const POWERFUL_CONSENT_BODY = powerfulConsentBody("this note's audio");
 export const POWERFUL_CONSENT_UPLOAD_BODY = powerfulConsentBody("this audio");
@@ -29,7 +29,7 @@ export function privateConsentDevice(platform: AppPlatform): string {
 }
 
 export function privateConsentBody(device: string): string {
-  return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. TinyCloud Home never sees it.`;
+  return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. TinyCloud One never sees it.`;
 }
 
 /** One name per transcription mode, keyed by the provider's transcriber id; every surface that names a mode reads this. */
@@ -140,10 +140,10 @@ export const FINAL_COPY = {
     localDesktopExplanation: (model: string) =>
       `Whisper ${model} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
     localWebExplanation:
-      "Runs on your phone or Mac in the TinyCloud Home app. Not available in the browser.",
-    privateCaption: "Fast, accurate, and sealed from TinyCloud Home.",
+      "Runs on your phone or Mac in the TinyCloud One app. Not available in the browser.",
+    privateCaption: "Fast, accurate, and sealed from TinyCloud One.",
     privateExplanation:
-      "Sent to a sealed hardware enclave, transcribed, then deleted. TinyCloud Home never sees it.",
+      "Sent to a sealed hardware enclave, transcribed, then deleted. TinyCloud One never sees it.",
     powerfulCaption: "Most accurate, with speaker labels.",
     powerfulExplanation: POWERFUL_NOT_PRIVATE_LINE,
   },

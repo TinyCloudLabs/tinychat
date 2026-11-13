@@ -209,7 +209,7 @@ export function createAppLock(deps: AppLockDeps): AppLock {
     dispatch({ type: "authStart" });
     let result: UnlockResult;
     try {
-      ({ result } = await native.authenticate({ reason: "Unlock TinyCloud Home" }));
+      ({ result } = await native.authenticate({ reason: "Unlock TinyCloud One" }));
     } catch {
       result = "failed";
     }
