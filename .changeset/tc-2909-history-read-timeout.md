@@ -3,4 +3,4 @@
 "@tinychat/frontend": patch
 ---
 
-Allow cold-start history reads more time, show history loading and keep sending independent of the read.
+Main gives earlier messages more time to load when it starts. It shows "Loading earlier messages…" while they load, and you can send a message in the meantime.
