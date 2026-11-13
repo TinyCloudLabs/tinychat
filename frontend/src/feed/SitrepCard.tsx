@@ -30,8 +30,8 @@ function approvalWords(type: string, kind?: string): string | undefined {
   return type === "go" && kind && GO_WORDS[kind] ? GO_WORDS[kind] : APPROVAL_WORDS[type];
 }
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
-/** The countdown label of "Skip this question": it shows as "Skipping in Ns", and a refusal names the button. */
-const SKIP_LABEL = "Skip this question";
+/** The countdown label of an ask's "Drop this card": it shows as "Dropping in Ns", and a refusal names the button. */
+const DROP_LABEL = "Drop this card";
 /** An approval's one action ("Give the go", "Save code", "I've done this step"): a normal-size dark button, as in the lab. */
 const approveClass = "inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50";
 const STEP_WORDS: Record<StepState, string> = { pending: "Waiting for you", done: "Done", "not needed": "Not needed", expired: "Ended", closed: "Closed" };
@@ -305,11 +305,11 @@ export function SitrepCard(props: Props) {
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />;
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own
   // countdown (`chosen`) shows in its row instead.
-  // "Skip this question" says what is happening while it waits, with the same Undo as a comment's (Monica).
-  const pendingLine = countdown.pending && !chosen && (countdown.pending.label === SKIP_LABEL
-    ? <><p className="mt-3.5 flex items-center gap-x-1.5 text-sm text-muted-foreground"><span className="tabular-nums">Skipping in {countdown.pending.seconds}s</span><span aria-hidden>·</span>
+  // An ask's "Drop this card" says what is happening while it waits, with the same Undo as a comment's (Monica).
+  const pendingLine = countdown.pending && !chosen && (countdown.pending.label === DROP_LABEL
+    ? <><p className="mt-3.5 flex items-center gap-x-1.5 text-sm text-muted-foreground"><span className="tabular-nums">Dropping in {countdown.pending.seconds}s</span><span aria-hidden>·</span>
       <button type="button" onClick={countdown.undo} className="relative min-h-11 rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9">Undo</button></p>
-      <p role="status" className="sr-only">Skipping this question in {UNDO_SECONDS} seconds. Undo is available until then.</p></>
+      <p role="status" className="sr-only">Dropping this card in {UNDO_SECONDS} seconds. Undo is available until then.</p></>
     : <PendingAnswer label={countdown.pending.label} seconds={countdown.pending.seconds} onUndo={countdown.undo}>
       <p>Sending <b className="font-semibold">{countdown.pending.label}</b>…</p>
     </PendingAnswer>);
@@ -332,11 +332,9 @@ export function SitrepCard(props: Props) {
         onChoose={choose} onUndo={() => { countdown.undo(); setChosen(undefined); }}
         own={{ open: ownOpen || !options.length, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={waiting || busy} onText={setText} onSend={() => { if (text.trim()) choose(OWN_OPTION.id, OWN_OPTION.label); }} onCancel={() => { setText(""); setOwnOpen(false); }}
           state={chosen === OWN_OPTION.id ? (busy ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED_COPY, true)} /> }} /></div>}
-      {!waiting && asking && <div className="mt-3 flex flex-wrap gap-2">
+      {!waiting && asking && ((steer === "open" && record.default) || record.recommend) && <div className="mt-3 flex flex-wrap gap-2">
         {steer === "open" && record.default && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>}
         {record.recommend && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.recommend) ?? "the recommendation", () => askAnswer("accept-default", record.recommend, true), true)}>Accept recommendation</button>}
-        {/* "Skip this question", not "Drop": "Drop this card" in the foot is a different action (Monica). */}
-        <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(SKIP_LABEL, () => askAnswer("drop", undefined, true), true)}>Skip this question</button>
       </div>}
       {!waiting && asking && steer === "open" && record.default && <p className={`mt-2 ${fineClass}`}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</p>}
       {!waiting && responds && (!asking || followup) && <div className="mt-1 flex flex-wrap gap-x-[26px]">
@@ -434,7 +432,9 @@ export function SitrepCard(props: Props) {
     {/* The card's foot, one row: Ask me later, Drop this card (from the page), and Details at the right, which holds
         who posted the card, its wiring, Pin to top and its history. */}
     {!waiting && (projection.request || expanded) && <div className="mt-3 border-t border-border pt-1">
-      <CardDetails unshown={cardUnshown(entry.state.card, { record })} card={entry.state.card} agent={agent} close={props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
+      {/* On an ask, "Drop this card" is an answer: it waits out the undo, then tells the agent to drop the question, so
+          the agent hears it (a plain close would only hide the card here). */}
+      <CardDetails unshown={cardUnshown(entry.state.card, { record })} card={entry.state.card} agent={agent} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
         <dl>{([
           ["Agent", record.from !== agent ? `${record.from} (through ${agent})` : agent],
           ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],

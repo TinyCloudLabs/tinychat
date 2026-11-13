@@ -250,3 +250,12 @@ test("the runner exits non-zero without a source, a recipient, spaces or a respo
   expect(errors.join("")).not.toContain(PRIVATE);
   for (const error of errors) expect(JSON.parse(error)).toMatchObject({ error: { code: "INVALID_INPUT", step: "arguments" }, delivery: "not-confirmed" });
 });
+
+test("a drop from Home (an ask's Drop this card) is written where the board reads Sam's answers, then acknowledged", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const response = await answer(f, card, { askId: record.id, action: "drop", text: "", at: T1 });
+  const result = await through(f, response);
+  expect(result).toMatchObject({ wrote: "answer", key: answerKey(record.id, T1), stored: "written", received: "recorded" });
+  expect(JSON.parse(f.values.get(answerKey(record.id, T1))!.text)).toMatchObject({ askId: record.id, action: "drop" });
+  expect(await handled(f, card, response)).toBe(true);
+});
