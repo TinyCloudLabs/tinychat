@@ -48,6 +48,7 @@ jobs:
       # The bots CVM only. This never falls back to the backend's PHALA_CVM_ID.
       BOTS_PHALA_CVM_ID: ${{ vars.BOTS_PHALA_CVM_ID }}
       BOTS_INGRESS_DOMAIN: ${{ vars.BOTS_INGRESS_DOMAIN }}
+      BOTS_SERVICE_CONNECT_HOST: ${{ vars.BOTS_SERVICE_CONNECT_HOST }}
     steps:
       - name: Require this workflow from main and a full commit SHA
         env:
@@ -426,13 +427,27 @@ jobs:
       # The first deploy to a new domain also waits for the ingress to obtain its certificate, hence the longer backoff.
       - name: Verify /healthz
         run: |
+          if [ -z "$BOTS_SERVICE_CONNECT_HOST" ]; then
+            echo "::error::BOTS_SERVICE_CONNECT_HOST is not configured in the production-bots environment"
+            exit 1
+          fi
+          if ! [[ "$BOTS_SERVICE_CONNECT_HOST" =~ ^[0-9a-f]{40}-443s\.dstack-[a-z0-9-]+\.phala\.network$ ]]; then
+            echo "::error::Invalid BOTS_SERVICE_CONNECT_HOST; expected an app-id-443s.dstack-*.phala.network TLS passthrough host"
+            exit 1
+          fi
+
           url="https://${BOTS_INGRESS_DOMAIN}/healthz"
-          echo "Probing $url (expect ok)"
+          echo "Probing $url via $BOTS_SERVICE_CONNECT_HOST (expect ok)"
           for i in {1..30}; do
             rc=0
-            body="$(curl -fsS --connect-timeout 5 --max-time 15 "$url")" || rc=$?
-            echo "Attempt $i/30: curl_exit=$rc body=${body:0:100}"
-            if [ "$rc" = 0 ] && [ "$body" = ok ]; then
+            response="$(printf 'GET /healthz HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' "$BOTS_INGRESS_DOMAIN" |
+              timeout 15s openssl s_client -quiet -connect "${BOTS_SERVICE_CONNECT_HOST}:443" \
+                -servername "$BOTS_SERVICE_CONNECT_HOST" \
+                -verify_hostname "$BOTS_INGRESS_DOMAIN" -verify_return_error 2>/dev/null)" || rc=$?
+            status="$(printf '%s\n' "$response" | awk 'NR == 1 { sub(/\r$/, ""); print; exit }')"
+            body="$(printf '%s\n' "$response" | awk 'found { sub(/\r$/, ""); print } /^[[:space:]]*$/ { found = 1 }')"
+            echo "Attempt $i/30: openssl_exit=$rc status=${status:0:100} body=${body:0:100}"
+            if [ "$rc" = 0 ] && [ "$status" = "HTTP/1.1 200 OK" ] && [ "$body" = ok ]; then
               echo "- \`${url}\`: \`ok\`" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
@@ -441,8 +456,11 @@ jobs:
             sleep "$delay"
           done
           echo "::error title=Bots health probe failed::$url did not answer ok"
-          echo "::group::Verbose curl diagnostics"
-          curl -v --max-time 20 "$url" || true
+          echo "::group::Verbose openssl diagnostics"
+          printf 'GET /healthz HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' "$BOTS_INGRESS_DOMAIN" |
+            timeout 20s openssl s_client -brief -connect "${BOTS_SERVICE_CONNECT_HOST}:443" \
+              -servername "$BOTS_SERVICE_CONNECT_HOST" \
+              -verify_hostname "$BOTS_INGRESS_DOMAIN" -verify_return_error || true
           echo "::endgroup::"
           exit 1
 
