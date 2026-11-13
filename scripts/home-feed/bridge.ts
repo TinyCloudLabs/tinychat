@@ -250,7 +250,10 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     }
     if (!head || head.sha256 !== publicationSha256 || head.raw.cardUuid !== identity.cardId) {
       const priorHead = head;
-      const predecessor = priorHead && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey && row.binding.legacy.publishedETag === priorHead.etag && row.binding.legacy.publicationSha256 === priorHead.sha256);
+      // A Home close rewrote the board copy after publication: its receipt, not the binding, names that head.
+      const predecessor = priorHead && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey &&
+        ((row.binding.legacy.publishedETag === priorHead.etag && row.binding.legacy.publicationSha256 === priorHead.sha256) ||
+          (row.receipt !== null && row.receipt.closedETag === priorHead.etag && priorHead.raw.cardUuid === identity.cardId && priorHead.record.status === row.receipt.status)));
       const unboundSameBusiness = head && !Object.hasOwn(head.raw, "cardUuid") && isDeepStrictEqual(head.record, record);
       if (head && !predecessor && !unboundSameBusiness) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
       if (!await currentCard(ctx, source, identity)) throw failure();
