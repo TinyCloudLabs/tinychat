@@ -208,20 +208,29 @@ try {
   const originalExpiryMs = Date.parse(saved.data.expiresAt);
   if (originalExpiryMs > Date.now() + 1000000 || originalExpiryMs < Date.now() + 900000) throw new Error("unexpected fixture expiry");
   evidence.originalExpiresAt = saved.data.expiresAt;
-  stage = "owner-lease-admission";
-  const receipt = await owner.createRenewalLease(new Date(Date.now() + 1200000));
-  evidence.leaseExpiresAt = receipt.leaseExpiresAt;
-  owner.cleanup(); owner = null;
-  stage = "wait-original-expiry";
-  await delay(Math.max(0, originalExpiryMs - Date.now() + 1500));
-  stage = "app-wrapper-restore";
-  const result = await restoreTinyCloudWebSession(account.address, {...config, autoCreateSpace: false, renewalLeaseAuthorization: receipt.leaseAuthorization});
-  if (result.status !== "restored" || !result.tcw) throw new Error("app wrapper refused renewal restore");
-  restored = result.tcw;
-  const read = await restored.kv.list("xyz.tinycloud.tinychat/connectors/");
-  if (!read.ok) throw new Error("transcript read refused");
-  evidence.browser = {restoreAfterOriginalExpiry: true, transcriptList: true};
-  evidence.result = "PASS"; evidence.stage = "complete";
+  stage = "live-original-transcript-preflight";
+  const preflight = await owner.kv.list({prefix: "xyz.tinycloud.tinychat/connectors/"});
+  evidence.preflight = {ok: preflight.ok, code: preflight.error?.code, message: preflight.error?.message};
+  if (!preflight.ok) throw new Error("live-original transcript preflight refused");
+  if (process.argv.includes("--preflight")) {
+    evidence.result = "PASS"; evidence.stage = "preflight-complete";
+  } else {
+    stage = "owner-lease-admission";
+    const receipt = await owner.createRenewalLease(new Date(Date.now() + 1200000));
+    evidence.leaseExpiresAt = receipt.leaseExpiresAt;
+    owner.cleanup(); owner = null;
+    stage = "wait-original-expiry";
+    await delay(Math.max(0, originalExpiryMs - Date.now() + 1500));
+    stage = "app-wrapper-restore";
+    const result = await restoreTinyCloudWebSession(account.address, {...config, autoCreateSpace: false, renewalLeaseAuthorization: receipt.leaseAuthorization});
+    if (result.status !== "restored" || !result.tcw) throw new Error("app wrapper refused renewal restore");
+    restored = result.tcw;
+    const read = await restored.kv.list({prefix: "xyz.tinycloud.tinychat/connectors/"});
+    evidence.read = {ok: read.ok, code: read.error?.code, message: read.error?.message};
+    if (!read.ok) throw new Error("transcript read refused");
+    evidence.browser = {restoreAfterOriginalExpiry: true, transcriptList: true};
+    evidence.result = "PASS"; evidence.stage = "complete";
+  }
 } catch (error) {
   evidence.result = "FAIL";
   evidence.stage = stage;
