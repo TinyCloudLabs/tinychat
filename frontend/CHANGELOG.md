@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.40
+
+### Patch Changes
+
+- 7e763b6: Home loads the Feed first when it opens on the Feed. The chat list refresh, the first-screen, word fixes and Canvas settings reads, the memory check, the transcriber library sync and the background chat history copy now wait until the Feed's first network load has shown (at most 3 s), so the Feed's reads no longer queue behind them at the node. Lists stored on the device still show at once, and opening Chat or any other screen releases the waiting reads immediately. Two overlapping automatic model lookups now share one request.
+
 ## 0.14.0-beta.39
 
 ### Patch Changes
