@@ -15,6 +15,13 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.14.0-beta.46
+
+### Patch Changes
+
+- f6f65ac: Sign-in works again on Android phones with an outdated System WebView (before Chromium 130, such as the stock WebView 113 on Android 14). Those WebViews read `xyz.tinycloud.exo://openkey/callback` with an empty host, so the OpenKey SDK refused the redirect URI with "Private-use redirect URI must have a host" before sign-in started, and a stored session couldn't be restored either. `patches/` now carries a fix to `@openkey/sdk-capacitor@0.2.0-beta.0` that reads the host from the path when the WebView leaves it empty, and still rejects a hostless redirect or a callback to another host or path. The same fix is going upstream to OpenKey. When the SDK release containing it lands, remove the patch, its `patchedDependencies` entry, and the `COPY patches` line in `backend/Dockerfile`.
+- 56edd41: Home Feed on a new device opens its live-update stream once, after the first load names the agents, instead of first for the registry alone and again for the agents (two node requests fewer per new-device open). Adds a per-PR gate on how many node requests and dependent rounds a Feed open costs (warm, new device, first ready, and an idle minute with the node's stream reconnect).
+
 ## 0.14.0-beta.45
 
 ### Patch Changes
