@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { listFeedCardHistory } from "@tinycloud/sdk-services/feed";
 import { boardKey } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord, Kind } from "@tinyboilerplate/core/feed/sitrep";
-import { boardCardIdentity, inventoryPlan, parseInventoryKinds, postMany, readBoardIndex, uuidV5 } from "./inventory";
+import { boardCard, boardCardIdentity, inventoryPlan, parseInventoryKinds, postMany, readBoardIndex, uuidV5 } from "./inventory";
 import { boardRecord, mirrorNode, NOW, SOURCE, take } from "./mirror-node.fixture";
 import type { MirrorNode } from "./mirror-node.fixture";
 
@@ -136,4 +136,17 @@ test("one card the mirror refuses is reported with its code and the rest are sti
   expect(results.map((item) => [item.key, item.outcome])).toEqual([[boardKey("ask", "a1"), "refused"], [boardKey("task", "t1"), "posted"]]);
   expect(results[0]!.code).toBe("KV_PRECONDITION_FAILED");
   expect(JSON.parse(f.values.get(boardKey("ask", "a1"))!.text).title).toBe("Edited on the board");
+});
+
+test("postMany and boardCard leave approvals, holds and claims on the board even when a caller passes them", async () => {
+  const f = await node();
+  const approval = boardRecord("approval", "g1"), hold = boardRecord("hold", "h1"), ask = boardRecord("ask", "a1");
+  await seedBoard(f, [approval, hold, ask]);
+  for (const record of [approval, hold]) expect(() => boardCard({ key: boardKey(record.kind, record.id), record }, [record], Date.parse(NOW))).toThrow("Home mirror inventory leaves approvals, holds and claims on the board");
+  f.resetCalls();
+  const results = await postMany(f.ctx, { sourceId: SOURCE, label: "Rocinante", rows: rowsOf([approval, hold, ask]), now: Date.parse(NOW) });
+  expect(results.map((item) => [item.key, item.outcome, item.code])).toEqual([
+    [boardKey("approval", "g1"), "refused", "INVALID_INPUT"], [boardKey("hold", "h1"), "refused", "INVALID_INPUT"], [boardKey("ask", "a1"), "posted", undefined],
+  ]);
+  expect(take(await listFeedCardHistory(f.output)).cards.map((card) => card.kind)).toEqual(["ask"]);
 });
