@@ -176,6 +176,43 @@ function watchForUpdates(registration: ServiceWorkerRegistration) {
   });
 }
 
+export interface StaleChunkWatch {
+  target?: EventTarget;
+  fetch?: typeof globalThis.fetch;
+  /** This bundle's commit; defaults to the one vite.config.ts baked in (none outside a Vite build). */
+  commit?: string | null;
+}
+
+/**
+ * A page left open across a deploy asks for lazy chunks the server no longer has; Pages answers a missing
+ * /assets/*.js with index.html, so the import fails ("Couldn't open", or the TinyCloud panel's "This didn't load.",
+ * which the SDK swallows but whose preload still fails here). On Vite's `vite:preloadError`, when this origin's
+ * version.json names another commit, offer the same "New version available — Reload" as an installed update. A
+ * failure while this build is still the deployed one (offline, a blip) offers nothing. The event is left to its
+ * other listeners (the recorders show their own retry). Returns the unsubscribe.
+ */
+export function watchStaleChunks(watch: StaleChunkWatch = {}): () => void {
+  const target = watch.target ?? window;
+  const commit = watch.commit !== undefined ? watch.commit
+    : typeof __EXO_BUILD_INFO__ === "object" && __EXO_BUILD_INFO__?.commit?.trim() || null;
+  const fetchImpl = watch.fetch ?? globalThis.fetch;
+  let checking = false;
+  const onError = () => {
+    if (!commit || checking || state.updateReady || typeof fetchImpl !== "function") return;
+    checking = true;
+    void fetchImpl("/version.json", { cache: "no-store", credentials: "omit" })
+      .then(async (response) => {
+        const body: unknown = response.ok ? await response.json() : null;
+        const deployed = body && typeof body === "object" && "commit" in body && typeof body.commit === "string" ? body.commit : null;
+        if (deployed && deployed !== commit) setState({ updateReady: true });
+      })
+      .catch(() => { /* Not JSON (no version.json here) or offline: nothing to offer. */ })
+      .finally(() => { checking = false; });
+  };
+  target.addEventListener("vite:preloadError", onError);
+  return () => target.removeEventListener("vite:preloadError", onError);
+}
+
 /**
  * Decide, record and (on the web) register. Call once, before rendering. The
  * decision lands on <html data-exo-sw="…"> so the shells' smoke tests (and
@@ -184,6 +221,8 @@ function watchForUpdates(registration: ServiceWorkerRegistration) {
 export function setupPwa(env: ServiceWorkerEnvironment): ServiceWorkerDecision {
   const decision = serviceWorkerDecision(env);
   document.documentElement.dataset.exoSw = decision;
+  // The web, with or without a service worker; the shells serve their chunks from the app bundle.
+  if (decision === "register" || decision === "skip:unsupported") watchStaleChunks();
   if (decision !== "register") return decision;
 
   window.addEventListener("beforeinstallprompt", (event) => {

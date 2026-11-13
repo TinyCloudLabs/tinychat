@@ -169,9 +169,10 @@ export default defineConfig(({ command, mode }) => {
         // first visit never downloads it.
         // The local-replication chunks (kv-storage + its 2.2 MB worker, replica, profile-gate) are only
         // fetched when the replication flag is ON (lazy import in lib/replication); runtime-cached below.
+        // assets/404.html is Pages' answer for a missing build file (public/assets/404.html), never a page to cache.
         globIgnores: [
           "agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm",
-          "assets/kv-storage*.js", "assets/replica-*.js", "assets/profile-gate-*.js",
+          "assets/kv-storage*.js", "assets/replica-*.js", "assets/profile-gate-*.js", "assets/404.html",
         ],
         // The main chunk (~7.4 MB, most of it the TinyCloud SDK) and the SDK's WASM (1.4 MB) are needed to boot;
         // Workbox skips anything over its 2 MiB default, which would leave the shell unable to boot offline.
@@ -179,7 +180,8 @@ export default defineConfig(({ command, mode }) => {
         // App routes (/, /chat/*) are client-side: serve the precached index.html for navigations.
         navigateFallback: "index.html",
         // ...except the static /agents docs (and /api, should one ever be same-origin). Precached files
-        // still win: their route is registered first. Mirrors public/_redirects.
+        // still win: their route is registered first. Mirrors Pages: public/_redirects for /agents, and its
+        // single-page-app fallback for every other path (no top-level 404.html).
         navigateFallbackDenylist: [/^\/agents(?:\/|$)/, /^\/api(?:\/|$)/],
         // The runtime caches are the notes renderer's WASM and the replication chunks, same-origin and content-hashed.
         // Everything else outside the precache is not intercepted, so API and cross-origin traffic
