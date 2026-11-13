@@ -1053,6 +1053,17 @@ test("Acknowledge on a done row takes it out of Pending through the undo bar", a
   expect(pendingToggle(view.host)?.textContent).toContain("1 · answered, not closed yet");
 });
 
+test("an answer its agent acknowledged but has not finished stays in Pending, reading Answered", async () => {
+  const acked = answered("acked-one", false);
+  acked.state.acknowledgement = handling(acked.state.response!, "acknowledged");
+  const store = persistence([decision("open-one"), acked], { defaultSelector: "both" });
+  const view = await mount(store.source());
+  expect(item(view.host, "Question acked-one")).toBeNull();
+  expect(pendingToggle(view.host)?.textContent).toContain("1 · answered, not closed yet");
+  await act(async () => pendingToggle(view.host)!.click());
+  expect(item(view.host, "Question acked-one")!.textContent).toContain("Answered");
+});
+
 test("the top row is Needs you · All · History and a Filter icon; Filter shows its dropdowns first and Snoozed under them", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());

@@ -32,7 +32,7 @@ import { shortTime } from "./ShortTime";
 import { PostPreview } from "./PostPreview";
 import { lazyTab } from "@/shell/lazyTab";
 import { labPageOf, postStatus } from "./postAnswers";
-import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
+import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, parseSitrepCardPayload, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
@@ -49,6 +49,11 @@ function keyOf(entry: HomeFeedEntry): string {
 }
 function isTypedPayload(entry: HomeFeedEntry): boolean {
   return entry.state.card.payload?.sitrep !== undefined || entry.state.card.payload?.sitrepThread !== undefined;
+}
+/** A typed card's revision whose board record is closed: the record's last word. */
+function closesRecord(entry: HomeFeedEntry): boolean {
+  const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
+  return !!record && record.kind === entry.state.card.kind && isClosed(record);
 }
 function snoozedNow(entry: HomeFeedEntry, now: number): boolean {
   return Date.parse(entry.view.snoozedUntil ?? "") > now;
@@ -145,6 +150,7 @@ function CardFacts({ entry, reference, priority }: { entry: HomeFeedEntry; refer
     ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
     ["Type", entry.state.card.kind.charAt(0).toUpperCase() + entry.state.card.kind.slice(1)],
     ...(job ? [["Working on", job] as [string, ReactNode]] : []),
+    ...(projectOf(entry) ? [["Project", projectOf(entry)] as [string, ReactNode]] : []),
     ["Reference", reference],
     // P0 and P1 show on the card itself; every level shows here.
     ...(priority !== undefined ? [["Priority", `P${priority}`] as [string, ReactNode]] : []),
@@ -286,7 +292,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     {/* The card's foot, one row, Details alone in the bottom-right corner: a decision has Ask me later and Drop this
         card; an update has Acknowledge and Show me later, then Comment beside Details. Drop, Acknowledge and the later
         times take the card away with the undo bar at the bottom. */}
-    <div className="border-t border-border pt-2"><CardDetails
+    <div className="border-t border-border pt-2"><CardDetails card={entry.state.card} agent={entry.source.label}
       close={closed || stale ? undefined : info ? { kind: "acknowledge", onTap: () => foot.onClose("acknowledge") } : attention ? { kind: "drop", onTap: () => foot.onClose("drop") } : undefined}
       actions={<>
         {!info && saved && !asking && <button type="button" className={footActionClass} onClick={() => setFollowup(true)}>Change answer</button>}
@@ -489,12 +495,19 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const lineageKey = (entry: HomeFeedEntry) => keyOf(replyChain(entry)[0]!);
   /** The revision in the reply-only run that holds the stored answer, if any. */
   const answeredIn = (entry: HomeFeedEntry) => isTypedPayload(entry) ? undefined : [...replyChain(entry)].reverse().find((candidate) => candidate.state.response);
-  /** Dropped or acknowledged by the owner, on any revision of the run (a reply-only revision doesn't reopen it). */
-  const closureOf = (entry: HomeFeedEntry) => ownerClosure(replyChain(entry).flatMap((candidate) => candidate.responses ?? []));
+  /**
+   * Dropped or acknowledged by the owner, on any revision of the run (a reply-only revision doesn't reopen it). A typed
+   * ask is dropped by its answer: "Drop this card" sends the agent a drop, and the card leaves with it.
+   */
+  const closureOf = (entry: HomeFeedEntry) => ownerClosure(replyChain(entry).flatMap((candidate) => candidate.responses ?? []))
+    ?? (contextFor(entry)?.projection.answer?.action === "drop" ? "Dropped" as const : undefined);
   const all = [...new Map([...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].map((entry) => [keyOf(entry), entry])).values()];
-  // In History a revision that only gained agent replies is shown as its latest revision, once.
+  // In History a revision that only gained agent replies is shown as its latest revision, once; so is a typed card its
+  // agent closed: its earlier revisions (the one Sam answered or dropped among them) give way to the closing one.
+  const replaces = (newer: HomeFeedEntry, older: HomeFeedEntry) => newer !== older && newer.state.card.revision > older.state.card.revision
+    && (lineageKey(newer) === lineageKey(older) || (isTypedPayload(older) && newer.source.sourceId === older.source.sourceId && newer.state.card.cardId === older.state.card.cardId && closesRecord(newer)));
   const entries = history || snoozedOnly
-    ? all.filter((entry) => !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === lineageKey(entry)))
+    ? all.filter((entry) => !all.some((other) => replaces(other, entry)))
     : snapshot?.entries ?? [];
   const contextFor = useMemo(() => {
     const current = typedContexts(snapshot?.entries ?? [], snapshot?.sitrep, clock);
@@ -544,7 +557,16 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const parent = typed.entries.find((candidate) => { const context = contextFor(candidate); return context?.record.kind === "ask" && context.record.id === typed.projection.foldedInto?.id; });
     return !!parent && matchesFilters(parent) && attention(parent);
   };
-  const inDone = (entry: HomeFeedEntry) => expired(entry) || !!closureOf(entry) || entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!answeredIn(entry) || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || snoozedNow(entry, clock);
+  /**
+   * A typed card its agent closed (answered, superseded, done, resolved…): it leaves the live views for History. Not
+   * while it carries an answer of the owner's that was never sent: its "Not sent" line must be seen where it was given.
+   */
+  const agentClosed = (entry: HomeFeedEntry) => {
+    const record = contextFor(entry)?.record;
+    const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]))?.outcome;
+    return !!record && isClosed(record) && held !== "closed" && held !== "refused";
+  };
+  const inDone = (entry: HomeFeedEntry) => expired(entry) || !!closureOf(entry) || agentClosed(entry) || entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!answeredIn(entry) || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || snoozedNow(entry, clock);
   // A card the owner touched in this view keeps its place, so an answer counting down (or a folded step he opened)
   // stays on screen. In All it stays, with "Change answer", until the view changes; in Needs you only until its
   // answer is saved, when it moves to Pending and the next card opens in its place.
@@ -552,27 +574,28 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const needing = (entry: HomeFeedEntry) => (attention(entry) && !folded(entry)) || keepsNeeds(entry);
   const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry)).length;
   /**
-   * Answered and still open (Sam, 11-13): Waiting on its agent, or Done (or Failed) and not yet acknowledged. In
-   * Needs you and All these leave the main flow for the Pending card at its end, so only what needs him stays in it.
-   * In All, a card he answered keeps its place until the view changes (keepsNeeds).
+   * Answered and still open (Sam, 11-13): Waiting on its agent, Answered (its agent got it), or Done (or Failed) and not
+   * yet acknowledged. In Needs you and All these leave the main flow for the Pending card at its end, so only what needs
+   * him stays in it. In All, a card he answered keeps its place until the view changes (keepsNeeds). A card its agent
+   * closed is in History instead, whatever it reads.
    */
   const pendingStatus = (entry: HomeFeedEntry) => {
     const status = statusOf(entry, cardAuthor(entry, contextFor(entry)?.record).name);
-    return status === "Done" || status === "Failed" || status?.startsWith("Waiting on") ? status : undefined;
+    return status === "Done" || status === "Failed" || status === "Answered" || status?.startsWith("Waiting on") ? status : undefined;
   };
   const showsPending = !history && !snoozedOnly;
   const visible = (entry: HomeFeedEntry) => matchesFilters(entry) && !undoBar.hidden(lineageKey(entry));
   // A card whose answer was held when the page closed keeps its place this session, so its "sent" or "not sent" line shows.
   const heldHere = (entry: HomeFeedEntry) => heldOutcomes.has(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
-  const pendingEntries = showsPending ? entries.filter((entry) => visible(entry) && !snoozedNow(entry, clock) && !expired(entry) && !closureOf(entry) && !attention(entry) && !keepsNeeds(entry) && !heldHere(entry) && !!pendingStatus(entry)).sort(compare) : [];
+  const pendingEntries = showsPending ? entries.filter((entry) => visible(entry) && !snoozedNow(entry, clock) && !expired(entry) && !closureOf(entry) && !agentClosed(entry) && !attention(entry) && !keepsNeeds(entry) && !heldHere(entry) && !!pendingStatus(entry)).sort(compare) : [];
   const pendingKeys = new Set(pendingEntries.map(keyOf));
   const matching = entries.filter((entry) => {
     if (!visible(entry) || pendingKeys.has(keyOf(entry))) return false;
     // A snoozed card is out of every view until its time comes, except the Filter's "Snoozed" list.
     if (snoozedOnly) return snoozedNow(entry, clock);
     if (history) return inDone(entry);
-    // Dropped, acknowledged or past its "matters until": only in History, marked so.
-    if (snoozedNow(entry, clock) || expired(entry) || closureOf(entry)) return false;
+    // Dropped, acknowledged, past its "matters until", or closed by its agent: only in History, marked so.
+    if (snoozedNow(entry, clock) || expired(entry) || closureOf(entry) || agentClosed(entry)) return false;
     return view === "both" || needing(entry);
   }).sort((a, b) => { const first = contextFor(a)?.waiting; const second = contextFor(b)?.waiting; return first && second ? compareWaiting(first, second) || compare(a, b) : compare(a, b); });
   const grouped = groupCards(matching, (entry) => {
@@ -874,7 +897,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           onNavigate={(next) => { engage(next); setOpened((current) => new Set(current).add(lineageKey(next))); }}
           {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
-          ? <p role="status" className="mt-3.5 text-sm">Ask your agent about this card.</p>
+          ? <><p role="status" className="mt-3.5 text-sm text-muted-foreground">Open Details to see this card's content, exactly as {author.name} sent it.</p>
+            <div className="mt-3 border-t border-border pt-2"><CardDetails card={entry.state.card} typed={{}} agent={author.name}>
+              <CardFacts entry={entry} reference={reference} {...(priority !== undefined ? { priority } : {})} />
+            </CardDetails></div></>
           : <AnswerForm key={key} drafts={ownDrafts.current} draftKey={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
             attention={attention(entry)} closed={closed} stale={retained} reference={reference} onSaved={onSaved} {...(priority !== undefined ? { priority } : {})}
             foot={{ onClose: (kind) => closeCard(entry, kind), onLater: (until) => askLater(entry, until), ...(wake ? { wake } : {}) }} />}

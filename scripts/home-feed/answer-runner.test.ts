@@ -7,7 +7,7 @@ import {
   appendFeedMessage, appendFeedResponse, listFeedResponseDeliveries, listFeedResponses, projectFeedResponseNotification, readFeedResponseHandling, restoreFeedRecords,
 } from "@tinycloud/sdk-services/feed";
 import type { FeedCard, FeedResponse, FeedResponsePayload, FeedRestoreDeliveryPolicy, FeedRestoreOrigin } from "@tinycloud/sdk-services/feed";
-import { answerKey, boardKey, safeSitrepActionSummary, stateKey, validateSitrepAction } from "@tinyboilerplate/core/feed/sitrep";
+import { SAM_THREAD_PREFIX, answerKey, boardKey, compactStamp, parseThreadMessage, safeSitrepActionSummary, stateKey, threadKey, validateSitrepAction } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord, Kind } from "@tinyboilerplate/core/feed/sitrep";
 import { handedOffResponse, runAnswerRunner, runnerLogLine, writeThroughResponse } from "./answer-runner";
 import { drainHomeMirrorResponses, publishHomeMirror } from "./bridge";
@@ -113,12 +113,145 @@ test("a different answer already stored under the same key is left as it is and 
   expect(await handled(f, card, response)).toBe(false);
 });
 
-test("a comment or a card action is not written through: no board write, no acknowledgement", async () => {
+test("a card action is not written through: no board write, no acknowledgement", async () => {
   const { f, card } = await mirrored("ask");
   const action = await message(f, card, { type: "feed.acknowledge", version: 1, data: {} });
   await expect(through(f, action)).rejects.toThrow("This response is not one the runner writes through");
   expect(kvWrites(f)).toBe(0);
   expect(await handled(f, card, action)).toBe(false);
+});
+
+/** A note as Home's typed-card composer sends it (SitrepCard `threadMessage`) on a card without an owner route. */
+const NONCE = "0123456789abcdef0123456789abcdef";
+const homeNote = (kind: Kind, id: string, text: string, extra: Record<string, unknown> = {}) => ({
+  side: "sam", kind, id, at: T1, text, messageId: `${compactStamp(T1)}-${NONCE}`, ...extra,
+});
+const ROUTE = { version: 1, targets: [{ recipientKey: "known-owner", agentId: "00000000-0000-4000-8000-000000000001", provider: "omp" }] };
+
+test("a note typed on a feed card is written to the card thread where the sitrep UI writes Sam's messages, then Home is told it was received", async () => {
+  for (const kind of ["ask", "task"] as const) {
+    const { f, record, card } = await mirrored(kind);
+    // Padded as typed: stored trimmed, as the sitrep UI's schema stores it.
+    const response = await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote(kind, record.id, "  Which one is cheaper?\n") });
+    const key = threadKey("sam", kind, record.id, T1, NONCE);
+    expect(await through(f, response)).toEqual({ wrote: "thread", key, stored: "written", received: "recorded" });
+    // Exactly the sitrep UI's stored shape (CardThread.tsx: SamThreadMessageSchema.parse({kind,id,at,text})): no route, side or id.
+    const stored = JSON.parse(f.values.get(key)!.text);
+    expect(stored).toEqual({ kind, id: record.id, at: T1, text: "Which one is cheaper?" });
+    // What the officer relay (card-thread-watch) lists and parses: a Sam message under sam/thread/, keeping Home's message id.
+    expect(key.startsWith(SAM_THREAD_PREFIX)).toBe(true);
+    expect(parseThreadMessage(key, stored)).toEqual({ ...stored, side: "sam", messageId: `${compactStamp(T1)}-${NONCE}` });
+    expect(take(await readFeedResponseHandling(f.output, { ...identity(card), responseId: response.responseId })).acknowledgement).toMatchObject({ phase: "acknowledged" });
+    f.resetCalls();
+    expect(await through(f, response)).toMatchObject({ stored: "already", received: "already" });
+    expect(kvWrites(f)).toBe(0);
+  }
+});
+
+test("an explicit resend from Home keeps the id of the message it resends", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const original = `${compactStamp(T0)}-${"f".repeat(32)}`;
+  const response = await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Sending this again.", { resendOf: original }) });
+  const { key } = await through(f, response);
+  expect(JSON.parse(f.values.get(key)!.text)).toEqual({ kind: "ask", id: record.id, at: T1, text: "Sending this again.", resendOf: original });
+});
+
+test("a note the sitrep UI would refuse is not written through: a secret, over 1000 characters, another card's, a bad or traversing id, an author field, or saved as an answer", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const refused = [
+    await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, `The code is ${PRIVATE} ghp_${"a".repeat(36)}`) }),
+    await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "x".repeat(1001)) }),
+    await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", "another-card", "Wrong card") }),
+    await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Bad id", { messageId: `${compactStamp(T0)}-${NONCE}` }) }),
+    await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Traversal", { messageId: `../../answers/${record.id}/${compactStamp(T1)}-${NONCE}` }) }),
+    await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Slash", { messageId: `${compactStamp(T1)}-${NONCE.slice(0, 16)}/${NONCE.slice(16)}` }) }),
+    await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Signed as an officer", { from: "Holden" }) }),
+    await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Signed as an author", { author: "Holden" }) }),
+    take(await appendFeedResponse(f.output, f.responses, { ...identity(card), responseId: randomUUID(), kind: "answer", choiceId: "yes", text: "A note", createdAt: T1 }, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Saved as an answer") })),
+  ];
+  for (const response of refused) {
+    await expect(through(f, response)).rejects.toThrow();
+    expect(await handled(f, card, response)).toBe(false);
+  }
+  expect(kvWrites(f)).toBe(0);
+});
+
+test("a note Home routed to named recipients is refused, not re-routed to the card's owner", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const response = await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "For the named officer only", { delivery: ROUTE }) });
+  await expect(through(f, response)).rejects.toThrow("This note names recipients the board's card thread cannot route to");
+  expect(kvWrites(f)).toBe(0);
+  expect(await handled(f, card, response)).toBe(false);
+});
+
+test("a note on a card closed since Sam wrote it is refused, so Home never says it was received", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const response = await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Too late") });
+  const key = boardKey("ask", record.id), head = JSON.parse(f.values.get(key)!.text);
+  take(await f.legacy.put(key, JSON.stringify({ ...head, status: "superseded", updatedAt: NOW }), { prefix: "", contentType: "application/json" }));
+  f.resetCalls();
+  await expect(through(f, response)).rejects.toThrow("This card is closed; the note was not passed on");
+  expect(kvWrites(f)).toBe(0);
+  expect(await handled(f, card, response)).toBe(false);
+});
+
+test("a restored note this runner may not receive is neither written nor acknowledged", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const responseId = randomUUID();
+  const origin: FeedRestoreOrigin = { sourceSpaceId: f.space, namespace: "xyz.tinycloud.rocinante", snapshotId: "synthetic-snapshot", sourceKey: `sam/thread/ask/${record.id}/${compactStamp(T1)}-${NONCE}.json` };
+  take(await restoreFeedRecords({ output: f.output, responses: f.responses }, { cards: [], responses: [{
+    response: { ...identity(card), responseId, kind: "message", text: "Historical card message", createdAt: T1 },
+    payload: { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Meant for another officer") }, origin, deliveries: [policy(origin, { recipient: "another-runner" })],
+  }] }));
+  const saved = take(await listFeedResponses(f.responses, { afterSequence: 0, limit: 1000 })).find((item) => item.responseId === responseId)!;
+  await expect(through(f, saved)).rejects.toThrow("This response is not deliverable to this runner");
+  expect(kvWrites(f)).toBe(0);
+  expect(await handled(f, card, saved)).toBe(false);
+});
+
+test("a value written between the runner's check and its write is kept, never overwritten: a note and an answer", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const cases = [
+    { response: await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Mine") }), key: threadKey("sam", "ask", record.id, T1, NONCE), theirs: { kind: "ask", id: record.id, at: T1, text: "Theirs" } },
+    { response: await answer(f, card, { askId: record.id, action: "answer", choice: "yes", text: "", at: T1 }), key: answerKey(record.id, T1), theirs: { askId: record.id, action: "drop", text: "", at: T1 } },
+  ];
+  for (const { response, key, theirs } of cases) {
+    let raced = false;
+    // Another writer lands right after the runner's put-if-absent pre-read saw nothing.
+    const legacy = {
+      get: async (target: string, options: unknown) => {
+        const result = await f.legacy.get(target, options as never);
+        if (target === key && !raced) { raced = true; take(await f.legacy.put(key, JSON.stringify(theirs), { prefix: "", contentType: "application/json" })); }
+        return result;
+      },
+      put: (target: string, value: unknown, options: unknown) => f.legacy.put(target, value as never, options as never),
+    } as unknown as HomeMirrorContext["legacy"];
+    await expect(through(f, response, { ...f.ctx, legacy })).rejects.toThrow();
+    expect(raced).toBe(true);
+    expect(JSON.parse(f.values.get(key)!.text)).toEqual(theirs);
+    expect(await handled(f, card, response)).toBe(false);
+  }
+});
+
+test("a different message already stored under the note's key is left as it is and nothing is acknowledged", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const key = threadKey("sam", "ask", record.id, T1, NONCE);
+  take(await f.legacy.put(key, JSON.stringify({ kind: "ask", id: record.id, at: T1, text: "Something else" }), { prefix: "", contentType: "application/json" }));
+  const response = await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "Which one is cheaper?") });
+  await expect(through(f, response)).rejects.toThrow("The board already holds a different message for this response");
+  expect(JSON.parse(f.values.get(key)!.text).text).toBe("Something else");
+  expect(await handled(f, card, response)).toBe(false);
+});
+
+test("the log line for a note has ids and times only, never the note", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const response = await message(f, card, { type: "sitrep.thread", version: 1, data: homeNote("ask", record.id, "A private thought about pricing") });
+  const log = join(f.directory, "runner.log");
+  const { value: code } = await quietly(() => runAnswerRunner(runnerArgs(log), async () => JSON.stringify(projectFeedResponseNotification(response)), session(f)));
+  expect(code).toBe(0);
+  const line = await readFile(log, "utf8");
+  expect(line).not.toContain("private thought");
+  expect(JSON.parse(line)).toMatchObject({ responseId: response.responseId, wrote: "thread", stored: "written", received: "recorded" });
 });
 
 test("the header on stdin grants nothing: a response the owner's database does not hold is refused", async () => {
@@ -249,4 +382,13 @@ test("the runner exits non-zero without a source, a recipient, spaces or a respo
   });
   expect(errors.join("")).not.toContain(PRIVATE);
   for (const error of errors) expect(JSON.parse(error)).toMatchObject({ error: { code: "INVALID_INPUT", step: "arguments" }, delivery: "not-confirmed" });
+});
+
+test("a drop from Home (an ask's Drop this card) is written where the board reads Sam's answers, then acknowledged", async () => {
+  const { f, record, card } = await mirrored("ask");
+  const response = await answer(f, card, { askId: record.id, action: "drop", text: "", at: T1 });
+  const result = await through(f, response);
+  expect(result).toMatchObject({ wrote: "answer", key: answerKey(record.id, T1), stored: "written", received: "recorded" });
+  expect(JSON.parse(f.values.get(answerKey(record.id, T1))!.text)).toMatchObject({ askId: record.id, action: "drop" });
+  expect(await handled(f, card, response)).toBe(true);
 });
