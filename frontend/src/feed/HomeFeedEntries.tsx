@@ -143,6 +143,7 @@ function CardFacts({ entry, reference, priority }: { entry: HomeFeedEntry; refer
     ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
     ["Type", entry.state.card.kind.charAt(0).toUpperCase() + entry.state.card.kind.slice(1)],
     ...(job ? [["Working on", job] as [string, ReactNode]] : []),
+    ...(projectOf(entry) ? [["Project", projectOf(entry)] as [string, ReactNode]] : []),
     ["Reference", reference],
     // P0 and P1 show on the card itself; every level shows here.
     ...(priority !== undefined ? [["Priority", `P${priority}`] as [string, ReactNode]] : []),
