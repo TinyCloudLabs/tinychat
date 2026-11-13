@@ -209,7 +209,7 @@ export function createHostedAssemblyAiClient(config: {
       });
     } catch {
       if (init.signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
-      throw new AssemblyAiError("network", "Could not reach TinyCloud One's server.");
+      throw new AssemblyAiError("network", "Couldn't reach TinyCloud One's server.");
     }
     if (!response.ok && !(init.allowConflict && response.status === 409)) {
       const error = await hostedError(response);

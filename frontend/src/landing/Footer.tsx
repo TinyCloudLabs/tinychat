@@ -34,7 +34,7 @@ export function Footer() {
         </div>
 
         <div className="mt-10 flex flex-col items-start justify-between gap-2 border-t border-border pt-6 text-xs text-muted-foreground sm:flex-row sm:items-center">
-          <span>© TinyCloud One</span>
+          <span>© TinyCloud Labs</span>
           <span>Built on TinyCloud</span>
         </div>
       </div>
