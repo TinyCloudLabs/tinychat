@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, cardTime, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
+import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox, type AnswerOption } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass, type CardClose } from "./CardActions";
 import { safeUrl } from "./feedData";
@@ -12,7 +12,21 @@ import { HomeCardThread } from "./HomeCardThread";
 import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
 
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
-function stamp(at: string) { return cardTime(at, Date.now()); }
+const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
+/** A typed card's times, in the feed's medium style: "13 Nov, 09:00", with the year when it isn't this one. */
+function stamp(at: string) {
+  const time = Date.parse(at);
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  const year = date.getFullYear() === new Date().getFullYear() ? "" : ` ${date.getFullYear()}`;
+  return `${date.getDate()} ${MEDIUM_MONTH.format(date)}${year}, ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+// An approval's kind in an owner's words (Monica, 11-13); a value with no plain word is left out, never shown raw.
+const GO_WORDS: Record<string, string> = { release: "Go-ahead to release", deploy: "Go-ahead to deploy", spend: "Go-ahead to spend", publish: "Go-ahead to publish" };
+const APPROVAL_WORDS: Record<string, string> = { go: "Go-ahead", openkey: "Approval in OpenKey", delegation: "Delegated access", claude: "Access for Claude", secret: "A secret" };
+function approvalWords(type: string, kind?: string): string | undefined {
+  return type === "go" && kind && GO_WORDS[kind] ? GO_WORDS[kind] : APPROVAL_WORDS[type];
+}
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
 /** An approval's one action ("Give the go", "Save code", "I've done this step"): a normal-size dark button, as in the lab. */
 const approveClass = "inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50";
@@ -536,7 +550,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   return <div className="mt-3.5 space-y-3 text-sm" onFocusCapture={() => { engagedOnce.current = true; }}>
     {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
-    <p>{approval.approvalType}{approval.approvalKind && ` · ${approval.approvalKind}`}{expired && " · Expired"} · Issued {stamp(approval.issuedAt)}{approval.expiresAt && ` · Expires ${stamp(approval.expiresAt)}`}</p>
+    <p>{[approvalWords(approval.approvalType, approval.approvalKind), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`].filter(Boolean).join(" · ")}</p>
     {approval.permissions && <p><strong className="font-semibold">Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
     {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
     {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
