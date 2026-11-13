@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
-import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, UNDO_SECONDS, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass, sourceRow } from "./cardKit";
+import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, FactRows, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, UNDO_SECONDS, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass, sourceRow, type FactRow } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox, type AnswerOption } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass, type CardClose } from "./CardActions";
 import { safeUrl } from "./feedData";
@@ -459,14 +459,14 @@ export function SitrepCard(props: Props) {
       {/* On an ask, "Drop this card" is an answer: it waits out the undo, then tells the agent to drop the question, so
           the agent hears it (a plain close would only hide the card here). */}
       <CardDetails card={entry.state.card} typed={{ record }} agent={agent} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
-        <dl>{([
+        <FactRows rows={[
           ["Agent", record.from !== agent ? `${record.from} (through ${agent})` : agent],
           ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
           ["Type", `${kindWord(record.kind)} · ${record.status}${pinned ? ` · Priority (${pinned.reason})` : ""}`],
           ...(typeof entry.state.card.payload?.project === "string" && entry.state.card.payload.project ? [["Project", entry.state.card.payload.project] as [string, ReactNode]] : []),
           ["Reference", <code className="block truncate select-all text-xs">{record.id}</code>],
           ...sourceRow(entry.state.card.payload),
-        ] as [string, ReactNode][]).map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>
+        ] as FactRow[]} />
         {receipt && <p>{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
         {routeReady && <p className="text-[12.5px] leading-[1.4] text-muted-foreground">Messages on this card go to: {destinations.map((recipient) => <span key={recipient.recipientKey} className="block break-all font-mono">{recipient.legacyName} · {recipient.runtimeTarget.agentId}</span>)}</p>}
         {!!state?.notes?.length && <div aria-label="Your private notes" className="space-y-1"><p className={fineClass}>Your private notes. Only you can see them; they aren't sent to the agent.</p>{state.notes.map((note) => <p key={note.id} className="whitespace-pre-wrap">{note.text} <time className={fineClass} dateTime={note.at}>{stamp(note.at)}</time></p>)}</div>}
