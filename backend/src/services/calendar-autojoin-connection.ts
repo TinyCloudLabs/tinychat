@@ -38,6 +38,9 @@ export interface CalendarAutojoinConnectionOptions {
   grantIndex?: CalendarAutojoinGrantIndex;
   /** Background-priority credential reader for restart backfill; never enumerates credential rows. */
   backfillCredentials?: CredentialStore;
+  /** The worker's store, for the reads of the calls the worker makes every tick (cleanupEnabling,
+   *  accessToken). Default `store`. Writes and every other read use `store`. */
+  workerStore?: CalendarAutojoinStore;
   /** TC-1013 S4b: removes the tenant's Exo state. Runs after custody, enablement and revocation; a failure is logged and does not block disconnect. */
   teardownExoOwner?: (owner: string) => Promise<unknown>;
 }
@@ -46,6 +49,11 @@ export interface CalendarAutojoinConnectionOptions {
 export class CalendarAutojoinConnection {
   private readonly transactions = new Map<string, Transaction>();
   private readonly refreshing = new Map<string, Promise<string>>();
+  /** Access tokens this process read or refreshed, by tenant, so a scan reads no custody while one is
+   *  valid. A disable bumps the generation, which retires the entry. */
+  private readonly accessTokens = new Map<string, { generation: number; token: string; expiresAt: number }>();
+  /** Disabled/reconnect tenants whose leftover custody this process already removed, at that generation. */
+  private readonly custodyCleared = new Map<string, number>();
   private readonly now: () => number;
   readonly grantIndex: CalendarAutojoinGrantIndex;
   /** Serialize credential installation plus index publication against decrement-and-check. */
@@ -319,6 +327,9 @@ export class CalendarAutojoinConnection {
   async backfillGrantReferences(rows: CalendarConnection[], store = this.options.store, stopping = () => false,
     start = this.grantIndex.beginBackfill()): Promise<void> {
     if (!this.grantIndex.needsBackfill || stopping()) return;
+    // Never trust the index from memory: every row the pass reads comes from the node. A row
+    // missing from the cached listing could only make a later disconnect revoke, never skip.
+    store.rereadConnections();
     const seen = new Set(rows.map(row => row.tenant.toLowerCase()));
     let failed = false;
     for (const listed of rows) {
@@ -349,26 +360,32 @@ export class CalendarAutojoinConnection {
 
   async cleanupEnabling(tenant: string): Promise<void> {
     await this.options.coordinator.run(tenant, async () => {
-      const row = await this.readConnection(tenant);
+      const row = await this.readConnection(tenant, this.options.workerStore);
       if (!row) this.grantIndex.forget(tenant);
       else if (!liveGoogleConnection(row, this.now())) this.grantIndex.detach(tenant);
       if (row?.state === "enabling" && (row.setupExpiresAt ?? 0) <= this.now()) {
         await this.disableLocked(tenant, "setup_expired");
-      } else if (row && (row.state === "disabled" || row.state === "needs_reconnect")) {
-        // Recover a crash after persisted disable but before local credential deletion.
+      } else if (row && (row.state === "disabled" || row.state === "needs_reconnect")
+        && this.custodyCleared.get(tenant.toLowerCase()) !== row.generation) {
+        // Recover a crash after persisted disable but before local credential deletion. Every
+        // credential write first moves the row out of this state at a new generation, so one check
+        // per generation per process suffices.
         let credentialPresent: boolean;
         try { credentialPresent = !!await this.options.credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant); }
         catch (error) { this.grantIndex.invalidate(); throw error; }
         if (credentialPresent) {
           await this.options.credentials.delete(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
         }
+        this.custodyCleared.set(tenant.toLowerCase(), row.generation);
       }
     });
   }
 
   async accessToken(tenant: string, forceRefresh = false): Promise<string> {
-    const connection = await this.readConnection(tenant);
+    const connection = await this.readConnection(tenant, this.options.workerStore);
     if (connection?.state !== "enabled") throw new CalendarAutojoinError("autojoin_disabled");
+    const cached = this.accessTokens.get(tenant.toLowerCase());
+    if (!forceRefresh && cached?.generation === connection.generation && cached.expiresAt > this.now() + 60_000) return cached.token;
     const key = `${tenant}:${connection.generation}`;
     const existing = this.refreshing.get(key);
     if (existing) return existing;
@@ -383,7 +400,10 @@ export class CalendarAutojoinConnection {
       await this.needsReconnect(tenant, generation);
       throw new CalendarAutojoinError("needs_reconnect", 401);
     }
-    if (!forceRefresh && old.expiresAt && Date.parse(old.expiresAt) > this.now() + 60_000) return old.accessToken;
+    if (!forceRefresh && old.expiresAt && Date.parse(old.expiresAt) > this.now() + 60_000) {
+      this.accessTokens.set(tenant.toLowerCase(), { generation, token: old.accessToken, expiresAt: Date.parse(old.expiresAt) });
+      return old.accessToken;
+    }
     let tokens: GoogleTokenPayload;
     try { tokens = await this.options.oauth.refresh(old.refreshToken); }
     catch (error) {
@@ -402,6 +422,7 @@ export class CalendarAutojoinConnection {
         try { await this.options.credentials.rotate({ source: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, address: tenant, secret }); }
         catch (error) { this.grantIndex.invalidate(); throw error; }
         this.holdGrant(latest, secret);
+        this.accessTokens.set(tenant.toLowerCase(), { generation, token: secret.accessToken, expiresAt: Date.parse(secret.expiresAt!) });
       });
       return tokens.access_token;
     });
@@ -439,6 +460,7 @@ export class CalendarAutojoinConnection {
     catch (error) { this.grantIndex.invalidate(); throw error; }
     try {
       this.grantIndex.detach(tenant);
+      this.accessTokens.delete(tenant.toLowerCase());
       this.options.onDisabled?.(tenant);
       for (const [key, value] of this.transactions) if (value.tenant === tenant) this.transactions.delete(key);
       const occurrences = await this.options.store.listOccurrences(tenant);

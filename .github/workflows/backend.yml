@@ -9,6 +9,10 @@ name: Backend
 # The backend suite also reads the Phala deploy workflow, compose file and
 # deploy scripts, so changes to those run it too.
 #
+# The Home mirror (scripts/home-feed, TC-2204) runs here too: it is owner-side
+# tooling over the shared packages, and no other workflow runs its tests
+# (TC-2921).
+#
 # Lint stays out: the repo-wide `bun run lint` still has errors in backend/
 # and artifacts/.
 
@@ -27,6 +31,8 @@ on:
       - ".github/deploy-tools/**"
       - ".github/workflows/deploy-backend-phala.yml"
       - ".github/workflows/backend.yml"
+      - "scripts/home-feed/**"
+      - "scripts/agent-sync/**"
 
 permissions:
   contents: read
@@ -62,6 +68,9 @@ jobs:
 
       - name: Package tests (core, client, server incl. node-sdk renewal)
         run: bun run test:packages
+
+      - name: Home mirror tests (scripts/home-feed)
+        run: bun test scripts/home-feed
 
       - name: Install checksum-pinned Vector (same release as the log-shipper image)
         run: |

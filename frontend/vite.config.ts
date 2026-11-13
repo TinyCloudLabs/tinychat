@@ -106,6 +106,23 @@ export default defineConfig(({ command, mode }) => {
         },
       } satisfies Plugin;
     })(),
+    {
+      // Open the connections to the TinyCloud node and the backend while the bundle loads, so the
+      // first request after sign-in restore does not also pay DNS, TCP and TLS (two round trips to
+      // the node's gateway). Only origins this build is configured with; dev without them adds none.
+      name: "tinychat-preconnect",
+      transformIndexHtml() {
+        const env = loadEnv(mode, rootDir, "VITE_");
+        const origins = [env.VITE_TINYCLOUD_HOST, env.VITE_BACKEND_URL].flatMap((value) => {
+          try { return value ? [new URL(value).origin] : []; } catch { return []; }
+        });
+        // The SDK's fetches are CORS without credentials: `crossorigin` makes the preconnected socket the one they use.
+        return [...new Set(origins)].flatMap((href) => [
+          { tag: "link", attrs: { rel: "preconnect", href, crossorigin: "" }, injectTo: "head-prepend" as const },
+          { tag: "link", attrs: { rel: "dns-prefetch", href }, injectTo: "head-prepend" as const },
+        ]);
+      },
+    },
     nodePolyfills({ globals: { Buffer: true, process: true, global: true } }),
     react(),
     // Installable web app (PWA). Builds dist/manifest.webmanifest (linked from index.html) and a Workbox

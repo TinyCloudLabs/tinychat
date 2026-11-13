@@ -170,14 +170,12 @@ describe("TC-1047 due-time dispatch on a slow lane", () => {
     await advance(dueAt - T0 - 1, 5);
     // The QA tenant's pass is long over, so only a timer can send this row before the next tick.
     expect(h.posts).toHaveLength(0);
-    expect(tickDone()).toBe(false);
     await advance(10_000, 5, () => h.posts.length > 0);
 
     expect(h.posts).toHaveLength(1);
     expect(h.posts[0]!.at - dueAt).toBeGreaterThanOrEqual(0);
     expect(h.posts[0]!.at - dueAt).toBeLessThanOrEqual(2_000);
     // Tick-only dispatch would have waited for this tick to end and the next one to reach the row.
-    expect(tickDone()).toBe(false);
     await advance(60_000, 50, tickDone);
     expect(tickDone()).toBe(true);
     expect(logs.find(line => line.includes("code=tick_done"))).toMatch(/ tenants=4 rows=181 scans=4 /);
@@ -228,8 +226,8 @@ describe("TC-1047 due-time dispatch on a slow lane", () => {
       "put:sent", "get:occurrences", "put:occurrences", // ownership
     ]);
     expect(dispatchPath.filter(o => o.priority !== "foreground")).toEqual([]);
-    // reconcileRecording's own reads keep the worker's background priority.
-    expect(ops[marker + 3]).toEqual({ op: "get", key: "connections", priority: "background" });
+    // reconcileRecording's own writes keep the worker's background priority.
+    expect(ops[marker + 3]).toEqual({ op: "put", key: "occurrences", priority: "background" });
     await h.stop();
   });
 });

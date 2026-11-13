@@ -18,9 +18,9 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
   const [hiddenByScroll, setHiddenByScroll] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   // Stuck over the cards, it comes back slimmer (design round 6): it slides up so the part marked `data-float-keep`
-  // (the slider and the toolbar) sits at the top and the rest (the title) is out of view. Scrolled down, it slides
-  // further, so only the part marked `data-float-pin` (the toolbar) stays at the top: Filter and View stay in reach
-  // without moving the list (QA cb784d4, B1). Its height never changes, so the cards below never jump.
+  // (the tabs and Filter) sits at the top and the rest (the title) is out of view. Scrolled down, the part marked
+  // `data-float-pin` (the same row) stays at the top: the tabs and Filter stay in reach without moving the list
+  // (QA cb784d4, B1). Its height never changes, so the cards below never jump.
   const [stuck, setStuck] = useState(false);
   const [keepAt, setKeepAt] = useState(0);
   const [pinAt, setPinAt] = useState(0);
@@ -50,9 +50,6 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
         setHiddenByScroll(false);
         return;
       }
-      // The feed scrolling itself to hold a card in place while the cards morph (densityMorph marks it) is not you
-      // scrolling: the header stays as it is, so the card it holds stays clear of it.
-      if (scroller.hasAttribute("data-anchoring")) { travel = 0; return; }
       if (delta === 0) return;
       travel = Math.sign(delta) === Math.sign(travel) ? travel + delta : delta;
       if (travel > THRESHOLD_PX) setHiddenByScroll(true);

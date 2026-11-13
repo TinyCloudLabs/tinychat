@@ -34,6 +34,10 @@ export function validateConfig(value) {
   return { schemaVersion: 1, host: host(value.host), space: 'applications', ...(value.expectedOwner === undefined ? {} : { expectedOwner: value.expectedOwner }) };
 }
 const sameOwner = (a, b) => a.toLowerCase() === b.toLowerCase();
+// Both names reach the same TinyCloud node (one node DID): tee.node.tinycloud.xyz, the default, and node.tinycloud.xyz
+// through Cloudflare (TC-2923). A profile on either name serves TinyChat.
+const PRODUCTION_NODE_ORIGINS = ['https://node.tinycloud.xyz', 'https://tee.node.tinycloud.xyz'];
+const sameNode = (a, b) => a === b || (PRODUCTION_NODE_ORIGINS.includes(a) && PRODUCTION_NODE_ORIGINS.includes(b));
 
 /** Binds the onboarding profile (TC_PROFILE, else `default`). The official CLI verifies every approval. */
 export function createSetup({ runTc = createTcRunner(), statePath, executable = defaultTc(), profile = process.env.TC_PROFILE || 'default' }) {
@@ -66,14 +70,19 @@ export function createSetup({ runTc = createTcRunner(), statePath, executable = 
   const grantArgs = state => ['--profile', state.profile, '--host', state.config.host, 'auth', 'request',
     ...TINYCHAT_CAPS.flatMap(cap => ['--cap', cap]), '--grant', '--paste', '--expiry', '30d'];
   async function inspect(state, { access = false } = {}) {
-    const common = { schemaVersion: 1, profile: state.profile, host: state.config.host };
-    const onboarding = reason => ({ ...common, status: 'onboarding-required', reason, onboardingUrl: ONBOARDING_URL,
-      next: `Set up TinyCloud with ${ONBOARDING_URL}, then run prepare again.` });
     const listed = await json(['--json', 'profile', 'list']);
     if (!Array.isArray(listed.profiles)) fail('INVALID_RESPONSE');
     const stored = listed.profiles.find(entry => entry.name === state.profile);
+    if (stored) {
+      const profileHost = host(stored.host);
+      if (!sameNode(profileHost, state.config.host)) fail('CONTEXT_MISMATCH');
+      // Keep the profile's own name for the node, so every later CLI call and check uses one host.
+      state.config.host = profileHost;
+    }
+    const common = { schemaVersion: 1, profile: state.profile, host: state.config.host };
+    const onboarding = reason => ({ ...common, status: 'onboarding-required', reason, onboardingUrl: ONBOARDING_URL,
+      next: `Set up TinyCloud with ${ONBOARDING_URL}, then run prepare again.` });
     if (!stored) return onboarding('profile-missing');
-    if (host(stored.host) !== state.config.host) fail('CONTEXT_MISMATCH');
     const base = ['--profile', state.profile, '--host', state.config.host, '--json', 'context'];
     let value = await json(base);
     function validate() {
@@ -113,7 +122,9 @@ export function createSetup({ runTc = createTcRunner(), statePath, executable = 
       const comparison = compareSemver(version, SETUP_CLI_VERSION);
       if (Number.isNaN(comparison) || comparison < 0) fail('CLI_VERSION');
       await save(state);
-      return inspect(state, { access: true });
+      const result = await inspect(state, { access: true });
+      await save(state);
+      return result;
     },
     async context() {
       const state = await current();

@@ -1,5 +1,37 @@
 # @tinychat/backend
 
+## 0.8.0-beta.21
+
+### Patch Changes
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+
+## 0.8.0-beta.20
+
+### Patch Changes
+
+- be21a74: Google connections started on tinycloud.one return to tinycloud.one. The backend accepts two new `state` tags, `one.<nonce>` for the popup return and `onetab.<path>.<nonce>` for the same-tab return; both go to the fixed https://tinycloud.one origin when it is in the `FRONTEND_ORIGINS` allowlist (it is by default), and are refused like any unknown tag when it is not. Untagged, `tab.`, `home.`, `hometab.` and `native.` flows are unchanged.
+
+## 0.8.0-beta.19
+
+### Patch Changes
+
+- aa036e0: The backend accepts https://tinycloud.one, the Home app's new site, for CORS and the sign-in (SIWE) domain, alongside tinycloud.chat and home.tinycloud.xyz. It is one more exact origin in the default `FRONTEND_ORIGINS` list; `www.tinycloud.one`, other ports, other schemes and lookalike hosts are still refused. Google connections started on tinycloud.one still return to `FRONTEND_URL` until they get their own return tag.
+
+## 0.8.0-beta.18
+
+### Patch Changes
+
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
+## 0.8.0-beta.17
+
+### Patch Changes
+
+- 095dda1: TC-2917: the calendar autojoin worker reads connection and meeting rows from an in-process copy instead of the node every 30 s tick. Idle users, disabled connections and finished meetings no longer cost node calls; scheduling, due-time timers and dispatch policy reads are unchanged.
+
 ## 0.8.0-beta.16
 
 ### Patch Changes

@@ -15,8 +15,12 @@ bun frontend/scripts/reviewer-seed/cli.ts \
   --owner  did:pkh:eip155:1:0xREVIEWER \
   --allow-owner did:pkh:eip155:1:0xREVIEWER \
   --request-out ./reviewer-seed-request.json \
+  --production \
   --dry-run                                   # or: --confirm tinycloud:pkh:eip155:1:0xREVIEWER:applications
 ```
+
+`--production` selects the production node, `https://tee.node.tinycloud.xyz`. For any other node pass
+`--host <origin>` instead. One of the two is required; the CLI never picks a node on its own.
 
 1. The CLI makes a session key in memory for this run and writes a capability request
    (`tinycloud.auth.request`) for it to `--request-out`, which must not exist yet. It prints the
@@ -37,7 +41,7 @@ bun frontend/scripts/reviewer-seed/cli.ts \
 | `--allow-owner` | yes, repeatable | The operator's allowlist. Pass the reviewer DID only. Never read from the environment. It guards against a mistyped `--owner`; the owner's grant is what authorizes the run. |
 | `--request-out` | yes | A new file for the capability request. An existing file is not overwritten (usage error). Not secret. |
 | `--dry-run` / `--confirm <space id>` | one of them | A dry run writes nothing. Writing needs `--confirm` set to the same space id as `--space`. |
-| `--host` | no | Node origin, `https://` with no path. Default `https://tee.node.tinycloud.xyz`. |
+| `--host <origin>` / `--production` | exactly one | The node to use. `--host` takes an `https://` origin with no path. `--production` selects the production node, `https://tee.node.tinycloud.xyz`. There is no default node: a run without either, or with both, is a usage error. |
 | grant JSON on stdin | yes | The owner's delegation to this run's session key. |
 
 The CLI never reads or prints a private key and never prints or stores the session key or the grant.
@@ -79,11 +83,13 @@ The CLI exits 2 (usage) or 3 (refused) and writes nothing when any check below f
 allowlist, owner/space and confirmation checks run before the capability request is written, so the
 owner is never asked to grant a run that would be refused.
 
+- neither or both of `--host` and `--production` are given, or `--host` is not an `https://` origin
+  (usage error);
 - neither `--dry-run` nor `--confirm` is given (usage error), or `--confirm` is not exactly `--space`
   (`CONFIRMATION_REQUIRED`);
 - `--owner` is not on `--allow-owner` (`OWNER_NOT_ALLOWLISTED`);
 - `--space` is not `--owner`'s applications space, or the grant does not match the target (`TARGET_MISMATCH`):
-  it must be addressed to this run's session key, issued by `--owner` for `--space` on `--host`,
+  it must be addressed to this run's session key, issued by `--owner` for `--space` on the selected node,
   unexpired and at most 24 hours long, and no wider than the request (plus
   `tinycloud.capabilities/read`, which OpenKey adds). This is checked twice before use: on the
   grant's transport fields (listed resources, flat path and actions), and on its signed UCAN
@@ -169,6 +175,7 @@ interrupted run of this revision was finished) or `already-seeded` (nothing writ
   the request before use, failing closed on anything wider or not a compact UCAN, and requires the
   grant's `cid` to be the CID of the checked bytes; the node verifies the signature and the chain to
   the owner. The handle's owner DID comes from the grant, so `seed.ts` checks it against the target again.
+- The node comes only from `--host` or `--production`; nothing defaults to the production node.
 - The allowlist and target come only from flags (`args.ts` `parseSeedArgs`); `seed.ts`
   `assertSeedTarget` checks the owner, the space and the confirmation before the request is written.
   The allowlist is a guard against a mistyped owner, not authority.
@@ -183,8 +190,8 @@ interrupted run of this revision was finished) or `already-seeded` (nothing writ
 
 ## Tests
 
-`bun test scripts/reviewer-seed` from `frontend/` runs the seed's 11 tests against in-memory SQLite
-and KV: refusal of a non-empty space, of a missing or wrong confirmation, of an owner off the
+`bun test scripts/reviewer-seed` from `frontend/` runs the seed's 12 tests against in-memory SQLite
+and KV: refusal of a run with no node, or two, chosen (`--host` / `--production`); refusal of a non-empty space, of a missing or wrong confirmation, of an owner off the
 allowlist and of a mismatched grant (transport fields and signed payload); a dry run that writes
 nothing; a no-op rerun; resuming an interrupted run, and refusing one whose space gained rows the
 seed did not write; and the seeded items as Home's thread list, Feed and Library read them.

@@ -14,6 +14,60 @@
 - TC-2208: Keep focused approval controls, including code-less confirmations, and consent-link interactions bound to their original issuance until explicit navigation; retain archive-only answers, threads, claims, and commands in History; isolate group priority by registered source or validated archive origin.
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
+- TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
+
+## 0.14.0-beta.51
+
+### Patch Changes
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+
+## 0.14.0-beta.50
+
+### Patch Changes
+
+- e4c47d6: The reviewer seed CLI no longer defaults to the production node: pass `--host <origin>`, or `--production` for `https://tee.node.tinycloud.xyz`. Neither, or both, is a usage error.
+
+## 0.14.0-beta.49
+
+### Patch Changes
+
+- be21a74: Connecting Google on tinycloud.one now finishes on tinycloud.one: the popup and same-tab flows tag their return with `one.`/`onetab.`. tinycloud.chat and home.tinycloud.xyz tag as before.
+
+## 0.14.0-beta.48
+
+### Patch Changes
+
+- 0cb46eb: The TinyChat retrieval skill (now 0.1.1-onboarding.27) and the reviewer seed default to `https://tee.node.tinycloud.xyz` again, pending the node-host privacy decision. A CLI profile on `https://node.tinycloud.xyz` still works.
+
+  Details: TC-2923
+
+## 0.14.0-beta.47
+
+### Patch Changes
+
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
+## 0.14.0-beta.46
+
+### Patch Changes
+
+- f6f65ac: Sign-in works again on Android phones with an outdated System WebView (before Chromium 130, such as the stock WebView 113 on Android 14). Those WebViews read `xyz.tinycloud.exo://openkey/callback` with an empty host, so the OpenKey SDK refused the redirect URI with "Private-use redirect URI must have a host" before sign-in started, and a stored session couldn't be restored either. `patches/` now carries a fix to `@openkey/sdk-capacitor@0.2.0-beta.0` that reads the host from the path when the WebView leaves it empty, and still rejects a hostless redirect or a callback to another host or path. The same fix is going upstream to OpenKey. When the SDK release containing it lands, remove the patch, its `patchedDependencies` entry, and the `COPY patches` line in `backend/Dockerfile`.
+- 56edd41: Home Feed on a new device opens its live-update stream once, after the first load names the agents, instead of first for the registry alone and again for the agents (two node requests fewer per new-device open). Adds a per-PR gate on how many node requests and dependent rounds a Feed open costs (warm, new device, first ready, and an idle minute with the node's stream reconnect).
+
+## 0.14.0-beta.45
+
+### Patch Changes
+
+- c5ed3f3: Home opens its connections to the TinyCloud node and the backend while the app bundle loads (`preconnect` and `dns-prefetch` hints for the build's configured origins), so the first request after the session restores no longer also pays DNS, TCP and TLS.
+
+## 0.14.0-beta.44
+
+### Patch Changes
+
+- b5d30c6: Home's feed puts less code in the startup script, so the startup script is back under its size budget. The card animations' code, a post's page and the brief reader now load from their own files once the feed has shown. Cards still show at once, and they animate as before once that code has loaded.
 
 ## 0.14.0-beta.43
 

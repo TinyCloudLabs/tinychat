@@ -4,6 +4,7 @@ import { stubSdkDomGlobals } from "../test/sdkDomGlobals";
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { OpenKeyNativeError } from "@openkey/sdk-capacitor";
+import { OpenKeyNative as SdkOpenKeyNative } from "@openkey/sdk-capacitor";
 import { UserFacingError } from "./authErrors";
 import type {
   NativeSession,
@@ -45,7 +46,8 @@ import {
 import APP_MANIFEST from "../../../manifest.json";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111";
-const HOST = "https://tee.node.tinycloud.xyz";
+const HOST = "https://node.tinycloud.xyz";
+const TEE_HOST = "https://tee.node.tinycloud.xyz";
 const SPACE_ID = "did:pkh:eip155:1:" + ADDRESS + "/applications";
 
 const delegation: TinyCloudDelegation = {
@@ -247,6 +249,56 @@ describe("nativeClientOptions", () => {
       { VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID, VITE_OPENKEY_HOST: "openkey.example.com" },
       HOST,
     )).toThrow('Native sign-in is not configured in this build (VITE_OPENKEY_HOST is not a valid URL: "openkey.example.com").');
+  });
+
+  // Android System WebView before Chromium 130 (the API 34 emulator's stock
+  // 113, unupdated phones) parses `xyz.tinycloud.exo://openkey/callback` with
+  // host "" and pathname "//openkey/callback". The SDK must still find the
+  // host; patches/@openkey%2Fsdk-capacitor@0.2.0-beta.0.patch does that until
+  // the SDK ships it.
+  class LegacyChromiumURL extends URL {
+    private readonly input: string;
+    constructor(url: string | URL, base?: string | URL) { super(url, base); this.input = String(url); }
+    private get opaque(): boolean { return !/^(https?|wss?|ftp|file):$/.test(this.protocol); }
+    override get host(): string { return this.opaque ? "" : super.host; }
+    override get hostname(): string { return this.opaque ? "" : super.hostname; }
+    // Everything after `scheme:` up to `?` or `#`, as Chrome 113 reports it.
+    override get pathname(): string {
+      return this.opaque ? this.input.slice(this.input.indexOf(":") + 1).split(/[?#]/)[0] : super.pathname;
+    }
+  }
+  const secureStore = {
+    openAuthSession: async () => { throw new Error("unused"); },
+    secureStoreGet: async () => ({ value: null }),
+    secureStoreSet: async () => {},
+    secureStoreRemove: async () => {},
+  };
+  function constructUnderLegacyChromium(redirectUri: string): void {
+    const options = nativeClientOptions({ VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID }, HOST);
+    const original = globalThis.URL;
+    globalThis.URL = LegacyChromiumURL as typeof URL;
+    try {
+      expect(new URL("xyz.tinycloud.exo://openkey/callback").host).toBe("");
+      new SdkOpenKeyNative({ ...options, redirectUri, plugin: secureStore });
+    } finally {
+      globalThis.URL = original;
+    }
+  }
+
+  test("the redirect URI constructs the SDK client under the Chromium < 130 URL parse", () => {
+    expect(() => constructUnderLegacyChromium("xyz.tinycloud.exo://openkey/callback")).not.toThrow();
+  });
+
+  test("a hostless private-use redirect is still rejected under the Chromium < 130 URL parse", () => {
+    expect(() => constructUnderLegacyChromium("xyz.tinycloud.exo:/openkey/callback"))
+      .toThrow("Private-use redirect URI must have a host");
+  });
+
+  test("a modern URL parse never reads a host from the path", () => {
+    // Host "" and path "//openkey/callback" here; only a Chromium < 130 parser may fall back.
+    expect(() => new SdkOpenKeyNative({ ...nativeClientOptions({ VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID }, HOST),
+      redirectUri: "xyz.tinycloud.exo:////openkey/callback", plugin: secureStore }))
+      .toThrow("Private-use redirect URI must have a host");
   });
 
   const malformedHost = { ...config, env: { ...config.env, VITE_OPENKEY_HOST: "openkey.example.com" } };
@@ -613,7 +665,7 @@ describe("native boot", () => {
     }
   });
 
-  test("restores a recent tee.node delegation without a host-migration renewal", async () => {
+  test("restores a recent delegation without a host-migration renewal", async () => {
     const flow = makeFlow();
     const recent = { ...delegation, issuedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 295_000).toISOString() };
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: recent, sessionKey });
@@ -624,7 +676,7 @@ describe("native boot", () => {
     expect(flow.restore[0]?.config.tinycloudHosts).toEqual([HOST]);
   });
 
-  test("renews an expiring tee.node delegation on the same host", async () => {
+  test("renews an expiring delegation on the same host", async () => {
     const flow = makeFlow();
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
     flow.openkey.renew = async () => ({ tokens: { accessToken: "a", refreshToken: "new" }, delegation, sessionKey });
@@ -746,7 +798,7 @@ describe("activation on restore (TC-2865)", () => {
   });
 
   test("a marker for another delegation or host does not skip the wait", async () => {
-    for (const stale of [`${HOST} bafyold`, `https://node.tinycloud.xyz ${delegation.delegationCid}`]) {
+    for (const stale of [`${HOST} bafyold`, `https://other.node.example ${delegation.delegationCid}`]) {
       resetNativeOpenKeyClientForTests();
       const { flow, marker } = restoreFlow(stale);
       flow.deps.activateSession = async () => ({ success: false, status: 401, error: "unknown delegation" });
@@ -801,6 +853,25 @@ test("renewed handoff saves the new CID, activates it, then restores on the live
   expect(flow.order).toEqual(["save", "activate", "liveRestore"]);
   expect(flow.storage.saved.at(-1)?.record.tinycloudSession?.delegationCid).toBe("bafyrenewed");
   expect(flow.activation.at(-1)?.header.Authorization).toBe("Bearer renewed");
+});
+
+test("a delegation on the node's previous name keeps working under the node.tinycloud.xyz config (TC-2923)", async () => {
+  const tee = { ...delegation, tinycloudHost: TEE_HOST };
+  const flow = makeFlow();
+  const recent = { ...tee, issuedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 295_000).toISOString() };
+  flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: recent, sessionKey });
+  expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
+  expect(flow.activation[0]?.host).toBe(TEE_HOST);
+  expect(flow.restore[0]?.config.tinycloudHosts).toEqual([TEE_HOST, HOST]);
+
+  const live = { restoreSession: async () => { flow.order.push("liveRestore"); return { status: "restored" }; } } as never;
+  const renewed = { tokens: { accessToken: "a", refreshToken: "new" }, sessionKey, delegation: { ...tee, delegationCid: "bafyrenewed" } } as NativeSession;
+  await installNativeSession(flow.openkey, renewed, config, flow.deps, live);
+  expect(flow.order.at(-1)).toBe("liveRestore");
+  expect(flow.activation.at(-1)?.host).toBe(TEE_HOST);
+
+  const foreign = { ...renewed, delegation: { ...renewed.delegation, tinycloudHost: "https://other.node.example" } };
+  await expect(installNativeSession(flow.openkey, foreign, config, flow.deps, live)).rejects.toThrow("different TinyCloud node");
 });
 
 describe("error message mapping", () => {

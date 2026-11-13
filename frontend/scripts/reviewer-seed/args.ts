@@ -4,7 +4,8 @@ import { parseArgs } from "node:util";
 import { deserializeDelegation, type PortableDelegation } from "@tinycloud/node-sdk";
 import { ReviewerSeedRefusal, seedPermissions, type ReviewerSeedMode, type ReviewerSeedTarget } from "./seed";
 
-export const DEFAULT_HOST = "https://tee.node.tinycloud.xyz";
+/** The production node. Selected only by an explicit `--production`; there is no default host. */
+export const PRODUCTION_HOST = "https://tee.node.tinycloud.xyz";
 /** The longest grant the seed accepts; a run needs minutes and asks for one hour. */
 const MAX_GRANT_MS = 24 * 60 * 60_000;
 
@@ -20,7 +21,7 @@ export function parseSeedArgs(argv: string[]): SeedCliOptions {
       args: argv, strict: true, allowPositionals: false,
       options: {
         space: { type: "string" }, owner: { type: "string" }, "allow-owner": { type: "string", multiple: true },
-        "request-out": { type: "string" }, host: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "string" },
+        "request-out": { type: "string" }, host: { type: "string" }, production: { type: "boolean" }, "dry-run": { type: "boolean" }, confirm: { type: "string" },
       },
     }));
   } catch (error) { throw new UsageError((error as Error).message); }
@@ -28,10 +29,12 @@ export function parseSeedArgs(argv: string[]): SeedCliOptions {
   if (missing.length) throw new UsageError(`Missing ${missing.map((name) => `--${name}`).join(", ")}`);
   if (values["dry-run"] && values.confirm !== undefined) throw new UsageError("--dry-run writes nothing; drop --confirm");
   if (!values["dry-run"] && values.confirm === undefined) throw new UsageError("Pass --dry-run, or --confirm <the target space id> to write");
-  const host = values.host ?? DEFAULT_HOST;
+  if (values.production && values.host !== undefined) throw new UsageError("Pass --host <origin> or --production, not both");
+  if (!values.production && values.host === undefined) throw new UsageError(`Pass --host <origin>, or --production to use ${PRODUCTION_HOST}`);
+  const host = values.production ? PRODUCTION_HOST : values.host!;
   let url: URL | null = null;
   try { url = new URL(host); } catch { /* not a URL */ }
-  if (url?.protocol !== "https:" || url.origin !== host) throw new UsageError("--host must be an https origin, such as https://tee.node.tinycloud.xyz");
+  if (url?.protocol !== "https:" || url.origin !== host) throw new UsageError("--host must be an https origin with no path, such as https://node.example");
   return {
     target: { spaceId: values.space!, ownerDid: values.owner!, allowlist: values["allow-owner"]! },
     mode: values["dry-run"] ? { dryRun: true } : { dryRun: false, confirm: values.confirm },
