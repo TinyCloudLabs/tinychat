@@ -127,8 +127,8 @@ export interface CalendarAutojoinStore {
   putConnection(row: CalendarConnection): Promise<void>;
   updateConnection(tenant: string, update: Update<CalendarConnection>): Promise<CalendarConnection | null>;
   listConnections(): Promise<CalendarConnection[]>;
-  /** Drop the in-memory copies of connection rows: the next read of each comes from the node. */
-  forgetCachedConnections(): void;
+  /** The next read of each connection row goes to the node; scan times staged in memory survive it. */
+  rereadConnections(): void;
   getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary | null>;
   getStatusSummaryOrLegacy(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary>;
   putStatusSummary(tenant: string, summary: CalendarAutojoinStatusSummary): Promise<void>;
@@ -166,8 +166,9 @@ interface JsonStore {
   keys(prefix: string): Promise<string[]>;
   /** Cached stores only: the row's live value changes in memory; the node keeps its stored copy. */
   stage?(key: string, value: unknown): void;
-  /** Cached stores only: forget the rows under `prefix`. Listings stay: writes keep them complete. */
-  forgetRows?(prefix: string): void;
+  /** Cached stores only: the next read of each row under `prefix` goes to the node. A staged value
+   *  survives when the node still holds its stored copy. Listings stay: writes keep them complete. */
+  rereadRows?(prefix: string): void;
 }
 /** Key-order independent JSON, so an unchanged row compares equal however it was built. */
 export function stableJson(value: unknown): string {
@@ -201,6 +202,8 @@ export class CalendarAutojoinRowCache {
   private readonly rows = new Map<string, CachedRow | null>();
   /** Complete key sets of listed prefixes. */
   private readonly listings = new Map<string, Set<string>>();
+  /** Rows whose next read must come from the node (see rereadRows). */
+  private readonly stale = new Set<string>();
 
   /** `json` read through this cache. `freshReads` stores (request and dispatch) read every row and
    *  listing from the node, and keep the cache current with what they read. */
@@ -210,7 +213,7 @@ export class CalendarAutojoinRowCache {
       get: async <T>(key: string) => {
         if (!cached(key)) return json.get<T>(key);
         const known = this.rows.get(key);
-        if (!freshReads) {
+        if (!freshReads && !this.stale.has(key)) {
           if (known !== undefined) return known === null ? null : structuredClone(known.value) as T;
           if (this.unlisted(key)) return null;
         }
@@ -219,19 +222,21 @@ export class CalendarAutojoinRowCache {
       put: async (key, value) => {
         if (!cached(key)) return json.put(key, value);
         const persisted = stableJson(value);
-        if (this.rows.get(key)?.persisted !== persisted) {
+        if (this.stale.has(key) || this.rows.get(key)?.persisted !== persisted) {
           try { await json.put(key, value); }
           catch (error) { this.forget(key); throw error; }
         }
         this.rows.set(key, { value: structuredClone(value), persisted });
+        this.stale.delete(key);
         this.listed(key, true);
       },
       remove: async key => {
         if (!cached(key)) return json.remove(key);
-        if (this.rows.get(key) === null || (!this.rows.has(key) && this.unlisted(key))) return;
+        if (!this.stale.has(key) && (this.rows.get(key) === null || (!this.rows.has(key) && this.unlisted(key)))) return;
         try { await json.remove(key); }
         catch (error) { this.forget(key); throw error; }
         this.rows.set(key, null);
+        this.stale.delete(key);
         this.listed(key, false);
       },
       keys: async prefix => {
@@ -240,7 +245,9 @@ export class CalendarAutojoinRowCache {
         const keys = await json.keys(prefix);
         if (!cached(prefix)) return keys;
         const present = new Set(keys);
-        for (const key of this.rows.keys()) if (key.startsWith(prefix) && !present.has(key)) this.rows.set(key, null);
+        for (const key of this.rows.keys()) {
+          if (key.startsWith(prefix) && !present.has(key)) { this.rows.set(key, null); this.stale.delete(key); }
+        }
         this.listings.set(prefix, present);
         return keys;
       },
@@ -249,14 +256,15 @@ export class CalendarAutojoinRowCache {
         if (!known) throw new Error("calendar_row_not_cached");
         this.rows.set(key, { value: structuredClone(value), persisted: known.persisted });
       },
-      forgetRows: prefix => {
-        for (const key of this.rows.keys()) if (key.startsWith(prefix)) this.rows.delete(key);
+      rereadRows: prefix => {
+        for (const key of this.rows.keys()) if (key.startsWith(prefix)) this.stale.add(key);
       },
     };
   }
   /** A node read. When it matches the stored copy, memory keeps any newer staged value. */
   private observe<T>(key: string, value: T | null): T | null {
     const known = this.rows.get(key);
+    this.stale.delete(key);
     if (value === null) { this.rows.set(key, null); this.listed(key, false); return null; }
     const persisted = stableJson(value);
     if (known?.persisted === persisted) return structuredClone(known.value) as T;
@@ -276,6 +284,7 @@ export class CalendarAutojoinRowCache {
   }
   private forget(key: string): void {
     this.rows.delete(key);
+    this.stale.delete(key);
     for (const prefix of this.listings.keys()) if (key.startsWith(prefix)) this.listings.delete(prefix);
   }
 }
@@ -335,7 +344,7 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     });
   }
   listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
-  forgetCachedConnections(): void { this.json.forgetRows?.(`${PREFIX}connections/`); }
+  rereadConnections(): void { this.json.rereadRows?.(`${PREFIX}connections/`); }
   getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) {
     return this.read(() => this.readSummary(tenant), deadline, metrics);
   }

@@ -338,6 +338,23 @@ describe("TC-2917 calendar autojoin node invocations", () => {
     for (let n = 1; n <= N; n++) expect(world.scans.filter(scan => scan === tenant(n)).length).toBeGreaterThanOrEqual(6);
   });
 
+  test("a grant backfill on every tick re-reads connections from the node, and keeps the scan cadence", async () => {
+    const { node, calls } = countingNode();
+    const world = outside();
+    const b = backend(node, world);
+    const owner = tenant(1);
+    await seedEnabled(b, owner, T0 + 86_400_000);
+    world.events.set(owner, [meetEvent(owner, "later", T0 + 6 * 3_600_000)]);
+    await b.worker.tick();
+    world.scans.length = 0;
+    calls.length = 0;
+    // An untrusted grant index backfills on each tick: its reads come from the node, but the scan
+    // times staged in memory (persisted hourly) survive them.
+    for (let i = 0; i < 20; i++) { b.connection.invalidateGrantReferences(); world.clock.now += TICK; await b.worker.tick(); }
+    expect(calls.filter(call => call === "get:connections")).toHaveLength(20);
+    expect(world.scans).toHaveLength(10);
+  });
+
   test("a second worker on the same store is refused, and stopping it keeps the first's claim", async () => {
     const { node } = countingNode();
     const world = outside();

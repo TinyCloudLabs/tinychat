@@ -329,7 +329,7 @@ export class CalendarAutojoinConnection {
     if (!this.grantIndex.needsBackfill || stopping()) return;
     // Never trust the index from memory: every row the pass reads comes from the node. A row
     // missing from the cached listing could only make a later disconnect revoke, never skip.
-    store.forgetCachedConnections();
+    store.rereadConnections();
     const seen = new Set(rows.map(row => row.tenant.toLowerCase()));
     let failed = false;
     for (const listed of rows) {
