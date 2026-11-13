@@ -94,15 +94,23 @@ async function mount(source: HomeFeedSource) {
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={source} />));
-  await fullCards(host);
+  await openAll(host);
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
 }
-/** View → Full cards: every card open, as these tests read and act on the open card. */
-async function fullCards(host: HTMLElement) {
-  await act(async () => button(host, "View").click());
-  const full = [...host.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="View"] [role="radio"]')].find((node) => node.textContent === "Full cards");
-  expect(full !== undefined).toBe(true);
-  await act(async () => full!.click());
+/**
+ * Opens every card in place, as these tests read and act on the open card (Needs you opens its first card itself;
+ * the rest are rows a tap opens). Answered cards wait in the Pending card at the end: it is opened first.
+ */
+async function openAll(host: ParentNode) {
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await act(async () => pending.click());
+  // Opening one card re-renders the list, so look again each time.
+  for (let next = row(host); next; next = row(host)) await act(async () => next!.click());
+}
+/** A card still shown as a row (a post's row opens a page, so it is left alone). */
+function row(host: ParentNode) {
+  return [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].filter((item) => !item.querySelector("article") && !item.closest("[inert]"))
+    .map((item) => item.querySelector<HTMLButtonElement>('button[aria-expanded="false"]:not([aria-haspopup])')).find(Boolean) ?? null;
 }
 /** Finds a button by its visible text in `scope`. */
 function button(scope: ParentNode, label: string) {
@@ -121,13 +129,14 @@ async function enter(scope: ParentNode, label: string, text: string) {
     input!.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-/** Picks a position of the feed view slider ("Information", "All", "Needs action"). */
-async function show(host: HTMLElement, label: "Information" | "All" | "Needs action") {
-  const value = ({ Information: "information", All: "both", "Needs action": "needs-action" } as const)[label];
+/** Picks a tab of the feed's island ("Needs you", "All"), then opens every card again. */
+async function show(host: HTMLElement, label: "All" | "Needs action") {
+  const value = ({ All: "both", "Needs action": "needs-action" } as const)[label];
   const radio = host.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Feed view"] input[value="${value}"]`);
   expect(radio !== null).toBe(true);
   await act(async () => radio!.click());
   expect(radio!.checked).toBe(true);
+  await openAll(host);
 }
 /** An open card, by the title it shows. */
 function card(scope: ParentNode, title: string) {
@@ -223,8 +232,9 @@ test("an expired go cannot be submitted and the earlier issuance is not treated 
   fixture.owner.answers.push({ sourceKey: "legacy-stale-go", card: { kind: "approval", id: record.id }, value: { askId: record.id, action: "done", issuedAt: SITREP_CREATED, text: "", at: SITREP_CREATED } });
   const view = await mount(fixture.source);
   // Past its expiry the card shows only in History.
-  await act(async () => button(view.host, "Filter").click());
-  await act(async () => button(view.host, "History").click());
+  // Past its expiry the card shows only in History, the island's third tab.
+  await act(async () => view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!.click());
+  await openAll(view.host);
   expect(button(card(view.host, String(record.title)), "Give the go").disabled).toBe(true);
   expect(answeredPanel(view.host)).toBeNull();
   expect(fixture.saved).toEqual([]);
@@ -369,7 +379,8 @@ test("an unknown typed record is visibly unsupported and never receives an actio
   expect(article.querySelector('[aria-label="Your own answer"]')).toBeNull();
   expect(answers(article)).toBeNull();
   // No answer, note, snooze or Details control.
-  expect(article.querySelectorAll("button, input, textarea, select").length).toBe(0);
+  // Nothing to act on: its only control folds it back to a row.
+  expect([...article.querySelectorAll("button, input, textarea, select")].filter((node) => node.getAttribute("aria-label") !== "Show less").length).toBe(0);
   expect(fixture.saved).toEqual([]);
 });
 
@@ -424,6 +435,7 @@ test("a folded approval step opens its own card after an ambiguous snapshot is r
   if (!open) throw new Error("Folded approval navigation is missing");
   fixture.snapshot.entries.pop();
   await act(async () => open.click());
+  await openAll(view.host);
 
   expect([...view.host.querySelectorAll("article")].some((article) => [...article.children].some((child) => child.tagName === "H2" && child.textContent === approval.title))).toBe(true);
 });
@@ -576,6 +588,7 @@ test("open cards in one named group fold together without losing their separate 
   expect(group.querySelector("article")).toBeNull();
   await act(async () => disclosure.click());
   expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+  await openAll(group);
   const ask = card(group, first.entry.state.card.title);
   const task = card(group, second.entry.state.card.title);
   // Each member keeps its own controls: the question its answers, the task its steps.

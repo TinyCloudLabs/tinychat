@@ -155,12 +155,17 @@ async function mount(transport: ReturnType<typeof observedSource>) {
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={transport.source} />));
   await transport.settle();
-  // View → Full cards: every card open, as these tests read and act on the open card.
-  await click(transport, button(host, "View"));
-  const full = [...host.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="View"] [role="radio"]')].find((candidate) => candidate.textContent === "Full cards");
-  if (!full) throw new Error("View → Full cards is missing");
-  await click(transport, full);
+  // Every card open, as these tests read and act on the open card: Needs you opens its first card itself, a tap
+  // opens each row, and answered cards wait in the Pending card at the end (opened first).
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await click(transport, pending);
+  for (let row = closedRow(host); row; row = closedRow(host)) await click(transport, row);
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
+}
+/** A card still shown as a row (a post's row opens a page, so it is left alone). */
+function closedRow(host: ParentNode) {
+  return [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].filter((item) => !item.querySelector("article") && !item.closest("[inert]"))
+    .map((item) => item.querySelector<HTMLButtonElement>('button[aria-expanded="false"]:not([aria-haspopup])')).find(Boolean) ?? null;
 }
 async function click(transport: ReturnType<typeof observedSource>, element: HTMLElement) {
   await act(async () => element.click()); await transport.settle();
@@ -191,10 +196,10 @@ function foldedStep(host: ParentNode, askTitle: string): HTMLElement {
   if (!section) throw new Error("Folded approval step is missing from its question");
   return section;
 }
-/** Filter → History: answered, replaced and closed cards. */
+/** History, the island's third tab: answered, replaced and closed cards, each opened in place. */
 async function showHistory(transport: Transport, host: ParentNode) {
-  await click(transport, button(host, "Filter"));
-  await click(transport, button(host, "History"));
+  await click(transport, host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!);
+  for (let row = closedRow(host); row; row = closedRow(host)) await click(transport, row);
 }
 
 for (const engagement of ["empty field focus", "consent link activation"] as const) {
