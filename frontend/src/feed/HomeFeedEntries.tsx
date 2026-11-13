@@ -552,13 +552,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const needing = (entry: HomeFeedEntry) => (attention(entry) && !folded(entry)) || keepsNeeds(entry);
   const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry)).length;
   /**
-   * Answered and still open (Sam, 11-13): Waiting on its agent, or Done (or Failed) and not yet acknowledged. In
-   * Needs you and All these leave the main flow for the Pending card at its end, so only what needs him stays in it.
-   * In All, a card he answered keeps its place until the view changes (keepsNeeds).
+   * Answered and still open (Sam, 11-13): Waiting on its agent, Answered (its agent got it), or Done (or Failed) and not
+   * yet acknowledged. In Needs you and All these leave the main flow for the Pending card at its end, so only what needs
+   * him stays in it. In All, a card he answered keeps its place until the view changes (keepsNeeds).
    */
   const pendingStatus = (entry: HomeFeedEntry) => {
     const status = statusOf(entry, cardAuthor(entry, contextFor(entry)?.record).name);
-    return status === "Done" || status === "Failed" || status?.startsWith("Waiting on") ? status : undefined;
+    return status === "Done" || status === "Failed" || status === "Answered" || status?.startsWith("Waiting on") ? status : undefined;
   };
   const showsPending = !history && !snoozedOnly;
   const visible = (entry: HomeFeedEntry) => matchesFilters(entry) && !undoBar.hidden(lineageKey(entry));
