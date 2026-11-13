@@ -136,7 +136,7 @@ test("a write without the confirmation is refused before any storage request", a
   expect(() => parseSeedArgs(base)).toThrow(UsageError);
   expect(() => parseSeedArgs([...base, "--dry-run", "--confirm", fake.spaceId])).toThrow(UsageError);
   expect(parseSeedArgs([...base, "--confirm", fake.spaceId]).mode).toEqual({ dryRun: false, confirm: fake.spaceId });
-  for (const host of ["http://tee.node.tinycloud.xyz", "https://tee.node.tinycloud.xyz/", "https://tee.node.tinycloud.xyz@evil.example", "https://evil.example/?x"])
+  for (const host of ["http://node.tinycloud.xyz", "https://node.tinycloud.xyz/", "https://node.tinycloud.xyz@evil.example", "https://evil.example/?x"])
     expect(() => parseSeedArgs([...base, "--dry-run", "--host", host])).toThrow(UsageError);
 });
 

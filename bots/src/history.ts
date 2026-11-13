@@ -7,6 +7,12 @@ import type { BotLayout } from "./layout";
 
 const DOMAIN = "tinychat.bot-history.storage/v1\n";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+// Both names reach the same production TinyCloud node (one node DID): node.tinycloud.xyz through Cloudflare, the default
+// since TC-2923, and tee.node.tinycloud.xyz, the default before it. A receipt signed under either name is for that node.
+// The backend and frontend use sameTinyCloudNode from @tinyboilerplate/core; this service builds on its own.
+const PRODUCTION_NODE_ORIGINS = ["https://node.tinycloud.xyz", "https://tee.node.tinycloud.xyz"];
+const sameNode = (host: unknown, expected: string) => host === expected
+  || (typeof host === "string" && PRODUCTION_NODE_ORIGINS.includes(host) && PRODUCTION_NODE_ORIGINS.includes(expected));
 export interface HistoryOptions { signerDid: string; host: string; policy: "notice-then-expiry-30-days" }
 export interface JournalBatch { v: 1; generation: string; seq: number; challenge: string; record: unknown }
 export interface ExpiryNotice { id: string; expiresAt: number; firstAttemptAt: number; deliveredAt?: number; deleteAt?: number }
@@ -131,7 +137,7 @@ export class HistoryJournal {
     if (!batch || !body || typeof signature !== "string") throw new Error("invalid_history_receipt");
     const { owner, botId, generation, seq, challenge, batchHash, host, spaceId, ciphertextHash, v } = body;
     if (v !== 1 || owner !== this.#state.owner || botId !== this.layout.botId || generation !== batch.generation || seq !== batch.seq
-      || challenge !== batch.challenge || batchHash !== hash(JSON.stringify(batch)) || host !== this.options.host
+      || challenge !== batch.challenge || batchHash !== hash(JSON.stringify(batch)) || !sameNode(host, this.options.host)
       || typeof spaceId !== "string" || !/^tinycloud:pkh:eip155:1:0x[a-fA-F0-9]{40}:applications$/.test(spaceId)
       || spaceId.split(":")[4]?.toLowerCase() !== this.#state.owner.split(":")[4]?.toLowerCase()
       || typeof ciphertextHash !== "string" || !/^[a-f0-9]{64}$/.test(ciphertextHash)) throw new Error("invalid_history_receipt");

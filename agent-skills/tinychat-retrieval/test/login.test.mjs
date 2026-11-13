@@ -27,8 +27,8 @@ async function fixture(t, { install = 'TC_BIN' } = {}) {
 const fs=require('node:fs'); const args=process.argv.slice(2);
 const granted=${JSON.stringify(granted)};
 if(args.includes('--version')) console.log('1.5.0-beta.28');
-else if(args.includes('list')) console.log(JSON.stringify({profiles:[{name:'default',host:'https://tee.node.tinycloud.xyz'}]}));
-else if(args.includes('context')) console.log(JSON.stringify({schemaVersion:1,profile:'default',host:'https://tee.node.tinycloud.xyz',sessionDid:'did:key:zTest',ownerDid:${JSON.stringify(owner)},spaceId:args.includes('--space')?'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:applications':null,session:{state:'present',expiresAt:'2099-01-01T00:00:00.000Z'}}));
+else if(args.includes('list')) console.log(JSON.stringify({profiles:[{name:'default',host:'https://node.tinycloud.xyz'}]}));
+else if(args.includes('context')) console.log(JSON.stringify({schemaVersion:1,profile:'default',host:'https://node.tinycloud.xyz',sessionDid:'did:key:zTest',ownerDid:${JSON.stringify(owner)},spaceId:args.includes('--space')?'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:applications':null,session:{state:'present',expiresAt:'2099-01-01T00:00:00.000Z'}}));
 else if(args.includes('caps')) console.log(JSON.stringify({covered:fs.existsSync(granted)}));
 else if(args.includes('request')) {
   if(!args.includes('--grant') || !args.includes('--paste')) throw new Error('Agent flow must use --grant --paste');
@@ -55,7 +55,7 @@ else if(args.includes('request')) {
   delete env.TC_PROFILE;
   if (install === 'TC_BIN') env.TC_BIN = cli; else delete env.TC_BIN;
   const config = join(dir, 'app.json');
-  await writeFile(config, JSON.stringify({ schemaVersion: 1, host: 'https://tee.node.tinycloud.xyz', space: 'applications' }));
+  await writeFile(config, JSON.stringify({ schemaVersion: 1, host: 'https://node.tinycloud.xyz', space: 'applications' }));
   const run = (args, input) => new Promise(resolve => {
     const child = spawn(process.execPath, [entry, ...args], { env, timeout: 12000 });
     let stdout = '', stderr = '';
@@ -93,7 +93,7 @@ for (const via of ['--code', 'stdin']) test(`a short code pasted in chat (${via}
   assert.equal(parse(result).status, 'ready');
   const observed = JSON.parse(await readFile(receipt, 'utf8'));
   assert.equal(observed.input, 'AbCd-2345\n');
-  assert.deepEqual(observed.args, ['--profile', 'default', '--host', 'https://tee.node.tinycloud.xyz', 'auth', 'request', ...TINYCHAT_CAPS.flatMap(cap => ['--cap', cap]), '--grant', '--paste', '--expiry', '30d']);
+  assert.deepEqual(observed.args, ['--profile', 'default', '--host', 'https://node.tinycloud.xyz', 'auth', 'request', ...TINYCHAT_CAPS.flatMap(cap => ['--cap', cap]), '--grant', '--paste', '--expiry', '30d']);
   assert.equal(parse(await run(['authorize'])).status, 'ready');
   await assert.rejects(readFile(tcCalled), { code: 'ENOENT' });
 });
