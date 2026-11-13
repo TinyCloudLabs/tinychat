@@ -22,7 +22,7 @@ import { agentProfile } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
 import { FeedTabs, type FeedTab } from "./FeedTabs";
 import { FloatingHeader } from "./FloatingHeader";
-import { AgentConversation, AgentList, AgentsPill, agentThreads } from "./AgentConversation";
+import { AgentsPill } from "./AgentMarks";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
 import { useUndoBar } from "./UndoBar";
@@ -38,6 +38,8 @@ import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
 import { FEED_SKILL_URL } from "./strings";
 
+const LazyAgentView = lazyTab("your agents", () => import("./AgentView").then((module) => module.AgentView));
+const LazyFilterPanel = lazyTab("Filter", () => import("./FilterPanel").then((module) => module.FilterPanel));
 /** A post's page, in a chunk of its own: boot never needs it (TC-2882). */
 const LazyPostPage = lazyTab("the post", () => import("./PostPage").then((module) => module.PostPage));
 
@@ -315,6 +317,10 @@ type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "
 
 /** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
 export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
+  useEffect(() => {
+    void LazyAgentView.preload().catch(() => {});
+    void LazyFilterPanel.preload().catch(() => {});
+  }, []);
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
   // Once the feed has loaded, the parts only a tap opens (a post's page, a brief) load too, so a tap never waits.
   const feedShown = snapshot !== null;
@@ -932,16 +938,6 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     return [agentKey(entry, record), { key: agentKey(entry, record), name: cardAuthor(entry, record).name }] as const;
   })).values()];
   const unreadReplies = (snapshot?.entries ?? []).some((entry) => (repliesOf(entry)?.unread ?? 0) > 0);
-  // The agent view, built only while it is open: every card on the page, each at its latest revision.
-  const agentList = agentPage === null ? [] : agentThreads(all.filter((entry) => !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === lineageKey(entry))), {
-    contextFor, author: cardAuthor, key: agentKey, needsYou: (entry) => attention(entry) && !folded(entry), unread: (entry) => repliesOf(entry)?.unread ?? 0,
-  });
-  const agentOpen = agentPage && agentPage !== "list" ? agentList.find((thread) => thread.key === agentPage) : undefined;
-  const fieldLabelClass = "mb-1 ml-0.5 block text-xs font-semibold text-muted-foreground";
-  const selectClass = "h-11 w-full min-w-0 rounded-xl border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-  const toggleClass = "flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-border px-3 text-sm font-medium aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-  // A popover under the row, right-aligned under Filter, over the cards.
-  const popoverClass = "absolute right-0 top-full z-30 mt-2 w-[300px] max-w-[calc(100vw-1.5rem)] rounded-2xl border border-border bg-card p-3.5 text-card-foreground shadow-[0_12px_32px_-12px_rgb(0_0_0/0.35)]";
   const pageEntry = pageKey ? all.find((entry) => lineageKey(entry) === pageKey && !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === pageKey)) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
   const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setProject(""); setPriorityMax(""); setSortBy(""); setSnoozedOnly(false); });
@@ -979,29 +975,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
             {!!filtersOn && <span aria-hidden className="absolute -right-1 -top-1 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-foreground px-1 text-[11px] font-bold text-background ring-2 ring-background">{filtersOn}</span>}
           </button>
           {/* Sam, 11-13: the dropdowns on top; Snoozed and Clear under them (History is a tab). */}
-          {panel === "filter" && <div id="home-feed-filters" role="group" aria-label="Filter" className={popoverClass}>
-            {agents.length > 1 && <label className="mb-2.5 block"><span className={fieldLabelClass}>Agent</span>
-              <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { const value = event.target.value; setFilter(() => setAgent(value)); }}><option value="">All agents</option>{agents.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>}
-            <div className="grid grid-cols-2 gap-2">
-              <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Type</span>
-                <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { const value = event.target.value; setFilter(() => setKind(value)); }}><option value="">All types</option>{kinds.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-              {projects.length > 0 && <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Project</span>
-                <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { const value = event.target.value; setFilter(() => setProject(value)); }}><option value="">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>}
-              <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Priority</span>
-                <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => { const value = event.target.value; setFilter(() => setPriorityMax(value)); }}>
-                  <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
-                </select></label>
-              <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Order</span>
-                <select aria-label="Order" className={selectClass} value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)}>
-                  <option value="">Usual order</option><option value="priority">Priority first</option><option value="due">Due first</option><option value="expires">Expires first</option>
-                </select></label>
-            </div>
-            <div className="mb-3 mt-1 h-px bg-border" />
-            <div className="flex gap-2">
-              <button type="button" aria-pressed={snoozedOnly} onClick={() => setFilter(() => { setSnoozedOnly(!snoozedOnly); setHistory(false); })} className={toggleClass}>Snoozed</button>
-              {!!filtersOn && <button type="button" className={toggleClass} onClick={clearFilters}>Clear filter</button>}
-            </div>
-          </div>}
+          {panel === "filter" && <LazyFilterPanel agents={agents} agent={agent} kinds={kinds} kind={kind} projects={projects} project={project}
+            priorityMax={priorityMax} sortBy={sortBy} snoozedOnly={snoozedOnly} filtersOn={filtersOn} setFilter={setFilter}
+            setAgent={setAgent} setKind={setKind} setProject={setProject} setPriorityMax={setPriorityMax} setSortBy={setSortBy}
+            setSnoozedOnly={setSnoozedOnly} setHistory={setHistory} clearFilters={clearFilters} />}
         </div>}
       </FloatingHeader>
       {ask}
@@ -1016,9 +993,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           <div className="h-3.5 w-3/5 rounded-full bg-muted" />
         </li>)}
       </ul>}
-      {snapshot && agentPage !== null && (agentOpen
-        ? <AgentConversation agent={agentOpen} onBack={() => setAgentPage("list")} onOpenCard={openFromAgent} />
-        : <AgentList agents={agentList} now={clock} onOpen={(key) => setAgentPage(key)} onBack={() => setAgentPage(null)} />)}
+      {snapshot && agentPage !== null && <LazyAgentView entries={all} page={agentPage} contextFor={contextFor} author={cardAuthor}
+        agentKey={agentKey} lineageKey={lineageKey} needsYou={(entry) => attention(entry) && !folded(entry)}
+        unread={(entry) => repliesOf(entry)?.unread ?? 0} now={clock} onPage={setAgentPage} onOpenCard={openFromAgent} />}
       {snapshot && agentPage === null && !listed.length && (bare
         ? <section aria-labelledby="home-empty-title" className={cardClass}>
           <h2 id="home-empty-title" className="font-display text-[1.375rem] font-normal leading-[1.2]">{HOME_EMPTY_TITLE}</h2>

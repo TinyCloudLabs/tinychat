@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { ChevronDownIcon, Clock3Icon } from "lucide-react";
 
 import { AgentMark } from "./AgentMark";
-import { StackedMarks } from "./AgentConversation";
+import { StackedMarks } from "./AgentMarks";
 import { ShortTime } from "./ShortTime";
 
 export interface PendingItem {
