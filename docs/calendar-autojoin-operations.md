@@ -47,6 +47,15 @@ events; an incomplete scan suppresses new dispatches until a complete scan succe
 operations can run concurrently, with at most one dispatch per tenant. Retry-After delays are kept
 in full even when they exceed the ordinary 15-minute retry backoff limit.
 
+**Node calls (TC-2917).** The single writer keeps an in-process copy of the connection and
+occurrence rows, rebuilt from the node on the first tick after a restart. A tick reads them from
+memory, so an idle connected user costs about five node calls an hour (one token refresh, one
+hourly `lastScanAt` write), and disabled users and finished meetings cost none. Writes reach the
+node first; identical writes are skipped. Request handlers, the dispatch path's policy checks and
+the restart grant backfill still read the node. A row edited in the space by anything but this
+backend reaches the worker when a request or dispatch next reads it, or after a restart. A second
+worker started on the same store in one process is refused.
+
 ## Two accounts in the same meeting (TC-581)
 
 ptx runs one bot per Meet, so two connected accounts that auto-join the same meeting must not
