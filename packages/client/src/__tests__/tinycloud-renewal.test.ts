@@ -4,6 +4,7 @@ const calls: unknown[][] = [];
 let lastConfig: any;
 let result = { status: "restored", session: {} };
 mock.module("@tinycloud/web-sdk", () => ({
+  serializeDelegation: (delegation: any) => delegation.serialized ?? "serialized-delegation",
   BrowserSessionStorage: class {},
   TinyCloudWeb: class {
     constructor(private config: any) { lastConfig = config; }
