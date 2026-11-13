@@ -63,5 +63,8 @@
     "turbo": "^2.0.0",
     "typescript-eslint": "^8.57.1",
     "zod": "3.25.76"
+  },
+  "patchedDependencies": {
+    "@openkey/sdk-capacitor@0.2.0-beta.0": "patches/@openkey%2Fsdk-capacitor@0.2.0-beta.0.patch"
   }
 }

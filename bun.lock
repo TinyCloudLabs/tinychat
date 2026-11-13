@@ -186,6 +186,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@openkey/sdk-capacitor@0.2.0-beta.0": "patches/@openkey%2Fsdk-capacitor@0.2.0-beta.0.patch",
+  },
   "overrides": {
     "@tinycloud/node-sdk": "3.11.2",
     "@tinycloud/node-sdk-wasm": "1.7.8",

@@ -4,6 +4,7 @@ import { stubSdkDomGlobals } from "../test/sdkDomGlobals";
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { OpenKeyNativeError } from "@openkey/sdk-capacitor";
+import { OpenKeyNative as SdkOpenKeyNative } from "@openkey/sdk-capacitor";
 import { UserFacingError } from "./authErrors";
 import type {
   NativeSession,
@@ -247,6 +248,56 @@ describe("nativeClientOptions", () => {
       { VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID, VITE_OPENKEY_HOST: "openkey.example.com" },
       HOST,
     )).toThrow('Native sign-in is not configured in this build (VITE_OPENKEY_HOST is not a valid URL: "openkey.example.com").');
+  });
+
+  // Android System WebView before Chromium 130 (the API 34 emulator's stock
+  // 113, unupdated phones) parses `xyz.tinycloud.exo://openkey/callback` with
+  // host "" and pathname "//openkey/callback". The SDK must still find the
+  // host; patches/@openkey%2Fsdk-capacitor@0.2.0-beta.0.patch does that until
+  // the SDK ships it.
+  class LegacyChromiumURL extends URL {
+    private readonly input: string;
+    constructor(url: string | URL, base?: string | URL) { super(url, base); this.input = String(url); }
+    private get opaque(): boolean { return !/^(https?|wss?|ftp|file):$/.test(this.protocol); }
+    override get host(): string { return this.opaque ? "" : super.host; }
+    override get hostname(): string { return this.opaque ? "" : super.hostname; }
+    // Everything after `scheme:` up to `?` or `#`, as Chrome 113 reports it.
+    override get pathname(): string {
+      return this.opaque ? this.input.slice(this.input.indexOf(":") + 1).split(/[?#]/)[0] : super.pathname;
+    }
+  }
+  const secureStore = {
+    openAuthSession: async () => { throw new Error("unused"); },
+    secureStoreGet: async () => ({ value: null }),
+    secureStoreSet: async () => {},
+    secureStoreRemove: async () => {},
+  };
+  function constructUnderLegacyChromium(redirectUri: string): void {
+    const options = nativeClientOptions({ VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID }, HOST);
+    const original = globalThis.URL;
+    globalThis.URL = LegacyChromiumURL as typeof URL;
+    try {
+      expect(new URL("xyz.tinycloud.exo://openkey/callback").host).toBe("");
+      new SdkOpenKeyNative({ ...options, redirectUri, plugin: secureStore });
+    } finally {
+      globalThis.URL = original;
+    }
+  }
+
+  test("the redirect URI constructs the SDK client under the Chromium < 130 URL parse", () => {
+    expect(() => constructUnderLegacyChromium("xyz.tinycloud.exo://openkey/callback")).not.toThrow();
+  });
+
+  test("a hostless private-use redirect is still rejected under the Chromium < 130 URL parse", () => {
+    expect(() => constructUnderLegacyChromium("xyz.tinycloud.exo:/openkey/callback"))
+      .toThrow("Private-use redirect URI must have a host");
+  });
+
+  test("a modern URL parse never reads a host from the path", () => {
+    // Host "" and path "//openkey/callback" here; only a Chromium < 130 parser may fall back.
+    expect(() => new SdkOpenKeyNative({ ...nativeClientOptions({ VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID }, HOST),
+      redirectUri: "xyz.tinycloud.exo:////openkey/callback", plugin: secureStore }))
+      .toThrow("Private-use redirect URI must have a host");
   });
 
   const malformedHost = { ...config, env: { ...config.env, VITE_OPENKEY_HOST: "openkey.example.com" } };
