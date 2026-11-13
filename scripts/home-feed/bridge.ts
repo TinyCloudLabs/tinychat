@@ -35,6 +35,11 @@ const receiptSchema = z.object({
   publicationSha256: digest, expectedETag: text, closedETag: text,
   status: z.enum(["answered", "dropped", "done", "resolved", "lifted"]), observedAt: z.string().datetime({ offset: true }),
 }).strict();
+// The owner's card actions (frontend/src/feed/ownerActions.ts): told to the agent, never closing evidence.
+const ownerActionSchema = z.union([
+  z.object({ type: z.enum(["feed.drop", "feed.acknowledge"]), version: z.literal(1), data: z.object({}).strict() }).strict(),
+  z.object({ type: z.literal("feed.snooze"), version: z.literal(1), data: z.object({ until: z.string().datetime({ offset: true }) }).strict() }).strict(),
+]);
 function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
 const businessSchema = z.custom<BoardRecord>((value: unknown) => object(value) && typeof value.kind === "string" && isKind(value.kind) && validateRecord(value.kind, value).ok);
 const cardSchema = z.custom<FeedCard>((value: unknown) => feedCardSchema.safeParse(value).success);
@@ -371,6 +376,10 @@ export async function forwardHomeMirrorResponse(ctx: HomeMirrorContext, options:
       try { decodeOwnerThreadMessage(typed.record, payload.data); nonclosing = true; } catch { return null; }
     } else if (response.kind === "message" && payload.type === "sitrep.note") {
       try { decodeLegacySendNote(typed.record, payload.data); nonclosing = true; } catch { return null; }
+    } else if (response.kind === "message" && payload.type.startsWith("feed.")) {
+      // Unknown or malformed owner actions are refused, never treated as decisions.
+      if (!ownerActionSchema.safeParse(payload).success) return null;
+      nonclosing = true;
     } else {
       // Reuse the same original-time answer and exact owner-event completion semantics.
       // Unsupported or malformed claimed decisions never fall through as ordinary notes.
