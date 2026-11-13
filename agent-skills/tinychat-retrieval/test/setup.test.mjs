@@ -146,14 +146,14 @@ test('operation guard checks saved setup and current bound owner/key/expiry with
   assert.equal(calls.length, before, 'changed selected setup fails before a CLI launch');
 });
 
-test('an onboarding profile on the node\'s previous name keeps working with the new default (TC-2923)', async t => {
-  const tee = 'https://tee.node.tinycloud.xyz';
-  const { setup, statePath } = await fixture(t, { host: tee });
+test('an onboarding profile on the node\'s other name keeps working with the default (TC-2923)', async t => {
+  const other = 'https://tee.node.tinycloud.xyz';
+  const { setup, statePath } = await fixture(t, { host: other });
   const result = await setup.prepare();
   assert.equal(result.status, 'ready');
-  assert.equal(result.host, tee);
-  assert.deepEqual(result.retrievalArgs, ['--profile', 'default', '--host', tee, '--space', `tinycloud:${owner.slice(4)}:applications`, '--owner', owner]);
-  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).config.host, tee);
-  assert.equal((await setup.guard(result)).host, tee);
+  assert.equal(result.host, other);
+  assert.deepEqual(result.retrievalArgs, ['--profile', 'default', '--host', other, '--space', `tinycloud:${owner.slice(4)}:applications`, '--owner', owner]);
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).config.host, other);
+  assert.equal((await setup.guard(result)).host, other);
   assert.equal((await setup.context()).status, 'ready');
 });

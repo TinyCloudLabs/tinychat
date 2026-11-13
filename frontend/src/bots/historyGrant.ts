@@ -30,7 +30,7 @@ export async function ensureBotHistoryGrant(tcw: TinyCloudWeb): Promise<void> {
   if (!tcw.hasPermissions(permissions)) throw new Error("history_authority_missing");
   const result = await tcw.delegateTo(backendDid, permissions, { expiry: lifetime });
   if (result.prompted) throw new Error("history_unexpected_approval");
-  const portable = toPortableDelegation(result.delegation, address, 1, tcw.hosts[0] ?? "https://tee.node.tinycloud.xyz");
+  const portable = toPortableDelegation(result.delegation, address, 1, tcw.hosts[0] ?? "https://node.tinycloud.xyz");
   if (currentSession().getToken() !== token || currentSession().getAddress()?.toLowerCase() !== address) throw new Error("history_session_changed");
   const accepted = await fetch(`${base}/api/bots/history/grant`, { method: "POST", headers: { ...headers, "content-type": "application/json" },
     body: JSON.stringify({ serialized: await serializePortableDelegation(portable), siwe: session.siwe, signature: session.signature }), signal: AbortSignal.timeout(10_000) });
