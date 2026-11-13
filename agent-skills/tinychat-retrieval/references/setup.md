@@ -1,6 +1,6 @@
 # TinyChat sign-in and recovery
 
-TinyChat uses the owner's TinyCloud onboarding sign-in: the `TC_PROFILE` profile, else `default`, on `https://tee.node.tinycloud.xyz` (a profile on `https://node.tinycloud.xyz`, the same node, also works). It never creates its own profile. Set PACK to this installed skill directory, resolved from terminal HOME, on a preceding line of the same shell invocation. If the app prompt supplies a configuration (schemaVersion 1, one host, `applications` and optional expectedOwner), write it to a temporary JSON file and add `--config "$CONFIG"` the first time. In OpenCode, `tinychat_setup` with `configPath` does the same. Available TinyChat tools identify the installed adapter; broad directory globs are unnecessary.
+TinyChat uses the owner's TinyCloud onboarding sign-in: the `TC_PROFILE` profile, else `default`, on `https://node.tinycloud.xyz` (a profile on `https://tee.node.tinycloud.xyz`, the same node, also works). It never creates its own profile. Set PACK to this installed skill directory, resolved from terminal HOME, on a preceding line of the same shell invocation. If the app prompt supplies a configuration (schemaVersion 1, one host, `applications` and optional expectedOwner), write it to a temporary JSON file and add `--config "$CONFIG"` the first time. In OpenCode, `tinychat_setup` with `configPath` does the same. Available TinyChat tools identify the installed adapter; broad directory globs are unnecessary.
 
 ```sh
 node "$PACK/scripts/setup.mjs" prepare
