@@ -246,7 +246,8 @@ export const PendingSendContext = createContext<Set<() => void> | null>(null);
  * (`guard.stale` at that moment): then nothing is written and `guard.onRefused` runs.
  */
 export function usePendingSend(guard: { stale: boolean; onRefused: (label: string) => void }) {
-  const [pending, setPending] = useState<{ label: string; seconds: number } | null>(null);
+  // `endsAt` (epoch ms) lets a page's undo bar count the same wait as the card.
+  const [pending, setPending] = useState<{ label: string; seconds: number; endsAt: number } | null>(null);
   const send = useRef<{ label: string; run: () => void } | null>(null);
   const timers = useRef<number[]>([]);
   // Read at commit time, not at tap time: a newer issuance may arrive during the countdown.
@@ -269,7 +270,7 @@ export function usePendingSend(guard: { stale: boolean; onRefused: (label: strin
   const start = useCallback((label: string, run: () => void) => {
     flush();
     send.current = { label, run };
-    setPending({ label, seconds: UNDO_SECONDS });
+    setPending({ label, seconds: UNDO_SECONDS, endsAt: Date.now() + UNDO_SECONDS * 1000 });
     for (let elapsed = 1; elapsed < UNDO_SECONDS; elapsed++) {
       timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: UNDO_SECONDS - elapsed }), elapsed * 1000));
     }
