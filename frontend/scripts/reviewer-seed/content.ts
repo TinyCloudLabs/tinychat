@@ -70,7 +70,7 @@ const CHAT_TURNS: readonly { role: "user" | "assistant"; text: string }[] = [
   { role: "user", text: "What can I do in TinyCloud One?" },
   {
     role: "assistant",
-    text: "TinyCloud One has three parts:\n\n- **One Feed**: cards from the tools you connect, which you can read and answer.\n- **Chat**: conversations like this one.\n- **Voice notes**: record a note and get a transcript.\n\nEverything is saved in your own TinyCloud space.",
+    text: "TinyCloud One has three parts:\n\n- **Feed**: cards from the tools you connect, which you can read and answer.\n- **Chat**: conversations like this one.\n- **Voice notes**: record a note and get a transcript.\n\nEverything is saved in your own TinyCloud space.",
   },
   { role: "user", text: "Give me a short checklist for trying it out." },
   {

@@ -4,7 +4,7 @@
 import { APP_NAME } from "./homeSite";
 
 /** The name of the main screen, the one feed everything lands in. One constant, so a rename is one edit. */
-export const SCREEN_NAME = "One Feed";
+export const SCREEN_NAME = "Feed";
 
 /** Navigation labels. */
 export const NAV_LABEL_RECORDING = "Recording";
@@ -40,7 +40,7 @@ export const APPS_OPEN_IN_SHARE = "Open in Share";
 export const APPS_OPENS_NEW_TAB = "opens in a new tab";
 export const APPS_EMPTY = "No apps to show yet.";
 
-/** A plain link on the signed-out sign-in surface to the landing page at /about. */
+/** A plain link on the signed-out sign-in surface to the product page. */
 export const LANDING_LINK_LABEL = `About ${APP_NAME}`;
 
 /** Connectors on the web asks for its own permission in place, when the owner opens it. */

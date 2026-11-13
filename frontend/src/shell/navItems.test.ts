@@ -6,7 +6,7 @@ describe("navigation", () => {
   test("leads with Home (the feed), then Chat, Apps, Recording, Connectors", () => {
     const items = navItems(0);
     expect(items.map((item) => [item.id, item.label])).toEqual([
-      ["feed", "One Feed"],
+      ["feed", "Feed"],
       ["chat", "Chat"],
       ["apps", "Apps"],
       ["capture", "Recording"],

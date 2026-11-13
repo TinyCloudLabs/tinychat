@@ -37,7 +37,7 @@ test("an agent keeps one letter and one colour wherever it appears", () => {
 
 test("agent details show only what the page knows, and offer no Disconnect", () => {
   const full = renderToStaticMarkup(<AgentDetails name="Trip agent" profile={agentProfile({ agent: { kind: "codex", model: "GPT-5.2-Codex", runsOn: "Your laptop" } })} onOpen={() => {}} />);
-  for (const row of ["What it is", "Codex", "Model", "GPT-5.2-Codex", "Runs on", "Your laptop", "It can", "Post cards to your One Feed and read your answers to them", "Open conversation"]) expect(full).toContain(row);
+  for (const row of ["What it is", "Codex", "Model", "GPT-5.2-Codex", "Runs on", "Your laptop", "It can", "Post cards to your Feed and read your answers to them", "Open conversation"]) expect(full).toContain(row);
   for (const unknown of ["Connected", "Access ends", "Disconnect"]) expect(full).not.toContain(unknown);
   const bare = renderToStaticMarkup(<AgentDetails name="Backup agent" />);
   for (const row of ["What it is", "Model", "Runs on"]) expect(bare).not.toContain(row);

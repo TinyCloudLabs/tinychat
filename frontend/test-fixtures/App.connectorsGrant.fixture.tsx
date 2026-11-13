@@ -369,7 +369,7 @@ test("Recording needs no re-authorise: it opens on the sign-in session with no p
 test("navigation, and Connectors asking in place", async () => {
   await mount("/chat");
   await signIn();
-  expect(navLabels()).toEqual(["One Feed", "Chat", "Apps", "Recording", "Connectors"]);
+  expect(navLabels()).toEqual(["Feed", "Chat", "Apps", "Recording", "Connectors"]);
   await navigate("/chat/connectors");
   expect(prompt("connectors")?.querySelector("h2")?.textContent).toBe("Allow Connectors");
   expect(host!.querySelectorAll("main").length).toBe(1);

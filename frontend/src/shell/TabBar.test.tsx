@@ -55,7 +55,7 @@ describe("TabBar", () => {
     expect(markup.indexOf(`href="${PATHS.feed}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.chat}"`));
     expect(markup.indexOf(`href="${PATHS.chat}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.capture}"`));
     expect(markup.indexOf(`href="${PATHS.capture}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.connectors}"`));
-    for (const label of ["One Feed", "Chat", "Apps", "Recording", "Connectors"]) expect(markup).toContain(`>${label}</span>`);
+    for (const label of ["Feed", "Chat", "Apps", "Recording", "Connectors"]) expect(markup).toContain(`>${label}</span>`);
   });
 
   test("exactly the current item is marked: aria-current, the tinted pill, label weight 600 and a heavier icon", () => {
