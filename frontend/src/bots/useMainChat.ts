@@ -40,14 +40,27 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
     };
   }, []);
 
-  /** Earlier messages from the service replace the local ones: they include every finished turn. */
+  /** A slow history read must not erase turns completed while it was in flight. */
   const loadHistory = useCallback((): Promise<void> => {
     const signal = lifetime.current?.signal;
     const run = (async () => {
       setState((current) => ({ ...current, history: "loading" }));
       try {
         const messages = await api.listMainMessages(signal);
-        setState((current) => ({ ...current, history: "loaded", lines: messages.map(({ id, role, text }) => ({ id, role, text })) }));
+        setState((current) => {
+          const listed = messages.map(({ id, role, text }) => ({ id, role, text }));
+          const ids = new Set(listed.map(line => line.id));
+          const pending: ChatLine[] = [];
+          for (let i = 0; i < current.lines.length; i++) {
+            const line = current.lines[i]!;
+            if (!line.id.startsWith("local-")) continue;
+            const reply = current.lines[i + 1]?.role === "bot" ? current.lines[++i] : undefined;
+            if (reply && ids.has(reply.id)) continue;
+            pending.push(line);
+            if (reply) pending.push(reply);
+          }
+          return { ...current, history: "loaded", lines: [...listed, ...pending] };
+        });
       } catch {
         if (!signal?.aborted) setState((current) => ({ ...current, history: "failed" }));
       }
@@ -71,9 +84,9 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
       return { ...current, lines: [...current.lines, ...failed], turn: { text, reply: "", state: "starting" } };
     });
     try {
-      // The earlier messages load first, so the new one is never listed twice.
+      // Authorization still gates sending; a slow or failed history read does not.
       await prepare?.();
-      await ensureHistory();
+      void ensureHistory();
       if (controller.signal.aborted) return;
       let reply = "";
       await api.sendToMain(text, (event) => {
@@ -84,7 +97,8 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
         } else if (event.type === "done") {
           setState((current) => ({
             ...current,
-            lines: [...current.lines, { id: `local-${++localId.current}`, role: "user", text }, { id: event.messageId, role: "bot", text: reply }],
+            lines: current.lines.some(line => line.id === event.messageId) ? current.lines
+              : [...current.lines, { id: `local-${++localId.current}`, role: "user", text }, { id: event.messageId, role: "bot", text: reply }],
             turn: null,
           }));
         } else setTurn((turn) => ({ ...turn, state: "error", error: event.code }));

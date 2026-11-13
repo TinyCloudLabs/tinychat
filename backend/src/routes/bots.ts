@@ -17,6 +17,8 @@ export interface BotsConfig {
   onTurnFinished?: () => void;
 }
 
+// Legacy history may restore a sandbox before OMP can answer. Keep this GET bounded independently of turns.
+export const BOTS_HISTORY_GET_TIMEOUT_MS = 300_000;
 const MAX_TEXT = 8000;
 const UNAVAILABLE = { code: "bot_unavailable", message: "Main isn't available. Try again later." };
 
@@ -74,7 +76,7 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     try {
       const upstream = await (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}/v1/bots/main/messages`, {
         headers: upstreamHeaders(address),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(BOTS_HISTORY_GET_TIMEOUT_MS),
       });
       if (!upstream.ok) { res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message }); return; }
       res.json(await upstream.json());

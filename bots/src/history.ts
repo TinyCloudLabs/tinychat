@@ -104,9 +104,9 @@ export class HistoryJournal {
   get legacyPending(): boolean { return this.#state.legacyPending; }
   messages() {
     return this.#state.batches.flatMap(batch => {
-      const record = batch.record as { type?: string; text?: string; at?: string };
+      const record = batch.record as { type?: string; text?: string; at?: string; outcome?: { messageId?: string } };
       return (record.type === "user" || record.type === "assistant") && typeof record.text === "string"
-        ? [{ id: `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "" }] : [];
+        ? [{ id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "" }] : [];
     });
   }
   stage(staged: StagedHistory) {
