@@ -72,9 +72,10 @@ function commentStatus(line: ConversationLine, replies: number) {
   return replies ? "Replied" : line.received ? "Received" : "Sent";
 }
 
-/** How long a comment may go unconfirmed before it says so and offers "Send again". A delivery to a running agent
- * is confirmed within seconds; thirty is long enough not to cry wolf on a slow one. */
-export const UNCONFIRMED_AFTER_MS = 30_000;
+/** How long a comment may go unconfirmed before it says so and offers "Send again". Measured across agents (the
+ * card-guide owner, 11-13): an acknowledgement lands 8–56 s after the save, up to 114 s on a slow model, so two
+ * minutes doesn't cry wolf on a healthy one. */
+export const UNCONFIRMED_AFTER_MS = 120_000;
 
 /** Your comments still waiting for the agent to confirm them: not received, not answered (a reply proves it got
  * there), not held, and not sent again since. A later comment of yours with the same words is the copy sent again,

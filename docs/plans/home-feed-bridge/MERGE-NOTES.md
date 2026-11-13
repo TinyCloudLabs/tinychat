@@ -38,11 +38,11 @@ Each entry says what the real feed needs: new card fields, the response and outb
 
 ### "Received" means delivered; "Send again"
 
-- **Lab:** a comment shows "Received" only once the agent acknowledges it. A comment with no acknowledgement and no reply 30 seconds after it went (`UNCONFIRMED_AFTER_MS`) shows "Not confirmed · may arrive twice if sent again" and "Send again" under it, even when it isn't your latest comment. A later comment with the same words counts as the copy and takes over the status.
+- **Lab:** a comment shows "Received" only once the agent acknowledges it. A comment with no acknowledgement and no reply 2 minutes after it went (`UNCONFIRMED_AFTER_MS`) shows "Not confirmed · It may arrive twice if you send it again." and "Send again" under it, even when it isn't your latest comment. A later comment with the same words counts as the copy and takes over the status.
 - **Port:** "Received" must be the agent's `FeedHandling { phase: "acknowledged" }`, written only after the comment really reached the agent (for a relayed agent, after its watcher confirms delivery). "Send again" posts the same text as a new `message` response; on typed cards, a `sitrep.thread` payload with `resendOf` set to the first `messageId`.
 - **Port:** plain cards have no `resendOf`; the lab pairs a copy with its original by matching words, so sending the same words twice on purpose reads as a resend. Add `resendOf` to the response schema if that matters. Typed cards already carry it (`usePostReply` now passes it).
 - **Port:** older typed threads whose messages have no response header count as unacknowledged and will read "Not confirmed". Decide whether history before the port is treated as confirmed.
-- **Port:** set `UNCONFIRMED_AFTER_MS` from the measured delay between a response and its acknowledgement: agents write `acknowledged` themselves when `tinycloud feed watch --once` (js-sdk#936) wakes them (30 s is a guess until that measurement arrives). Resends send at once, without the undo window; route them through the outbox like any send.
+- **Port:** `UNCONFIRMED_AFTER_MS` is 120 s, from the card-guide owner's measurement (rounds 5–8): agents acknowledge 8–24 s after a lone response, up to 56 s deep in a burst, and a slow model 24–114 s; add the 5 s undo and the save. Plain-card messages need their handling read by the store (main reads it only for typed cards and the latest answer). Resends wait the 5 s undo like any comment.
 - **Mock-only:** the lab agent acknowledges new comments on a timer, and one seeded comment on the water filter card is never acknowledged, to show the state.
 
 ### Briefs

@@ -67,7 +67,8 @@ export function useUndoBar(onError: (message: string) => void) {
     item?.undo?.();
   }, []);
   const hidden = useCallback((key: string) => items.some((item) => item.key === key), [items]);
-  const bar = !!items.length && <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex flex-col items-center gap-2 px-3">
+  // Clear of a phone's home indicator in the native shell (safe-area inset), 1.5rem above the edge elsewhere.
+  const bar = !!items.length && <div className="pointer-events-none fixed inset-x-0 bottom-[max(1.5rem,calc(env(safe-area-inset-bottom)+0.5rem))] z-30 flex flex-col items-center gap-2 px-3">
     {/* One width for every bar, so a stack lines up (the design agent). */}
     {items.map((item) => <p key={item.id} role="status" className="pointer-events-auto flex min-h-11 min-w-[15rem] items-center justify-between gap-3 rounded-full bg-zinc-900 py-1 pl-4 pr-1 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900 fine:min-h-10">
       <span className="tabular-nums">{item.text} · {Math.max(1, Math.ceil((item.endsAt - now) / 1000))}s</span>
