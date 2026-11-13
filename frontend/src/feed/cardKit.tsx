@@ -351,3 +351,18 @@ export function Reference({ children, title }: { children: ReactNode; title?: st
     <p aria-label="Card reference" className="text-[12.5px] leading-[1.4] text-muted-foreground"><code className="select-all break-all" title={title}>{children}</code></p>
   </div>;
 }
+
+/**
+ * The path behind a card's source (`payload.source.ref`, e.g. a board record's key). The card names its source only
+ * ("Source: Rocinante board"); Details shows the path, so nothing is dropped (Sam, 11-14: the line was cut off).
+ */
+export function sourceRef(payload: Record<string, unknown> | undefined): string | undefined {
+  const source = payload?.source;
+  const ref = source && typeof source === "object" ? (source as Record<string, unknown>).ref : undefined;
+  return typeof ref === "string" && ref ? ref : undefined;
+}
+/** Details' "Source" row for a card whose source carries a path. */
+export function sourceRow(payload: Record<string, unknown> | undefined): [string, ReactNode][] {
+  const ref = sourceRef(payload);
+  return ref ? [["Source", <code className="block select-all text-xs [overflow-wrap:anywhere]">{ref}</code>]] : [];
+}

@@ -8,7 +8,7 @@ import { HomeFeedEntries } from "./HomeFeedEntries";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
-import { AgentDetails, AgentMark, PlatformName, type AgentProfile } from "./AgentMark";
+import { AgentDetails, AgentMark, type AgentProfile } from "./AgentMark";
 import { StatusMark } from "./CompactCard";
 import { ShortTime } from "./ShortTime";
 
@@ -184,31 +184,31 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
   const [about, setAbout] = useState(false);
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
   const platform = agent?.profile?.platform;
+  // The header's second line: the agent's platform, then who the card came through ("Codex · via Rocinante").
+  const second = [platform?.name, card.author.via && `via ${card.author.via}`].filter(Boolean).join(" · ");
+  const markClass = second ? "row-span-2 self-start" : "";
   // Long unbroken tokens (commit hashes, file paths, URLs) wrap instead of running past the card's edge: overflow-wrap is
   // inherited, and `anywhere` breaks a token only where it cannot fit on a line of its own.
   return (
     <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
-      {/* One meta line, the compact card's (design round 7), so a card keeps its header row when it opens: the agent's
-          mark, its name, its platform's mark, the time, and at the right the status and "Show less". */}
-      <div className="flex min-w-0 items-center gap-3">
-        {agent ? <AgentMark agentKey={agent.key} name={card.author.name} small /> : avatar && <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />}
-        <div className="flex min-h-6 min-w-0 flex-1 items-center gap-1.5 text-meta text-muted-foreground">
-          <span data-agent-line className="flex min-w-0 max-w-[60%] shrink-0 items-center gap-1.5">
-            {/* The name's own box is 44px tall on touch, pulled back by its negative margin so the line stays 24px (critique #8, QA cb784d4). */}
-            {onAuthor
-              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="-my-2.5 flex min-h-11 min-w-11 max-w-full shrink-0 items-center text-left font-semibold text-foreground fine:my-0 fine:min-h-6 fine:min-w-0"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
-              : <span className="max-w-full shrink-0 truncate font-semibold text-foreground">{card.author.name}</span>}
-            {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
-          </span>
-          {/* Who a typed card came through ("Holden (through Rocinante)") is in Details; here it was a stub ("via…"). */}
-          <p className="flex shrink-0 items-center gap-1.5 before:content-['·']"><ShortTime at={card.at} day className="shrink-0 tabular-nums" /></p>
-          <span className="ml-auto flex shrink-0 items-center gap-2">
-            {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
-            {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}
-            {status && status !== "Information" && <span data-status className="flex shrink-0 items-center"><StatusMark status={status} /></span>}
-            {collapse && <span className="-my-1.5 -mr-1.5 shrink-0">{collapse}</span>}
-          </span>
-        </div>
+      {/* Sam (11-14): the name on one line, who the card came through on the next, never cut to "…". The agent's mark
+          spans both lines; the status and "Show less" sit level with the name (the design agent). */}
+      <div className={`grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] gap-x-3 ${second ? "items-start" : "items-center"}`}>
+        {agent ? <span className={`flex ${markClass}`}><AgentMark agentKey={agent.key} name={card.author.name} small /></span> : avatar ? <img src={avatar} alt="" className={`size-7 shrink-0 rounded-full bg-muted object-cover ${markClass}`} /> : <span />}
+        <p data-agent-line className="flex min-h-6 min-w-0 flex-wrap items-center gap-x-1.5 text-meta text-muted-foreground">
+          {/* The name's own box is 44px tall on touch, pulled back by its negative margin so the line stays 24px (critique #8, QA cb784d4). */}
+          {onAuthor
+            ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="-my-2.5 flex min-h-11 min-w-11 max-w-full items-center text-left font-semibold text-foreground fine:my-0 fine:min-h-6 fine:min-w-0"><span className="underline decoration-border underline-offset-2 [overflow-wrap:anywhere]">{card.author.name}</span></button>
+            : <span className="min-w-0 font-semibold text-foreground [overflow-wrap:anywhere]">{card.author.name}</span>}
+          <span className="shrink-0 whitespace-nowrap before:mr-1.5 before:content-['·']"><ShortTime at={card.at} day className="tabular-nums" /></span>
+        </p>
+        <span className="flex min-h-6 shrink-0 items-center gap-2">
+          {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
+          {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}
+          {status && status !== "Information" && <span data-status className="flex shrink-0 items-center"><StatusMark status={status} /></span>}
+          {collapse && <span className="-my-1.5 -mr-1.5 shrink-0">{collapse}</span>}
+        </span>
+        {second && <p data-agent-via className="col-start-2 text-meta text-muted-foreground">{second}</p>}
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
       {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-title-2">{card.title}</h2>}
@@ -228,9 +228,10 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
           ? <a className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
           : <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
       </div>}
+      {/* The source by name; its path (a board record's key) is in Details' "Source" row (Sam, 11-14: it was cut off). */}
       {card.source && <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">Source: {card.source.url
-        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</a>
-        : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
+        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-block min-h-7 max-w-full underline underline-offset-2">{card.source.label}</a>
+        : <span>{card.source.label}</span>}</p>}
       {children}
     </article>
   );
