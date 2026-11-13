@@ -18,10 +18,6 @@ mock.module("../components/ui/responsive-sheet", () => ({
     props.open ? <div role="dialog" aria-label="sheet" {...props.contentProps}><h2>{props.title}</h2><p>{props.description}</p>{props.children}<div>{props.footer}</div></div> : null,
   ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
 }));
-// The card's Details pop-up is a Radix Dialog too: the same inline stand-in, open only while Details is open.
-mock.module("./DetailsSheet", () => ({
-  DetailsSheet: (props: { open: boolean; children?: ReactNode }) => props.open ? <div role="dialog" aria-label="Details">{props.children}</div> : null,
-}));
 const { FeedViewEntries } = await import("./FeedView");
 
 type PrivatePayload = { type: string; version: number; data: unknown };
@@ -150,10 +146,12 @@ function option(scope: ParentNode, label: string) {
   const found = [...(answers(scope)?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((node) => node.textContent?.startsWith(label));
   expect(found !== undefined).toBe(true); return found!;
 }
-/** Opens the card's Details pop-up from its foot. */
+/** Opens the card's Details from its foot: it unfolds in the card. */
 async function details(article: HTMLElement) {
-  await act(async () => button(article, "Details").click());
-  expect(article.querySelector('[role="dialog"][aria-label="Details"]') !== null).toBe(true);
+  const toggle = [...article.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")].find((node) => node.textContent?.trim().startsWith("Details"));
+  expect(toggle !== undefined).toBe(true);
+  await act(async () => toggle!.click());
+  expect(article.querySelector('[aria-label="Details"]') !== null).toBe(true);
 }
 /** The "Undo · N" pill of an action counting down in `scope`. */
 function undoPill(scope: ParentNode) {
@@ -378,9 +376,9 @@ test("an unknown typed record is visibly unsupported and never receives an actio
   expect(article.querySelector('[role="status"]') !== null).toBe(true);
   expect(article.querySelector('[aria-label="Your own answer"]')).toBeNull();
   expect(answers(article)).toBeNull();
-  // No answer, note, snooze or Details control.
-  // Nothing to act on: its only control folds it back to a row.
-  expect([...article.querySelectorAll("button, input, textarea, select")].filter((node) => node.getAttribute("aria-label") !== "Show less").length).toBe(0);
+  // No answer, note or snooze control: besides folding it back to a row ("Show less"), only Details, which lists
+  // everything the card carries.
+  expect([...article.querySelectorAll("button, input, textarea, select")].filter((node) => node.getAttribute("aria-label") !== "Show less").map((node) => node.textContent?.trim().replace(/\+\d+$/, ""))).toEqual(["Details"]);
   expect(fixture.saved).toEqual([]);
 });
 
@@ -445,7 +443,7 @@ test("a typed question's foot is one row (Ask me later, Drop this card, Details)
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
   const foot = article.querySelector('[aria-label="Card actions"]');
-  expect([...foot!.querySelectorAll("button")].map((node) => node.textContent)).toEqual(["Ask me later", "Drop this card", "Details"]);
+  expect([...foot!.querySelectorAll("button")].map((node) => node.textContent?.replace(/\+\d+$/, ""))).toEqual(["Ask me later", "Drop this card", "Details"]);
   const comment = button(article, "Leave a comment for SyntheticOfficer");
   expect(comment.compareDocumentPosition(foot!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // The context sits in its panel above the options, then the lab's expiry line (this fixture has a legacy expiry).

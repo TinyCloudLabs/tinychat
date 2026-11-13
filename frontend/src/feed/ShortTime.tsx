@@ -30,7 +30,17 @@ export function relativeTime(at: string, now = Date.now()): string {
   return date.toLocaleDateString(undefined, { day: "numeric", month: "short", ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
 }
 
-/** A card's time: `relative` in lists (compact cards, tiles), absolute on an open card; the full stamp on hover. */
-export function ShortTime({ at, className, relative = false }: { at: string; className?: string; relative?: boolean }) {
-  return <time dateTime={at} title={new Date(at).toLocaleString()} className={className}>{relative ? relativeTime(at) : shortTime(at)}</time>;
+/**
+ * An open card's header time (the design agent): the time alone today ("1:15 PM"), then "Yesterday", a weekday within
+ * the week ("Mon"), else the day ("12 Nov"), so the author's name keeps its room on a phone.
+ */
+export function dayTime(at: string, now = Date.now()): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return at;
+  return sameDay(date, new Date(now)) ? date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : relativeTime(at, now);
+}
+
+/** A card's time: `relative` in lists (compact cards, tiles), `day` in an open card's header; the full stamp on hover. */
+export function ShortTime({ at, className, relative = false, day = false }: { at: string; className?: string; relative?: boolean; day?: boolean }) {
+  return <time dateTime={at} title={new Date(at).toLocaleString()} className={className}>{relative ? relativeTime(at) : day ? dayTime(at) : shortTime(at)}</time>;
 }

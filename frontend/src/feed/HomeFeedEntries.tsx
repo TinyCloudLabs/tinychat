@@ -10,6 +10,7 @@ import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
+import { cardUnshown } from "./unshownCard";
 import { CardConversation, plainConversation } from "./CardConversation";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, Reference, usePendingSend } from "./cardKit";
@@ -145,6 +146,7 @@ function CardFacts({ entry, reference, priority }: { entry: HomeFeedEntry; refer
     ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
     ["Type", entry.state.card.kind.charAt(0).toUpperCase() + entry.state.card.kind.slice(1)],
     ...(job ? [["Working on", job] as [string, ReactNode]] : []),
+    ...(projectOf(entry) ? [["Project", projectOf(entry)] as [string, ReactNode]] : []),
     ["Reference", reference],
     // P0 and P1 show on the card itself; every level shows here.
     ...(priority !== undefined ? [["Priority", `P${priority}`] as [string, ReactNode]] : []),
@@ -286,7 +288,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     {/* The card's foot, one row, Details alone in the bottom-right corner: a decision has Ask me later and Drop this
         card; an update has Acknowledge and Show me later, then Comment beside Details. Drop, Acknowledge and the later
         times take the card away with the undo bar at the bottom. */}
-    <div className="border-t border-border pt-2"><CardDetails
+    <div className="border-t border-border pt-2"><CardDetails unshown={cardUnshown(entry.state.card)} card={entry.state.card} agent={entry.source.label}
       close={closed || stale ? undefined : info ? { kind: "acknowledge", onTap: () => foot.onClose("acknowledge") } : attention ? { kind: "drop", onTap: () => foot.onClose("drop") } : undefined}
       actions={<>
         {!info && saved && !asking && <button type="button" className={footActionClass} onClick={() => setFollowup(true)}>Change answer</button>}
@@ -874,7 +876,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           onNavigate={(next) => { engage(next); setOpened((current) => new Set(current).add(lineageKey(next))); }}
           {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
-          ? <p role="status" className="mt-3.5 text-sm">Ask your agent about this card.</p>
+          ? <><p role="status" className="mt-3.5 text-sm text-muted-foreground">Open Details to see this card's content, exactly as {author.name} sent it.</p>
+            <div className="mt-3 border-t border-border pt-2"><CardDetails unshown={cardUnshown(entry.state.card, {})} card={entry.state.card} agent={author.name}>
+              <CardFacts entry={entry} reference={reference} {...(priority !== undefined ? { priority } : {})} />
+            </CardDetails></div></>
           : <AnswerForm key={key} drafts={ownDrafts.current} draftKey={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
             attention={attention(entry)} closed={closed} stale={retained} reference={reference} onSaved={onSaved} {...(priority !== undefined ? { priority } : {})}
             foot={{ onClose: (kind) => closeCard(entry, kind), onLater: (until) => askLater(entry, until), ...(wake ? { wake } : {}) }} />}

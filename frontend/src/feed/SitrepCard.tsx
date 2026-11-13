@@ -10,6 +10,7 @@ import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
 import { HomeCardThread } from "./HomeCardThread";
 import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
+import { cardUnshown } from "./unshownCard";
 
 function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
 const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
@@ -427,11 +428,12 @@ export function SitrepCard(props: Props) {
     {/* The card's foot, one row: Ask me later, Drop this card (from the page), and Details at the right, which holds
         who posted the card, its wiring, Pin to top and its history. */}
     {!waiting && (projection.request || expanded) && <div className="mt-3 border-t border-border pt-1">
-      <CardDetails close={props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
+      <CardDetails unshown={cardUnshown(entry.state.card, { record })} card={entry.state.card} agent={agent} close={props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
         <dl>{([
           ["Agent", record.from !== agent ? `${record.from} (through ${agent})` : agent],
           ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
           ["Type", `${kindWord(record.kind)} · ${record.status}${pinned ? ` · Priority (${pinned.reason})` : ""}`],
+          ...(typeof entry.state.card.payload?.project === "string" && entry.state.card.payload.project ? [["Project", entry.state.card.payload.project] as [string, ReactNode]] : []),
           ["Reference", <code className="block truncate select-all text-xs">{record.id}</code>],
         ] as [string, ReactNode][]).map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>
         {receipt && <p>{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
