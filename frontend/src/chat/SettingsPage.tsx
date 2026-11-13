@@ -28,7 +28,7 @@ import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
-import { BuildInfoLine } from "@/components/BuildInfoLine";
+import { SettingsBuildFooter } from "@/components/PlaybackDiagnosticsSection";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
 import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
@@ -358,8 +358,8 @@ export function SettingsPage({
             <span className="flex-1">How it works</span>
             <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
           </Link>
-          {/* The build line at the bottom of Settings (TC-840). */}
-          <BuildInfoLine />
+          {/* The build line at the bottom of Settings (TC-840); seven taps reveal playback diagnostics (TC-2857). */}
+          <SettingsBuildFooter />
         </div>
       </div>
     </div>
