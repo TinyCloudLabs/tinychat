@@ -134,10 +134,10 @@ function labCards(now: number): LabCard[] {
       },
     })) },
     { source: studio, card: typed("lab-prices", 2, -10, {
-      kind: "approval", id: "price-list-go", title: "Publish the spring price list", body: "Two prices changed; the rest are as they were.",
+      kind: "approval", id: "price-list-go", title: "Publish the spring price list", body: "One price changed; the rest are as they were.",
       approvalType: "go", approvalKind: "publish", codeExpected: false, issuedAt: at(-10), expiresAt: at(3 * 24 * 60), status: "open",
       permissions: "Publishing replaces the price list on the studio's page for everyone.",
-      steps: ["Read the two changed prices: glazing goes up by 2, firing stays the same.", "Give the go when they are right."],
+      steps: ["Check the new glazing price: it goes up by 2.", "Give the go when they are right."],
       context: {
         background: "The spring price list is drafted and checked against last season's. Only the glazing price changed; the page still shows the winter list.",
         whyNow: "Spring bookings open in three days and should show the new prices.",
@@ -398,6 +398,11 @@ export function createFeedLabSource(now = Date.now()): HomeFeedSource & { stop()
     },
     async sendMessage(entry, message, payload) {
       const stored = await store(entry, message, payload);
+      // Ask me later, Drop this card, Acknowledge (feed.* payloads): the agent takes note, with no reply.
+      if (payload?.type.startsWith("feed.")) {
+        later(LAB_REPLY_RECEIVED_MS, () => report(stored, "acknowledged"));
+        return stored;
+      }
       const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);
       const sent = payload?.type === "sitrep.thread" ? payload.data as { text?: unknown; messageId?: unknown } : undefined;
       if (typed && typeof sent?.text === "string" && typeof sent.messageId === "string") {

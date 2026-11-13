@@ -104,22 +104,32 @@ function MorphContent({ children, reduce, ref }: { children: ReactNode; reduce: 
 
 export type AnchorOptions = {
   /**
-   * Where the readable area starts. An element (a sticky header inside the scroll container): its bottom edge.
-   * A number: that many pixels below the container's top. Default: the container's top.
+   * Where the readable area starts. An element: the bottom edge of the sticky header it is in (or is), inside the
+   * scroll container, wherever that header is now (slid out of view, it adds nothing). A number: that many pixels
+   * below the container's top. Default: the container's top.
    */
   stickyTop?: RefObject<HTMLElement | null> | number;
 };
+
+/** The box of the sticky element `node` is in (or is), below `container`; `node`'s own box if there is none. */
+function stickyBox(node: HTMLElement, container: HTMLElement): DOMRect {
+  for (let at: HTMLElement | null = node; at && at !== container; at = at.parentElement) {
+    if (getComputedStyle(at).position === "sticky") return at.getBoundingClientRect();
+  }
+  return node.getBoundingClientRect();
+}
 
 /**
  * Changes the feed's density (or anything else that resizes every card) without losing your place: the card you
  * are reading stays where it is on screen, the cards above it grow or shrink upwards and the cards below move down.
  *
- * Returns `anchoredToggle(change)`. It finds the first card (`li[data-card-key]` in the scroll container) with at
- * least 24px showing below the top, notes where it is on screen, holds the content's height so the container
+ * Returns `anchoredToggle(change)`. It finds the first card (`li[data-card-key]` in the scroll container) whose top
+ * shows below the top (below `stickyTop`), notes where it is on screen, holds the content's height so the container
  * cannot shrink and clamp the scroll mid-morph, and applies `change` straight away (flushSync). Then, every frame
  * after motion has drawn, it scrolls the container by however far that card has moved, until the card's own
- * animation has finished. If the card's top was hidden, it eases down to just below the top instead (its
- * `scroll-margin-top`, or 8px), so a long card that shrinks lands in view.
+ * animation has finished. When one card fills the view and no top shows, that card (with at least 24px showing) is
+ * the one held: it eases down to just below the top instead (its `scroll-margin-top`, or 8px), so a long card that
+ * shrinks lands in view.
  *
  * Why every frame, not once: motion starts the morph a frame or two after the change and moves the card over
  * about 400ms, so a single correction (or a timer) would leave it drifting. Scrolling or touching the feed during
@@ -143,8 +153,14 @@ export function useAnchoredToggle(mainRef: RefObject<HTMLElement | null>, option
 
     const mainBox = main.getBoundingClientRect();
     const line = typeof stickyTop === "number" ? mainBox.top + stickyTop
-      : stickyTop?.current ? stickyTop.current.getBoundingClientRect().bottom : mainBox.top;
-    const anchor = [...main.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => {
+      : stickyTop?.current ? Math.max(mainBox.top, stickyBox(stickyTop.current, main).bottom) : mainBox.top;
+    // The card you are reading: the first whose top shows, so it and everything below it hold still while the
+    // cards above it change size. Only when one card fills the view (no top shows) is that card the anchor.
+    const cards = [...main.querySelectorAll<HTMLElement>("li[data-card-key]")];
+    const anchor = cards.find((node) => {
+      const box = node.getBoundingClientRect();
+      return box.top >= line && box.top < mainBox.bottom;
+    }) ?? cards.find((node) => {
       const box = node.getBoundingClientRect();
       return box.bottom >= line + MIN_VISIBLE_PX && box.top < mainBox.bottom;
     });

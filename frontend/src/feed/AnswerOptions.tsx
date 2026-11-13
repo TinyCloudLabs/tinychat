@@ -1,11 +1,13 @@
 // Answering a feed card with one tap: the tap chooses, the answer waits a few
 // seconds with Undo, then it is sent. Plain cards (HomeFeedEntries.tsx) and typed
-// asks (SitrepCard.tsx) share the wait, its words and the option buttons.
+// asks (SitrepCard.tsx) share the wait, its words and the option buttons; comments
+// (CardConversation.tsx) and replies (CardReply.tsx) wait the same way.
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ComposerField } from "./ComposerField";
 import { StatefulSendButton, type SendState } from "./StatefulSendButton";
 
 /** Seconds an answer waits, after the tap or Send, before it is sent. Undo works until then and not after. */
-export const ANSWER_UNDO_SECONDS = 4;
+export const ANSWER_UNDO_SECONDS = 5;
 export const ANSWER_UNDO_HINT = `Your answer is sent ${ANSWER_UNDO_SECONDS} seconds after you tap an option or press Send. You can undo it until then, not after.`;
 
 /** What a send control reads while its answer waits (`seconds` left) or is being sent (null), naming who gets it (`to`). */
@@ -16,9 +18,10 @@ export const answerSummary = (label?: string, text?: string) => label ? `You cho
 
 /**
  * The undo window. `start` counts ANSWER_UNDO_SECONDS down and then calls `send`;
- * `undo` stops the count, so nothing is saved. A card that goes away while it
- * counts sends at once, and so does a page that is closed or hidden: an answer
- * is never dropped silently. `status` is the line a screen reader hears.
+ * `undo` stops the count, so nothing is saved; `flush` sends now whatever waits.
+ * A card that goes away while it counts sends at once, and so does a page that is
+ * closed or hidden: an answer is never dropped silently. `status` is the line a
+ * screen reader hears.
  */
 export function useUndoWindow(send: () => void) {
   const [seconds, setSeconds] = useState<number | null>(null);
@@ -31,15 +34,15 @@ export function useUndoWindow(send: () => void) {
     timer.current = undefined;
     setSeconds(null);
   }
+  function flush() {
+    if (!timer.current) return;
+    stop(); setStatus("Sending…");
+    latest.current();
+  }
   // A closed or hidden page may never run the rest of the count (mobile browsers freeze or discard it), so the
   // answer goes now, as it does on unmount. `pagehide` covers closing and navigating away; `visibilitychange` to
   // hidden covers switching apps, which on a phone is often the last event a page gets.
   useEffect(() => {
-    function flush() {
-      if (!timer.current) return;
-      stop(); setStatus("Sending…");
-      latest.current();
-    }
     const hidden = () => { if (document.visibilityState === "hidden") flush(); };
     window.addEventListener("pagehide", flush);
     document.addEventListener("visibilitychange", hidden);
@@ -70,7 +73,13 @@ export function useUndoWindow(send: () => void) {
       if (!timer.current) return;
       stop(); setStatus("Undone. Nothing was sent.");
     },
+    flush,
   };
+}
+
+/** Undo in a status line under something that waits: small text, with a hit area of 44px on touch (40px with a mouse). */
+export function UndoButton({ onClick }: { onClick: () => void }) {
+  return <button type="button" onClick={onClick} className="relative rounded-sm font-medium text-foreground underline decoration-border underline-offset-2 after:absolute after:-inset-x-2 after:-inset-y-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:after:-inset-y-3">Undo</button>;
 }
 
 export interface AnswerOption { id: string; label: string; detail?: string; cost?: string }
@@ -123,7 +132,7 @@ export function AnswerOptions({ options: given, suggested, chosen, seconds, send
   </fieldset>;
 }
 
-/** What "Your own answer" opens: a text box and Send. Send waits out the same undo window as a tap. */
+/** What "Your own answer" opens: one field with Send inside it. Send waits out the same undo window as a tap. */
 // Send only starts the undo window; the real save runs later in the caller, so
 // the caller passes `state` for that save (sending/sent/error) and `onRetry` to
 // re-run it after a failure. Without `state` the button just stays on Send.
@@ -134,9 +143,6 @@ export function OwnAnswerBox({ text, disabled, onText, onSend, state = "idle", o
   // While the answer waits out its undo window, the option row above is the only status, so Send steps aside; it
   // comes back to show the save itself (sending, or "Couldn't send · Retry").
   const holding = disabled && state === "idle";
-  return <div className="space-y-2 rounded-xl border border-border p-3">
-    <textarea autoFocus rows={3} aria-label={OWN_OPTION.label} value={text} disabled={disabled} onInput={(event) => onText(event.currentTarget.value)}
-      className="block min-h-20 w-full resize-y rounded-lg border border-border bg-background p-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" />
-    {!holding && <StatefulSendButton state={state} disabled={disabled || !text.trim()} onSend={state === "error" ? (onRetry ?? onSend) : onSend} />}
-  </div>;
+  return <ComposerField autoFocus label={OWN_OPTION.label} value={text} onValue={onText} disabled={disabled}
+    send={!holding && <StatefulSendButton compact state={state} disabled={disabled || !text.trim()} onSend={state === "error" ? (onRetry ?? onSend) : onSend} />} />;
 }

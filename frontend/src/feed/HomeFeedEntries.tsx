@@ -8,12 +8,13 @@ import { AgentConversation, AgentList, agentKey, agentThreads } from "./AgentCon
 import { agentProfile, AgentMark } from "./AgentMark";
 import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { CardConversation, plainConversation, typedConversation } from "./CardConversation";
-import { actionClass, CardDetails, footActionClass } from "./CardActions";
+import { actionClass, CardDetails, closedAs, footActionClass, sendOwnerAction } from "./CardActions";
 import { cardStatus } from "./cardStatus";
 import { FeedCardView } from "./FeedView";
 import { PostTile, postMorphId } from "./PostTile";
 import { labPageOf, PostPage, PostPreview, postStatus } from "./PostPage";
-import { CompactCard, StatusMark } from "./CompactCard";
+import { CompactCard, DueMark, PriorityMark, ReplyCount, StatusMark, type Replies } from "./CompactCard";
+import { useUndoBar } from "./UndoBar";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { ShortTime, shortTime } from "./ShortTime";
@@ -39,22 +40,6 @@ export function sentAgo(at: string, now: number): string {
   if (hours < 24) return `${hours} ${hours === 1 ? "hr" : "hrs"} ago`;
   const days = Math.floor(hours / 24);
   return `${days} ${days === 1 ? "day" : "days"} ago`;
-}
-
-/**
- * A labelled on/off switch, as Settings draws it: a 44px target on touch around a 44x24 track. Its off state has
- * an edge, so it reads against the page (design critique #5).
- */
-function LabSwitch({ label, checked, disabled = false, onChange }: { label: string; checked: boolean; disabled?: boolean; onChange: (on: boolean) => void }) {
-  return <label className={`flex min-h-10 items-center gap-2 text-sm ${disabled ? "opacity-50" : ""}`}>
-    <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}
-      className="-my-2.5 flex h-11 w-12 shrink-0 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:h-6 fine:w-11">
-      <span aria-hidden className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? "bg-primary" : "bg-input ring-1 ring-inset ring-foreground/15"}`}>
-        <span className={`absolute top-1 size-4 rounded-full bg-background shadow-sm transition-transform ${checked ? "left-6" : "left-1"}`} />
-      </span>
-    </button>
-    {label}
-  </label>;
 }
 
 function keyOf(entry: HomeFeedEntry): string {
@@ -166,14 +151,14 @@ function TypedThread({ entry, typed, source, onSaved }: { entry: HomeFeedEntry; 
   return <CardConversation lines={typedConversation(entry, typed.record, typed.owner)} to={route.to} reason={"reason" in route ? route.reason : undefined} onSend={(text) => post(text, "delivery" in route ? route.delivery : undefined)} onResend={(line) => post(line.text, "delivery" in route ? route.delivery : undefined, line.id)} />;
 }
 /** A plain card's conversation: a comment is a card message to the agent that posted it. */
-function PlainThread({ entry, source, onSaved }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void }) {
+function PlainThread({ entry, source, onSaved, composer }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; composer?: { open: boolean; onOpenChange: (open: boolean) => void } }) {
   async function send(text: string) {
     if (!source.sendMessage) throw new Error("No agent can receive a comment here");
     const card = entry.state.card;
     const result = await source.sendMessage(entry, { responseId: crypto.randomUUID(), cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, kind: "message", text, createdAt: new Date().toISOString() });
     onSaved(entry, result);
   }
-  return <CardConversation lines={plainConversation(entry)} to={source.sendMessage ? entry.source.label : undefined} onSend={send} onResend={(line) => send(line.text)} />;
+  return <CardConversation lines={plainConversation(entry)} to={source.sendMessage ? entry.source.label : undefined} onSend={send} onResend={(line) => send(line.text)} {...(composer ? { composer } : {})} />;
 }
 
 function AnswerForm({ entry, source, onSaved, onAnswered }: { entry: HomeFeedEntry; source: HomeFeedSource; onSaved: (entry: HomeFeedEntry, response: FeedResponse) => void; onAnswered: (response: FeedResponse, summary: string) => void }) {
@@ -263,13 +248,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // Feed lab (Sam, 23:30Z): show only cards at or above a priority (0 highest), and an order other than the view's.
   const [priorityMax, setPriorityMax] = useState("");
   const [sortBy, setSortBy] = useState<"" | "priority" | "due" | "expires">("");
-  // A short note after an action, with a way to take it back ("Back at 15:00 · Undo").
-  const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 6_000);
-    return () => clearTimeout(timer);
-  }, [toast]);
+  // Drop this card, Acknowledge, Ask me later and Show me later take the card away at once; a bar at the bottom
+  // counts 5 seconds with Undo, and only then is anything sent (Sam 23:5xZ, as sitrep's; UndoBar.tsx).
+  const undoBar = useUndoBar((message) => setError(message));
   const [error, setError] = useState<string | null>(null);
   const [savingDefault, setSavingDefault] = useState(false);
   const [viewBusy, setViewBusy] = useState(false);
@@ -277,10 +258,14 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [sent, setSent] = useState<SentAnswer | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Feed lab (Sam, 11-12): "View" opens the choice of compact cards, full cards, or the grid, next to Filter.
+  const [viewOpen, setViewOpen] = useState(false);
   // The agents list ("list") or one agent's conversation (its key), shown instead of the cards.
   const [agentView, setAgentView] = useState<string | null>(null);
   // Which card's "Ask me later" times are showing.
   const [laterKey, setLaterKey] = useState<string | null>(null);
+  // An update's comment box, opened from "Comment" in its foot (Sam, 23:5xZ).
+  const [commentKey, setCommentKey] = useState<string | null>(null);
   // Feed lab (Sam, 11-12): every card as a short item ("compact"), tapping one opens it in place, or every card
   // open, big card after big card ("full").
   const [size, setSize] = useState<"compact" | "full">("compact");
@@ -296,8 +281,6 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [earlier, setEarlier] = useState<HomeFeedEntry[]>([]);
   const [pull, setPull] = useState(0);
   const mainRef = useRef<HTMLElement>(null);
-  // Full cards and Grid keep the card you are reading where it is while the cards morph (densityMorph.tsx).
-  const anchoredToggle = useAnchoredToggle(mainRef);
   const bottomSentinel = useRef<HTMLDivElement>(null);
   const topSentinel = useRef<HTMLDivElement>(null);
   const pullStart = useRef<number | null>(null);
@@ -310,6 +293,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [historyAt, setHistoryAt] = useState<string | null>(null);
   // "Go to current" shows only while the feed's heading is below the screen (design critique #9).
   const [currentBelow, setCurrentBelow] = useState(false);
+  // Full cards and Grid keep the card you are reading where it is while the cards morph (densityMorph.tsx); the
+  // header floats over the cards, so the card you are reading is the first one below it.
+  const anchoredToggle = useAnchoredToggle(mainRef, { stickyTop: headerRef });
   // Earlier answers come and go above the feed without the feed moving: before the list above changes, the element
   // given here is measured, and after the change the scroll is put back so it stays at the same place on screen.
   // `then` runs after that (the scroll up to the newest earlier answer, or down to the feed).
@@ -509,6 +495,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const matching = entries.filter((entry) => {
     const card = entry.state.card;
     if (!matchesFilters(entry)) return false;
+    // Taken away a moment ago, while the undo bar counts.
+    if (undoBar.hidden(keyOf(entry))) return false;
     // A snoozed card is out of every view until its time comes, except the Filter's "Snoozed" list.
     const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > clock;
     if (snoozedOnly) return snoozed;
@@ -517,7 +505,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const expired = !!timing.expiresAt && Date.parse(timing.expiresAt) <= clock;
     if (priorityMax && (timing.priority ?? 9) > Number(priorityMax)) return false;
     if (history) return expired || entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || Date.parse(entry.view.snoozedUntil ?? "") > clock;
-    if (snoozed || expired) return false;
+    // Dropped or acknowledged (Sam 23:40Z): only in History, marked so.
+    if (snoozed || expired || closedAs(entry)) return false;
     const typed = contextFor(entry);
     const unsupported = card.payload?.sitrep !== undefined || card.payload?.sitrepThread !== undefined;
     if (selector === "needs-action" && typed?.projection.foldedInto) {
@@ -591,6 +580,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const sections: [string, typeof navigation][] = selector === "needs-action"
     ? [["Needs you", ordered(navigation.filter(rowNeedsYou))], ["Updates", ordered(navigation.filter((row) => !rowNeedsYou(row)))]]
     : [["", ordered([...navigation].sort((first, second) => newest(second) - newest(first)))]];
+  // The cards in the order this view shows them, top to bottom (where focus goes when one is taken away).
+  const shown = sections.flatMap(([, rows]) => rows.flatMap((row) => row.kind === "card" ? [row.item] : row.items));
   // A card counts as seen once it shows open: every card in the full view, the ones you open in the compact view.
   const seenAsked = useRef(new Set<string>());
   const seenNow = (size === "full" ? filtered : filtered.filter((entry) => opened.has(keyOf(entry)) || keyOf(entry) === pageKey)).filter((entry) => !entry.view.seenAt && !seenAsked.current.has(keyOf(entry)));
@@ -623,20 +614,35 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Default could not be saved"); }
     finally { setSavingDefault(false); }
   }
-  async function snooze(entry: HomeFeedEntry, until: string) {
-    if (viewBusy) return;
-    setViewBusy(true); setError(null);
-    try {
+  /**
+   * Takes a card away now and shows the undo bar; `commit` runs once its 5 seconds pass. Focus moves to the card that
+   * takes its place, else the one above.
+   */
+  function takeAway(entry: HomeFeedEntry, text: string, commit: () => Promise<unknown>, undo?: () => void) {
+    const key = keyOf(entry);
+    const index = shown.findIndex((candidate) => keyOf(candidate) === key);
+    const next = index < 0 ? undefined : shown[index + 1] ?? shown[index - 1];
+    undoBar.push({ key, text, commit, ...(undo ? { undo } : {}) });
+    if (next) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-card-key="${CSS.escape(keyOf(next))}"] button`)?.focus());
+  }
+  /** Ask me later (a decision) or Show me later (an update) on a plain card: saved, and its agent told, after the undo. */
+  function askLater(entry: HomeFeedEntry, until: string) {
+    setLaterKey(null);
+    takeAway(entry, `Back at ${shortTime(until, clock)}`, async () => {
       await source.snooze(entry, until);
       setSnapshot((current) => updateSnapshotEntry(current, keyOf(entry), (candidate) => ({ ...candidate, view: { ...candidate.view, snoozedUntil: until } })));
-      setLaterKey(null);
-      snoozed(entry, until);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Card could not be snoozed"); }
-    finally { setViewBusy(false); }
+      await sendOwnerAction(entry, source, "feed.snooze", `Ask me later: ${until}`, { until });
+      refreshRef.current();
+    });
   }
-  /** After a snooze: the card has gone; say when it comes back, with Undo. */
+  /** A typed card's Ask me later saves its snooze itself (with its note); the bar offers Undo, then tells the agent. */
   function snoozed(entry: HomeFeedEntry, until: string) {
-    setToast({ text: `Back at ${shortTime(until, clock)}`, undo: () => void unsnooze(entry) });
+    takeAway(entry, `Back at ${shortTime(until, clock)}`, () => sendOwnerAction(entry, source, "feed.snooze", `Ask me later: ${until}`, { until }), () => void unsnooze(entry));
+  }
+  /** Drop this card (a decision) or Acknowledge (an update): gone now, told to its agent and moved to History after the undo. */
+  function closeCard(entry: HomeFeedEntry, kind: "drop" | "acknowledge") {
+    const text = kind === "drop" ? "Dropped" : "Acknowledged";
+    takeAway(entry, text, async () => { await sendOwnerAction(entry, source, kind === "drop" ? "feed.drop" : "feed.acknowledge", text); refreshRef.current(); });
   }
   /** Brings a snoozed card back now (Undo, or "Bring back now" from the Snoozed list). */
   async function unsnooze(entry: HomeFeedEntry) {
@@ -644,7 +650,6 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     try {
       await source.snooze(entry, now);
       setSnapshot((current) => updateSnapshotEntry(current, keyOf(entry), (candidate) => ({ ...candidate, view: { ...candidate.view, snoozedUntil: now } })));
-      setToast(null);
       refreshRef.current();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Card could not be brought back"); }
   }
@@ -655,13 +660,21 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const author = cardAuthor(entry, context?.record).name;
     const unsupported = (entry.state.card.payload?.sitrep !== undefined || entry.state.card.payload?.sitrepThread !== undefined) && !context;
     const timing = cardTiming(entry, context);
-    return <CompactCard agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt} priority={timing.priority}
-      status={unsupported ? undefined : statusOf(entry, author)} title={entry.state.card.title} description={(timing.deadline && needsAttention(entry, clock, context?.projection) ? `Due ${shortTime(timing.deadline, clock)} · ` : "") + describe(entry)} onOpen={() => openCard(entry)} />;
+    return <CompactCard agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt} priority={timing.priority} replies={repliesOf(entry)}
+      status={unsupported ? undefined : statusOf(entry, author)} title={entry.state.card.title} due={timing.deadline && needsAttention(entry, clock, context?.projection) ? timing.deadline : undefined} now={clock} description={describe(entry)} onOpen={() => openCard(entry)} />;
   }
-  /** A card's status word, or "Expired" once it is past its "relevant until" (it then shows only in History). */
+  /** The agent's replies on a card, and how many came after you last opened it (the compact card's and tile's count). */
+  function repliesOf(entry: HomeFeedEntry): Replies | undefined {
+    const context = contextFor(entry);
+    const theirs = (context ? typedConversation(entry, context.record, context.owner) : plainConversation(entry)).filter((line) => !line.mine);
+    if (!theirs.length) return undefined;
+    const seenAt = entry.view.seenAt;
+    return { count: theirs.length, unread: theirs.filter((line) => !seenAt || line.at > seenAt).length, from: cardAuthor(entry, context?.record).name };
+  }
+  /** A card's status word, or "Expired" once it is past its "matters until" (it then shows only in History). */
   function statusOf(entry: HomeFeedEntry, author: string) {
     const expiresAt = cardTiming(entry, contextFor(entry)).expiresAt;
-    return expiresAt && Date.parse(expiresAt) <= clock ? "Expired" : cardStatus(entry, contextFor(entry)?.projection, clock, author);
+    return closedAs(entry) ?? (expiresAt && Date.parse(expiresAt) <= clock ? "Expired" : cardStatus(entry, contextFor(entry)?.projection, clock, author));
   }
   /** A card's one or two lines: what you chose once you have answered it, else its short description or body. */
   function describe(entry: HomeFeedEntry) {
@@ -683,16 +696,18 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const context = contextFor(entry);
     const author = cardAuthor(entry, context?.record).name;
     const page = labPageOf(entry);
+    const timing = cardTiming(entry, context);
+    const due = timing.deadline && needsAttention(entry, clock, context?.projection) ? timing.deadline : undefined;
     const plain = statusOf(entry, author);
     const status = page ? postStatus(entry, page, plain) : plain;
     // A post's tile morphs straight into its page (PostTile.tsx, Sam 22:44Z).
-    if (page) return <PostTile entry={entry} page={page} author={author} agentKey={agentKey(entry, context?.record)} status={status} onOpen={() => setPageKey(keyOf(entry))} />;
+    if (page) return <PostTile entry={entry} page={page} author={author} agentKey={agentKey(entry, context?.record)} status={status} replies={repliesOf(entry)} onOpen={() => setPageKey(keyOf(entry))} />;
     return <button type="button" onClick={() => openCard(entry)} aria-expanded={false}
       className="flex h-full w-full min-w-0 flex-col gap-2 rounded-2xl border border-border bg-card p-3 text-left text-card-foreground transition-transform duration-150 ease-smooth active:scale-[.985] fine:hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:active:scale-100">
       <span className="flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground"><AgentMark agentKey={agentKey(entry, context?.record)} name={author} small /><span className="min-w-0 truncate font-semibold text-foreground">{author}</span></span>
       <span className="line-clamp-3 break-words text-sm font-semibold leading-[18px]">{entry.state.card.title}</span>
-      <span className="line-clamp-3 break-words text-xs leading-4 text-muted-foreground">{describe(entry)}</span>
-      <span className="mt-auto flex min-w-0 items-center justify-between gap-2 pt-1 text-meta text-muted-foreground"><ShortTime at={entry.state.card.createdAt} className="truncate" /><StatusMark status={status} /></span>
+      <span className="line-clamp-3 break-words text-xs leading-4 text-muted-foreground">{due && <><DueMark due={due} now={clock} /> · </>}{describe(entry)}</span>
+      <span className="mt-auto flex min-w-0 items-center justify-between gap-2 pt-1 text-meta text-muted-foreground"><ShortTime at={entry.state.card.createdAt} className="truncate" /><span className="flex shrink-0 items-center gap-2"><PriorityMark priority={timing.priority} /><ReplyCount replies={repliesOf(entry)} /><StatusMark status={status} /></span></span>
     </button>;
   }
 
@@ -707,54 +722,55 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const reference = referenceFor(entry);
     const later = laterKey === key;
     // Opened in place from a list: fold it back from the top right, beside its status (design round 6).
-    const fewer = (size === "compact" || grid) && <button type="button" aria-expanded aria-label="Show less" onClick={() => setOpened((current) => { const next = new Set(current); next.delete(key); return next; })} className="flex size-9 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><ChevronUpIcon aria-hidden className="size-4" /></button>;
-    // "Next card" (recycled from the one-open-card feed, Sam 22:52Z): the next card in this view that needs you, as a
-    // dark pill at the right of the card's foot, like the slider and "Go to current".
-    const nextEntry = filtered.slice(filtered.findIndex((candidate) => keyOf(candidate) === key) + 1).find((candidate) => !labPageOf(candidate) && needsAttention(candidate, clock, contextFor(candidate)?.projection));
-    const nextCard = nextEntry && <button type="button" onClick={() => goNext(entry, nextEntry)} className="inline-flex min-h-11 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 text-sm font-semibold text-background transition-transform active:scale-[.97] motion-reduce:transform-none fine:min-h-9">Next card<ArrowDownIcon aria-hidden className="size-4" /></button>;
+    const fewer = (size === "compact" || grid) && <button type="button" aria-expanded aria-label="Show less" onClick={() => setOpened((current) => { const next = new Set(current); next.delete(key); return next; })} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronUpIcon aria-hidden className="size-4" /></button>;
     // A snoozed card opened early, from the Snoozed list, can come back now.
     const wake = Date.parse(entry.view.snoozedUntil ?? "") > clock && <button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button>;
+    // An update (nothing to decide) is acknowledged, not dropped (Sam 23:40Z).
+    const info = entry.state.card.needsResponse === false;
+    const priority = cardTiming(entry, context).priority;
     const facts = <dl className="space-y-0">{[
       ["Agent", entry.source.label],
       ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
       ["Type", entry.state.card.kind.charAt(0).toUpperCase() + entry.state.card.kind.slice(1)],
       ["Reference", <code className="block truncate select-all text-xs" title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</code>],
+      // P0 and P1 show on the card itself; every level shows here (the design agent, 23:5xZ).
+      ...(priority !== undefined ? [["Priority", `P${priority}`]] : []),
     ].map(([term, value]) => <div key={String(term)} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>;
     return <div className="min-w-0">
       {fold && <AnswerFold key={fold.response.responseId} entry={entry} sent={fold} agent={author} typed={context} source={source} onSaved={onSaved} onToggle={() => setSent({ ...fold, open: !fold.open })} />}
-      {fold && !fold.open && nextCard && <div className="-mt-1 mb-3 flex justify-end">{nextCard}</div>}
       <div hidden={!!fold && !fold.open}>
         <FeedCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} status={unsupported ? undefined : statusOf(entry, author)} onAuthor={() => setAgentView(agentKey(entry, context?.record))} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }} collapse={fewer || undefined}>
           {/* The agent's one-page brief, read in the app beside the decision (Sam, 23:30Z). */}
           {briefOf(entry.state.card.payload) && <BriefButton brief={briefOf(entry.state.card.payload)!} className="mb-3" />}
           <ReportLink entry={entry} />
-          {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} end={nextCard || undefined} extra={wake || undefined} onSnoozed={(until) => snoozed(entry, until)} />
-            : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-2"><CardDetails end={nextCard || undefined}>{facts}</CardDetails></div></div>
+          {context ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} onSaved={onSaved} onAnswered={onAnswered} onOwnerSaved={() => refreshRef.current()} onNavigate={openCard} reference={reference} close={needsAttention(entry, clock, context.projection) ? { kind: "drop", onTap: () => closeCard(entry, "drop") } : undefined} extra={wake || undefined} onSnoozed={(until) => snoozed(entry, until)} />
+            : unsupported ? <div className="mt-4 space-y-4"><p role="status" className="rounded-xl border border-border p-3 text-sm">Unsupported typed record or unresolved thread event. Original card preserved; no fallback answer action is available.</p><div className="border-t border-border pt-2"><CardDetails>{facts}</CardDetails></div></div>
             : <div className="mt-4 space-y-4">
               {/* When it's due, how long it stays relevant, and its priority, when its agent set them (Sam, 23:30Z). */}
               {(() => {
                 const timing = cardTiming(entry, context);
-                const parts = [timing.deadline && `Due ${shortTime(timing.deadline, clock)}`, timing.expiresAt && `Relevant until ${shortTime(timing.expiresAt, clock)}`, timing.priority !== undefined && `Priority P${timing.priority}`].filter(Boolean);
+                const parts = [timing.deadline && `Due ${shortTime(timing.deadline, clock)}`, timing.expiresAt && `Matters until ${shortTime(timing.expiresAt, clock)}`, timing.priority !== undefined && `Priority P${timing.priority}`].filter(Boolean);
                 return parts.length ? <p className="text-xs text-muted-foreground">{parts.join(" · ")}</p> : null;
               })()}
               <AnswerForm key={key} entry={entry} source={source} onSaved={onSaved} onAnswered={onAnswered} />
-              <PlainThread entry={entry} source={source} onSaved={onSaved} />
-              {/* The card's foot, one row (Sam 11-12; design round 6): Ask me later and Details quiet on the left, Next
-                  card on the right; Ask me later's times open under it. */}
-              <div className="border-t border-border pt-2"><CardDetails end={nextCard || undefined} actions={wake || (needsAttention(entry, clock) && <button type="button" disabled={viewBusy} aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={footActionClass}>Ask me later</button>)}>
+              <PlainThread entry={entry} source={source} onSaved={onSaved} {...(info ? { composer: { open: commentKey === key, onOpenChange: (open: boolean) => setCommentKey(open ? key : null) } } : {})} />
+              {/* The card's foot, one row, Details in the bottom-right corner (Sam 23:40Z and 23:5xZ; the design
+                  agent's layout): a decision has Ask me later, then Drop this card beside Details; an update has
+                  Acknowledge, Show me later and Comment. Drop, Acknowledge and the later times take the card away
+                  with the undo bar. The later times open under the row. */}
+              <div className="border-t border-border pt-2"><CardDetails close={closedAs(entry) ? undefined : info ? { kind: "acknowledge", onTap: () => closeCard(entry, "acknowledge") } : needsAttention(entry, clock) ? { kind: "drop", onTap: () => closeCard(entry, "drop") } : undefined}
+                actions={<>
+                  {wake || ((info || needsAttention(entry, clock)) && <button type="button" aria-expanded={later} onClick={() => setLaterKey(later ? null : key)} className={footActionClass}>{info ? "Show me later" : "Ask me later"}</button>)}
+                  {info && source.sendMessage && <button type="button" aria-expanded={commentKey === key} onClick={() => setCommentKey(commentKey === key ? null : key)} className={footActionClass}>Comment</button>}
+                </>}>
                 {facts}<CardHistory entry={entry} /></CardDetails></div>
-              {later && needsAttention(entry, clock) && <section aria-label="Ask me later" className="space-y-2 rounded-xl border border-border p-3 text-sm"><p className="font-medium">Ask me again</p>
-                <div className="flex flex-wrap gap-2">{snoozePresets(clock).slice(0, 3).map((preset) => <button key={preset.id} type="button" disabled={viewBusy} onClick={() => void snooze(entry, preset.until)} className={actionClass}>{preset.label}</button>)}</div>
+              {later && (info || needsAttention(entry, clock)) && <section aria-label={info ? "Show me later" : "Ask me later"} className="space-y-2 rounded-xl border border-border p-3 text-sm"><p className="font-medium">{info ? "Show me again" : "Ask me again"}</p>
+                <div className="flex flex-wrap gap-2">{snoozePresets(clock).slice(0, 3).map((preset) => <button key={preset.id} type="button" onClick={() => askLater(entry, preset.until)} className={actionClass}>{preset.label}</button>)}</div>
               </section>}
             </div>}
         </FeedCardView>
       </div>
     </div>;
-  }
-  /** To the next card that needs you: in the compact view this card folds and the next one opens; it comes into view. */
-  function goNext(from: HomeFeedEntry, to: HomeFeedEntry) {
-    if (size === "compact") setOpened((current) => { const next = new Set(current); next.delete(keyOf(from)); return next; });
-    openCard(to);
   }
   /** A post (feed lab): its preview in both views; tapping it opens its page. */
   function postCard(entry: HomeFeedEntry) {
@@ -776,7 +792,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     // content crossfades (densityMorph.tsx, Sam 22:44Z).
     return <MorphItem key={key} contentKey={grid && !wide ? "tile" : page ? "post" : isOpen(entry) ? "full" : "compact"}
       data-card-key={key} data-sent-at={answered ? entry.state.response?.createdAt : undefined} className={`min-w-0 scroll-mt-4 ${wide ? "col-span-full" : ""}`}>
-      {grid && !wide ? gridTile(entry) : page ? postCard(entry) : isOpen(entry) ? fullCard(entry) : compactCard(entry)}</MorphItem>;
+      {grid && !wide ? gridTile(entry) : page ? postCard(entry) : isOpen(entry) ? fullCard(entry) : compactCard(entry)}
+      {/* The Snoozed list: each card can come back now without opening it (QA, 1f17120). */}
+      {snoozedOnly && !isOpen(entry) && Date.parse(entry.view.snoozedUntil ?? "") > clock && <div className="mt-1 flex justify-end"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}</MorphItem>;
   };
   const listClass = grid ? "grid grid-cols-2 content-start gap-3 sm:grid-cols-3" : size === "compact" ? "space-y-2" : "space-y-4";
   const pageEntry = pageKey ? [...(snapshot?.entries ?? []), ...(snapshot?.historicalEntries ?? [])].find((entry) => keyOf(entry) === pageKey) : undefined;
@@ -794,7 +812,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // Home shows only the heading and its empty state until the first card arrives.
   const bare = !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
   const filtersOn = [agent, kind, project, priorityMax, sortBy].filter(Boolean).length + (history ? 1 : 0) + (snoozedOnly ? 1 : 0);
-  const selectClass = "min-h-10 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  const view = grid ? "grid" : size;
+  const selectClass = "min-h-11 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm fine:min-h-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   // No browser scroll anchoring: it would hold the end of the list in view as cards land, loading more forever.
   return <main ref={mainRef} onScroll={measureHistory} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
     onTouchStart={(event) => { pullStart.current = (mainRef.current?.scrollTop ?? 1) <= 0 && source.loadAnswered ? event.touches[0]!.clientY : null; }}
@@ -835,23 +854,25 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {ask}
       {!bare && <>
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-        {/* Feed lab (Sam, 11-12): a toggle between every card short, like a list of posts, and every card open;
-            and an optional grid of tiles. Both keep your place and morph the cards on screen (anchoredToggle). */}
-        {!agentView && <>
-          <LabSwitch label="Full cards" checked={size === "full"} disabled={grid} onChange={(on) => anchoredToggle(() => { setSize(on ? "full" : "compact"); setOpened(new Set()); })} />
-          <LabSwitch label="Grid" checked={grid} onChange={(on) => anchoredToggle(() => { setGrid(on); setOpened(new Set()); })} />
-        </>}
         <span className="ml-auto flex items-center gap-2">
           <button type="button" aria-pressed={!!agentView} onClick={() => setAgentView(agentView === "list" ? null : "list")} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background">Agents</button>
+          {!agentView && <button type="button" aria-expanded={viewOpen} aria-controls="home-feed-view" onClick={() => setViewOpen(!viewOpen)} className={`min-h-11 rounded-lg border px-3 text-sm fine:min-h-10 ${view === "compact" ? "border-border" : "border-primary bg-primary/10 font-medium"}`}>{view === "compact" ? "View" : `View · ${view === "full" ? "Full" : "Grid"}`}</button>}
           {!agentView && <button type="button" aria-expanded={filtersOpen} aria-controls="home-feed-filters" onClick={() => setFiltersOpen(!filtersOpen)} className={`min-h-11 rounded-lg border px-3 text-sm fine:min-h-10 ${filtersOn ? "border-primary bg-primary/10 font-medium" : "border-border"}`}>{filtersOn ? `Filter · ${filtersOn}` : "Filter"}</button>}
         </span>
       </div>
+      {/* Feed lab (Sam, 11-12): every card short, like a list of posts; every card open; or a grid of tiles. Each keeps
+          your place and morphs the cards on screen (anchoredToggle). The panel stays open until View is tapped again. */}
+      {viewOpen && !agentView && <div id="home-feed-view" role="radiogroup" aria-label="View" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
+        {(["compact", "full", "grid"] as const).map((option) => <button key={option} type="button" role="radio" aria-checked={view === option}
+          onClick={() => { if (option !== view) anchoredToggle(() => { setSize(option === "full" ? "full" : "compact"); setGrid(option === "grid"); setOpened(new Set()); }); }}
+          className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-checked:border-primary aria-checked:bg-primary/10">{option === "compact" ? "Compact" : option === "full" ? "Full cards" : "Grid"}</button>)}
+      </div>}
       {filtersOpen && <div id="home-feed-filters" className="mb-5 flex flex-wrap gap-2 rounded-xl border border-border p-3">
         <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">All agents</option>{[...new Map(entries.map((entry) => [entry.source.sourceId, entry.source.label])).entries()].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>
         <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => setKind(event.target.value)}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => setProject(event.target.value)}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <button type="button" aria-pressed={history} onClick={() => setHistory(!history)} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
-        <button type="button" aria-pressed={snoozedOnly} onClick={() => setSnoozedOnly(!snoozedOnly)} className="min-h-10 rounded-lg border border-border px-3 text-sm aria-pressed:border-primary aria-pressed:bg-primary/10">Snoozed</button>
+        <button type="button" aria-pressed={history} onClick={() => setHistory(!history)} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-primary aria-pressed:bg-primary/10">History</button>
+        <button type="button" aria-pressed={snoozedOnly} onClick={() => setSnoozedOnly(!snoozedOnly)} className="min-h-11 rounded-lg border border-border px-3 text-sm fine:min-h-10 aria-pressed:border-primary aria-pressed:bg-primary/10">Snoozed</button>
         <select aria-label="Filter by priority" className={selectClass} value={priorityMax} onChange={(event) => setPriorityMax(event.target.value)}>
           <option value="">Any priority</option>{[0, 1, 2, 3, 4].map((level) => <option key={level} value={level}>{level === 0 ? "P0 only" : `P0 to P${level}`}</option>)}
         </select>
@@ -906,12 +927,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         </button>
       </div>}
     </MorphConfig>
-    {/* A short note after an action, with Undo (Sam 22:58Z: "Back at 15:00 · Undo" after Ask me later). */}
-    {toast && <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex justify-center px-3">
-      <p role="status" className="pointer-events-auto flex items-center gap-3 rounded-full bg-zinc-900 py-1.5 pl-4 pr-1.5 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900">
-        {toast.text}{toast.undo && <button type="button" onClick={toast.undo} className="min-h-9 rounded-full px-3 font-semibold underline-offset-2 hover:underline">Undo</button>}
-      </p>
-    </div>}
+    {undoBar.bar}
     </div>
     {pageEntry && pageOpen && (() => {
       const author = cardAuthor(pageEntry).name;

@@ -42,7 +42,7 @@ Each entry says what the real feed needs: new card fields, the response and outb
 - **Port:** "Received" must be the agent's `FeedHandling { phase: "acknowledged" }`, written only after the comment really reached the agent (for a relayed agent, after its watcher confirms delivery). "Send again" posts the same text as a new `message` response; on typed cards, a `sitrep.thread` payload with `resendOf` set to the first `messageId`.
 - **Port:** plain cards have no `resendOf`; the lab pairs a copy with its original by matching words, so sending the same words twice on purpose reads as a resend. Add `resendOf` to the response schema if that matters. Typed cards already carry it (`usePostReply` now passes it).
 - **Port:** older typed threads whose messages have no response header count as unacknowledged and will read "Not confirmed". Decide whether history before the port is treated as confirmed.
-- **Port:** set `UNCONFIRMED_AFTER_MS` to the watcher's real delivery time (30 s is a guess). Resends send at once, without the undo window; route them through the outbox like any send.
+- **Port:** set `UNCONFIRMED_AFTER_MS` from the measured delay between a response and its acknowledgement: agents write `acknowledged` themselves when `tinycloud feed watch --once` (js-sdk#936) wakes them (30 s is a guess until that measurement arrives). Resends send at once, without the undo window; route them through the outbox like any send.
 - **Mock-only:** the lab agent acknowledges new comments on a timer, and one seeded comment on the water filter card is never acknowledged, to show the state.
 
 ### Briefs
@@ -51,18 +51,23 @@ Each entry says what the real feed needs: new card fields, the response and outb
 - **Lab:** `briefOf` (`BriefSheet.tsx`) checks the field: a title up to 200 characters; `markdown` up to 100,000 characters (it wins over `url`); `url` a path on this host, this origin or any https address ending `.md`, `.markdown`, `.html` or `.htm`. `BriefMarkdown.tsx` renders headings, lists, quotes, code, tables, emphasis and links; raw HTML shows as text, images as their alt text, and only http, https and mailto become links. An `.html` brief shows in a sandboxed frame with no scripts.
 - **Lab:** the room card's brief is inline Markdown (mock-only content). Opening a brief writes nothing, so it needs no outbox or undo.
 - **Port:** typed cards' `links` still open in a new tab; same-host `.md` and `.html` links there could open in the same sheet.
-- **Port:** decide where brief pages live (a file in the agent's TinyCloud space, read with the owner's grant, is the natural home) and whether `url` may point off-host. Name `brief` in the card guide.
+- **Port:** decide where brief pages live (a file in the agent's TinyCloud space, read with the owner's grant, is the natural home) and whether `url` may point off-host. Card guide v2 (prompts#171) already names `payload.brief { title, markdown | url }`, plus `deadline`, `expiresAt` and `priority`, with the lab's names.
 
 ### Expiry and deadline
 
-- **Lab:** two separate optional times. Past `expiresAt`, a card leaves every view and shows only in History, marked "Expired". `deadline` shows as "Due …" on a card that needs you. An opened card lists "Due …", "Relevant until …" and its priority. Filter can order by "Due first" or "Expires first"; cards without the time go last.
+- **Lab:** two separate optional times. Past `expiresAt`, a card leaves every view and shows only in History, marked "Expired". `deadline` shows as "Due …" on a card that needs you. An opened card lists "Due …", "Matters until …" and its priority. Filter can order by "Due first" or "Expires first"; cards without the time go last.
 - **Open question (flag for the merge):** whether expiry and deadline are one thing. Kept as two fields until decided.
 - **Port:** the expiry check runs in the browser against the clock; the real feed should also let the agent close the card (a new revision) and tell the poster it expired, as the sitrep board's expiry pass does.
 
 ### Priority
 
 - **Lab:** `payload.priority` 0 to 5, set by the agent, shown as "P0"…"P5" on the compact card. Filter: "Any priority", "P0 only", "P0 to P1" … "P0 to P4"; order "Priority first".
-- **Port:** decide how it relates to `urgency` (the SDK's one number) and to typed cards' urgency and importance. The lab treats them as unrelated.
+- **Port:** card guide v2 (prompts#171) tells agents to set `urgency = 5 − priority`, so `main`, which sorts by `urgency` only, already ranks plain cards in priority order before the port. Typed cards' urgency and importance stay separate; the lab doesn't map them.
+
+### Ask me later reaches the agent
+
+- **Lab:** snooze stays private: the card leaves every view until its time, "Back at {time} · Undo", Filter → Snoozed, "Bring back now". Nothing goes to the agent.
+- **Port (proposed in card guide v2, used by its forward tests):** on snooze, Home appends a `message` response with text `Ask me later: <ISO until>` and private payload `{ type: "feed.snooze", version: 1, data: { until } }`. The watcher delivers payload type `feed.snooze`; the agent acknowledges it with no reply and no outcome. "Bring back now" and Undo need a matching shape (not yet named). Rename before the guide ships if a better name comes up.
 
 ### Earlier in the lab (unchanged by this round)
 

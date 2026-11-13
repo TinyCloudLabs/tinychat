@@ -6,7 +6,7 @@ import { motion, useReducedMotion, type Transition } from "motion/react";
 import { PlayIcon } from "lucide-react";
 
 import { AgentMark } from "./AgentMark";
-import { StatusMark } from "./CompactCard";
+import { ReplyCount, StatusMark, type Replies } from "./CompactCard";
 import type { HomeFeedEntry } from "./feedStoreTypes";
 import type { LabPage } from "./PostPage";
 import { ShortTime } from "./ShortTime";
@@ -28,8 +28,8 @@ export function useMorphTransition(): Transition {
  * A post in the grid: its picture, who sent it and when, the title in two lines, and where it stands (the
  * compact card's status mark: "Done", "1 of 2 answered", or the solid "Needs you"). `status` is postStatus's word.
  */
-export function PostTile({ entry, page, author, agentKey, status, onOpen }: {
-  entry: HomeFeedEntry; page: LabPage; author: string; agentKey: string; status?: string; onOpen: () => void;
+export function PostTile({ entry, page, author, agentKey, status, replies, onOpen }: {
+  entry: HomeFeedEntry; page: LabPage; author: string; agentKey: string; status?: string; replies?: Replies; onOpen: () => void;
 }) {
   const card = entry.state.card;
   const id = postMorphId(entry);
@@ -51,12 +51,12 @@ export function PostTile({ entry, page, author, agentKey, status, onOpen }: {
         <span className="flex h-5 min-w-0 items-center gap-1.5 text-meta text-muted-foreground [&_[data-agent-mark]]:size-5 [&_[data-agent-mark]]:text-[10px]">
           <AgentMark agentKey={agentKey} name={author} small />
           <span className="min-w-0 truncate font-semibold text-foreground">{author}</span>
-          <ShortTime at={card.createdAt} className="shrink-0 tabular-nums before:mr-1.5 before:content-['·']" />
         </span>
         <motion.span layoutId={morphTitleId(id)} layout="position" transition={transition}
-          className={`line-clamp-2 break-words text-sm leading-[18px] ${status === "Needs you" ? "font-semibold" : "font-medium"}`}>{card.title}</motion.span>
-        {/* The status stays behind when the tile opens: shared, it crossed the title mid-morph (picks §2). */}
-        <span className="mt-auto flex min-h-5 items-center pt-0.5"><StatusMark status={status} /></span>
+          className={`line-clamp-3 break-words text-sm leading-[18px] ${status === "Needs you" ? "font-semibold" : "font-medium"}`}>{card.title}</motion.span>
+        {/* The status stays behind when the tile opens: shared, it crossed the title mid-morph (picks §2). The time sits
+            beside it, as on the other tiles, so the agent's name has the top row to itself (QA, 1f17120). */}
+        <span className="mt-auto flex min-h-5 min-w-0 items-center justify-between gap-2 pt-0.5 text-meta text-muted-foreground"><ShortTime at={card.createdAt} className="truncate tabular-nums" /><span className="flex shrink-0 items-center gap-2"><ReplyCount replies={replies} /><StatusMark status={status} /></span></span>
       </motion.span>
     </motion.span>
   </button>;

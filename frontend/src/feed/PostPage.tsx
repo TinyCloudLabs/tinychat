@@ -95,7 +95,8 @@ export function PostPreview({ entry, page, author, agentKey, platform, status, f
 function Media({ media }: { media: LabPageMedia }) {
   return <figure className="min-w-0">
     {media.type === "video"
-      ? <video src={media.src} poster={media.poster} controls playsInline preload="metadata" className="block aspect-video w-full rounded-xl border border-border bg-black object-contain" />
+      // A video's native controls don't match :focus-visible, so its ring shows on any focus (QA, 1f17120).
+      ? <video src={media.src} poster={media.poster} controls playsInline preload="metadata" className="block aspect-video w-full rounded-xl border border-border bg-black object-contain focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background" />
       : <a href={media.src} target="_blank" rel="noopener noreferrer"><img src={media.src} alt={media.caption ?? ""} loading="lazy" className="block w-full rounded-xl border border-border bg-muted" /></a>}
     {media.caption && <figcaption className="mt-1 text-xs text-muted-foreground">{media.caption}</figcaption>}
   </figure>;
@@ -281,7 +282,11 @@ export function PostPage({ entry, page, source, author, card, status, footer, mo
               {/* One send for the whole page, at the bottom where the answers are. */}
               <motion.div {...reveal} className="shrink-0 border-t border-border bg-background px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5 sm:pb-3">
                 <div className="mx-auto flex w-full max-w-2xl items-center gap-3">
-                  <p className="min-w-0 flex-1 text-sm text-muted-foreground" aria-live="polite">{error ? <span role="alert" className="text-destructive">{error}</span> : waiting ? sendingLabel(hold.seconds, "Sending", author) : `${count} of ${page.questions.length} answered`}</p>
+                  {/* Once sent, where the person is: Sent, then "{agent} received it", then Done (QA, 1f17120: the
+                      status at the top of the page was off-screen after sending from the bottom). */}
+                  <p className="min-w-0 flex-1 text-sm text-muted-foreground" aria-live="polite">{error ? <span role="alert" className="text-destructive">{error}</span> : waiting ? sendingLabel(hold.seconds, "Sending", author)
+                    : sent && !dirty ? <span className="font-medium text-foreground">{entry.state.outcome?.phase === "succeeded" ? "Done" : entry.state.outcome?.phase === "failed" ? "Failed" : entry.state.acknowledgement ? `${author} received it` : "Sent"}</span>
+                    : `${count} of ${page.questions.length} answered`}</p>
                   {hold.seconds !== null
                     ? <Button type="button" variant="outline" onClick={hold.undo} className="min-h-11">Undo</Button>
                     // Once sent and unchanged, adding more is the quiet way back in (design critique #7).

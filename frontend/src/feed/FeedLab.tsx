@@ -85,7 +85,7 @@ export function FeedLab() {
       <p className="min-w-0 flex-1"><span className="block truncate font-medium">Feed lab · {active}</span><span className="hidden text-xs text-muted-foreground sm:block">{lab?.exportedAt === undefined ? "A simulated agent answers. Nothing leaves this page." : "Cards from a test feed's export. Nothing you do here is sent."}</span></p>
       <button type="button" onClick={() => setPasting(!pasting)} aria-expanded={pasting} aria-label="Load JSON" title="Load JSON" className="flex size-11 shrink-0 items-center justify-center rounded-lg border border-border fine:size-9"><UploadIcon aria-hidden className="size-4" /></button>
       <button type="button" onClick={reset} className={`${buttonClass} shrink-0`}>Reset</button>
-      <Link to="/" className="inline-flex min-h-11 shrink-0 items-center underline underline-offset-2 fine:min-h-10">Close</Link>
+      <Link to="/" className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center underline underline-offset-2 fine:min-h-10">Close</Link>
     </header>
     {pasting && <div className="flex flex-col gap-2 border-b border-border px-3 py-2 text-sm">
       <textarea value={pasted} onChange={(event) => setPasted(event.target.value)} aria-label="Feed export JSON" placeholder="Paste a test feed's export JSON" rows={6} className="w-full rounded-lg border border-border bg-background p-2 font-mono text-xs" />

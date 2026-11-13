@@ -77,20 +77,26 @@ export function FeedCardView({ card, sample = true, readBody, status, onAuthor, 
   const platform = agent?.profile?.platform;
   return (
     <article className={plain ? "min-w-0 text-foreground" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
-      <div className="flex min-w-0 items-start gap-3 text-sm">
-        {agent ? <AgentMark agentKey={agent.key} name={card.author.name} /> : avatar && <img src={avatar} alt="" className="size-9 shrink-0 rounded-full bg-muted object-cover" />}
-        <div className="min-w-[6rem] flex-1">
-          <p data-agent-line className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      {/* One meta line, the compact card's (design round 7), so a card keeps its header row when it opens: the agent's
+          mark, its name, its platform's mark, the time, and at the right the status and "Show less". */}
+      <div className="flex min-w-0 items-center gap-3">
+        {agent ? <AgentMark agentKey={agent.key} name={card.author.name} small /> : avatar && <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />}
+        <div className="flex min-h-6 min-w-0 flex-1 items-center gap-1.5 text-meta text-muted-foreground">
+          <span data-agent-line className="flex min-w-0 items-center gap-1.5">
             {/* The name is 24px tall; its ::after stretches the tap target to 44px without moving the line (critique #8). */}
-            {onAuthor ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="relative min-h-6 break-words text-left font-semibold underline decoration-border underline-offset-4 after:absolute after:-inset-x-1 after:-inset-y-2.5 fine:after:hidden">{card.author.name}</button> : <span className="break-words font-semibold">{card.author.name}</span>}
-            {platform && <PlatformName platform={platform} chip />}
-          </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">{card.author.via && <>via {card.author.via} · </>}<ShortTime at={card.at} /></p>
+            {onAuthor
+              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="relative flex min-h-6 min-w-0 items-center text-left font-semibold text-foreground after:absolute after:-inset-x-1 after:-inset-y-2.5 fine:after:hidden"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
+              : <span className="min-w-0 truncate font-semibold text-foreground">{card.author.name}</span>}
+            {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
+          </span>
+          <p className={`flex items-center gap-1.5 before:content-['·'] ${card.author.via ? "min-w-0" : "shrink-0"}`}>{card.author.via && <span className="min-w-0 truncate">{`via ${card.author.via} · `}</span>}<ShortTime at={card.at} className="shrink-0 tabular-nums" /></p>
+          <span className="ml-auto flex shrink-0 items-center gap-2">
+            {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
+            {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}
+            {status && status !== "Information" && <span data-status className="flex shrink-0 items-center"><StatusMark status={status} /></span>}
+            {collapse && <span className="-my-1.5 -mr-1.5 shrink-0">{collapse}</span>}
+          </span>
         </div>
-        {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
-        {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}
-        {status && status !== "Information" && <span data-status className="flex min-h-6 shrink-0 items-center"><StatusMark status={status} /></span>}
-        {collapse && <span className="-my-1.5 -mr-1.5 shrink-0">{collapse}</span>}
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
       {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-title-2">{card.title}</h2>}

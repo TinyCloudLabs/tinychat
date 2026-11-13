@@ -3,11 +3,13 @@
 // line and the conversation with one agent (AgentConversation.tsx) share them, so a reply reads and goes the same
 // way from each. A reply reaches only destinations the person approved: the posting agent, or the agents linked
 // for the card's owner. It is never broadcast.
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage } from "@tinycloud/sdk-services/feed";
 import { compactStamp, isClosed, jsonValue, safeSitrepActionSummary, threadOwner, validateSitrepAction, type BoardRecord, type SitrepMessageDelivery } from "@tinyboilerplate/core/feed/sitrep";
-import { sendingLabel, useUndoWindow } from "./AnswerOptions";
+import { sendingLabel, UndoButton, useUndoWindow } from "./AnswerOptions";
+import { ComposerField } from "./ComposerField";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
+import { StatefulSendButton } from "./StatefulSendButton";
 
 /** Who a typed card is from: the crew member named on it, which may post through another agent's connection. */
 export function cardAuthor(entry: HomeFeedEntry, record?: BoardRecord): { name: string; via?: string } {
@@ -72,8 +74,9 @@ export function usePostReply(entry: HomeFeedEntry, record: BoardRecord, source: 
 }
 
 /**
- * The one place to write under a card, labelled with who gets it. Send waits out the same undo window as an answer
- * ("Sending to Studio agent in 4s", Undo), then saves; the words stay if the save fails, with Try again.
+ * The one place to write under a card, labelled with who gets it: one field with Send inside it. Send waits out the
+ * same undo window as an answer ("Sending to Studio agent in 5s · Undo" under the field), then saves; the words stay
+ * if the save fails, with Try again.
  */
 export function ReplyBox({ to, onSend, disabled = false, about, autoFocus = false }: {
   to: string;
@@ -98,15 +101,18 @@ export function ReplyBox({ to, onSend, disabled = false, about, autoFocus = fals
   }
   const hold = useUndoWindow(() => void send());
   const waiting = saving || hold.seconds !== null;
-  return <form className="space-y-2" onSubmit={(event) => { event.preventDefault(); if (!waiting && text.trim()) hold.start(); }}>
-    <label className="block font-medium">Reply to {to}{about && <span className="block text-xs font-normal text-muted-foreground">About: {about}</span>}
-      <textarea name="reply" aria-label={`Reply to ${to}`} autoFocus={autoFocus} value={text} disabled={disabled || waiting} onInput={(event) => setText(event.currentTarget.value)} className="mt-2 min-h-20 w-full rounded-xl border border-border bg-background p-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" />
-    </label>
+  const id = useId();
+  function start() { if (!waiting && text.trim()) hold.start(); }
+  // While it waits, Send is named for the wait ("Sending to Studio agent in 5s"); the line under the field shows the
+  // same words to the eye, with Undo.
+  return <form className="space-y-2" onSubmit={(event) => { event.preventDefault(); start(); }}>
+    <label htmlFor={id} className="block font-medium">Reply to {to}{about && <span className="block text-xs font-normal text-muted-foreground">About: {about}</span>}</label>
+    <ComposerField id={id} name="reply" label={`Reply to ${to}`} autoFocus={autoFocus} value={text} onValue={setText} disabled={disabled || waiting}
+      send={<StatefulSendButton compact label={waiting ? sendingLabel(hold.seconds, "Sending", to) : "Send"} state={saving ? "sending" : "idle"} disabled={disabled || waiting || !text.trim()} onSend={start} />} />
+    {hold.seconds !== null && <p className="flex flex-wrap items-center justify-end gap-x-1.5 text-xs text-muted-foreground">
+      <span aria-hidden className="tnum">{sendingLabel(hold.seconds, "Sending", to)}</span><span aria-hidden>·</span><UndoButton onClick={hold.undo} />
+    </p>}
     {error && !waiting && <div role="alert" className="text-destructive"><p>{error}</p><button type="button" className="mt-1 min-h-9 underline" onClick={() => void send()}>Try again</button></div>}
-    <div className="flex flex-wrap items-center gap-2">
-      <button className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={disabled || waiting || !text.trim()}>{waiting ? sendingLabel(hold.seconds, "Sending", to) : "Send"}</button>
-      {hold.seconds !== null && <button type="button" onClick={hold.undo} className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium">Undo</button>}
-    </div>
     <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{hold.status}</p>
   </form>;
 }

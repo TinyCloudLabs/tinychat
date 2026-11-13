@@ -7,7 +7,7 @@ import { cardAuthor, replyRoute, usePostReply } from "./CardReply";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
-import { CardDetails, footActionClass } from "./CardActions";
+import { CardDetails, footActionClass, type CardClose } from "./CardActions";
 import { CardConversation, typedConversation } from "./CardConversation";
 import { HistoryTimeline } from "./HistoryTimeline";
 import { shortTime } from "./ShortTime";
@@ -35,8 +35,8 @@ interface Props {
   onNavigate: (entry: HomeFeedEntry) => void;
   /** The card's reference line, kept with the other wiring under Details. */
   reference?: ReactNode;
-  /** At the right of the card's foot: the page's "Next card". */
-  end?: ReactNode;
+  /** At the right end of the card's foot: "Drop this card" (Sam 23:40Z), while the card still needs you. */
+  close?: CardClose;
   /** In place of Ask me later: "Bring back now" on a snoozed card opened from the Snoozed list. */
   extra?: ReactNode;
   /** After Ask me later: the card has gone until `until`; the page says when it comes back, with Undo. */
@@ -273,10 +273,10 @@ export function SitrepCard(props: Props) {
       {note.unresolvedRecipients.map((recipient) => <p key={recipient} className="text-xs">Held / unrouted · {recipient} · owner archive only; not sent</p>)}
     </div>)}</details>}
     {owner.unsupportedResponses?.map((response) => <p key={response.responseId} role="status" className="text-xs text-muted-foreground">{response.reason}. Saved transport record preserved; no question decision inferred.</p>)}
-    {/* The card's foot, one row (Sam 11-12; design round 6): Ask me later and Details quiet on the left, Next card on
-        the right. Details holds who posted it, its history and its wiring. */}
+    {/* The card's foot, one row (Sam 23:40Z; the design agent's layout): Ask me later and Details quiet on the left,
+        Drop this card at the right end. Details holds who posted it, its history and its wiring. */}
     <div className="border-t border-border pt-2">
-      <CardDetails end={props.end} actions={props.extra ?? <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}>
+      <CardDetails close={props.close} actions={props.extra ?? <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>}>
         <dl>{([
           ["Agent", record.from !== entry.source.label ? `${record.from} (through ${entry.source.label})` : entry.source.label],
           ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
