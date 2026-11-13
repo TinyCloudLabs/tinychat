@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { appendFeedMessage, appendFeedResponse, feedResourceNames, initializeFeedDatabases, publishFeedCard, readFeedResponsePayload, recordFeedHandling, type FeedCard, type FeedDatabase, type FeedHooks } from "@tinycloud/sdk-services/feed";
+import { appendFeedMessage, appendFeedResponse, feedResourceNames, initializeFeedDatabases, publishFeedCard, readFeedResponseHandling, readFeedResponsePayload, recordFeedHandling, type FeedCard, type FeedDatabase, type FeedHooks } from "@tinycloud/sdk-services/feed";
 import { installDom } from "@/test/dom";
 import type { HomeFeedEntry, HomeFeedSnapshot } from "./feedStoreTypes";
 import { useLocalThreadStorage } from "../lib/threadStore";
@@ -336,7 +336,7 @@ test("a write naming a replaced approval issuance is refused and never stored", 
 
 const SPACE = "isolated-feed-registry-test";
 
-test("a plain card's comments and answer carry the agent's handling, read per response", async () => {
+test("a plain card's comments and answer carry the agent's handling", async () => {
   const fixture = await agentFixture();
   const identity = { cardId: fixture.card.cardId, revision: 1, issuanceId: "issuance-1" };
   value(await appendFeedMessage(fixture.output, fixture.responses, { ...identity, responseId: "plain-comment", kind: "message", text: "One more thing", createdAt: "2026-10-29T00:01:00Z" }));
@@ -349,6 +349,53 @@ test("a plain card's comments and answer carry the agent's handling, read per re
   expect(entry.responseHandling?.["plain-answer"]?.acknowledgement?.handlingId).toBe("answer-received");
   expect(entry.state.acknowledgement?.handlingId).toBe("answer-received");
   expect(entry.responseHandling).not.toHaveProperty("unhandled-comment");
+});
+
+test("a plain card's handling and a post's answers come from the one-round agent read: no per-response request", async () => {
+  const fixture = await agentFixture();
+  const identity = { cardId: fixture.card.cardId, revision: 1, issuanceId: "issuance-1" };
+  const page = (note: string) => ({ type: "feed.page", version: 1, data: { answers: { q1: { choices: ["a"], note } } } });
+  value(await appendFeedResponse(fixture.output, fixture.responses, { ...identity, responseId: "post-answer-1", kind: "answer", text: "a", createdAt: "2026-10-29T00:01:00Z" }, page("first")));
+  value(await appendFeedMessage(fixture.output, fixture.responses, { ...identity, responseId: "handled-comment", kind: "message", text: "One more thing", createdAt: "2026-10-29T00:01:30Z" }));
+  value(await appendFeedMessage(fixture.output, fixture.responses, { ...identity, responseId: "unhandled-comment", kind: "message", text: "And another", createdAt: "2026-10-29T00:01:40Z" }));
+  value(await appendFeedMessage(fixture.output, fixture.responses, { ...identity, responseId: "dropped", kind: "message", text: "Dropped", createdAt: "2026-10-29T00:01:50Z" }, { type: "feed.drop", version: 1, data: {} }));
+  value(await appendFeedResponse(fixture.output, fixture.responses, { ...identity, responseId: "post-answer-2", kind: "answer", text: "a", createdAt: "2026-10-29T00:02:00Z" }, page("second")));
+  value(await recordFeedHandling(fixture.output, { ...identity, responseId: "post-answer-1", handlingId: "first-received", phase: "acknowledged", createdAt: "2026-10-29T00:03:00Z" }));
+  value(await recordFeedHandling(fixture.output, { ...identity, responseId: "post-answer-1", handlingId: "first-done", phase: "succeeded", createdAt: "2026-10-29T00:03:10Z" }));
+  value(await recordFeedHandling(fixture.output, { ...identity, responseId: "handled-comment", handlingId: "comment-received", phase: "acknowledged", createdAt: "2026-10-29T00:03:20Z" }));
+  value(await recordFeedHandling(fixture.output, { ...identity, responseId: "post-answer-2", handlingId: "second-received", phase: "acknowledged", createdAt: "2026-10-29T00:03:30Z" }));
+  const sent: string[] = [];
+  for (const handle of [fixture.output, fixture.responses]) {
+    const query = handle.query.bind(handle);
+    spyOn(handle, "query").mockImplementation((sql, params) => { sent.push(sql); return query(sql, params); });
+  }
+  const entry = (await fixture.source.load()).entries[0]!;
+  // One paged statement per agent database, whatever the number of responses.
+  expect(sent.map((sql) => sql.slice(0, 26))).toEqual(["SELECT * FROM (SELECT 'c',", "SELECT * FROM (SELECT 'r',"]);
+  // What the SDK's per-response reads return: handling where the agent has some, a post's feed.page answers only.
+  const handling: Record<string, unknown> = {};
+  const payloads: Record<string, unknown> = {};
+  for (const response of entry.responses ?? []) {
+    const receipt = await readFeedResponseHandling(fixture.output, response);
+    if (receipt.ok) handling[response.responseId] = receipt.data;
+    else expect(receipt.error.code).toBe("NOT_FOUND");
+    if (response.payloadType === "feed.page") payloads[response.responseId] = value(await readFeedResponsePayload(fixture.responses, response));
+  }
+  expect(entry.responses?.map((response) => response.responseId)).toEqual(["post-answer-1", "handled-comment", "unhandled-comment", "dropped", "post-answer-2"]);
+  expect(Object.keys(handling).sort()).toEqual(["handled-comment", "post-answer-1", "post-answer-2"]);
+  expect(entry.responseHandling).toEqual(handling);
+  expect(entry.responseHandling?.["post-answer-1"]).toMatchObject({ acknowledgement: { handlingId: "first-received" }, outcome: { handlingId: "first-done", phase: "succeeded" } });
+  expect(entry.state.acknowledgement?.handlingId).toBe("second-received");
+  expect(entry.responsePayloads).toEqual(payloads);
+  expect(entry.responsePayloads).toEqual({ "post-answer-1": page("first"), "post-answer-2": page("second") });
+});
+
+test("a plain card with no post answers has no responsePayloads", async () => {
+  const fixture = await agentFixture();
+  value(await appendFeedResponse(fixture.output, fixture.responses, { cardId: fixture.card.cardId, revision: 1, issuanceId: "issuance-1", responseId: "plain-answer", kind: "answer", text: "Yes", createdAt: "2026-10-29T00:02:00Z" }));
+  const entry = (await fixture.source.load()).entries[0]!;
+  expect(entry.responseHandling).toEqual({});
+  expect(entry).not.toHaveProperty("responsePayloads");
 });
 
 test("owner actions reach the agent as messages with the agreed header and private payload, and close the card", async () => {
