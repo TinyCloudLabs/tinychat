@@ -549,6 +549,38 @@ test("Drop this card writes one feed.drop message once the bar's 5 s pass, held 
   expect(item?.textContent).toContain("Dropped");
 });
 
+test("Acknowledge on a plain update: the card stays away while its write is in flight after the bar's 5 s, then is acknowledged in History (it came back as an open row in production)", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("ack");
+  value(await publishFeedCard(agent.output, plainCard({ kind: "update", needsResponse: false, title: "The 09:10 flight was rebooked", body: "Seat 14C, no change to the fare.", choices: [] })));
+  const transport = owner.fresh(); const view = await mount(transport);
+  const listed = () => ["Needs you", "Updates"].some((section) => (view.host.querySelector(`section[aria-label="${section}"]`)?.textContent ?? "").includes("The 09:10 flight was rebooked"));
+  // The write is slow, as it is over a real node: the bar's count ends while it is still in flight.
+  const gate = Promise.withResolvers<void>();
+  owner.faults.writeGate = gate.promise;
+  await act(async () => button(card(view.host, "The 09:10 flight was rebooked"), "Acknowledge").click());
+  expect(view.host.textContent).not.toContain("The 09:10 flight was rebooked");
+  expect(undoBar(view.host, "Acknowledged")?.textContent).toBe("Acknowledged · 5sUndo");
+  await countdown(transport, 5000);
+  expect(undoBar(view.host, "Acknowledged")).toBeUndefined();
+  expect(await stored(agent)).toEqual([]);
+  // The bar is gone and nothing is saved yet: the card must not be back among the open ones.
+  expect(listed()).toBe(false);
+  await countdown(transport, 1500);
+  expect(listed()).toBe(false);
+  gate.resolve();
+  await transport.settle();
+  const rows = await stored(agent);
+  expect(rows.map((row) => [row.kind, row.text, row.payloadType])).toEqual([["message", "Acknowledged", "feed.acknowledge"]]);
+  // Saved: still away from the live list, and in History marked Acknowledged.
+  await transport.notify();
+  await countdown(transport, 2000);
+  expect(listed()).toBe(false);
+  await click(transport, view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!);
+  const history = view.host.querySelector<HTMLElement>('section[aria-label="History"]');
+  const item = [...history?.querySelectorAll<HTMLElement>("li[data-card-key]") ?? []].find((node) => node.textContent?.includes("The 09:10 flight was rebooked"));
+  expect(item?.textContent).toContain("Acknowledged");
+});
+
 test("Undo on the Drop bar writes nothing, holds nothing, and puts the card back", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("drop-undo");
   value(await publishFeedCard(agent.output, plainCard()));
