@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.58
+
+### Patch Changes
+
+- 092bbfc: Feed: on a Rocinante question, "Drop this card" now tells Rocinante to drop it (the same answer "Skip this question" sent), then the card moves to History marked Dropped. "Skip this question" is removed, so one control does it. Before, Drop only hid the card here and Rocinante never heard.
+
 ## 0.14.0-beta.57
 
 ### Patch Changes
