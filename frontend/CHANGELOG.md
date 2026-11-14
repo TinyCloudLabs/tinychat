@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.55
+
+### Patch Changes
+
+- b599417: Feed: every open card shows what it doesn't draw. "Details" in the card's foot carries a "+N" when the card holds data the card doesn't show. Details now unfolds inside the card and lists those fields under "Not shown on the card", exactly as the agent sent them (as text: links aren't opened and images aren't loaded), along with the card's facts, its history, and the whole card as sent ("Card data", with Copy). A Rocinante card the app can't read now points to Details, which lists everything it carries, instead of only "Ask your agent about this card."
+
 ## 0.14.0-beta.54
 
 ### Patch Changes
