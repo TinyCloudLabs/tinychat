@@ -454,13 +454,13 @@ test("a typed question's foot is one row (Ask me later, Drop this card, Details)
   expect(expiry && options && expiry.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-test("Accept recommendation and Skip this question wait under Undo before anything is written", async () => {
+test("Accept recommendation and Drop this card wait under Undo before anything is written", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
-  await act(async () => button(article, "Skip this question").click());
-  expect(article.textContent).toContain("Skipping in 5s");
+  await act(async () => button(article, "Drop this card").click());
+  expect(article.textContent).toContain("Dropping in 5s");
   await act(async () => button(article, "Undo").click());
   await timer.advance(10_000);
   expect(fixture.saved).toEqual([]);
@@ -774,4 +774,35 @@ test("a typed ask's timing line says Due and Expires in the feed's words; one th
   const text = card(neverView.host, String(never.entry.state.card.title)).textContent ?? "";
   expect(text).not.toContain("Expires");
   expect(text).not.toContain("expiry");
+});
+
+test("Drop this card on a typed ask sends one drop answer for its agent, and there is no separate Skip", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  expect(hasButton(article, "Skip this question")).toBe(false);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(article, "Drop this card").click());
+  await timer.advance(5000);
+  // One answer, the same one the board reads as "drop it"; no owner-action message beside it.
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.response.kind).toBe("answer");
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: "ask-synthetic", action: "drop" } });
+  // The card goes, as Drop says: out of the live feed, in History marked Dropped.
+  fixture.notify();
+  await act(async () => { await Promise.resolve(); });
+  const titled = () => [...view.host.querySelectorAll("article")].filter((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === fixture.entry.state.card.title));
+  expect(titled().length).toBe(0);
+  await show(view.host, "History");
+  expect(card(view.host, String(fixture.entry.state.card.title)).querySelector("[data-status]")?.textContent).toBe("Dropped");
+});
+
+test("an ask Sam dropped that its agent then closes in a new revision is one card in History, still Dropped", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Drop this card").click());
+  await timer.advance(5000);
+  expect(fixture.saved).toHaveLength(1);
+  expect(await closeInNewRevision(fixture, view.host, "dropped")).toEqual(["Dropped"]);
 });
