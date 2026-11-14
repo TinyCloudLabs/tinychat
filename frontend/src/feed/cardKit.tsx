@@ -246,7 +246,8 @@ export const PendingSendContext = createContext<Set<() => void> | null>(null);
  * (`guard.stale` at that moment): then nothing is written and `guard.onRefused` runs.
  */
 export function usePendingSend(guard: { stale: boolean; onRefused: (label: string) => void }) {
-  const [pending, setPending] = useState<{ label: string; seconds: number } | null>(null);
+  // `endsAt` (epoch ms) lets a page's undo bar count the same wait as the card.
+  const [pending, setPending] = useState<{ label: string; seconds: number; endsAt: number } | null>(null);
   const send = useRef<{ label: string; run: () => void } | null>(null);
   const timers = useRef<number[]>([]);
   // Read at commit time, not at tap time: a newer issuance may arrive during the countdown.
@@ -269,7 +270,7 @@ export function usePendingSend(guard: { stale: boolean; onRefused: (label: strin
   const start = useCallback((label: string, run: () => void) => {
     flush();
     send.current = { label, run };
-    setPending({ label, seconds: UNDO_SECONDS });
+    setPending({ label, seconds: UNDO_SECONDS, endsAt: Date.now() + UNDO_SECONDS * 1000 });
     for (let elapsed = 1; elapsed < UNDO_SECONDS; elapsed++) {
       timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: UNDO_SECONDS - elapsed }), elapsed * 1000));
     }
@@ -350,4 +351,30 @@ export function Reference({ children, title }: { children: ReactNode; title?: st
     <p className="text-[12.5px] font-semibold text-muted-foreground">Card ID</p>
     <p aria-label="Card reference" className="text-[12.5px] leading-[1.4] text-muted-foreground"><code className="select-all break-all" title={title}>{children}</code></p>
   </div>;
+}
+
+/**
+ * The path behind a card's source (`payload.source.ref`, e.g. a board record's key). The card names its source only
+ * ("Source: Rocinante board"); Details shows the path, so nothing is dropped (Sam, 11-14: the line was cut off).
+ */
+export function sourceRef(payload: Record<string, unknown> | undefined): string | undefined {
+  const source = payload?.source;
+  const ref = source && typeof source === "object" ? (source as Record<string, unknown>).ref : undefined;
+  return typeof ref === "string" && ref ? ref : undefined;
+}
+/** Details' "Source" row for a card whose source carries a path; a path past 28 characters stacks under its label. */
+export function sourceRow(payload: Record<string, unknown> | undefined): FactRow[] {
+  const ref = sourceRef(payload);
+  return ref ? [["Source", <code className="block select-all text-xs [overflow-wrap:anywhere]">{ref}</code>, ref.length > 28]] : [];
+}
+/** A fact under Details: its label, its value, and whether the value is long enough to stack under the label. */
+export type FactRow = [term: string, value: ReactNode, stack?: boolean];
+/**
+ * A card's facts under Details: label and value on one line, the value at the right; a long value (a path) stacks under
+ * its label instead, left-aligned and full width, rather than a ragged right-aligned column (the design agent).
+ */
+export function FactRows({ rows }: { rows: readonly FactRow[] }) {
+  return <dl>{rows.map(([term, value, stack]) => <div key={term} className={`border-t border-border py-2 first:border-t-0 first:pt-0 ${stack ? "" : "flex items-baseline justify-between gap-4"}`}>
+    <dt className="shrink-0 text-muted-foreground">{term}</dt><dd className={stack ? "mt-1 min-w-0" : "min-w-0 text-right"}>{value}</dd>
+  </div>)}</dl>;
 }

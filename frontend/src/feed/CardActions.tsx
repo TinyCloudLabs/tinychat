@@ -4,25 +4,18 @@
 // this card" on a decision, "Acknowledge" on an information card. Plain cards (HomeFeedEntries.tsx) and typed cards
 // (SitrepCard.tsx) share it. What a closing action writes lives in the store (ownerActions.ts); the page owns the tap
 // and its undo bar.
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import type { FeedCard } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
-import type * as DetailsPanel from "./cardDetailsPanel";
+import { preloadModule } from "./preloadModule";
 
 /** A Details section's heading ("This card", "Not shown on the card"). */
 export const detailsSectionTitle = "mb-2 flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-[.04em] text-muted-foreground";
 
-// The shapes behind "+N" and Details' lists load beside the app, not in its startup chunk (entry-size-check.ts): the
-// load starts with this module, so they are there long before anyone opens a card's Details.
-type DetailsModule = typeof DetailsPanel;
-let detailsModule: DetailsModule | undefined;
-const detailsLoad = import("./cardDetailsPanel").then((loaded) => (detailsModule = loaded));
-function useDetailsModule(): DetailsModule | undefined {
-  const [loaded, setLoaded] = useState(detailsModule);
-  useEffect(() => { if (!loaded) void detailsLoad.then(setLoaded); }, [loaded]);
-  return loaded;
-}
+// The shapes behind "+N" and Details' lists load beside the app, not in its startup chunk: there long before anyone
+// opens a card's Details.
+const useDetailsModule = preloadModule(() => import("./cardDetailsPanel"));
 
 /** The class of a small action on a card: 44px on touch (QA cb784d4), 40px with a mouse. */
 export const actionClass = "min-h-11 rounded-lg border border-border px-3 text-sm disabled:opacity-50 fine:min-h-10";

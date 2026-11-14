@@ -68,7 +68,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
       const pressed = held || (!waiting && chosen === option.id) || (option === OWN_OPTION && !!own?.open);
       const off = disabled || (waiting && !held);
       return <div key={option.id} className={`relative rounded-xl border ${pressed ? "border-primary bg-selected" : "border-transparent bg-surface-2"} ${off ? "opacity-50" : ""}`}>
-        <button type="button" aria-pressed={pressed} disabled={off} onClick={() => choose(option)} className="flex min-h-12 w-full items-start gap-3 rounded-xl px-3 py-3 text-left active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:active:bg-transparent">
+        <button type="button" data-option-id={option.id} aria-pressed={pressed} disabled={off} onClick={() => choose(option)} className="flex min-h-12 w-full items-start gap-3 rounded-xl px-3 py-3 text-left active:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:active:bg-transparent">
           <span aria-hidden className={`mt-0.5 flex size-[1.125rem] shrink-0 items-center justify-center rounded-full border-2 ${pressed ? "border-primary" : "border-muted-foreground"} ${held ? "opacity-0" : ""}`}>{pressed && <span className="size-2 rounded-full bg-primary" />}</span>
           <span className={`min-w-0 flex-1 ${held ? "opacity-0" : ""}`}>
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="min-w-0 break-words font-medium">{option.label}</span>{suggested === option.id && <span className="shrink-0 rounded-full border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground">Suggested</span>}</span>

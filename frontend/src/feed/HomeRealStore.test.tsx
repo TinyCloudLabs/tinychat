@@ -287,6 +287,8 @@ test("one tap writes one answer after the 5 s window, with the same header as be
   expect(rows).toHaveLength(1);
   expect(header(rows[0]!)).toEqual({ responseId: rows[0]!.responseId, cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", kind: "answer", choiceId: "go", createdAt: COMMITTED });
   expect(value(await readFeedResponsePayload(agent.responses, rows[0]!))).toBeUndefined();
+  // The answered card is in Pending (TC-2998); opened there, it shows the answer.
+  await openCards(view.host);
   expect(view.host.textContent).toContain("You chose Go.");
 });
 
@@ -467,6 +469,7 @@ test("an answer on revision 1 stays bound to it when a reply-only revision follo
   await countdown(transport);
   value(await publishFeedCard(agent.output, withReplies(2, ["Booked."], T2)));
   await transport.notify();
+  await openCards(view.host);
   expect(view.host.textContent).toContain("You chose Go.");
   expect(view.host.textContent).toContain("Nothing needs you.");
   expect((await stored(agent)).map((row) => [row.revision, row.kind])).toEqual([[1, "answer"]]);
@@ -737,6 +740,7 @@ for (const kind of ["Change answer", "Fine, go ahead"] as const) {
       await act(async () => option(view.host, "Go").click());
       await countdown(first);
       earlier = (await stored(agent))[0]?.responseId;
+      await openCards(view.host);
       await act(async () => button(view.host, "Change answer").click());
       await act(async () => option(view.host, "Hold").click());
     }
@@ -875,6 +879,7 @@ test("a held follow-up goes to the issuance it changes, not to a later reply-onl
   await act(async () => option(view.host, "Go").click());
   await countdown(first);
   const earlier = (await stored(agent))[0]!.responseId;
+  await openCards(view.host);
   await act(async () => button(view.host, "Change answer").click());
   await act(async () => option(view.host, "Hold").click());
   owner.faults.refuseResponseWrites = true;
@@ -978,6 +983,7 @@ test("a held follow-up is not sent when a newer follow-up was made on another de
   await act(async () => option(view.host, "Go").click());
   await countdown(first);
   const earlier = (await stored(agent))[0]!.responseId;
+  await openCards(view.host);
   await act(async () => button(view.host, "Change answer").click());
   await act(async () => option(view.host, "Hold").click());
   owner.faults.refuseResponseWrites = true;
