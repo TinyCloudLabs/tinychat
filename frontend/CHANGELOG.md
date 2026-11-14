@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.56
+
+### Patch Changes
+
+- 8371a8d: Feed: a Rocinante card its agent has closed (answered, replaced, done, resolved…) leaves All and Needs action and shows in History, marked as closed, like cards you dropped or that expired. A closed card that still carries an answer of yours that was never sent stays in the feed until you've seen its "Not sent" line.
+
 ## 0.14.0-beta.55
 
 ### Patch Changes
