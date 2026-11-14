@@ -374,6 +374,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const hasDefault = useRef(false);
   const refreshRef = useRef<() => void>(() => {});
   const committed = useRef(new Map<string, FeedResponse>());
+  // Owner actions (Drop, Acknowledge, a later time) the page saved, by card: kept on it until a load shows them, so a
+  // load that reads before the write is visible never brings the card back as an open row.
+  const savedActions = useRef(new Map<string, FeedResponse[]>());
   const activeRef = useRef<HomeFeedEntry | null>(null);
   const currentSource = useRef(source);
   const pendingSends = useRef(new Set<() => void>());
@@ -412,8 +415,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         try {
           const next = await source.load(activeRef.current ?? undefined, { feed: true });
           if (!alive) return;
-          const reconcile = (entry: HomeFeedEntry): HomeFeedEntry => {
-            const local = committed.current.get(keyOf(entry));
+          const reconcile = (stored: HomeFeedEntry): HomeFeedEntry => {
+            const key = keyOf(stored);
+            const actions = savedActions.current.get(key);
+            const missing = actions?.filter((action) => !stored.responses?.some((response) => response.responseId === action.responseId));
+            if (actions && !missing?.length) savedActions.current.delete(key);
+            const entry = missing?.length ? { ...stored, responses: [...(stored.responses ?? []), ...missing] } : stored;
+            const local = committed.current.get(key);
             if (!local) return entry;
             if (entry.state.response && entry.state.response.sequence >= local.sequence) {
               committed.current.delete(keyOf(entry));
@@ -772,7 +780,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   /** The owner's card actions an agent hears about (card guide v2), written once the undo bar's count ends. */
   const tell = (entry: HomeFeedEntry, action: Parameters<NonNullable<HomeFeedSource["sendOwnerAction"]>>[1]) => async () => {
     if (!source.sendOwnerAction) return;
-    await source.sendOwnerAction(entry, action, { hold: true });
+    const saved = await source.sendOwnerAction(entry, action, { hold: true });
+    // The card is closed from the moment its action is saved, whatever the next load reads.
+    const key = keyOf(entry);
+    savedActions.current.set(key, [...(savedActions.current.get(key) ?? []), saved]);
+    setSnapshot((current) => updateSnapshotEntry(current, key, (candidate) => ({ ...candidate, responses: [...(candidate.responses ?? []), saved] })));
     refreshRef.current();
   };
   /** Drop this card (a decision) or Acknowledge (an update): gone now, told to its agent and moved to History after the undo. */

@@ -581,6 +581,37 @@ test("Acknowledge on a plain update: the card stays away while its write is in f
   expect(item?.textContent).toContain("Acknowledged");
 });
 
+test("Drop this card on a plain card stays away while its write is in flight after the bar's 5 s", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("drop-flight");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const transport = owner.fresh(); const view = await mount(transport);
+  const gate = Promise.withResolvers<void>();
+  owner.faults.writeGate = gate.promise;
+  await act(async () => button(card(view.host, "Book the Thursday flight?"), "Drop this card").click());
+  await countdown(transport, 5000);
+  await countdown(transport, 1500);
+  expect(undoBar(view.host, "Dropped")).toBeUndefined();
+  expect(view.host.textContent).not.toContain("Book the Thursday flight?");
+  gate.resolve();
+  await transport.settle();
+  expect((await stored(agent)).map((row) => row.payloadType)).toEqual(["feed.drop"]);
+  expect(view.host.textContent).not.toContain("That didn't reach the agent.");
+});
+
+test("Acknowledge whose write is refused brings the card back with the sentence that it didn't reach the agent", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("ack-refused");
+  value(await publishFeedCard(agent.output, plainCard({ kind: "update", needsResponse: false, title: "The 09:10 flight was rebooked", body: "Seat 14C, no change to the fare.", choices: [] })));
+  const transport = owner.fresh(); const view = await mount(transport);
+  owner.faults.refuseResponseWrites = true;
+  await act(async () => button(card(view.host, "The 09:10 flight was rebooked"), "Acknowledge").click());
+  await countdown(transport, 5000);
+  await transport.settle();
+  expect(await stored(agent)).toEqual([]);
+  expect(view.host.textContent).toContain("That didn't reach the agent.");
+  expect(view.host.textContent).toContain("The 09:10 flight was rebooked");
+  owner.faults.refuseResponseWrites = false;
+});
+
 test("Undo on the Drop bar writes nothing, holds nothing, and puts the card back", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("drop-undo");
   value(await publishFeedCard(agent.output, plainCard()));

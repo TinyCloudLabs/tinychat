@@ -25,6 +25,9 @@ const MAX_BARS = 3;
 
 export function useUndoBar(onError: (message: string, cause?: unknown) => void) {
   const [items, setItems] = useState<Pending[]>([]);
+  // Cards whose commit is still being written: hidden until it lands (or fails), not only while the bar counts. A card
+  // that came back as an open row in the seconds a slow write took was Clarissa's "Acknowledge" finding (production).
+  const [committing, setCommitting] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [now, setNow] = useState(() => Date.now());
   const live = useRef<Pending[]>([]);
   const nextId = useRef(1);
@@ -33,8 +36,16 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
   const commit = useCallback((item: Pending) => {
     live.current = live.current.filter((other) => other.id !== item.id);
     setItems(live.current);
+    setCommitting((current) => new Map(current).set(item.key, (current.get(item.key) ?? 0) + 1));
+    const settled = () => setCommitting((current) => {
+      const count = (current.get(item.key) ?? 0) - 1;
+      const next = new Map(current);
+      if (count > 0) next.set(item.key, count); else next.delete(item.key);
+      return next;
+    });
     // A plain sentence, never the store's own error text; the cause goes along so the caller can tell a held send.
-    item.commit().catch((cause: unknown) => errorRef.current("That didn't reach the agent.", cause));
+    // A failed write brings the card back (with that sentence); a saved one leaves it with the response it wrote.
+    item.commit().then(settled, (cause: unknown) => { settled(); errorRef.current("That didn't reach the agent.", cause); });
   }, []);
   // One tick a second while anything counts; each bar ends on its own time.
   useEffect(() => {
@@ -68,7 +79,7 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
     setItems(live.current);
     item?.undo?.();
   }, []);
-  const hidden = useCallback((key: string) => items.some((item) => item.key === key), [items]);
+  const hidden = useCallback((key: string) => committing.has(key) || items.some((item) => item.key === key), [items, committing]);
   // The stack's height (0 when no bar shows), so the feed can add it to its bottom padding and its last cards scroll
   // clear of the bars (QA cb784d4, P3).
   const [height, setHeight] = useState(0);
