@@ -41,6 +41,7 @@ import { rememberReplicationPrincipal, replicationCopyMayExist } from "./lib/rep
 import { isReplicationBindPaused } from "./lib/replication/replicationFlag";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
 import { replicationRestorePatch } from "./lib/replication/replicationRestore";
+import { readOnlyAccountProvider } from "./lib/replication/readOnlyAccountProvider";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, REPLICA_PURGE_FAILED_WARNING, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { wipeNativeReplicaOnSignOut } from "./lib/replication/nativeReplicaStore";
@@ -786,8 +787,10 @@ export function App() {
             uiPlatform: sdkUiPlatform(),
             // Restore the base request. Any previously signed connector grants remain in the saved session.
             manifest: appPlatform() === "web" ? webSignInManifest(manifest, [], storedAddress) : manifest,
-            // ON: the replication option plus a read-only account provider (so the restore has a signer
-            // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
+            // A restored session needs a signer for `tcw.session()` to exist (Main's history and the transcript
+            // writer read it); this one answers the stored account and never signs. Details: TC-3019
+            provider: readOnlyAccountProvider(storedAddress),
+            // Local copy ON adds the replication option (and the same provider). See replicationRestore.ts.
             ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
           }),
       });
