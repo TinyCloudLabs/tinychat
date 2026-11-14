@@ -95,6 +95,12 @@ async function startAuthServer() {
  * Stop there so this test never needs a live OpenKey key or TinyCloud node. */
 async function signWithWebSdk(origin: string, nonce: string, claimedDomain?: string) {
   browser.happyDOM.setURL(origin);
+  // The web SDK decides first-party from window.location.origin (js-sdk #945); happy-dom reports a custom scheme such
+  // as tauri:// as "null", where the desktop WebView reports the scheme and host.
+  const reported = new URL(origin);
+  if (browser.location.origin === "null") {
+    Object.defineProperty(browser.location, "origin", { configurable: true, get: () => `${reported.protocol}//${reported.host}` });
+  }
   const captured = { message: "", signature: "" };
   const signed = Symbol("signed by offline wallet");
   const provider = {
@@ -184,7 +190,8 @@ describe("real SDK SIWE audience", () => {
   test("raw Tauri development authority includes the port and is rejected by production", async () => {
     const server = await startAuthServer();
     try {
-      const signed = await signWithWebSdk("http://localhost:5186/chat", await server.nonce());
+      // Signed on the desktop app's origin; the SIWE domain carries the raw development authority under test.
+      const signed = await signWithWebSdk("tauri://localhost/chat", await server.nonce(), "localhost:5186");
       const parsed = parseSiweMessage(signed.message);
       expect(parsed.domain).toBe("localhost:5186");
       expect(parsed.uri).toMatch(SESSION_URI);
@@ -198,7 +205,7 @@ describe("real SDK SIWE audience", () => {
     ["production web", "https://tinycloud.chat/chat", "tinycloud.chat"],
     ["Home site", "https://home.tinycloud.xyz/", "home.tinycloud.xyz"],
     ["Pages preview", "https://feature-12.tinychat-4jq.pages.dev/chat", "feature-12.tinychat-4jq.pages.dev"],
-    ["Tauri development", "http://localhost:5186/chat", "localhost", "localhost"],
+    ["Tauri development", "tauri://localhost/chat", "localhost", "localhost"],
     ["macOS Tauri", "tauri://localhost/chat", "localhost"],
     ["Windows Tauri", "http://tauri.localhost/chat", "tauri.localhost"],
   ] as const) {
@@ -289,7 +296,8 @@ describe("real SDK SIWE audience", () => {
     const server = await startAuthServer();
     try {
       const nonce = await server.nonce(false);
-      const signed = await signWithWebSdk("https://attacker.example/chat", nonce, "openkey.so");
+      // Signed on a TinyCloud origin; the claimed SIWE domain is what the backend must refuse as a native grant.
+      const signed = await signWithWebSdk("https://tinycloud.chat/chat", nonce, "openkey.so");
       const parsed = parseSiweMessage(signed.message);
       expect(parsed.domain).toBe("openkey.so");
       expect(parsed.uri).toMatch(SESSION_URI);
@@ -305,7 +313,8 @@ describe("real SDK SIWE audience", () => {
     const server = await startAuthServer();
     try {
       const nonce = await server.nonce();
-      const signed = await signWithWebSdk("https://evil.pages.dev/chat", nonce);
+      // Signed on a TinyCloud origin; the claimed SIWE domain is the attacker host the backend must refuse.
+      const signed = await signWithWebSdk("https://tinycloud.chat/chat", nonce, "evil.pages.dev");
       expect(await server.verify(signed.message, signed.signature)).toEqual({ status: 400, error: "invalid_origin" });
     } finally {
       await server.close();
