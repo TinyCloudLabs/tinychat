@@ -48,7 +48,7 @@ export function PlaybackDiagnosticsSection({ platform }: { platform: AppPlatform
     const text = playbackDiagnosticsText({ build: await resolveBuildInfo(platform).catch(() => null) });
     if (share && typeof navigator.share === "function") {
       try {
-        await navigator.share({ title: "TinyCloud Home playback diagnostics", text });
+        await navigator.share({ title: "TinyCloud One playback diagnostics", text });
         return;
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;

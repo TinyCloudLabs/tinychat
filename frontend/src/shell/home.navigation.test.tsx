@@ -14,7 +14,7 @@ const back = (path: string) => decideBack({ overlay: false, screen: screenFor(pa
 describe("navigation model", () => {
   test("Home (the feed), Chat, Apps, Recording, then Connectors, each to its own root", () => {
     expect(navItems(0).map((item) => [item.label, item.href])).toEqual([
-      ["Home", PATHS.feed],
+      ["Feed", PATHS.feed],
       ["Chat", PATHS.chat],
       ["Apps", PATHS.apps],
       ["Recording", PATHS.capture],

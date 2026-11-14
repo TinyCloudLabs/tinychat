@@ -43,7 +43,7 @@ const click = (node: Element) => act(async () => { node.dispatchEvent(new window
 test("a cancelled Face ID keeps the lock screen up, the app inert behind it; Retry unlocks", async () => {
   const { host, native } = await mount(["cancelled", "success"]);
   expect(native.calls).toBe(1);
-  expect(dialog()?.textContent).toContain("TinyCloud Home is locked");
+  expect(dialog()?.textContent).toContain("TinyCloud One is locked");
   expect(host.hasAttribute("inert")).toBe(true);
   const retry = dialog()!.querySelector("button")!;
   expect(retry.textContent).toBe("Unlock with Face ID");

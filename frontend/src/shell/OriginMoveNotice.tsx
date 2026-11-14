@@ -14,7 +14,7 @@ const recordings = (n: number) => (n === 1 ? "1 recording" : `${n} recordings`);
 
 /** The lines a visitor held on tinycloud.chat reads. `saving: Infinity` means the check could not read this browser's recordings. */
 export function originMoveNoticeLines(work: LocalRecordingWork): NoticePart[][] {
-  const moved = `TinyCloud Home has moved to ${CANONICAL_HOST}.`;
+  const moved = `TinyCloud One has moved to ${CANONICAL_HOST}.`;
   const { saving, localAudio, unclaimed, otherAccount, signedIn } = work;
   if (!Number.isFinite(saving)) {
     return [[`${moved} Recordings in this browser may still be saving here; you'll move automatically once they're saved.`]];

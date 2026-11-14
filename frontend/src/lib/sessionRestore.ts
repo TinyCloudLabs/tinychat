@@ -68,7 +68,7 @@ export type RestoreOutcome<T> =
 const MISSING_SPACE_CODE = "restored-session-missing-space";
 
 export const MISSING_SPACE_MESSAGE =
-  "Your saved session is missing its TinyCloud space, so TinyCloud Home can't open or save your notes with it. Tap Sign in to sign in again; notes recorded on this device stay on it until they upload.";
+  "Your saved session is missing its TinyCloud space, so TinyCloud One can't open or save your notes with it. Tap Sign in to sign in again; notes recorded on this device stay on it until they upload.";
 
 function isMissingSpaceError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === MISSING_SPACE_CODE;
@@ -76,8 +76,8 @@ function isMissingSpaceError(error: unknown): boolean {
 
 export type RestoreFailureKind = "transient" | "auth";
 
-const OFFLINE_MESSAGE = "You're offline. TinyCloud Home will reconnect when you're back online.";
-const UNREACHABLE_MESSAGE = "Can't reach TinyCloud Home right now. You're still signed in.";
+const OFFLINE_MESSAGE = "You're offline. TinyCloud One will reconnect when you're back online.";
+const UNREACHABLE_MESSAGE = "Can't reach TinyCloud One right now. You're still signed in.";
 
 export function restoreUnavailableMessage(offline: boolean): string {
   return offline ? OFFLINE_MESSAGE : UNREACHABLE_MESSAGE;

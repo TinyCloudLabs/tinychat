@@ -1,6 +1,6 @@
-# Location for TinyCloud Home: spike findings (TC-524)
+# Location for TinyCloud One: spike findings (TC-524)
 
-What it takes for TinyCloud Home to record the user's location, in the foreground and in the background, into the user's
+What it takes for TinyCloud One to record the user's location, in the foreground and in the background, into the user's
 own TinyCloud space, with the OS showing that it happens. The prototype in this PR is **off by default and absent
 from release builds**. Policy and OS facts were checked on 2026-10-04 against Apple and Android developer docs,
 Apple's App Review Guidelines (June 2026) and Play Console Help. Where a fact could not be verified in official
@@ -8,13 +8,13 @@ text, it says so.
 
 ## Recommendation
 
-1. **Ship "location sessions" first, with while-in-use permission only.** The user taps Start; TinyCloud Home records until
+1. **Ship "location sessions" first, with while-in-use permission only.** The user taps Start; TinyCloud One records until
    they tap Stop, including after they leave the app.
    - Android: a `location` foreground service with a notification and a Stop action. ACCESS_FINE/COARSE only, no
      ACCESS_BACKGROUND_LOCATION.
    - iOS: When-In-Use plus `allowsBackgroundLocationUpdates`. iOS shows the blue location pill the whole time.
    - Both OSes allow this without "all the time" / Always, as long as the session starts while the app is on
-     screen. It gives the transparency TinyCloud Home wants for free: the OS indicator cannot be hidden, and on Android the
+     screen. It gives the transparency TinyCloud One wants for free: the OS indicator cannot be hidden, and on Android the
      notification carries a Stop button.
    - It avoids Play's background-location declaration and Apple's Always prompt.
    - It still needs Play's foreground-service (location) declaration with a video, and a feature that genuinely
@@ -31,11 +31,11 @@ text, it says so.
 4. **Plan for Play's new location declaration.** Play announced a declaration for any app using
    `ACCESS_FINE_LOCATION`. The form opens in November 2026; it is mandatory from **2027-01-27**. "Live tracking" is
    a listed use case. Apps targeting API 37 must use the system location button for one-time precise location.
-   Whatever TinyCloud Home ships after January needs this form, even for sessions only.
+   Whatever TinyCloud One ships after January needs this form, even for sessions only.
 5. **Native upload is the real engineering gap.** Samples are captured natively and queued on the device. Today
    only the web layer can write to TinyCloud (the session key lives in the WebView). Background relaunches on iOS
    have no WebView, and a suspended WebView uploads nothing. A shipped version needs either a native TinyCloud
-   writer (a delegated session key in the Keychain / Keystore) or acceptance that uploads happen when TinyCloud Home is next
+   writer (a delegated session key in the Keychain / Keystore) or acceptance that uploads happen when TinyCloud One is next
    opened.
 
 ## What is in this PR
@@ -72,7 +72,7 @@ OS state change ─┘                  ▲                         (when the We
 - **Android:** Capacitor does not pause the WebView in the background, and the foreground service keeps the process
   alive, so the 30 s loop should keep uploading while backgrounded. Chromium throttles timers in hidden pages, so
   expect about once a minute. This is a device check below.
-- **iOS:** the WKWebView is suspended in the background, so uploads wait until TinyCloud Home is opened.
+- **iOS:** the WKWebView is suspended in the background, so uploads wait until TinyCloud One is opened.
 
 ## Permission flows
 
@@ -81,7 +81,7 @@ OS state change ─┘                  ▲                         (when the We
 1. **Foreground.**
    - `requestPermission({ level: "foreground" })` asks for ACCESS_COARSE + ACCESS_FINE together. Both are needed for
      Android 12+ to offer the choice.
-   - Dialog (Android 12+): **"Allow TinyCloud Home to access this device's location?"** with **Precise / Approximate** and
+   - Dialog (Android 12+): **"Allow TinyCloud One to access this device's location?"** with **Precise / Approximate** and
      **"While using the app" / "Only this time" / "Don't allow"**.
    - Approximate grants only COARSE: the app sees `accuracy: "approximate"`.
    - Asking again for FINE later shows an upgrade dialog. Downgrading precise to approximate in Settings restarts
@@ -101,9 +101,9 @@ OS state change ─┘                  ▲                         (when the We
    - Denied: the service still runs and still appears in the Task Manager (Android 13+), but its notification is
      hidden from the shade.
    - The card shows `notificationsEnabled`.
-4. **TinyCloud Home's own strings.**
-   - Notification channel **"Location"** ("Shown while TinyCloud Home is recording your location").
-   - Notification title **"TinyCloud Home is recording your location"**, text **"Saved to your TinyCloud space. Tap Stop to end
+4. **TinyCloud One's own strings.**
+   - Notification channel **"Location"** ("Shown while TinyCloud One is recording your location").
+   - Notification title **"TinyCloud One is recording your location"**, text **"Saved to your TinyCloud space. Tap Stop to end
      it."**, an elapsed-time chronometer, and a **Stop** action.
 
 "Only this time" reads as `foreground`: the app cannot tell it from "While using the app". With a foreground
@@ -112,17 +112,17 @@ service started while the app was visible, access lasts until the service stops.
 ### iOS (deployment target 15.0)
 
 1. **When In Use.**
-   - `requestWhenInUseAuthorization()`. TinyCloud Home's string `NSLocationWhenInUseUsageDescription`: **"TinyCloud Home records your
+   - `requestWhenInUseAuthorization()`. TinyCloud One's string `NSLocationWhenInUseUsageDescription`: **"TinyCloud One records your
      location while you use it, only after you turn location on, and saves it to your TinyCloud space."**
    - System prompt buttons: **"Allow Once" / "Allow While Using App" / "Don't Allow"**, with a map and a **"Precise:
-     On"** toggle. On devices the title reads "Allow "TinyCloud Home" to use your location?"; Apple does not document it.
+     On"** toggle. On devices the title reads "Allow "TinyCloud One" to use your location?"; Apple does not document it.
    - The prompt is shown once. Afterwards only Settings can change the answer.
    - "Allow Once" reports as `authorizedWhenInUse`, the same as "While Using". When it lapses, the status goes back
      to `notDetermined`, which the app sees as `permission: "prompt"` again.
 2. **Always (upgrade).**
    - `requestAlwaysAuthorization()` while When-In-Use shows the upgrade prompt **immediately**, **once per install**,
      and not if When-In-Use came from Allow Once.
-   - TinyCloud Home's string `NSLocationAlwaysAndWhenInUseUsageDescription`: **"TinyCloud Home keeps recording your location in the
+   - TinyCloud One's string `NSLocationAlwaysAndWhenInUseUsageDescription`: **"TinyCloud One keeps recording your location in the
      background after you turn it on, so your timeline has no gaps. It is saved to your TinyCloud space, and you can
      turn it off at any time."**
    - Buttons: **"Keep Only While Using" / "Change to Always Allow"**. The title wording ("…also use your location
@@ -207,10 +207,10 @@ Notes for a shipped version:
   - **2.3.1(a)**: describe the feature specifically in the review notes, with a demo account (2.1).
 - **Review notes (draft, for Sam).** Needed when Always ships; usable for sessions too.
 
-  > TinyCloud Home records the user's location only after they turn it on in Connectors → Sources → Location (off by
+  > TinyCloud One records the user's location only after they turn it on in Connectors → Sources → Location (off by
   > default). It builds the user's own timeline of places, used to answer questions about their day and to put
   > voice notes and meetings in context. Recording continues after the user leaves the app until they tap Stop, so
-  > the timeline has no gaps; iOS shows the location indicator the whole time. [Always only:] With "Always", TinyCloud Home
+  > the timeline has no gaps; iOS shows the location indicator the whole time. [Always only:] With "Always", TinyCloud One
   > also logs significant location changes and visits when it is not open, using the low-power services. Location
   > is stored in the user's own TinyCloud space. It is not shared with third parties or used for advertising. To
   > test: sign in with the demo account (email + code), open Connectors → Sources → Location, tap Start and allow
@@ -240,7 +240,7 @@ Notes for a shipped version:
   during normal use.
   - It must contain the word "location", one of "background" / "when the app is closed" / "always in use" / "when
     the app is not in use", and every feature that uses it.
-  - Draft: *"TinyCloud Home collects location data to build your private timeline of places, even when the app is closed or
+  - Draft: *"TinyCloud One collects location data to build your private timeline of places, even when the app is closed or
     not in use. It is saved to your TinyCloud space and not shared."*
   - The same text must appear in the store description and on the website.
 - **`ACCESS_FINE_LOCATION` declaration** (new): opens November 2026, mandatory 2027-01-27. Applies even to sessions.
@@ -271,7 +271,7 @@ as Audio Data, because samples leave the device for the user's space without end
 </dict>
 ```
 
-- **Coarse location.** Add `NSPrivacyCollectedDataTypeCoarseLocation` the same way if TinyCloud Home stores approximate fixes
+- **Coarse location.** Add `NSPrivacyCollectedDataTypeCoarseLocation` the same way if TinyCloud One stores approximate fixes
   (the user picked Approximate). Apple's definition: Precise means three or more decimal places of
   latitude/longitude.
 - **No new required-reason API.** The recorder's timestamps come from `Date` and `CLLocation.timestamp`, not
@@ -309,13 +309,13 @@ KV  {APP_ID}/connectors/exo-location/{installId}/{YYYY-MM-DD}/{firstSeq:012}  �
   "service": "tinycloud.sql",
   "path": "location",
   "actions": ["read", "write", "schema"],
-  "description": "Store the places and location history TinyCloud Home records on your phone, only after you turn location on."
+  "description": "Store the places and location history TinyCloud One records on your phone, only after you turn location on."
 },
 {
   "service": "tinycloud.kv",
   "path": "location/",
   "actions": ["get", "put", "del", "list"],
-  "description": "Keep the raw location batches TinyCloud Home uploads from your phone."
+  "description": "Keep the raw location batches TinyCloud One uploads from your phone."
 }
 ```
 

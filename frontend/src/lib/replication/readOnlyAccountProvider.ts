@@ -28,7 +28,11 @@ export class UnsupportedMethodError extends Error {
   }
 }
 
-/** The app signs in on chain 1 (the `did:pkh:eip155:1` DID); keep this in step. */
+/**
+ * The app signs in on chain 1 (the `did:pkh:eip155:1` DID); keep this in step. A restored client never asks for it:
+ * the SDK reads the wallet's chain only when signing in (readOnlyAccountProvider.sdk.test.ts). Reading the saved
+ * session's chain here would need a load of the stored record before the restore, which discards an expired one.
+ */
 const CHAIN_ID_HEX = "0x1";
 
 export function readOnlyAccountProvider(storedAddress: string): EIP1193Provider {

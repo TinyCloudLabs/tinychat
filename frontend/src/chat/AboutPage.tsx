@@ -38,11 +38,11 @@ const VOICE_NOTE_MAX_HOURS = VOICE_NOTE_MAX_DURATION_MS / (60 * 60 * 1000);
 export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
   capture: (
     <>
-      <p>TinyCloud Home records audio in two ways.</p>
+      <p>TinyCloud One records audio in two ways.</p>
       <List>
         <li>
           <strong className="font-semibold">Voice notes</strong>, in the phone app. A note can run up to {VOICE_NOTE_MAX_HOURS} hours; the
-          recorder stops at the limit. It is saved to your TinyCloud space and shows up in Library. While TinyCloud Home records,
+          recorder stops at the limit. It is saved to your TinyCloud space and shows up in Library. While TinyCloud One records,
           your phone shows its microphone indicator and a notification.
         </li>
         <li>
@@ -76,7 +76,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         </li>
         <li>It receives an anonymous account identifier, not your wallet address.</li>
         <li>
-          TinyChat’s server authorizes the upload and relays status and the transcript text back to this app. It never
+          TinyCloud One’s server authorizes the upload and relays status and the transcript text back to this app. It never
           receives your audio.
         </li>
       </List>
@@ -89,9 +89,9 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       <Sub>Powerful · {POWERFUL_PROVIDER_NAME}</Sub>
       <List>
         <li>
-          Powerful transcription, for voice notes and uploads, sends your audio through TinyCloud Home’s server (a confidential VM on
+          Powerful transcription, for voice notes and uploads, sends your audio through TinyCloud One’s server (a confidential VM on
           Phala Cloud) to {POWERFUL_PROVIDER_NAME}, under TinyCloud’s account and {POWERFUL_PROVIDER_NAME}’s terms.{" "}
-          {POWERFUL_PROVIDER_NAME} isn’t part of TinyCloud’s private transcription. TinyCloud Home deletes {POWERFUL_PROVIDER_NAME}’s
+          {POWERFUL_PROVIDER_NAME} isn’t part of TinyCloud’s private transcription. TinyCloud One deletes {POWERFUL_PROVIDER_NAME}’s
           copy once the transcript is saved.
         </li>
       </List>
@@ -158,7 +158,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       </p>
       <Sub>Calendar autojoin</Sub>
       <p>
-        A notetaker joins Google Meet events on your main calendar that you organize or have accepted, even while TinyChat is closed; the host still admits it. Recordings reach your space the next time you open TinyChat. Turning it off deletes our server&apos;s copy of your Google sign-in.
+        A notetaker joins Google Meet events on your main calendar that you organize or have accepted, even while TinyCloud One is closed; the host still admits it. Recordings reach your space the next time you open TinyCloud One. Turning it off deletes our server&apos;s copy of your Google sign-in.
       </p>
     </>
   ),
@@ -173,7 +173,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         any time in Settings.
       </p>
       <p>
-        To use your space from your own agent, copy the prompt in Settings into it and sign in with your TinyChat account
+        To use your space from your own agent, copy the prompt in Settings into it and sign in with your TinyCloud One account
         when prompted.
       </p>
     </>
@@ -213,7 +213,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       <p>This verifies the gateway and its enclave, not the model's own code.</p>
       <Sub>The backend</Sub>
       <p>
-        Settings checks TinyChat’s own backend from your browser. It verifies the TDX quote (relayed via Phala and
+        Settings checks TinyCloud One’s own backend from your browser. It verifies the TDX quote (relayed via Phala and
         anchored trustlessly on-chain), binds the backend identity to a fresh nonce, and replays the served code
         measurement. The status turns Backend attested only when all three legs pass. Today the compose leg can’t fully
         bind (the backend doesn’t serve the app-compose file yet), so it stays at Quote issued until that deploy lands.

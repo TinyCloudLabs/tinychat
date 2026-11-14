@@ -56,7 +56,7 @@ public class AppLockPlugin extends Plugin {
     /** Resolves {@code { result }}: "success", "cancelled", "failed", or "unavailable" (no screen lock set). */
     @PluginMethod
     public void authenticate(PluginCall call) {
-        String reason = call.getString("reason", "Unlock TinyCloud Home");
+        String reason = call.getString("reason", "Unlock TinyCloud One");
         getActivity().runOnUiThread(() -> {
             if (authenticating) { resolve(call, "cancelled"); return; }
             if (!deviceSecure()) { resolve(call, "unavailable"); return; }

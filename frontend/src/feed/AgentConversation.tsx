@@ -4,6 +4,7 @@
 // latest line is the way in (AgentList), opened from the Agents pill on Home's title line or an agent's name on a
 // card. Nothing here is stored or loaded separately. Replies stay on the cards: a card line opens its card.
 import { ChevronLeftIcon } from "lucide-react";
+import { NAV_LABEL_HOME } from "@/lib/homeStrings";
 import type { FeedResponse } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { AgentDetails, AgentMark, agentProfile, PlatformName, type AgentProfile } from "./AgentMark";
@@ -101,7 +102,7 @@ const lineText = (line: AgentLine) => line.side === "card" ? `Card · ${line.tex
 
 export function AgentList({ agents, now, onOpen, onBack }: { agents: AgentThread[]; now: number; onOpen: (key: string) => void; onBack: () => void }) {
   return <section aria-label="Your agents" className="space-y-3">
-    <button type="button" onClick={onBack} className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-xl border border-border px-3 text-[13px] font-medium fine:min-h-10"><ChevronLeftIcon aria-hidden className="size-4" />Home</button>
+    <button type="button" onClick={onBack} className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-xl border border-border px-3 text-[13px] font-medium fine:min-h-10"><ChevronLeftIcon aria-hidden className="size-4" />{NAV_LABEL_HOME}</button>
     <h2 className="font-display text-xl font-semibold">Your agents</h2>
     {!agents.length && <p className="text-sm text-muted-foreground">No agent has posted yet.</p>}
     <ul className="space-y-2">{agents.map((agent) => {

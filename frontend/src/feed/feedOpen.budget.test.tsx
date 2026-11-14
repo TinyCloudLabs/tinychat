@@ -334,7 +334,7 @@ const showsCard = (open: Open) => hasCard(open, PLAIN_TITLE);
 
 /** The node's Feed, whole: no load error, and the answered typed asks among the cards. */
 function expectWholeFeed(open: Open) {
-  expect(open.host.textContent).not.toContain("Home didn't load");
+  expect(open.host.textContent).not.toContain("Feed didn't load");
   for (const title of [PLAIN_TITLE, "Choose the synthetic approach", "Choose the second synthetic approach", "Synthetic incident"]) {
     expect(hasCard(open, title)).toBe(true);
   }
@@ -462,7 +462,7 @@ test("new device: a first load that fails before the registry names the agents s
   node.unavailable.add(HOME_FEED_RESOURCE);
   const open = await openFeed(node, ownerClient(node));
   await answerUntil(node, open, () => node.requests.some(isTicket));
-  expect(open.host.textContent).toContain("Home didn't load");
+  expect(open.host.textContent).toContain("Feed didn't load");
   expect(open.fresh).toBeUndefined();
 
   node.unavailable.clear();

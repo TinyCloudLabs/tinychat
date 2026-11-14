@@ -9,7 +9,7 @@ import type { MicState } from "@/lib/voiceNotes/nativeVoiceNotes";
 /** The title while recording ("● 0:42 · Exo"), paused ("❚❚ 0:42 · Exo"), or null when there is nothing to show. */
 export function recordingTitle(phase: RecorderPhase, micState: MicState, elapsedMs: number): string | null {
   if (phase !== "recording") return null;
-  return `${micState === "paused" ? "❚❚" : "●"} ${formatDuration(elapsedMs)} · TinyCloud Home`;
+  return `${micState === "paused" ? "❚❚" : "●"} ${formatDuration(elapsedMs)} · TinyCloud One`;
 }
 
 /** Where the title lives: the tab on the web, the window in the desktop app. */

@@ -230,6 +230,8 @@ export async function restoreTinyCloudWebSession(
     // The app owns the floating button (Settings toggle); the SDK default shows it.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    // A restore never sets up an account, whatever page it runs on (as createTinyCloudWeb). Details: TC-3019
+    autoBootstrapAccount: false,
   };
 
   if (config?.provider) {

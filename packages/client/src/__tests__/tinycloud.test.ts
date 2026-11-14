@@ -184,6 +184,12 @@ describe("restoreTinyCloudWebSession", () => {
     expect(lastTinyCloudConfig.includeAccountRegistryPermissions).toBe(false);
   });
 
+  test("a restore never sets up an account, even when given a provider", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    await restoreTinyCloudWebSession("0xabc", { provider: { request: async () => [] } as never });
+    expect(lastTinyCloudConfig.autoBootstrapAccount).toBe(false);
+  });
+
   test("restores a session-only TinyCloudWeb without a provider", async () => {
     restoreResult = { status: "restored", session: { address: "0xabc" } };
     persistedSession = { signature: "stored-session-signature", tinycloudSession: { spaceId: "space-from-sdk" } };

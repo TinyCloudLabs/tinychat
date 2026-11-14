@@ -49,10 +49,10 @@ const FEED: HomeFeedSource = {
   load: async () => ({
     entries: [
       card("trip", "Trip agent", "train", "Which train should I hold for Friday?", "08:15 direct or 09:40 with a change.", 12),
-      card("home", "Home agent", "filter", "The water filter renews tomorrow. Keep it?", "The last filter is still unopened.", 60),
+      card("home", "House agent", "filter", "The water filter renews tomorrow. Keep it?", "The last filter is still unopened.", 60),
       card("studio", "Studio agent", "room", "Which room for the pottery workshop?", "The loft seats 12, the hall 30.", 180),
       card("trip", "Trip agent", "plan", "Write tomorrow's plan at 09:00?", "A short plan for the day.", 240, "waiting"),
-      card("home", "Home agent", "backup", "Run the weekly backup now?", "It takes about ten minutes.", 300, "done"),
+      card("home", "House agent", "backup", "Run the weekly backup now?", "It takes about ten minutes.", 300, "done"),
     ],
     settings: { defaultSelector: "needs-action" },
   }),

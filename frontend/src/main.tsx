@@ -11,7 +11,7 @@ import { PwaPrompts } from "./components/pwa-prompts";
 import { RootErrorBoundary } from "./shell/RootErrorBoundary";
 import { OriginMoveHold } from "./shell/OriginMoveNotice";
 import { decideOriginMove, isLegacyOrigin, type OriginMoveDecision } from "./lib/originMove";
-import { LandingRoute, RootRoute } from "./landing/RootRoute";
+import { AboutRedirect, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
@@ -22,6 +22,9 @@ import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoice
 import { installDebugLog } from "./lib/debugLog";
 import { billingLinksAllowed } from "./lib/openManageStorage";
 import { hideSdkPurchaseLinks } from "./lib/sdkPanelPurchaseLinks";
+import { hydrateDurableKeys } from "./lib/durableKeys";
+import { APP_LOCK_PREFS_KEY } from "./lib/appLock";
+import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/openkeyNative";
 
 // False on the web and in the desktop (Tauri) app; true only inside the TinyCloud Home mobile app.
 const nativeShell = Capacitor.isNativePlatform();
@@ -85,6 +88,12 @@ void installEd25519Polyfill().catch((error: unknown) => {
   console.error(`[webcrypto] Ed25519 probe failed; WebCrypto left unchanged: ${error instanceof Error ? error.name : "unknown error"}`);
 }).then(async () => {
   await installDebugLog();
+  // The phone app's settings that outlive its WebView storage (durableKeys.ts), in place before anything reads
+  // them. A local file read; the bound only keeps a stuck bridge from holding the app at a blank screen.
+  await Promise.race([
+    hydrateDurableKeys([APP_LOCK_PREFS_KEY, NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY]),
+    new Promise((resolve) => setTimeout(resolve, 2000)),
+  ]);
   const move = await originMove;
   if (move.kind === "move") {
     window.location.replace(move.url);
@@ -96,7 +105,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<RootRoute />} />
-            <Route path="/about" element={<LandingRoute />} />
+            <Route path="/about" element={<AboutRedirect />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

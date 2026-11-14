@@ -22,20 +22,20 @@ import android.widget.TextView;
 public class HealthPermissionsRationaleActivity extends Activity {
 
     static final String TEXT =
-        "TinyCloud Home and Health Connect (development preview)\n\n" +
-        "TinyCloud Home reads the steps, sleep and heart rate you allow, and only while you use the health preview. " +
+        "TinyCloud One and Health Connect (development preview)\n\n" +
+        "TinyCloud One reads the steps, sleep and heart rate you allow, and only while you use the health preview. " +
         "It turns them into one summary per day (step count, minutes asleep, lowest, average and highest heart rate, " +
         "and which apps recorded them) and saves the summaries to your own TinyCloud space, which only you and the " +
         "apps you authorize can read.\n\n" +
-        "TinyCloud Home does not sell this data, use it for advertising, or share it with anyone. You can turn access off at any " +
+        "TinyCloud One does not sell this data, use it for advertising, or share it with anyone. You can turn access off at any " +
         "time in Health Connect, and delete the summaries from your space.\n\n" +
-        "This preview has no published privacy policy yet; one is required before TinyCloud Home can ask anyone outside the team " +
+        "This preview has no published privacy policy yet; one is required before TinyCloud One can ask anyone outside the team " +
         "for health data.";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setTitle("TinyCloud Home and Health Connect");
+        setTitle("TinyCloud One and Health Connect");
         int padding = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24, getResources().getDisplayMetrics());
 
         TextView text = new TextView(this);

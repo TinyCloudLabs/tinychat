@@ -123,7 +123,7 @@ pub fn install<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
                 true,
                 Some(RECORD_SHORTCUT),
             )?,
-            &MenuItem::with_id(app, MENU_OPEN, "Open TinyCloud Home", true, None::<&str>)?,
+            &MenuItem::with_id(app, MENU_OPEN, "Open TinyCloud One", true, None::<&str>)?,
         ],
     )?;
     TrayIconBuilder::with_id("exo-record")
@@ -131,7 +131,7 @@ pub fn install<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             "../icons/tray-record-template.png"
         ))?)
         .icon_as_template(true)
-        .tooltip("TinyCloud Home")
+        .tooltip("TinyCloud One")
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {

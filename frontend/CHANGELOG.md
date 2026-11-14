@@ -16,6 +16,24 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.64
+
+### Minor Changes
+
+- 98e2480: TinyCloud Home is now TinyCloud One everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud One.app`; `exo-update` replaces an existing `TinyCloud Home.app`), the Android and iOS app names, widgets, Siri phrases ("Start recording in TinyCloud One"), notifications, permission prompts and error messages. The main screen is now called Feed, and Settings › Start screen holds the first-screen choice. You stay signed in: the app id, bundle ids, URL schemes, installed web app id and every data path are unchanged, and nobody has to sign in again.
+
+## 0.14.0-beta.63
+
+### Patch Changes
+
+- 77dab54: The phone apps keep the app-lock settings, the record of being signed in and a pending sign-out in the device's app storage as well as the WebView's, so they survive a change of the app's WebView origin. A session restored when the app opens now locks like any cold launch when the app lock is on, including when the app opened without its record of being signed in. Details: TC-3045.
+
+## 0.14.0-beta.62
+
+### Patch Changes
+
+- fae976b: A restored session never sets up a TinyCloud account, whatever page it runs on. Details: TC-3019.
+
 ## 0.14.0-beta.61
 
 ### Patch Changes
