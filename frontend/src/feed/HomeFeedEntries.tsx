@@ -12,7 +12,7 @@ import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { CardConversation, plainConversation } from "./CardConversation";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, Reference, UNDO_SECONDS, usePendingSend } from "./cardKit";
+import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, quotedWords, Reference, UNDO_SECONDS, usePendingSend } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
@@ -901,7 +901,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
     const unsent = held && held.outcome !== "sent" ? held : undefined;
     // Said in the owner's own words when they wrote them, so they can say it again; an option by its label.
-    const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : held?.text ? `“${held.text}”` : NOT_SENT_COPY.yourAnswer;
+    const words = !held?.choiceLabel && held?.text ? quotedWords(held.text) : undefined;
+    const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : words ? words.label : NOT_SENT_COPY.yourAnswer;
+    const wordsOf = (label: string) => (words && label === heldLabel ? { ...(words.full ? { full: words.full } : {}), ends: words.ends } : {});
     const refusedLabel = refused.get(key) ?? (retained && unsent && (!unsent.answered || keyOf(unsent.answered) === keyOf(entry)) ? heldLabel : undefined);
     const onRefused = (label: string) => setRefused((current) => new Map(current).set(key, label));
     const seenUnsent = () => source.dismissUnsentAnswer?.(entry.source.sourceId, entry.state.card.cardId);
@@ -923,10 +925,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {...(unsupported ? {} : { onAuthor: () => { leaveView(); setAgentPage(agentKey(entry, context?.record)); mainRef.current?.scrollTo({ top: 0 }); } })}
       {...(status ? { status } : {})} collapse={collapse}>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
-        ? <SeenAfterUndo onSeen={seenUnsent}><NotSent label={refusedLabel} changed={refused.has(key) || unsent?.outcome !== "closed"} /></SeenAfterUndo>
+        ? <SeenAfterUndo onSeen={seenUnsent}><NotSent label={refusedLabel} changed={refused.has(key) || unsent?.outcome !== "closed"} {...wordsOf(refusedLabel)} /></SeenAfterUndo>
         : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
       {!retained && held?.outcome === "sent" && <p role="status" className="mt-3 text-[13px] text-muted-foreground">{HELD_ANSWER_COPY.sent}</p>}
-      {!retained && unsent && <p role="alert" className="mt-3 text-[13px]"><SeenAfterUndo onSeen={seenUnsent}><NotSent label={heldLabel} changed={unsent.outcome === "replaced"} /></SeenAfterUndo></p>}
+      {!retained && unsent && <p role="alert" className="mt-3 text-[13px]"><SeenAfterUndo onSeen={seenUnsent}><NotSent label={heldLabel} changed={unsent.outcome === "replaced"} {...wordsOf(heldLabel)} /></SeenAfterUndo></p>}
       {/* The agent's one-page brief, read in the app beside the decision. */}
       {brief && <BriefButton brief={brief} className="mt-3" />}
       <ReportLink entry={entry} />

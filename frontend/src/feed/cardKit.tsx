@@ -224,13 +224,24 @@ export const NOT_SENT_COPY = {
   changed: "This card changed. Answer the newer version.",
 } as const;
 
+/** How much of an answer in words the "Not sent" line shows; the rest is in the line's title and aria-label. */
+export const NOT_SENT_WORDS_MAX = 80;
+
+/** The owner's words as the "Not sent" line quotes them: the first 80 characters with "…" when longer, the full text kept for the title. */
+export function quotedWords(text: string): { label: string; full?: string; ends: boolean } {
+  const clipped = text.length > NOT_SENT_WORDS_MAX;
+  const shown = clipped ? `${text.slice(0, NOT_SENT_WORDS_MAX).trimEnd()}…` : text;
+  return { label: `“${shown}”`, ...(clipped ? { full: text } : {}), ends: !clipped && /[.!?]$/.test(text.trimEnd()) };
+}
+
 /**
  * "Not sent: {label}." for an answer that was never sent, during its countdown or from the
  * page-close outbox. `changed` adds why, for a card a newer version replaced; a closed card
- * already says it ended.
+ * already says it ended. `full` is a clipped answer in words, readable and copyable from the line's title;
+ * `ends` drops the sentence's own full stop when the owner's words already end in one.
  */
-export function NotSent({ label, changed = false }: { label: string; changed?: boolean }) {
-  return <span className="text-foreground">Not sent: {label === NOT_SENT_COPY.yourAnswer ? label : <b className="font-semibold">{label}</b>}.{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
+export function NotSent({ label, changed = false, full, ends = false }: { label: string; changed?: boolean; full?: string; ends?: boolean }) {
+  return <span className="text-foreground">Not sent: {label === NOT_SENT_COPY.yourAnswer ? label : <b className="font-semibold" {...(full ? { title: full, "aria-label": `“${full}”` } : {})}>{label}</b>}{ends ? "" : "."}{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
 }
 
 /**

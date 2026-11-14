@@ -751,24 +751,35 @@ test("a held answer whose card the agent closed while the answered card was open
   expect([...relaunched.host.querySelectorAll('[role="alert"]')].some((node) => node.textContent?.startsWith("Not sent: Quick option."))).toBe(true);
 });
 
-test("an answer in words that was not sent says what the owner wrote, so they can say it again", async () => {
-  const owner = await ownerFixture(); const agent = await owner.agent("lost-words");
-  value(await publishFeedCard(agent.output, plainCard()));
-  const first = owner.fresh(); const view = await mount(first);
-  await act(async () => option(view.host, "Your own answer").click());
-  await enter(view.host, "Your own answer", "Only if the aisle seat is free");
-  await act(async () => button(view.host, "Send").click());
-  await countdown(first, 1200);
-  owner.faults.refuseResponseWrites = true;
-  await closePage(first);
-  await view.unmount();
-  owner.faults.refuseResponseWrites = false;
-  value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", title: "Book the Friday flight?" })));
-  const next = owner.fresh(); const relaunched = await mount(next);
-  await next.settle();
-  expect(await stored(agent)).toEqual([]);
-  expect(card(relaunched.host, "Book the Thursday flight?").textContent).toContain(`Not sent: “Only if the aisle seat is free”. ${NOT_SENT_COPY.changed}`);
-});
+const LONG_WORDS = "Only if the aisle seat is free, the flight is not after nine, and the fare stays under the budget we agreed last week";
+for (const [name, words, line, full] of [
+  ["says what the owner wrote, so they can say it again", "Only if the aisle seat is free", "Not sent: “Only if the aisle seat is free”.", undefined],
+  ["drops its own full stop when the owner's words already end in one", "Is the aisle seat free?", "Not sent: “Is the aisle seat free?”", undefined],
+  ["shows the first 80 characters of a long answer, the whole of it in the title", LONG_WORDS, `Not sent: “${LONG_WORDS.slice(0, 80).trimEnd()}…”.`, LONG_WORDS],
+] as const) {
+  test(`an answer in words that was not sent ${name}`, async () => {
+    const owner = await ownerFixture(); const agent = await owner.agent("lost-words");
+    value(await publishFeedCard(agent.output, plainCard()));
+    const first = owner.fresh(); const view = await mount(first);
+    await act(async () => option(view.host, "Your own answer").click());
+    await enter(view.host, "Your own answer", words);
+    await act(async () => button(view.host, "Send").click());
+    await countdown(first, 1200);
+    owner.faults.refuseResponseWrites = true;
+    await closePage(first);
+    await view.unmount();
+    owner.faults.refuseResponseWrites = false;
+    value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", title: "Book the Friday flight?" })));
+    const next = owner.fresh(); const relaunched = await mount(next);
+    await next.settle();
+    expect(await stored(agent)).toEqual([]);
+    const article = card(relaunched.host, "Book the Thursday flight?");
+    expect(article.textContent).toContain(`${line} ${NOT_SENT_COPY.changed}`);
+    const quoted = [...article.querySelectorAll<HTMLElement>("b")].find((node) => node.textContent?.startsWith("“"));
+    expect(quoted?.getAttribute("title") ?? undefined).toBe(full);
+    expect(quoted?.getAttribute("aria-label") ?? undefined).toBe(full ? `“${full}”` : undefined);
+  });
+}
 
 test("a held answer whose outcome the page never got (it went away while the flush finished) is told at the next launch, until the owner has seen it", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("lost-gone");
