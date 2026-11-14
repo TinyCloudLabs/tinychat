@@ -147,6 +147,28 @@ export function clearAllHeldAnswers(): void {
 }
 
 /**
+ * How many held and unsent answers on this device, whatever space they belong to, are still within
+ * HELD_ANSWER_TTL_MS at `now`. Reads only: a malformed or expired entry is not counted (its owner's
+ * next read removes it). For the move off tinycloud.chat (originMove.ts), which must not strand them.
+ */
+export function countStoredAnswers(storage: Pick<Storage, "length" | "key" | "getItem">, now = Date.now()): { held: number; unsent: number } {
+  let held = 0;
+  let unsent = 0;
+  const fresh = (at: string) => now - Date.parse(at) <= HELD_ANSWER_TTL_MS;
+  for (let index = 0; index < storage.length; index++) {
+    const key = storage.key(index);
+    if (key?.startsWith(PREFIX)) {
+      const entry = parse(storage.getItem(key));
+      if (entry && fresh(entry.at)) held++;
+    } else if (key?.startsWith(UNSENT_PREFIX)) {
+      const entry = parseUnsent(storage.getItem(key));
+      if (entry && fresh(entry.at)) unsent++;
+    }
+  }
+  return { held, unsent };
+}
+
+/**
  * An answer the feed did not take when its held entry was flushed at a launch: the owner never saw it counted,
  * so it is kept (one per card) until the owner has seen "Not sent" on that card, whatever the page was doing when
  * the flush ended. It carries what lets the owner say it again: the option's label, or the words they wrote.

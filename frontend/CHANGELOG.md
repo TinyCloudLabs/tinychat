@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.67
+
+### Patch Changes
+
+- 7e4a103: On tinycloud.chat, Home answers still waiting to be sent, answers marked "Not sent" that you have not seen yet, and post answers you have not sent now keep the tab there (with a notice saying why) instead of being left behind by the move to home.tinycloud.xyz; each stops holding 7 days after it was written. When the tab moves, what is left of them on tinycloud.chat is removed.
+
 ## 0.14.0-beta.66
 
 ### Patch Changes
