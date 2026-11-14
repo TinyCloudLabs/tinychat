@@ -133,6 +133,18 @@ export function clearPostDrafts(space: string): void {
   } catch { /* Nothing to clear. */ }
 }
 
+/**
+ * Removes every post draft on this device, whatever space it belongs to: for a sign-out that cannot name its space
+ * (a restart that finds a sign-out still pending), so the owner's words do not outlive the account.
+ */
+export function clearAllPostDrafts(): void {
+  try {
+    const storage = window.localStorage;
+    const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter((key): key is string => !!key?.startsWith(DRAFT_PREFIX));
+    for (const key of keys) storage.removeItem(key);
+  } catch { /* Nothing to clear. */ }
+}
+
 /** Two sets of answers say the same. */
 export function sameAnswers(a: PageAnswers, b: PageAnswers): boolean {
   const keys = (answers: PageAnswers) => Object.keys(answers).filter((id) => isAnswered(answers[id])).sort();
