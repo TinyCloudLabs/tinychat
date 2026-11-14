@@ -9,6 +9,7 @@ import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
 import { firstNonEmpty } from "./src/lib/buildEnv";
 import { extractInlinedSdkWasm } from "./src/lib/sdkWasmAsset";
+import { stablelibBrowserCrypto } from "./src/lib/stablelibBrowserCrypto";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromApp = createRequire(import.meta.url);
@@ -123,6 +124,8 @@ export default defineConfig(({ command, mode }) => {
         ]);
       },
     },
+    // @stablelib/random's browser field keeps crypto-browserify out of the entry chunk (src/lib/stablelibBrowserCrypto.ts).
+    stablelibBrowserCrypto(),
     nodePolyfills({ globals: { Buffer: true, process: true, global: true } }),
     react(),
     // Installable web app (PWA). Builds dist/manifest.webmanifest (linked from index.html) and a Workbox
