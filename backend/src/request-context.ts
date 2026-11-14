@@ -11,6 +11,7 @@ const METHODS: Record<string, true> = {
 };
 
 export type StreamOutcome = "done" | "error" | "aborted";
+export type CreditsBucket = "0" | "1-9" | "10-99" | "100-999" | "1000+";
 
 export type RequestEvent = {
   event: "tinychat_request";
@@ -25,9 +26,9 @@ export type RequestEvent = {
   /** Streaming routes only: how the stream ended, plus a fixed error code. */
   stream?: StreamOutcome;
   code?: string;
-  /** Credits recorded for this request, when any were charged. */
-  credits?: number;
-  /** Keyed HMAC of the authenticated account; omitted when unauthenticated or no key is configured. */
+  /** Bucket of the credits recorded for this request, when any were charged. */
+  credits?: CreditsBucket;
+  /** Keyed HMAC of the authenticated account and the record's UTC month; omitted when unauthenticated or no key is configured. */
   account_hash?: string;
 } | {
   event: "tinychat_request_diagnostic";
@@ -63,10 +64,23 @@ export function configureRequestLogAccountHash(key: string | undefined): void {
   accountHashKey = key?.trim() || undefined;
 }
 
-/** hex(HMAC-SHA256(key, "account\0" || lowercase address)): a stable pseudonym, never the address itself. */
-export function requestLogAccountHash(address: string): string | undefined {
+/** hex(HMAC-SHA256(key, "account\0" || UTC "YYYY-MM" of `at` || "\0" || lowercase address)): a pseudonym that
+ * changes every calendar month, never the address itself. Contract and vectors: tinycloud-dev ops/logging/pseudonyms.md.
+ */
+export function requestLogAccountHash(address: string, at: Date = new Date()): string | undefined {
   if (!accountHashKey) return undefined;
-  return createHmac("sha256", accountHashKey).update(`account\0${address.toLowerCase()}`).digest("hex");
+  const month = at.toISOString().slice(0, 7);
+  return createHmac("sha256", accountHashKey).update(`account\0${month}\0${address.toLowerCase()}`).digest("hex");
+}
+
+/** The shipped record carries only the order of magnitude of a request's credits. */
+export function requestLogCreditsBucket(credits: number): CreditsBucket {
+  // Anything that is not a finite count (NaN, ±Infinity) and any negative lands in "0", never in "1000+".
+  if (!Number.isFinite(credits) || credits < 1) return "0";
+  if (credits < 10) return "1-9";
+  if (credits < 100) return "10-99";
+  if (credits < 1000) return "100-999";
+  return "1000+";
 }
 
 /** Add the stream outcome, a fixed error code or charged credits to this response's request record. */
@@ -216,7 +230,7 @@ export function createRequestContextMiddleware(emit: EventSink = emitToStdout): 
           ...(typeof correlation === "string" && LEGACY_CORRELATION_ID.test(correlation) ? { correlation_id: correlation.toLowerCase() } : {}),
           ...(note.stream ? { stream: note.stream } : {}),
           ...(note.code ? { code: note.code } : {}),
-          ...(note.credits !== undefined ? { credits: note.credits } : {}),
+          ...(note.credits !== undefined ? { credits: requestLogCreditsBucket(note.credits) } : {}),
           ...(accountHash ? { account_hash: accountHash } : {}),
         });
       } catch {

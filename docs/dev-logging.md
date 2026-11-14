@@ -206,10 +206,16 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `request_id`, `method`, `route_template` (the record's `route`), `status`, `duration_ms` (0.1 ms), `stream`, `code`,
   `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
   `request_id_replaced`, `correlation_id` and any other key are dropped; a malformed `request_id` or `status` drops
-  the record; a route that is not template-shaped or is longer than 64 characters ships as `unmatched`, and an
+  the record; a route that is not in the closed list (below) ships as `unmatched`, and an
   off-shape optional field is omitted. Bodies, prompts, replies, headers, keys, tokens, emails
   and IPs are never fields. To bound volume on the shared Better Stack allowance, at most 10 problem records
   (5xx, stream `error` or `aborted`) and 20 other records per minute ship; the rest are dropped (Vector `throttle`).
+  TC-3031 narrows three fields. `route_template` is one of the templates in `backend/src/request-log-routes.ts`
+  (every route the backend registers; each at most 96 characters) or `unmatched`. `credits` ships only as a bucket: `0`,
+  `1-9`, `10-99`, `100-999` or `1000+`. `account_hash` is
+  `hex(HMAC-SHA256(REQUEST_LOG_HMAC_KEY, "account\0" || UTC "YYYY-MM" of the record || "\0" || lowercase address))`,
+  so one account's records join within a calendar month and not across months. The scheme and its test vectors are in
+  `ops/logging/pseudonyms.md` in `tinycloud-dev`.
   `backend/src/__tests__/request-record.test.ts` sends a chat turn carrying each kind of sensitive value and checks
   the emitted record and, with `VECTOR_BIN`, what the real pipeline passes to the sink.
 - **Storage and calendar diagnostics (TC-2546).** A `[storage-lane]` line projects exactly `svc`, `event`, `component`,
@@ -243,7 +249,13 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   application-payload budgets, not a guarantee about future traffic from other services or vendor billing changes.
 - **`REQUEST_LOG_HMAC_KEY`.** Generated once (`openssl rand -hex 32`) and set as the `production-api` secret; it
   reaches only the backend's encrypted CVM env (step `env:`, env-file `printf`, Compose). It is never logged or
-  shipped. Rotating it changes every `account_hash`, so records before and after a rotation no longer join.
+  shipped. Rotating it changes every `account_hash`, so records before and after a rotation no longer join; the
+  hash also changes at each UTC month boundary.
+- **Add or remove a route.** `backend/src/__tests__/request-log-routes.test.ts` reads the route registrations from
+  the source and fails until `backend/src/request-log-routes.ts` lists the new template. Copy the list into the
+  `route_template` enum in `ops/logging/fields.json` in `tinycloud-dev` (then byte-for-byte into
+  `log-shipper/fields.json`) and into the `includes([...], route)` check in `log-shipper/vector.yaml` and its Compose copy;
+  the same test checks all three. A route path the scanner cannot read as a literal fails the test.
 - **Add an event or field.** (1) Add it to `tinychat-backend` in `ops/logging/fields.json` in `tinycloud-dev` and merge;
   (2) copy that file byte-for-byte to `log-shipper/fields.json`; (3) emit it in the `allowlist` transform in
   `log-shipper/vector.yaml` with a type/range check; (4) mirror the YAML into `docker-compose.phala.yml` (`$` → `$$`);
