@@ -1,10 +1,12 @@
 // tinycloud.chat serves the same build as the canonical Home origin. Visitors there move to
-// home.tinycloud.xyz, unless this browser holds recording work that exists only on the legacy
-// origin: origins don't share IndexedDB or localStorage, so moving would strand it. Held visitors
-// move on their own once that work is saved to their TinyCloud space. A move also waits until
-// home.tinycloud.xyz serves this same build, and never happens to a page that must finish here
-// (an OAuth return, a popup, the static /agents docs) or while this page has work in memory.
+// home.tinycloud.xyz, unless this browser holds recording work or Home answers that exist only on the legacy
+// origin: origins don't share IndexedDB or localStorage, so moving would strand them. Held visitors
+// move on their own once that work is saved to their TinyCloud space (or the answers are sent, seen or expired).
+// A move also waits until home.tinycloud.xyz serves this same build, and never happens to a page that must finish
+// here (an OAuth return, a popup, the static /agents docs) or while this page has work in memory.
 
+import { clearAllHeldAnswers, countStoredAnswers } from "@/feed/answerOutbox";
+import { clearAllPostDrafts, countPostDrafts } from "@/feed/postAnswers";
 import { UPLOAD_PENDING_STORAGE_KEY, uploadRunner, type UploadState } from "./audioUpload";
 import { sameTabReturnState } from "./connectors/googleOAuthReturn";
 import { hasVerifiedSpaceCopy } from "./voiceNotes/audioPlaybackCache";
@@ -42,6 +44,9 @@ export const CANONICAL_VERSION_TIMEOUT_MS = 5_000;
  * `localAudio`: the signed-in account's notes saved to the space whose audio is not (web audio upload is off by
  * default), by recording id; webStore never deletes that audio, so it stays reachable only on this origin.
  * `signedIn`: an account is signed in here.
+ * `heldAnswers`, `unsentAnswers`, `postDrafts`: Home's answers kept only in this origin's localStorage, younger than
+ * HELD_ANSWER_TTL_MS: answers waiting to be sent (the feed sends them from here), answers the feed did not take that
+ * the owner has not yet seen as "Not sent", and post drafts with at least one answer.
  */
 export interface LocalRecordingWork {
   saving: number;
@@ -49,14 +54,32 @@ export interface LocalRecordingWork {
   unclaimed: number;
   otherAccount: number;
   signedIn: boolean;
+  heldAnswers: number;
+  unsentAnswers: number;
+  postDrafts: number;
 }
 
 /** Nothing local-only: the move may go ahead, and no notice shows. */
-export const NO_LOCAL_WORK: LocalRecordingWork = { saving: 0, localAudio: [], unclaimed: 0, otherAccount: 0, signedIn: false };
+export const NO_LOCAL_WORK: LocalRecordingWork = {
+  saving: 0, localAudio: [], unclaimed: 0, otherAccount: 0, signedIn: false, heldAnswers: 0, unsentAnswers: 0, postDrafts: 0,
+};
 
 /** Whether anything in `work` keeps the visitor on this origin. */
 export function holdsOriginMove(work: LocalRecordingWork): boolean {
-  return work.saving !== 0 || work.localAudio.length > 0 || work.unclaimed > 0 || work.otherAccount > 0;
+  return work.saving !== 0 || work.localAudio.length > 0 || work.unclaimed > 0 || work.otherAccount > 0 || holdsAnswers(work);
+}
+
+function holdsAnswers(work: LocalRecordingWork): boolean {
+  return work.heldAnswers > 0 || work.unsentAnswers > 0 || work.postDrafts > 0;
+}
+
+/**
+ * Removes this origin's held and unsent answers and post drafts, right before the move: once the count let the move
+ * go ahead, only expired, empty or malformed ones are left, and they must not linger on the old origin.
+ */
+export function clearMovedAnswers(): void {
+  clearAllHeldAnswers();
+  clearAllPostDrafts();
 }
 
 /** The count when this browser's recordings could not be read: unknown blocks the move. */
@@ -368,7 +391,11 @@ export async function countLocalOnlyRecordingWork(env: OriginMoveEnv = {}): Prom
       else if (owner !== signedIn) otherAccount++;
       else localAudio.push(id);
     }
-    return { saving: saving.size + local.uploads, localAudio, unclaimed, otherAccount, signedIn: signedIn !== null };
+    const answers = storage ? countStoredAnswers(storage) : { held: 0, unsent: 0 };
+    return {
+      saving: saving.size + local.uploads, localAudio, unclaimed, otherAccount, signedIn: signedIn !== null,
+      heldAnswers: answers.held, unsentAnswers: answers.unsent, postDrafts: storage ? countPostDrafts(storage) : 0,
+    };
   } catch (error) {
     console.warn("[originMove] Could not check local recordings; staying on this origin", error);
     return UNKNOWN_WORK;
@@ -488,7 +515,7 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
         const { work } = decision;
         const shown = await buildServed();
         // Until home.tinycloud.xyz serves this build, keep asking it, so the notice can appear.
-        polling = work.saving !== 0 || !shown;
+        polling = work.saving !== 0 || holdsAnswers(work) || !shown;
         if (!stopped) options.onPending?.(shown ? work : NO_LOCAL_WORK);
         return;
       }
@@ -498,7 +525,15 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
         if (!stopped) options.onPending?.(NO_LOCAL_WORK);
         return;
       }
+      // The feed can hold an answer or save a draft while the counts above were awaited. localStorage reads are
+      // synchronous, so nothing can land between this recount and the clear; anything found keeps the page held.
+      const answers = answersStoredNow();
+      if (answers === null || holdsAnswers(answers)) {
+        options.onPending?.(answers ?? NO_LOCAL_WORK);
+        return;
+      }
       stop();
+      clearMovedAnswers();
       location.replace(canonicalUrlFor(location));
     } finally {
       running = false;
@@ -522,4 +557,17 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
   }
   void check();
   return stop;
+}
+
+/** This origin's held, unsent and draft answers, read synchronously; null when localStorage cannot be read. */
+function answersStoredNow(): LocalRecordingWork | null {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return NO_LOCAL_WORK;
+    const { held, unsent } = countStoredAnswers(storage);
+    return { ...NO_LOCAL_WORK, heldAnswers: held, unsentAnswers: unsent, postDrafts: countPostDrafts(storage) };
+  } catch (error) {
+    console.warn("[originMove] Could not re-check stored answers; staying on this origin", error);
+    return null;
+  }
 }
