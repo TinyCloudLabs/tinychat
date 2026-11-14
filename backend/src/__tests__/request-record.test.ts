@@ -494,6 +494,11 @@ describe("TC-3031 monthly account hash and credit buckets", () => {
     expect(edges.map(([credits]) => requestLogCreditsBucket(credits))).toEqual(edges.map(([, bucket]) => bucket));
   });
 
+  test("a value that is not a count of credits ships as \"0\"", () => {
+    expect([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, -0.5].map(requestLogCreditsBucket))
+      .toEqual(["0", "0", "0", "0", "0"]);
+  });
+
   test("the record sums every charge, then ships only its bucket", async () => {
     const turn = recorder();
     const server = await listen(chargingApp(turn.sink));

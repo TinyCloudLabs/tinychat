@@ -75,7 +75,8 @@ export function requestLogAccountHash(address: string, at: Date = new Date()): s
 
 /** The shipped record carries only the order of magnitude of a request's credits. */
 export function requestLogCreditsBucket(credits: number): CreditsBucket {
-  if (credits < 1) return "0";
+  // Anything that is not a finite count (NaN, ±Infinity) and any negative lands in "0", never in "1000+".
+  if (!Number.isFinite(credits) || credits < 1) return "0";
   if (credits < 10) return "1-9";
   if (credits < 100) return "10-99";
   if (credits < 1000) return "100-999";
