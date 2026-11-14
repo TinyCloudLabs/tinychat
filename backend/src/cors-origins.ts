@@ -13,6 +13,13 @@ export const EXO_ANDROID_ORIGIN = "https://app.tinycloud.one";
 /** The origin of the phone app's bundled frontend on iOS (`server.hostname` + `iosScheme`). */
 export const EXO_IOS_ORIGIN = "tinycloudone://app.tinycloud.one";
 
+/**
+ * The phone apps' origins before TC-3045 (Capacitor's defaults), still accepted until the tester builds with
+ * the new origins are out. Removal: TC-3046.
+ */
+export const EXO_LEGACY_ANDROID_ORIGIN = "https://localhost";
+export const EXO_LEGACY_IOS_ORIGIN = "capacitor://localhost";
+
 /** The TinyCloud Home site, the canonical web origin of the single TinyChat/Home web build. */
 export const HOME_WEB_ORIGIN = "https://home.tinycloud.xyz";
 
@@ -93,6 +100,8 @@ export function appCorsOrigins(frontendOrigins: readonly string[]): Array<string
     EXO_DESKTOP_WINDOWS_ORIGIN,
     EXO_ANDROID_ORIGIN,
     EXO_IOS_ORIGIN,
+    EXO_LEGACY_ANDROID_ORIGIN,
+    EXO_LEGACY_IOS_ORIGIN,
     TINYCHAT_PAGES_ORIGIN,
     ...LOCAL_WEB_ORIGINS,
   ];

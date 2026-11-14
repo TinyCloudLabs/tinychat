@@ -669,6 +669,7 @@ check() { # check <jq filter> <description>
   fi
 }
 check '.href | startswith("tinycloudone://app.tinycloud.one/")' "bundled web app loaded from tinycloudone://app.tinycloud.one"
+check '.origin == "tinycloudone://app.tinycloud.one"' "WebKit reports window.location.origin as tinycloudone://app.tinycloud.one"
 check '.platform == "ios"' 'Capacitor platform is "ios"'
 check '.mounted == true' "React mounted into #root"
 check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes plugin registered and visible to JS"

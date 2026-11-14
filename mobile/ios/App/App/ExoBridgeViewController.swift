@@ -52,6 +52,8 @@ class ExoBridgeViewController: CAPBridgeViewController {
         const headers = (cap && cap.PluginHeaders) || [];
         const probe = {
           href: location.href,
+          // The origin the backend and the SDK trust for this app (TC-3045), as WebKit reports it.
+          origin: location.origin,
           platform: cap && cap.getPlatform ? cap.getPlatform() : null,
           mounted: !!root && root.childElementCount > 0,
           voiceNotesHeader: headers.some((h) => h.name === "VoiceNotes"),
