@@ -25,6 +25,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 import { withAbortTimeout } from "./abortTimeout";
+import { durableKeyReady, writeDurableKey } from "./durableKeys";
 import { manifestCarriesBundle, sameTinyCloudNode } from "@tinyboilerplate/core";
 import APP_MANIFEST from "../../../manifest.json";
 
@@ -44,8 +45,8 @@ export function isNativeOpenKeySignIn(platform: AppPlatform = appPlatform()): bo
  * no secrets capability, so every flow that unlocks or stores credentials is
  * gated on this inside the app.
  */
-const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
-const NATIVE_SIGN_OUT_PENDING_KEY = "xyz.tinycloud.tinychat:native-signout-pending";
+export const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
+export const NATIVE_SIGN_OUT_PENDING_KEY = "xyz.tinycloud.tinychat:native-signout-pending";
 /**
  * `<host> <delegationCid>` of the last delegation this device saw the node accept
  * (`/delegate` succeeded and hosted the space). Not secret: a CID names the
@@ -71,8 +72,8 @@ let nativeSessionActive = false;
 
 export function setNativeSignOutPending(pending: boolean): boolean {
   try {
-    if (pending) localStorage.setItem(NATIVE_SIGN_OUT_PENDING_KEY, "1");
-    else localStorage.removeItem(NATIVE_SIGN_OUT_PENDING_KEY);
+    // Also kept in native storage (durableKeys.ts): a pending sign-out must survive a WebView origin change.
+    writeDurableKey(NATIVE_SIGN_OUT_PENDING_KEY, pending ? "1" : null, localStorage);
     return (localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1") === pending;
   } catch { return false; }
 }
@@ -81,6 +82,15 @@ export function nativeSignOutPending(): boolean | null {
   if (typeof localStorage === "undefined") return false;
   try { return localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1"; }
   catch { return null; }
+}
+
+/**
+ * The fence as the boot restore must see it: only once its native copy has been reconciled (durableKeys.ts), which
+ * can take longer than the app waits to render. If native storage can't say, a sign-out counts as still pending,
+ * so an unfinished sign-out is never undone by restoring the session it was signing out of.
+ */
+async function settledNativeSignOutPending(): Promise<boolean | null> {
+  return (await durableKeyReady(NATIVE_SIGN_OUT_PENDING_KEY)) ? nativeSignOutPending() : true;
 }
 
 /** A native JWT is marked separately from a legacy widget session. No key material is stored here. */
@@ -92,23 +102,23 @@ export function nativeSessionWasActive(): boolean {
   }
 }
 
-const nativeSessionListeners = new Set<(active: boolean) => void>();
+const nativeSessionListeners = new Set<(active: boolean, restored: boolean) => void>();
 
 /** The app lock (lib/appLock.ts) follows sign-in and sign-out through this. */
-export function onNativeSessionChange(listener: (active: boolean) => void): () => void {
+export function onNativeSessionChange(listener: (active: boolean, restored: boolean) => void): () => void {
   nativeSessionListeners.add(listener);
   return () => { nativeSessionListeners.delete(listener); };
 }
 
-export function setNativeSessionActive(active: boolean): void {
+/** `restored`: the session was restored at launch rather than signed in just now (the app lock tells them apart). */
+export function setNativeSessionActive(active: boolean, restored = false): void {
   nativeSessionActive = active;
   try {
-    if (active) localStorage.setItem(NATIVE_SESSION_KIND_KEY, "native");
-    else localStorage.removeItem(NATIVE_SESSION_KIND_KEY);
+    writeDurableKey(NATIVE_SESSION_KIND_KEY, active ? "native" : null, localStorage);
   } catch {
     // The SDK secure store is still authoritative if web storage is unavailable.
   }
-  for (const listener of nativeSessionListeners) listener(active);
+  for (const listener of nativeSessionListeners) listener(active, restored);
 }
 
 export function isNativeOpenKeySession(): boolean {
@@ -581,7 +591,7 @@ export async function restoreNativeAtBoot(
   try {
     const d = deps ?? await defaultDeps();
     openkey = nativeClient(nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost), d.createOpenKeyNative);
-    const signOutPending = d.readSignOutFence ? d.readSignOutFence() : nativeSignOutPending();
+    const signOutPending = d.readSignOutFence ? d.readSignOutFence() : await settledNativeSignOutPending();
     if (signOutPending === null) return { kind: "signOutPending" };
     if (signOutPending) {
       try {
