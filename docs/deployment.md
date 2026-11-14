@@ -665,7 +665,7 @@ nothing below may be reported as done on its behalf.
   (comma-separated exact `http(s)` origins; unset means the built-in default
   `https://tinycloud.chat,https://home.tinycloud.xyz,https://tinycloud.one`, `DEFAULT_FRONTEND_ORIGINS`
   in `backend/src/cors-origins.ts`) plus `FRONTEND_URL`, which is always added;
-  TinyCloud Home's fixed Tauri and Capacitor origins; the TinyChat Cloudflare
+  TinyCloud One's fixed Tauri and Capacitor origins; the TinyChat Cloudflare
   Pages project (`*.tinychat-4jq.pages.dev`); and the exact documented local
   origins on port `5186`. A malformed `FRONTEND_ORIGINS` entry stops startup.
   The Phala deploy does not pass `FRONTEND_ORIGINS`, so production uses the
@@ -703,7 +703,7 @@ nothing below may be reported as done on its behalf.
   KV grant and the two named runnable catalog databases are tolerated next to
   it but never count as that proof on their own; other grants are rejected.
   Native sign-in requests every applications-space KV, SQL and hook entry of
-  the served manifest except `tinycloud.space`; OpenKey's TinyCloud Home native
+  the served manifest except `tinycloud.space`; OpenKey's TinyCloud One native
   client ceiling matches it (TC-2720), and the `Native ceiling` CI job PARs that
   exact request against production OpenKey. Widen the ceiling before adding a
   manifest entry. The web sign-in does not use that client ceiling. Set
@@ -719,7 +719,7 @@ nothing below may be reported as done on its behalf.
   the path), except when `FRONTEND_URL` is `https://home.tinycloud.xyz`: then
   they return to `https://tinycloud.chat`, because the client tags every flow
   it starts on home.tinycloud.xyz or tinycloud.one. `home.<nonce>` and `hometab.<path>.<nonce>`
-  do the same for the TinyCloud Home site, but to the fixed `HOME_WEB_ORIGIN`;
+  do the same for the TinyCloud One site, but to the fixed `HOME_WEB_ORIGIN`;
   `one.<nonce>` and `onetab.<path>.<nonce>` do it for the fixed `TINYCLOUD_ONE_WEB_ORIGIN`;
   the nonce is base64url of at least 16 characters, and the path rules are the
   `tab.` ones. A return origin missing from `FRONTEND_ORIGINS` is refused at

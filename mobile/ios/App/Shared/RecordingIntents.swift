@@ -18,7 +18,7 @@ private let intentLog = Logger(subsystem: "xyz.tinycloud.exo", category: "shortc
 /// the microphone in the background.
 struct RecordControlIntent: AudioRecordingIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "Record"
-    static let description = IntentDescription("Starts recording a voice note in TinyCloud Home.")
+    static let description = IntentDescription("Starts recording a voice note in TinyCloud One.")
     static let isDiscoverable = false
     static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
@@ -37,11 +37,11 @@ struct RecordControlIntent: AudioRecordingIntent, LiveActivityIntent {
     }
 }
 
-/// "Stop recording in TinyCloud Home", and the Live Activity's Stop button. The note is saved natively; the web
+/// "Stop recording in TinyCloud One", and the Live Activity's Stop button. The note is saved natively; the web
 /// app picks it up like any other stopped recording.
 struct StopRecordingIntent: AudioRecordingIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "Stop Recording"
-    static let description = IntentDescription("Stops and saves the voice note TinyCloud Home is recording.")
+    static let description = IntentDescription("Stops and saves the voice note TinyCloud One is recording.")
     static let supportedModes: IntentModes = .background
 
     func perform() async throws -> some IntentResult {
@@ -56,12 +56,12 @@ struct StopRecordingIntent: AudioRecordingIntent, LiveActivityIntent {
 }
 
 #if !EXO_WIDGET_EXTENSION
-/// "Start recording in TinyCloud Home": Siri, Spotlight, the Shortcuts app and the Action button.
+/// "Start recording in TinyCloud One": Siri, Spotlight, the Shortcuts app and the Action button.
 /// Recording starts in the background (so it works from the Lock Screen, with the Live Activity), then the app
 /// comes forward on the recorder when the phone allows it.
 struct StartRecordingIntent: AudioRecordingIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "Record a Voice Note"
-    static let description = IntentDescription("Starts recording a voice note in TinyCloud Home.")
+    static let description = IntentDescription("Starts recording a voice note in TinyCloud One.")
     static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     func perform() async throws -> some IntentResult {
@@ -96,8 +96,8 @@ enum RecordingShortcutError: Error, CustomLocalizedStringResourceConvertible {
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
-        case .microphoneDenied: "TinyCloud Home can't use the microphone. Allow it in Settings, then try again."
-        case .microphoneNeedsApp: "Open TinyCloud Home once to allow the microphone, then try again."
+        case .microphoneDenied: "TinyCloud One can't use the microphone. Allow it in Settings, then try again."
+        case .microphoneNeedsApp: "Open TinyCloud One once to allow the microphone, then try again."
         }
     }
 }

@@ -668,11 +668,11 @@ describe("syncQueuedMeetings", () => {
 // ── Status and notices ───────────────────────────────────────────────
 
 describe("status", () => {
-  test("a minted config is 'Enabled in TinyChat' — never 'Live'", async () => {
+  test("a minted config is 'Enabled in TinyCloud One' — never 'Live'", async () => {
     const h = harness({ enable: okEnabled() });
     await enableBackgroundSync(h.deps, h.emit);
     expect(backgroundSyncStatus(h.state()).label).toBe(BACKGROUND_SYNC_ENABLED_LABEL);
-    expect(BACKGROUND_SYNC_ENABLED_LABEL).toBe("Enabled in TinyChat");
+    expect(BACKGROUND_SYNC_ENABLED_LABEL).toBe("Enabled in TinyCloud One");
   });
 
   test("no reachable state ever labels itself Live", () => {

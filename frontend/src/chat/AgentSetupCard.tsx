@@ -19,7 +19,7 @@ export function AgentSetupCard() {
   return (
     <SectionCard icon={TerminalIcon} title="Use with your agent">
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Paste this into your agent. Sign in with your TinyChat account when prompted.
+        Paste this into your agent. Sign in with your TinyCloud One account when prompted.
       </p>
       <label htmlFor="agent-setup-prompt" className="mt-4 block text-xs font-medium">Prompt</label>
       <textarea

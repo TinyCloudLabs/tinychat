@@ -332,7 +332,7 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   await act(async () => { releaseSignOut?.(); releaseSignOut = null; await tick(); await tick(); });
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
-  expect(host!.textContent).toContain("You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.");
+  expect(host!.textContent).toContain("You're signed out of TinyCloud One, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.");
   expect(host!.textContent).not.toContain("Storage full");
   expect(isStorageReadOnly()).toBe(false);
 
@@ -605,7 +605,7 @@ test("a failed note deletion with a retained sign-out fence reports the signed-i
     expect(host!.textContent)
       .toContain("You're still signed in on this tab. If you reload or close it, you'll need to sign in again.");
     expect(host!.textContent)
-      .not.toContain("You're signed out of TinyChat, but this device didn't finish clearing your session.");
+      .not.toContain("You're signed out of TinyCloud One, but this device didn't finish clearing your session.");
     expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
     expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
     expect(window.localStorage.getItem(fenceKey)).not.toBeNull();
@@ -642,7 +642,7 @@ test("sign-out recovery copy distinguishes a local-clear failure from an unfinis
   await click("Test sign out");
   await settle();
   expect(host!.textContent)
-    .toContain("You're signed out of TinyChat, but this device didn't finish clearing your session. Sign in again, then sign out.");
+    .toContain("You're signed out of TinyCloud One, but this device didn't finish clearing your session. Sign in again, then sign out.");
 
   const originalRemoveItem = storage.removeItem.bind(storage);
   Object.defineProperty(storage, "removeItem", {

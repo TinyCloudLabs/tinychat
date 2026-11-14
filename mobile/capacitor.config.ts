@@ -11,7 +11,7 @@ const config: CapacitorConfig = {
   // The Android applicationId and the iOS bundle id. The app's private-use
   // URL scheme stays xyz.tinycloud.exo (registered with OpenKey and the backend).
   appId: "xyz.tinycloud.home",
-  appName: "TinyCloud Home",
+  appName: "TinyCloud One",
   webDir: "../frontend/dist",
   // Capacitor logs raw bridge arguments/results, including OpenKey session
   // material. debugLog.ts records redacted method/outcome events instead.

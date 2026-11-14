@@ -17,7 +17,7 @@ const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
 const FEATURES_KEY = `xyz.tinycloud.tinychat:home-features:${ADDRESS}`;
-const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
+const NOTICE = "Sign in once more so TinyCloud One can open your apps and your feed. Your data stays as it is.";
 const readManifest = (name: string) => validateManifest(JSON.parse(readFileSync(new URL(`../../${name}`, import.meta.url), "utf8")));
 
 const restoreImportDom = installDom();
@@ -369,7 +369,7 @@ test("Recording needs no re-authorise: it opens on the sign-in session with no p
 test("navigation, and Connectors asking in place", async () => {
   await mount("/chat");
   await signIn();
-  expect(navLabels()).toEqual(["Home", "Chat", "Apps", "Recording", "Connectors"]);
+  expect(navLabels()).toEqual(["Feed", "Chat", "Apps", "Recording", "Connectors"]);
   await navigate("/chat/connectors");
   expect(prompt("connectors")?.querySelector("h2")?.textContent).toBe("Allow Connectors");
   expect(host!.querySelectorAll("main").length).toBe(1);

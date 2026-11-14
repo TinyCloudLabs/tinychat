@@ -196,7 +196,7 @@ async function expectViewerRefuses(payload: object, name: string): Promise<void>
     loadSharedThreadFromToken(encodeShareToken(payload), async () => {
       throw new Error(`${name}: opener must not be called`);
     }),
-  ).rejects.toThrow("Unsupported TinyCloud Home share link");
+  ).rejects.toThrow("Unsupported TinyCloud One share link");
 }
 
 describe("tinychat share links", () => {

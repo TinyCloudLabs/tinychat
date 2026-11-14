@@ -26,7 +26,7 @@ export const BACKGROUND_SYNC_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "C",
   heading: "Background sync",
   intro:
-    "Fireflies tells our server when a meeting finishes, and TinyChat pulls it into your space the next time you open it. Our server gets only the meeting's ID, never its content or your Fireflies key.",
+    "Fireflies tells our server when a meeting finishes, and TinyCloud One pulls it into your space the next time you open it. Our server gets only the meeting's ID, never its content or your Fireflies key.",
 };
 
 
@@ -48,7 +48,7 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "google-oauth",
   heading: "Connect Google Meet",
   intro:
-    "You'll sign in with Google so TinyChat can read your Meet transcripts and Gemini notes and turn on transcription for meetings you host. Your browser fetches them from Google and saves them to your space; our server never keeps your Google token or your meetings.",
+    "You'll sign in with Google so TinyCloud One can read your Meet transcripts and Gemini notes and turn on transcription for meetings you host. Your browser fetches them from Google and saves them to your space; our server never keeps your Google token or your meetings.",
   disconnectNote:
     "**Disconnecting asks Google to revoke this access and deletes the saved token from your " +
     "secrets.** If Google cannot be reached we say so instead of pretending the revoke worked, " +
@@ -67,7 +67,7 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
   variant: "google-calendar-autojoin",
   heading: "Calendar autojoin",
   intro:
-    "TinyChat sends a notetaker to Google Meet events on your main calendar that you organize or have accepted, even while TinyChat is closed; the host still admits it. To do that, our server keeps your Google sign-in and reads your calendar. Turning this off deletes it.",
+    "TinyCloud One sends a notetaker to Google Meet events on your main calendar that you organize or have accepted, even while TinyCloud One is closed; the host still admits it. To do that, our server keeps your Google sign-in and reads your calendar. Turning this off deletes it.",
   disconnectNote: "Disconnecting Google Meet also stops Calendar autojoin, removes the server’s token and asks Google to revoke it. A failed revoke is reported. Your recordings remain available.",
 };
 

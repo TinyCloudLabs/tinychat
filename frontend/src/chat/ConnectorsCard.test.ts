@@ -285,7 +285,7 @@ describe("Google Meet OAuth connect variant", () => {
     expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable && (');
     const panel = connectHalf.slice(connectHalf.indexOf("const NativeUnavailablePanel"), connectHalf.indexOf("const WaitCallbackPanel"));
     expect(panel).toContain('formatOAuthError({ kind: "native-unavailable", message: "" })');
-    expect(dialog).toContain("Connecting Google isn’t available in the TinyCloud Home app yet.");
+    expect(dialog).toContain("Connecting Google isn’t available in the TinyCloud One app yet.");
     // …and a footer with Close only.
     expect(render).toContain('canAuthorize={authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable}');
     const footer = connectHalf.slice(connectHalf.indexOf("const OAuthConnectFooter"), connectHalf.indexOf("const Emphasized"));

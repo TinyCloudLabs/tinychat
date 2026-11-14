@@ -10,6 +10,7 @@ import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
+import { APP_NAME } from "@/lib/homeSite";
 
 export const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground";
 const controlEdge = "shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))]";
@@ -203,11 +204,11 @@ export const UNDO_SECONDS = 5;
 /** What a card says about an answer that was waiting to be sent when the page closed. */
 export const HELD_ANSWER_COPY = {
   /** It was sent at this launch, later than the owner chose it. */
-  sent: "Sent when you opened Home again.",
+  sent: "Sent when you opened TinyCloud One again.",
 } as const;
 
 /** A failed answer send: the answer is held in the outbox, so it goes at the next launch. */
-export const ANSWER_HELD_COPY = "Your answer isn't sent yet. Send it again now, or Home will send it the next time you open it.";
+export const ANSWER_HELD_COPY = `Your answer isn't sent yet. Send it again now, or ${APP_NAME} will send it the next time you open it.`;
 
 /** A failed answer send that isn't held (refused, or it failed before it was held): nothing will send it later. */
 export const ANSWER_FAILED_COPY = "Your answer wasn't saved. Try again.";

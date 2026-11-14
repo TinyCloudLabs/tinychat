@@ -1,7 +1,8 @@
+import { useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
+import { PRODUCT_PAGE_URL } from "../lib/homeSite";
 import { PATHS } from "../shell/routes";
-import { LandingPage } from "./LandingPage";
 
 // What `/` shows on every platform (web, desktop, iOS and Android): TinyCloud
 // Home's first screen. It goes to Feed marked as a Home entry, and HomeEntryGate
@@ -16,7 +17,10 @@ export function RootRoute() {
   return <Navigate to={{ pathname: PATHS.feed, search, hash }} state={{ homeEntry: true }} replace />;
 }
 
-/** `/about`: the marketing landing page, kept reachable now that `/` opens the app. */
-export function LandingRoute() {
-  return <LandingPage />;
+const leaveFor = (url: string) => window.location.replace(url);
+
+/** `/about`: the old in-app landing page is gone; the address keeps working by moving to the product page. */
+export function AboutRedirect({ go = leaveFor }: { go?: (url: string) => void }) {
+  useEffect(() => { go(PRODUCT_PAGE_URL); }, [go]);
+  return <a href={PRODUCT_PAGE_URL}>Opening the product page</a>;
 }

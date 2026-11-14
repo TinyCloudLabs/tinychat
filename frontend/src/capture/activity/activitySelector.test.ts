@@ -167,7 +167,7 @@ test("each voice job kind has running, waiting and attention fixtures", () => {
   const base = { saved: true, pending: null, lane: { busy: false, depth: 0 } } as const;
   const scenarios: { kind: ActivityKind; state: ActivityState; copy: string; patch: Partial<NotePipelineInput> }[] = [
     { kind: "finish", state: "running", copy: "Finishing the recording…", patch: { capture: { finalizing: true, issue: null } } },
-    { kind: "finish", state: "waiting", copy: "TinyCloud Home will finish it next launch", patch: { capture: { finalizing: false, issue: "finalization_timed_out" } } },
+    { kind: "finish", state: "waiting", copy: "TinyCloud One will finish it next launch", patch: { capture: { finalizing: false, issue: "finalization_timed_out" } } },
     { kind: "finish", state: "needs-attention", copy: "Couldn't finish this recording. Its pieces are kept on this Mac.", patch: { capture: { finalizing: false, issue: "write_failed" } } },
     { kind: "transcribe", state: "running", copy: "Transcribing on this Mac · 30%", patch: {} },
     { kind: "transcribe", state: "waiting", copy: "Waiting to transcribe · 1 note ahead", patch: { transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "queued", error: null }, queue: { position: 2, inLine: 2, percent: null }, model: null, download: "idle", sync: null } } } },

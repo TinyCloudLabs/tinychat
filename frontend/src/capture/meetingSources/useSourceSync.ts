@@ -30,7 +30,7 @@ export const SOURCE_SYNC_FAILED_MESSAGE = "Sync failed. Try again.";
 const DECRYPTION_FAILED = "DECRYPTION_FAILED";
 /** The saved credential cannot be decrypted for this account: one plain sentence, no SDK text. */
 const reconnectSourceMessage = (name: string) =>
-  `TinyChat can't read your saved ${name} connection. Disconnect it under Manage, then connect ${name} again.`;
+  `TinyCloud One can't read your saved ${name} connection. Disconnect it under Manage, then connect ${name} again.`;
 export type DriveMode = "auto" | "snapshot";
 
 /**

@@ -39,7 +39,7 @@ class LoadBoundary extends Component<
           className="mt-2 font-medium text-primary"
           onClick={reloadExo}
         >
-          Reload TinyCloud Home
+          Reload TinyCloud One
         </button>
       </div>
     ) : (

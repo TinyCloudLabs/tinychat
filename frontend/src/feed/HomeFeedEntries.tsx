@@ -451,7 +451,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
             }).catch(() => { /* Held answers stay held for the next launch. */ });
           }
         } catch {
-          if (alive) setError({ lead: "Home didn't load.", text: "Check your connection, then try again." });
+          if (alive) setError({ lead: `${NAV_LABEL_HOME} didn't load.`, text: "Check your connection, then try again." });
           markFeedFresh();
         }
       } while (alive && dirty);

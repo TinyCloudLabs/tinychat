@@ -44,8 +44,8 @@ public enum CaptureNotifications {
     public static func recovered(id: String, pauseTimedOut: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = "Recording saved"
-        content.body = pauseTimedOut ? "TinyCloud Home saved your recording after an hour paused." :
-            "TinyCloud Home recovered your recording. Tap to open it."
+        content.body = pauseTimedOut ? "TinyCloud One saved your recording after an hour paused." :
+            "TinyCloud One recovered your recording. Tap to open it."
         content.sound = .default
         content.userInfo = ["id": id, "recovered": true]
         center.add(UNNotificationRequest(identifier: "capture.recovered.\(id)",

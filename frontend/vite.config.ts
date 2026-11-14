@@ -140,8 +140,8 @@ export default defineConfig(({ command, mode }) => {
       manifest: {
         // home.tinycloud.xyz's installed-app id since TC-2387, so existing Home installs stay one app.
         id: "/chat/feed",
-        name: "TinyCloud Home",
-        short_name: "Home",
+        name: "TinyCloud One",
+        short_name: "TinyCloud One",
         description: "Your feed, chat, recordings and apps, in your TinyCloud space.",
         // `/` opens the first screen the user chose (Feed unless they picked Apps).
         start_url: "/",

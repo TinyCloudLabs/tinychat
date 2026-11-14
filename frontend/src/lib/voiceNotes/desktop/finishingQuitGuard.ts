@@ -1,4 +1,4 @@
-export const FINISHING_QUIT_COPY = "TinyCloud Home is finishing a recording. Quit anyway? It finishes next time you open TinyCloud Home.";
+export const FINISHING_QUIT_COPY = "TinyCloud One is finishing a recording. Quit anyway? It finishes next time you open TinyCloud One.";
 
 /** One decision per close request. The native stop journal survives either choice. */
 export function askToQuitDuringFinishing(doc: Document = document): Promise<boolean> {

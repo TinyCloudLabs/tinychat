@@ -59,6 +59,6 @@ test("sign-in returns quietly to signed-out on cancel and shows no raw message o
 });
 
 
-test("the document title is TinyCloud Home", () => {
-  expect(readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf8")).toContain("<title>TinyCloud Home</title>");
+test("the document title is TinyCloud One", () => {
+  expect(readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf8")).toContain("<title>TinyCloud One</title>");
 });

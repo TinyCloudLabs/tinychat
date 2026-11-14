@@ -78,7 +78,7 @@ describe("lazyTab load failures", () => {
     const Tab = lazyTab("Greeting", () => Promise.reject<typeof Greeting>(chunkError()), reload);
     await show(<Tab name="Ada" />);
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t open Greeting.");
-    await click("Reload TinyCloud Home");
+    await click("Reload TinyCloud One");
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
@@ -88,7 +88,7 @@ describe("lazyTab load failures", () => {
     await show(<Tab name="Ada" />);
     await click("Try again");
     expect(load).toHaveBeenCalledTimes(2);
-    expect(host.textContent).toContain("Reload TinyCloud Home");
+    expect(host.textContent).toContain("Reload TinyCloud One");
   });
 
   test("Try again shows the screen once its chunk loads", async () => {
@@ -115,7 +115,7 @@ describe("lazyTab load failures", () => {
     const reload = mock(() => {});
     const Tab = lazyTab("Greeting", () => Promise.reject<typeof Greeting>(chunkError()), reload);
     await show(<Tab name="Ada" />, "web", "recording");
-    await click("Reload TinyCloud Home");
+    await click("Reload TinyCloud One");
     expect(reload).not.toHaveBeenCalled();
     expect(host.textContent).toContain("Reloading stops this recording in the browser.");
     await click("Reload");

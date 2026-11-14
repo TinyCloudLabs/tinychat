@@ -13,7 +13,7 @@ import { normalizeLoginHint, type NativeSignInHints, type OpenKeySocialProvider 
 import { bootMessage } from "./BootSurface";
 
 export const NATIVE_SIGN_IN_SUBCOPY = "Your notes and recordings sync to your own TinyCloud space.";
-export const NATIVE_SIGN_IN_FINE_PRINT = "You'll finish on openkey.so. TinyCloud Home never sees your code or passkey.";
+export const NATIVE_SIGN_IN_FINE_PRINT = "You'll finish on openkey.so. TinyCloud One never sees your code or passkey.";
 
 // The shared Button never wraps and has a fixed height; at large text sizes these
 // labels need to wrap and the button to grow with them.
@@ -66,7 +66,7 @@ export function NativeSignIn(props: {
         <div className="flex flex-col gap-4 pt-4">
           <img src="/icons/pwa-192.png" alt="" className="size-16 rounded-2xl" />
           <div className="flex flex-col gap-2">
-            <h1 className="font-display text-title-1">Sign in to TinyCloud Home</h1>
+            <h1 className="font-display text-title-1">Sign in to TinyCloud One</h1>
             <p className="text-callout text-muted-foreground">{NATIVE_SIGN_IN_SUBCOPY}</p>
           </div>
         </div>

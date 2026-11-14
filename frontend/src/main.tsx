@@ -11,7 +11,7 @@ import { PwaPrompts } from "./components/pwa-prompts";
 import { RootErrorBoundary } from "./shell/RootErrorBoundary";
 import { OriginMoveHold } from "./shell/OriginMoveNotice";
 import { decideOriginMove, isLegacyOrigin, type OriginMoveDecision } from "./lib/originMove";
-import { LandingRoute, RootRoute } from "./landing/RootRoute";
+import { AboutRedirect, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
@@ -105,7 +105,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<RootRoute />} />
-            <Route path="/about" element={<LandingRoute />} />
+            <Route path="/about" element={<AboutRedirect />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

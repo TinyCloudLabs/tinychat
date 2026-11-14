@@ -1,13 +1,13 @@
-# TinyCloud Home desktop
+# TinyCloud One desktop
 
-Desktop app for **TinyCloud Home** (exo.tinycloud.xyz) — the TinyCloud chat product,
+Desktop app for **TinyCloud One** (exo.tinycloud.xyz) — the TinyCloud chat product,
 wrapped in [Tauri 2](https://v2.tauri.app) around the existing `frontend/`
 React app, with local meeting transcription from
 [fastrepl/anarlog](https://github.com/fastrepl/anarlog)'s MIT-licensed plugins.
 
 ## Layout
 
-- `src-tauri/` — Rust shell (`productName: TinyCloud Home`, identifier `xyz.tinycloud.exo`).
+- `src-tauri/` — Rust shell (`productName: TinyCloud One`, identifier `xyz.tinycloud.exo`).
   - `tauri.conf.json` points `devUrl` at the frontend Vite dev server
     (`http://localhost:5186`) and `frontendDist` at `frontend/dist`, so the
     desktop app is the same SPA that ships to the web.
@@ -24,7 +24,7 @@ bun run dev:desktop         # = tauri dev (transcription enabled by default)
 Prereqs: Rust stable, Bun 1.3.9, and full Xcode (not just the Command Line
 Tools) with the Metal Toolchain component installed
 (`xcodebuild -downloadComponent MetalToolchain`) — the local transcription
-engine compiles whisper.cpp/MLX Metal shaders and SwiftPM packages. TinyCloud Home desktop
+engine compiles whisper.cpp/MLX Metal shaders and SwiftPM packages. TinyCloud One desktop
 is macOS-only (Apple Silicon, macOS 14.2+), because the default `transcription`
 feature targets Core Audio process taps and Metal; CI builds macOS only.
 Use `cargo check --no-default-features` to check the shell on other platforms.
@@ -35,7 +35,7 @@ Build notes:
   `native` build system; Xcode 27's default `swiftbuild` hides the Swift
   bridge symbols from the release link. See its `PROVENANCE.md`.
 - `src-tauri/.cargo/config.toml` forces an empty `POSTHOG_API_KEY`: anarlog's
-  transitive analytics crate reads it at compile time, and TinyCloud Home never
+  transitive analytics crate reads it at compile time, and TinyCloud One never
   registers that plugin or embeds a vendor key. Cargo only reads this file
   when run under `desktop/src-tauri` (the tauri CLI does).
 - `[profile.release.build-override] strip = "none"` works around macOS 27
@@ -47,7 +47,7 @@ Build notes:
 ## Desktop recorder and local Whisper
 
 The shared recorder is the desktop recording flow. It writes crash-recoverable
-segments under TinyCloud Home's app-data vault, imports them into a mono 16 kHz, 64 kbps
+segments under TinyCloud One's app-data vault, imports them into a mono 16 kHz, 64 kbps
 note file, and exposes bounded file reads to the webview for uploads. The
 System audio setting defaults on: enabled segments mix microphone and system
 audio; disabled segments record the microphone alone. Pause releases the mic.
@@ -66,7 +66,7 @@ file commands are declared in `build.rs`. Native recorder state and its model
 download listener start on the first recorder command; a corrupt settings
 file returns an error from the command instead of blocking app launch.
 
-Whisper models download into `models/stt/` under TinyCloud Home's app-data dir. The
+Whisper models download into `models/stt/` under TinyCloud One's app-data dir. The
 vendored model downloader retries and resumes partial downloads and checks
 size and CRC32 before installation. The vendored Whisper transcription code
 reports work during receive, decode, VAD and inference, so long quiet notes do
@@ -94,20 +94,20 @@ also fails when generated permissions (including untracked files) differ from
 the committed tree. Ordinary release builds compile the self-test out.
 
 The vault lives under `~/Library/Application Support/xyz.tinycloud.exo` in
-both dev and release builds. TinyCloud Home's vendored anarlog storage crate uses the
+both dev and release builds. TinyCloud One's vendored anarlog storage crate uses the
 host bundle identifier, so it does not share an upstream app's vault. A
-`vault_path` in TinyCloud Home's own `global.json` or `CHAR_VAULT_BASE` can redirect it.
+`vault_path` in TinyCloud One's own `global.json` or `CHAR_VAULT_BASE` can redirect it.
 
 macOS prompts for microphone and system-audio capture when those sources are
 used. `Entitlements.plist` grants audio input to signed bundles.
 
 ### Start recording from anywhere
 
-TinyCloud Home registers a global shortcut, **⌘⇧⌥R** (Command-Shift-Option-R;
+TinyCloud One registers a global shortcut, **⌘⇧⌥R** (Command-Shift-Option-R;
 Ctrl+Shift+Alt+R on other platforms), as soon as it launches. No setup is
 needed. Three modifiers keep it clear of common bindings such as ⌘⇧R (a
 browser's hard reload) and ⌘⇧5 (the system screen recorder). The menu-bar icon
-(a record symbol) has **Start recording** and **Open TinyCloud Home**.
+(a record symbol) has **Start recording** and **Open TinyCloud One**.
 
 The shortcut and **Start recording** bring the main window forward, hold a
 start request natively and emit `exo://recorder-start-requested`. The recorder
@@ -119,8 +119,8 @@ after 15 seconds. The recorder handles a claimed request like its Record button:
 it starts a recording through the same disclosures and native capture path and
 opens the recorder, or just opens the recorder when a recording or its receipt
 is already showing. If the recorder is not ready yet, the request waits up to
-15 seconds for it. **Open TinyCloud Home** only brings the window forward. If
-another app already owns the shortcut, TinyCloud Home logs a warning and the
+15 seconds for it. **Open TinyCloud One** only brings the window forward. If
+another app already owns the shortcut, TinyCloud One logs a warning and the
 menu-bar item still works.
 
 Both are registered in Rust (`src-tauri/src/record_launch.rs`). The webview
@@ -218,7 +218,7 @@ up as `securitypolicyviolation` events and console errors in Web Inspector
 
 ## Releases and signing
 
-Releases come from `Desktop release (TinyCloud Home)` (`.github/workflows/desktop-release.yml`),
+Releases come from `Desktop release (TinyCloud One)` (`.github/workflows/desktop-release.yml`),
 dispatched from `main` for every `exo-desktop@<version>` tag; versions, channels,
 the `EXO_DESKTOP_SIGNING` switch and the secrets are in the root
 [README](../README.md) ("Desktop releases", "Signing mode", "Signing"). The build
@@ -293,7 +293,7 @@ App Store Connect key `KLLY4KJK58`).
 
 ## Known constraints
 
-- **Sign-in:** OpenKey **email** sign-in (one-time code) works inside TinyCloud Home's
+- **Sign-in:** OpenKey **email** sign-in (one-time code) works inside TinyCloud One's
   webview, including the capability consent, and the session survives
   relaunch. Passkeys inside the ad-hoc-signed app are not expected to work
   (WebAuthn in a third-party WKWebView needs an associated domain). Local

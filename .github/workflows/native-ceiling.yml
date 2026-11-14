@@ -2,7 +2,7 @@ name: Native ceiling
 
 # Native (iOS/Android) sign-in sends every applications-space entry of
 # manifest.json to OpenKey, which refuses the whole request if one entry is
-# outside the TinyCloud Home native client's ceiling (TC-2720, TC-1989). This
+# outside the TinyCloud One native client's ceiling (TC-2720, TC-1989). This
 # job sends that exact request to production OpenKey as a throwaway PAR.
 # It fails only when OpenKey refuses the request; an unreachable production
 # is reported as a warning (frontend/scripts/native-ceiling-check.ts).
