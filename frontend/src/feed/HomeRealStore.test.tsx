@@ -776,9 +776,21 @@ for (const [name, words, line, full] of [
     expect(await stored(agent)).toEqual([]);
     const article = card(relaunched.host, "Book the Thursday flight?");
     expect(article.textContent).toContain(`${line} ${NOT_SENT_COPY.changed}`);
-    const quoted = [...article.querySelectorAll<HTMLElement>("b")].find((node) => node.textContent?.startsWith("“"));
+    const quoted = [...article.querySelectorAll<HTMLElement>("b, button[aria-expanded]")].find((node) => node.textContent?.startsWith("“"));
     expect(quoted?.getAttribute("title") ?? undefined).toBe(full);
     expect(quoted?.getAttribute("aria-label") ?? undefined).toBe(full ? `“${full}”` : undefined);
+    if (full) {
+      // On a phone no title shows: tapping the clipped quote reads the whole answer, tapping again folds it back.
+      expect(quoted?.tagName).toBe("BUTTON");
+      expect(quoted?.getAttribute("aria-expanded")).toBe("false");
+      await click(next, quoted!);
+      expect(quoted?.textContent).toBe(`“${full}”`);
+      expect(quoted?.getAttribute("aria-expanded")).toBe("true");
+      expect(quoted?.getAttribute("aria-label")).toBe(`“${full}”`);
+      await click(next, quoted!);
+      expect(quoted?.textContent).toBe(`“${full.slice(0, 80).trimEnd()}…”`);
+      expect(quoted?.getAttribute("aria-expanded")).toBe("false");
+    } else expect(quoted?.tagName).toBe("B");
   });
 }
 

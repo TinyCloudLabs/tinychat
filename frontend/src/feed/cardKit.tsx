@@ -237,13 +237,26 @@ export function quotedWords(text: string): { label: string; full?: string; ends:
 }
 
 /**
+ * A clipped answer in words, as a control: tapping it (or Enter / Space) shows the whole answer in place, and again
+ * folds it back, so the full text is readable on a phone where a title never shows. Its accessible name is always the
+ * whole answer in quotes.
+ */
+function ClippedWords({ label, full }: { label: string; full: string }) {
+  const [open, setOpen] = useState(false);
+  return <button type="button" aria-expanded={open} aria-label={`“${full}”`} title={full} onClick={() => setOpen((current) => !current)}
+    className="whitespace-normal break-words text-left font-semibold underline decoration-dotted underline-offset-4">{open ? `“${full}”` : label}</button>;
+}
+
+/**
  * "Not sent: {label}." for an answer that was never sent, during its countdown or from the
  * page-close outbox. `changed` adds why, for a card a newer version replaced; a closed card
- * already says it ended. `full` is a clipped answer in words, readable and copyable from the line's title;
+ * already says it ended. `full` is a clipped answer in words: the quote becomes a control that expands to the whole
+ * answer and folds back (and keeps the full text in its title and aria-label);
  * `ends` drops the sentence's own full stop when the owner's words already end in one.
  */
 export function NotSent({ label, changed = false, full, ends = false, to }: { label: string; changed?: boolean; full?: string; ends?: boolean; to?: string }) {
-  return <span className="text-foreground">Not sent{to ? ` to ${to}` : ""}: {label === NOT_SENT_COPY.yourAnswer ? label : <b className="font-semibold" {...(full ? { title: full, "aria-label": `“${full}”` } : {})}>{label}</b>}{ends ? "" : "."}{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
+  const quoted = label === NOT_SENT_COPY.yourAnswer ? label : full ? <ClippedWords label={label} full={full} /> : <b className="font-semibold">{label}</b>;
+  return <span className="text-foreground">Not sent{to ? ` to ${to}` : ""}: {quoted}{ends ? "" : "."}{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
 }
 
 /** Why an answer's notice has no card: the agent it was for is gone (named when the card said who it was, else "Its agent"). */
