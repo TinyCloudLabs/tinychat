@@ -138,8 +138,8 @@ export interface UnsentAnswer {
   /** The answered revision. */
   revision: number;
   issuanceId: string;
-  /** "replaced": a newer revision changed the request; "closed": the agent closed it; "refused": the feed said no. */
-  outcome: "replaced" | "closed" | "refused";
+  /** "replaced": a newer revision changed the request; "closed": the agent closed it; "refused": the feed said no; "disconnected": its agent is no longer connected, so no card is left to show it on. */
+  outcome: "replaced" | "closed" | "refused" | "disconnected";
   choiceLabel?: string;
   text?: string;
   at: string;
@@ -156,7 +156,7 @@ function parseUnsent(raw: string | null): UnsentAnswer | undefined {
     const entry = value as Record<string, unknown>;
     const outcome = entry.outcome;
     if (typeof entry.sourceId !== "string" || typeof entry.cardId !== "string" || typeof entry.issuanceId !== "string" || typeof entry.at !== "string") return undefined;
-    if (typeof entry.revision !== "number" || !Number.isSafeInteger(entry.revision) || (outcome !== "replaced" && outcome !== "closed" && outcome !== "refused")) return undefined;
+    if (typeof entry.revision !== "number" || !Number.isSafeInteger(entry.revision) || (outcome !== "replaced" && outcome !== "closed" && outcome !== "refused" && outcome !== "disconnected")) return undefined;
     return {
       sourceId: entry.sourceId, cardId: entry.cardId, revision: entry.revision, issuanceId: entry.issuanceId, outcome, at: entry.at,
       ...(typeof entry.choiceLabel === "string" ? { choiceLabel: entry.choiceLabel } : {}),

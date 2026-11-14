@@ -368,6 +368,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [refused, setRefused] = useState<ReadonlyMap<string, string>>(() => new Map());
   // Answers held when the page closed and settled at this launch, by card.
   const [heldOutcomes, setHeldOutcomes] = useState<ReadonlyMap<string, HeldAnswerOutcome>>(() => new Map());
+  // Answers whose agent is no longer connected: no card is left to carry their "Not sent", so each has a notice of its own.
+  const [lostAnswers, setLostAnswers] = useState<ReadonlyMap<string, HeldAnswerOutcome>>(() => new Map());
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
@@ -420,7 +422,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
     activeRef.current = null;
-    setSnapshot(null); setSelector(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map());
+    setSnapshot(null); setSelector(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map()); setLostAnswers(new Map());
     setExpandedGroups(new Set()); setAgentPage(null); setPendingOpen(false); ownDrafts.current.clear();
     const refresh = async () => {
       if (running) { dirty = true; return; }
@@ -458,7 +460,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
             flushed = true;
             void source.flushHeldAnswers().then((outcomes) => {
               if (!alive || !outcomes.length) return;
-              setHeldOutcomes(new Map(outcomes.map((outcome) => [JSON.stringify([outcome.sourceId, outcome.cardId]), outcome])));
+              const outcomeKey = (outcome: HeldAnswerOutcome) => JSON.stringify([outcome.sourceId, outcome.cardId]);
+              setHeldOutcomes(new Map(outcomes.filter((outcome) => outcome.outcome !== "disconnected").map((outcome) => [outcomeKey(outcome), outcome])));
+              setLostAnswers(new Map(outcomes.filter((outcome) => outcome.outcome === "disconnected").map((outcome) => [outcomeKey(outcome), outcome])));
               // A replaced card's answer stays on screen with its refusal, as when a countdown is refused.
               const replaced = outcomes.find((outcome) => outcome.answered)?.answered;
               if (replaced) setActive(replaced);
@@ -899,7 +903,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   function fullCard(entry: HomeFeedEntry, retained = false) {
     const key = lineageKey(entry);
     const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
-    const unsent = held && held.outcome !== "sent" ? held : undefined;
+    const unsent = held && (held.outcome === "replaced" || held.outcome === "closed" || held.outcome === "refused") ? held : undefined;
     // Said in the owner's own words when they wrote them, so they can say it again; an option by its label.
     const words = !held?.choiceLabel && held?.text ? quotedWords(held.text) : undefined;
     const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : words ? words.label : NOT_SENT_COPY.yourAnswer;
@@ -929,6 +933,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
       {!retained && held?.outcome === "sent" && <p role="status" className="mt-3 text-[13px] text-muted-foreground">{HELD_ANSWER_COPY.sent}</p>}
       {!retained && unsent && <p role="alert" className="mt-3 text-[13px]"><SeenAfterUndo onSeen={seenUnsent}><NotSent label={heldLabel} changed={unsent.outcome === "replaced"} {...wordsOf(heldLabel)} /></SeenAfterUndo></p>}
+      {held?.outcome === "held" && <div role="status" className="mt-3 text-[13px]"><AnswerFailedLine held />{words && <p className="mt-1 text-foreground"><b className="font-semibold" {...(words.full ? { title: words.full, "aria-label": `“${words.full}”` } : {})}>{words.label}</b></p>}</div>}
       {/* The agent's one-page brief, read in the app beside the decision. */}
       {brief && <BriefButton brief={brief} className="mt-3" />}
       <ReportLink entry={entry} />
@@ -1053,6 +1058,16 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>
       </div>}
+      {[...lostAnswers.entries()].map(([lostKey, lost]) => {
+        const words = lost.text ? quotedWords(lost.text) : undefined;
+        return <div key={lostKey} role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+          <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
+          <div className="min-w-0">
+            <p><NotSent label={words ? words.label : NOT_SENT_COPY.yourAnswer} {...(words ? { ...(words.full ? { full: words.full } : {}), ends: words.ends } : {})} /> {NOT_SENT_COPY.disconnected}</p>
+            <button type="button" onClick={() => { source.dismissUnsentAnswer?.(lost.sourceId, lost.cardId); setLostAnswers((current) => { const next = new Map(current); next.delete(lostKey); return next; }); }} className="mt-2 min-h-11 underline">Dismiss</button>
+          </div>
+        </div>;
+      })}
       {!snapshot && !error && <ul aria-busy="true" aria-label="Loading your feed" className="grid gap-3">
         {[0, 1, 2].map((index) => <li key={index} aria-hidden className={`${cardClass} space-y-3`}>
           <div className="flex items-center gap-2"><span className="size-7 rounded-full bg-muted" /><span className="h-3 w-2/5 rounded-full bg-muted" /></div>

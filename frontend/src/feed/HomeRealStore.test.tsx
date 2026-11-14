@@ -813,6 +813,61 @@ test("a held answer whose outcome the page never got (it went away while the flu
   expect(reopened.host.textContent).not.toContain("Not sent");
 });
 
+test("an answer whose agent is no longer connected is told in a notice of its own, with the owner's words, until they dismiss it (it was released silently)", async () => {
+  const owner = await ownerFixture();
+  // Another agent stays connected, so the feed has cards; the answer's own agent never registered.
+  const other = await owner.agent("still-here");
+  value(await publishFeedCard(other.output, plainCard()));
+  hold(owner.spaceId, { sourceId: "gone-agent", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: "held-gone-agent", text: "Only if the aisle seat is free", at: SITREP_NOW });
+  const first = await relaunch(owner);
+  expect(outboxKeys()).toEqual([]);
+  expect(first.view.host.textContent).toContain(`Not sent: “Only if the aisle seat is free”. ${NOT_SENT_COPY.disconnected}`);
+  // Left unseen, it is there at the next launch too.
+  await first.view.unmount();
+  const second = await relaunch(owner);
+  expect(second.view.host.textContent).toContain(`Not sent: “Only if the aisle seat is free”. ${NOT_SENT_COPY.disconnected}`);
+  await click(second.next, button(second.view.host, "Dismiss"));
+  expect(second.view.host.textContent).not.toContain("Not sent");
+  await second.view.unmount();
+  const third = await relaunch(owner);
+  expect(third.view.host.textContent).not.toContain("Not sent");
+});
+
+test("an answer the node could not be reached for stays held and says it is not sent yet, with the owner's words, then goes at the next launch (it said nothing)", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("flush-down");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Your own answer").click());
+  await enter(view.host, "Your own answer", "Only if the aisle seat is free");
+  await act(async () => button(view.host, "Send").click());
+  await countdown(first, 1200);
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+
+  // The reopened page loads, then the node stops answering just as the flush reads.
+  const next = owner.fresh();
+  const flushStarts = Promise.withResolvers<void>();
+  const relaunched = await mount(withSlowFlush(next, { before: flushStarts.promise }));
+  owner.faults.failReads = true;
+  flushStarts.resolve();
+  // The reload the page starts after the flush fails as well while the node is down.
+  await next.settle().catch(() => {});
+  owner.faults.failReads = false;
+  expect(outboxKeys()).toHaveLength(1);
+  expect(await stored(agent)).toEqual([]);
+  expect(relaunched.host.textContent).toContain("Your answer isn't sent yet.");
+  expect(relaunched.host.textContent).toContain("“Only if the aisle seat is free”");
+  await relaunched.unmount();
+
+  // The next launch reaches the node: the same answer goes, once.
+  const again = await relaunch(owner);
+  expect((await stored(agent)).map((row) => row.text)).toEqual(["Only if the aisle seat is free"]);
+  expect(outboxKeys()).toEqual([]);
+  expect(again.view.host.textContent).toContain(HELD_ANSWER_COPY.sent);
+});
+
 for (const kind of ["Change answer", "Fine, go ahead"] as const) {
   test(`a flushed "${kind}" reproduces the original header and payload exactly, so its responseId is accepted again`, async () => {
     const owner = await ownerFixture(); const agent = await owner.agent(kind === "Change answer" ? "flush-followup" : "flush-default");

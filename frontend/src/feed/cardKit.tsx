@@ -222,6 +222,8 @@ export function AnswerFailedLine({ held }: { held: boolean }) {
 export const NOT_SENT_COPY = {
   yourAnswer: "your answer",
   changed: "This card changed. Answer the newer version.",
+  /** An answer whose agent is no longer connected: no card is left to show it on, so a notice says it. */
+  disconnected: "Its agent isn't connected any more.",
 } as const;
 
 /** How much of an answer in words the "Not sent" line shows; the rest is in the line's title and aria-label. */

@@ -80,10 +80,12 @@ export interface HeldAnswerOutcome {
   cardId: string;
   /**
    * "sent": sent now, with its original responseId. Not sent: "replaced", a newer revision changed
-   * the request; "closed", the agent closed, ended or expired it; "refused", the feed rejected it.
+   * the request; "closed", the agent closed, ended or expired it; "refused", the feed rejected it;
+   * "disconnected", its agent is no longer connected (no card is left to show it on).
+   * "held": not sent yet: the node could not be reached, the answer stays held and goes at the next launch.
    * (An answer the owner already replaced with a newer one is cleared without an outcome.)
    */
-  outcome: "sent" | "replaced" | "closed" | "refused";
+  outcome: "sent" | "replaced" | "closed" | "refused" | "disconnected" | "held";
   /** The chosen option's label on the answered revision; absent for an answer in words. */
   choiceLabel?: string;
   /** The words the owner wrote, for an answer in words: what "Not sent" shows so they can say it again. */

@@ -638,8 +638,16 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         // Cleared meanwhile (sign-out gave up on this flush): an entry that hasn't started is never sent.
         if (!isHeld(space, held)) continue;
         const source = sources.find((candidate) => candidate.sourceId === held.sourceId);
-        // Its agent is no longer connected: there is no card left to answer or to tell.
-        if (!source) { releaseAnswer(space, held); continue; }
+        // Its agent is no longer connected: no card is left to answer or to tell, and none to carry a "Not sent" line,
+        // so an answer is kept as a notice of its own (shown until dismissed). An owner action has nothing to say.
+        if (!source) {
+          if (!held.ownerAction) {
+            recordUnsentAnswer(space, { sourceId: held.sourceId, cardId: held.cardId, revision: held.revision, issuanceId: held.issuanceId, outcome: "disconnected", at: new Date().toISOString(), ...(held.text ? { text: held.text } : {}) });
+            outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "disconnected", ...(held.text ? { text: held.text } : {}) });
+          }
+          releaseAnswer(space, held);
+          continue;
+        }
         const output = db(source.output.database);
         const responses = db(source.responses.database);
         try {
@@ -710,13 +718,14 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           clearUnsentAnswer(space, held.sourceId, held.cardId);
           outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "sent" });
         } catch {
-          // A failed transport keeps the answer for the next launch.
+          // A failed transport keeps the answer for the next launch, and says so: the owner is told it is not sent yet.
+          if (!held.ownerAction && isHeld(space, held)) outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "held", ...(held.text ? { text: held.text } : {}) });
         }
       }
       // Beside this launch's own: what an earlier launch's flush kept and the owner has not yet seen.
       const reported = new Set(outcomes.map((outcome) => JSON.stringify([outcome.sourceId, outcome.cardId])));
       for (const unsent of unsentAnswers(space)) {
-        if (reported.has(JSON.stringify([unsent.sourceId, unsent.cardId])) || !sources.some((candidate) => candidate.sourceId === unsent.sourceId)) continue;
+        if (reported.has(JSON.stringify([unsent.sourceId, unsent.cardId])) || (unsent.outcome !== "disconnected" && !sources.some((candidate) => candidate.sourceId === unsent.sourceId))) continue;
         outcomes.push({
           sourceId: unsent.sourceId, cardId: unsent.cardId, outcome: unsent.outcome,
           ...(unsent.choiceLabel ? { choiceLabel: unsent.choiceLabel } : {}), ...(unsent.text ? { text: unsent.text } : {}),
