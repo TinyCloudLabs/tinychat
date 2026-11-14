@@ -17,6 +17,7 @@ import { useSyncExternalStore } from "react";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { appPlatform } from "./platform";
 import { nativeSessionWasActive, onNativeSessionChange } from "./openkeyNative";
+import { writeDurableKey } from "./durableKeys";
 
 // ── State machine (pure) ─────────────────────────────────────────────
 
@@ -95,7 +96,8 @@ export function readPrefs(storage: PrefsStorage | null): AppLockPrefs {
 
 function writePrefs(storage: PrefsStorage | null, prefs: AppLockPrefs): void {
   try {
-    storage?.setItem(APP_LOCK_PREFS_KEY, JSON.stringify(prefs));
+    // Also kept in native storage, so the setting outlives this WebView origin (durableKeys.ts).
+    writeDurableKey(APP_LOCK_PREFS_KEY, JSON.stringify(prefs), storage);
   } catch (error) {
     console.warn("Could not store the app lock setting; it applies until the app is closed", error);
   }
@@ -158,7 +160,11 @@ export interface AppLock {
   start(): Promise<void>;
   /** Asks for Face ID / the passcode again (the lock screen's button). */
   retry(): Promise<void>;
-  setSignedIn(signedIn: boolean): void;
+  /**
+   * `restored`: a session restored at launch, not a fresh sign-in. It locks as a cold launch does, for when the
+   * app opened without its record of being signed in (its WebView storage was left behind by an origin change).
+   */
+  setSignedIn(signedIn: boolean, restored?: boolean): void;
   setEnabled(enabled: boolean): void;
   setTimeoutMinutes(minutes: LockTimeoutMinutes): void;
 }
@@ -177,6 +183,8 @@ export function createAppLock(deps: AppLockDeps): AppLock {
   let unlockWaiters: Array<() => void> = [];
   let started = false;
   let coverEnabled: boolean | null = null;
+  // A session restored at launch before the device's authentication was known.
+  let lockOnStart = false;
 
   const required = () => !!native && signedIn && prefs.enabled === true && device?.deviceSecure === true;
 
@@ -247,17 +255,28 @@ export function createAppLock(deps: AppLockDeps): AppLock {
         writePrefs(storage, prefs);
       }
       if (!required()) dispatch({ type: "release" });
+      else if (lockOnStart) dispatch({ type: "launch", required: true });
       else publish(snapshot.state);
+      lockOnStart = false;
       // A cover left from before a WebView reload.
       void native.reveal().catch(() => {});
       if (snapshot.state.locked) await authenticate();
     },
     retry: authenticate,
-    setSignedIn(next: boolean) {
+    setSignedIn(next: boolean, restored = false) {
       if (next === signedIn) return;
       signedIn = next;
-      // Signing out leaves nothing to protect. Signing in is itself an authentication, so it never locks.
-      if (!next) dispatch({ type: "release" });
+      // Signing out leaves nothing to protect. Signing in is itself an authentication, so it never locks;
+      // restoring a session at launch is not one, so the cold-launch lock applies.
+      if (!next) {
+        lockOnStart = false;
+        dispatch({ type: "release" });
+      } else if (restored && device === null) {
+        lockOnStart = true;
+      } else if (restored && required()) {
+        dispatch({ type: "launch", required: true });
+        void authenticate();
+      }
       syncCover();
     },
     setEnabled(enabled: boolean) {
@@ -300,7 +319,7 @@ export function appLock(): AppLock {
       signedIn: nativeSessionWasActive(),
       afterPaint: (callback) => requestAnimationFrame(() => requestAnimationFrame(callback)),
     });
-    onNativeSessionChange((active) => instance?.setSignedIn(active));
+    onNativeSessionChange((active, restored) => instance?.setSignedIn(active, restored));
   }
   return instance;
 }

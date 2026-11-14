@@ -672,7 +672,8 @@ export function App() {
           logSession("restore", "done");
           restoreRetryAfterRef.current = 0;
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
-          setNativeSessionActive(true);
+          // Restored, not signed in: the app lock applies as on any cold launch.
+          setNativeSessionActive(true, true);
           const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
           if (!mayCommitRestore()) {
             nativeRenewalRef.current?.stop();

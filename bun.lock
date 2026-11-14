@@ -21,7 +21,7 @@
     },
     "backend": {
       "name": "@tinychat/backend",
-      "version": "0.8.0-beta.16",
+      "version": "0.8.0-beta.21",
       "dependencies": {
         "@phala/aci-verifier": "0.11.0",
         "@scalar/express-api-reference": "^0.4.0",
@@ -50,7 +50,7 @@
     },
     "desktop": {
       "name": "exo-desktop",
-      "version": "0.14.0-beta.46",
+      "version": "0.14.0-beta.60",
       "dependencies": {
         "@tauri-apps/api": "^2.9.0",
       },
@@ -60,7 +60,7 @@
     },
     "frontend": {
       "name": "@tinychat/frontend",
-      "version": "0.14.0-beta.46",
+      "version": "0.14.0-beta.60",
       "dependencies": {
         "@assistant-ui/react": "^0.14.13",
         "@assistant-ui/react-markdown": "0.14.1",
@@ -68,6 +68,7 @@
         "@capacitor/browser": "^8.0.5",
         "@capacitor/core": "^8.5.2",
         "@capacitor/haptics": "^8.0.2",
+        "@capacitor/preferences": "^8.0.1",
         "@franken-suite/franken-markdown": "0.5.0",
         "@noble/curves": "1.9.7",
         "@noble/hashes": "1.8.0",
@@ -130,6 +131,7 @@
         "@capacitor/core": "^8.5.2",
         "@capacitor/haptics": "^8.0.2",
         "@capacitor/ios": "^8.5.2",
+        "@capacitor/preferences": "^8.0.1",
         "@openkey/sdk-capacitor": "0.2.0-beta.0",
       },
       "devDependencies": {
@@ -416,6 +418,8 @@
     "@capacitor/haptics": ["@capacitor/haptics@8.0.2", "", { "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-c2hZzRR5Fk1tbTvhG1jhh2XBAf3EhnIerMIb2sl7Mt41Gxx1fhBJFDa0/BI1IbY4loVepyyuqNC9820/GZuoWQ=="],
 
     "@capacitor/ios": ["@capacitor/ios@8.5.2", "", { "peerDependencies": { "@capacitor/core": "^8.5.0" } }, "sha512-eOT2S67AfTFG7KN0T3oxwAajrJz4rSye+ODfvChiwrk0F/+kWufFM1qU6cDjGJUOfwdAoeuEpZyWHSwZlu4GFg=="],
+
+    "@capacitor/preferences": ["@capacitor/preferences@8.0.1", "", { "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-T6no3ebi79XJCk91U3Jp/liJUwgBdvHR+s6vhvPkPxSuch7z3zx5Rv1bdWM6sWruNx+pViuEGqZvbfCdyBvcHQ=="],
 
     "@chainsafe/is-ip": ["@chainsafe/is-ip@2.1.0", "", {}, "sha512-KIjt+6IfysQ4GCv66xihEitBjvhU/bixbbbFxdJ1sqCp4uJ0wuZiYBPhksZoy4lfaF0k9cwNzY5upEW/VWdw3w=="],
 
