@@ -16,6 +16,48 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.58
+
+### Patch Changes
+
+- 092bbfc: Feed: on a Rocinante question, "Drop this card" now tells Rocinante to drop it (the same answer "Skip this question" sent), then the card moves to History marked Dropped. "Skip this question" is removed, so one control does it. Before, Drop only hid the card here and Rocinante never heard.
+
+## 0.14.0-beta.57
+
+### Patch Changes
+
+- 931849e: Feed: a Rocinante card's timing line reads "Due 13 Nov, 6:00 PM · Expires 14 Nov, 2:48 PM · in 2 h" instead of "Deadline …" and "Legacy expiry …"; a card that never expires no longer says "No automatic expiry".
+
+## 0.14.0-beta.56
+
+### Patch Changes
+
+- 8371a8d: Feed: a Rocinante card its agent has closed (answered, replaced, done, resolved…) leaves All and Needs action and shows in History, marked as closed, like cards you dropped or that expired. A closed card that still carries an answer of yours that was never sent stays in the feed until you've seen its "Not sent" line.
+
+## 0.14.0-beta.55
+
+### Patch Changes
+
+- b599417: Feed: every open card shows what it doesn't draw. "Details" in the card's foot carries a "+N" when the card holds data the card doesn't show. Details now unfolds inside the card and lists those fields under "Not shown on the card", exactly as the agent sent them (as text: links aren't opened and images aren't loaded), along with the card's facts, its history, and the whole card as sent ("Card data", with Copy). A Rocinante card the app can't read now points to Details, which lists everything it carries, instead of only "Ask your agent about this card."
+
+## 0.14.0-beta.54
+
+### Patch Changes
+
+- f11e6ca: Home feed: once the agent acknowledges your answer, a card's status reads "Answered" instead of "Waiting", until the agent reports it done or failed. A Rocinante card closed after you answered it also reads "Answered".
+
+## 0.14.0-beta.53
+
+### Patch Changes
+
+- df99598: When Main's earlier messages fail to load, the browser console now records why. The chat still shows the same failure message. Details: TC-3019.
+
+## 0.14.0-beta.52
+
+### Patch Changes
+
+- a6240ab: Home's top bar, rebuilt: Needs you · All · History with a Filter icon. Needs you opens its first card, the rest are rows by urgency, and an answered card makes way for the next. All shows Needs you, Updates and Done today. The chat box shows only when Main's chat works, Filter lists its dropdowns first, answered cards that are waiting or done wait in one Pending card at the end, and the Agents pill opens each agent's page. Details: TC-2941.
+
 ## 0.14.0-beta.51
 
 ### Patch Changes
