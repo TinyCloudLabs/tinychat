@@ -118,10 +118,83 @@ export function isHeld(space: string, held: HeldIdentity): boolean {
   catch { return false; }
 }
 
-/** Removes every answer this owner holds (at sign-out, after its one bounded flush). */
+/** Removes every answer this owner holds, and every unsent answer still waiting to be seen (at sign-out, after its one bounded flush). */
 export function clearHeldAnswers(space: string): void {
   try {
     const storage = window.localStorage;
     for (const key of spaceKeys(storage, space)) storage.removeItem(key);
+  } catch { /* Nothing to clear. */ }
+  clearUnsentAnswers(space);
+}
+
+/**
+ * An answer the feed did not take when its held entry was flushed at a launch: the owner never saw it counted,
+ * so it is kept (one per card) until the owner has seen "Not sent" on that card, whatever the page was doing when
+ * the flush ended. It carries what lets the owner say it again: the option's label, or the words they wrote.
+ */
+export interface UnsentAnswer {
+  sourceId: string;
+  cardId: string;
+  /** The answered revision. */
+  revision: number;
+  issuanceId: string;
+  /** "replaced": a newer revision changed the request; "closed": the agent closed it; "refused": the feed said no. */
+  outcome: "replaced" | "closed" | "refused";
+  choiceLabel?: string;
+  text?: string;
+  at: string;
+}
+
+const UNSENT_PREFIX = "tinychat.home.answer-unsent.v1:";
+const unsentKey = (space: string, sourceId: string, cardId: string) => `${UNSENT_PREFIX}${space}:${JSON.stringify([sourceId, cardId])}`;
+
+function parseUnsent(raw: string | null): UnsentAnswer | undefined {
+  if (!raw) return undefined;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object") return undefined;
+    const entry = value as Record<string, unknown>;
+    const outcome = entry.outcome;
+    if (typeof entry.sourceId !== "string" || typeof entry.cardId !== "string" || typeof entry.issuanceId !== "string" || typeof entry.at !== "string") return undefined;
+    if (typeof entry.revision !== "number" || !Number.isSafeInteger(entry.revision) || (outcome !== "replaced" && outcome !== "closed" && outcome !== "refused")) return undefined;
+    return {
+      sourceId: entry.sourceId, cardId: entry.cardId, revision: entry.revision, issuanceId: entry.issuanceId, outcome, at: entry.at,
+      ...(typeof entry.choiceLabel === "string" ? { choiceLabel: entry.choiceLabel } : {}),
+      ...(typeof entry.text === "string" ? { text: entry.text } : {}),
+    };
+  } catch { return undefined; }
+}
+
+/** Keeps this unsent answer for its card, replacing an earlier one. */
+export function recordUnsentAnswer(space: string, unsent: UnsentAnswer): void {
+  try { window.localStorage.setItem(unsentKey(space, unsent.sourceId, unsent.cardId), JSON.stringify(unsent)); }
+  catch { /* localStorage full or disabled: the page still shows it this session. */ }
+}
+
+/** This owner's unsent answers still to be seen; a malformed or expired one is removed. */
+export function unsentAnswers(space: string, now = Date.now()): UnsentAnswer[] {
+  const found: UnsentAnswer[] = [];
+  try {
+    const storage = window.localStorage;
+    const prefix = `${UNSENT_PREFIX}${space}:`;
+    for (const key of Array.from({ length: storage.length }, (_, index) => storage.key(index)!).filter((name) => name.startsWith(prefix))) {
+      const entry = parseUnsent(storage.getItem(key));
+      if (entry && key === unsentKey(space, entry.sourceId, entry.cardId) && now - Date.parse(entry.at) <= HELD_ANSWER_TTL_MS) found.push(entry);
+      else storage.removeItem(key);
+    }
+  } catch { /* localStorage disabled: nothing was kept. */ }
+  return found;
+}
+
+/** The owner has seen it (or answered the card again): it is not shown again. */
+export function clearUnsentAnswer(space: string, sourceId: string, cardId: string): void {
+  try { window.localStorage.removeItem(unsentKey(space, sourceId, cardId)); } catch { /* Nothing to clear. */ }
+}
+
+function clearUnsentAnswers(space: string): void {
+  try {
+    const storage = window.localStorage;
+    const prefix = `${UNSENT_PREFIX}${space}:`;
+    for (const key of Array.from({ length: storage.length }, (_, index) => storage.key(index)!).filter((name) => name.startsWith(prefix))) storage.removeItem(key);
   } catch { /* Nothing to clear. */ }
 }

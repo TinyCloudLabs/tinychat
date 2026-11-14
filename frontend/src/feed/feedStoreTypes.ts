@@ -86,6 +86,8 @@ export interface HeldAnswerOutcome {
   outcome: "sent" | "replaced" | "closed" | "refused";
   /** The chosen option's label on the answered revision; absent for an answer in words. */
   choiceLabel?: string;
+  /** The words the owner wrote, for an answer in words: what "Not sent" shows so they can say it again. */
+  text?: string;
   /** "replaced": the answered revision, which stays on screen with the refusal until the owner moves on. */
   answered?: HomeFeedEntry;
 }
@@ -115,7 +117,13 @@ export interface HomeFeedSource {
    * a `message` with the agreed header and private payload (see ownerActions.ts).
    */
   sendOwnerAction?(entry: HomeFeedEntry, action: OwnerAction, options?: HomeFeedSaveOptions): Promise<FeedResponse>;
+  /**
+   * Hands back every answer not sent at a launch whose owner has not yet seen it (kept across launches until
+   * dismissUnsentAnswer), beside this launch's own: "Not sent" never depends on the page that ran the flush.
+   */
   flushHeldAnswers?(): Promise<HeldAnswerOutcome[]>;
+  /** The owner has seen "Not sent" on this card, or answered it again: it is not shown again. */
+  dismissUnsentAnswer?(sourceId: string, cardId: string): void;
   sendMessage?: (entry: HomeFeedEntry, message: HomeFeedMessageDraft, payload?: FeedResponsePayload) => Promise<FeedResponse>;
   saveOwnerState?: (entry: HomeFeedEntry, event: HomeFeedOwnerEvent) => Promise<void>;
   saveHeldNote?: (entry: HomeFeedEntry, note: SitrepHeldNote) => Promise<void>;

@@ -12,7 +12,7 @@ import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { CardConversation, plainConversation } from "./CardConversation";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, Reference, usePendingSend } from "./cardKit";
+import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, Reference, UNDO_SECONDS, usePendingSend } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
@@ -42,6 +42,21 @@ const LazyAgentView = lazyTab("your agents", () => import("./AgentView").then((m
 const LazyFilterPanel = lazyTab("Filter", () => import("./FilterPanel").then((module) => module.FilterPanel));
 /** A post's page, in a chunk of its own: boot never needs it (TC-2882). */
 const LazyPostPage = lazyTab("the post", () => import("./PostPage").then((module) => module.PostPage));
+
+/**
+ * The "Not sent" line of an answer the feed did not take. The device keeps that answer until the owner has had the
+ * line on screen for as long as an undo lasts (5 s): a page that goes away first (closed, remounted, a source that
+ * changed) leaves it for the next launch, so the owner's answer is never lost unseen.
+ */
+function SeenAfterUndo({ onSeen, children }: { onSeen: () => void; children: ReactNode }) {
+  const seen = useRef(onSeen);
+  seen.current = onSeen;
+  useEffect(() => {
+    const timer = window.setTimeout(() => seen.current(), UNDO_SECONDS * 1000);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return <>{children}</>;
+}
 
 function keyOf(entry: HomeFeedEntry): string {
   const card = entry.state.card;
@@ -696,6 +711,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const onSaved = useCallback((entry: HomeFeedEntry, response: FeedResponse) => {
     if (currentSource.current !== source) return;
     if (response.kind === "message") { refreshRef.current(); return; }
+    // The owner answered this card again: an earlier "Not sent" on it is settled.
+    source.dismissUnsentAnswer?.(entry.source.sourceId, entry.state.card.cardId);
+    setHeldOutcomes((current) => {
+      const heldKey = JSON.stringify([entry.source.sourceId, entry.state.card.cardId]);
+      if (!current.has(heldKey)) return current;
+      const next = new Map(current); next.delete(heldKey); return next;
+    });
     committed.current.set(keyOf(entry), response);
     const key = keyOf(entry);
     const update = (candidate: HomeFeedEntry): HomeFeedEntry => ({ ...candidate, state: { ...candidate.state, response, acknowledgement: null, outcome: null } });
@@ -759,6 +781,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const key = lineageKey(entry);
     setRefused((current) => { const next = new Map(current); next.delete(key); return next; });
     setHeldOutcomes((current) => { const next = new Map(current); next.delete(JSON.stringify([entry.source.sourceId, entry.state.card.cardId])); return next; });
+    // The owner has seen it: it is not shown again at the next launch.
+    source.dismissUnsentAnswer?.(entry.source.sourceId, entry.state.card.cardId);
     setSticky((current) => { const next = new Map(current); next.delete(key); return next; });
     if (keyOf(entry) === activeKey) setActive(null);
   }
@@ -875,9 +899,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   function fullCard(entry: HomeFeedEntry, retained = false) {
     const key = lineageKey(entry);
     const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
-    const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : NOT_SENT_COPY.yourAnswer;
-    const refusedLabel = refused.get(key) ?? (retained && held?.answered && keyOf(held.answered) === keyOf(entry) ? heldLabel : undefined);
+    const unsent = held && held.outcome !== "sent" ? held : undefined;
+    // Said in the owner's own words when they wrote them, so they can say it again; an option by its label.
+    const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : held?.text ? `“${held.text}”` : NOT_SENT_COPY.yourAnswer;
+    const refusedLabel = refused.get(key) ?? (retained && unsent && (!unsent.answered || keyOf(unsent.answered) === keyOf(entry)) ? heldLabel : undefined);
     const onRefused = (label: string) => setRefused((current) => new Map(current).set(key, label));
+    const seenUnsent = () => source.dismissUnsentAnswer?.(entry.source.sourceId, entry.state.card.cardId);
     const context = contextFor(entry);
     const unsupported = isTypedPayload(entry) && !context;
     const author = cardAuthor(entry, context?.record);
@@ -896,10 +923,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {...(unsupported ? {} : { onAuthor: () => { leaveView(); setAgentPage(agentKey(entry, context?.record)); mainRef.current?.scrollTo({ top: 0 }); } })}
       {...(status ? { status } : {})} collapse={collapse}>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
-        ? <NotSent label={refusedLabel} changed />
+        ? <SeenAfterUndo onSeen={seenUnsent}><NotSent label={refusedLabel} changed={refused.has(key) || unsent?.outcome !== "closed"} /></SeenAfterUndo>
         : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
       {!retained && held?.outcome === "sent" && <p role="status" className="mt-3 text-[13px] text-muted-foreground">{HELD_ANSWER_COPY.sent}</p>}
-      {!retained && (held?.outcome === "closed" || held?.outcome === "refused") && <p role="alert" className="mt-3 text-[13px]"><NotSent label={heldLabel} /></p>}
+      {!retained && unsent && <p role="alert" className="mt-3 text-[13px]"><SeenAfterUndo onSeen={seenUnsent}><NotSent label={heldLabel} changed={unsent.outcome === "replaced"} /></SeenAfterUndo></p>}
       {/* The agent's one-page brief, read in the app beside the decision. */}
       {brief && <BriefButton brief={brief} className="mt-3" />}
       <ReportLink entry={entry} />

@@ -718,6 +718,90 @@ test("a held answer whose request the agent closed is not sent: the closed card 
   expect([...closed.querySelectorAll("button")].some((node) => ["Fine, go ahead", "Your own answer", "Send"].includes(node.textContent?.trim() ?? ""))).toBe(false);
 });
 
+/** A page whose held-answer flush starts only after `before` opens, and hands its result over only after `after` opens (a slow node). */
+function withSlowFlush(transport: ReturnType<typeof observedSource>, { before, after }: { before?: Promise<void>; after?: Promise<void> }) {
+  return { ...transport, source: { ...transport.source, flushHeldAnswers: async () => { await before; const outcomes = await transport.source.flushHeldAnswers!(); await after; return outcomes; } } };
+}
+
+test("a held answer whose card the agent closed while the answered card was open on screen still says Not sent (production: it said nothing)", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("lost-retained");
+  const record = syntheticRecord("ask");
+  const asked = typedCard(record);
+  value(await publishFeedCard(agent.output, asked));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Quick option").click());
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+
+  // The reopened page paints the card as the owner left it, and the owner has it open before the flush has read the
+  // revision the agent has since closed: that card stays on screen as the answered one.
+  const next = owner.fresh();
+  const flushStarts = Promise.withResolvers<void>();
+  const relaunched = await mount(withSlowFlush(next, { before: flushStarts.promise }));
+  await act(async () => option(card(relaunched.host, String(record.title)), "Quick option").dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+  value(await publishFeedCard(agent.output, { ...asked, revision: 2, issuanceId: "typed-card-closed", payload: { sitrep: { version: 1, record: { ...record, status: "expired", expiredAt: SITREP_NOW } } } }));
+  await next.notify();
+  expect(relaunched.host.textContent).toContain("A newer version of this card arrived");
+  flushStarts.resolve();
+  await next.settle();
+  expect(await stored(agent)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+  expect([...relaunched.host.querySelectorAll('[role="alert"]')].some((node) => node.textContent?.startsWith("Not sent: Quick option."))).toBe(true);
+});
+
+test("an answer in words that was not sent says what the owner wrote, so they can say it again", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("lost-words");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Your own answer").click());
+  await enter(view.host, "Your own answer", "Only if the aisle seat is free");
+  await act(async () => button(view.host, "Send").click());
+  await countdown(first, 1200);
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", title: "Book the Friday flight?" })));
+  const next = owner.fresh(); const relaunched = await mount(next);
+  await next.settle();
+  expect(await stored(agent)).toEqual([]);
+  expect(card(relaunched.host, "Book the Thursday flight?").textContent).toContain(`Not sent: “Only if the aisle seat is free”. ${NOT_SENT_COPY.changed}`);
+});
+
+test("a held answer whose outcome the page never got (it went away while the flush finished) is told at the next launch, until the owner has seen it", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("lost-gone");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Go").click());
+  await countdown(first, 1200);
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", title: "Book the Friday flight?" })));
+
+  // A launch whose page goes away before the flush's result arrives: the held entry is already released.
+  const gate = Promise.withResolvers<void>();
+  const gone = owner.fresh(); const goneView = await mount(withSlowFlush(gone, { after: gate.promise }));
+  await goneView.unmount();
+  gate.resolve();
+  await gone.settle();
+  expect(outboxKeys()).toEqual([]);
+  expect(await stored(agent)).toEqual([]);
+
+  const next = owner.fresh(); const relaunched = await mount(next);
+  await next.settle();
+  expect(relaunched.host.textContent).toContain(`Not sent: Go. ${NOT_SENT_COPY.changed}`);
+  // On screen for as long as an undo lasts: the owner has seen it, and the next launch does not repeat it.
+  await countdown(next, 5000);
+  await relaunched.unmount();
+  const again = owner.fresh(); const reopened = await mount(again);
+  await again.settle();
+  expect(reopened.host.textContent).not.toContain("Not sent");
+});
+
 for (const kind of ["Change answer", "Fine, go ahead"] as const) {
   test(`a flushed "${kind}" reproduces the original header and payload exactly, so its responseId is accepted again`, async () => {
     const owner = await ownerFixture(); const agent = await owner.agent(kind === "Change answer" ? "flush-followup" : "flush-default");

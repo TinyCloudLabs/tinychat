@@ -32,7 +32,7 @@ import { enrichTypedEntry } from "./loadTypedFeed";
 import { OUTPUT_TALLY, readAgent, readRegistry, readTally, REGISTRY_TALLY, RESPONSES_TALLY, type AgentRead, type RegistryRead } from "./feedRead";
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
-import { clearHeldAnswers, heldAnswers, holdAnswer, isHeld, releaseAnswer, type HeldAnswer } from "./answerOutbox";
+import { clearHeldAnswers, clearUnsentAnswer, heldAnswers, holdAnswer, isHeld, recordUnsentAnswer, releaseAnswer, unsentAnswers, type HeldAnswer } from "./answerOutbox";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { ownerActionMessage, type OwnerAction } from "./ownerActions";
 
@@ -671,10 +671,21 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           const refusal = (outcome: "closed" | "replaced" | "refused"): HeldAnswerOutcome => ({
             sourceId: held.sourceId, cardId: held.cardId, outcome,
             ...(label ? { choiceLabel: label } : {}),
+            ...(!label && held.text ? { text: held.text } : {}),
             ...(outcome === "replaced" && answered ? { answered: storedRevisionEntry(source, answered) } : {}),
           });
+          // Never silent: the answer is kept as "Not sent" in the same step that releases the held entry, so no page
+          // that closes, remounts or loses its source while this flush finishes can lose what the owner said.
+          const refuse = (outcome: "closed" | "replaced" | "refused") => {
+            recordUnsentAnswer(space, {
+              sourceId: held.sourceId, cardId: held.cardId, revision: held.revision, issuanceId: held.issuanceId, outcome, at: new Date().toISOString(),
+              ...(label ? { choiceLabel: label } : {}), ...(!label && held.text ? { text: held.text } : {}),
+            });
+            releaseAnswer(space, held);
+            outcomes.push(refusal(outcome));
+          };
           const target = heldAnswerTarget(source, held, revisions, latest);
-          if (typeof target === "string") { releaseAnswer(space, held); outcomes.push(refusal(target)); continue; }
+          if (typeof target === "string") { refuse(target); continue; }
           // Nothing newer may be overwritten: the owner may have answered since, on another device or tab.
           // A held answer goes only to a card not answered from its answered revision on; a held follow-up
           // only while the answer it replaces is still the newest on its issuance.
@@ -692,17 +703,28 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
             await saveResponse({ source, state, view: { sourceId: source.sourceId, cardId: target.cardId, revision: target.revision, issuanceId: target.issuanceId } }, rebuilt.response, rebuilt.payload);
           } catch (error) {
             // The feed's definitive no: the request no longer takes this answer.
-            if (error instanceof RefusedWrite) { releaseAnswer(space, held); outcomes.push(refusal("refused")); continue; }
+            if (error instanceof RefusedWrite) { refuse("refused"); continue; }
             throw error;
           }
           releaseAnswer(space, held);
+          clearUnsentAnswer(space, held.sourceId, held.cardId);
           outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "sent" });
         } catch {
           // A failed transport keeps the answer for the next launch.
         }
       }
+      // Beside this launch's own: what an earlier launch's flush kept and the owner has not yet seen.
+      const reported = new Set(outcomes.map((outcome) => JSON.stringify([outcome.sourceId, outcome.cardId])));
+      for (const unsent of unsentAnswers(space)) {
+        if (reported.has(JSON.stringify([unsent.sourceId, unsent.cardId])) || !sources.some((candidate) => candidate.sourceId === unsent.sourceId)) continue;
+        outcomes.push({
+          sourceId: unsent.sourceId, cardId: unsent.cardId, outcome: unsent.outcome,
+          ...(unsent.choiceLabel ? { choiceLabel: unsent.choiceLabel } : {}), ...(unsent.text ? { text: unsent.text } : {}),
+        });
+      }
       return outcomes;
     },
+    dismissUnsentAnswer(sourceId, cardId) { clearUnsentAnswer(space, sourceId, cardId); },
     async sendMessage(entry, message, payload) {
       assertEntryScope(entry, message);
       if (payload?.type.startsWith("sitrep.")) {
