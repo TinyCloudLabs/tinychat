@@ -25,7 +25,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 import { withAbortTimeout } from "./abortTimeout";
-import { writeDurableKey } from "./durableKeys";
+import { durableKeyReady, writeDurableKey } from "./durableKeys";
 import { manifestCarriesBundle, sameTinyCloudNode } from "@tinyboilerplate/core";
 import APP_MANIFEST from "../../../manifest.json";
 
@@ -82,6 +82,15 @@ export function nativeSignOutPending(): boolean | null {
   if (typeof localStorage === "undefined") return false;
   try { return localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1"; }
   catch { return null; }
+}
+
+/**
+ * The fence as the boot restore must see it: only once its native copy has been reconciled (durableKeys.ts), which
+ * can take longer than the app waits to render. If native storage can't say, a sign-out counts as still pending,
+ * so an unfinished sign-out is never undone by restoring the session it was signing out of.
+ */
+async function settledNativeSignOutPending(): Promise<boolean | null> {
+  return (await durableKeyReady(NATIVE_SIGN_OUT_PENDING_KEY)) ? nativeSignOutPending() : true;
 }
 
 /** A native JWT is marked separately from a legacy widget session. No key material is stored here. */
@@ -582,7 +591,7 @@ export async function restoreNativeAtBoot(
   try {
     const d = deps ?? await defaultDeps();
     openkey = nativeClient(nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost), d.createOpenKeyNative);
-    const signOutPending = d.readSignOutFence ? d.readSignOutFence() : nativeSignOutPending();
+    const signOutPending = d.readSignOutFence ? d.readSignOutFence() : await settledNativeSignOutPending();
     if (signOutPending === null) return { kind: "signOutPending" };
     if (signOutPending) {
       try {

@@ -7,6 +7,12 @@
 // (a new origin, or the first launch of a build with this module), whatever either side has is kept: a key only
 // native storage has is copied into localStorage, and a key localStorage has is copied to native storage. From
 // then on that localStorage is the record, removals included, and every write goes to both.
+//
+// Rendering waits for this only briefly (main.tsx). Anything that must not act on a stale value waits for its
+// key with durableKeyReady: the boot restore for the sign-out fence, the app lock for its settings.
+//
+// Native storage here is NOT a secret store: it is a plain, unencrypted preferences file (NSUserDefaults /
+// SharedPreferences) and goes into device backups. Never put a key, token or anything secret in a durable key.
 import { Capacitor } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
 
@@ -20,6 +26,8 @@ type WebStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 const durableKeys = new Set<string>();
 let store: DurableStore | null = null;
+// Per key, once reconciled: whether localStorage's value can be trusted (see durableKeyReady).
+const readiness = new Map<string, Promise<boolean>>();
 
 /** Set in localStorage once it has been reconciled with native storage: from then on, its removals count. */
 export const DURABLE_KEYS_RECONCILED = "xyz.tinycloud.home:durable-keys";
@@ -61,7 +69,7 @@ export async function hydrateDurableKeys(
   } catch {
     return;
   }
-  const results = await Promise.all(keys.map(async (key) => {
+  const results = keys.map(async (key) => {
     try {
       const [saved, local] = [await durable.get(key), web.getItem(key)];
       if (local === null && saved !== null) {
@@ -76,13 +84,28 @@ export async function hydrateDurableKeys(
       console.warn(`Could not reconcile ${key} with native storage`, error);
       return false;
     }
-  }));
-  if (reconciled || !results.every(Boolean)) return;
+  });
+  // Once reconciled, localStorage is the record whatever native storage did; before that, only a read counts.
+  keys.forEach((key, index) => readiness.set(key, results[index]!.then((ok) => ok || reconciled)));
+  if (!(await Promise.all(results)).every(Boolean) || reconciled) return;
   try {
     web.setItem(DURABLE_KEYS_RECONCILED, "1");
   } catch {
     // Reconciled again next launch.
   }
+}
+
+/**
+ * Resolves when `key` has been reconciled: true if localStorage now holds its value, false if it may not (native
+ * storage could not be read, or did not answer within `timeoutMs`, in a WebView storage never reconciled
+ * before). Resolves true at once where nothing is reconciled (the web, desktop, tests).
+ */
+export function durableKeyReady(key: string, timeoutMs = 10_000): Promise<boolean> {
+  const ready = readiness.get(key);
+  if (!ready) return Promise.resolve(true);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });
+  return Promise.race([ready, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** Writes `value` (null removes) to localStorage and, for a durable key in the phone app, to native storage. */
@@ -102,4 +125,5 @@ export function writeDurableKey(
 export function resetDurableKeysForTest(): void {
   store = null;
   durableKeys.clear();
+  readiness.clear();
 }

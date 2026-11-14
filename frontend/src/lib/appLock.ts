@@ -16,8 +16,8 @@
 import { useSyncExternalStore } from "react";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { appPlatform } from "./platform";
-import { nativeSessionWasActive, onNativeSessionChange } from "./openkeyNative";
-import { writeDurableKey } from "./durableKeys";
+import { NATIVE_SESSION_KIND_KEY, nativeSessionWasActive, onNativeSessionChange } from "./openkeyNative";
+import { durableKeyReady, writeDurableKey } from "./durableKeys";
 
 // ── State machine (pure) ─────────────────────────────────────────────
 
@@ -141,6 +141,13 @@ export interface AppLockDeps {
   signedIn: boolean;
   /** Runs once the lock decision has painted, to drop the native background cover. */
   afterPaint: (callback: () => void) => void;
+  /**
+   * Resolves once the settings and the signed-in record in `storage` are loaded (durableKeys.ts); the app can
+   * render before that. start() reads them again then, before deciding or settling the default.
+   */
+  settingsLoaded?: () => Promise<void>;
+  /** The signed-in record, read again once the settings are loaded. */
+  signedInRecord?: () => boolean;
 }
 
 export interface AppLockSnapshot {
@@ -245,6 +252,15 @@ export function createAppLock(deps: AppLockDeps): AppLock {
       if (!native || started) return;
       started = true;
       await native.addListener("foreground", ({ backgroundMs }) => onForeground(backgroundMs));
+      if (deps.settingsLoaded) {
+        await deps.settingsLoaded();
+        prefs = readPrefs(storage);
+        // Loaded late: a signed-in record that arrived after the first render locks as the cold launch would have.
+        if (!signedIn && deps.signedInRecord?.()) {
+          signedIn = true;
+          lockOnStart = true;
+        }
+      }
       try {
         device = await native.status();
       } catch {
@@ -318,6 +334,10 @@ export function appLock(): AppLock {
       storage: browserStorage(),
       signedIn: nativeSessionWasActive(),
       afterPaint: (callback) => requestAnimationFrame(() => requestAnimationFrame(callback)),
+      settingsLoaded: async () => {
+        await Promise.all([durableKeyReady(APP_LOCK_PREFS_KEY), durableKeyReady(NATIVE_SESSION_KIND_KEY)]);
+      },
+      signedInRecord: nativeSessionWasActive,
     });
     onNativeSessionChange((active, restored) => instance?.setSignedIn(active, restored));
   }
