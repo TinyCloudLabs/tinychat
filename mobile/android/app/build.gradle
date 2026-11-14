@@ -186,6 +186,8 @@ dependencies {
     implementation "androidx.biometric:biometric:$androidxBiometricVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    // TC-3045: WebStorageCompat.deleteBrowsingDataForSite (OldOriginWipe); the version Capacitor itself pins.
+    implementation "androidx.webkit:webkit:$androidxWebkitVersion"
     implementation project(':capacitor-android')
     // Health spike (TC-525): Health Connect client, and the coroutines its suspend API needs from Java.
     implementation "androidx.health.connect:connect-client:$healthConnectClientVersion"
