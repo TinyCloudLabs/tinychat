@@ -58,7 +58,8 @@ export function originMoveNoticeLines(work: LocalRecordingWork): NoticePart[][] 
         : " in this browser belong to another TinyCloud account. Sign in to that account here to save them.",
     ]);
   }
-  if (unclaimed > 0 || otherAccount > 0) lines.push(["This tab stays here while these recordings are only in this browser."]);
+  if (unclaimed + otherAccount === 1) lines.push(["This tab stays here while this recording is only in this browser."]);
+  else if (unclaimed + otherAccount > 1) lines.push(["This tab stays here while these recordings are only in this browser."]);
   const { heldAnswers, unsentAnswers, postDrafts } = work;
   if (heldAnswers > 0) {
     lines.push([heldAnswers === 1
@@ -90,7 +91,7 @@ export function originMoveNoticeText(work: LocalRecordingWork): string {
 export function OriginMoveNotice({ work }: { work: LocalRecordingWork }) {
   if (!holdsOriginMove(work)) return null;
   return (
-    <p role="status" className="pointer-events-none fixed inset-x-0 top-0 z-50 border-b border-border bg-muted/95 px-4 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] text-center text-xs text-muted-foreground">
+    <p role="status" className="pointer-events-none fixed inset-x-0 top-0 z-50 flex flex-col gap-1.5 border-b border-border bg-muted/95 px-4 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] text-center text-xs text-muted-foreground">
       {originMoveNoticeLines(work).map((line, i) => (
         <Fragment key={i}>
           {i > 0 && " "}

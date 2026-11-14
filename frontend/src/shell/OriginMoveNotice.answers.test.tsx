@@ -28,11 +28,26 @@ test("answers alone show the notice, after any recording lines", () => {
   expect(originMoveNoticeText(work({ otherAccount: 1, heldAnswers: 1, unsentAnswers: 1, postDrafts: 1 }))).toBe([
     MOVED,
     "1 recording in this browser belongs to another TinyCloud account. Sign in to that account here to save it.",
-    "This tab stays here while these recordings are only in this browser.",
+    "This tab stays here while this recording is only in this browser.",
     "1 answer is still sending from this tab. The tab moves on its own once it's sent.",
     "1 answer wasn't sent. Open your Feed to see it. This tab stays here until you do.",
     "1 post has answers you haven't sent. Send them, and this tab moves.",
   ].join(" "));
+});
+
+test("the closer is singular when one recording keeps the tab here, plural otherwise", () => {
+  const single = "This tab stays here while this recording is only in this browser.";
+  const plural = "This tab stays here while these recordings are only in this browser.";
+  expect(originMoveNoticeText(work({ unclaimed: 1 }))).toEndWith(single);
+  expect(originMoveNoticeText(work({ otherAccount: 1 }))).toEndWith(single);
+  expect(originMoveNoticeText(work({ unclaimed: 1, otherAccount: 1 }))).toEndWith(plural);
+  expect(originMoveNoticeText(work({ otherAccount: 2 }))).toEndWith(plural);
+});
+
+test("each reason is its own block line, spaced apart in a column", () => {
+  const html = renderToStaticMarkup(<MemoryRouter><OriginMoveNotice work={work({ otherAccount: 1, heldAnswers: 2, unsentAnswers: 3, postDrafts: 1 })} /></MemoryRouter>);
+  expect(html).toMatch(/<p role="status" class="[^"]*\bflex flex-col gap-1\.5\b/);
+  expect(html.match(/<span class="block">/g)).toHaveLength(6);
 });
 
 test("main.tsx clears the moved answers right before it leaves", () => {
