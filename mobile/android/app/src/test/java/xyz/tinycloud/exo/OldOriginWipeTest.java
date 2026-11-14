@@ -12,10 +12,14 @@ import org.junit.Test;
 public class OldOriginWipeTest {
     private static final String NEW_HOST = "app.tinycloud.one";
 
-    private static final class FakeFlag implements OldOriginWipe.Flag {
-        boolean set;
-        @Override public boolean isSet() { return set; }
-        @Override public void set() { set = true; }
+    /** The persisted state, which outlives each simulated launch. */
+    private static final class FakeStore implements OldOriginWipe.Store {
+        boolean done;
+        int attempts;
+        @Override public boolean done() { return done; }
+        @Override public void markDone() { done = true; }
+        @Override public int attempts() { return attempts; }
+        @Override public void setAttempts(int attempts) { this.attempts = attempts; }
     }
 
     private static final class FakeWiper implements OldOriginWipe.Wiper {
@@ -23,68 +27,145 @@ public class OldOriginWipeTest {
         RuntimeException failure;
         final List<String> sites = new ArrayList<>();
         Runnable pending;
-        @Override public boolean wipe(String site, Runnable onDone) {
-            if (!supported) return false;
+        @Override public boolean supported() { return supported; }
+        @Override public void wipe(String site, Runnable onDone) {
             if (failure != null) throw failure;
             sites.add(site);
             pending = onDone;
-            return true;
         }
     }
 
+    private static final class FakeScheduler implements OldOriginWipe.Scheduler {
+        final List<Long> delays = new ArrayList<>();
+        Runnable timeout;
+        @Override public void after(long delayMs, Runnable task) {
+            delays.add(delayMs);
+            timeout = task;
+        }
+    }
+
+    private static final class FakeEvents implements OldOriginWipe.Events {
+        int wiped;
+        final List<String> failures = new ArrayList<>();
+        int gaveUp;
+        @Override public void wiped() { wiped++; }
+        @Override public void failed(String reason) { failures.add(reason); }
+        @Override public void gaveUp() { gaveUp++; }
+    }
+
+    private final FakeStore store = new FakeStore();
+    private final FakeWiper wiper = new FakeWiper();
+    private final FakeScheduler scheduler = new FakeScheduler();
+    private final FakeEvents events = new FakeEvents();
+
+    private OldOriginWipe.Result launch() {
+        return launch(NEW_HOST);
+    }
+
+    private OldOriginWipe.Result launch(String appHost) {
+        return OldOriginWipe.start(store, wiper, scheduler, events, appHost);
+    }
+
     @Test public void wipesTheOldSiteAndMarksDoneOnlyWhenTheWebViewFinishes() {
-        FakeFlag done = new FakeFlag();
-        FakeWiper wiper = new FakeWiper();
-        assertEquals(OldOriginWipe.Result.STARTED, OldOriginWipe.start(done, wiper, NEW_HOST));
+        assertEquals(OldOriginWipe.Result.STARTED, launch());
         assertEquals(Collections.singletonList("localhost"), wiper.sites);
-        assertFalse(done.set);
+        assertEquals(Collections.singletonList(OldOriginWipe.TIMEOUT_MS), scheduler.delays);
+        assertFalse(store.done);
         wiper.pending.run();
-        assertTrue(done.set);
+        assertTrue(store.done);
+        assertEquals(1, events.wiped);
     }
 
     @Test public void neverWipesAgainOnceDone() {
-        FakeFlag done = new FakeFlag();
-        FakeWiper wiper = new FakeWiper();
-        OldOriginWipe.start(done, wiper, NEW_HOST);
+        launch();
         wiper.pending.run();
-        assertEquals(OldOriginWipe.Result.ALREADY_DONE, OldOriginWipe.start(done, wiper, NEW_HOST));
+        assertEquals(OldOriginWipe.Result.ALREADY_DONE, launch());
         assertEquals(1, wiper.sites.size());
     }
 
-    @Test public void aWipeThatNeverFinishesIsRetriedNextLaunch() {
-        FakeFlag done = new FakeFlag();
-        FakeWiper wiper = new FakeWiper();
-        OldOriginWipe.start(done, wiper, NEW_HOST);
-        assertEquals(OldOriginWipe.Result.STARTED, OldOriginWipe.start(done, wiper, NEW_HOST));
-        assertEquals(2, wiper.sites.size());
-        assertFalse(done.set);
+    @Test public void countsTheAttemptBeforeStartingIt() {
+        wiper.failure = new IllegalStateException("crash mid-attempt");
+        launch();
+        assertEquals(1, store.attempts);
     }
 
-    @Test public void aWebViewWithoutTheFeatureIsSkippedWithoutMarkingAndRetriedLater() {
-        FakeFlag done = new FakeFlag();
-        FakeWiper wiper = new FakeWiper();
-        wiper.supported = false;
-        assertEquals(OldOriginWipe.Result.UNSUPPORTED, OldOriginWipe.start(done, wiper, NEW_HOST));
-        assertFalse(done.set);
-        wiper.supported = true;
-        assertEquals(OldOriginWipe.Result.STARTED, OldOriginWipe.start(done, wiper, NEW_HOST));
+    @Test public void aTimedOutAttemptFailsAndALateCallbackIsIgnored() {
+        launch();
+        scheduler.timeout.run();
+        assertEquals(Collections.singletonList("timed out"), events.failures);
         wiper.pending.run();
-        assertTrue(done.set);
+        assertFalse(store.done);
+        assertEquals(0, events.wiped);
+    }
+
+    @Test public void aWipeThatNeverSettledIsRetriedNextLaunch() {
+        launch();
+        assertEquals(OldOriginWipe.Result.STARTED, launch());
+        assertEquals(2, wiper.sites.size());
+        assertEquals(2, store.attempts);
+        assertFalse(store.done);
     }
 
     @Test public void aFailedWipeIsNotMarked() {
-        FakeFlag done = new FakeFlag();
-        FakeWiper wiper = new FakeWiper();
         wiper.failure = new IllegalArgumentException("boom");
-        assertEquals(OldOriginWipe.Result.FAILED, OldOriginWipe.start(done, wiper, NEW_HOST));
-        assertFalse(done.set);
+        assertEquals(OldOriginWipe.Result.FAILED, launch());
+        assertFalse(store.done);
+        assertEquals(Collections.singletonList("IllegalArgumentException"), events.failures);
     }
 
     @Test public void aDevBuildServedFromLocalhostIsLeftAlone() {
-        FakeFlag done = new FakeFlag();
-        FakeWiper wiper = new FakeWiper();
-        assertEquals(OldOriginWipe.Result.OLD_SITE_IN_USE, OldOriginWipe.start(done, wiper, "localhost"));
+        assertEquals(OldOriginWipe.Result.OLD_SITE_IN_USE, launch("localhost"));
         assertTrue(wiper.sites.isEmpty());
-        assertFalse(done.set);
+        assertEquals(0, store.attempts);
+        assertFalse(store.done);
+    }
+
+    @Test public void threeFailuresThenNoFourthAttemptAndTheGiveUpLineOnce() {
+        for (int i = 0; i < 3; i++) {
+            assertEquals(OldOriginWipe.Result.STARTED, launch());
+            scheduler.timeout.run();
+        }
+        assertEquals(3, wiper.sites.size());
+        assertEquals(1, events.gaveUp);
+        assertEquals(OldOriginWipe.Result.GAVE_UP, launch());
+        assertEquals(OldOriginWipe.Result.GAVE_UP, launch());
+        assertEquals(3, wiper.sites.size());
+        assertEquals(1, events.gaveUp);
+        assertFalse(store.done);
+    }
+
+    @Test public void aThirdAttemptThatNeverSettledGivesUpOnTheNextLaunchOnce() {
+        for (int i = 0; i < 3; i++) launch();
+        assertEquals(0, events.gaveUp);
+        assertEquals(OldOriginWipe.Result.GAVE_UP, launch());
+        assertEquals(OldOriginWipe.Result.GAVE_UP, launch());
+        assertEquals(3, wiper.sites.size());
+        assertEquals(1, events.gaveUp);
+    }
+
+    @Test public void successOnTheSecondAttemptSetsDoneAndStops() {
+        launch();
+        scheduler.timeout.run();
+        launch();
+        wiper.pending.run();
+        scheduler.timeout.run();
+        assertTrue(store.done);
+        assertEquals(Collections.singletonList("timed out"), events.failures);
+        assertEquals(OldOriginWipe.Result.ALREADY_DONE, launch());
+        assertEquals(2, wiper.sites.size());
+        assertEquals(0, events.gaveUp);
+    }
+
+    @Test public void unsupportedLaunchesDoNotConsumeAttempts() {
+        wiper.supported = false;
+        for (int i = 0; i < 5; i++) assertEquals(OldOriginWipe.Result.UNSUPPORTED, launch());
+        assertEquals(0, store.attempts);
+        assertTrue(wiper.sites.isEmpty());
+        assertFalse(store.done);
+        wiper.supported = true;
+        assertEquals(OldOriginWipe.Result.STARTED, launch());
+        wiper.pending.run();
+        assertTrue(store.done);
+        assertEquals(1, store.attempts);
     }
 }
