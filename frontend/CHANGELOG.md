@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.66
+
+### Patch Changes
+
+- 522a554: Feed: an answer you gave just as you left the app is never lost silently. When you come back, the card says "Not sent" with your answer if the card has changed or closed, even if you had it open when it changed; an answer you wrote in words is shown in the line so you can say it again. If the app could not reach the server, the card says the answer isn't sent yet and it goes the next time you open the app. If the agent is no longer connected, a notice says so until you dismiss it. If you leave before you have seen any of these, they appear the next time you open the feed.
+
 ## 0.14.0-beta.65
 
 ### Patch Changes
