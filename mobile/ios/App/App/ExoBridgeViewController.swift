@@ -131,7 +131,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
                 line = Self.smokeProbeError(error.localizedDescription)
             }
             // A page at about:blank can outlive the old 60-second timer; publish only after the app page mounts.
-            guard line.contains(#""href":"capacitor://localhost"#), line.contains(#""mounted":true"#) else { return }
+            guard line.contains(#""href":"tinycloudone://app.tinycloud.one/"#), line.contains(#""mounted":true"#) else { return }
             self.smokeProbeTimer?.invalidate()
             self.smokeProbeTimer = nil
             print("EXO_WEB_APP_READY")

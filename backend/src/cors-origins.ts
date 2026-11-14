@@ -4,11 +4,14 @@ export const EXO_DESKTOP_ORIGIN = "tauri://localhost";
 /** The fixed origin Tauri assigns to Exo's bundled frontend on Windows. */
 export const EXO_DESKTOP_WINDOWS_ORIGIN = "http://tauri.localhost";
 
-/** The fixed origin Capacitor assigns to Exo's bundled frontend on Android. */
-export const EXO_ANDROID_ORIGIN = "https://localhost";
+/**
+ * The origin of the phone app's bundled frontend on Android, set in mobile/capacitor.config.ts
+ * (`server.hostname` + `androidScheme`). Nothing is ever served at this host (TC-3045).
+ */
+export const EXO_ANDROID_ORIGIN = "https://app.tinycloud.one";
 
-/** The fixed origin Capacitor assigns to Exo's bundled frontend on iOS. */
-export const EXO_IOS_ORIGIN = "capacitor://localhost";
+/** The origin of the phone app's bundled frontend on iOS (`server.hostname` + `iosScheme`). */
+export const EXO_IOS_ORIGIN = "tinycloudone://app.tinycloud.one";
 
 /** The TinyCloud Home site, the canonical web origin of the single TinyChat/Home web build. */
 export const HOME_WEB_ORIGIN = "https://home.tinycloud.xyz";
