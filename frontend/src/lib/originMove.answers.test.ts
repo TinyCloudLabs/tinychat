@@ -124,4 +124,36 @@ describe("Home answers kept only in this origin's localStorage hold the move", (
     expect(replaced).toEqual([{ url: "https://home.tinycloud.xyz/chat", left: ["unrelated"] }]);
     stop();
   });
+
+  test("an answer held while the move decides keeps the page here, and the move goes once it is sent", async () => {
+    const win = new EventTarget();
+    const replaced: string[] = [];
+    let next = Promise.withResolvers<void>();
+    const seen: LocalRecordingWork[] = [];
+    let writeDuringDecision = true;
+    const stop = moveWhenClear({
+      location: { ...legacy, replace: (url: string) => { replaced.push(url); next.resolve(); } },
+      window: win, document: Object.assign(new EventTarget(), { visibilityState: "visible" as DocumentVisibilityState }),
+      opener: false, canonicalReady: ready, upload: () => null, onPending: (work) => { seen.push(work); next.resolve(); },
+      // The count finds nothing; the feed holds an answer before the decision acts on it.
+      countWork: async () => {
+        const work = await countLocalOnlyRecordingWork({ factory: null, storage });
+        if (writeDuringDecision) holdAnswer("space-one", held());
+        writeDuringDecision = false;
+        return work;
+      },
+    });
+    await next.promise;
+    expect(replaced).toEqual([]);
+    expect(seen).toEqual([counted({ heldAnswers: 1 })]);
+    expect([...store.keys()].filter((key) => key.startsWith("tinychat.home.answer-outbox.v1:"))).toHaveLength(1);
+
+    // The feed sent it: the next check moves.
+    store.delete([...store.keys()].find((key) => key.startsWith("tinychat.home.answer-outbox.v1:"))!);
+    next = Promise.withResolvers<void>();
+    win.dispatchEvent(new Event("online"));
+    await next.promise;
+    expect(replaced).toEqual(["https://home.tinycloud.xyz/chat"]);
+    stop();
+  });
 });

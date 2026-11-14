@@ -525,6 +525,13 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
         if (!stopped) options.onPending?.(NO_LOCAL_WORK);
         return;
       }
+      // The feed can hold an answer or save a draft while the counts above were awaited. localStorage reads are
+      // synchronous, so nothing can land between this recount and the clear; anything found keeps the page held.
+      const answers = answersStoredNow();
+      if (answers === null || holdsAnswers(answers)) {
+        options.onPending?.(answers ?? NO_LOCAL_WORK);
+        return;
+      }
       stop();
       clearMovedAnswers();
       location.replace(canonicalUrlFor(location));
@@ -550,4 +557,17 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
   }
   void check();
   return stop;
+}
+
+/** This origin's held, unsent and draft answers, read synchronously; null when localStorage cannot be read. */
+function answersStoredNow(): LocalRecordingWork | null {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return NO_LOCAL_WORK;
+    const { held, unsent } = countStoredAnswers(storage);
+    return { ...NO_LOCAL_WORK, heldAnswers: held, unsentAnswers: unsent, postDrafts: countPostDrafts(storage) };
+  } catch (error) {
+    console.warn("[originMove] Could not re-check stored answers; staying on this origin", error);
+    return null;
+  }
 }
