@@ -7,7 +7,7 @@ import { installDom } from "@/test/dom";
 import { installFakeClock } from "@/test/fakeClock.fixture";
 import type { HomeFeedEntry, HomeFeedMessageDraft, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SITREP_CREATED, SITREP_NOW, SITREP_REASKED, syntheticRecord } from "./sitrep.fixtures";
-import { foldsInto, parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
+import { emptySitrepOwnerData, foldsInto, parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
 import { homeFeedKey } from "./feedIdentity";
 
 // Radix portals do not attach in this DOM (happy-dom), so the sheet's chrome (BottomSheet / Dialog) is swapped for an
@@ -126,8 +126,8 @@ async function enter(scope: ParentNode, label: string, text: string) {
   });
 }
 /** Picks a tab of the feed's island ("Needs you", "All"), then opens every card again. */
-async function show(host: HTMLElement, label: "All" | "Needs action") {
-  const value = ({ All: "both", "Needs action": "needs-action" } as const)[label];
+async function show(host: HTMLElement, label: "All" | "Needs action" | "History") {
+  const value = ({ All: "both", "Needs action": "needs-action", History: "history" } as const)[label];
   const radio = host.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Feed view"] input[value="${value}"]`);
   expect(radio !== null).toBe(true);
   await act(async () => radio!.click());
@@ -717,4 +717,48 @@ test("an unresolved original thread destination is held instead of silently rese
   // No "Send again": the original destination isn't connected, so nothing may go to the publisher instead.
   expect(hasButton(thread!, "Send again")).toBe(false);
   expect(fixture.saved).toEqual([]);
+});
+
+test("a card its agent closed leaves the live feed and shows in History, marked Closed", async () => {
+  const record = { ...syntheticRecord("ask"), status: "superseded", closedAt: SITREP_NOW };
+  const fixture = typedFixture(record);
+  const view = await mount(fixture.source);
+  const titled = () => [...view.host.querySelectorAll("article")].filter((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === record.title));
+  // Neither in All nor in Needs action.
+  expect(titled().length).toBe(0);
+  await show(view.host, "Needs action");
+  expect(titled().length).toBe(0);
+  await show(view.host, "History");
+  const closed = card(view.host, String(record.title));
+  expect(closed.querySelector("[data-status]")?.textContent).toBe("Closed");
+  expect(fixture.saved).toEqual([]);
+});
+
+/**
+ * Rocinante closes the ask with `status`, which publishes a new revision of the card. As in the store, Sam's answers stay
+ * with the revision he answered and the closing revision carries none (ownerCardKey). Then History's statuses for it.
+ */
+async function closeInNewRevision(fixture: ReturnType<typeof typedFixture>, host: HTMLElement, status: string) {
+  const answered: HomeFeedEntry = { ...structuredClone(fixture.entry), owner: { ...emptySitrepOwnerData(), answers: structuredClone(fixture.owner.answers) as never } };
+  const closing = structuredClone(fixture.entry);
+  closing.state = { ...closing.state, response: null, card: { ...closing.state.card, revision: 2, issuanceId: "closing-issuance", payload: { sitrep: { version: 1, record: { ...syntheticRecord("ask"), status, closedAt: SITREP_NOW } } } } };
+  closing.view = { ...closing.view, revision: 2, issuanceId: "closing-issuance" };
+  closing.owner = emptySitrepOwnerData();
+  fixture.snapshot.entries = [closing];
+  fixture.snapshot.historicalEntries = [answered];
+  fixture.notify();
+  await act(async () => { await Promise.resolve(); });
+  await show(host, "History");
+  const title = String(fixture.entry.state.card.title);
+  return [...host.querySelectorAll("article")].filter((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === title)).map((node) => node.querySelector("[data-status]")?.textContent);
+}
+
+test("an ask Sam answered that its agent then closes in a new revision is one card in History, reading Answered", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Accept recommendation").click());
+  await timer.advance(5000);
+  expect(fixture.saved).toHaveLength(1);
+  expect(await closeInNewRevision(fixture, view.host, "answered")).toEqual(["Answered"]);
 });
