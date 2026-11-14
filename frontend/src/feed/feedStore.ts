@@ -84,6 +84,12 @@ function optionLabel(card: FeedCard, choiceId: string): string | undefined {
   return options.find((option) => option.id === choiceId)?.label;
 }
 
+/** The agent's name as the card shows it: the crew member a typed card names, else the connection's label. */
+function agentName(entry: HomeFeedEntry): string | undefined {
+  const from = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record.from?.trim();
+  return from || entry.source.label || undefined;
+}
+
 /** The outbox entry for an answer: only what rebuilds it (see answerOutbox.ts). */
 function heldAnswerOf(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload): HeldAnswer {
   const data = payload?.type === "sitrep.answer" && payload.data && typeof payload.data === "object" && !Array.isArray(payload.data) ? payload.data : undefined;
@@ -94,6 +100,9 @@ function heldAnswerOf(entry: HomeFeedEntry, response: NewFeedResponse, payload?:
     sourceId: entry.source.sourceId, cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId,
     ...(typeof choiceId === "string" && choiceId ? { choiceId } : {}),
     ...(typeof text === "string" && text ? { text } : {}),
+    // What the owner saw, for a "Not sent" notice that has no card left to read it from.
+    ...(agentName(entry) ? { agent: agentName(entry) } : {}),
+    ...(typeof choiceId === "string" && choiceId && optionLabel(entry.state.card, choiceId) ? { choiceLabel: optionLabel(entry.state.card, choiceId)! } : {}),
     ...(action === "answer" || action === "accept-default" ? { action } : {}),
     ...(response.supersedesResponseId ? { supersedesResponseId: response.supersedesResponseId } : {}),
     // A plain card's own payload (a post's answers) is sent unchanged; a typed answer's is rebuilt from its action.
@@ -642,8 +651,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         // so an answer is kept as a notice of its own (shown until dismissed). An owner action has nothing to say.
         if (!source) {
           if (!held.ownerAction) {
-            recordUnsentAnswer(space, { sourceId: held.sourceId, cardId: held.cardId, revision: held.revision, issuanceId: held.issuanceId, outcome: "disconnected", at: new Date().toISOString(), ...(held.text ? { text: held.text } : {}) });
-            outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "disconnected", ...(held.text ? { text: held.text } : {}) });
+            recordUnsentAnswer(space, { sourceId: held.sourceId, cardId: held.cardId, revision: held.revision, issuanceId: held.issuanceId, outcome: "disconnected", at: new Date().toISOString(), ...(held.text ? { text: held.text } : {}), ...(held.choiceLabel ? { choiceLabel: held.choiceLabel } : {}), ...(held.agent ? { agent: held.agent } : {}) });
+            outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "disconnected", ...(held.text ? { text: held.text } : {}), ...(held.choiceLabel ? { choiceLabel: held.choiceLabel } : {}), ...(held.agent ? { agent: held.agent } : {}) });
           }
           releaseAnswer(space, held);
           continue;
@@ -728,7 +737,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         if (reported.has(JSON.stringify([unsent.sourceId, unsent.cardId])) || (unsent.outcome !== "disconnected" && !sources.some((candidate) => candidate.sourceId === unsent.sourceId))) continue;
         outcomes.push({
           sourceId: unsent.sourceId, cardId: unsent.cardId, outcome: unsent.outcome,
-          ...(unsent.choiceLabel ? { choiceLabel: unsent.choiceLabel } : {}), ...(unsent.text ? { text: unsent.text } : {}),
+          ...(unsent.choiceLabel ? { choiceLabel: unsent.choiceLabel } : {}), ...(unsent.text ? { text: unsent.text } : {}), ...(unsent.agent ? { agent: unsent.agent } : {}),
         });
       }
       return outcomes;

@@ -90,6 +90,8 @@ export interface HeldAnswerOutcome {
   choiceLabel?: string;
   /** The words the owner wrote, for an answer in words: what "Not sent" shows so they can say it again. */
   text?: string;
+  /** "disconnected": the agent's name on the card, so the notice can say who it was for. */
+  agent?: string;
   /** "replaced": the answered revision, which stays on screen with the refusal until the owner moves on. */
   answered?: HomeFeedEntry;
 }

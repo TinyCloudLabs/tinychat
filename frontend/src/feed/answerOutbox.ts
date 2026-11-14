@@ -9,7 +9,8 @@ import { validOwnerAction, type OwnerAction } from "./ownerActions";
  *
  * An entry holds only what rebuilds that exact answer: the card identity, the responseId, the
  * chosen option or written text, the typed action, the answer it replaces, and its time. No
- * tokens, keys or card content.
+ * tokens, keys or card content, apart from the two short labels the owner saw when they answered
+ * (the agent's name and the option's label), which a "Not sent" notice needs once no card is left.
  *
  * Version 2 entries (`version: 2`) may also carry a plain card's `feed.*` answer payload, or be an
  * owner action (a `message`: Drop, Acknowledge, Ask me later) instead of an answer. An entry with no
@@ -32,6 +33,12 @@ export interface HeldAnswer extends FeedCardIdentity {
   payload?: FeedResponsePayload;
   /** Version 2: not an answer but this owner action, sent as a message (see ownerActions.ts). */
   ownerAction?: OwnerAction;
+  /**
+   * What the owner saw when they answered, kept so "Not sent" can say it even when no card is left to read it from
+   * (the agent was disconnected): the agent's name on the card, and the chosen option's label. Never sent anywhere.
+   */
+  agent?: string;
+  choiceLabel?: string;
   /** When the answer was made: the response's createdAt. */
   at: string;
 }
@@ -66,7 +73,7 @@ function parse(raw: string | null): HeldAnswer | null {
     const optional = (key: string) => value[key] === undefined || text(key);
     if (!value || typeof value !== "object" || !["sourceId", "cardId", "issuanceId", "responseId", "at"].every(text)
       || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1
-      || !optional("choiceId") || !optional("text") || !optional("supersedesResponseId")
+      || !optional("choiceId") || !optional("text") || !optional("supersedesResponseId") || !optional("agent") || !optional("choiceLabel")
       || (value.action !== undefined && value.action !== "answer" && value.action !== "accept-default")) return null;
     if (value.version === undefined) return value.payload === undefined && value.ownerAction === undefined ? value as unknown as HeldAnswer : null;
     if (value.version !== 2 || (value.payload !== undefined && !feedPayload(value.payload))) return null;
@@ -142,6 +149,8 @@ export interface UnsentAnswer {
   outcome: "replaced" | "closed" | "refused" | "disconnected";
   choiceLabel?: string;
   text?: string;
+  /** The agent's name as the owner saw it on the card: what a notice names when its card is gone. */
+  agent?: string;
   at: string;
 }
 
@@ -161,6 +170,7 @@ function parseUnsent(raw: string | null): UnsentAnswer | undefined {
       sourceId: entry.sourceId, cardId: entry.cardId, revision: entry.revision, issuanceId: entry.issuanceId, outcome, at: entry.at,
       ...(typeof entry.choiceLabel === "string" ? { choiceLabel: entry.choiceLabel } : {}),
       ...(typeof entry.text === "string" ? { text: entry.text } : {}),
+      ...(typeof entry.agent === "string" ? { agent: entry.agent } : {}),
     };
   } catch { return undefined; }
 }

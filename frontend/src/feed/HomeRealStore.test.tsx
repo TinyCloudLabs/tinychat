@@ -638,7 +638,8 @@ test("closing the page mid-countdown sends at once and holds only the pending an
   const held = await closePage(transport);
   expect(held).toHaveLength(1);
   const entry = JSON.parse(held[0]!) as Record<string, unknown>;
-  expect(entry).toEqual({ sourceId: "close-send", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: entry.responseId, choiceId: "go", at: "2026-10-29T12:00:02.000Z" });
+  // The agent's name and the option's label are kept beside the answer: a "Not sent" notice needs them once no card is left.
+  expect(entry).toEqual({ sourceId: "close-send", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: entry.responseId, choiceId: "go", agent: expect.any(String), choiceLabel: "Go", at: "2026-10-29T12:00:02.000Z" });
   expect(outboxKeys()).toEqual([]);
   const rows = await stored(agent);
   expect(rows.map((row) => [row.responseId, row.choiceId])).toEqual([[entry.responseId, "go"]]);
@@ -831,6 +832,34 @@ test("an answer whose agent is no longer connected is told in a notice of its ow
   await second.view.unmount();
   const third = await relaunch(owner);
   expect(third.view.host.textContent).not.toContain("Not sent");
+});
+
+for (const [name, answer, line] of [
+  ["the option's label", { choiceId: "go", choiceLabel: "Go" }, "Not sent to Rocinante: Go. Rocinante isn't connected any more."],
+  ["the owner's words, with no full stop of its own after a question", { text: "Is the aisle seat free?" }, "Not sent to Rocinante: “Is the aisle seat free?” Rocinante isn't connected any more."],
+] as const) {
+  test(`the notice for an answer whose agent is gone names the agent and says ${name}`, async () => {
+    const owner = await ownerFixture();
+    const other = await owner.agent("still-here-named");
+    value(await publishFeedCard(other.output, plainCard()));
+    hold(owner.spaceId, { sourceId: "gone-named", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: "held-gone-named", agent: "Rocinante", ...answer, at: SITREP_NOW });
+    const { view } = await relaunch(owner);
+    expect(view.host.textContent).toContain(line);
+  });
+}
+
+test("a held answer records what the owner saw (the agent's name, the option's label), so a notice can say it when no card is left", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("records-label");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Go").click());
+  owner.faults.refuseResponseWrites = true;
+  const [held] = await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  const entry = JSON.parse(held!) as { agent?: string; choiceLabel?: string };
+  expect(entry.choiceLabel).toBe("Go");
+  expect(typeof entry.agent === "string" && entry.agent.length > 0).toBe(true);
 });
 
 test("an answer the node could not be reached for stays held and says it is not sent yet, with the owner's words, then goes at the next launch (it said nothing)", async () => {

@@ -12,7 +12,7 @@ import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { CardConversation, plainConversation } from "./CardConversation";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, quotedWords, Reference, UNDO_SECONDS, usePendingSend } from "./cardKit";
+import { AnsweredPanel, AnswerFailedLine, cardClass, disconnectedCopy, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, quotedWords, Reference, UNDO_SECONDS, usePendingSend } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
@@ -1059,11 +1059,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>
       </div>}
       {[...lostAnswers.entries()].map(([lostKey, lost]) => {
-        const words = lost.text ? quotedWords(lost.text) : undefined;
+        const words = !lost.choiceLabel && lost.text ? quotedWords(lost.text) : undefined;
         return <div key={lostKey} role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
           <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
           <div className="min-w-0">
-            <p><NotSent label={words ? words.label : NOT_SENT_COPY.yourAnswer} {...(words ? { ...(words.full ? { full: words.full } : {}), ends: words.ends } : {})} /> {NOT_SENT_COPY.disconnected}</p>
+            <p><NotSent label={lost.choiceLabel ? optionText(lost.choiceLabel) : words ? words.label : NOT_SENT_COPY.yourAnswer} {...(lost.agent ? { to: lost.agent } : {})} {...(words ? { ...(words.full ? { full: words.full } : {}), ends: words.ends } : {})} /> {disconnectedCopy(lost.agent)}</p>
             <button type="button" onClick={() => { source.dismissUnsentAnswer?.(lost.sourceId, lost.cardId); setLostAnswers((current) => { const next = new Map(current); next.delete(lostKey); return next; }); }} className="mt-2 min-h-11 underline">Dismiss</button>
           </div>
         </div>;

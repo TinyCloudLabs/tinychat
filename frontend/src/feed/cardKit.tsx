@@ -242,9 +242,12 @@ export function quotedWords(text: string): { label: string; full?: string; ends:
  * already says it ended. `full` is a clipped answer in words, readable and copyable from the line's title;
  * `ends` drops the sentence's own full stop when the owner's words already end in one.
  */
-export function NotSent({ label, changed = false, full, ends = false }: { label: string; changed?: boolean; full?: string; ends?: boolean }) {
-  return <span className="text-foreground">Not sent: {label === NOT_SENT_COPY.yourAnswer ? label : <b className="font-semibold" {...(full ? { title: full, "aria-label": `“${full}”` } : {})}>{label}</b>}{ends ? "" : "."}{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
+export function NotSent({ label, changed = false, full, ends = false, to }: { label: string; changed?: boolean; full?: string; ends?: boolean; to?: string }) {
+  return <span className="text-foreground">Not sent{to ? ` to ${to}` : ""}: {label === NOT_SENT_COPY.yourAnswer ? label : <b className="font-semibold" {...(full ? { title: full, "aria-label": `“${full}”` } : {})}>{label}</b>}{ends ? "" : "."}{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
 }
+
+/** Why an answer's notice has no card: the agent it was for is gone (named when the card said who it was, else "Its agent"). */
+export const disconnectedCopy = (agent?: string): string => agent ? `${agent} isn't connected any more.` : NOT_SENT_COPY.disconnected;
 
 /**
  * The list's "send now" registry: when the owner leaves the view (switches segment),
