@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 
 const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
 
-test("mounted App restores with a read-only account provider only when the local copy is on", () => {
+test("mounted App restores with a read-only account provider, and with the replication option when the local copy is on", () => {
   const result = spawnSync(process.execPath, ["test", "--isolate", "./test-fixtures/App.restoreProvider.fixture.tsx"], {
     cwd: frontendRoot,
     encoding: "utf8",
