@@ -107,7 +107,7 @@ import {
 } from "./lib/billingConfigPolicy";
 import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
-import { clearHeldAnswers } from "./feed/answerOutbox";
+import { clearAllHeldAnswers, clearHeldAnswers } from "./feed/answerOutbox";
 import { clearPostDrafts } from "./feed/postAnswers";
 import { settleHeldAnswersForSignOut } from "./feed/feedStore";
 import { HomeEntryGate } from "./home/HomeEntryGate";
@@ -428,7 +428,8 @@ export function App() {
     endStorageAccountSession();
     const accountSpace = tcw?.spaceId ?? spaceId;
     // The page-close outbox and post drafts hold the owner's words in this device's storage; both go with the account.
-    if (accountSpace) { clearHeldAnswers(accountSpace); clearPostDrafts(accountSpace); }
+    // A sign-out that finds no client and no space (a restart with a sign-out still pending) clears the answers device-wide.
+    if (accountSpace) { clearHeldAnswers(accountSpace); clearPostDrafts(accountSpace); } else clearAllHeldAnswers();
     if (storedAddress) clearPersistedSession(storedAddress);
     if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
     // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.

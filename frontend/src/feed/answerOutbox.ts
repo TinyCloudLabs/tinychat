@@ -135,6 +135,18 @@ export function clearHeldAnswers(space: string): void {
 }
 
 /**
+ * Removes every held and unsent answer on this device, whatever space it belongs to. For a sign-out that cannot
+ * name its space: a restart that finds a sign-out still pending has no client and no space to clear by, and the
+ * owner's words must not outlive the account on this device.
+ */
+export function clearAllHeldAnswers(): void {
+  try {
+    const storage = window.localStorage;
+    for (const key of Array.from({ length: storage.length }, (_, index) => storage.key(index)!).filter((name) => name.startsWith(PREFIX) || name.startsWith(UNSENT_PREFIX))) storage.removeItem(key);
+  } catch { /* Nothing to clear. */ }
+}
+
+/**
  * An answer the feed did not take when its held entry was flushed at a launch: the owner never saw it counted,
  * so it is kept (one per card) until the owner has seen "Not sent" on that card, whatever the page was doing when
  * the flush ended. It carries what lets the owner say it again: the option's label, or the words they wrote.
