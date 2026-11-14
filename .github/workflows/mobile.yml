@@ -18,6 +18,9 @@ on:
       - "frontend/src/chat/OfflineVoiceNotes.tsx"
       - "frontend/src/chat/PendingVoiceNotesSaver.tsx"
       - "frontend/src/lib/platform.ts"
+      # The phone apps' WebView origins: the config, these two and mobile/webview-origin.test.ts must agree (TC-3045).
+      - "frontend/src/lib/nativeOrigins.ts"
+      - "backend/src/cors-origins.ts"
       - "frontend/src/lib/theme.ts"
       - "frontend/src/lib/sizeClass.ts"
       - "frontend/index.html"
@@ -33,6 +36,7 @@ on:
       - "frontend/**"
       - "packages/**"
       - ".github/workflows/mobile.yml"
+      - "backend/src/cors-origins.ts"
       - ".github/workflows/ios-build.yml"
       - ".github/workflows/ios-testflight.yml"
       - "scripts/release/ios-*"
@@ -75,6 +79,9 @@ jobs:
 
       - name: Sync Capacitor
         run: bun run --cwd mobile sync android
+
+      - name: Pin the WebView origins (config and synced Android config)
+        run: bun test ./mobile/webview-origin.test.ts
 
       - name: Test and build debug APK
         working-directory: mobile/android
@@ -176,6 +183,9 @@ jobs:
 
       - name: Sync Capacitor
         run: bun run --cwd mobile sync ios
+
+      - name: Pin the WebView origins (config and synced iOS config)
+        run: bun test ./mobile/webview-origin.test.ts
 
       # Debug build: CAPACITOR_DEBUG logging and the EXO_SMOKE probe in ExoBridgeViewController.
       - name: Build for iOS Simulator

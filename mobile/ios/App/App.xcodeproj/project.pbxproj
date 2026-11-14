@@ -33,6 +33,7 @@
 		E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */; };
 		E0A1C0DE0000000000000302 /* ExoDevLogPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000301 /* ExoDevLogPlugin.swift */; };
 		E0A1C0DE0000000000000F02 /* WebViewRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000F01 /* WebViewRecovery.swift */; };
+		E0A1C0DE0000000000003046 /* OldOriginWipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000003045 /* OldOriginWipe.swift */; };
 		E0A1C0DE0000000000001002 /* AppLockPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000001001 /* AppLockPlugin.swift */; };
 		E0A1C0DE0000000000001004 /* AudioDiagnosticsPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000001003 /* AudioDiagnosticsPlugin.swift */; };
 		E0A1C0DE0000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */; };
@@ -92,6 +93,7 @@
 		E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoBridgeViewController.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000301 /* ExoDevLogPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoDevLogPlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000F01 /* WebViewRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewRecovery.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000003045 /* OldOriginWipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OldOriginWipe.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000001001 /* AppLockPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLockPlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000001003 /* AudioDiagnosticsPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDiagnosticsPlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -152,6 +154,7 @@
 				E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */,
 				E0A1C0DE0000000000000301 /* ExoDevLogPlugin.swift */,
 				E0A1C0DE0000000000000F01 /* WebViewRecovery.swift */,
+				E0A1C0DE0000000000003045 /* OldOriginWipe.swift */,
 				E0A1C0DE0000000000001001 /* AppLockPlugin.swift */,
 				E0A1C0DE0000000000001003 /* AudioDiagnosticsPlugin.swift */,
 				E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */,
@@ -356,6 +359,7 @@
 				E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */,
 				E0A1C0DE0000000000000302 /* ExoDevLogPlugin.swift in Sources */,
 				E0A1C0DE0000000000000F02 /* WebViewRecovery.swift in Sources */,
+				E0A1C0DE0000000000003046 /* OldOriginWipe.swift in Sources */,
 				E0A1C0DE0000000000001002 /* AppLockPlugin.swift in Sources */,
 				E0A1C0DE0000000000001004 /* AudioDiagnosticsPlugin.swift in Sources */,
 				E0A1C0DE0000000000000002 /* VoiceNotesPlugin.swift in Sources */,

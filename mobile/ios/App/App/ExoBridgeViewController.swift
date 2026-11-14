@@ -18,6 +18,10 @@ class ExoBridgeViewController: CAPBridgeViewController {
         if let webView = webView, let start = bridge?.config.appStartServerURL, let original = webView.navigationDelegate {
             webViewRecovery = WebViewRecovery(webView: webView, startURL: start, original: original)
         }
+        // TC-3045: once, delete what the web app left at the old origin (capacitor://localhost). Started a few seconds
+        // later so the hidden WebView it uses stays off the app WebView's first load.
+        let appHost = bridge?.config.appStartServerURL.host
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { OldOriginWipe.startIfNeeded(appHost: appHost) }
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())
         bridge?.registerPluginInstance(AppLockPlugin())
@@ -52,6 +56,8 @@ class ExoBridgeViewController: CAPBridgeViewController {
         const headers = (cap && cap.PluginHeaders) || [];
         const probe = {
           href: location.href,
+          // The origin the backend and the SDK trust for this app (TC-3045), as WebKit reports it.
+          origin: location.origin,
           platform: cap && cap.getPlatform ? cap.getPlatform() : null,
           mounted: !!root && root.childElementCount > 0,
           voiceNotesHeader: headers.some((h) => h.name === "VoiceNotes"),
@@ -131,7 +137,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
                 line = Self.smokeProbeError(error.localizedDescription)
             }
             // A page at about:blank can outlive the old 60-second timer; publish only after the app page mounts.
-            guard line.contains(#""href":"capacitor://localhost"#), line.contains(#""mounted":true"#) else { return }
+            guard line.contains(#""href":"tinycloudone://app.tinycloud.one/"#), line.contains(#""mounted":true"#) else { return }
             self.smokeProbeTimer?.invalidate()
             self.smokeProbeTimer = nil
             print("EXO_WEB_APP_READY")

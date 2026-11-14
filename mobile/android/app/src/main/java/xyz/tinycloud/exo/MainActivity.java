@@ -59,6 +59,8 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
         consumeIntent(getIntent());
         super.onCreate(savedInstanceState);
+        // TC-3045: once, after the first frame, delete what the web app left at the old origin (https://localhost).
+        OldOriginWipe.afterFirstFrame(this, getBridge().getAppUrl());
         webViewRecovery = new WebViewRecovery(this, getBridge().getAppUrl());
         getBridge().addWebViewListener(webViewRecovery);
         if (WebViewRecovery.takeHoldNextPage()) {

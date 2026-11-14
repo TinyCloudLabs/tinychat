@@ -8,7 +8,7 @@
  *
  * Registration is decided here, before React renders, because the same
  * frontend/dist is bundled into the native shells, which must never register
- * it: Capacitor (capacitor://localhost on iOS, https://localhost on Android,
+ * it: Capacitor (tinycloudone://app.tinycloud.one on iOS, https://app.tinycloud.one on Android,
  * or the Vite dev server for live reload) and Tauri (tauri://localhost,
  * http://tauri.localhost). Their WebViews already serve the bundle from disk,
  * and a worker there would only pin a stale shell over a fresh app update.
@@ -20,6 +20,8 @@
  * runs the new version. Nothing ever swaps the shell under a running page
  * (a reload mid-recording would lose the voice note).
  */
+
+import { ANDROID_WEBVIEW_ORIGIN, IOS_WEBVIEW_SCHEME } from "./nativeOrigins";
 
 export type ServiceWorkerDecision =
   | "register"
@@ -53,11 +55,11 @@ export function serviceWorkerDecision(env: ServiceWorkerEnvironment): ServiceWor
   // are authoritative, the origins are a backstop should a flag ever be missing.
   if (env.isCapacitorNative) return "skip:capacitor";
   if (env.isTauri) return "skip:tauri";
-  if (env.protocol === "capacitor:") return "skip:capacitor";
+  if (env.protocol === `${IOS_WEBVIEW_SCHEME}:`) return "skip:capacitor";
   if (env.protocol === "tauri:" || env.hostname === "tauri.localhost") return "skip:tauri";
-  // Capacitor Android serves the bundle from https://localhost (no port). A
-  // local `vite preview` always has a port, so it still registers.
-  if (env.protocol === "https:" && env.hostname === "localhost" && env.port === "") return "skip:capacitor";
+  // Capacitor Android serves the bundle from https://app.tinycloud.one, a host nothing ever
+  // serves on the web (TC-3045), so no deployed site loses its worker to this check.
+  if (`${env.protocol}//${env.hostname}${env.port ? `:${env.port}` : ""}` === ANDROID_WEBVIEW_ORIGIN) return "skip:capacitor";
   if (!env.hasServiceWorker) return "skip:unsupported";
   if (env.dev && !env.devEnabled) return "skip:dev";
   return "register";

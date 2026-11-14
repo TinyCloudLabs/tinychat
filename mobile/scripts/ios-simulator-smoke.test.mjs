@@ -8,7 +8,7 @@ import { describe, test } from "node:test";
 
 const smoke = fileURLToPath(new URL("./ios-simulator-smoke.sh", import.meta.url));
 const goodProbe = {
-  href: "capacitor://localhost/", platform: "ios", mounted: true,
+  href: "tinycloudone://app.tinycloud.one/", origin: "tinycloudone://app.tinycloud.one", platform: "ios", mounted: true,
   voiceNotesHeader: true, voiceNotesAvailable: true,
   voiceNotesStatus: { state: "idle", maxDurationMs: 10800000 },
   voiceNotesReadChunk: { code: "not_found" },

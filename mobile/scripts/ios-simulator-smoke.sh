@@ -2,7 +2,7 @@
 # Boot an iOS Simulator, install a Debug simulator build of Exo, grant the microphone, launch it and prove it came
 # up. Fails unless, within SMOKE_TIMEOUT seconds:
 #   - the debug-only probe in ExoBridgeViewController logs `EXO_SMOKE {json}` with the bundled web app at
-#     capacitor://localhost, platform "ios", React mounted into #root, the VoiceNotes plugin visible to JS and
+#     tinycloudone://app.tinycloud.one, platform "ios", React mounted into #root, the VoiceNotes plugin visible to JS and
 #     its status() answering over the bridge with state "idle" and the 3-hour recording limit, and its
 #     readAudioChunk() refusing a missing recording with "not_found", and the web app's PWA service worker skipped;
 #   - the Debug-only Location plugin (TC-524 spike) is visible to JS and its status() reports the Debug Info.plist
@@ -151,7 +151,7 @@ safe_log_lines() {
 mounted_probe() {
   grep -a 'EXO_SMOKE ' "$1" 2>/dev/null | sed 's/^.*EXO_SMOKE //' | tr -d '\r' |
     while IFS= read -r candidate; do
-      if jq -e '(.href | startswith("capacitor://localhost")) and .mounted == true' \
+      if jq -e '(.href | startswith("tinycloudone://app.tinycloud.one/")) and .mounted == true' \
         >/dev/null 2>&1 <<<"$candidate"; then
         printf '%s\n' "$candidate"
         break
@@ -668,7 +668,8 @@ check() { # check <jq filter> <description>
     fail "$2"
   fi
 }
-check '.href | startswith("capacitor://localhost")' "bundled web app loaded from capacitor://localhost"
+check '.href | startswith("tinycloudone://app.tinycloud.one/")' "bundled web app loaded from tinycloudone://app.tinycloud.one"
+check '.origin == "tinycloudone://app.tinycloud.one"' "WebKit reports window.location.origin as tinycloudone://app.tinycloud.one"
 check '.platform == "ios"' 'Capacitor platform is "ios"'
 check '.mounted == true' "React mounted into #root"
 check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes plugin registered and visible to JS"
@@ -726,7 +727,7 @@ note() { # note <jq filter> <description>
 note '.before.permission == "background"' "location authorization is Always (granted by simctl)"
 note '.started.active == true' "Location.start() began a continuous capture"
 note '.pending.samples > 0' "the native queue recorded location samples"
-loads=$(time_stage main.load-count grep -a -c 'Loading app at capacitor://localhost' "$private_logs/console.log" || true)
+loads=$(time_stage main.load-count grep -a -c 'Loading app at tinycloudone://app.tinycloud.one' "$private_logs/console.log" || true)
 [ "${loads:-0}" -le 1 ] || fail "the web app was loaded $loads times (two bridges?)"
 time_stage main.console-sanitize safe_log_lines "$private_logs/console.log" "$out/console.log"
 

@@ -208,3 +208,21 @@ describe("app CORS origins", () => {
     },
   );
 });
+
+describe("phone app origins during the TC-3045 move", () => {
+  // Builds from before the move keep working until the new-origin tester builds are out (removal: TC-3046).
+  test.each(["https://app.tinycloud.one", "tinycloudone://app.tinycloud.one", "https://localhost", "capacitor://localhost"])(
+    "allows %s",
+    async (origin) => {
+      const response = await fetch(`${baseUrl}/health`, { headers: { Origin: origin } });
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+    },
+  );
+
+  test("refuses the app host on another scheme or port", async () => {
+    for (const origin of ["http://app.tinycloud.one", "https://app.tinycloud.one:8443", "capacitor://app.tinycloud.one"]) {
+      const response = await fetch(`${baseUrl}/health`, { headers: { Origin: origin } });
+      expect(response.headers.has("access-control-allow-origin")).toBe(false);
+    }
+  });
+});

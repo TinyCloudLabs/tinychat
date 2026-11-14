@@ -43,12 +43,19 @@ const config: CapacitorConfig = {
       initialViewportFitValueHint: "cover",
     },
   },
-  ...(devServerUrl && {
-    server: {
+  server: {
+    // The WebView origins: https://app.tinycloud.one on Android and tinycloudone://app.tinycloud.one
+    // on iOS. The WebView answers this host from the bundle, so nothing may ever be served there
+    // (TC-3045). The backend's CORS list and frontend/src/lib/nativeOrigins.ts name the same
+    // origins; mobile/webview-origin.test.ts fails CI if any of them drift.
+    hostname: "app.tinycloud.one",
+    androidScheme: "https",
+    iosScheme: "tinycloudone",
+    ...(devServerUrl && {
       url: devServerUrl,
       cleartext: devServerUrl.startsWith("http://"),
-    },
-  }),
+    }),
+  },
 };
 
 export default config;
