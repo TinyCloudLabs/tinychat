@@ -10,7 +10,7 @@ import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootErrorBoundary } from "./shell/RootErrorBoundary";
 import { OriginMoveHold } from "./shell/OriginMoveNotice";
-import { decideOriginMove, isLegacyOrigin, type OriginMoveDecision } from "./lib/originMove";
+import { clearMovedAnswers, decideOriginMove, isLegacyOrigin, type OriginMoveDecision } from "./lib/originMove";
 import { AboutRedirect, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
@@ -96,6 +96,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
   ]);
   const move = await originMove;
   if (move.kind === "move") {
+    clearMovedAnswers();
     window.location.replace(move.url);
     return;
   }

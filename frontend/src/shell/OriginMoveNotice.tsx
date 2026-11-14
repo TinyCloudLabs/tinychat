@@ -59,6 +59,25 @@ export function originMoveNoticeLines(work: LocalRecordingWork): NoticePart[][] 
     ]);
   }
   if (unclaimed > 0 || otherAccount > 0) lines.push(["This tab stays here while these recordings are only in this browser."]);
+  const { heldAnswers, unsentAnswers, postDrafts } = work;
+  if (heldAnswers > 0) {
+    lines.push([heldAnswers === 1
+      ? "1 answer is still sending from this tab. The tab moves on its own once it's sent."
+      : `${heldAnswers} answers are still sending from this tab. The tab moves on its own once they're sent.`]);
+  }
+  if (unsentAnswers > 0) {
+    const one = unsentAnswers === 1;
+    lines.push([
+      one ? "1 answer wasn't sent. " : `${unsentAnswers} answers weren't sent. `,
+      { text: "Open your Feed", to: PATHS.feed },
+      one ? " to see it. This tab stays here until you do." : " to see them. This tab stays here until you do.",
+    ]);
+  }
+  if (postDrafts > 0) {
+    lines.push([postDrafts === 1
+      ? "1 post has answers you haven't sent. Send them, and this tab moves."
+      : `${postDrafts} posts have answers you haven't sent. Send them, and this tab moves.`]);
+  }
   return lines;
 }
 
