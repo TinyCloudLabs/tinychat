@@ -10,6 +10,7 @@ import type {
 } from "@tinycloud/web-sdk";
 import type { ISessionStorage, PersistedSessionData } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "./openkey.js";
+import { withSpaceCapabilitiesRead } from "./manifest.js";
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -64,7 +65,7 @@ export function createTinyCloudWeb(
   web3Provider: EIP1193Provider,
   config?: TinyCloudWebConfig,
 ): TinyCloudWeb {
-  const manifest = config?.manifest ?? config?.capabilityRequest?.manifests;
+  const manifest = config?.manifest ? withSpaceCapabilitiesRead(config.manifest) : config?.capabilityRequest?.manifests;
   const tcwConfig: TinyCloudWebSdkConfig = {
     provider: web3Provider,
     tinycloudHosts: config?.tinycloudHosts,
@@ -214,7 +215,7 @@ export async function restoreTinyCloudWebSession(
   address: string,
   config?: TinyCloudWebConfig & { provider?: EIP1193Provider; renewalLeaseAuthorization?: string },
 ): Promise<RestoreTinyCloudWebSessionResult> {
-  const manifest = config?.manifest ?? config?.capabilityRequest?.manifests;
+  const manifest = config?.manifest ? withSpaceCapabilitiesRead(config.manifest) : config?.capabilityRequest?.manifests;
   const recording = recordRestoredSession(config?.sessionStorage ?? new BrowserSessionStorage());
   const tcwConfig: TinyCloudWebSdkConfig = {
     tinycloudHosts: config?.tinycloudHosts,
