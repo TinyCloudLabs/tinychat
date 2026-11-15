@@ -12,6 +12,7 @@ import { prepareSitrepImport, type PrepareSitrepImportInput } from "@tinyboilerp
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { useLocalThreadStorage } from "../lib/threadStore";
+import { resetLanesForTests } from "../lib/localFirst/requestLanes";
 import { clearHeldAnswers, HELD_ANSWER_TTL_MS, heldAnswerKey, type HeldAnswer } from "./answerOutbox";
 import { ANSWER_FAILED_COPY, ANSWER_HELD_COPY, HELD_ANSWER_COPY, NOT_SENT_COPY } from "./cardKit";
 import { createHomeFeedSource, HOME_FEED_RESOURCE, SIGN_OUT_FLUSH_MS, settleHeldAnswersForSignOut } from "./feedStore";
@@ -47,6 +48,7 @@ afterEach(async () => {
   Reflect.deleteProperty(globalThis, "matchMedia");
   for (const database of databases.splice(0)) database.close();
   setSystemTime();
+  resetLanesForTests();
 });
 
 function value<T>(result: { ok: boolean; data?: T; error?: { message?: string } }): T {
