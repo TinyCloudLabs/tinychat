@@ -22,6 +22,12 @@ on:
       - "frontend/src/lib/sizeClass.ts"
       - "frontend/index.html"
       - "frontend/src/index.css"
+      # What the phone bundle is built from besides its source: dependency pins and the workspace packages it imports,
+      # so an SDK repin builds both apps on its own PR.
+      - "package.json"
+      - "bun.lock"
+      - "frontend/package.json"
+      - "packages/**"
       - ".github/workflows/mobile.yml"
       - ".github/workflows/ios-build.yml"
       - ".github/workflows/ios-testflight.yml"
