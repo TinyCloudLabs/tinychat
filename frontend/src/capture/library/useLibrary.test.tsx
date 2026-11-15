@@ -15,6 +15,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 
 import { beginStorageAccountSession, endStorageAccountSession } from "@/lib/storageStatus";
+import { resetLanesForTests } from "@/lib/localFirst/requestLanes";
 import { saveNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { clearDiscarded, markDiscarded, unmarkDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
@@ -128,6 +129,7 @@ afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
   endStorageAccountSession();
+  resetLanesForTests();
 });
 async function render(props: Parameters<typeof Probe>[0]) {
   root ??= createRoot(container);
