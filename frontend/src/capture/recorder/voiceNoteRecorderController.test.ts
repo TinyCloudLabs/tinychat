@@ -3595,10 +3595,10 @@ describe("a recording stopped outside the app", () => {
     detach();
   });
 
-  // The browser engine reports idle with no reason ahead of its own autoStopped; Android's pause timeout is an engine
+  // The browser engine reports idle with no reason ahead of its own autoStopped (only native takes outside stops); Android's pause timeout is an engine
   // stop too. Neither is a Stop from outside the app, so the save and its notice stay with autoStopped.
   for (const [label, reason, native, notice] of [
-    ["the browser engine's limit", null, false, "Stopped at the 1-minute limit."],
+    ["a non-native (browser or Mac) engine's limit", null, false, "Stopped at the 1-minute limit."],
     ["Android's pause timeout", "pause_timeout", true, null],
   ] as const) {
     test(`${label}: the idle micState does not land the note ahead of autoStopped`, async () => {
@@ -3768,6 +3768,21 @@ describe("a recording stopped outside the app", () => {
     expect(recorder.getState()).toMatchObject({ phase: "idle", recordingId: null });
     await recorder.record();
     expect(recorder.getState().phase).toBe("recording");
+    detach();
+  });
+
+  test("a failed check whose retry finds nothing kept closes the recorder without the old error", async () => {
+    const steer = steered();
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    steer.hidden = recording.id;
+    steer.listFailures = 1;
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().error !== null, "the failed check to show");
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().phase === "idle", "the retry to close the recorder");
+    expect(recorder.getState()).toMatchObject({ recordingId: null, outcome: null, error: null });
     detach();
   });
 });

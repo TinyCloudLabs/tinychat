@@ -767,17 +767,16 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         );
       } else {
         // Discarded where it was stopped, or nothing was captured: there is no note to show.
-        send({ type: "STOP_FAILED", status: "idle", error: null, id });
+        send({ type: "STOP_FAILED", status: "idle", error: null, id, clearError: true });
         void pendingStore.refresh();
       }
-      // Another recording started meanwhile (a Shortcut during the save): show it, as attach would, if it still runs.
-      if (status.id && status.id !== id && status.state !== "idle") {
-        const latest = await VoiceNotes.status();
-        if (closed || state.phase !== "idle" || !latest.id || latest.id === id || latest.state === "idle") return;
-        acceptNativeOptions(latest);
-        send(activePickup(latest));
-        if (latest.source && latest.source !== "in_app") present();
-      }
+      // Another recording started meanwhile (a Shortcut during the save; its presentRecorder met `stopping`): show it,
+      // as attach would, if it still runs.
+      const latest = await VoiceNotes.status();
+      if (closed || state.phase !== "idle" || !latest.id || latest.id === id || latest.state === "idle") return;
+      acceptNativeOptions(latest);
+      send(activePickup(latest));
+      if (latest.source && latest.source !== "in_app") present();
     } catch (caught) {
       console.warn("[VoiceNotes] Could not settle a recording stopped outside the app", caught);
       if (!endedElsewhereCurrent(id)) return;
@@ -972,13 +971,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       });
       const handles = [
         VoiceNotes.addListener("micState", (event) => {
+          // A stop ended outside the app is waiting on its save: any micState, even a newer recording's (its failed save
+          // sends no committed), settles it.
+          if (endedElsewhere) void reconcileWithEngine(event.at);
           if (event.id && state.recordingId && event.id !== state.recordingId) return;
           // Idle under the recording on screen, which this recorder is not stopping: status decides what ended it, and
           // the clock stays where it stopped.
-          const idleUnderRecording = captureEngineKind() === "native" && state.phase === "recording" && event.state === "idle" &&
-            !ENGINE_STOP_REASONS.has(event.reason);
-          if (idleUnderRecording || endedElsewhere) void reconcileWithEngine(event.at);
-          if (idleUnderRecording) return;
+          if (captureEngineKind() === "native" && state.phase === "recording" && event.state === "idle" &&
+            !ENGINE_STOP_REASONS.has(event.reason)) {
+            void reconcileWithEngine(event.at);
+            return;
+          }
           acceptNativeOptions(event);
           sendMicState(event);
         }),
