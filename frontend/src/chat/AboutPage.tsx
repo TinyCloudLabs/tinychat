@@ -186,6 +186,11 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         desktop local recording stays on that Mac.
       </p>
       <p>
+        Your space is not end-to-end encrypted: the TinyCloud node that hosts it, and the apps and services you
+        authorize, can read your content in order to serve it to you. Ending an app’s or agent’s access stops future
+        reads; it cannot recall copies already read.
+      </p>
+      <p>
         The assistant’s memory is a document in your space. You can edit or clear it at any time in Settings; clearing
         or resetting it cannot be undone.
       </p>
