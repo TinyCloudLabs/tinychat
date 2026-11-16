@@ -5,7 +5,7 @@ import { setShowHiddenFeatures, useShowHiddenFeatures } from "@/lib/hiddenFeatur
 export const HIDDEN_FEATURES_STRINGS = {
   title: "Hidden features",
   label: "Show hidden features",
-  note: "Features that aren't finished yet. They stay off until they work. This device only.",
+  note: "Shows features that are off by default. This device only.",
 } as const;
 
 /** Settings → Hidden features. This device's setting; it doesn't sync. */

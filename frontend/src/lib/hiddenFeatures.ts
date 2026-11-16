@@ -1,4 +1,4 @@
-// Settings → "Show hidden features": features that are built but not ready show only while this is on. Off by default,
+// Settings → "Show hidden features": features that are off by default show only while this is on. Off by default,
 // this device only (it doesn't sync). Kept in a durable key so the phone app keeps it when its WebView origin changes
 // (durableKeys.ts); main.tsx hydrates it before the app renders.
 import { useSyncExternalStore } from "react";
