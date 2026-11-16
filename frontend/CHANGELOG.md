@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.68
+
+### Patch Changes
+
+- 9d13c13: How it works now says that your TinyCloud space is not end-to-end encrypted: the node that hosts it, and the apps and services you authorize, can read your content in order to serve it to you. Ending an app's or agent's access stops future reads; it cannot recall copies already read.
+
 ## 0.14.0-beta.67
 
 ### Patch Changes
