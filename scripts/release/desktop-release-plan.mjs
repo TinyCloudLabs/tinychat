@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Plan the GitHub Release for one exo-desktop@<version> tag (the desktop app, TinyCloud Home). desktop-release.yml runs this (from main, its trusted
+ * Plan the GitHub Release for one exo-desktop@<version> tag (the desktop app, TinyCloud One). desktop-release.yml runs this (from main, its trusted
  * copy) after fetching main and the exo-desktop tags fresh: the tag must name a release version, point at a commit of
  * --main (release tags are created only by the Release workflow; see the rulesets in docs/deployment.md), and match
  * desktop/package.json at that commit. Version, changelogs and the bundled web version are read from that commit, not
@@ -8,7 +8,7 @@
  * than the latest stable exo-desktop tag on --main (0.2.0-beta.3 once 0.2.0 is tagged) is refused: superseded betas
  * are not published. Writes the release notes to --notes and tag, sha, version, channel, prerelease, title,
  * asset-prefix, signing to $GITHUB_OUTPUT. The title and asset prefix use that commit's tauri.conf.json productName
- * ("TinyCloud Home 0.15.0 (beta)", TinyCloud-Home_0.15.0-beta.1_aarch64).
+ * ("TinyCloud One 0.15.0 (beta)", TinyCloud-One_0.15.0-beta.1_aarch64).
  *
  * --signing is the EXO_DESKTOP_SIGNING repository variable and must be set explicitly: `required` (Developer ID
  * signed and notarized; publishing refuses anything else) or `unsigned` (ad-hoc sealed only, no Developer ID or
@@ -60,7 +60,7 @@ if (prerelease) {
     throw new Error(`${values.tag} is older than the latest stable release ${prefix}${latestStable} on ${values.main}: betas superseded by a stable release are not published`);
   }
 }
-// The app's name at the release commit (TinyCloud Home; Exo before the rename) titles the release and its assets.
+// The app's name at the release commit (TinyCloud One; TinyCloud Home and Exo before the renames) titles the release and its assets.
 const { productName, assetName } = desktopProduct(show(DESKTOP.tauriConf) ?? '{}');
 const frontendVersion = JSON.parse(show('frontend/package.json')).version;
 const desktopChanges = changelogSection(show('desktop/CHANGELOG.md') ?? '', version);

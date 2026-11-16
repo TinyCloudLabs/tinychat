@@ -332,7 +332,7 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   await act(async () => { releaseSignOut?.(); releaseSignOut = null; await tick(); await tick(); });
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
-  expect(host!.textContent).toContain("You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.");
+  expect(host!.textContent).toContain("You're signed out of TinyCloud One, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.");
   expect(host!.textContent).not.toContain("Storage full");
   expect(isStorageReadOnly()).toBe(false);
 
@@ -605,7 +605,7 @@ test("a failed note deletion with a retained sign-out fence reports the signed-i
     expect(host!.textContent)
       .toContain("You're still signed in on this tab. If you reload or close it, you'll need to sign in again.");
     expect(host!.textContent)
-      .not.toContain("You're signed out of TinyChat, but this device didn't finish clearing your session.");
+      .not.toContain("You're signed out of TinyCloud One, but this device didn't finish clearing your session.");
     expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
     expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
     expect(window.localStorage.getItem(fenceKey)).not.toBeNull();
@@ -642,7 +642,7 @@ test("sign-out recovery copy distinguishes a local-clear failure from an unfinis
   await click("Test sign out");
   await settle();
   expect(host!.textContent)
-    .toContain("You're signed out of TinyChat, but this device didn't finish clearing your session. Sign in again, then sign out.");
+    .toContain("You're signed out of TinyCloud One, but this device didn't finish clearing your session. Sign in again, then sign out.");
 
   const originalRemoveItem = storage.removeItem.bind(storage);
   Object.defineProperty(storage, "removeItem", {
@@ -792,4 +792,19 @@ test("TC-2785 a local-result clear failure releases the sign-out fence and keeps
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
   expect(signOutEvents).toEqual([]);
+});
+
+test("a restart that finds a sign-out still pending clears the owner's held answers, unsent answers and post drafts, whatever their space", async () => {
+  const address = loginAddress.toLowerCase();
+  const storage = authStorage.localStorage;
+  // A restart has no client and no space to clear by: these carry the owner's words and must not outlive the account.
+  const answers = ['tinychat.home.answer-outbox.v1:space-a:["agent","card",1,"issuance"]', 'tinychat.home.answer-unsent.v1:space-b:["agent","card"]', 'tinychat.home.post-draft.v1:space-c:["agent","card"]'];
+  for (const key of answers) storage.setItem(key, "{}");
+  storage.setItem("tinycloud:session:active-address", address);
+  storage.setItem(`tinycloud:session:${address}`, "sdk session");
+  storage.setItem("xyz.tinycloud.tinychat:signout-pending", `restart-token|${address}`);
+  await mount("web");
+  await settle();
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
+  for (const key of answers) expect(storage.getItem(key)).toBeNull();
 });

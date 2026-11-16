@@ -71,6 +71,9 @@ const refusalMessages = [
   "This response is not deliverable to this runner",
   "This handoff ledger belongs to another Home feed source",
   "The board already holds a different answer for this response",
+  "The board already holds a different message for this response",
+  "This card is closed; the note was not passed on",
+  "This note names recipients the board's card thread cannot route to",
   "Answer runner requires a source, a recipient, spaces and a response on stdin",
 ] as const;
 export type HomeMirrorRefusalMessage = (typeof refusalMessages)[number];
@@ -222,6 +225,10 @@ async function readLegacy(ctx: HomeMirrorContext, kind: BoardRecord["kind"], key
   if (!checked.ok) throw failure();
   return { raw, record: checked.value, etag: headers.etag, sha256: hash(data) };
 }
+/** The board's current copy of a mirrored card, without its Home marker; undefined once it is gone. */
+export async function readHomeMirrorBoardRecord(ctx: HomeMirrorContext, binding: HomeMirrorBinding): Promise<BoardRecord | undefined> {
+  try { return (await readLegacy(ctx, binding.legacy.kind, binding.legacy.fullKey))?.record; } catch (error) { throw safeFailure(error); }
+}
 
 export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown): Promise<HomeMirrorBinding> {
   try {
@@ -250,7 +257,10 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     }
     if (!head || head.sha256 !== publicationSha256 || head.raw.cardUuid !== identity.cardId) {
       const priorHead = head;
-      const predecessor = priorHead && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey && row.binding.legacy.publishedETag === priorHead.etag && row.binding.legacy.publicationSha256 === priorHead.sha256);
+      // A Home close rewrote the board copy after publication: its receipt, not the binding, names that head.
+      const predecessor = priorHead && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey &&
+        ((row.binding.legacy.publishedETag === priorHead.etag && row.binding.legacy.publicationSha256 === priorHead.sha256) ||
+          (row.receipt !== null && row.receipt.closedETag === priorHead.etag && priorHead.raw.cardUuid === identity.cardId && priorHead.record.status === row.receipt.status)));
       const unboundSameBusiness = head && !Object.hasOwn(head.raw, "cardUuid") && isDeepStrictEqual(head.record, record);
       if (head && !predecessor && !unboundSameBusiness) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
       if (!await currentCard(ctx, source, identity)) throw failure();

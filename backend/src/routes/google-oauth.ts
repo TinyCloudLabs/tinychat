@@ -1,7 +1,7 @@
 import { browserTokenPayload, type CalendarAutojoinConnection } from "../services/calendar-autojoin-connection.js";
 import { randomBytes } from "node:crypto";
 import { Router } from "express";
-import { HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN, frontendOriginsFromEnv } from "../cors-origins.js";
+import { HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN, frontendOriginsFromEnv } from "../cors-origins.js";
 import type { NextFunction, Request, Response } from "express";
 
 import {
@@ -90,9 +90,12 @@ function firstQueryValue(value: unknown): unknown {
 //                        that fixed origin.
 //   `hometab.<path>.<nonce>` — the Home site's same-tab fallback: a 302 to HOME_WEB_ORIGIN and the
 //                        path, validated exactly as `tab.` paths are.
+//   `one.<nonce>`      — the Home app on tinycloud.one (TINYCLOUD_ONE_WEB_ORIGIN): the postMessage
+//                        page, pinned to that fixed origin.
+//   `onetab.<path>.<nonce>` — its same-tab fallback: a 302 to TINYCLOUD_ONE_WEB_ORIGIN and the path.
 //   `<anything>.<…>`   — an unknown tag: refused at /start and at /callback. Never defaulted.
 //
-// The SPA tags every flow it starts on HOME_WEB_ORIGIN, so an untagged or `tab.` flow was started
+// The SPA tags every flow it starts on HOME_WEB_ORIGIN or TINYCLOUD_ONE_WEB_ORIGIN, so an untagged or `tab.` flow was started
 // elsewhere. Its WEB RETURN ORIGIN is FRONTEND_URL, except when FRONTEND_URL is HOME_WEB_ORIGIN
 // itself: then it is TINYCHAT_WEB_ORIGIN, where visitors with unsynced local work stay, so their
 // flows still finish on tinycloud.chat. Every return origin must be in the FRONTEND_ORIGINS
@@ -125,10 +128,13 @@ export const NATIVE_OAUTH_NOT_COMPLETED = "not_completed";
 /** The `state` tag of the TinyCloud Home site's popup flow. */
 export const HOME_OAUTH_CLIENT = "home";
 
+/** The `state` tag of the tinycloud.one popup flow. */
+export const ONE_OAUTH_CLIENT = "one";
+
 /** The nonce after the tag: base64url, the alphabet the app mints it in. */
 const NATIVE_STATE_NONCE_PATTERN = /^[A-Za-z0-9_-]{16,}$/;
 
-export type OAuthReturnClient = "web" | "native" | "tab" | "home" | "hometab";
+export type OAuthReturnClient = "web" | "native" | "tab" | "home" | "hometab" | "one" | "onetab";
 
 /**
  * The client a (shape-valid) `state` selects, or `null` for a tag no client mints. Callers check
@@ -139,6 +145,10 @@ export function oauthReturnClient(state: string): OAuthReturnClient | null {
   if (separator === -1) return "web";
   if (state.startsWith("tab.")) return tabReturnPath(state) ? "tab" : null;
   if (state.startsWith("hometab.")) return tabReturnPath(state) ? "hometab" : null;
+  if (state.startsWith("onetab.")) return tabReturnPath(state) ? "onetab" : null;
+  if (state.slice(0, separator) === ONE_OAUTH_CLIENT) {
+    return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "one" : null;
+  }
   if (state.slice(0, separator) === HOME_OAUTH_CLIENT) {
     return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "home" : null;
   }
@@ -147,7 +157,7 @@ export function oauthReturnClient(state: string): OAuthReturnClient | null {
 }
 
 function tabReturnPath(state: string): string | null {
-  const match = /^(?:home)?tab\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/.exec(state);
+  const match = /^(?:home|one)?tab\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/.exec(state);
   if (!match) return null;
   const path = Buffer.from(match[1], "base64url").toString("utf8");
   return path.startsWith("/") && !path.startsWith("//") && !/[\\#\p{Cc}]/u.test(path) &&
@@ -227,7 +237,8 @@ function renderCancelledPage(): string {
 
 /**
  * FRONTEND_URL: the web app origin. It picks the web return origin of untagged and `tab.` flows
- * (see "Native (Exo app) return"); `home.`/`hometab.` flows return to the fixed `HOME_WEB_ORIGIN`.
+ * (see "Native (Exo app) return"); `home.`/`hometab.` flows return to the fixed `HOME_WEB_ORIGIN`, and
+ * `one.`/`onetab.` flows to the fixed `TINYCLOUD_ONE_WEB_ORIGIN`.
  * Both must be in the FRONTEND_ORIGINS allowlist, which always contains FRONTEND_URL. Exo's fixed
  * Tauri and Capacitor origins are also allowed to call the API, but the callback page postMessages
  * only to one of these web origins. The Exo apps return through the fixed native deep link instead
@@ -303,9 +314,10 @@ export function createGoogleOAuthRouter(
   const webOrigin = appOrigin === HOME_WEB_ORIGIN ? TINYCHAT_WEB_ORIGIN : appOrigin;
   const webReturn = frontendOrigins.includes(webOrigin) ? webOrigin : null;
   const homeReturn = frontendOrigins.includes(HOME_WEB_ORIGIN) ? HOME_WEB_ORIGIN : null;
+  const oneReturn = frontendOrigins.includes(TINYCLOUD_ONE_WEB_ORIGIN) ? TINYCLOUD_ONE_WEB_ORIGIN : null;
   /** Where a web-family flow returns, or `null` when that origin is not allowlisted. */
-  const returnOrigins: Record<"web" | "tab" | "home" | "hometab", string | null> = {
-    web: webReturn, tab: webReturn, home: homeReturn, hometab: homeReturn,
+  const returnOrigins: Record<"web" | "tab" | "home" | "hometab" | "one" | "onetab", string | null> = {
+    web: webReturn, tab: webReturn, home: homeReturn, hometab: homeReturn, one: oneReturn, onetab: oneReturn,
   };
   const nativeReturn = options.nativeReturn ?? googleOAuthNativeReturnEnabled();
   const desktopClientId = options.desktopClientId ?? googleDesktopClientId();
@@ -409,7 +421,7 @@ export function createGoogleOAuthRouter(
     const validState = isValidOAuthState(state) ? state : null;
     const returnClient = validState === null ? null : oauthReturnClient(validState);
     const returnOrigin = returnClient === null || returnClient === "native" ? null : returnOrigins[returnClient];
-    if (validState !== null && returnOrigin !== null && (returnClient === "tab" || returnClient === "hometab")) {
+    if (validState !== null && returnOrigin !== null && (returnClient === "tab" || returnClient === "hometab" || returnClient === "onetab")) {
       const path = tabReturnPath(validState)!;
       const params = new URLSearchParams({ state: validState });
       if (isBoundedString(code, MAX_CODE_LENGTH)) params.set("google_oauth_code", code);
@@ -423,7 +435,7 @@ export function createGoogleOAuthRouter(
       !isBoundedString(code, MAX_CODE_LENGTH) ||
       !isValidOAuthState(state) ||
       // A tag no client mints is not "the web": it gets the no-code page, never a postMessage.
-      (returnClient !== "web" && returnClient !== "home") ||
+      (returnClient !== "web" && returnClient !== "home" && returnClient !== "one") ||
       returnOrigin === null
     ) {
       // A denial (`?error=access_denied`) or a malformed return. NOTHING is postMessaged: the

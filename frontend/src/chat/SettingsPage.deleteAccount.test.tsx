@@ -41,7 +41,7 @@ async function renderSettings(platform: AppPlatform): Promise<HTMLDivElement> {
     <MemoryRouter>
       <PlatformContext.Provider value={platform}>
         <StaticRecorderProvider value={{ signedIn: true, available: false }}>
-          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud Home" openkeyHost="http://localhost">
+          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud One" openkeyHost="http://localhost">
             <SettingsPage
               address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
               onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}

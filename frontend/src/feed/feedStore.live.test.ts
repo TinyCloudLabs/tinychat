@@ -48,6 +48,7 @@ afterEach(() => {
   Reflect.deleteProperty(globalThis, "localStorage");
   Reflect.deleteProperty(globalThis, "indexedDB");
   resetLocalCacheForTests();
+  resetLanesForTests();
   for (const database of databases.splice(0)) database.close();
 });
 

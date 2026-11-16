@@ -201,17 +201,17 @@ describe("isChunkLoadError", () => {
   });
 });
 
-describe("Reload TinyCloud Home", () => {
-  test("a chunk-load error goes straight to Reload TinyCloud Home, with no Try again", () => {
+describe("Reload TinyCloud One", () => {
+  test("a chunk-load error goes straight to Reload TinyCloud One, with no Try again", () => {
     expect(failedElement({ error: chunkError }).props.needsReload).toBe(true);
     const html = within(
       <LoadFailed layout="desktop" onRetry={() => {}} needsReload />,
     );
-    expect(html).toContain("Reload TinyCloud Home");
+    expect(html).toContain("Reload TinyCloud One");
     expect(html).not.toContain("Try again");
   });
 
-  test("another error offers Try again first, and Reload TinyCloud Home once the retry has failed too", () => {
+  test("another error offers Try again first, and Reload TinyCloud One once the retry has failed too", () => {
     const other = new Error("render blew up");
     expect(failedElement({ error: other }).props.needsReload).toBe(false);
     expect(
@@ -219,18 +219,18 @@ describe("Reload TinyCloud Home", () => {
     ).toBe(true);
     const first = within(<LoadFailed layout="desktop" onRetry={() => {}} />);
     expect(first).toContain("Try again");
-    expect(first).not.toContain("Reload TinyCloud Home");
+    expect(first).not.toContain("Reload TinyCloud One");
   });
 
-  test("with no recording, Reload TinyCloud Home calls the reload seam directly", () => {
+  test("with no recording, Reload TinyCloud One calls the reload seam directly", () => {
     let reloads = 0;
     const tree = view({ reload: () => (reloads += 1) });
     expect(find(tree, (e) => e.type === ConfirmDialog)).toBeNull();
-    button(tree, "Reload TinyCloud Home")?.props.onClick();
+    button(tree, "Reload TinyCloud One")?.props.onClick();
     expect(reloads).toBe(1);
   });
 
-  test("with a recording, Reload TinyCloud Home asks first, and only Reload calls the seam", () => {
+  test("with a recording, Reload TinyCloud One asks first, and only Reload calls the seam", () => {
     let reloads = 0;
     let asked = 0;
     let kept = 0;
@@ -240,7 +240,7 @@ describe("Reload TinyCloud Home", () => {
       onAskReload: () => (asked += 1),
       onKeep: () => (kept += 1),
     };
-    button(view(handlers), "Reload TinyCloud Home")?.props.onClick();
+    button(view(handlers), "Reload TinyCloud One")?.props.onClick();
     expect([asked, reloads]).toEqual([1, 0]);
 
     const dialog = find(
@@ -278,11 +278,11 @@ describe("Reload TinyCloud Home", () => {
     );
     expect(web).toContain("pr-discard");
     expect(web).toContain(
-      "Reloading stops this recording in the browser. TinyCloud Home recovers what was recorded when the page reopens.",
+      "Reloading stops this recording in the browser. TinyCloud One recovers what was recorded when the page reopens.",
     );
     for (const platform of ["tauri", "ios", "android"] as const) {
       const html = confirm(platform);
-      expect(html).toContain("The recording keeps going while TinyCloud Home reloads.");
+      expect(html).toContain("The recording keeps going while TinyCloud One reloads.");
       expect(html).not.toContain("stops this recording");
     }
   });
@@ -327,7 +327,7 @@ describe("vite:preloadError", () => {
       <LoadFailed layout="desktop" onRetry={() => {}} needsReload />,
     );
     expect(html).toContain("Couldn&#x27;t open the recorder.");
-    expect(html).toContain("Reload TinyCloud Home");
+    expect(html).toContain("Reload TinyCloud One");
   });
 
   test("before it has loaded, another chunk's failure is not the recorder's", () => {

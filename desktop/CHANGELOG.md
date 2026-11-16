@@ -1,5 +1,95 @@
 # exo-desktop
 
+## 0.14.0-beta.68
+
+No changes in this release.
+
+## 0.14.0-beta.67
+
+No changes in this release.
+
+## 0.14.0-beta.66
+
+No changes in this release.
+
+## 0.14.0-beta.65
+
+No changes in this release.
+
+## 0.14.0-beta.64
+
+### Minor Changes
+
+- 98e2480: TinyCloud Home is now TinyCloud One everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud One.app`; `exo-update` replaces an existing `TinyCloud Home.app`), the Android and iOS app names, widgets, Siri phrases ("Start recording in TinyCloud One"), notifications, permission prompts and error messages. The main screen is now called Feed, and Settings › Start screen holds the first-screen choice. You stay signed in: the app id, bundle ids, URL schemes, installed web app id and every data path are unchanged, and nobody has to sign in again.
+
+## 0.14.0-beta.63
+
+No changes in this release.
+
+## 0.14.0-beta.62
+
+No changes in this release.
+
+## 0.14.0-beta.61
+
+No changes in this release.
+
+## 0.14.0-beta.60
+
+No changes in this release.
+
+## 0.14.0-beta.59
+
+No changes in this release.
+
+## 0.14.0-beta.58
+
+No changes in this release.
+
+## 0.14.0-beta.57
+
+No changes in this release.
+
+## 0.14.0-beta.56
+
+No changes in this release.
+
+## 0.14.0-beta.55
+
+No changes in this release.
+
+## 0.14.0-beta.54
+
+No changes in this release.
+
+## 0.14.0-beta.53
+
+No changes in this release.
+
+## 0.14.0-beta.52
+
+No changes in this release.
+
+## 0.14.0-beta.51
+
+No changes in this release.
+
+## 0.14.0-beta.50
+
+No changes in this release.
+
+## 0.14.0-beta.49
+
+No changes in this release.
+
+## 0.14.0-beta.48
+
+No changes in this release.
+
+## 0.14.0-beta.47
+
+No changes in this release.
+
 ## 0.14.0-beta.46
 
 ### Patch Changes

@@ -14,16 +14,16 @@ fi
 
 plist="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
 plutil -replace NSHealthShareUsageDescription -string \
-  "TinyCloud Home reads the steps, sleep and heart rate you allow and saves a daily summary to your own TinyCloud space. It never uses health data for advertising." \
+  "TinyCloud One reads the steps, sleep and heart rate you allow and saves a daily summary to your own TinyCloud space. It never uses health data for advertising." \
   "$plist"
 plutil -replace NSHealthUpdateUsageDescription -string \
-  "TinyCloud Home's development preview can add sample steps, sleep and heart rate to Health for testing. TinyCloud Home never writes health data otherwise." \
+  "TinyCloud One's development preview can add sample steps, sleep and heart rate to Health for testing. TinyCloud One never writes health data otherwise." \
   "$plist"
 plutil -replace NSLocationWhenInUseUsageDescription -string \
-  "TinyCloud Home records your location while you use it, only after you turn location on, and saves it to your TinyCloud space." \
+  "TinyCloud One records your location while you use it, only after you turn location on, and saves it to your TinyCloud space." \
   "$plist"
 plutil -replace NSLocationAlwaysAndWhenInUseUsageDescription -string \
-  "TinyCloud Home keeps recording your location in the background after you turn it on, so your timeline has no gaps. It is saved to your TinyCloud space, and you can turn it off at any time." \
+  "TinyCloud One keeps recording your location in the background after you turn it on, so your timeline has no gaps. It is saved to your TinyCloud space, and you can turn it off at any time." \
   "$plist"
 if ! plutil -extract UIBackgroundModes json -o - "$plist" | grep -q '"location"'; then
   /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string location" "$plist"

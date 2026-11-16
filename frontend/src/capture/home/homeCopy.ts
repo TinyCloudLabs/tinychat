@@ -29,19 +29,19 @@ export const HOME_COPY = {
   savingToSpace: "Saving to your TinyCloud space…",
   saveNow: "Save now",
   manageStorage: "Manage storage",
-  get willFinish() { return `Kept on ${captureDeviceName()}. TinyCloud Home will finish it automatically.`; },
-  willRetry: "TinyCloud Home will retry when it next opens",
+  get willFinish() { return `Kept on ${captureDeviceName()}. TinyCloud One will finish it automatically.`; },
+  willRetry: "TinyCloud One will retry when it next opens",
   /** Native has used up its automatic retries on a quarantined recording: no promise to try again. */
   quarantinedCard: "Couldn't recover · audio kept",
   get timedOutMeta() { return `Saving… · kept on ${captureDeviceName()}`; },
   recoveryFailedMeta: RECOVERY_FAILED,
   quarantinedMeta: `${RECOVERY_FAILED} · audio kept`,
   /** What the recorder's own error line says once native has reported the failure; replaces "Exo will finish it automatically". */
-  recoveryFailedError: `${RECOVERY_FAILED}. TinyCloud Home will try again when it next opens.`,
+  recoveryFailedError: `${RECOVERY_FAILED}. TinyCloud One will try again when it next opens.`,
   writeFailedError: `${WRITE_FAILED}.`,
   timedOutSheet: {
     title: "Saving this recording",
-    get body() { return `Kept on ${captureDeviceName()}. TinyCloud Home will finish it automatically.`; },
+    get body() { return `Kept on ${captureDeviceName()}. TinyCloud One will finish it automatically.`; },
   },
   writeFailedMeta: WRITE_FAILED,
   /** Shared with the desktop follow-ups: the informational line under a saved recording that is missing some audio. */
@@ -57,7 +57,7 @@ export const HOME_COPY = {
   needsAttention: "Needs attention",
   opensDetails: "Opens details",
   scanFailure:
-    "TinyCloud Home couldn't check for unfinished recordings. It will try again when it next opens.",
+    "TinyCloud One couldn't check for unfinished recordings. It will try again when it next opens.",
   upload: "Upload",
   recorder: "Recorder",
   meeting: "Meeting",
@@ -78,14 +78,14 @@ export const HOME_COPY = {
     get body() { return `The audio will be deleted from ${captureDeviceName()}. This can't be undone.`; },
   },
   quarantineFailure:
-    "TinyCloud Home couldn't check for recordings it kept. It will try again when it next opens.",
+    "TinyCloud One couldn't check for recordings it kept. It will try again when it next opens.",
   recoveryFailedSheet: {
     title: RECOVERY_FAILED,
-    body: "TinyCloud Home couldn't finish saving this recording. It will try again when it next opens.",
+    body: "TinyCloud One couldn't finish saving this recording. It will try again when it next opens.",
   },
   quarantinedSheet: {
     title: RECOVERY_FAILED,
-    get body() { return `TinyCloud Home tried several times and couldn't finish saving this recording. The audio is kept on ${captureDeviceName()}.`; },
+    get body() { return `TinyCloud One tried several times and couldn't finish saving this recording. The audio is kept on ${captureDeviceName()}.`; },
   },
   unplayableSheet: {
     title: RECOVERY_FAILED,

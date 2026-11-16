@@ -16,6 +16,142 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.68
+
+### Patch Changes
+
+- 9d13c13: How it works now says that your TinyCloud space is not end-to-end encrypted: the node that hosts it, and the apps and services you authorize, can read your content in order to serve it to you. Ending an app's or agent's access stops future reads; it cannot recall copies already read.
+
+## 0.14.0-beta.67
+
+### Patch Changes
+
+- 7e4a103: On tinycloud.chat, Home answers still waiting to be sent, answers marked "Not sent" that you have not seen yet, and post answers you have not sent now keep the tab there (with a notice saying why) instead of being left behind by the move to home.tinycloud.xyz; each stops holding 7 days after it was written. When the tab moves, what is left of them on tinycloud.chat is removed.
+
+## 0.14.0-beta.66
+
+### Patch Changes
+
+- 522a554: Feed: an answer you gave just as you left the app is never lost silently. When you come back, the card says "Not sent" with your answer if the card has changed or closed, even if you had it open when it changed; an answer you wrote in words is shown in the line so you can say it again. If the app could not reach the server, the card says the answer isn't sent yet and it goes the next time you open the app. If the agent is no longer connected, a notice says so until you dismiss it. If you leave before you have seen any of these, they appear the next time you open the feed.
+
+## 0.14.0-beta.65
+
+### Patch Changes
+
+- 487602b: Main's earlier messages load faster: the app fetches and decrypts up to four of them at a time instead of one after another. Every check on each message is unchanged, and the first failure still stops the whole load. Details: TC-3054.
+
+## 0.14.0-beta.64
+
+### Minor Changes
+
+- 98e2480: TinyCloud Home is now TinyCloud One everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud One.app`; `exo-update` replaces an existing `TinyCloud Home.app`), the Android and iOS app names, widgets, Siri phrases ("Start recording in TinyCloud One"), notifications, permission prompts and error messages. The main screen is now called Feed, and Settings › Start screen holds the first-screen choice. You stay signed in: the app id, bundle ids, URL schemes, installed web app id and every data path are unchanged, and nobody has to sign in again.
+
+## 0.14.0-beta.63
+
+### Patch Changes
+
+- 77dab54: The phone apps keep the app-lock settings, the record of being signed in and a pending sign-out in the device's app storage as well as the WebView's, so they survive a change of the app's WebView origin. A session restored when the app opens now locks like any cold launch when the app lock is on, including when the app opened without its record of being signed in. Details: TC-3045.
+
+## 0.14.0-beta.62
+
+### Patch Changes
+
+- fae976b: A restored session never sets up a TinyCloud account, whatever page it runs on. Details: TC-3019.
+
+## 0.14.0-beta.61
+
+### Patch Changes
+
+- 40534a9: Home feed: a card you acknowledge or drop no longer comes back as an open row for a few seconds while the app is still saving it. It stays out of Updates until it is saved, and is then in History as Acknowledged or Dropped. If the save fails, the card comes back with the message that it didn't reach the agent.
+
+## 0.14.0-beta.60
+
+### Patch Changes
+
+- 1160a72: After a page reload, opening Main's chat no longer fails with "Couldn't load your earlier messages with Main." It asks for the same approval as a new session, then loads the earlier messages. The transcript writer also renews again after a reload. Details: TC-3019.
+
+## 0.14.0-beta.59
+
+### Patch Changes
+
+- c0aaaea: The startup bundle no longer carries a Node crypto library the browser never runs: about 435 KB less to download and parse on every launch. Details: TC-2935.
+
+## 0.14.0-beta.58
+
+### Patch Changes
+
+- 092bbfc: Feed: on a Rocinante question, "Drop this card" now tells Rocinante to drop it (the same answer "Skip this question" sent), then the card moves to History marked Dropped. "Skip this question" is removed, so one control does it. Before, Drop only hid the card here and Rocinante never heard.
+
+## 0.14.0-beta.57
+
+### Patch Changes
+
+- 931849e: Feed: a Rocinante card's timing line reads "Due 13 Nov, 6:00 PM · Expires 14 Nov, 2:48 PM · in 2 h" instead of "Deadline …" and "Legacy expiry …"; a card that never expires no longer says "No automatic expiry".
+
+## 0.14.0-beta.56
+
+### Patch Changes
+
+- 8371a8d: Feed: a Rocinante card its agent has closed (answered, replaced, done, resolved…) leaves All and Needs action and shows in History, marked as closed, like cards you dropped or that expired. A closed card that still carries an answer of yours that was never sent stays in the feed until you've seen its "Not sent" line.
+
+## 0.14.0-beta.55
+
+### Patch Changes
+
+- b599417: Feed: every open card shows what it doesn't draw. "Details" in the card's foot carries a "+N" when the card holds data the card doesn't show. Details now unfolds inside the card and lists those fields under "Not shown on the card", exactly as the agent sent them (as text: links aren't opened and images aren't loaded), along with the card's facts, its history, and the whole card as sent ("Card data", with Copy). A Rocinante card the app can't read now points to Details, which lists everything it carries, instead of only "Ask your agent about this card."
+
+## 0.14.0-beta.54
+
+### Patch Changes
+
+- f11e6ca: Home feed: once the agent acknowledges your answer, a card's status reads "Answered" instead of "Waiting", until the agent reports it done or failed. A Rocinante card closed after you answered it also reads "Answered".
+
+## 0.14.0-beta.53
+
+### Patch Changes
+
+- df99598: When Main's earlier messages fail to load, the browser console now records why. The chat still shows the same failure message. Details: TC-3019.
+
+## 0.14.0-beta.52
+
+### Patch Changes
+
+- a6240ab: Home's top bar, rebuilt: Needs you · All · History with a Filter icon. Needs you opens its first card, the rest are rows by urgency, and an answered card makes way for the next. All shows Needs you, Updates and Done today. The chat box shows only when Main's chat works, Filter lists its dropdowns first, answered cards that are waiting or done wait in one Pending card at the end, and the Agents pill opens each agent's page. Details: TC-2941.
+
+## 0.14.0-beta.51
+
+### Patch Changes
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+
+## 0.14.0-beta.50
+
+### Patch Changes
+
+- e4c47d6: The reviewer seed CLI no longer defaults to the production node: pass `--host <origin>`, or `--production` for `https://tee.node.tinycloud.xyz`. Neither, or both, is a usage error.
+
+## 0.14.0-beta.49
+
+### Patch Changes
+
+- be21a74: Connecting Google on tinycloud.one now finishes on tinycloud.one: the popup and same-tab flows tag their return with `one.`/`onetab.`. tinycloud.chat and home.tinycloud.xyz tag as before.
+
+## 0.14.0-beta.48
+
+### Patch Changes
+
+- 0cb46eb: The TinyChat retrieval skill (now 0.1.1-onboarding.27) and the reviewer seed default to `https://tee.node.tinycloud.xyz` again, pending the node-host privacy decision. A CLI profile on `https://node.tinycloud.xyz` still works.
+
+  Details: TC-2923
+
+## 0.14.0-beta.47
+
+### Patch Changes
+
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
 ## 0.14.0-beta.46
 
 ### Patch Changes

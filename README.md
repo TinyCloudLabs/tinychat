@@ -14,7 +14,7 @@ This app was generated with:
 
 ## UI Style
 
-TinyCloud Home's look comes from tokens, not per-component values. The palette (TinyCloud Home's
+TinyCloud One's look comes from tokens, not per-component values. The palette (TinyCloud One's
 neutral zinc greys, light and dark, following the system theme), the type roles (Literata for
 display titles only, the system sans for everything else), radius, shadow and
 motion are defined in `frontend/src/index.css` and `frontend/tailwind.config.js`.
@@ -226,10 +226,10 @@ Only these holds are needed:
    `Release` run and the runs it dispatches are in progress. `Deploy production`
    has one fixed concurrency group that keeps only one pending run, so a manual
    run queued behind the dispatched one replaces (cancels) it; a manual
-   `Desktop release (TinyCloud Home)` run for the same tag races the dispatched one.
+   `Desktop release (TinyCloud One)` run for the same tag races the dispatched one.
 3. **Only if the go excludes desktop** (for example a web-only hotfix; the
    fixed group still tags `exo-desktop`): let the dispatch happen, then cancel
-   the `Desktop release (TinyCloud Home)` run it started (`gh run cancel <id>`) before its
+   the `Desktop release (TinyCloud One)` run it started (`gh run cancel <id>`) before its
    publish job. Never block it by disabling the workflow.
 
 Immediately before the merge, every dispatched workflow must read `active`, and
@@ -243,7 +243,7 @@ done
 gh variable get EXO_DESKTOP_SIGNING -R TinyCloudLabs/tinychat
 ```
 
-After the merge, watch `Release`, `Deploy production` and `Desktop release (TinyCloud Home)`
+After the merge, watch `Release`, `Deploy production` and `Desktop release (TinyCloud One)`
 to the end, then check that `gh release view exo-desktop@<version>` shows a
 published, latest release with the DMG, `.app.zip` and `SHA256SUMS.txt`. If the
 dispatch step failed anyway, start what it didn't, with the same inputs:
@@ -260,7 +260,7 @@ workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
 `bun run release:check` fails if they drift.
 
 **Desktop releases.** For every new stable `exo-desktop@<version>` tag the
-`Release` workflow runs `Desktop release (TinyCloud Home)` **from main** with the tag as an
+`Release` workflow runs `Desktop release (TinyCloud One)` **from main** with the tag as an
 input. Betas are manual: a merge that versions a beta builds no desktop release,
 so a release coordinator runs
 `gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`
@@ -270,13 +270,13 @@ CI (`.github/workflows/desktop-build.yml`) and publishes a GitHub Release with
 no manual step:
 
 - a beta (`0.2.0-beta.3`) becomes a **pre-release** titled
-  `TinyCloud Home 0.2.0-beta.3 (beta)`, never marked latest;
+  `TinyCloud One 0.2.0-beta.3 (beta)`, never marked latest;
 - a stable version becomes a published Release marked **latest**.
 
 **Signing follows the `EXO_DESKTOP_SIGNING` repository variable** (see Signing
 mode below): `required` signs, notarizes and staples both channels and refuses
 to publish unless the build reports `signed=true`; `unsigned` publishes an
-unsigned build whose title (`TinyCloud Home 0.2.0-beta.3 (beta, UNSIGNED)`) and
+unsigned build whose title (`TinyCloud One 0.2.0-beta.3 (beta, UNSIGNED)`) and
 notes say so. An unset or unknown value fails the run before anything is built.
 Assets are `TinyCloud-Home_<version>_aarch64.dmg`, the matching `.app.zip` and
 `SHA256SUMS.txt` (the name is the tagged commit's `tauri.conf.json`
@@ -308,13 +308,13 @@ fails if the built Info.plist doesn't match.
 Beta desktop builds embed the beta web app, which talks to the production API
 (betas don't deploy the backend).
 
-**Signing mode.** `Desktop release (TinyCloud Home)` reads the `EXO_DESKTOP_SIGNING`
+**Signing mode.** `Desktop release (TinyCloud One)` reads the `EXO_DESKTOP_SIGNING`
 repository variable once, in its plan job, and has no default:
 
 | Value | Build | Release |
 |---|---|---|
 | `required` | Developer ID signed, notarized, stapled and verified (`desktop-build.yml` with `sign: true`, `desktop-release` environment) | published only if the build reports `signed=true` |
-| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested; ad-hoc sealed (`signingIdentity "-"`, same hardened runtime and entitlements) and the build fails unless `codesign --verify --deep --strict` accepts the app and the app in the DMG (Gatekeeper still rejects ad-hoc code) | title marked UNSIGNED; notes open with **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine "/Applications/TinyCloud Home.app"`.**; betas stay pre-releases, stables are marked latest |
+| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested; ad-hoc sealed (`signingIdentity "-"`, same hardened runtime and entitlements) and the build fails unless `codesign --verify --deep --strict` accepts the app and the app in the DMG (Gatekeeper still rejects ad-hoc code) | title marked UNSIGNED; notes open with **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine "/Applications/TinyCloud One.app"`.**; betas stay pre-releases, stables are marked latest |
 | unset or anything else | nothing | the plan job fails with an error naming the two values |
 
 The provenance checks (the workflow runs from `main`, the tag points at a
@@ -337,7 +337,7 @@ in the `desktop-release` GitHub environment, which must allow deployments from
 **`main` only** (set that up and check it before adding any secret:
 [desktop/README.md](desktop/README.md#before-adding-any-signing-secret-restrict-desktop-release-to-main))
 and has a required reviewer (Sam; self-review allowed), so only `Desktop
-release (TinyCloud Home)` dispatched on main reaches it, and each signed release
+release (TinyCloud One)` dispatched on main reaches it, and each signed release
 waits for approval twice: the preflight right after the plan, the sign job once
 the app is built. Approve from the run page or with
 `gh api -X POST repos/TinyCloudLabs/tinychat/actions/runs/<run id>/pending_deployments -F 'environment_ids[]=<id>' -f state=approved -f comment=...`. Only two jobs use it, and both

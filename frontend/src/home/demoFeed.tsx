@@ -20,7 +20,7 @@ const CARDS: DemoCard[] = [
     recommend: "early", done: "Travel agent will hold it and remind you tomorrow." },
   { id: "reading", kind: "task", agent: "Research agent", ago: 40 * MINUTE, title: "This week's reading list",
     body: "Five papers matched your topics. Two are short.", steps: ["Skim the two short papers", "Pick one to discuss in Chat"] },
-  { id: "backup", kind: "update", agent: "Home agent", ago: 3 * 60 * MINUTE, title: "Photo backup finished",
+  { id: "backup", kind: "update", agent: "House agent", ago: 3 * 60 * MINUTE, title: "Photo backup finished",
     body: "1,204 new photos are stored in your TinyCloud space." },
 ];
 

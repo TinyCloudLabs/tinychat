@@ -26,7 +26,7 @@ export class RootErrorBoundary extends Component<
         <div className="mx-auto flex w-full max-w-sm flex-col items-center gap-5 text-center">
           <img src="/icons/pwa-192.png" alt="" className="size-12 rounded-2xl" />
           <div className="flex flex-col gap-1.5">
-            <h1 className="font-display text-title-2">TinyCloud Home hit a snag</h1>
+            <h1 className="font-display text-title-2">TinyCloud One hit a snag</h1>
             <p className="text-callout text-muted-foreground">
               Reload to get back to where you were.
             </p>

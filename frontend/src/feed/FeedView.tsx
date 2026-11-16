@@ -184,21 +184,24 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
   const [about, setAbout] = useState(false);
   const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
   const platform = agent?.profile?.platform;
+  // Long unbroken tokens (commit hashes, file paths, URLs) wrap instead of running past the card's edge: overflow-wrap is
+  // inherited, and `anywhere` breaks a token only where it cannot fit on a line of its own.
   return (
-    <article className={plain ? "min-w-0 text-foreground" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
+    <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
       {/* One meta line, the compact card's (design round 7), so a card keeps its header row when it opens: the agent's
           mark, its name, its platform's mark, the time, and at the right the status and "Show less". */}
       <div className="flex min-w-0 items-center gap-3">
         {agent ? <AgentMark agentKey={agent.key} name={card.author.name} small /> : avatar && <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />}
         <div className="flex min-h-6 min-w-0 flex-1 items-center gap-1.5 text-meta text-muted-foreground">
-          <span data-agent-line className="flex min-w-0 items-center gap-1.5">
+          <span data-agent-line className="flex min-w-0 max-w-[60%] shrink-0 items-center gap-1.5">
             {/* The name's own box is 44px tall on touch, pulled back by its negative margin so the line stays 24px (critique #8, QA cb784d4). */}
             {onAuthor
-              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="-my-2.5 flex min-h-11 min-w-11 items-center text-left font-semibold text-foreground fine:my-0 fine:min-h-6 fine:min-w-0"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
-              : <span className="min-w-0 truncate font-semibold text-foreground">{card.author.name}</span>}
+              ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className="-my-2.5 flex min-h-11 min-w-11 max-w-full shrink-0 items-center text-left font-semibold text-foreground fine:my-0 fine:min-h-6 fine:min-w-0"><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
+              : <span className="max-w-full shrink-0 truncate font-semibold text-foreground">{card.author.name}</span>}
             {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
           </span>
-          <p className={`flex items-center gap-1.5 before:content-['·'] ${card.author.via ? "min-w-0" : "shrink-0"}`}>{card.author.via && <span className="min-w-0 truncate">{`via ${card.author.via} · `}</span>}<ShortTime at={card.at} className="shrink-0 tabular-nums" /></p>
+          {/* Who a typed card came through ("Holden (through Rocinante)") is in Details; here it was a stub ("via…"). */}
+          <p className="flex shrink-0 items-center gap-1.5 before:content-['·']"><ShortTime at={card.at} day className="shrink-0 tabular-nums" /></p>
           <span className="ml-auto flex shrink-0 items-center gap-2">
             {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
             {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}

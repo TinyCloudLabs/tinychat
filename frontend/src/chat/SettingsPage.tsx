@@ -217,7 +217,7 @@ export function SettingsPage({
             </div>
           </SectionCard>
           <AppLockSettings />
-          <SectionCard icon={LayoutGridIcon} title="Home">
+          <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
           <SectionCard

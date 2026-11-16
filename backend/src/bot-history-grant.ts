@@ -3,6 +3,7 @@
 import { verifySiweSession } from "@tinyboilerplate/server";
 import { makePkhSpaceId, verifyDidKeyEd25519Signature } from "@tinycloud/sdk-core";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { sameTinyCloudNode } from "@tinyboilerplate/core";
 import { historyBotId, HISTORY_PREFIX } from "./bot-history.js";
 export interface HistoryGrant {
   cid: string; authorization: string; ownerAddress: string; chainId: number; spaceId: string;
@@ -15,7 +16,7 @@ export async function projectBotHistoryGrant(
 ): Promise<HistoryGrant> {
   const fail = () => { throw new Error("history_grant_rejected"); };
   const bundle: unknown = JSON.parse(envelope.serialized);
-  if (!object(bundle) || bundle.host !== host || !object(bundle.delegationHeader) || typeof bundle.delegationHeader.Authorization !== "string") return fail();
+  if (!object(bundle) || typeof bundle.host !== "string" || !sameTinyCloudNode(bundle.host, host) || !object(bundle.delegationHeader) || typeof bundle.delegationHeader.Authorization !== "string") return fail();
   const authorization = bundle.delegationHeader.Authorization;
   const parts = authorization.replace(/^Bearer /i, "").split(".");
   if (parts.length !== 3 || node.computeDelegationCid(authorization) !== bundle.cid) return fail();

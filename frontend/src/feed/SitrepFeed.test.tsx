@@ -7,7 +7,7 @@ import { installDom } from "@/test/dom";
 import { installFakeClock } from "@/test/fakeClock.fixture";
 import type { HomeFeedEntry, HomeFeedMessageDraft, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SITREP_CREATED, SITREP_NOW, SITREP_REASKED, syntheticRecord } from "./sitrep.fixtures";
-import { foldsInto, parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
+import { emptySitrepOwnerData, foldsInto, parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
 import { homeFeedKey } from "./feedIdentity";
 
 // Radix portals do not attach in this DOM (happy-dom), so the sheet's chrome (BottomSheet / Dialog) is swapped for an
@@ -17,10 +17,6 @@ mock.module("../components/ui/responsive-sheet", () => ({
   ResponsiveSheet: (props: { open: boolean; title: ReactNode; description?: ReactNode; children?: ReactNode; footer?: ReactNode; contentProps?: Record<string, string> }) =>
     props.open ? <div role="dialog" aria-label="sheet" {...props.contentProps}><h2>{props.title}</h2><p>{props.description}</p>{props.children}<div>{props.footer}</div></div> : null,
   ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
-}));
-// The card's Details pop-up is a Radix Dialog too: the same inline stand-in, open only while Details is open.
-mock.module("./DetailsSheet", () => ({
-  DetailsSheet: (props: { open: boolean; children?: ReactNode }) => props.open ? <div role="dialog" aria-label="Details">{props.children}</div> : null,
 }));
 const { FeedViewEntries } = await import("./FeedView");
 
@@ -94,15 +90,23 @@ async function mount(source: HomeFeedSource) {
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={source} />));
-  await fullCards(host);
+  await openAll(host);
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
 }
-/** View → Full cards: every card open, as these tests read and act on the open card. */
-async function fullCards(host: HTMLElement) {
-  await act(async () => button(host, "View").click());
-  const full = [...host.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="View"] [role="radio"]')].find((node) => node.textContent === "Full cards");
-  expect(full !== undefined).toBe(true);
-  await act(async () => full!.click());
+/**
+ * Opens every card in place, as these tests read and act on the open card (Needs you opens its first card itself;
+ * the rest are rows a tap opens). Answered cards wait in the Pending card at the end: it is opened first.
+ */
+async function openAll(host: ParentNode) {
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await act(async () => pending.click());
+  // Opening one card re-renders the list, so look again each time.
+  for (let next = row(host); next; next = row(host)) await act(async () => next!.click());
+}
+/** A card still shown as a row (a post's row opens a page, so it is left alone). */
+function row(host: ParentNode) {
+  return [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].filter((item) => !item.querySelector("article") && !item.closest("[inert]"))
+    .map((item) => item.querySelector<HTMLButtonElement>('button[aria-expanded="false"]:not([aria-haspopup])')).find(Boolean) ?? null;
 }
 /** Finds a button by its visible text in `scope`. */
 function button(scope: ParentNode, label: string) {
@@ -121,13 +125,14 @@ async function enter(scope: ParentNode, label: string, text: string) {
     input!.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-/** Picks a position of the feed view slider ("Information", "All", "Needs action"). */
-async function show(host: HTMLElement, label: "Information" | "All" | "Needs action") {
-  const value = ({ Information: "information", All: "both", "Needs action": "needs-action" } as const)[label];
+/** Picks a tab of the feed's island ("Needs you", "All"), then opens every card again. */
+async function show(host: HTMLElement, label: "All" | "Needs action" | "History") {
+  const value = ({ All: "both", "Needs action": "needs-action", History: "history" } as const)[label];
   const radio = host.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Feed view"] input[value="${value}"]`);
   expect(radio !== null).toBe(true);
   await act(async () => radio!.click());
   expect(radio!.checked).toBe(true);
+  await openAll(host);
 }
 /** An open card, by the title it shows. */
 function card(scope: ParentNode, title: string) {
@@ -141,10 +146,12 @@ function option(scope: ParentNode, label: string) {
   const found = [...(answers(scope)?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((node) => node.textContent?.startsWith(label));
   expect(found !== undefined).toBe(true); return found!;
 }
-/** Opens the card's Details pop-up from its foot. */
+/** Opens the card's Details from its foot: it unfolds in the card. */
 async function details(article: HTMLElement) {
-  await act(async () => button(article, "Details").click());
-  expect(article.querySelector('[role="dialog"][aria-label="Details"]') !== null).toBe(true);
+  const toggle = [...article.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")].find((node) => node.textContent?.trim().startsWith("Details"));
+  expect(toggle !== undefined).toBe(true);
+  await act(async () => toggle!.click());
+  expect(article.querySelector('[aria-label="Details"]') !== null).toBe(true);
 }
 /** The "Undo · N" pill of an action counting down in `scope`. */
 function undoPill(scope: ParentNode) {
@@ -223,8 +230,9 @@ test("an expired go cannot be submitted and the earlier issuance is not treated 
   fixture.owner.answers.push({ sourceKey: "legacy-stale-go", card: { kind: "approval", id: record.id }, value: { askId: record.id, action: "done", issuedAt: SITREP_CREATED, text: "", at: SITREP_CREATED } });
   const view = await mount(fixture.source);
   // Past its expiry the card shows only in History.
-  await act(async () => button(view.host, "Filter").click());
-  await act(async () => button(view.host, "History").click());
+  // Past its expiry the card shows only in History, the island's third tab.
+  await act(async () => view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!.click());
+  await openAll(view.host);
   expect(button(card(view.host, String(record.title)), "Give the go").disabled).toBe(true);
   expect(answeredPanel(view.host)).toBeNull();
   expect(fixture.saved).toEqual([]);
@@ -368,8 +376,9 @@ test("an unknown typed record is visibly unsupported and never receives an actio
   expect(article.querySelector('[role="status"]') !== null).toBe(true);
   expect(article.querySelector('[aria-label="Your own answer"]')).toBeNull();
   expect(answers(article)).toBeNull();
-  // No answer, note, snooze or Details control.
-  expect(article.querySelectorAll("button, input, textarea, select").length).toBe(0);
+  // No answer, note or snooze control: besides folding it back to a row ("Show less"), only Details, which lists
+  // everything the card carries.
+  expect([...article.querySelectorAll("button, input, textarea, select")].filter((node) => node.getAttribute("aria-label") !== "Show less").map((node) => node.textContent?.trim().replace(/\+\d+$/, ""))).toEqual(["Details"]);
   expect(fixture.saved).toEqual([]);
 });
 
@@ -424,6 +433,7 @@ test("a folded approval step opens its own card after an ambiguous snapshot is r
   if (!open) throw new Error("Folded approval navigation is missing");
   fixture.snapshot.entries.pop();
   await act(async () => open.click());
+  await openAll(view.host);
 
   expect([...view.host.querySelectorAll("article")].some((article) => [...article.children].some((child) => child.tagName === "H2" && child.textContent === approval.title))).toBe(true);
 });
@@ -433,24 +443,24 @@ test("a typed question's foot is one row (Ask me later, Drop this card, Details)
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
   const foot = article.querySelector('[aria-label="Card actions"]');
-  expect([...foot!.querySelectorAll("button")].map((node) => node.textContent)).toEqual(["Ask me later", "Drop this card", "Details"]);
+  expect([...foot!.querySelectorAll("button")].map((node) => node.textContent?.replace(/\+\d+$/, ""))).toEqual(["Ask me later", "Drop this card", "Details"]);
   const comment = button(article, "Leave a comment for SyntheticOfficer");
   expect(comment.compareDocumentPosition(foot!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  // The context sits in its panel above the options, then the lab's expiry line (this fixture has a legacy expiry).
+  // The context sits in its panel above the options, then the card's timing line (this fixture expires).
   const options = article.querySelector("fieldset");
   const why = [...article.querySelectorAll("strong")].find((node) => node.textContent === "Why now: ");
   expect(why && options && why.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const expiry = [...article.querySelectorAll("p")].find((node) => node.textContent?.startsWith("Legacy expiry "));
+  const expiry = [...article.querySelectorAll("p")].find((node) => node.textContent?.startsWith("Expires "));
   expect(expiry && options && expiry.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-test("Accept recommendation and Skip this question wait under Undo before anything is written", async () => {
+test("Accept recommendation and Drop this card wait under Undo before anything is written", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
-  await act(async () => button(article, "Skip this question").click());
-  expect(article.textContent).toContain("Skipping in 5s");
+  await act(async () => button(article, "Drop this card").click());
+  expect(article.textContent).toContain("Dropping in 5s");
   await act(async () => button(article, "Undo").click());
   await timer.advance(10_000);
   expect(fixture.saved).toEqual([]);
@@ -576,6 +586,7 @@ test("open cards in one named group fold together without losing their separate 
   expect(group.querySelector("article")).toBeNull();
   await act(async () => disclosure.click());
   expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+  await openAll(group);
   const ask = card(group, first.entry.state.card.title);
   const task = card(group, second.entry.state.card.title);
   // Each member keeps its own controls: the question its answers, the task its steps.
@@ -706,4 +717,92 @@ test("an unresolved original thread destination is held instead of silently rese
   // No "Send again": the original destination isn't connected, so nothing may go to the publisher instead.
   expect(hasButton(thread!, "Send again")).toBe(false);
   expect(fixture.saved).toEqual([]);
+});
+
+test("a card its agent closed leaves the live feed and shows in History, marked Closed", async () => {
+  const record = { ...syntheticRecord("ask"), status: "superseded", closedAt: SITREP_NOW };
+  const fixture = typedFixture(record);
+  const view = await mount(fixture.source);
+  const titled = () => [...view.host.querySelectorAll("article")].filter((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === record.title));
+  // Neither in All nor in Needs action.
+  expect(titled().length).toBe(0);
+  await show(view.host, "Needs action");
+  expect(titled().length).toBe(0);
+  await show(view.host, "History");
+  const closed = card(view.host, String(record.title));
+  expect(closed.querySelector("[data-status]")?.textContent).toBe("Closed");
+  expect(fixture.saved).toEqual([]);
+});
+
+/**
+ * Rocinante closes the ask with `status`, which publishes a new revision of the card. As in the store, Sam's answers stay
+ * with the revision he answered and the closing revision carries none (ownerCardKey). Then History's statuses for it.
+ */
+async function closeInNewRevision(fixture: ReturnType<typeof typedFixture>, host: HTMLElement, status: string) {
+  const answered: HomeFeedEntry = { ...structuredClone(fixture.entry), owner: { ...emptySitrepOwnerData(), answers: structuredClone(fixture.owner.answers) as never } };
+  const closing = structuredClone(fixture.entry);
+  closing.state = { ...closing.state, response: null, card: { ...closing.state.card, revision: 2, issuanceId: "closing-issuance", payload: { sitrep: { version: 1, record: { ...syntheticRecord("ask"), status, closedAt: SITREP_NOW } } } } };
+  closing.view = { ...closing.view, revision: 2, issuanceId: "closing-issuance" };
+  closing.owner = emptySitrepOwnerData();
+  fixture.snapshot.entries = [closing];
+  fixture.snapshot.historicalEntries = [answered];
+  fixture.notify();
+  await act(async () => { await Promise.resolve(); });
+  await show(host, "History");
+  const title = String(fixture.entry.state.card.title);
+  return [...host.querySelectorAll("article")].filter((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === title)).map((node) => node.querySelector("[data-status]")?.textContent);
+}
+
+test("an ask Sam answered that its agent then closes in a new revision is one card in History, reading Answered", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Accept recommendation").click());
+  await timer.advance(5000);
+  expect(fixture.saved).toHaveLength(1);
+  expect(await closeInNewRevision(fixture, view.host, "answered")).toEqual(["Answered"]);
+});
+
+test("a typed ask's timing line says Due and Expires in the feed's words; one that never expires says nothing of it", async () => {
+  const due = typedFixture({ ...syntheticRecord("ask"), deadline: SITREP_NOW });
+  const dueView = await mount(due.source);
+  const dueLine = [...card(dueView.host, String(due.entry.state.card.title)).querySelectorAll("p")].find((node) => node.textContent?.startsWith("Due "));
+  expect(dueLine?.textContent).toContain(" · Expires ");
+  await dueView.unmount();
+  const never = typedFixture({ ...syntheticRecord("ask"), expiresAt: "never" });
+  const neverView = await mount(never.source);
+  const text = card(neverView.host, String(never.entry.state.card.title)).textContent ?? "";
+  expect(text).not.toContain("Expires");
+  expect(text).not.toContain("expiry");
+});
+
+test("Drop this card on a typed ask sends one drop answer for its agent, and there is no separate Skip", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  expect(hasButton(article, "Skip this question")).toBe(false);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(article, "Drop this card").click());
+  await timer.advance(5000);
+  // One answer, the same one the board reads as "drop it"; no owner-action message beside it.
+  expect(fixture.saved).toHaveLength(1);
+  expect(fixture.saved[0]?.response.kind).toBe("answer");
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: "ask-synthetic", action: "drop" } });
+  // The card goes, as Drop says: out of the live feed, in History marked Dropped.
+  fixture.notify();
+  await act(async () => { await Promise.resolve(); });
+  const titled = () => [...view.host.querySelectorAll("article")].filter((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === fixture.entry.state.card.title));
+  expect(titled().length).toBe(0);
+  await show(view.host, "History");
+  expect(card(view.host, String(fixture.entry.state.card.title)).querySelector("[data-status]")?.textContent).toBe("Dropped");
+});
+
+test("an ask Sam dropped that its agent then closes in a new revision is one card in History, still Dropped", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Drop this card").click());
+  await timer.advance(5000);
+  expect(fixture.saved).toHaveLength(1);
+  expect(await closeInNewRevision(fixture, view.host, "dropped")).toEqual(["Dropped"]);
 });

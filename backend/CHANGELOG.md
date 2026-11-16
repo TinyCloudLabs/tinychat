@@ -1,5 +1,43 @@
 # @tinychat/backend
 
+## 0.8.0-beta.23
+
+### Patch Changes
+
+- 6d52413: The per-request log record now names its route only from the fixed list of routes the backend serves (anything else is `unmatched`), reports credits as a range (`0`, `1-9`, `10-99`, `100-999`, `1000+`) instead of an exact count, and uses an account pseudonym that changes every calendar month (UTC), so one account's records can be linked within a month but not across months. Details: TC-3031.
+
+## 0.8.0-beta.22
+
+### Patch Changes
+
+- 98e2480: TinyCloud Home is now TinyCloud One everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud One.app`; `exo-update` replaces an existing `TinyCloud Home.app`), the Android and iOS app names, widgets, Siri phrases ("Start recording in TinyCloud One"), notifications, permission prompts and error messages. The main screen is now called Feed, and Settings › Start screen holds the first-screen choice. You stay signed in: the app id, bundle ids, URL schemes, installed web app id and every data path are unchanged, and nobody has to sign in again.
+
+## 0.8.0-beta.21
+
+### Patch Changes
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+
+## 0.8.0-beta.20
+
+### Patch Changes
+
+- be21a74: Google connections started on tinycloud.one return to tinycloud.one. The backend accepts two new `state` tags, `one.<nonce>` for the popup return and `onetab.<path>.<nonce>` for the same-tab return; both go to the fixed https://tinycloud.one origin when it is in the `FRONTEND_ORIGINS` allowlist (it is by default), and are refused like any unknown tag when it is not. Untagged, `tab.`, `home.`, `hometab.` and `native.` flows are unchanged.
+
+## 0.8.0-beta.19
+
+### Patch Changes
+
+- aa036e0: The backend accepts https://tinycloud.one, the Home app's new site, for CORS and the sign-in (SIWE) domain, alongside tinycloud.chat and home.tinycloud.xyz. It is one more exact origin in the default `FRONTEND_ORIGINS` list; `www.tinycloud.one`, other ports, other schemes and lookalike hosts are still refused. Google connections started on tinycloud.one still return to `FRONTEND_URL` until they get their own return tag.
+
+## 0.8.0-beta.18
+
+### Patch Changes
+
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
 ## 0.8.0-beta.17
 
 ### Patch Changes

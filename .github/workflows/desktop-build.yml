@@ -1,4 +1,4 @@
-name: Desktop build (TinyCloud Home)
+name: Desktop build (TinyCloud One)
 
 # The one desktop build definition, called by desktop.yml (CI) and desktop-release.yml (releases), so the long native
 # build is never duplicated. It produces the .dmg and a ditto-zipped .app as one workflow artifact.

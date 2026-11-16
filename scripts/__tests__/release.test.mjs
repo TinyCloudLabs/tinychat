@@ -915,14 +915,14 @@ test('desktop-bundle-config.mjs refuses a productName or identifier that is unsa
     assert.match(result.stderr, new RegExp(`tauri\\.conf\\.json ${key} must be`));
   }
   const spaced = manifests(t);
-  editJson(spaced, 'desktop/src-tauri/tauri.conf.json', conf => { conf.productName = 'TinyCloud Home'; });
+  editJson(spaced, 'desktop/src-tauri/tauri.conf.json', conf => { conf.productName = 'TinyCloud One'; });
   const ok = run('desktop-bundle-config.mjs', ['--root', spaced, '--out', join(tempDir(t), 'bundle'), '--smoke']);
   assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /^product-name=TinyCloud Home Smoke$/m);
+  assert.match(ok.stdout, /^product-name=TinyCloud One Smoke$/m);
 });
 
 // A repo whose main has a release commit at `version`, tagged `exo-desktop@<version>`.
-function releasePlanRepo(t, version, productName = 'TinyCloud Home') {
+function releasePlanRepo(t, version, productName = 'TinyCloud One') {
   const root = manifests(t);
   for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = version; });
   editJson(root, 'desktop/src-tauri/tauri.conf.json', conf => { conf.productName = productName; });
@@ -953,12 +953,12 @@ test('desktop-release-plan.mjs: a beta tag on main becomes a pre-release built f
   assert.match(result.stdout, new RegExp(`^sha=${sha}$`, 'm'));
   assert.match(result.stdout, /^channel=beta$/m);
   assert.match(result.stdout, /^prerelease=true$/m);
-  assert.match(result.stdout, /^title=TinyCloud Home 0\.2\.0-beta\.3 \(beta\)$/m);
-  assert.match(result.stdout, /^asset-prefix=TinyCloud-Home_0\.2\.0-beta\.3_aarch64$/m);
+  assert.match(result.stdout, /^title=TinyCloud One 0\.2\.0-beta\.3 \(beta\)$/m);
+  assert.match(result.stdout, /^asset-prefix=TinyCloud-One_0\.2\.0-beta\.3_aarch64$/m);
   assert.match(result.stdout, /^signing=required$/m);
   const text = readFileSync(notes, 'utf8');
-  assert.match(text, /\*\*Beta\.\*\* A pre-release of TinyCloud Home 0\.2\.0/);
-  assert.match(text, /^- TinyCloud Home 0\.2\.0-beta\.3 for Apple Silicon Macs/m);
+  assert.match(text, /\*\*Beta\.\*\* A pre-release of TinyCloud One 0\.2\.0/);
+  assert.match(text, /^- TinyCloud One 0\.2\.0-beta\.3 for Apple Silicon Macs/m);
   assert.match(text, /## Desktop\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n/);
   assert.match(text, /## Web app \(bundled, @tinychat\/frontend@0\.2\.0-beta\.3\)\n\n### Minor Changes\n\n- def5678: Web feature X\n/);
   assert.match(text, /CFBundleShortVersionString 0\.2\.0, CFBundleVersion 200003/);
@@ -987,11 +987,11 @@ test('desktop-release-plan.mjs: a stable tag becomes the latest release', t => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^channel=stable$/m);
   assert.match(result.stdout, /^prerelease=false$/m);
-  assert.match(result.stdout, /^title=TinyCloud Home 0\.2\.0$/m);
+  assert.match(result.stdout, /^title=TinyCloud One 0\.2\.0$/m);
   assert.doesNotMatch(readFileSync(notes, 'utf8'), /Beta/);
 });
 
-const UNSIGNED_NOTICE = '> **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine "/Applications/TinyCloud Home.app"`.**';
+const UNSIGNED_NOTICE = '> **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine "/Applications/TinyCloud One.app"`.**';
 
 test('desktop-release-plan.mjs --signing unsigned: a beta stays a pre-release, marked UNSIGNED in title and notes', t => {
   const { root, sha } = releasePlanRepo(t, '0.2.0-beta.3');
@@ -1001,8 +1001,8 @@ test('desktop-release-plan.mjs --signing unsigned: a beta stays a pre-release, m
   assert.match(result.stdout, /^signing=unsigned$/m);
   assert.match(result.stdout, /^channel=beta$/m);
   assert.match(result.stdout, /^prerelease=true$/m);
-  assert.match(result.stdout, /^title=TinyCloud Home 0\.2\.0-beta\.3 \(beta, UNSIGNED\)$/m);
-  assert.match(result.stdout, /^asset-prefix=TinyCloud-Home_0\.2\.0-beta\.3_aarch64$/m);
+  assert.match(result.stdout, /^title=TinyCloud One 0\.2\.0-beta\.3 \(beta, UNSIGNED\)$/m);
+  assert.match(result.stdout, /^asset-prefix=TinyCloud-One_0\.2\.0-beta\.3_aarch64$/m);
   const text = readFileSync(notes, 'utf8');
   assert.ok(text.startsWith(`${UNSIGNED_NOTICE}\n\n> **Beta.**`), text);
   assert.match(text, /^- UNSIGNED: not Developer ID signed or notarized\. Check downloads against SHA256SUMS\.txt\.$/m);
@@ -1017,7 +1017,7 @@ test('desktop-release-plan.mjs --signing unsigned: a stable is still the latest 
   assert.match(result.stdout, /^signing=unsigned$/m);
   assert.match(result.stdout, /^channel=stable$/m);
   assert.match(result.stdout, /^prerelease=false$/m);
-  assert.match(result.stdout, /^title=TinyCloud Home 0\.2\.0 \(UNSIGNED\)$/m);
+  assert.match(result.stdout, /^title=TinyCloud One 0\.2\.0 \(UNSIGNED\)$/m);
   const text = readFileSync(notes, 'utf8');
   assert.ok(text.startsWith(`${UNSIGNED_NOTICE}\n\n## `), text);
   assert.doesNotMatch(text, /Beta|Developer ID signed, notarized and stapled/);
@@ -1272,7 +1272,7 @@ test('desktop builds and releases run release tooling from the workflow commit, 
 });
 
 test('verify-desktop-signing.sh rejects a missing app before running any check', t => {
-  const result = spawnSync('bash', [join(repo, 'scripts/release/verify-desktop-signing.sh'), join(tempDir(t), 'TinyCloud Home.app'), 'TinyCloud-Home.dmg', 'ABCDE12345'], { encoding: 'utf8' });
+  const result = spawnSync('bash', [join(repo, 'scripts/release/verify-desktop-signing.sh'), join(tempDir(t), 'TinyCloud One.app'), 'TinyCloud-One.dmg', 'ABCDE12345'], { encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /::error::no app bundle at/);
 });
@@ -1901,7 +1901,7 @@ exit 1
 `);
   write(dir, 'bin/ditto', '#!/usr/bin/env bash\n[ "$1" = -x ] && [ "$2" = -k ] && exec tar -xf "$3" -C "$4"\nexit 1\n');
   for (const name of ['codesign', 'plutil', 'ditto']) chmodSync(join(bin, name), 0o755);
-  const contents = join(dir, 'src/TinyCloud Home.app/Contents');
+  const contents = join(dir, 'src/TinyCloud One.app/Contents');
   write(contents, 'Info.plist', ['<plist><dict>', ...Object.entries({ CFBundleExecutable: 'exo-desktop', CFBundleIdentifier: 'xyz.tinycloud.exo',
     CFBundleShortVersionString: '0.2.0', CFBundleVersion: '200003' }).flatMap(([key, value]) => [`<key>${key}</key>`, `<string>${value}</string>`]), '</dict></plist>', ''].join('\n'));
   const macho = rel => {
@@ -1915,7 +1915,7 @@ exit 1
   write(contents, 'Resources/Res.bundle/Contents/Resources/strings.txt', 'resources only');
   const archive = name => {
     const tar = join(dir, name);
-    assert.equal(spawnSync('tar', ['-cf', tar, 'TinyCloud Home.app'], { cwd: join(dir, 'src') }).status, 0);
+    assert.equal(spawnSync('tar', ['-cf', tar, 'TinyCloud One.app'], { cwd: join(dir, 'src') }).status, 0);
     return tar;
   };
   const log = join(dir, 'codesign.log');
@@ -1926,14 +1926,14 @@ exit 1
 test('desktop-signing.sh unpack checks the handed-over app before anything signs it', t => {
   const { dir, contents, archive, env } = stubbedMacTools(t);
   const named = (name, tar, ...versions) => desktopSigning(['unpack', tar, join(dir, 'out'), name, ...versions], env);
-  const unpack = (tar, ...versions) => named('TinyCloud Home', tar, ...versions);
+  const unpack = (tar, ...versions) => named('TinyCloud One', tar, ...versions);
   const good = archive('good.tar');
   const ok = unpack(good, '0.2.0-beta.3', '0.2.0', '200003');
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
-  assert.equal(ok.stdout.trim(), join(dir, 'out/TinyCloud Home.app'));
+  assert.equal(ok.stdout.trim(), join(dir, 'out/TinyCloud One.app'));
   // The build job's outputs are strings from a job that ran build code: refused unless they look like a name and
   // versions, before they name anything.
-  for (const name of ['', '../TinyCloud Home', 'TinyCloud/Home', 'TinyCloud Home; touch pwned', ' TinyCloud Home', 'TinyCloud  Home']) {
+  for (const name of ['', '../TinyCloud One', 'TinyCloud/Home', 'TinyCloud One; touch pwned', ' TinyCloud One', 'TinyCloud  Home']) {
     const refused = named(name, good, '0.2.0-beta.3', '0.2.0', '200003');
     assert.equal(refused.status, 1, name);
     assert.match(refused.stdout, /::error::the build reports product name '.*', not words of letters and digits/, name);
@@ -1947,7 +1947,7 @@ test('desktop-signing.sh unpack checks the handed-over app before anything signs
   symlinkSync('../../../../etc/passwd', join(contents, 'Resources/escape'));
   const escape = unpack(archive('escape.tar'), '0.2.0-beta.3', '0.2.0', '200003');
   assert.equal(escape.status, 1);
-  assert.match(escape.stdout, /::error::symlink TinyCloud Home\.app\/Contents\/Resources\/escape points outside the app/);
+  assert.match(escape.stdout, /::error::symlink TinyCloud One\.app\/Contents\/Resources\/escape points outside the app/);
   chmodSync(join(contents, 'MacOS/exo-desktop'), 0o644);
   rmSync(join(contents, 'Resources/escape'));
   assert.match(unpack(archive('noexec.tar'), '0.2.0-beta.3', '0.2.0', '200003').stdout, /::error::Contents\/MacOS\/exo-desktop lost its executable bit/);
@@ -1955,7 +1955,7 @@ test('desktop-signing.sh unpack checks the handed-over app before anything signs
 
 test('desktop-signing.sh sign signs nested code deepest first, the app last with the entitlements, never with --deep', t => {
   const { dir, archive, env, log } = stubbedMacTools(t);
-  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), 'TinyCloud Home', '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
+  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), 'TinyCloud One', '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
   const entitlements = join(repo, 'desktop/src-tauri/Entitlements.plist');
   const signed = identity => {
     writeFileSync(log, '');
@@ -1965,19 +1965,19 @@ test('desktop-signing.sh sign signs nested code deepest first, the app last with
   };
   const adHoc = signed('-');
   const signs = adHoc.filter(line => line.includes(' --sign '));
-  const target = line => line.slice(line.lastIndexOf(` ${join(dir, 'out')}/`) + 1).replace(`${app}/`, '').replace(app, 'TinyCloud Home.app');
+  const target = line => line.slice(line.lastIndexOf(` ${join(dir, 'out')}/`) + 1).replace(`${app}/`, '').replace(app, 'TinyCloud One.app');
   assert.deepEqual(signs.map(target), [
     'Contents/Frameworks/Foo.framework/Versions/A/Foo',
     'Contents/Resources/lib/libbar.dylib',
     'Contents/Frameworks/Foo.framework',
     'Contents/MacOS/helper',
-    'TinyCloud Home.app',
+    'TinyCloud One.app',
   ]);
   for (const line of signs) {
     assert.match(line, /^codesign --force --options runtime --sign - --timestamp=none /);
     assert.doesNotMatch(line, /--deep/);
   }
-  assert.deepEqual(signs.filter(line => line.includes('--entitlements')).map(target), ['TinyCloud Home.app']);
+  assert.deepEqual(signs.filter(line => line.includes('--entitlements')).map(target), ['TinyCloud One.app']);
   assert.ok(adHoc.findIndex(line => line.startsWith('codesign --verify --deep --strict')) > adHoc.indexOf(signs.at(-1)), 'verified after signing');
 
   const developerId = signed('Developer ID Application: TinyCloud Labs (ABCDE12345)').filter(line => line.includes(' --sign '));
@@ -1991,13 +1991,13 @@ test('desktop-signing.sh sign signs nested code deepest first, the app last with
 // without an identity.
 test('the desktop sign step re-seals ad-hoc in the dry run and never signs ad-hoc for a signed build', t => {
   const { dir, archive, env, log } = stubbedMacTools(t);
-  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), 'TinyCloud Home', '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
+  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), 'TinyCloud One', '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
   const script = stepScript(jobText(read(repo, '.github/workflows/desktop-build.yml'), 'sign'), 'Sign the app (inside-out)');
   const step = extra => spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], { cwd: repo, encoding: 'utf8', env: { ...env, EXO_APP: app, ...extra } });
   writeFileSync(log, '');
   const dryRun = step({ SIGN: 'false', IDENTITY: '' });
   assert.equal(dryRun.status, 0, dryRun.stdout + dryRun.stderr);
-  assert.match(dryRun.stdout, /TinyCloud Home\.app re-sealed ad-hoc inside-out \(4 nested\)/);
+  assert.match(dryRun.stdout, /TinyCloud One\.app re-sealed ad-hoc inside-out \(4 nested\)/);
   writeFileSync(log, '');
   const missing = step({ SIGN: 'true', IDENTITY: '' });
   assert.equal(missing.status, 1);
@@ -2100,7 +2100,7 @@ if command -v sha256sum >/dev/null; then exec sha256sum "$@"; else exec /usr/bin
   open: `#!/bin/bash\nprintf 'open %s\\n' "$1" >> "$STUB_LOG/calls.log"\n`,
 };
 
-function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, installedAs = 'TinyCloud Home.app', releaseApp = 'TinyCloud Home.app', releaseDmg, args = [] } = {}) {
+function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, installedAs = 'TinyCloud One.app', releaseApp = 'TinyCloud One.app', releaseDmg, args = [] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'exo-update-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dirs = Object.fromEntries(['bin', 'home', 'apps', 'release', 'log', 'tmp'].map((name) => [name, join(root, name)]));
@@ -2116,7 +2116,7 @@ function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, kill
   app(join(dirs.release, 'content'), releaseApp, 'new-build');
   writeFileSync(join(dirs.release, dmg), 'fake dmg bytes');
   const digest = createHash('sha256').update(sums === 'bad' ? 'other bytes' : 'fake dmg bytes').digest('hex');
-  writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'TinyCloud-Home_other_aarch64.dmg' : dmg}\n`);
+  writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'TinyCloud-One_other_aarch64.dmg' : dmg}\n`);
   for (const [name, body] of Object.entries(EXO_UPDATE_STUBS)) {
     writeFileSync(join(dirs.bin, name), body);
     chmodSync(join(dirs.bin, name), 0o755);
@@ -2135,10 +2135,10 @@ function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, kill
   return {
     status: result.status, stderr: result.stderr,
     calls: read(join(dirs.log, 'calls.log')), curl: read(join(dirs.log, 'curl.log')),
-    build: read(join(dirs.apps, existsSync(join(dirs.apps, 'TinyCloud Home.app')) ? 'TinyCloud Home.app' : installedAs, 'Contents/Info.plist')).trim(),
+    build: read(join(dirs.apps, existsSync(join(dirs.apps, 'TinyCloud One.app')) ? 'TinyCloud One.app' : installedAs, 'Contents/Info.plist')).trim(),
     apps: readdirSync(dirs.apps).filter((name) => name.endsWith('.app')),
     state: read(join(dirs.home, '.exo-update')).trim(),
-    leftovers: [...readdirSync(dirs.apps).filter((name) => name !== 'TinyCloud Home.app' && name !== installedAs), ...readdirSync(dirs.tmp)],
+    leftovers: [...readdirSync(dirs.apps).filter((name) => name !== 'TinyCloud One.app' && name !== installedAs), ...readdirSync(dirs.tmp)],
   };
 }
 
@@ -2163,19 +2163,33 @@ for (const shell of ['bash', 'sh']) {
     assert.equal(runExoUpdate(t, shell, { args: ['beta'] }).build, 'new-build', 'beta channel');
   });
 
-  test(`exo-update.sh (${shell}) replaces an install from before the rename (Exo.app) with TinyCloud Home.app`, (t) => {
+  test(`exo-update.sh (${shell}) replaces an install from before the rename (Exo.app) with TinyCloud One.app`, (t) => {
     const run = runExoUpdate(t, shell, { installedAs: 'Exo.app' });
     assert.equal(run.status, 0, run.stderr);
     assert.equal(run.build, 'new-build');
-    assert.deepEqual(run.apps, ['TinyCloud Home.app'], 'the old Exo.app is gone, not left beside the new app');
+    assert.deepEqual(run.apps, ['TinyCloud One.app'], 'the old Exo.app is gone, not left beside the new app');
     assert.deepEqual(run.leftovers, []);
+  });
+
+  test(`exo-update.sh (${shell}) replaces TinyCloud Home.app with TinyCloud One.app, from either release`, (t) => {
+    const fromNew = runExoUpdate(t, shell, { installedAs: 'TinyCloud Home.app' });
+    assert.equal(fromNew.status, 0, fromNew.stderr);
+    assert.equal(fromNew.build, 'new-build');
+    assert.deepEqual(fromNew.apps, ['TinyCloud One.app'], 'the old TinyCloud Home.app is gone, not left beside the new app');
+    assert.deepEqual(fromNew.leftovers, []);
+    const fromHomeRelease = runExoUpdate(t, shell, { installedAs: 'TinyCloud Home.app', releaseApp: 'TinyCloud Home.app', releaseDmg: 'TinyCloud-Home_9.9.9_aarch64.dmg' });
+    assert.equal(fromHomeRelease.status, 0, fromHomeRelease.stderr);
+    assert.equal(fromHomeRelease.build, 'new-build');
+    assert.deepEqual(fromHomeRelease.apps, ['TinyCloud One.app']);
+    assert.match(fromHomeRelease.curl, /TinyCloud-Home_9\.9\.9_aarch64\.dmg/);
+    assert.deepEqual(fromHomeRelease.leftovers, []);
   });
 
   test(`exo-update.sh (${shell}) still installs a release from before the rename (Exo_<v>_aarch64.dmg holding Exo.app)`, (t) => {
     const run = runExoUpdate(t, shell, { installedAs: 'Exo.app', releaseApp: 'Exo.app', releaseDmg: 'Exo_9.9.9_aarch64.dmg' });
     assert.equal(run.status, 0, run.stderr);
     assert.equal(run.build, 'new-build');
-    assert.deepEqual(run.apps, ['TinyCloud Home.app']);
+    assert.deepEqual(run.apps, ['TinyCloud One.app']);
     assert.match(run.curl, /Exo_9\.9\.9_aarch64\.dmg/);
     assert.deepEqual(run.leftovers, []);
   });
