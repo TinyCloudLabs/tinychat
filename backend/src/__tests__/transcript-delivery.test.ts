@@ -125,6 +125,8 @@ async function fixture(schema = true): Promise<Fixture> {
   const node = {
     computeDelegationCid: grant.computeDelegationCid,
     async useDelegation() { counts.activation++; events.push("activation"); return { sql, kv }; },
+    // What the node's delegation status read says about the stored grant; refusals remove it only when this is revoked or expired.
+    async getDelegationStatus() { return { ok: true, data: { status: "revoked", active: false, revoked: true, expired: false, exists: true, cid: "cid" } }; },
   } as unknown as TinyCloudNode;
   const storageLane = new BackendStorageLane();
   const worker = (options: Partial<TranscriptDeliveryOptions> = {}) =>
@@ -1495,7 +1497,7 @@ describe("durable transcript delivery", () => {
     await worker.stop();
   });
 
-  it("meters rejected-grant removal and leaves the shared user lane free while a take waits", async () => {
+  it("meters removal of a grant whose activation is refused and the node reports revoked, and leaves the shared user lane free while a take waits", async () => {
     const f = await fixture();
     await admit(f, "rejected");
     await withActivationNode(f, { status: 403 }, async (host) => {
@@ -1529,7 +1531,7 @@ describe("durable transcript delivery", () => {
     await second.stop();
   });
 
-  it("removes a grant the node rejects at activation (401/403), so status reports none and renewal follows", async () => {
+  it("removes a grant the node rejects at activation (401/403) and reports revoked, so status reports none and renewal follows", async () => {
     for (const rejected of [401, 403]) {
       const f = await fixture();
       const answer = { status: 200 };
@@ -1607,7 +1609,7 @@ describe("durable transcript delivery", () => {
     await worker.stop();
   });
 
-  it("confirms a storage 403 with a fresh activation: a refused activation (401/403) deletes the grant", async () => {
+  it("confirms a storage 403 with a fresh activation: a refused activation (401/403) that the node reports revoked deletes the grant", async () => {
     for (const [refused, confirmation] of [["sql", 403], ["kv", 403], ["sql", 401]] as const) {
       const f = await fixture();
       const answers: NodeAnswers = { delegate: 200, sql: 200, kv: 200 };
@@ -1733,5 +1735,98 @@ describe("durable transcript delivery", () => {
     expect(laneReleased).toBe(true);
     expect(f.state().done.paced.how).toBe("written");
     await worker.stop();
+  });
+
+  describe("a refused activation removes the grant only when the node's status says it is revoked or expired", () => {
+    type Status = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string } } | "throws";
+    const result = (status: string, extra: Record<string, unknown> = {}): Status => ({
+      ok: true, data: { status, active: status === "active", revoked: status === "revoked", expired: status === "expired", exists: status !== "not_found", cid: "cid", ...extra },
+    });
+    const setStatus = (f: Fixture, status: Status) => {
+      (f.node as unknown as { getDelegationStatus: () => Promise<unknown> }).getDelegationStatus = async () => {
+        if (status === "throws") throw new Error("status read failed");
+        return status;
+      };
+    };
+    const captureWarnings = () => {
+      const lines: string[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+      return { lines, restore: () => { console.warn = original; } };
+    };
+
+    it("keeps the grant, records a retry and logs the reason, for an unlabelled 401/403 whatever the node's status read gives", async () => {
+      const cases: [string, Status, string][] = [
+        ["active", result("active"), "active"],
+        ["not found", result("not_found"), "not_found"],
+        ["unavailable", result("unavailable"), "unavailable"],
+        ["read failed", { ok: false, error: { code: "NETWORK_ERROR" } }, "status_unreadable"],
+        ["read threw", "throws", "status_unreadable"],
+      ];
+      for (const rejected of [401, 403]) {
+        for (const [label, status, reason] of cases) {
+          const f = await fixture();
+          setStatus(f, status);
+          await admit(f, "refused");
+          const logs = captureWarnings();
+          try {
+            await withActivationNode(f, { status: rejected }, async (host) => {
+              const worker = f.worker({ configuredHost: host });
+              await worker.deliver(f.grant.address, "refused");
+              await worker.stop();
+            });
+          } finally { logs.restore(); }
+          const where = `${rejected} / ${label}`;
+          expect({ where, removed: f.counts.removal, kept: f.records.has(f.grant.address.toLowerCase()) }).toEqual({ where, removed: 0, kept: true });
+          expect({ where, code: f.state().retry.refused.code }).toEqual({ where, code: "storage_error" });
+          expect(f.state().retry.refused.nextAt).toBeGreaterThan(Date.now());
+          expect(logs.lines).toContain(`[transcript-delivery] op=activation_refused reason=${reason} result=grant_kept`);
+        }
+      }
+    });
+
+    it("removes the grant and logs the reason, without the delegation id, when the node reports it revoked or expired", async () => {
+      for (const reason of ["revoked", "expired"]) {
+        const f = await fixture();
+        setStatus(f, result(reason, { cid: "bafy-delegation-id-must-not-be-logged" }));
+        await admit(f, "gone");
+        const logs = captureWarnings();
+        try {
+          await withActivationNode(f, { status: 401 }, async (host) => {
+            const worker = f.worker({ configuredHost: host });
+            await worker.deliver(f.grant.address, "gone");
+            await worker.stop();
+          });
+        } finally { logs.restore(); }
+        expect({ reason, removed: f.counts.removal, kept: f.records.has(f.grant.address.toLowerCase()) }).toEqual({ reason, removed: 1, kept: false });
+        expect(f.state()?.retry?.gone).toBeUndefined();
+        expect(logs.lines).toContain(`[transcript-delivery] op=activation_refused reason=${reason} result=grant_removed`);
+        expect(logs.lines.join("\n")).not.toContain("bafy-delegation-id-must-not-be-logged");
+      }
+    });
+
+    it("keeps the grant when a storage 403 is confirmed by a refused activation but the node's status says it is still active", async () => {
+      const f = await fixture();
+      const answers: NodeAnswers = { delegate: 200, sql: 200, kv: 200 };
+      await withStorageNode(f, answers, async (host) => {
+        const cache = new DelegationCache();
+        const worker = f.worker({ configuredHost: host, delegationCache: cache });
+        const address = f.grant.address.toLowerCase();
+        const envelope = f.records.get(address)!.serialized;
+        await admit(f, "warm");
+        await worker.deliver(address, "warm");
+        expect(f.state().done.warm.how).toBe("written");
+        setStatus(f, result("active"));
+        answers.sql = 403;
+        answers.delegate = 401;
+        await admit(f, "operational");
+        await worker.deliver(address, "operational");
+        expect(f.counts.removal).toBe(0);
+        expect(f.records.get(address)?.serialized).toBe(envelope);
+        expect(f.state().retry.operational.code).toBe("storage_error");
+        expect(cache.get(verificationCacheKey(address, envelope, f.grant.backendDid, host))).toBeNull();
+        await worker.stop();
+      });
+    });
   });
 });

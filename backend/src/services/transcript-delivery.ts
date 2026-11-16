@@ -142,7 +142,7 @@ const SWEEP_CALL_CAP = 200;
 /** A non-cohort grant check reads once, and once more to compare-and-delete a grant it finds. */
 const GRANT_CHECK_READS = 2;
 
-/** Only the node refusing an activation of the grant itself proves the grant is revoked. */
+/** The node answered an activation of the grant with 401/403. That alone does not say why (see `grantGoneOnNode`). */
 function refusedActivation(error: unknown): boolean {
   return error instanceof DelegationActivationError && (error.status === 401 || error.status === 403);
 }
@@ -558,8 +558,9 @@ export class TranscriptDeliveryWorker {
       this.done(address, state, id, "written");
       console.info(`[transcript-delivery] op=deliver result=written id=${id}`);
     } catch (error) {
-      if (refusedActivation(error)) await this.removeGrant(address, grant.envelope);
-      else this.retry(address, state, id, this.errorCode(error));
+      if (!refusedActivation(error)) this.retry(address, state, id, this.errorCode(error));
+      else if (await this.grantGoneOnNode(grant.verified.cid)) await this.removeGrant(address, grant.envelope);
+      else this.retry(address, state, id, "storage_error");
     }
     return true;
   }
@@ -596,9 +597,32 @@ export class TranscriptDeliveryWorker {
       });
       this.accessCache.set(cacheKey, access);
     } catch (error) {
-      if (refusedActivation(error)) { await this.removeGrant(address, grant.envelope); return; }
+      if (refusedActivation(error) && await this.grantGoneOnNode(grant.verified.cid)) { await this.removeGrant(address, grant.envelope); return; }
     }
     this.retry(address, state, id, "storage_error");
+  }
+
+  /**
+   * Whether the node itself says this grant is over. A 401/403 on activation carries no reason, and a node
+   * fault (TC-3076) answers 401 for a valid grant, so a refusal alone never deletes one. The reason comes from
+   * the node's delegation status read (`getDelegationStatus`, readable by the delegatee): `revoked` or `expired`.
+   * Anything else (still active, not found, unavailable, or the read itself failing) keeps the grant for a retry.
+   * Logs the reason, never the CID.
+   */
+  private async grantGoneOnNode(cid: string): Promise<boolean> {
+    let reason: string;
+    try {
+      const read = await this.options.node.getDelegationStatus(cid);
+      if (!read.ok) reason = "status_unreadable";
+      else if (read.data.revoked || read.data.status === "revoked") reason = "revoked";
+      else if (read.data.expired || read.data.status === "expired") reason = "expired";
+      else reason = read.data.status === "active" ? "active" : read.data.status === "not_found" ? "not_found" : "unavailable";
+    } catch {
+      reason = "status_unreadable";
+    }
+    const gone = reason === "revoked" || reason === "expired";
+    console.warn(`[transcript-delivery] op=activation_refused reason=${reason} result=${gone ? "grant_removed" : "grant_kept"}`);
+    return gone;
   }
 
   private async nextSweepItem(): Promise<SweepAction | null> {
