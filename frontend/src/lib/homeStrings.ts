@@ -56,6 +56,10 @@ export const FEATURE_ACCESS_NOT_NOW = "Not now";
 export const FEATURE_ACCESS_BUSY = "Finish the current recording or upload first.";
 export const FEATURE_ACCESS_DECLINED = "Permission wasn't given. Nothing changed.";
 export const FEATURE_ACCESS_FAILED = "Couldn't ask for permission. Nothing changed. Try again.";
+/** DRAFT COPY, Monica words it. OpenKey's review was approved with some permissions unticked: say which are needed and why. */
+export const FEATURE_ACCESS_NARROWED = {
+  connectors: `Connectors needs permission to keep your meetings, and the keys and sign-ins you add, in your TinyCloud space. Nothing changed. Continue again and keep every permission ticked.`,
+} as const;
 export const FEATURE_ACCESS_WRONG_ACCOUNT = "That was a different OpenKey account from the one signed in here. Nothing changed. Try again with the same account.";
 /** A new recording or upload waits while OpenKey is open for one of these asks. */
 export const FEATURE_ACCESS_WAIT_FOR_OPENKEY = "Finish in OpenKey first, then try again.";

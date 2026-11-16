@@ -310,10 +310,9 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   expect(signInCalls).toBe(1);
   expect(verifyCalls).toBe(1);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
-  // One-click flow: no OpenKey authorize mode, and no app-key grants in the signed manifest.
+  // OpenKey's versioned authorization in its frame, and no app-key grants in the signed manifest.
   const config = lastSignInConfig as unknown as { openkey?: { mode?: unknown }; manifest: Record<string, unknown> };
-  expect(config.openkey?.mode).toBeUndefined();
-  expect(JSON.stringify(config)).not.toContain("iframe");
+  expect(config.openkey?.mode).toBe("iframe");
   expect("keys" in config.manifest).toBe(false);
   expect("keys_app_id" in config.manifest).toBe(false);
 

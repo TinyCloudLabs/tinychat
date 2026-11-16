@@ -16,7 +16,7 @@ import type { ConnectWalletResult, EIP1193Provider, TinyCloudWebConfig } from "@
 import { isSignInCancelled } from "./authErrors";
 import { webSignInManifest, type HomeFeature } from "./homeFeatures";
 import { setHomeReauthorizing } from "./homeReauthorizing";
-import type { WebSignInPrefetch } from "./webSignInPrefetch";
+import { guardOpenKey, type WebSignInPrefetch } from "./webSignInPrefetch";
 
 export interface HomeReauthorizeDeps {
   connect(): Promise<Pick<ConnectWalletResult, "address" | "openkey"> & { web3Provider: EIP1193Provider }>;
@@ -42,7 +42,7 @@ export type HomeReauthorizeResult =
      */
     rollback(): Promise<boolean>;
   }
-  | { outcome: "declined" | "failed" | "wrong-account" | CommitBlocked };
+  | { outcome: "declined" | "failed" | "narrowed" | "wrong-account" | CommitBlocked };
 
 // Which attempt saved the persisted session last: a rollback by any other attempt is a no-op.
 let commitAttempts = 0;
@@ -125,14 +125,17 @@ export async function reauthorizeHome(
       manifest,
       sessionStorage: staged.storage,
       siweConfig: { nonce },
+      // OpenKey's versioned authorization: the owner approves the permission review in its frame. The nonce is in
+      // `siweConfig`; the SDK refuses sign-in options on this path.
+      openkey: { client: guardOpenKey(prefetch, openkey), mode: "iframe" },
     });
     next = created;
-    const session = await created.signIn({ nonce });
-    // An approval of less than was asked (the base, or some of the sets) is not kept.
+    const session = await created.signIn();
+    // An approval of less than was asked (the base, or some of the sets) is not kept, and the owner is told what is needed.
     const asked = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources as PermissionEntry[];
     if (!created.hasPermissions(asked)) {
       created.cleanup();
-      return { outcome: "failed" };
+      return { outcome: "narrowed" };
     }
     const verified = await deps.verify(session.siwe, session.signature);
     // Asked before the snapshot of what is saved and again after it, immediately before anything is written.

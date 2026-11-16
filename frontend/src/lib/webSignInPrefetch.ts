@@ -81,3 +81,28 @@ export function createWebSignInPrefetch(backendUrl: string, services: Services):
     },
   };
 }
+
+/**
+ * The same nonce rule as `guardSigning`, for the OpenKey versioned sign-in: no `personal_sign` runs there, so the check
+ * wraps the client's `authorizeTinyCloud`. It refuses before OpenKey opens (cancelled, or a nonce already too old) and
+ * again when the approval comes back (the owner took too long on OpenKey's screen), so a stale nonce is reported as
+ * such rather than as a rejection from the backend. Every other member of the client is passed through untouched.
+ */
+export function guardOpenKey<T extends object>(prefetch: Pick<WebSignInPrefetch, "guardSigning">, client: T): T {
+  const gate = prefetch.guardSigning({ on() {}, removeListener() {}, request: async () => null });
+  const check = () => gate.request({ method: "personal_sign", params: [] });
+  return new Proxy(client, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === "authorizeTinyCloud" && typeof value === "function") {
+        return async (...args: unknown[]) => {
+          await check();
+          const result = await (value as (...inner: unknown[]) => Promise<unknown>).apply(target, args);
+          await check();
+          return result;
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}

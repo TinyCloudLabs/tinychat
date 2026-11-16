@@ -12,6 +12,7 @@ import { createTinyCloudWeb, restoreTinyCloudWebSession, type EIP1193Provider } 
 import { installDom } from "@/test/dom";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState } from "@/shell/homeFeatureAccess";
 import { homeFeaturesToRequest, readHomeFeatures, rememberHomeFeature, webSignInManifest, sessionCoversHomeFeature, type HomeFeature } from "./homeFeatures";
+import { openKeyStub } from "@/test/openkeyStub";
 import { reauthorizeHome } from "./homeReauthorize";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 
@@ -80,7 +81,7 @@ async function signInBase(): Promise<TinyCloudWeb> {
 
 function reauthorize(features: readonly HomeFeature[], answer: "approve" | "decline" = "approve") {
   return reauthorizeHome({
-    connect: async () => ({ address: ADDRESS, openkey: {} as never, web3Provider: wallet(answer) }),
+    connect: async () => ({ address: ADDRESS, openkey: openKeyStub(account, answer) as never, web3Provider: wallet(answer) }),
     prefetch: { manifest: async () => base, nonceForSigning: async () => "webReauthTest1", guardSigning: (provider) => provider, complete: () => {}, cancel: () => {} },
     createTcw: createTinyCloudWeb,
     verify: async () => ({ token: "bearer", expiresIn: 3600 }),

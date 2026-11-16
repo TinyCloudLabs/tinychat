@@ -8,6 +8,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTinyCloudWeb, restoreTinyCloudWebSession, type EIP1193Provider } from "@tinyboilerplate/client";
 import { installDom } from "@/test/dom";
+import { openKeyStub } from "@/test/openkeyStub";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState } from "@/shell/homeFeatureAccess";
 import { homeFeaturesToRequest, sessionCoversHomeFeature, webSignInManifest, type HomeFeature } from "./homeFeatures";
 import { reauthorizeHome } from "./homeReauthorize";
@@ -78,7 +79,7 @@ async function signInBase(): Promise<TinyCloudWeb> {
 
 function reauthorize(features: readonly HomeFeature[], answer: "approve" | "decline" = "approve") {
   return reauthorizeHome({
-    connect: async () => ({ address: ADDRESS, openkey: {} as never, web3Provider: wallet(answer) }),
+    connect: async () => ({ address: ADDRESS, openkey: openKeyStub(account, answer) as never, web3Provider: wallet(answer) }),
     prefetch: { manifest: async () => base, nonceForSigning: async () => "homeReauthTest1", guardSigning: (provider) => provider, complete: () => {}, cancel: () => {} },
     createTcw: createTinyCloudWeb,
     verify: async () => ({ token: "bearer", expiresIn: 3600 }),

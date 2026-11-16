@@ -5,6 +5,7 @@ import type {
   ComposedManifestRequest,
   Config as TinyCloudWebSdkConfig,
   Manifest,
+  PermissionEntry,
   SessionRestoreResult,
   SiweConfig,
 } from "@tinycloud/web-sdk";
@@ -46,6 +47,12 @@ export interface TinyCloudWebConfig {
    * Only the web flag in frontend/src/lib/replication sets it.
    */
   replication?: TinyCloudWebSdkConfig["replication"];
+  /**
+   * Sign in through OpenKey's versioned authorization (`authorizeTinyCloud`) instead of a byte-exact `personal_sign`.
+   * The provider still supplies the account address and chain; its `personal_sign` is not called for sign-in.
+   * With it, `signIn()` takes no options: the nonce goes in through `nonce`/`siweConfig`.
+   */
+  openkey?: TinyCloudWebSdkConfig["openkey"];
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -82,6 +89,7 @@ export function createTinyCloudWeb(
     // The app owns the floating button (Settings toggle); the SDK default shows it.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    ...(config?.openkey ? { openkey: config.openkey } : {}),
     autoBootstrapAccount: false,
   };
 
@@ -107,8 +115,35 @@ export async function createAndSignIn(
   if (config?.nonce) {
     await tcw.clearPersistedSession(config.address);
   }
-  const session = await tcw.signIn(config?.nonce ? { nonce: config.nonce } : undefined);
+  // The SDK refuses sign-in options on the OpenKey path; the nonce is already in `siweConfig`.
+  const session = await tcw.signIn(config?.nonce && !config?.openkey ? { nonce: config.nonce } : undefined);
+  // On OpenKey's versioned path the owner can untick permissions and the SDK accepts the narrowed session. The app cannot
+  // work with less than it asked for, so such a session is refused: nothing is kept, and the caller can say what is missing.
+  const narrowed = config?.openkey && config.manifest ? await missingPermissions(tcw, config.manifest) : [];
+  if (narrowed.length > 0) {
+    await tcw.clearPersistedSession(session.address).catch(() => undefined);
+    tcw.cleanup();
+    throw new NarrowedApprovalError(narrowed);
+  }
   return { tcw, session };
+}
+
+/** The owner approved fewer permissions than the app asked for. `missing` is what the approval does not cover. */
+export class NarrowedApprovalError extends Error {
+  override readonly name = "NarrowedApprovalError";
+  constructor(readonly missing: PermissionEntry[]) {
+    super("The approval covers fewer permissions than were asked for");
+  }
+}
+
+/** What `manifest` asks for that the signed-in session does not cover (nothing: the approval is whole). */
+export async function missingPermissions(tcw: Pick<TinyCloudWeb, "hasPermissions">, manifest: Manifest): Promise<PermissionEntry[]> {
+  // Loaded here, not at the top: the narrowing check runs only on OpenKey's versioned path.
+  const { composeManifestRequest } = await import("@tinycloud/web-sdk");
+  const asked = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources as PermissionEntry[];
+  if (tcw.hasPermissions(asked)) return [];
+  const missing = asked.filter((entry) => !tcw.hasPermissions([entry]));
+  return missing.length > 0 ? missing : asked;
 }
 
 /** Matched by `code` in frontend/src/lib/sessionRestore.ts. */

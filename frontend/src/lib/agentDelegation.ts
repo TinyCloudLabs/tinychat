@@ -278,7 +278,7 @@ export interface FreshSignInMintOptions {
   /** The signed-in app session's owner address (`tcw.address()`). The key picked in OpenKey must match it. */
   sessionAddress: string | null | undefined;
   /** Test-only seam: override the OpenKey connect step. */
-  _connect?: (config: { appName: string; host: string; passkeysSupported: boolean }) => Promise<Pick<ConnectWalletResult, "address" | "web3Provider">>;
+  _connect?: (config: { appName: string; host: string; passkeysSupported: boolean }) => Promise<Pick<ConnectWalletResult, "address" | "web3Provider"> & Partial<Pick<ConnectWalletResult, "openkey">>>;
 }
 
 /** The key picked in the Connect-agent OpenKey prompt is not the signed-in owner's key. */
@@ -310,15 +310,23 @@ export function assertAgentOwner(sessionAddress: string | null | undefined, conn
   }
 }
 
-async function connectSessionOwner(options: FreshSignInMintOptions): Promise<ConnectWalletResult["web3Provider"]> {
+async function connectSessionOwner(options: FreshSignInMintOptions): Promise<Pick<ConnectWalletResult, "web3Provider"> & Partial<Pick<ConnectWalletResult, "openkey">>> {
   const connect = options._connect ?? (await import("@tinyboilerplate/client")).connectWallet;
-  const { address, web3Provider } = await connect({
+  const { address, web3Provider, openkey } = await connect({
     appName: options.appName,
     host: options.openkeyHost,
     passkeysSupported: openkeyPasskeysSupported(),
   });
   assertAgentOwner(options.sessionAddress, address);
-  return web3Provider;
+  return { web3Provider, openkey };
+}
+
+/** On OpenKey's versioned path the owner can untick permissions; the isolated session must cover everything it asked for. */
+async function refuseNarrowedApproval(tcw: TinyCloudWeb, manifest: Manifest, owner: { openkey?: unknown }): Promise<void> {
+  if (!owner.openkey) return;
+  const { missingPermissions, NarrowedApprovalError } = await import("@tinyboilerplate/client");
+  const missing = await missingPermissions(tcw, manifest);
+  if (missing.length > 0) throw new NarrowedApprovalError(missing);
 }
 
 /**
@@ -327,6 +335,8 @@ async function connectSessionOwner(options: FreshSignInMintOptions): Promise<Con
  */
 export function ephemeralAgentSdkConfig(input: {
   web3Provider: ConnectWalletResult["web3Provider"];
+  /** The connected OpenKey client: sign-in then goes through OpenKey's versioned authorization (the permission review). */
+  openkey?: ConnectWalletResult["openkey"];
   sessionStorage: TinyCloudWebSdkConfig["sessionStorage"];
   tinycloudHosts?: string[];
   /** Consent manifest for the isolated session; defaults to the private-agent manifest. */
@@ -336,6 +346,7 @@ export function ephemeralAgentSdkConfig(input: {
 }): TinyCloudWebSdkConfig {
   return {
     providers: { web3: { driver: input.web3Provider } },
+    ...(input.openkey ? { openkey: { client: input.openkey, mode: "iframe" as const } } : {}),
     includeAccountRegistryPermissions: false,
     ...(localValidationEnabled() ? { autoCreateSpace: false } : {}),
     ...(input.tinycloudHosts ? { tinycloudHosts: input.tinycloudHosts } : {}),
@@ -366,7 +377,7 @@ export function ephemeralAgentSdkConfig(input: {
 export async function mintAgentDelegationViaFreshSignIn(
   options: FreshSignInMintOptions,
 ): Promise<string> {
-  const web3Provider = await connectSessionOwner(options);
+  const owner = await connectSessionOwner(options);
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
 
   // CRITICAL: isolate this sign-in's session storage. With NO sessionStorage the
@@ -396,11 +407,12 @@ export async function mintAgentDelegationViaFreshSignIn(
   // The isolated session asks for the exact memory + transcript permissions it
   // must sub-delegate. Without this manifest, the SDK's generic default recap
   // does not cover the transcript resources and delegateTo() fails closed.
-  const tcw = new TinyCloudWeb(ephemeralAgentSdkConfig({ web3Provider, sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }), tinycloudHosts: options.tinycloudHosts }));
+  const tcw = new TinyCloudWeb(ephemeralAgentSdkConfig({ ...owner, sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }), tinycloudHosts: options.tinycloudHosts }));
 
   try {
     if (localValidationEnabled()) await prepareLocalSignIn(tcw);
     await tcw.signIn();
+    await refuseNarrowedApproval(tcw, AGENT_CONSENT_MANIFEST, owner);
     return await mintAgentDelegation(tcw, {
       delegateDID: options.delegateDID,
       path: options.path,
@@ -420,14 +432,15 @@ export async function mintAgentDelegationViaFreshSignIn(
 
 /** Open an isolated passkey sign-in, run `mint` against it, and always tear it down in memory. */
 async function withFreshSignIn<T>(options: FreshSignInMintOptions, manifest: Manifest, mint: (tcw: TinyCloudWeb) => Promise<T>): Promise<T> {
-  const web3Provider = await connectSessionOwner(options);
+  const owner = await connectSessionOwner(options);
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
   const memory = new Map<string, string>();
   const storage: Storage = { get length() { return memory.size; }, clear: () => memory.clear(), getItem: (k) => memory.get(k) ?? null, key: (i) => Array.from(memory.keys())[i] ?? null, removeItem: (k) => { memory.delete(k); }, setItem: (k, v) => { memory.set(k, String(v)); } };
-  const tcw = new TinyCloudWeb(ephemeralAgentSdkConfig({ web3Provider, sessionStorage: new BrowserSessionStorage({ storage }), tinycloudHosts: options.tinycloudHosts, manifest }));
+  const tcw = new TinyCloudWeb(ephemeralAgentSdkConfig({ ...owner, sessionStorage: new BrowserSessionStorage({ storage }), tinycloudHosts: options.tinycloudHosts, manifest }));
   try {
     if (localValidationEnabled()) await prepareLocalSignIn(tcw);
     await tcw.signIn();
+    await refuseNarrowedApproval(tcw, manifest, owner);
     return await mint(tcw);
   } finally { try { tcw.cleanup?.(); } catch { /* best effort */ } }
 }

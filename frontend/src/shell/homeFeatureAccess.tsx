@@ -10,12 +10,12 @@ import { Button } from "@/components/ui/button";
 import { readHomeFeatures, rememberHomeFeature, sessionCoversHomeFeature, type HomeFeature } from "@/lib/homeFeatures";
 import {
   FEATURE_ACCESS_BODY, FEATURE_ACCESS_BUSY, FEATURE_ACCESS_CONTINUE, FEATURE_ACCESS_DECLINED, FEATURE_ACCESS_FAILED,
-  FEATURE_ACCESS_NEEDED, FEATURE_ACCESS_NOT_NOW, FEATURE_ACCESS_TITLE, FEATURE_ACCESS_WRONG_ACCOUNT,
+  FEATURE_ACCESS_NARROWED, FEATURE_ACCESS_NEEDED, FEATURE_ACCESS_NOT_NOW, FEATURE_ACCESS_TITLE, FEATURE_ACCESS_WRONG_ACCOUNT,
 } from "@/lib/homeStrings";
 import type { InFlightWork } from "@/lib/inFlightWork";
 
 /** What asking for a feature's set came to. Only "granted" replaces the session. */
-export type FeatureAccessOutcome = "granted" | "declined" | "failed" | "wrong-account" | "busy" | "signed-out";
+export type FeatureAccessOutcome = "granted" | "declined" | "failed" | "narrowed" | "wrong-account" | "busy" | "signed-out";
 export type RequestFeatureAccess = (feature: HomeFeature) => Promise<FeatureAccessOutcome>;
 
 export interface HomeFeatureAccess {
@@ -100,7 +100,7 @@ export function HomeFeatureGate({ feature, children }: { feature: HomeFeature; c
   return covered ? <>{children}</> : <HomeFeaturePrompt feature={feature} />;
 }
 
-type PromptPhase = "ask" | "asking" | "later" | "declined" | "failed" | "wrong-account" | "busy";
+type PromptPhase = "ask" | "asking" | "later" | "declined" | "failed" | "narrowed" | "wrong-account" | "busy";
 
 const OUTCOME_LINE: Partial<Record<PromptPhase, string>> = {
   declined: FEATURE_ACCESS_DECLINED,
@@ -125,7 +125,7 @@ export function HomeFeaturePrompt({ feature }: { feature: HomeFeature }) {
     // Granted: the gate shows the feature once the new session covers it; if it does not, the ask starts over.
     setPhase(outcome === "granted" || outcome === "signed-out" ? "ask" : outcome);
   };
-  const alert = OUTCOME_LINE[phase];
+  const alert = phase === "narrowed" ? FEATURE_ACCESS_NARROWED[feature] : OUTCOME_LINE[phase];
   return (
     <section aria-labelledby={headingId} data-testid={`feature-access-${feature}`} className="mx-auto my-6 flex w-full max-w-md flex-col gap-3 rounded-xl border bg-card p-5">
       <h2 id={headingId} className="text-base font-semibold">{FEATURE_ACCESS_TITLE[feature]}</h2>

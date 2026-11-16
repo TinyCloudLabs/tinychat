@@ -56,7 +56,7 @@ import {
 } from "./lib/sessionSignOutFence";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
-import { createWebSignInPrefetch, WEB_APP_MANIFEST, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
+import { createWebSignInPrefetch, guardOpenKey, WEB_APP_MANIFEST, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
 import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
 import { UsageIndicator } from "./chat/UsageIndicator";
 import { AgentAccessProvider } from "./chat/useAgentEnablement";
@@ -1178,7 +1178,9 @@ export function App() {
             await localTcw.clearPersistedSession(connectedAddress);
             return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
           })()
-        : await createAndSignIn(prefetch.guardSigning(web3Provider), signInConfig);
+        // OpenKey's versioned authorization, in its frame: the owner approves the permission review and OpenKey signs the
+        // grant. The provider only names the account; its personal_sign is not used for sign-in.
+        : await createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, openkey: { client: guardOpenKey(prefetch, openkey), mode: "iframe" } });
 
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).

@@ -109,13 +109,20 @@ describe("re-authorising Connectors in place", () => {
     expect(storage.records.get(ADDRESS)).toBe(OLD);
   });
 
-  test("an approval that covers less than was asked is not kept: failed, nothing verified or saved", async () => {
+  test("an approval that covers less than was asked is not kept: narrowed, nothing verified or saved", async () => {
     const { deps, storage, calls } = harness({ answer: "approve", covers: false });
-    expect((await reauthorizeHome(deps, input)).outcome).toBe("failed");
+    expect((await reauthorizeHome(deps, input)).outcome).toBe("narrowed");
     expect(calls.verified).toBe(0);
     expect(storage.records.get(ADDRESS)).toBe(OLD);
     expect(calls.cleanup).toBe(1);
     expect(calls.completed).toBe(0);
+  });
+
+  test("a real failure (the node is unreachable) is still the generic failed outcome, not narrowed", async () => {
+    const { deps, storage, calls } = harness({ answer: "error" });
+    expect((await reauthorizeHome(deps, input)).outcome).toBe("failed");
+    expect(calls.verified).toBe(0);
+    expect(storage.records.get(ADDRESS)).toBe(OLD);
   });
 
   test("signed out or busy by the time it would be kept: nothing is saved and that is the outcome", async () => {

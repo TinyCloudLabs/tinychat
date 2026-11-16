@@ -7,12 +7,17 @@ import {
   isActiveAgentBundle, mintAgentSessionViaFreshSignIn, mintMcpSessionViaFreshSignIn,
   type AgentSessionStatus, type AgentSessionEnvelope, type AgentSessionSnapshot,
 } from "../lib/agentDelegation";
+import { narrowedApprovalMessage } from "../lib/narrowedApproval";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 
 /** Connect failure copy. Shows the server's stable error code, never its free-text detail. */
 export function connectErrorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === "NotAllowedError") return "Passkey sign was cancelled. Try connecting again.";
   if (error instanceof AgentOwnerMismatchError) return error.message;
+  const narrowed = error as { name?: unknown; missing?: unknown } | null;
+  if (narrowed?.name === "NarrowedApprovalError" && Array.isArray(narrowed.missing)) {
+    return narrowedApprovalMessage(narrowed.missing as { service: string }[], "Connecting the agent", "Connect again");
+  }
   const code = error instanceof AgentSessionError ? error.code : null;
   if (code === "delegation_expiry_too_long") {
     return "The agent grant was rejected because it lasts longer than 30 days (delegation_expiry_too_long). Check that your device clock is correct, then try again.";

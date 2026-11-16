@@ -1,3 +1,4 @@
+import { narrowedApprovalMessage } from "./narrowedApproval";
 import { appPlatform, type AppPlatform } from "./platform";
 
 /** An Error whose message was written for the user and may be shown as is. */
@@ -44,6 +45,11 @@ const CRYPTO_UNSUPPORTED = /createPrivateKey|Ed25519|Unrecognized name|WebCrypto
 /** A message that is safe to show for a failed sign-in or restore. Logging the raw error is the caller's job (describeAuthFailure). */
 export function authErrorMessage(error: unknown, platform: AppPlatform = appPlatform()): string {
   if (error instanceof UserFacingError) return error.message;
+  // The owner unticked permissions in OpenKey's review: say which are needed, never the generic failure.
+  const narrowed = (error as { name?: unknown; missing?: unknown } | null);
+  if (narrowed?.name === "NarrowedApprovalError" && Array.isArray(narrowed.missing)) {
+    return narrowedApprovalMessage(narrowed.missing as { service: string }[]);
+  }
   if (errorChain(error).some((link) => CRYPTO_UNSUPPORTED.test(messageOf(link)))) {
     return platform === "android" ? WEBVIEW_UPDATE_MESSAGE : BROWSER_UPDATE_MESSAGE;
   }

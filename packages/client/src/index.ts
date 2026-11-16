@@ -5,6 +5,8 @@ export { connectWallet, type ConnectWalletConfig, type ConnectWalletResult, type
 export {
   createTinyCloudWeb,
   createAndSignIn,
+  missingPermissions,
+  NarrowedApprovalError,
   restoreTinyCloudWebSession,
   type RestoreTinyCloudWebSessionResult,
   type TinyCloudWebConfig,
