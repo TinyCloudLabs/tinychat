@@ -157,3 +157,19 @@ test('an onboarding profile on the node\'s other name keeps working with the def
   assert.equal((await setup.guard(result)).host, other);
   assert.equal((await setup.context()).status, 'ready');
 });
+
+test('a renewed session (original grant ended, owner renewal running) is accepted like a present one', async t => {
+  const { setup, profiles, setTransform } = await fixture(t);
+  const renewed = { state: 'renewed', expiresAt: '2099-01-01T00:00:00.000Z' };
+  profiles.get('default').session = renewed;
+  const result = await setup.prepare({ config });
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(result.session, renewed);
+  const bound = await setup.context();
+  assert.equal((await setup.guard(bound)).session.state, 'renewed');
+  setTransform(value => ({ ...value, session: { state: 'renewed', expiresAt: '2020-01-01T00:00:00.000Z' } }));
+  await assert.rejects(setup.guard(bound), { code: 'AUTH_EXPIRED' });
+  await assert.rejects(setup.context(), { code: 'INVALID_RESPONSE' });
+  setTransform(value => ({ ...value, session: { state: 'renewed' } }));
+  await assert.rejects(setup.guard(bound), { code: 'INVALID_RESPONSE' });
+});

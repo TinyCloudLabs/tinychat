@@ -86,9 +86,9 @@ export function createSetup({ runTc = createTcRunner(), statePath, executable = 
     const base = ['--profile', state.profile, '--host', state.config.host, '--json', 'context'];
     let value = await json(base);
     function validate() {
-      if (value.schemaVersion !== 1 || value.profile !== state.profile || !['missing', 'expired', 'present', 'unknown-expiry'].includes(value.session?.state)) fail('INVALID_RESPONSE');
+      if (value.schemaVersion !== 1 || value.profile !== state.profile || !['missing', 'expired', 'present', 'renewed', 'unknown-expiry'].includes(value.session?.state)) fail('INVALID_RESPONSE');
       if (typeof value.sessionDid !== 'string' || !value.sessionDid.startsWith('did:key:')) fail('INVALID_RESPONSE');
-      if (value.session.state === 'present' && (!Number.isFinite(Date.parse(value.session.expiresAt)) || Date.parse(value.session.expiresAt) <= Date.now())) fail('INVALID_RESPONSE');
+      if (['present', 'renewed'].includes(value.session.state) && (!Number.isFinite(Date.parse(value.session.expiresAt)) || Date.parse(value.session.expiresAt) <= Date.now())) fail('INVALID_RESPONSE');
       if (host(value.host) !== state.config.host) fail('CONTEXT_MISMATCH');
       if (value.ownerDid !== null && !primary(value.ownerDid)) fail('INVALID_RESPONSE');
       if (state.config.expectedOwner && value.ownerDid && !sameOwner(state.config.expectedOwner, value.ownerDid)) fail('OWNER_MISMATCH');
@@ -99,7 +99,7 @@ export function createSetup({ runTc = createTcRunner(), statePath, executable = 
     const first = value;
     value = await json([...base, '--space', state.config.space]);
     validate();
-    if (!primary(value.ownerDid) || !['present', 'unknown-expiry'].includes(value.session.state)) fail('INVALID_RESPONSE');
+    if (!primary(value.ownerDid) || !['present', 'renewed', 'unknown-expiry'].includes(value.session.state)) fail('INVALID_RESPONSE');
     if (!sameOwner(value.ownerDid, first.ownerDid) || value.sessionDid !== first.sessionDid) fail('CONTEXT_MISMATCH');
     const expectedSpace = `tinycloud:${value.ownerDid.slice(4)}:${state.config.space}`;
     if (typeof value.spaceId !== 'string' || value.spaceId.toLowerCase() !== expectedSpace.toLowerCase() || !value.spaceId.endsWith(`:${state.config.space}`)) fail('CONTEXT_MISMATCH');
@@ -142,13 +142,13 @@ export function createSetup({ runTc = createTcRunner(), statePath, executable = 
       // be observed and rejected against the acquisition's verified binding.
       const value = await json(['--profile', state.profile, '--json', 'context', '--space', state.config.space]);
       if (value.schemaVersion !== 1 || value.profile !== state.profile || typeof value.sessionDid !== 'string' ||
-          !value.sessionDid.startsWith('did:key:') || !['missing', 'expired', 'present', 'unknown-expiry'].includes(value.session?.state)) fail('INVALID_RESPONSE');
+          !value.sessionDid.startsWith('did:key:') || !['missing', 'expired', 'present', 'renewed', 'unknown-expiry'].includes(value.session?.state)) fail('INVALID_RESPONSE');
       if (host(value.host) !== bound.host || value.sessionDid !== bound.sessionDid) fail('CONTEXT_MISMATCH');
       if (value.ownerDid !== null && !primary(value.ownerDid)) fail('INVALID_RESPONSE');
       if (value.ownerDid && !sameOwner(value.ownerDid, bound.owner)) fail('OWNER_MISMATCH');
-      if (value.session.state === 'expired' || value.session.state === 'present' && Date.parse(value.session.expiresAt) <= Date.now()) fail('AUTH_EXPIRED');
+      if (value.session.state === 'expired' || ['present', 'renewed'].includes(value.session.state) && Date.parse(value.session.expiresAt) <= Date.now()) fail('AUTH_EXPIRED');
       if (value.session.state === 'missing') fail('AUTH_REQUIRED');
-      if (value.session.state === 'present' && !Number.isFinite(Date.parse(value.session.expiresAt))) fail('INVALID_RESPONSE');
+      if (['present', 'renewed'].includes(value.session.state) && !Number.isFinite(Date.parse(value.session.expiresAt))) fail('INVALID_RESPONSE');
       if (!primary(value.ownerDid) || value.spaceId !== bound.space) fail('CONTEXT_MISMATCH');
       return { ...bound, session: value.session };
     },
