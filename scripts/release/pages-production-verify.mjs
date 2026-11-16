@@ -9,7 +9,7 @@
 import { appendFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { BRANCH_PRODUCTION, classifyPagesCheckRuns, repoRoot, run } from './lib.mjs';
+import { BRANCH_PRODUCTION, classifyPagesCheckRuns, hostServesCommit, repoRoot, run } from './lib.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -17,6 +17,7 @@ const { values } = parseArgs({
     url: { type: 'string' },
     'build-minutes': { type: 'string', default: '20' },
     'live-minutes': { type: 'string', default: '5' },
+    'also-host': { type: 'string', multiple: true, default: [] },
   },
 });
 if (!values.commit || !values.url) throw new Error('--commit and --url are required');
@@ -67,8 +68,22 @@ const live = await poll(values['live-minutes'], async () => {
   return served === expected ? true : undefined;
 });
 if (!live) throw new Error(`${values.url} does not serve deployment ${pages.deploymentUrl} after ${values['live-minutes']} minutes`);
-requireTip('After verifying tinycloud.chat');
+// Every other host that must serve this build (the other web domains of the same product). One Pages project serves
+// several domains, and a domain that sits on another project keeps an old build: each must name the deployed commit.
+const stale = [];
+for (const host of values['also-host']) {
+  let last;
+  const result = await poll(values['live-minutes'], async () => {
+    last = await hostServesCommit(host, values.commit);
+    console.log(`${host} ${last.ok ? 'serves' : `does not serve yet (${last.served})`} ${values.commit}`);
+    return last.ok ? last : undefined;
+  });
+  if (!result) stale.push(`${host} (serves ${last?.served})`);
+}
+if (stale.length > 0) throw new Error(`These hosts do not serve ${values.commit} after ${values['live-minutes']} minutes: ${stale.join(', ')}. A web domain is on another Cloudflare Pages project, or its deploy is stuck (docs/deployment.md).`);
+requireTip('After verifying the web hosts');
 
-const summary = `- Web: ${values.url} serves Cloudflare Pages deployment ${pages.deploymentUrl} ([logs](${pages.detailsUrl})) from \`${values.commit}\`\n`;
+const alsoServed = values['also-host'].length ? `; ${values['also-host'].join(', ')} serve the same commit` : '';
+const summary = `- Web: ${values.url} serves Cloudflare Pages deployment ${pages.deploymentUrl} ([logs](${pages.detailsUrl})) from \`${values.commit}\`${alsoServed}\n`;
 console.log(summary.trim());
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);

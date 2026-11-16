@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, desktopProduct, planDispatches, setCargoLockVersion, setCargoTomlVersion, stablePlan } from '../release/lib.mjs';
+import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, hostServesCommit, desktopProduct, planDispatches, setCargoLockVersion, setCargoTomlVersion, stablePlan } from '../release/lib.mjs';
 
 const require = createRequire(import.meta.url);
 const eslintAjv = createRequire(realpathSync(require.resolve('eslint/package.json')))('ajv');
@@ -2426,4 +2426,24 @@ test('a Releases list that cannot be read in full fails closed', { skip: !change
     git(root, 'reset', '-q', '--hard', 'HEAD');
     git(root, 'clean', '-fdq');
   }
+});
+
+test('hostServesCommit says whether a web host serves the deployed commit, and why not', async () => {
+  const COMMIT = 'a'.repeat(40);
+  const answer = (body, init = {}) => async url => {
+    assert.equal(new URL(url).pathname, '/version.json');
+    assert.equal(new URL(url).searchParams.get('deploy'), COMMIT);
+    return new Response(body, { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' }, ...init });
+  };
+  assert.deepEqual(await hostServesCommit('tinycloud.one', COMMIT, answer(JSON.stringify({ commit: COMMIT }))), { ok: true, served: COMMIT });
+  assert.deepEqual(await hostServesCommit('tinycloud.chat', COMMIT, answer(JSON.stringify({ commit: 'b'.repeat(40) }))), { ok: false, served: 'b'.repeat(40) });
+  assert.deepEqual(await hostServesCommit('x', COMMIT, answer(JSON.stringify({ commit: null }))), { ok: false, served: 'no commit' });
+  // A domain on another Pages project answers the SPA shell for /version.json.
+  const html = await hostServesCommit('home.tinycloud.xyz', COMMIT, answer('<!doctype html>', { headers: { 'content-type': 'text/html; charset=utf-8' } }));
+  assert.equal(html.ok, false);
+  assert.match(html.served, /text\/html/);
+  assert.deepEqual(await hostServesCommit('x', COMMIT, async () => new Response('nope', { status: 503 })), { ok: false, served: 'HTTP 503' });
+  const down = await hostServesCommit('x', COMMIT, async () => { throw new Error('connect ECONNREFUSED'); });
+  assert.equal(down.ok, false);
+  assert.match(down.served, /ECONNREFUSED/);
 });

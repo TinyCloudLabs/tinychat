@@ -1,4 +1,4 @@
-import { CANONICAL_ORIGIN } from "../originMove";
+import { HOME_ORIGIN } from "../originMove";
 
 /** The Home app's second web origin: the same build, served from tinycloud.one. */
 export const TINYCLOUD_ONE_ORIGIN = "https://tinycloud.one";
@@ -10,7 +10,7 @@ export const TINYCLOUD_ONE_ORIGIN = "https://tinycloud.one";
 export type OAuthReturnTag = "home" | "one";
 
 export function oauthReturnTag(origin: string | undefined = globalThis.location?.origin): OAuthReturnTag | null {
-  if (origin === CANONICAL_ORIGIN) return "home";
+  if (origin === HOME_ORIGIN) return "home";
   if (origin === TINYCLOUD_ONE_ORIGIN) return "one";
   return null;
 }

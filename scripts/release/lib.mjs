@@ -125,6 +125,26 @@ export function classifyPagesCheckRuns(checkRuns) {
   return { state: 'production', deploymentUrl, detailsUrl: latest.details_url };
 }
 
+/**
+ * Whether `https://<host>/version.json` names `commit`: the build every web host must serve after a deploy
+ * (frontend/vite.config.ts writes it). Never throws: a host that is down, answers HTML (a different Pages project) or
+ * names another commit is reported as not serving it, with what it served.
+ */
+export async function hostServesCommit(host, commit, fetchImpl = globalThis.fetch) {
+  try {
+    const url = new URL(`https://${host}/version.json`);
+    url.searchParams.set('deploy', commit);
+    const response = await fetchImpl(url, { headers: { 'cache-control': 'no-cache' } });
+    if (!response.ok) return { ok: false, served: `HTTP ${response.status}` };
+    const type = response.headers.get('content-type') ?? '';
+    if (!/json/i.test(type)) return { ok: false, served: `a ${type.split(';')[0] || 'non-JSON'} response, not version.json` };
+    const served = (await response.json())?.commit ?? null;
+    return { ok: served === commit, served: served ?? 'no commit' };
+  } catch (error) {
+    return { ok: false, served: `no answer (${error instanceof Error ? error.message : 'error'})` };
+  }
+}
+
 export const readJson = (root, rel) => JSON.parse(readFileSync(join(root, rel), 'utf8'));
 
 export function readPreState(root) {

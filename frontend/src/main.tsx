@@ -75,9 +75,9 @@ setupPwa({
 
 registerWebCaptureEngine();
 
-// tinycloud.chat serves this same build; its visitors move to home.tinycloud.xyz (path, query and #hash kept) once
-// that origin serves this build, unless recordings saved only in this origin's storage would be left behind, or this
-// page must finish here (originMove.ts `originMoveExemption`). Only that host reads anything here.
+// tinycloud.chat and home.tinycloud.xyz serve this same build; their visitors move to tinycloud.one (path, query and
+// #hash kept) once that origin serves this build, unless recordings or answers saved only in this origin's storage would
+// be left behind, or this page must finish here (originMove.ts `originMoveExemption`). Only those hosts read anything here.
 const originMove: Promise<OriginMoveDecision> = isLegacyOrigin(window.location)
   ? decideOriginMove({ location: window.location, opener: window.opener != null })
   : Promise.resolve({ kind: "stay" });
