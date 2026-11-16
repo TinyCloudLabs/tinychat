@@ -161,7 +161,7 @@ export interface VoiceNoteRecorderController {
 }
 
 /** Why native reports idle after the engine stopped a recording by itself; its retained autoStopped lands the note. */
-const ENGINE_STOP_REASONS: ReadonlySet<CaptureStatus["reason"]> = new Set(["max_duration", "disk_full", "write_failed", "permission_revoked"]);
+const ENGINE_STOP_REASONS: ReadonlySet<CaptureStatus["reason"]> = new Set(["max_duration", "disk_full", "write_failed", "permission_revoked", "pause_timeout"]);
 
 // Waits between the engine reads of a closed recorder's held place (the last repeats).
 const ENGINE_IDLE_POLL_MS: readonly number[] = [1_000, 2_000, 5_000, 30_000];
@@ -772,7 +772,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
   /** `stoppedAt`: when native reported it idle, so the clock stops there. */
   const reconcileWithEngine = async (stoppedAt?: number) => {
-    if (closed) return;
+    // Only the phone shells can be stopped outside the web app; the browser and Mac engines report idle with no reason
+    // ahead of their own autoStopped.
+    if (closed || captureEngineKind() !== "native") return;
     if (endedElsewhere) return settleEndedElsewhere(endedElsewhere);
     const id = state.recordingId;
     if (state.phase !== "recording" || !id) return;
@@ -953,7 +955,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           if (event.id && state.recordingId && event.id !== state.recordingId) return;
           // Idle under the recording on screen, which this recorder is not stopping: status decides what ended it, and
           // the clock stays where it stopped.
-          const idleUnderRecording = state.phase === "recording" && event.state === "idle" && !ENGINE_STOP_REASONS.has(event.reason);
+          const idleUnderRecording = captureEngineKind() === "native" && state.phase === "recording" && event.state === "idle" &&
+            !ENGINE_STOP_REASONS.has(event.reason);
           if (idleUnderRecording || endedElsewhere) void reconcileWithEngine(event.at);
           if (idleUnderRecording) return;
           acceptNativeOptions(event);
