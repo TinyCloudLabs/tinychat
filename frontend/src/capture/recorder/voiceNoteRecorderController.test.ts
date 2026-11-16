@@ -3596,8 +3596,11 @@ describe("a recording stopped outside the app", () => {
   });
 
   // The browser engine reports idle with no reason ahead of its own autoStopped; Android's pause timeout is an engine
-  // stop too. Neither is a Stop from outside the app, so the limit's save and notice stay with autoStopped.
-  for (const [label, reason, native] of [["the browser engine's limit", null, false], ["Android's pause timeout", "pause_timeout", true]] as const) {
+  // stop too. Neither is a Stop from outside the app, so the save and its notice stay with autoStopped.
+  for (const [label, reason, native, notice] of [
+    ["the browser engine's limit", null, false, "Stopped at the 1-minute limit."],
+    ["Android's pause timeout", "pause_timeout", true, null],
+  ] as const) {
     test(`${label}: the idle micState does not land the note ahead of autoStopped`, async () => {
       const base = plugin;
       __setVoiceNotesForTests({ ...base, async status() {
@@ -3616,11 +3619,155 @@ describe("a recording stopped outside the app", () => {
       app.foreground();
       for (let turn = 0; turn < 5; turn++) await tick();
       expect(saves).toEqual([]);
-      fake.emit("autoStopped", { reason: "max_duration", maxDurationMs: 60_000, at: Date.now(), recording });
+      fake.emit("autoStopped", { reason: reason ?? "max_duration", maxDurationMs: 60_000, at: Date.now(), recording } as never);
       await settled(() => recorder.getState().outcome === "saved", "the engine stop's save");
       expect(saves).toEqual([recording.id]);
-      expect(recorder.getState().limitNotice).toBe("Stopped at the 1-minute limit.");
+      expect(recorder.getState().limitNotice ?? null).toBe(notice);
       detach();
     });
   }
+
+  /** A native engine whose status and pending list the test steers. */
+  function steered() {
+    const base = plugin;
+    const steer = {
+      finalizing: false,
+      idleReason: "user" as "user" | "write_failed",
+      hidden: null as string | null,
+      listFailures: 0,
+      /** Another recording live in the engine (a Shortcut's), and whether it ends during the next list read. */
+      other: null as { id: string; endsDuringList: boolean } | null,
+    };
+    __setVoiceNotesForTests({ ...base,
+      async status() {
+        const status = await base.status();
+        if (steer.other) return { ...status, state: "recording" as const, reason: null, id: steer.other.id, intent: "recording" as const,
+          startedAt: Date.now() - 1_000, source: "intent" as const, finalizing: steer.finalizing };
+        return { ...status, reason: status.state === "idle" ? steer.idleReason : status.reason, finalizing: steer.finalizing };
+      },
+      async listPending() {
+        if (steer.listFailures > 0) { steer.listFailures--; throw new Error("the phone's library is busy"); }
+        if (steer.other?.endsDuringList) steer.other = null;
+        const { recordings } = await base.listPending();
+        return { recordings: recordings.filter((listed) => listed.id !== steer.hidden) };
+      },
+    }, { available: true });
+    return steer;
+  }
+
+  test("a Shortcut started during the outside stop's save is picked up, and the stopped note is still saved once", async () => {
+    const steer = steered();
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    steer.other = { id: "shortcut-recording", endsDuringList: false };
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().recordingId === "shortcut-recording", "the Shortcut's recording to be shown");
+    expect(recorder.getState().phase).toBe("recording");
+    await settled(() => saves.length > 0, "the stopped note to save");
+    expect(saves).toEqual([recording.id]);
+    detach();
+  });
+
+  test("a Shortcut's recording that ended during the list read is not picked up", async () => {
+    const steer = steered();
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    steer.other = { id: "shortcut-recording", endsDuringList: true };
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().outcome === "saved", "the stopped note to save");
+    for (let turn = 0; turn < 5; turn++) await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "idle", recordingId: null, lastSaved: { id: recording.id } });
+    detach();
+  });
+
+  for (const recovery of ["its committed event", "Stop again"] as const) {
+    test(`a failed check while settling shows Stop again, and ${recovery} clears it`, async () => {
+      const steer = steered();
+      const { recorder, detach } = await attached();
+      await recorder.record();
+      const recording = await stopNatively();
+      steer.listFailures = 1;
+      fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+      await settled(() => recorder.getState().error !== null, "the failed check to show");
+      expect(recorder.getState()).toMatchObject({ phase: "stopping", recordingId: recording.id });
+      expect(recorder.getState().error).toContain("Could not check whether this phone saved the recording");
+      if (recovery === "its committed event") {
+        fake.emit("committed", { id: recording.id });
+        await settled(() => recorder.getState().outcome === "saved", "the note to land");
+        expect(recorder.getState().error).toBeNull();
+        expect(saves).toEqual([recording.id]);
+      } else {
+        await recorder.stop();
+        expect(recorder.getState()).toMatchObject({ phase: "idle", recordingId: null });
+        await recorder.record();
+        expect(recorder.getState().phase).toBe("recording");
+      }
+      detach();
+    });
+  }
+
+  test("an outside Stop whose save fails to write closes the recorder, keeping the write-failure notice", async () => {
+    const steer = steered();
+    steer.idleReason = "write_failed";
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    // iOS failStop: the note is not committed (recovery owns it) and no autoStopped follows.
+    steer.hidden = recording.id;
+    fake.emit("writeFailure", { id: recording.id, error: "writer.finish failed" });
+    fake.emit("micState", { state: "idle", reason: "write_failed", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().phase === "idle", "the recorder to close");
+    expect(recorder.getState()).toMatchObject({ recordingId: null, outcome: null });
+    expect(recorder.getState().captureIssues[recording.id]?.kind).toBe("write_failed");
+    await recorder.record();
+    expect(recorder.getState().phase).toBe("recording");
+    detach();
+  });
+
+  test("the engine's own write-failure stop still lands from stopping with its notice", async () => {
+    const steer = steered();
+    steer.idleReason = "write_failed";
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    steer.finalizing = true;
+    const recording = await stopNatively();
+    steer.hidden = recording.id;
+    fake.emit("micState", { state: "idle", reason: "write_failed", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().phase === "stopping", "the recorder to wait for the save");
+    // One native turn: committed, the settled micState, then autoStopped.
+    steer.finalizing = false;
+    steer.hidden = null;
+    fake.emit("committed", { id: recording.id });
+    fake.emit("micState", { state: "idle", reason: "write_failed", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    fake.emit("autoStopped", { id: recording.id, reason: "write_failed", maxDurationMs: 10_800_000, at: Date.now(), recording });
+    await settled(() => recorder.getState().outcome === "saved", "the engine stop's save");
+    expect(saves).toEqual([recording.id]);
+    expect(recorder.getState().limitNotice).toBe("Recording stopped because audio could not be written.");
+    detach();
+  });
+
+  test("an outside Stop whose save times out closes the recorder; the note committed later is not shown as live", async () => {
+    const steer = steered();
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    steer.finalizing = true;
+    const recording = await stopNatively();
+    steer.hidden = recording.id;
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().phase === "stopping", "the recorder to wait for the save");
+    // The mux timed out: finalizing ends with nothing committed (native retries it later).
+    steer.finalizing = false;
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().phase === "idle", "the recorder to close");
+    // The automatic retry commits it later: nothing on screen comes back.
+    steer.hidden = null;
+    fake.emit("committed", { id: recording.id });
+    for (let turn = 0; turn < 5; turn++) await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "idle", recordingId: null });
+    await recorder.record();
+    expect(recorder.getState().phase).toBe("recording");
+    detach();
+  });
 });

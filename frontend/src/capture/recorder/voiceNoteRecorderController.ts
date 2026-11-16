@@ -160,8 +160,13 @@ export interface VoiceNoteRecorderController {
   subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
 
-/** Why native reports idle after the engine stopped a recording by itself; its retained autoStopped lands the note. */
-const ENGINE_STOP_REASONS: ReadonlySet<CaptureStatus["reason"]> = new Set(["max_duration", "disk_full", "write_failed", "permission_revoked", "pause_timeout"]);
+/**
+ * Why native reports idle after the engine stopped a recording by itself; its retained autoStopped lands the note.
+ * Not write_failed: a Stop from outside the app whose save fails reports it too, with no autoStopped to follow. The
+ * engine's own write-failure stop sends autoStopped in the same native turn as its committed event, so it reaches the
+ * recorder before any status read it started, and lands the note from `stopping` with its notice.
+ */
+const ENGINE_STOP_REASONS: ReadonlySet<CaptureStatus["reason"]> = new Set(["max_duration", "disk_full", "permission_revoked", "pause_timeout"]);
 
 // Waits between the engine reads of a closed recorder's held place (the last repeats).
 const ENGINE_IDLE_POLL_MS: readonly number[] = [1_000, 2_000, 5_000, 30_000];
@@ -765,17 +770,19 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         send({ type: "STOP_FAILED", status: "idle", error: null, id });
         void pendingStore.refresh();
       }
-      // Another recording started meanwhile (a Shortcut during the save): show it, as attach would.
+      // Another recording started meanwhile (a Shortcut during the save): show it, as attach would, if it still runs.
       if (status.id && status.id !== id && status.state !== "idle") {
-        acceptNativeOptions(status);
-        send(activePickup(status));
-        if (status.source && status.source !== "in_app") present();
+        const latest = await VoiceNotes.status();
+        if (closed || state.phase !== "idle" || !latest.id || latest.id === id || latest.state === "idle") return;
+        acceptNativeOptions(latest);
+        send(activePickup(latest));
+        if (latest.source && latest.source !== "in_app") present();
       }
     } catch (caught) {
       console.warn("[VoiceNotes] Could not settle a recording stopped outside the app", caught);
       if (!endedElsewhereCurrent(id)) return;
-      // Retry Stop (reconcileFailedStop) reads status again and closes the recorder.
-      endedElsewhere = null;
+      // Stop again (reconcileFailedStop) closes it; the stop stays marked, so its committed event or the next micState
+      // can still land the note.
       send({ type: "STOP_FAILED", status: "unknown", id,
         error: `Could not check whether this ${recorderDevice()} saved the recording: ${messageOf(caught)}` });
     }
