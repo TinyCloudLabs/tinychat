@@ -190,8 +190,8 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         Revocation depends on the access path. Current node delegation revocation is available; host deletion
         propagation is planned. Revoking access or deleting data cannot recall copies already read.
       </p>
-      <p>
-        <a className="underline" href="https://docs.tinycloud.xyz/concepts/security-and-trust">Security and trust: storage, keys, and access boundaries</a>
+      <p className="break-words">
+        Security and trust (storage, keys and access boundaries): docs.tinycloud.xyz/concepts/security-and-trust
       </p>
       <p>
         The assistant’s memory is a document in your space. You can edit or clear it at any time in Settings; clearing
