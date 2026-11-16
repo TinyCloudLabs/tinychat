@@ -14,6 +14,427 @@
 - TC-2208: Keep focused approval controls, including code-less confirmations, and consent-link interactions bound to their original issuance until explicit navigation; retain archive-only answers, threads, claims, and commands in History; isolate group priority by registered source or validated archive origin.
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
+- TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
+
+## 0.14.0-beta.67
+
+### Patch Changes
+
+- 7e4a103: On tinycloud.chat, Home answers still waiting to be sent, answers marked "Not sent" that you have not seen yet, and post answers you have not sent now keep the tab there (with a notice saying why) instead of being left behind by the move to home.tinycloud.xyz; each stops holding 7 days after it was written. When the tab moves, what is left of them on tinycloud.chat is removed.
+
+## 0.14.0-beta.66
+
+### Patch Changes
+
+- 522a554: Feed: an answer you gave just as you left the app is never lost silently. When you come back, the card says "Not sent" with your answer if the card has changed or closed, even if you had it open when it changed; an answer you wrote in words is shown in the line so you can say it again. If the app could not reach the server, the card says the answer isn't sent yet and it goes the next time you open the app. If the agent is no longer connected, a notice says so until you dismiss it. If you leave before you have seen any of these, they appear the next time you open the feed.
+
+## 0.14.0-beta.65
+
+### Patch Changes
+
+- 487602b: Main's earlier messages load faster: the app fetches and decrypts up to four of them at a time instead of one after another. Every check on each message is unchanged, and the first failure still stops the whole load. Details: TC-3054.
+
+## 0.14.0-beta.64
+
+### Minor Changes
+
+- 98e2480: TinyCloud Home is now TinyCloud One everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud One.app`; `exo-update` replaces an existing `TinyCloud Home.app`), the Android and iOS app names, widgets, Siri phrases ("Start recording in TinyCloud One"), notifications, permission prompts and error messages. The main screen is now called Feed, and Settings › Start screen holds the first-screen choice. You stay signed in: the app id, bundle ids, URL schemes, installed web app id and every data path are unchanged, and nobody has to sign in again.
+
+## 0.14.0-beta.63
+
+### Patch Changes
+
+- 77dab54: The phone apps keep the app-lock settings, the record of being signed in and a pending sign-out in the device's app storage as well as the WebView's, so they survive a change of the app's WebView origin. A session restored when the app opens now locks like any cold launch when the app lock is on, including when the app opened without its record of being signed in. Details: TC-3045.
+
+## 0.14.0-beta.62
+
+### Patch Changes
+
+- fae976b: A restored session never sets up a TinyCloud account, whatever page it runs on. Details: TC-3019.
+
+## 0.14.0-beta.61
+
+### Patch Changes
+
+- 40534a9: Home feed: a card you acknowledge or drop no longer comes back as an open row for a few seconds while the app is still saving it. It stays out of Updates until it is saved, and is then in History as Acknowledged or Dropped. If the save fails, the card comes back with the message that it didn't reach the agent.
+
+## 0.14.0-beta.60
+
+### Patch Changes
+
+- 1160a72: After a page reload, opening Main's chat no longer fails with "Couldn't load your earlier messages with Main." It asks for the same approval as a new session, then loads the earlier messages. The transcript writer also renews again after a reload. Details: TC-3019.
+
+## 0.14.0-beta.59
+
+### Patch Changes
+
+- c0aaaea: The startup bundle no longer carries a Node crypto library the browser never runs: about 435 KB less to download and parse on every launch. Details: TC-2935.
+
+## 0.14.0-beta.58
+
+### Patch Changes
+
+- 092bbfc: Feed: on a Rocinante question, "Drop this card" now tells Rocinante to drop it (the same answer "Skip this question" sent), then the card moves to History marked Dropped. "Skip this question" is removed, so one control does it. Before, Drop only hid the card here and Rocinante never heard.
+
+## 0.14.0-beta.57
+
+### Patch Changes
+
+- 931849e: Feed: a Rocinante card's timing line reads "Due 13 Nov, 6:00 PM · Expires 14 Nov, 2:48 PM · in 2 h" instead of "Deadline …" and "Legacy expiry …"; a card that never expires no longer says "No automatic expiry".
+
+## 0.14.0-beta.56
+
+### Patch Changes
+
+- 8371a8d: Feed: a Rocinante card its agent has closed (answered, replaced, done, resolved…) leaves All and Needs action and shows in History, marked as closed, like cards you dropped or that expired. A closed card that still carries an answer of yours that was never sent stays in the feed until you've seen its "Not sent" line.
+
+## 0.14.0-beta.55
+
+### Patch Changes
+
+- b599417: Feed: every open card shows what it doesn't draw. "Details" in the card's foot carries a "+N" when the card holds data the card doesn't show. Details now unfolds inside the card and lists those fields under "Not shown on the card", exactly as the agent sent them (as text: links aren't opened and images aren't loaded), along with the card's facts, its history, and the whole card as sent ("Card data", with Copy). A Rocinante card the app can't read now points to Details, which lists everything it carries, instead of only "Ask your agent about this card."
+
+## 0.14.0-beta.54
+
+### Patch Changes
+
+- f11e6ca: Home feed: once the agent acknowledges your answer, a card's status reads "Answered" instead of "Waiting", until the agent reports it done or failed. A Rocinante card closed after you answered it also reads "Answered".
+
+## 0.14.0-beta.53
+
+### Patch Changes
+
+- df99598: When Main's earlier messages fail to load, the browser console now records why. The chat still shows the same failure message. Details: TC-3019.
+
+## 0.14.0-beta.52
+
+### Patch Changes
+
+- a6240ab: Home's top bar, rebuilt: Needs you · All · History with a Filter icon. Needs you opens its first card, the rest are rows by urgency, and an answered card makes way for the next. All shows Needs you, Updates and Done today. The chat box shows only when Main's chat works, Filter lists its dropdowns first, answered cards that are waiting or done wait in one Pending card at the end, and the Agents pill opens each agent's page. Details: TC-2941.
+
+## 0.14.0-beta.51
+
+### Patch Changes
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+
+## 0.14.0-beta.50
+
+### Patch Changes
+
+- e4c47d6: The reviewer seed CLI no longer defaults to the production node: pass `--host <origin>`, or `--production` for `https://tee.node.tinycloud.xyz`. Neither, or both, is a usage error.
+
+## 0.14.0-beta.49
+
+### Patch Changes
+
+- be21a74: Connecting Google on tinycloud.one now finishes on tinycloud.one: the popup and same-tab flows tag their return with `one.`/`onetab.`. tinycloud.chat and home.tinycloud.xyz tag as before.
+
+## 0.14.0-beta.48
+
+### Patch Changes
+
+- 0cb46eb: The TinyChat retrieval skill (now 0.1.1-onboarding.27) and the reviewer seed default to `https://tee.node.tinycloud.xyz` again, pending the node-host privacy decision. A CLI profile on `https://node.tinycloud.xyz` still works.
+
+  Details: TC-2923
+
+## 0.14.0-beta.47
+
+### Patch Changes
+
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
+## 0.14.0-beta.46
+
+### Patch Changes
+
+- f6f65ac: Sign-in works again on Android phones with an outdated System WebView (before Chromium 130, such as the stock WebView 113 on Android 14). Those WebViews read `xyz.tinycloud.exo://openkey/callback` with an empty host, so the OpenKey SDK refused the redirect URI with "Private-use redirect URI must have a host" before sign-in started, and a stored session couldn't be restored either. `patches/` now carries a fix to `@openkey/sdk-capacitor@0.2.0-beta.0` that reads the host from the path when the WebView leaves it empty, and still rejects a hostless redirect or a callback to another host or path. The same fix is going upstream to OpenKey. When the SDK release containing it lands, remove the patch, its `patchedDependencies` entry, and the `COPY patches` line in `backend/Dockerfile`.
+- 56edd41: Home Feed on a new device opens its live-update stream once, after the first load names the agents, instead of first for the registry alone and again for the agents (two node requests fewer per new-device open). Adds a per-PR gate on how many node requests and dependent rounds a Feed open costs (warm, new device, first ready, and an idle minute with the node's stream reconnect).
+
+## 0.14.0-beta.45
+
+### Patch Changes
+
+- c5ed3f3: Home opens its connections to the TinyCloud node and the backend while the app bundle loads (`preconnect` and `dns-prefetch` hints for the build's configured origins), so the first request after the session restores no longer also pays DNS, TCP and TLS.
+
+## 0.14.0-beta.44
+
+### Patch Changes
+
+- b5d30c6: Home's feed puts less code in the startup script, so the startup script is back under its size budget. The card animations' code, a post's page and the brief reader now load from their own files once the feed has shown. Cards still show at once, and they animate as before once that code has loaded.
+
+## 0.14.0-beta.43
+
+### Patch Changes
+
+- 749f7bf: Keep TinyCloud permission prompts accessible while Main's chat is open, then restore chat focus without losing the draft. Details: TC-2835.
+
+## 0.14.0-beta.42
+
+### Minor Changes
+
+- fc1ba3e: Home Feed gets the new card design.
+  - **Views:** an Information | All | Needs action slider stays in reach as you scroll. "View" shows cards Compact (the default), as Full cards, or as a Grid, and keeps your place when you switch. History, Snoozed, priority and order sit under Filter.
+  - **Compact cards:** each shows the agent, a relative time, where the card stands, a P0/P1 priority mark, when it's due, and how many times the agent replied.
+  - **Open cards:** a card can carry a one-page brief that opens in the app. Comments read as a conversation. A comment shows "Received" only once the agent confirms it, and offers "Send again" if it isn't confirmed within two minutes.
+  - **5 s Undo on every send:** that covers answers, comments, approvals, codes, and claim and task actions. A go-ahead is checked again before it's sent, and an approval that expired or closed in the meantime sends nothing.
+  - **Card actions:** a decision can be dropped and an update acknowledged; either can be brought back later. Each takes the card away at once with Undo at the bottom of the screen, then tells the agent, and the card moves to History, marked Dropped or Acknowledged. Cards past their expiry move there too, marked Expired.
+  - **Posts:** a post opens as a page with media and questions. Answers go to the agent per question, and unsent answers stay on the device.
+
+## 0.14.0-beta.41
+
+### Patch Changes
+
+- 94fbf3b: TinyCloud Home starts with less JavaScript. The startup script drops from 10.1 MB to 7.4 MB. The TinyCloud SDK's WebAssembly is now a separate file in the app bundle, fetched while the page loads, instead of 1.9 MB of base64 decoded at startup. Chat, Recording, Connectors, Apps, Settings and How it works load from their own files once Feed is up. The web app precaches everything an offline launch needs, and the desktop and phone apps load it all from the app bundle. An installed web app opened offline loads again: since the desktop quit guard (October), the startup script imported a desktop-only file the offline cache leaves out, so the page stayed blank. One copy of `@tinycloud/replica` (0.4.4, the SDK's) is installed instead of two. CI fails a build whose startup script goes over 7.6 MB or inlines WebAssembly again. Details: TC-2882
+
+## 0.14.0-beta.40
+
+### Patch Changes
+
+- 7e763b6: Home loads the Feed first when it opens on the Feed. The chat list refresh, the first-screen, word fixes and Canvas settings reads, the memory check, the transcriber library sync and the background chat history copy now wait until the Feed's first network load has shown (at most 3 s), so the Feed's reads no longer queue behind them at the node. Lists stored on the device still show at once, and opening Chat or any other screen releases the waiting reads immediately. Two overlapping automatic model lookups now share one request.
+
+## 0.14.0-beta.39
+
+### Patch Changes
+
+- e84dd3b: Allow first-use bot history approval with fresh SDK session snapshots while refusing owner or session-key changes. Details: TC-2895.
+
+## 0.14.0-beta.38
+
+### Patch Changes
+
+- 2bfd082: Opening Home no longer runs schema checks or table creation in front of its first reads. The chat list and settings read at once on a new device; only a read that finds its table missing creates the tables and reads again, and the full schema check runs in the background after the open's reads. Voice-note setup (its two schema statements and definition check) runs once per account and schema version on each device, after the open's reads when there is nothing to save, instead of on every open; later opens only sweep archived duplicates in the background.
+
+## 0.14.0-beta.37
+
+### Patch Changes
+
+- 50e57be: The Home Feed refreshes in one round of requests instead of three or more. On open it reads the agent registry and every agent the device already knows at the same time, one request per database, and no longer waits for the live-update stream first: each read carries its own freshness fingerprint, so the stream's first ready compares instead of loading again. Answers, follow-ups and agent receipts come with those reads instead of one request each, in sequence. A new device reads the Feed before it creates its tables; the one-time schema batch runs after the first load.
+
+## 0.14.0-beta.36
+
+### Patch Changes
+
+- ee74379: Playback diagnostics (TC-2857): an opt-in, on-device log of how a note's audio plays, for diagnosing choppy playback. Off by default; Settings reveals it after seven taps on the build line. It records the iOS audio session (category, mode, route, interruptions, thermal state, Low Power Mode), the note player's events and its clock against the wall clock, the audio source type and size, and main-thread blocks during playback, and exports as JSON lines with Share or Copy. No note content or file path is recorded.
+
+## 0.14.0-beta.35
+
+### Patch Changes
+
+- f53e7c8: Home in a desktop Chromium browser opens to the Feed again without waiting about a second and a half for the node. Production web builds no longer bind the local copy of transcripts at sign-in or session restore, because web-sdk 3.11.2 holds the restore until that bind and the node's `/info` answer (TC-2773 removes the wait in web-sdk 3.12). A copy already on the device is kept, not deleted; signing out still erases it. The switch for the local copy is hidden while binding is paused. Details: TC-2883
+
+## 0.14.0-beta.34
+
+### Patch Changes
+
+- f8b488c: The iOS and Android apps get a native local store for your TinyCloud data: an encrypted SQLite copy kept outside the web view, with one file and one device-only key per account. Nothing uses it yet (it is switched off until the TinyCloud SDK can read from it), and signing out deletes that account's copy and its key. Details: TC-2862
+
+## 0.14.0-beta.33
+
+### Patch Changes
+
+- 273a4cb: Home Feed loads once per open. A live-update connect, reconnect or resume no longer reloads the whole Feed: the first load waits for the live-update stream, and each later stream compares a one-request-per-database fingerprint with the last one and reloads only when something changed. A resume within 60 s makes no requests.
+
+## 0.14.0-beta.32
+
+### Patch Changes
+
+- 87f3e3f: The minimised recorder bar on the phone and in the browser is back to how it was before TC-2077: the timer, the moving level bars, the stop time under them, and the larger Pause and Stop. The small bar with "Stops in" and the stop time on hover stays on the desktop: the sidebar dock and the Mac app's floating bar. Details: TC-2077
+
+## 0.14.0-beta.31
+
+### Patch Changes
+
+- 97dbe56: iOS and Android: a returning user's Feed no longer waits for the TinyCloud node to re-activate a delegation it already holds (TC-2865). Once a launch has seen the node accept the current delegation, later launches still send `/delegate`, but in the background. On the iOS simulator, the time to the first Feed card dropped from about 3.0 s to about 0.6 s. If a background activation fails, the next launch waits for activation again and shows its error. Sign-in and renewal still wait for activation.
+
+## 0.14.0-beta.30
+
+### Patch Changes
+
+- 85e83ce: The iOS and Android apps no longer link to or open a purchase page (App Store 3.1.1, Google Play Payments). Manage storage, Upgrade, Manage plan, the pricing dialog and the usage chip's plans link are gone there. Storage-full surfaces keep Save now and Transcribe again, and say "Manage your plan on the web at tinycloud.xyz." as plain text. The TinyCloud panel's storage link and its storage-full toast link are hidden too. Web and desktop are unchanged.
+
+## 0.14.0-beta.29
+
+### Minor Changes
+
+- cf05789: The app links TinyCloud's privacy policy, `https://tinycloud.xyz/privacy` (TC-2876, App Store 5.1.1(i), Play User Data policy). The link appears in Settings → Account (signed in, and the signed-out phone Settings) and in How it works → Your data. It opens in the in-app browser on iOS and Android, in the system browser on desktop (a fixed-URL Tauri command), and in a new tab on the web.
+
+  The iOS privacy manifest now also declares Name, Purchase History, Product Interaction and Performance Data, to match the App Store privacy answers. The HealthKit purpose strings are now added to Debug builds only, and `ios-build.yml` fails a Release archive that has them.
+
+## 0.14.0-beta.28
+
+### Minor Changes
+
+- 4b2a0e3: Home's feed is now a list of cards. Every card shows at once, grouped under "Needs you" and "Earlier", with Needs you, All and Done above them and a filter for agent, project and type. A question answers with one tap on an option, or in your own words. The answer waits 5 seconds with an Undo button, then it's sent. Close the page during those 5 seconds and the answer is still sent, at once or the next time you open Home, unless the request changed in between. Comments sit under each card, one reply deep, as on the sitrep board, and an agent's replies show there too. The private note is gone from the card. Cards use plain words throughout. Empty and loading states are cards, and the signed-out demo uses the same card.
+
+## 0.14.0-beta.27
+
+### Minor Changes
+
+- abe8e22: Save bot chat history encrypted in the owner's TinyCloud space, with verified model receipts and storage acknowledgments. Notify the owner in Main's chat when expired TinyCloud permission schedules local history deletion, and resume copying after reconnection. Details: TC-2808.
+
+## 0.14.0-beta.26
+
+### Patch Changes
+
+- 31c1323: tinycloud.chat notice: one recording that belongs to another account now reads "…Sign in to that account here to save it." The Library's "Audio only in this browser" filter, when empty, says "No recordings have audio only in this browser." Details: TC-2050
+
+## 0.14.0-beta.25
+
+### Patch Changes
+
+- b557fb0: tinycloud.chat: the notice on a tab kept there says why, one line per reason (audio only in this browser, recordings in no account yet, another account's recordings), and each count links to where to deal with them. Several recordings with audio only in this browser open the Library's new "Audio only in this browser" filter. Details: TC-2050
+
+## 0.14.0-beta.24
+
+### Minor Changes
+
+- 20598f6: One TinyCloud Home: home.tinycloud.xyz, tinycloud.chat, the desktop app and the mobile apps now run the same build. The `VITE_HOME_SITE` build flag, its separate production upload job and the Home-only sign-in grant (`manifest.home.json`) are gone.
+  - Every platform opens on Feed, named Home, with the tabs Home, Chat, Apps, Recording and Connectors in that order. Signed out on the web you see the Home front page with its demo feed, and the install prompt waits until you have signed in.
+  - Every web build signs in with `manifest.json`'s storage, without the connector secrets or the decrypt grant until this device has used Connectors. Opening Connectors the first time asks OpenKey for them in place, once. Recording no longer asks for its own permission, and Local copy, Agent access, Conversation Canvas and every Settings section are available on home.tinycloud.xyz too. If you signed in on home.tinycloud.xyz under the narrower Home grant, you sign in once more. The desktop and mobile apps sign in as before.
+  - tinycloud.chat moves you to home.tinycloud.xyz with the same path, query and `#` link. If this browser still holds recordings that are only saved on tinycloud.chat, you stay there with a notice and move automatically once they are saved.
+
+  Details: TC-2050
+
+## 0.14.0-beta.23
+
+### Patch Changes
+
+- 7b41d89: Android: TinyCloud Home's package is now `xyz.tinycloud.home`, the same id as the iPhone app, ahead of its first Google Play release. To Android it is a new app: an installed debug or sideloaded `xyz.tinycloud.exo` build does not update in place. Open the old build and let its pending recordings upload, then uninstall it (uninstalling deletes its local data, and both builds answer the same `xyz.tinycloud.exo://` sign-in link), install the new one and sign in again. Sign-in and Google return links are unchanged. Details: TC-2846
+
+## 0.14.0-beta.22
+
+### Patch Changes
+
+- 4143792: Remove the transcript-share action from note detail. Transcript sharing returns through the TC-2525 SDK adoption.
+
+  Details: TC-2845, TC-2192
+
+## 0.14.0-beta.21
+
+### Minor Changes
+
+- e5f9e06: Share links you open or create are now kept in your TinyCloud space (`xyz.tinycloud.tinychat/threads/shared-with-me/`, inside the existing `threads/` grant), so they follow your account to other devices and to the new Home address (TC-2830). The browser keeps only a per-account copy, which is cleared at sign-out. The first account to sign in on a browser takes over that browser's old list, once. A link opened while signed out is saved only if you then sign in on that same page.
+
+## 0.14.0-beta.20
+
+### Patch Changes
+
+- f4853a8: Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
+
+  Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
+
+  Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
+
+  Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
+  Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
+  Details: TC-2192
+
+## 0.14.0-beta.19
+
+### Patch Changes
+
+- 8a1d52e: Wait for restored private-agent access to settle before routing the first chat send.
+
+## 0.14.0-beta.18
+
+### Minor Changes
+
+- 033a30f: Tiny bots, slice 1 (TC-2808), off by default. For accounts on `BOTS_TEST_ACCOUNTS` with `BOTS_ENABLED=true`, Home shows a "What do you want done?" box that sends to Main, the owner's main bot, and opens Main's chat with the reply streaming in. The backend adds `/api/bots/status` and `/api/bots/main/messages`, which forward to the new bots service (`bots/`). Everyone else sees no change.
+
+## 0.14.0-beta.17
+
+### Patch Changes
+
+- 609603c: On web and desktop, voice notes that aren't saved yet stay on the device for your account when you sign out, or you can delete them. Notes recorded while signed out wait until you save each one to an account.
+
+  Details: TC-2785
+
+## 0.14.0-beta.16
+
+### Patch Changes
+
+- ae08fc0: Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196
+
+## 0.14.0-beta.15
+
+### Patch Changes
+
+- 47e3ecf: Reviewer seed: check the grant's signed UCAN payload against the request before use, match resumed chat messages by their ids, and state the requested KV scope exactly.
+
+## 0.14.0-beta.14
+
+### Minor Changes
+
+- 7db69c7: TinyCloud Home opens from the device: the Feed, chat histories and Library show their last copy at once and refresh in the background. What you open is fetched first; background copying waits for it and pauses while the app is hidden. The Feed loads with far fewer requests.
+
+## 0.14.0-beta.13
+
+### Minor Changes
+
+- eed0f62: TinyCloud Home on iPhone and Android now opens with Face ID, Touch ID or the phone's screen lock instead of signing in again. A signed-in app asks when it opens, and when you come back after 5 minutes away (Settings › App lock: 1, 5 or 15 minutes, or an hour). Your feed and recordings load behind the lock screen and appear the moment you unlock; on iPhone and Android 13 and later the app switcher shows a blank screen while the lock is on. Cancelling keeps the lock screen up with a button to try again, and never signs you out. The lock is on by default where Face ID, Touch ID or a fingerprint is set up, and can be turned off in Settings. Recording from a shortcut starts without waiting for the unlock. Details: TC-2738
+
+## 0.14.0-beta.12
+
+### Minor Changes
+
+- 680789e: TinyCloud Home for Mac starts a recording from anywhere: press ⌘⇧⌥R (Command-Shift-Option-R), or choose Start recording from its menu-bar icon. The app comes to the front with the recorder open and recording; if a recording is already going, it opens that recorder instead. The menu-bar icon also has Open TinyCloud Home.
+
+## 0.14.0-beta.11
+
+### Patch Changes
+
+- faad27f: Add a reviewer seed CLI (`frontend/scripts/reviewer-seed`) that fills one fresh, explicitly confirmed TinyCloud Home space with fixed demo Feed cards, a chat and a transcript-only voice note through Home's own write paths, using only a short delegation the space owner grants to the run.
+
+## 0.14.0-beta.10
+
+### Patch Changes
+
+- 761a6ba: The web build includes connector secret permissions and the decrypt permission at sign-in for devices that have used Connectors. First use requests access through OpenKey in place. Remove the unused custom AssemblyAI key permission from the manifest.
+
+## 0.14.0-beta.9
+
+### Minor Changes
+
+- aaf1236: iOS: TinyCloud Home ships recording shortcuts that work right after install (TC-2740). Siri, Spotlight, the Shortcuts app and the Action button get **Record** ("Start recording in TinyCloud Home", "Record a note in TinyCloud Home") and **Stop Recording**; Control Center and the Lock Screen get a **Record a Voice Note** control that records without unlocking; the home-screen quick action uses the same start. Every recording shows a Live Activity with a timer and a Stop button. The test-only "TinyCloud Home probe" control and shortcut are gone.
+
+## 0.14.0-beta.8
+
+### Minor Changes
+
+- b589ec8: Android: add a Quick Settings "Record" tile that opens TinyCloud Home and starts a voice note, and relabel the launcher shortcut "Record".
+
+## 0.14.0-beta.7
+
+### Minor Changes
+
+- f8823ef: Exo is now TinyCloud Home everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud Home.app`), the Android and iOS app names, notifications, permission prompts and error messages. Home opens on Feed on the web, on desktop and on iOS and Android, on a fresh install and after signing in, unless you chose Apps as your first screen in Settings. Feed and Apps are no longer experimental: they are in the navigation for everyone, and Settings › Home holds the first-screen choice. App id, bundle ids, URL schemes and every data path are unchanged. Details: TC-2050, TC-2040
+
+## 0.14.0-beta.6
+
+No changes in this release.
+
+## 0.14.0-beta.5
+
+### Patch Changes
+
+- 451ae7e: Native sign-in on iOS and Android asks for every applications-space KV, SQL and hook entry of the manifest, the same grant as the web sign-in, so the Home feed works on the phone apps (TC-2720). Space info stays web-only until the backend accepts it. A CI job checks the native request against production OpenKey's ceiling.
+
+## 0.14.0-beta.4
+
+### Minor Changes
+
+- 657b2ef: Settings → Account has "Delete OpenKey account" (TC-2721, App Store 5.1.1(v)). It opens OpenKey's deletion page, `https://openkey.so/dashboard/settings/delete-account` on the configured `VITE_OPENKEY_HOST`, in the system browser sheet on the phone or a new tab on the web. The row isn't shown on desktop, which has no fixed-URL opener for it yet.
+
+## 0.14.0-beta.3
+
+### Minor Changes
+
+- ab71584: Native sign-in offers "Continue with Apple" once OpenKey lists Apple in `GET /api/auth/providers`; it opens Sign in with Apple in the existing OpenKey sheet (TC-1233). Updates `@openkey/sdk-capacitor` to the release that accepts `loginMethod: "apple"`.
 
 ## 0.14.0-beta.2
 

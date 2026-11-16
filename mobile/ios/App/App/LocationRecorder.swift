@@ -2,7 +2,7 @@
 // TC-524 location spike: Debug builds only. Release compiles none of this, so a Release binary never links
 // CoreLocation and needs no location purpose strings (App Store Connect rejects a binary that references
 // location APIs without them, ITMS-90683). The Debug-only Info.plist keys are added at build time by
-// App/location-spike-info-plist.sh. What shipping it would change: mobile/docs/location-spike.md.
+// App/debug-spikes-info-plist.sh. What shipping it would change: mobile/docs/location-spike.md.
 import CoreLocation
 import Foundation
 import UIKit

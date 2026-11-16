@@ -63,14 +63,23 @@ describe("a recording under the silent safety cap", () => {
     expect(minimizedLimit(minimizedView(withLimit, 2 * MIN), withLimit.maxDurationMs)).not.toBeNull();
   });
 
-  test("Ribbon and dock render no Stops in, no Recording stops at, and no limit line", () => {
+  test("Ribbon (phone and Mac app) and dock render no Stops in, no Recording stops at, and no limit line", () => {
     const ribbon = renderToStaticMarkup(<RibbonView recorder={recorderWith(capped)} elapsedMs={2 * MIN} theme="night" />);
+    const macRibbon = renderToStaticMarkup(
+      <PlatformContext.Provider value="tauri">
+        <RibbonView recorder={recorderWith(capped)} elapsedMs={2 * MIN} theme="night" />
+      </PlatformContext.Provider>,
+    );
     const dock = renderToStaticMarkup(<SidebarDockView recorder={recorderWith(capped)} elapsedMs={2 * MIN} theme="night" />);
-    for (const html of [ribbon, dock]) {
+    for (const html of [ribbon, macRibbon, dock]) {
       expect(html).not.toMatch(/Stops in|Stops at|stops at/);
       expect(html).toContain("2:00");
     }
-    const withLimit = renderToStaticMarkup(<RibbonView recorder={recorderWith(automatic)} elapsedMs={2 * MIN} theme="night" />);
+    const withLimit = renderToStaticMarkup(
+      <PlatformContext.Provider value="tauri">
+        <RibbonView recorder={recorderWith(automatic)} elapsedMs={2 * MIN} theme="night" />
+      </PlatformContext.Provider>,
+    );
     expect(withLimit).toContain("Stops in 58:00");
   });
 });

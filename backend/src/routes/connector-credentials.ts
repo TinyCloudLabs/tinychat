@@ -137,7 +137,9 @@ export function createConnectorCredentialRouter(
     }
     let mode: string;
     try {
-      mode = await options.modes.mode(address);
+      mode = options.modes.eligible
+        ? (await options.modes.eligible(address) ? "backend" : "browser")
+        : await options.modes.mode(address, source);
     } catch {
       res.status(503).json({ error: "unavailable" });
       return null;
@@ -334,8 +336,8 @@ export function createConnectorCredentialRouter(
         result = await credentials.revoke(req.params.source, address);
       }
     } catch {
-      // The tombstone is written first, so a failure below it has already classified this
-      // tenant's content as purged. 503 asks for a retry of the SAME idempotent call.
+      // Ingress shutdown or the subsequent purge may have partially completed. 503 asks for
+      // a retry of the SAME idempotent disconnect, never reports partial cleanup as success.
       logCredentialRoute(
         `op=disconnect result=teardown_incomplete source=${req.params.source} ` +
           `aid=${hashedAddress(address)}`,

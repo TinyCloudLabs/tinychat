@@ -1,0 +1,97 @@
+diff --git a/node_modules/@openkey/sdk-capacitor/.bun-tag-d6d9a3448bc7215e b/.bun-tag-d6d9a3448bc7215e
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 8189c9f53ed87389fa568005b4f64e742d0218da..c7ea2a477a7b7a4e2f5333f302b4e8c10d241fbd 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -2617,8 +2617,8 @@ var OpenKeyNative = class {
+         await write();
+       });
+     }, () => !this.coordinator.signedOut, () => this.coordinator.epoch);
+-    const redirect = new URL(options.redirectUri);
+-    if (redirect.protocol !== "https:" && !redirect.hostname) {
++    const redirect = redirectTarget(options.redirectUri);
++    if (redirect.protocol !== "https:" && !redirect.host) {
+       throw new o("SERVER", "Private-use redirect URI must have a host");
+     }
+     void this.retryPendingRevoke().catch(() => {
+@@ -3041,11 +3041,11 @@ var OpenKeyNative = class {
+     }
+     let returned;
+     try {
+-      returned = new URL(callback);
++      returned = redirectTarget(callback);
+     } catch {
+       throw new o("SERVER", "Callback URL is not parseable");
+     }
+-    const expected = new URL(this.options.redirectUri);
++    const expected = redirectTarget(this.options.redirectUri);
+     if (returned.protocol !== expected.protocol || returned.host !== expected.host || returned.pathname !== expected.pathname) {
+       throw new o("STATE_MISMATCH", "Callback destination does not match redirect URI");
+     }
+@@ -3438,3 +3438,17 @@ var OpenKeyNative = class {
+ @noble/curves/esm/ed25519.js:
+   (*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
+ */
++
++// tinychat stopgap until @openkey/sdk-capacitor ships the fix: Chromium before
++// 130 (Android System WebView 113) parses `xyz.app://openkey/callback` with
++// host '' and pathname '//openkey/callback'. On such an engine only, recover
++// the authority from that path; a modern parser's fields are used as-is (there
++// `xyz.app:////openkey/callback` has an empty host and must not match).
++// Mirrors the upstream redirectTarget() in packages/sdk-capacitor/src/client.ts.
++function redirectTarget(uri) {
++  const url = new URL(uri);
++  const opaqueAuthority = new URL("x-openkey-probe://host/").host === "";
++  if (url.host || !opaqueAuthority || !url.pathname.startsWith("//")) return { protocol: url.protocol, host: url.host, pathname: url.pathname };
++  const pathStart = url.pathname.indexOf("/", 2);
++  return pathStart === -1 ? { protocol: url.protocol, host: url.pathname.slice(2), pathname: "" } : { protocol: url.protocol, host: url.pathname.slice(2, pathStart), pathname: url.pathname.slice(pathStart) };
++}
+diff --git a/dist/index.js b/dist/index.js
+index 2d21294eaf891c62cd062167d913d255b1520122..b131429dd2311e180861c2871f8836e871bb78a3 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -2576,8 +2576,8 @@ var OpenKeyNative = class {
+         await write();
+       });
+     }, () => !this.coordinator.signedOut, () => this.coordinator.epoch);
+-    const redirect = new URL(options.redirectUri);
+-    if (redirect.protocol !== "https:" && !redirect.hostname) {
++    const redirect = redirectTarget(options.redirectUri);
++    if (redirect.protocol !== "https:" && !redirect.host) {
+       throw new o("SERVER", "Private-use redirect URI must have a host");
+     }
+     void this.retryPendingRevoke().catch(() => {
+@@ -3000,11 +3000,11 @@ var OpenKeyNative = class {
+     }
+     let returned;
+     try {
+-      returned = new URL(callback);
++      returned = redirectTarget(callback);
+     } catch {
+       throw new o("SERVER", "Callback URL is not parseable");
+     }
+-    const expected = new URL(this.options.redirectUri);
++    const expected = redirectTarget(this.options.redirectUri);
+     if (returned.protocol !== expected.protocol || returned.host !== expected.host || returned.pathname !== expected.pathname) {
+       throw new o("STATE_MISMATCH", "Callback destination does not match redirect URI");
+     }
+@@ -3405,3 +3405,17 @@ export {
+ @noble/curves/esm/ed25519.js:
+   (*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
+ */
++
++// tinychat stopgap until @openkey/sdk-capacitor ships the fix: Chromium before
++// 130 (Android System WebView 113) parses `xyz.app://openkey/callback` with
++// host '' and pathname '//openkey/callback'. On such an engine only, recover
++// the authority from that path; a modern parser's fields are used as-is (there
++// `xyz.app:////openkey/callback` has an empty host and must not match).
++// Mirrors the upstream redirectTarget() in packages/sdk-capacitor/src/client.ts.
++function redirectTarget(uri) {
++  const url = new URL(uri);
++  const opaqueAuthority = new URL("x-openkey-probe://host/").host === "";
++  if (url.host || !opaqueAuthority || !url.pathname.startsWith("//")) return { protocol: url.protocol, host: url.host, pathname: url.pathname };
++  const pathStart = url.pathname.indexOf("/", 2);
++  return pathStart === -1 ? { protocol: url.protocol, host: url.pathname.slice(2), pathname: "" } : { protocol: url.protocol, host: url.pathname.slice(2, pathStart), pathname: url.pathname.slice(pathStart) };
++}

@@ -25,6 +25,7 @@ import {
   type VoiceNoteTranscriptionStatus,
 } from "./voiceNoteTranscription";
 import { isSourcePinned } from "./sourcePins";
+import { advanceAccountGeneration } from "./accountContext";
 
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"], admission: "open" };
 const AUDIO = { mimeType: "audio/mp4", base64: "AAAA" };
@@ -472,6 +473,19 @@ describe("turning off", () => {
 });
 
 describe("voiceNoteTranscriberFor", () => {
+  test("TC-2785 a same-account return gets a fresh transcriber while same-generation mounts share one", () => {
+    const store = { getToken: () => "tok", isExpired: () => false } as never;
+    const account = { did: "did:test:transcriber-return" } as unknown as TinyCloudWeb;
+    const beforeSignOut = voiceNoteTranscriberFor(account, "https://api.example", store);
+    expect(beforeSignOut).not.toBeNull();
+    expect(voiceNoteTranscriberFor(account, "https://api.example", store)).toBe(beforeSignOut);
+    advanceAccountGeneration();
+    const signedBackIn = voiceNoteTranscriberFor(account, "https://api.example", store);
+    expect(signedBackIn).not.toBeNull();
+    expect(signedBackIn).not.toBe(beforeSignOut);
+    expect(voiceNoteTranscriberFor(account, "https://api.example", store)).toBe(signedBackIn);
+  });
+
   test("one transcriber per account DID; none without a DID", () => {
     const store = { getToken: () => "tok", isExpired: () => false } as never;
     const a1 = voiceNoteTranscriberFor({ did: "did:test:a" } as unknown as TinyCloudWeb, "https://api.example", store);

@@ -7,8 +7,10 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "./chatModelAdapter.js";
+import { createAgentAccessController } from "./useAgentEnablement.js";
 import { createMeetingMessageRegistry, takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
 import { DEFAULT_MODEL } from "../lib/threadStore.js";
+import { clearGatewayReceipt, getGatewayReceiptVerified } from "../lib/gatewayReceiptStore";
 import { offeredChatModelContextTokens } from "@tinyboilerplate/core";
 import type { MeetingCandidate } from "../lib/meetingChat/types.js";
 
@@ -134,6 +136,62 @@ describe("createChatModelAdapter — C1 branch selection", () => {
     globalThis.fetch = (async (url: string) => sseResponse(url)) as typeof fetch;
     const { calledUrl } = await drainAdapter(makeDeps(true, "thread-x"));
     expect(calledUrl).toContain("/api/agent/chat");
+  });
+  it("waits when the restored-session first send precedes the access probe", async () => {
+    let resolveProbe!: (response: Response) => void;
+    const probeResponse = new Promise<Response>((resolve) => { resolveProbe = resolve; });
+    let resolveChat!: (response: Response) => void;
+    const chatResponse = new Promise<Response>((resolve) => { resolveChat = resolve; });
+    let calledUrl = "";
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/api/agent/session")) return probeResponse;
+      calledUrl = requestUrl;
+      return chatResponse;
+    }) as typeof fetch;
+
+    const controller = createAgentAccessController({
+      backendUrl: "https://api.test",
+      tcw: { address: () => "0xone" } as never,
+      sessionStore: { getToken: () => "test-token" } as never,
+      appName: "test",
+      openkeyHost: "https://openkey.test",
+    });
+    const deps = makeDeps(false);
+    deps.agentEnabledRef = controller.agentEnabledRef as never;
+    deps.privateAccessRef = controller.privateAccessRef;
+    deps.waitForInitialProbe = controller.waitForInitialProbe;
+    const adapter = createChatModelAdapter(deps);
+    let thrown: unknown;
+    const received: string[] = [];
+    const sending = (async () => {
+      try {
+        for await (const frame of adapter.run({
+          messages: [{ id: "restored-first", role: "user", content: [{ type: "text", text: "hi" }] }],
+          abortSignal: new AbortController().signal,
+          context: {},
+          unstable_assistantMessageId: "restored-first",
+        } as never)) {
+          received.push(...frame.content.map((part) => part.type === "text" ? part.text : ""));
+        }
+      } catch (error) {
+        thrown = error;
+      }
+    })();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const requestBeforeProbeSettled = calledUrl;
+    const probe = controller.refresh();
+    resolveProbe(Response.json({ status: "active", transcriptStatus: "active", revision: "restored-r1" }));
+    await probe;
+    resolveChat(sseResponse(calledUrl));
+    await sending;
+    controller.dispose();
+
+    expect(requestBeforeProbeSettled).toBe("");
+    expect(calledUrl).toBe("https://api.test/api/agent/chat");
+    expect(received.join("")).toBe("Hello");
+    expect(thrown).toBeUndefined();
   });
 
   it("routes a transcript turn through /api/agent/chat without invoking the browser retriever", async () => {
@@ -275,6 +333,40 @@ describe("createChatModelAdapter — C2 receipt+badge stashing on agent path", (
     const receipt = takePendingReceipt(msgId);
     expect(receipt).not.toBeNull();
     expect(receipt?.usage).toEqual({ promptTokens: 1, completionTokens: 1 });
+  });
+});
+
+describe("createChatModelAdapter — streamed gateway receipt state", () => {
+  const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+
+  for (const outcome of ["failed", "timed out"] as const) {
+    it(`keeps the reply unverified after a ${outcome} audit`, async () => {
+      const msgId = `msg-receipt-${outcome.replaceAll(" ", "-")}`;
+      clearGatewayReceipt(msgId);
+      globalThis.fetch = (async () => new Response([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: `Partial reply. ${warning}` } }] })}\n\n`,
+        "data: [DONE]\n\n",
+      ].join(""), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+
+      const result = await drainAdapter(makeDeps(false), msgId);
+      expect(result.chunks.at(-1)).toContain(warning);
+      expect(getGatewayReceiptVerified(msgId)).toBe(false);
+      clearGatewayReceipt(msgId);
+    });
+  }
+
+  it("marks the adapter reply verified only after the backend verifier event", async () => {
+    const msgId = "msg-receipt-verified";
+    clearGatewayReceipt(msgId);
+    globalThis.fetch = (async () => new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Verified reply." } }] })}\n\n`,
+      'event: tinycloud.receipt-verification\ndata: {"status":"verified"}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+
+    await drainAdapter(makeDeps(false), msgId);
+    expect(getGatewayReceiptVerified(msgId)).toBe(true);
+    clearGatewayReceipt(msgId);
   });
 });
 

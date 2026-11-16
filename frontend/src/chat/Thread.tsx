@@ -54,6 +54,7 @@ import {
 } from "@/lib/billingApi";
 import { copyText } from "@/lib/copyText";
 import { isLocalThreadStorage } from "@/lib/threadStore";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
@@ -63,9 +64,11 @@ import {
   type OwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
+import { sharedWithMeVersion, subscribeSharedWithMe } from "@/lib/sharedWithMe";
 import { canOfferChatShare } from "@/lib/chatSharing";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
+import { getGatewayReceiptVerified, onGatewayReceipt } from "@/lib/gatewayReceiptStore";
 import { ToolActivityChip } from "./ToolActivityChip";
 import type { SelectionView } from "./modelSelection";
 
@@ -250,7 +253,9 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
 
   // `visible` gates whether the share button renders at all — only once a
   // chat exchange exists (not empty, history loaded). `canShare` additionally
-  // pauses actions while a share link is being created.
+  // pauses actions while a share link is being created. Subscribing re-renders
+  // when the account's share list syncs from its space.
+  useSyncExternalStore(subscribeSharedWithMe, sharedWithMeVersion);
   const hasExistingShare = Boolean(threadId && findStoredTinychatShareForThread(threadId));
   const visible = Boolean(
     !isLocalThreadStorage(tcw) &&
@@ -507,7 +512,7 @@ const ThreadWelcome: FC = () => {
       <div className="relative -top-20 flex w-full flex-1 flex-col items-center justify-center gap-6 px-4 py-16 pb-24 text-center sm:top-0">
         <div className="flex flex-col items-center gap-2">
           {/* The chat header's title is the screen's h1. */}
-          <h2 className="font-display text-title-2">TinyCloud Chat</h2>
+          <h2 className="font-display text-title-2">TinyCloud One</h2>
           <p className="max-w-sm text-callout text-muted-foreground">
             Your conversations are stored in your TinyCloud space. Ordinary hosted storage is plaintext at rest.
           </p>
@@ -559,6 +564,8 @@ const WELCOME_SUGGESTIONS = [
 // above the tab bar it needs no safe area (the bar has it), over the keyboard
 // it tightens to 8 px, and at the screen's edge it clears the home indicator.
 const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boolean }> = ({ selection, toolbar, isEmpty }) => {
+  // A typed draft and a reply being written live only in this page: a held tinycloud.chat page must not move under them.
+  useOriginMoveDeferral(useAuiState((s) => s.thread.isRunning || s.composer.text.trim() !== ""));
   return (
     <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 [html[data-keyboard=open]_&]:pb-2 [html[data-nav=tabbar]:not([data-keyboard=open])_&]:pb-3">
       <div className="relative">
@@ -568,7 +575,7 @@ const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boo
         <ComposerPrimitive.Input
           autoFocus
           rows={1}
-          placeholder="Message TinyCloud Chat…"
+          placeholder="Message TinyCloud One…"
           disabled={!selection.canSend}
           // Always 16px: smaller text makes iOS zoom the page when the field
           // gains focus, and the composer reads the same on every device.
@@ -621,13 +628,14 @@ const AssistantMessage: FC = () => (
       <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
         T
       </span>
-      <span>TinyCloud Chat</span>
+      <span>TinyCloud One</span>
     </div>
     <div className="pl-7 text-sm leading-relaxed text-foreground">
       <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
       <ThinkingIndicator />
       <StreamingCursor />
       <ToolActivityChip />
+      <GatewayReceiptMark />
     </div>
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -641,6 +649,27 @@ const AssistantMessage: FC = () => (
     </div>
   </MessagePrimitive.Root>
 );
+const GatewayReceiptMark: FC = () => {
+  const messageId = useMessage((message) => message.id);
+  const verified = useSyncExternalStore(
+    (notify) => onGatewayReceipt(messageId, notify),
+    () => getGatewayReceiptVerified(messageId),
+    () => false,
+  );
+  if (!verified) return null;
+  return (
+    <span
+      aria-label="Enclave verified"
+      className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-teal-700 dark:text-teal-300"
+      data-testid="gateway-receipt-verified"
+      role="status"
+      title="Enclave verified"
+    >
+      <CheckIcon aria-hidden="true" className="size-3.5" />
+      Enclave verified
+    </span>
+  );
+};
 
 // Three-way phase for the running assistant message — exactly one of the two
 // indicators below matches each phase, so the handoff is mutually exclusive.

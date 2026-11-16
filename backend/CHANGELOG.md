@@ -1,5 +1,149 @@
 # @tinychat/backend
 
+## 0.8.0-beta.23
+
+### Patch Changes
+
+- 6d52413: The per-request log record now names its route only from the fixed list of routes the backend serves (anything else is `unmatched`), reports credits as a range (`0`, `1-9`, `10-99`, `100-999`, `1000+`) instead of an exact count, and uses an account pseudonym that changes every calendar month (UTC), so one account's records can be linked within a month but not across months. Details: TC-3031.
+
+## 0.8.0-beta.22
+
+### Patch Changes
+
+- 98e2480: TinyCloud Home is now TinyCloud One everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud One.app`; `exo-update` replaces an existing `TinyCloud Home.app`), the Android and iOS app names, widgets, Siri phrases ("Start recording in TinyCloud One"), notifications, permission prompts and error messages. The main screen is now called Feed, and Settings › Start screen holds the first-screen choice. You stay signed in: the app id, bundle ids, URL schemes, installed web app id and every data path are unchanged, and nobody has to sign in again.
+
+## 0.8.0-beta.21
+
+### Patch Changes
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+
+## 0.8.0-beta.20
+
+### Patch Changes
+
+- be21a74: Google connections started on tinycloud.one return to tinycloud.one. The backend accepts two new `state` tags, `one.<nonce>` for the popup return and `onetab.<path>.<nonce>` for the same-tab return; both go to the fixed https://tinycloud.one origin when it is in the `FRONTEND_ORIGINS` allowlist (it is by default), and are refused like any unknown tag when it is not. Untagged, `tab.`, `home.`, `hometab.` and `native.` flows are unchanged.
+
+## 0.8.0-beta.19
+
+### Patch Changes
+
+- aa036e0: The backend accepts https://tinycloud.one, the Home app's new site, for CORS and the sign-in (SIWE) domain, alongside tinycloud.chat and home.tinycloud.xyz. It is one more exact origin in the default `FRONTEND_ORIGINS` list; `www.tinycloud.one`, other ports, other schemes and lookalike hosts are still refused. Google connections started on tinycloud.one still return to `FRONTEND_URL` until they get their own return tag.
+
+## 0.8.0-beta.18
+
+### Patch Changes
+
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
+## 0.8.0-beta.17
+
+### Patch Changes
+
+- 095dda1: TC-2917: the calendar autojoin worker reads connection and meeting rows from an in-process copy instead of the node every 30 s tick. Idle users, disabled connections and finished meetings no longer cost node calls; scheduling, due-time timers and dispatch policy reads are unchanged.
+
+## 0.8.0-beta.16
+
+### Patch Changes
+
+- 339a1d2: Route Fireflies ingestion by the user's connection: server OAuth plus cohort eligibility selects backend ingestion; users without server OAuth keep browser access to their queued meetings.
+
+## 0.8.0-beta.15
+
+### Patch Changes
+
+- 915a8f9: Stop webhook admission on Fireflies disconnect, close the in-flight enqueue race, and retain purge-ledger ID timestamps without extending them on retries.
+
+## 0.8.0-beta.14
+
+### Patch Changes
+
+- fc73a24: Remove reconciled server copies when Fireflies sync is disabled, preserving unreadable or unreconciled copies for retention cleanup.
+
+## 0.8.0-beta.13
+
+### Patch Changes
+
+- 20484c4: Delete server-held Fireflies meeting IDs within 14 days and enforce authenticated content expiry and bounded replay protection.
+
+## 0.8.0-beta.12
+
+### Minor Changes
+
+- abe8e22: Save bot chat history encrypted in the owner's TinyCloud space, with verified model receipts and storage acknowledgments. Notify the owner in Main's chat when expired TinyCloud permission schedules local history deletion, and resume copying after reconnection. Details: TC-2808.
+
+## 0.8.0-beta.11
+
+### Patch Changes
+
+- 78c73f1: Support a bots service connection host with TLS verification against the service URL identity. Details: TC-2808
+
+## 0.8.0-beta.10
+
+### Patch Changes
+
+- 898ce96: Require a pinned content-master commitment and successful existing-index decrypt before canary enrollment; verify the encrypted canary before ingestion starts. Add an authenticated read-only continuity diagnostic. Existing ingestion deployments must pin CONNECTOR_CONTENT_EXPECTED_SHA256 from their live master before first startup; fresh installations require explicit CONNECTOR_CONTENT_ENROLL_FRESH=true enrollment.
+
+  Take the ingest singleton lease before enrollment and reject blank pins. Require encoded random key material for new enrollment. An unset master permits startup only with empty sealed storage, leaves sealed features disabled, and returns a diagnostic error without a fingerprint.
+
+  Close connections that become idle after an in-flight response finishes during shutdown, so Bun shutdown does not wait for keep-alive expiry. Tighten base64 padding validation and limit the diagnostic exemption to its literal path.
+
+## 0.8.0-beta.9
+
+### Patch Changes
+
+- 20598f6: The backend accepts both tinycloud.chat and home.tinycloud.xyz for CORS, sign-in (the SIWE domain) and Google OAuth returns, through the new `FRONTEND_ORIGINS` allowlist: comma-separated exact origins, `FRONTEND_URL` always added, defaulting to `https://tinycloud.chat,https://home.tinycloud.xyz`. A Google connection started on tinycloud.chat returns to tinycloud.chat even after `FRONTEND_URL` moves to home.tinycloud.xyz; one started on home.tinycloud.xyz returns there. Stripe and connector-off links still use `FRONTEND_URL`.
+
+  Deploy this backend before setting `TINYCHAT_FRONTEND_URL` to `https://home.tinycloud.xyz`. That variable is also the backend's `FRONTEND_URL`, and an older backend would stop accepting tinycloud.chat, where visitors whose recordings are still only in that browser stay.
+
+## 0.8.0-beta.8
+
+### Patch Changes
+
+- f4853a8: Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
+
+  Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
+
+  Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
+
+  Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
+  Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
+  Details: TC-2192
+
+## 0.8.0-beta.7
+
+### Patch Changes
+
+- 36f006a: Backend deploys pass the tiny bots settings (BOTS_ENABLED, BOTS_TEST_ACCOUNTS, BOTS_SERVICE_URL, BOTS_SERVICE_SECRET, BOTS_POST_TIMEOUT_MS) to the backend CVM; BOTS_ENABLED defaults to false. A new workflow, deploy-bots-phala.yml, deploys the bots service to its own CVM. Details: TC-2808
+
+## 0.8.0-beta.6
+
+### Minor Changes
+
+- 033a30f: Tiny bots, slice 1 (TC-2808), off by default. For accounts on `BOTS_TEST_ACCOUNTS` with `BOTS_ENABLED=true`, Home shows a "What do you want done?" box that sends to Main, the owner's main bot, and opens Main's chat with the reply streaming in. The backend adds `/api/bots/status` and `/api/bots/main/messages`, which forward to the new bots service (`bots/`). Everyone else sees no change.
+
+## 0.8.0-beta.5
+
+### Patch Changes
+
+- ae08fc0: Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196
+
+## 0.8.0-beta.4
+
+### Patch Changes
+
+- 761a6ba: The web build includes connector secret permissions and the decrypt permission at sign-in for devices that have used Connectors. First use requests access through OpenKey in place. Remove the unused custom AssemblyAI key permission from the manifest.
+
+## 0.8.0-beta.3
+
+### Patch Changes
+
+- f8823ef: Exo is now TinyCloud Home everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud Home.app`), the Android and iOS app names, notifications, permission prompts and error messages. Home opens on Feed on the web, on desktop and on iOS and Android, on a fresh install and after signing in, unless you chose Apps as your first screen in Settings. Feed and Apps are no longer experimental: they are in the navigation for everyone, and Settings › Home holds the first-screen choice. App id, bundle ids, URL schemes and every data path are unchanged. Details: TC-2050, TC-2040
+
 ## 0.8.0-beta.2
 
 ### Patch Changes

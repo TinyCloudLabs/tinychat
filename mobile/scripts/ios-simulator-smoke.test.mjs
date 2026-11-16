@@ -16,6 +16,7 @@ const goodProbe = {
   serviceWorkerDecision: "skip:capacitor", serviceWorkerRegistrations: 0,
   locationAvailable: true,
   locationStatus: { platform: "ios", declared: { foreground: true, background: true, backgroundExecution: true } },
+  appLock: { deviceSecure: false },
 };
 const earlyProbe = { href: "about:blank", platform: "ios", mounted: false };
 const aliveLine = { file: "liveness.log", pattern: "pid \\d+ alive" };
@@ -262,7 +263,7 @@ PATH=\${PATH#*:} exec mv "$@"
     FAKE_PS_STALL_SECONDS: String(psStallSeconds),
     FAKE_AWK_STALL_CALL: String(awkStallCall || ""),
     FAKE_AWK_STALL_SECONDS: String(awkStallSeconds),
-    EXO_CAPTURE_SMOKE: "0", EXO_LOCATION_SMOKE: "0",
+    EXO_CAPTURE_SMOKE: "0", EXO_LOCATION_SMOKE: "0", EXO_SHORTCUT_SMOKE: "0",
     SMOKE_TIMEOUT: String(timeout), SMOKE_SETTLE: String(settle),
     ...(gapFailSeconds ? { SMOKE_GAP_FAIL_S: String(gapFailSeconds) } : {}),
   };

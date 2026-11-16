@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { CHAT_SHARING_PAUSED, ChatSharingPausedError, canOfferChatShare } from "./chatSharing";
 import { deleteThread } from "./threadStore";
+import { bindSharedWithMe, resetSharedWithMeForTests } from "./sharedWithMe";
 
 const originalWindow = globalThis.window;
 const originalHTMLElement = (globalThis as { HTMLElement?: unknown }).HTMLElement;
@@ -56,6 +57,7 @@ function token(expiresAt: string, id = "share-1"): string {
 }
 
 afterEach(() => {
+  resetSharedWithMeForTests();
   (globalThis as { window?: unknown }).window = originalWindow;
   (globalThis as { HTMLElement?: unknown }).HTMLElement = originalHTMLElement;
   (globalThis as { customElements?: unknown }).customElements = originalCustomElements;
@@ -84,14 +86,34 @@ describe("chat sharing paused", () => {
     expect(calls).toBe(0);
   });
 
-  it("still stores and finds an incoming share link", async () => {
+  it("still stores and finds an incoming share link for the signed-in account", async () => {
     installStorage();
     const { saveTinychatShareToken, findStoredTinychatShareForThread } = await loadShareModule();
+    const puts: string[] = [];
+    await bindSharedWithMe({
+      did: "did:pkh:eip155:1:0x0000000000000000000000000000000000000a11",
+      kv: {
+        list: async () => ({ ok: true, data: { keys: [] } }),
+        put: async (key: string) => {
+          puts.push(key);
+          return { ok: true, data: {} };
+        },
+      },
+    } as never);
 
     const saved = saveTinychatShareToken(token("2999-01-01T00:00:00.000Z"));
 
     expect(saved.threadId).toBe("thread-1");
     expect(findStoredTinychatShareForThread("thread-1")?.id).toBe("share-1");
+    expect(puts).toEqual(["xyz.tinycloud.tinychat/threads/shared-with-me/share-1"]);
+  });
+
+  it("opens an incoming share link signed out without listing it", async () => {
+    installStorage();
+    const { saveTinychatShareToken, findStoredTinychatShareForThread } = await loadShareModule();
+
+    expect(saveTinychatShareToken(token("2999-01-01T00:00:00.000Z")).id).toBe("share-1");
+    expect(findStoredTinychatShareForThread("thread-1")).toBeNull();
   });
 
   it("offers the share action only for a chat that already has a link", () => {

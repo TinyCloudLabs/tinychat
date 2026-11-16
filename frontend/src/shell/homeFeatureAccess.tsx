@@ -1,12 +1,12 @@
-// Recording and Connectors on the Home site. The base sign-in grants neither, so each asks for its own set in place,
-// when the owner opens it, through an injected requestFeatureAccess; nothing asks at boot. Off the Home site every
-// feature is covered and permitted, and nothing here changes what renders.
+// Connectors on the web. The web sign-in leaves out the connector secrets and the decrypt grant until this device has
+// used Connectors, so Connectors asks for them in place, when the owner opens it, through an injected
+// requestFeatureAccess; nothing asks at boot. The phone and desktop apps sign in with them, so there everything is
+// covered and nothing here changes what renders.
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { CONNECTORS_KV_PREFIX } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
-import { HOME_SITE } from "@/lib/homeSite";
 import { readHomeFeatures, rememberHomeFeature, sessionCoversHomeFeature, type HomeFeature } from "@/lib/homeFeatures";
 import {
   FEATURE_ACCESS_BODY, FEATURE_ACCESS_BUSY, FEATURE_ACCESS_CONTINUE, FEATURE_ACCESS_DECLINED, FEATURE_ACCESS_FAILED,
@@ -19,10 +19,8 @@ export type FeatureAccessOutcome = "granted" | "declined" | "failed" | "wrong-ac
 export type RequestFeatureAccess = (feature: HomeFeature) => Promise<FeatureAccessOutcome>;
 
 export interface HomeFeatureAccess {
-  /** The session's own approval covers the feature's set: its screens may open and use it. */
+  /** The session's own approval covers the feature's set: its screens and its background work may use it. */
   covered(feature: HomeFeature): boolean;
-  /** Covered, and this device has used the feature: work that runs without the owner opening it may start. */
-  permitted(feature: HomeFeature): boolean;
   /** Ask for the feature's set in place. */
   request: RequestFeatureAccess;
   /** The owner is in a covered feature: once one call needing its rights succeeds, remember it on this device. */
@@ -33,56 +31,45 @@ export interface HomeFeatureAccess {
 
 const EVERYTHING: HomeFeatureAccess = {
   covered: () => true,
-  permitted: () => true,
   request: async () => "granted",
   confirmUse: () => {},
   inFlight: null,
 };
-// The Home site without a session: nothing is covered, and there is nothing to ask with.
-const NOTHING: HomeFeatureAccess = {
-  covered: () => false,
-  permitted: () => false,
-  request: async () => "failed",
-  confirmUse: () => {},
-  inFlight: null,
-};
 
-export const HomeFeatureAccessContext = createContext<HomeFeatureAccess>(HOME_SITE ? NOTHING : EVERYTHING);
+export const HomeFeatureAccessContext = createContext<HomeFeatureAccess>(EVERYTHING);
 
 export function useHomeFeatureAccess(): HomeFeatureAccess {
   return useContext(HomeFeatureAccessContext);
 }
 
-// A read under connectors/, which both sets grant. Found or not found, it answers only when the session's rights work.
+// A read under connectors/, which the base grant and the Connectors set both grant. Found or not found, it answers only
+// when the session's rights work.
 const FIRST_USE_KEY = `${CONNECTORS_KV_PREFIX}/home-first-use`;
 
-/** The Home site's feature access for the signed-in `tcw` and `address`. Off the Home site, everything. */
+/** Connectors access for the signed-in `tcw` and `address` when `enabled` (the web); otherwise everything. */
 export function useHomeFeatureAccessState(options: {
-  homeSite: boolean;
+  enabled: boolean;
   tcw: (Partial<Pick<TinyCloudWeb, "hasPermissions">> & Pick<TinyCloudWeb, "kv">) | null;
   address: string | null;
   store: Pick<Storage, "getItem" | "setItem"> | null;
   requestFeatureAccess: RequestFeatureAccess;
   inFlight: InFlightWork;
 }): HomeFeatureAccess {
-  const { homeSite, tcw, address, store, requestFeatureAccess, inFlight } = options;
+  const { enabled, tcw, address, store, requestFeatureAccess, inFlight } = options;
   // Bumped when a feature's flag is stored, so the flags are read again. A write the store refuses changes nothing,
   // so nothing reads again until the owner opens the feature again.
   const [remembered, setRemembered] = useState(0);
   const confirming = useRef(new Set<string>());
   const flags = useMemo(
-    () => (homeSite && address ? readHomeFeatures(store, address) : []),
-    [homeSite, address, store, remembered],
+    () => (enabled && address ? readHomeFeatures(store, address) : []),
+    [enabled, address, store, remembered],
   );
-  const coverage = useMemo(() => {
-    if (!homeSite || !tcw || !address) return { recording: false, connectors: false };
-    return {
-      recording: sessionCoversHomeFeature(tcw, "recording", address),
-      connectors: sessionCoversHomeFeature(tcw, "connectors", address),
-    };
-  }, [homeSite, tcw, address]);
+  const connectorsCovered = useMemo(
+    () => enabled && tcw !== null && address !== null && sessionCoversHomeFeature(tcw, "connectors", address),
+    [enabled, tcw, address],
+  );
   const confirmUse = useCallback((feature: HomeFeature) => {
-    if (!homeSite || !tcw || !address || !coverage[feature] || flags.includes(feature)) return;
+    if (!enabled || !tcw || !address || !connectorsCovered || flags.includes(feature)) return;
     const attempt = `${address}:${feature}`;
     if (confirming.current.has(attempt)) return;
     confirming.current.add(attempt);
@@ -94,21 +81,15 @@ export function useHomeFeatureAccessState(options: {
       },
       () => undefined,
     ).finally(() => { confirming.current.delete(attempt); });
-  }, [homeSite, tcw, address, store, coverage, flags]);
-  return useMemo(() => homeSite
-    ? {
-      covered: (feature) => coverage[feature],
-      permitted: (feature) => coverage[feature] && flags.includes(feature),
-      request: requestFeatureAccess,
-      confirmUse,
-      inFlight,
-    }
-    : EVERYTHING, [homeSite, coverage, flags, requestFeatureAccess, confirmUse, inFlight]);
+  }, [enabled, tcw, address, store, connectorsCovered, flags]);
+  return useMemo(() => enabled
+    ? { covered: () => connectorsCovered, request: requestFeatureAccess, confirmUse, inFlight }
+    : EVERYTHING, [enabled, connectorsCovered, requestFeatureAccess, confirmUse, inFlight]);
 }
 
 /**
- * A feature's screen or Settings section: the content once the session covers its set, else the in-place ask. Opening
- * it on a covering session is one use: it confirms the rights once, not on every render.
+ * A feature's screen: the content once the session covers its set, else the in-place ask. Opening it on a covering
+ * session is one use: it confirms the rights once, not on every render.
  */
 export function HomeFeatureGate({ feature, children }: { feature: HomeFeature; children: ReactNode }) {
   const access = useHomeFeatureAccess();
@@ -129,8 +110,9 @@ const OUTCOME_LINE: Partial<Record<PromptPhase, string>> = {
 };
 
 /**
- * Asks for one feature's set. Nothing else on the page waits on it: the feed and chat keep working whatever it says.
- * Every outcome leaves Continue and Not now usable; the session only changes when the ask is granted and swapped in.
+ * Asks for one feature's set. Nothing else on the page waits on it: the feed, chat and Recording keep working whatever
+ * it says. Every outcome leaves Continue and Not now usable; the session only changes when the ask is granted and
+ * swapped in.
  */
 export function HomeFeaturePrompt({ feature }: { feature: HomeFeature }) {
   const access = useHomeFeatureAccess();

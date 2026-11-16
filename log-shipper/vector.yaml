@@ -79,7 +79,7 @@ transforms:
           method = string(j.method) ?? ""
           if !includes(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER"], method) { abort }
           route = string(j.route) ?? ""
-          if length(route) > 64 || !match(route, r'^(?:unmatched|/[A-Za-z0-9_.:*/-]{0,63})$') { route = "unmatched" }
+          if !includes(["/api/agent/chat", "/api/agent/session", "/api/attestation/self", "/api/auth/nonce", "/api/auth/verify", "/api/billing/checkout", "/api/billing/config", "/api/billing/portal", "/api/billing/rates", "/api/billing/status", "/api/billing/webhook", "/api/bots/history/grant", "/api/bots/history/notice", "/api/bots/history/notice/ack", "/api/bots/history/status", "/api/bots/main/messages", "/api/bots/status", "/api/chat", "/api/chat/model-selection", "/api/chat/models", "/api/connectors/credentials/:source", "/api/connectors/credentials/:source/oauth/callback", "/api/connectors/credentials/:source/oauth/start", "/api/connectors/google/autojoin/begin", "/api/connectors/google/autojoin/disable", "/api/connectors/google/autojoin/disconnect", "/api/connectors/google/autojoin/enable", "/api/connectors/google/autojoin/exchange", "/api/connectors/google/autojoin/status", "/api/connectors/google/oauth/callback", "/api/connectors/google/oauth/desktop/start", "/api/connectors/google/oauth/exchange", "/api/connectors/google/oauth/refresh", "/api/connectors/google/oauth/revoke", "/api/connectors/google/oauth/start", "/api/connectors/meetings", "/api/connectors/meetings/:source/:sourceId", "/api/connectors/meetings/:source/:sourceId/reconciled", "/api/connectors/webhooks/:source/:token", "/api/connectors/webhooks/ack", "/api/connectors/webhooks/config", "/api/connectors/webhooks/drain", "/api/connectors/webhooks/pending", "/api/connectors/webhooks/purged", "/api/delegations", "/api/delegations/status", "/api/exo/v1/grant", "/api/exo/v1/requests", "/api/internal/assemblyai-status", "/api/internal/credential-row-count", "/api/manifest", "/api/nras-proxy", "/api/nras-proxy/jwks", "/api/openapi.json", "/api/ops/content-continuity", "/api/phala-verify", "/api/server-info", "/api/signature/:id", "/api/transcriber/assemblyai/capabilities", "/api/transcriber/assemblyai/hosted/admin/reconcile", "/api/transcriber/assemblyai/hosted/jobs/:source_id", "/api/transcriber/assemblyai/hosted/transcripts", "/api/transcriber/assemblyai/hosted/transcripts/:handle", "/api/transcriber/assemblyai/hosted/transcripts/:handle/sentences", "/api/transcriber/assemblyai/hosted/uploads", "/api/transcriber/assemblyai/hosted/uploads/:upload_id", "/api/transcriber/assemblyai/hosted/uploads/:upload_id/parts/:index", "/api/transcriber/assemblyai/transcripts/:id", "/api/transcriber/meetings", "/api/transcriber/meetings/:id", "/api/transcriber/meetings/:id/stop", "/api/transcriber/meetings/:id/transcript", "/api/transcriber/private-cloud/capabilities", "/api/transcriber/private-cloud/transcriptions", "/api/transcriber/private-cloud/transcriptions/:id", "/api/transcriber/private-cloud/transcriptions/:id/cancel", "/api/transcriber/private-cloud/transcriptions/:id/result", "/api/transcriber/webhooks/ptx", "/health", "unmatched"], route) { route = "unmatched" }
           if !is_integer(j.status) { abort }
           status = int(j.status) ?? 0
           if status < 100 || status > 599 { abort }
@@ -93,10 +93,8 @@ transforms:
           if includes(["done", "error", "aborted"], stream) { out.stream = stream }
           code = string(j.code) ?? ""
           if length(code) <= 60 && match(code, r'^[a-z][a-z0-9_]{0,59}$') { out.code = code }
-          if is_integer(j.credits) {
-            credits = int(j.credits) ?? -1
-            if credits >= 0 && credits <= 1000000000 { out.credits = credits }
-          }
+          credits = string(j.credits) ?? ""
+          if includes(["0", "1-9", "10-99", "100-999", "1000+"], credits) { out.credits = credits }
           account_hash = string(j.account_hash) ?? ""
           if length(account_hash) == 64 && match(account_hash, r'^[0-9a-f]{64}$') { out.account_hash = account_hash }
         } else if name == "backend_log_error" && j.component == "calendar-autojoin" {
