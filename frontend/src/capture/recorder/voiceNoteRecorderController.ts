@@ -9,9 +9,9 @@ import { pruneDeletedFailureNotification } from "../activity/failureNotification
 // mounts it exactly once; the tests drive it directly against the fake plugin.
 //
 // It owns the plugin's four listeners (micState, level, autoStopped, presentRecorder), picks a
-// running recording back up after a WebView reload (status()), lands one stopped outside the app once status() shows
-// it ended (the Live Activity, Siri, a notification), saves a stopped
-// recording through the shared single-flight guards (recorderSaves.ts), and
+// running recording back up after a WebView reload (status()), lands one stopped outside
+// the app (the Live Activity, Siri, a notification) once status() shows it ended, saves a
+// stopped recording through the shared single-flight guards (recorderSaves.ts), and
 // hands each saved note to private cloud transcription. Discard (PR5) marks the
 // recording before stopping it, so no save that meets it keeps it.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -755,19 +755,29 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (!endedElsewhereCurrent(id)) return;
       endedElsewhere = null;
       const recording = recordings.find((candidate) => candidate.id === id);
-      if (!recording) {
+      if (recording) {
+        captureCommitted(recording.id, recording);
+        void saveStopped(recording).catch((caught: unknown) =>
+          send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
+        );
+      } else {
         // Discarded where it was stopped, or nothing was captured: there is no note to show.
         send({ type: "STOP_FAILED", status: "idle", error: null, id });
         void pendingStore.refresh();
-        return;
       }
-      captureCommitted(recording.id, recording);
-      void saveStopped(recording).catch((caught: unknown) =>
-        send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
-      );
+      // Another recording started meanwhile (a Shortcut during the save): show it, as attach would.
+      if (status.id && status.id !== id && status.state !== "idle") {
+        acceptNativeOptions(status);
+        send(activePickup(status));
+        if (status.source && status.source !== "in_app") present();
+      }
     } catch (caught) {
-      // The next micState, or the app coming forward, tries again.
       console.warn("[VoiceNotes] Could not settle a recording stopped outside the app", caught);
+      if (!endedElsewhereCurrent(id)) return;
+      // Retry Stop (reconcileFailedStop) reads status again and closes the recorder.
+      endedElsewhere = null;
+      send({ type: "STOP_FAILED", status: "unknown", id,
+        error: `Could not check whether this ${recorderDevice()} saved the recording: ${messageOf(caught)}` });
     }
   };
   /** `stoppedAt`: when native reported it idle, so the clock stops there. */
@@ -775,7 +785,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     // Only the phone shells can be stopped outside the web app; the browser and Mac engines report idle with no reason
     // ahead of their own autoStopped.
     if (closed || captureEngineKind() !== "native") return;
-    if (endedElsewhere) return settleEndedElsewhere(endedElsewhere);
+    if (endedElsewhere) {
+      if (endedElsewhereCurrent(endedElsewhere)) return settleEndedElsewhere(endedElsewhere);
+      endedElsewhere = null;
+    }
     const id = state.recordingId;
     if (state.phase !== "recording" || !id) return;
     let status: CaptureStatus;

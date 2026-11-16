@@ -3594,4 +3594,33 @@ describe("a recording stopped outside the app", () => {
     expect(recorder.getState().limitNotice).toBe("Stopped at the 1-minute limit.");
     detach();
   });
+
+  // The browser engine reports idle with no reason ahead of its own autoStopped; Android's pause timeout is an engine
+  // stop too. Neither is a Stop from outside the app, so the limit's save and notice stay with autoStopped.
+  for (const [label, reason, native] of [["the browser engine's limit", null, false], ["Android's pause timeout", "pause_timeout", true]] as const) {
+    test(`${label}: the idle micState does not land the note ahead of autoStopped`, async () => {
+      const base = plugin;
+      __setVoiceNotesForTests({ ...base, async status() {
+        const status = await base.status();
+        return status.state === "idle" ? { ...status, reason } : status;
+      } }, { available: true });
+      const app = appActivity();
+      const recorder = controller({ subscribeAppActive: app.subscribeAppActive });
+      const detach = recorder.attach();
+      await tick();
+      await recorder.record();
+      if (!native) __setVoiceNotesForTests({ ...plugin, async status() { return { ...(await base.status()), reason }; } }, { available: false });
+      const recording = await stopNatively();
+      fake.emit("committed", { id: recording.id });
+      fake.emit("micState", { state: "idle", reason, id: null, audioMs: 60_000, elapsedMs: 0, at: Date.now() });
+      app.foreground();
+      for (let turn = 0; turn < 5; turn++) await tick();
+      expect(saves).toEqual([]);
+      fake.emit("autoStopped", { reason: "max_duration", maxDurationMs: 60_000, at: Date.now(), recording });
+      await settled(() => recorder.getState().outcome === "saved", "the engine stop's save");
+      expect(saves).toEqual([recording.id]);
+      expect(recorder.getState().limitNotice).toBe("Stopped at the 1-minute limit.");
+      detach();
+    });
+  }
 });
