@@ -2,7 +2,7 @@
 // new test account sees it) under the real navigation, with the ask box on top; then Main's chat over
 // it, mid-reply. Synthetic content; nothing is sent anywhere. `bots-home-feed`: the same Home with cards from three
 // agents, two of them answered (Sam's top bar, 11-13: the slider beside Filter and View, and Pending at the end).
-import { useState, type ReactNode } from "react";
+import { useLayoutEffect, useState, type ReactNode } from "react";
 
 import { AskBox } from "@/bots/AskBox";
 import type { BotsApi } from "@/bots/botsApi";
@@ -11,6 +11,7 @@ import { MainChat } from "@/bots/MainChat";
 import type { MainChatState } from "@/bots/useMainChat";
 import { HomeFeedEntries } from "@/feed/HomeFeedEntries";
 import type { HomeFeedEntry, HomeFeedSource } from "@/feed/feedStoreTypes";
+import { setShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
 import { NavRail } from "@/shell/NavRail";
@@ -99,6 +100,15 @@ function Home({ ask, source = EMPTY_FEED }: { ask: ReactNode; source?: HomeFeedS
   );
 }
 
+/** Home as it is by default: Settings → Show hidden features is off, so no ask box and no Agents pill. */
+function HiddenFeaturesOff() {
+  useLayoutEffect(() => {
+    setShowHiddenFeatures(false);
+    return () => setShowHiddenFeatures(true);
+  }, []);
+  return <Home source={FEED} ask={<HomeAskBox api={ENABLED} />} />;
+}
+
 function PendingHistoryNotice() {
   const [open, setOpen] = useState(false);
   const expiry = Date.UTC(2026, 10, 12);
@@ -127,6 +137,7 @@ export const botsScreens: HarnessScreen[] = [
   // Layout viewports only: at 200% text the compact cards truncate long agent names by design (CompactCard).
   { ...BASE, id: "bots-home-feed", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "phone-402", "phone-land", "tablet", "tablet-land", "desktop-min", "desktop", "zoom200"],
     render: () => <Home source={FEED} ask={<HomeAskBox api={ENABLED} />} /> },
+  { ...BASE, id: "home-hidden-features-off", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "desktop-min"], render: () => <HiddenFeaturesOff /> },
   {
     ...BASE,
     id: "bots-main-reply",

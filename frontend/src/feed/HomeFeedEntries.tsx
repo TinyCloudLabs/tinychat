@@ -23,6 +23,7 @@ import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
 import { FeedTabs, type FeedTab } from "./FeedTabs";
 import { FloatingHeader } from "./FloatingHeader";
 import { AgentsPill } from "./AgentMarks";
+import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
 import { useUndoBar } from "./UndoBar";
@@ -338,6 +339,8 @@ type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "
 
 /** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
 export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
+  // The ask box and the Agents pill are hidden features (Sam, 11-17): shown only while Settings → Show hidden features is on.
+  const showHidden = useShowHiddenFeatures();
   useEffect(() => {
     void LazyAgentView.preload().catch(() => {});
     void LazyFilterPanel.preload().catch(() => {});
@@ -1026,7 +1029,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         <header ref={headerRef} className="scroll-mt-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="min-w-0 flex-1 font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
-            {!bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
+            {showHidden && !bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
               onOpen={() => { if (agentPage !== null) { setAgentPage(null); return; } leaveView(); setAgentPage("list"); }} />}
           </div>
           <p className="mt-0.5 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
@@ -1053,7 +1056,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
             setSnoozedOnly={setSnoozedOnly} setHistory={setHistory} clearFilters={clearFilters} />}
         </div>}
       </FloatingHeader>
-      {ask}
+      {showHidden && ask}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>
