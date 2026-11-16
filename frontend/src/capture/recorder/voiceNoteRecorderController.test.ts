@@ -3637,6 +3637,8 @@ describe("a recording stopped outside the app", () => {
       listFailures: 0,
       /** Another recording live in the engine (a Shortcut's), and whether it ends during the next list read. */
       other: null as { id: string; endsDuringList: boolean } | null,
+      /** A Shortcut recording that starts while the pending list is read. */
+      startsDuringList: null as string | null,
     };
     __setVoiceNotesForTests({ ...base,
       async status() {
@@ -3648,6 +3650,7 @@ describe("a recording stopped outside the app", () => {
       async listPending() {
         if (steer.listFailures > 0) { steer.listFailures--; throw new Error("the phone's library is busy"); }
         if (steer.other?.endsDuringList) steer.other = null;
+        if (steer.startsDuringList) { steer.other = { id: steer.startsDuringList, endsDuringList: false }; steer.startsDuringList = null; }
         const { recordings } = await base.listPending();
         return { recordings: recordings.filter((listed) => listed.id !== steer.hidden) };
       },
@@ -3783,6 +3786,38 @@ describe("a recording stopped outside the app", () => {
     fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
     await settled(() => recorder.getState().phase === "idle", "the retry to close the recorder");
     expect(recorder.getState()).toMatchObject({ recordingId: null, outcome: null, error: null });
+    detach();
+  });
+
+  test("a waiting outside stop settles on a newer recording's micState when its save fails, and shows that recording", async () => {
+    const steer = steered();
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    steer.finalizing = true;
+    const recording = await stopNatively();
+    steer.hidden = recording.id;
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().phase === "stopping", "the recorder to wait for the save");
+    // A Shortcut starts a recording, then the old save fails: the only micState is the new recording's.
+    steer.other = { id: "shortcut-after-failed-save", endsDuringList: false };
+    steer.finalizing = false;
+    fake.emit("micState", { state: "recording", reason: null, id: "shortcut-after-failed-save", audioMs: 0, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().recordingId === "shortcut-after-failed-save", "the new recording to be shown");
+    expect(recorder.getState()).toMatchObject({ phase: "recording", error: null });
+    detach();
+  });
+
+  test("a Shortcut started while the stopped note is listed is picked up after the note lands", async () => {
+    const steer = steered();
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    steer.startsDuringList = "shortcut-during-list";
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 1_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().recordingId === "shortcut-during-list", "the Shortcut's recording to be shown");
+    expect(recorder.getState().phase).toBe("recording");
+    await settled(() => saves.length > 0, "the stopped note to save");
+    expect(saves).toEqual([recording.id]);
     detach();
   });
 });
