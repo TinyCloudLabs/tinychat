@@ -514,7 +514,7 @@ const ThreadWelcome: FC = () => {
           {/* The chat header's title is the screen's h1. */}
           <h2 className="font-display text-title-2">TinyCloud One</h2>
           <p className="max-w-sm text-callout text-muted-foreground">
-            Your conversations are stored in your TinyCloud space. Ordinary hosted storage is plaintext at rest.
+            Your conversations are private and stored in your TinyCloud space.
           </p>
           <HowItWorksLink section="your-data" />
         </div>

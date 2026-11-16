@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-How it works now says how hosted storage is protected: data in your TinyCloud space is plaintext at rest, apps and agents reach it through the scopes you approve, and revoking access cannot recall copies already read. Screens that called your space "private" now call it your TinyCloud space, and deleting a thread says it requests deletion from your space.
+How it works now says that your TinyCloud space is not end-to-end encrypted: the node that hosts it, and the apps and services you authorize, can read your content in order to serve it to you. Ending an app's or agent's access stops future reads; it cannot recall copies already read.
