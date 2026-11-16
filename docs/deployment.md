@@ -191,12 +191,21 @@ or host check that changes the product.
   moves while the tab is signing in, re-authorising Connectors, connecting
   Google, streaming or drafting a chat reply, or editing a note
   (`deferOriginMove`). A visitor who moves signs in once on tinycloud.one.
-- **Edge redirect (Cloudflare Redirect Rules on the `tinycloud.chat` and
-  `tinycloud.xyz` zones; the Pages `_redirects` file matches paths only):** a
-  301 to `https://tinycloud.one` with the same path and query. It skips
-  `/sw.js`, `/assets/*`, `/manifest.webmanifest`, `/version.json`, `/icons/*`,
-  `/agents/*`, any request carrying the `tc_hold` cookie, and `?legacy=1`.
-  Browsers keep the `#hash` across a 301 whose `Location` has none.
+- **Edge redirect (the `tinycloud-domain-redirects` Cloudflare Worker, TinyCloudLabs/internal
+  `infra/tinycloud-domain-redirects`, routes on `tinycloud.chat/*` and
+  `home.tinycloud.xyz/*` in front of this Pages project; the Pages `_redirects`
+  file matches paths only):** a page load gets a 301 to `https://tinycloud.one`
+  with the same path and query (`no-store`). The Worker's `worker.js` is the
+  source of truth for what it lets through to this app instead: a request with
+  the `tc_hold=1` cookie; `?legacy=1`; the same-tab Google sign-in return
+  (`state` starting `tab.`, `hometab.` or `onetab.` with `google_oauth_code` or
+  `google_oauth_error`); a request the browser says is not a page load
+  (`Sec-Fetch-Dest` other than `document`, `iframe`, `frame`, `embed`,
+  `object`: scripts, styles, images, fonts, `fetch`/XHR, the service worker and
+  its imports); any method but `GET` or `HEAD`; and these paths: `/sw.js`,
+  `/workbox-<hash>.js`, `/assets/*`, `/manifest.webmanifest`, `/version.json`,
+  `/icons/*`, `/fonts/*`, `/agents` and `/agents/*`. Browsers keep the `#hash`
+  across a 301 whose `Location` has none.
 - **`tc_hold` cookie:** the edge redirect runs before the app, so it could
   strand local-only work. While the app holds work on a legacy host it sets
   `tc_hold=1` (host-only, `Secure`, `SameSite=Lax`, 400 days) so the rule lets
@@ -204,7 +213,7 @@ or host check that changes the product.
   counts as held.
 - **Recovering data left on a legacy origin (`?legacy=1`):** open
   `https://tinycloud.chat/?legacy=1` or `https://home.tinycloud.xyz/?legacy=1`.
-  The edge rule skips it, the app stays on that origin, and it sets `tc_hold`
+  The Worker lets it through, the app stays on that origin, and it sets `tc_hold`
   so plain visits keep loading the app there. From that page the visitor
   uploads or saves their recordings and answers as usual; once nothing local is
   left, the app clears the cookie and moves them to tinycloud.one on its own.
@@ -234,7 +243,7 @@ or host check that changes the product.
   `FRONTEND_URL`: Stripe returns and untagged OAuth returns land on
   tinycloud.one); (4) deploy this web build and confirm all three hosts serve
   it; (5) check a held visitor stays, a clear visitor moves, and `?legacy=1`
-  works on both legacy hosts; (6) add the edge redirect rules.
+  works on both legacy hosts; (6) deploy the Worker's forwards (its README, "Turn the forwards on").
 - **Links the backend generates** keep using `FRONTEND_URL`: the Stripe
   checkout and portal returns (`/?billing=…`) and the connector-off link (the
   bare origin). All three hosts serve the same build, so those paths work on
