@@ -3464,3 +3464,134 @@ describe("Stop recordings automatically reaches VoiceNotes.start (TC-2081)", () 
     fixed.detach();
   });
 });
+
+// The Live Activity's Stop, Siri and Shortcuts (iOS StopRecordingIntent), or a notification's Stop or Discard (Android),
+// end the recording natively: native reports it idle and commits the note, with no autoStopped. TestFlight build 9: the
+// recorder stayed on "Finishing…", its clock running from 0:00 and every control off, until the app was relaunched.
+describe("a recording stopped outside the app", () => {
+  function appActivity() {
+    let listener: () => void = () => {};
+    return {
+      subscribeAppActive: async (next: () => void) => {
+        listener = next;
+        return { remove: async () => { listener = () => {}; } };
+      },
+      foreground: () => listener(),
+    };
+  }
+
+  test("stopped while the WebView was suspended: coming forward closes the recorder and saves the note once", async () => {
+    const app = appActivity();
+    const recorder = controller({ subscribeAppActive: app.subscribeAppActive });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    const id = recorder.getState().recordingId;
+    // Coming forward while it still records changes nothing.
+    app.foreground();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "recording", recordingId: id });
+    // The Live Activity's Stop: the engine stops and commits the note, and the suspended WebView hears none of it.
+    const recording = await stopNatively();
+    app.foreground();
+    await settled(() => recorder.getState().outcome === "saved", "the note stopped outside the app to save");
+    expect(saves).toEqual([recording.id]);
+    expect(recorder.getState()).toMatchObject({ phase: "idle", recordingId: null, error: null, lastSaved: { id: recording.id } });
+    expect(selectedView(recorder).controls.busy).toBe(false);
+    app.foreground();
+    await tick();
+    expect(saves).toEqual([recording.id]);
+    // A new recording starts normally.
+    recorder.dismissOutcome();
+    await recorder.record();
+    expect(recorder.getState().phase).toBe("recording");
+    expect(recorder.getState().recordingId).not.toBe(id);
+    detach();
+  });
+
+  test("its events, heard in the iOS order, stop the clock where it stopped and land the note once the save settles", async () => {
+    const base = plugin;
+    // iOS: micState goes idle as soon as the input stops; the note is committed (and listed) when the mux finishes.
+    let finalizing = false;
+    let muxing: string | null = null;
+    __setVoiceNotesForTests({ ...base,
+      async status() { return { ...(await base.status()), finalizing }; },
+      async listPending() {
+        const { recordings } = await base.listPending();
+        return { recordings: recordings.filter((listed) => !finalizing || listed.id !== muxing) };
+      },
+    }, { available: true });
+    const app = appActivity();
+    const recorder = controller({ subscribeAppActive: app.subscribeAppActive });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    fake.emit("micState", { state: "recording", reason: null, id, audioMs: 90_000, elapsedMs: 90_000, at: Date.now() });
+    finalizing = true;
+    muxing = id;
+    const recording = await stopNatively();
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 90_000, elapsedMs: 0, at: Date.now() });
+    await tick();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "stopping", recordingId: id });
+    expect(recorder.getState().elapsedMs).toBeGreaterThanOrEqual(90_000);
+    expect(selectedView(recorder).controls).toMatchObject({ busy: true, stop: false });
+    app.foreground();
+    await tick();
+    await tick();
+    expect(recorder.getState().phase).toBe("stopping");
+    expect(saves).toEqual([]);
+    // The mux commits: the retained committed event, then the micState that says the save settled.
+    finalizing = false;
+    fake.emit("committed", { id: recording.id });
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 90_000, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().outcome === "saved", "the note to save once its commit lands");
+    app.foreground();
+    fake.emit("micState", { state: "idle", reason: "user", id: null, audioMs: 90_000, elapsedMs: 0, at: Date.now() });
+    await tick();
+    await tick();
+    expect(saves).toEqual([recording.id]);
+    expect(recorder.getState()).toMatchObject({ phase: "idle", lastSaved: { id: recording.id } });
+    detach();
+  });
+
+  test("discarded where it was stopped: the recorder closes with nothing saved, and Record works", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    await plugin.discard();
+    fake.emit("micState", { state: "idle", reason: null, id: null, audioMs: 0, elapsedMs: 0, at: Date.now() });
+    await settled(() => recorder.getState().phase === "idle", "the recorder to close");
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: null, recordingId: null });
+    expect(saves).toEqual([]);
+    await recorder.record();
+    expect(recorder.getState().phase).toBe("recording");
+    detach();
+  });
+
+  test("the engine's own stop at the limit still lands through autoStopped, with its notice", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async status() {
+      const status = await base.status();
+      return status.state === "idle" ? { ...status, reason: "max_duration" as const } : status;
+    } }, { available: true });
+    const app = appActivity();
+    const recorder = controller({ subscribeAppActive: app.subscribeAppActive });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    const recording = await stopNatively();
+    fake.emit("micState", { state: "idle", reason: "max_duration", id: null, audioMs: 60_000, elapsedMs: 0, at: Date.now() });
+    fake.emit("committed", { id: recording.id });
+    app.foreground();
+    await tick();
+    await tick();
+    expect(recorder.getState().phase).toBe("recording");
+    expect(saves).toEqual([]);
+    fake.emit("autoStopped", { reason: "max_duration", maxDurationMs: 60_000, at: Date.now(), recording });
+    await settled(() => recorder.getState().outcome === "saved", "the limit's save");
+    expect(saves).toEqual([recording.id]);
+    expect(recorder.getState().limitNotice).toBe("Stopped at the 1-minute limit.");
+    detach();
+  });
+});

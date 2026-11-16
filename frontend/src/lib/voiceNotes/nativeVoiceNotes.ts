@@ -229,6 +229,8 @@ export interface CaptureStatus {
   micDeniedPresentation?: boolean;
   shortcutRecordPending?: boolean;
   microphonePermissionGranted?: boolean;
+  /** iOS: a stopped recording is still being saved, so a note not listed yet may still be committed. Absent: none is. */
+  finalizing?: boolean;
 }
 
 /**

@@ -1259,6 +1259,8 @@ public final class CaptureEngine {
                     self.emit("committed", committed, retained: true)
                     self.pendingStopFinalizations -= 1
                     self.resumeSttIfIdle()
+                    // `finalizing` is false again: a web app waiting on a Stop it did not make hears it is settled.
+                    self.emitState()
                     completion(.success(committed))
                 }
             } catch {
@@ -1267,6 +1269,7 @@ public final class CaptureEngine {
                 DispatchQueue.main.async {
                     self.pendingStopFinalizations -= 1
                     self.resumeSttIfIdle()
+                    self.emitState()
                     completion(.failure(error))
                     if let captureError = error as? CaptureError,
                        case .finalizationTimedOut = captureError {
@@ -1376,7 +1379,9 @@ public final class CaptureEngine {
                 "options": ["transcriber": options.transcriber, "identifySpeakers": options.identifySpeakers,
                             "uploadAudio": options.uploadAudio ?? false],
                 "input": currentInput as Any? ?? NSNull(), "owner": info?.owner as Any? ?? NSNull(),
-                "transitionGen": info?.transitionGen ?? defaults().transitionGen]
+                "transitionGen": info?.transitionGen ?? defaults().transitionGen,
+                // A stopped recording is still being saved: until this is false, a missing note may yet be committed.
+                "finalizing": pendingStopFinalizations > 0]
     }
 
     public func listInputs() throws -> [String: Any] {

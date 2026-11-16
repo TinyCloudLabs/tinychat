@@ -937,6 +937,48 @@ import XCTest
         }
     }
 
+    /// A Stop the web app did not make (the Live Activity's) reaches it only through status and micState: idle with
+    /// `finalizing` while the note is still being saved, then a micState once it is committed, so the web app can tell a
+    /// note still on its way from one that was never kept.
+    func testStatusReportsAStopStillFinalizingAndAnnouncesWhenItSettles() throws {
+        try withEngine { engine in
+            engine.debugSuppressTaps()
+            let gate = DispatchSemaphore(value: 0)
+            var seam = RecordingFinalizer.WaitSeam()
+            seam.workerOverride = { output, progress in
+                gate.wait()
+                try progress.tick()
+                try Data("m4a".utf8).write(to: output)
+            }
+            engine.debugMuxWaitSeam = seam
+            let id = try XCTUnwrap(engine.start()["id"] as? String)
+            try enqueueTone(engine)
+            XCTAssertEqual(engine.status()["finalizing"] as? Bool, false)
+            let inputStopped = expectation(description: "idle while the note is still being saved")
+            let settled = expectation(description: "a micState once the note is committed")
+            let stopped = expectation(description: "stop completes")
+            var committed = false
+            let token = engine.observe { name, data, _ in
+                if name == "committed", data["id"] as? String == id { committed = true }
+                guard name == "micState", data["state"] as? String == "idle" else { return }
+                if data["finalizing"] as? Bool == true { inputStopped.fulfill() }
+                if data["finalizing"] as? Bool == false, committed { settled.fulfill() }
+            }
+            defer { engine.removeObserver(token) }
+            engine.stop { result in
+                if case .failure(let error) = result { XCTFail("stop failed: \(error)") }
+                stopped.fulfill()
+            }
+            wait(for: [inputStopped], timeout: eventTimeout)
+            XCTAssertEqual(engine.status()["state"] as? String, "idle")
+            XCTAssertEqual(engine.status()["finalizing"] as? Bool, true)
+            gate.signal()
+            wait(for: [settled, stopped], timeout: eventTimeout)
+            XCTAssertEqual(engine.status()["finalizing"] as? Bool, false)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path))
+        }
+    }
+
     func testTimedOutStopBacksOffRecordsEveryAttemptAndTryAgainStillWorks() throws {
         let clock = TestClock()
         try withEngine(clock: clock) { engine in
