@@ -66,7 +66,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
     if (event.key !== "Escape" || !pending) return;
     event.preventDefault(); undo();
   }
-  const status = pending && waitingLabel ? `${waitingLabel} sends in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
+  const status = pending && waitingLabel ? `Your answer, ${waitingLabel}, sends in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
   // The legend and the note share a line while they fit and stack when they don't: both float, the buttons clear them.
   return <fieldset className="text-sm" onKeyDown={escape}>
     <legend className="float-left mb-2 mr-3 p-0 text-xs font-medium leading-4 text-muted-foreground">Choose an option</legend>
@@ -92,6 +92,8 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
         {/* The wait lies over the button, which keeps its size: nothing moves while Undo is on offer. The label never
             shortens; the countdown does. A screen reader hears the full status line below instead. */}
         {held && <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden rounded-xl pl-3.5 pr-2">
+          {/* Working: a ring while the answer waits or is being saved; the check is the answered panel that replaces these rows. */}
+          <span aria-hidden className="size-4 shrink-0 rounded-full border-2 border-foreground/25 border-t-foreground motion-safe:animate-spin motion-safe:[animation-duration:0.8s]" />
           <span aria-hidden className="min-w-0 truncate font-semibold">{option.label}</span>
           <span aria-hidden className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{pending ? `Sends in ${pending.seconds}s` : "Sending…"}</span>
           {/* Focus moves to Undo when the wait starts, so Enter or Escape undoes from the keyboard. */}

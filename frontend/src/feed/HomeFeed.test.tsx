@@ -636,7 +636,7 @@ test("an answer waits 5 seconds: nothing is written before, exactly one write at
   expect(undo).not.toBeNull();
   expect(document.activeElement === undo).toBe(true);
   expect(answers(view.host)!.textContent).toContain("Sends in 5s");
-  expect(view.host.textContent).toContain("Hold sends in 5 seconds. Undo is available until then.");
+  expect(view.host.textContent).toContain("Your answer, Hold, sends in 5 seconds. Undo is available until then.");
   await clock!.advance(2000);
   expect(answers(view.host)!.textContent).toContain("Sends in 3s");
   await clock!.advance(2900);
