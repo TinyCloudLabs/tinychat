@@ -11,6 +11,9 @@ name: Deploy production
 # - Redeploy or roll back: the same, with an older stable tag (scripts/release/deploy-target.mjs requires a stable
 #   tag per selected unit on that commit, and the commit on main), e.g. -f tag=@tinychat/backend@0.1.1 -f web=false
 # - Unreleased hotfix: only with -f allow_unreleased=true -f confirm_sha=<full SHA of the commit to deploy>, no tag.
+# - Pinned backend redeploy (true rollback, no build, no push): the same gate (tag, or hotfix confirm_sha) plus
+#   -f web=false -f backend_digest=sha256:<64 hex> -f ingress_digest=sha256:<64 hex>, the GHCR images of that commit
+#   to deploy again. deploy-backend-phala.yml verifies them and deploys them by digest.
 #
 # Web deploys by fast-forwarding the `production` branch, which the Cloudflare Pages Git integration builds as
 # production. A ruleset lets only deploy keys update `production`, so the push goes over SSH with the release-push
@@ -45,6 +48,14 @@ on:
         description: "TC-2843 transition ONLY: permit the exact recorded dstack-dev-0.5.12 image; remove with the OS move or first post-move deploy"
         type: boolean
         default: false
+      backend_digest:
+        description: "Pinned backend redeploy only: sha256:<64 hex> of the GHCR backend image of the gated commit (needs ingress_digest, web=false)"
+        type: string
+        default: ""
+      ingress_digest:
+        description: "Pinned backend redeploy only: sha256:<64 hex> of the GHCR ingress image of the gated commit (needs backend_digest, web=false)"
+        type: string
+        default: ""
 
 concurrency:
   group: tinychat-production-deploy
@@ -77,6 +88,25 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Require a backend-only run for a pinned redeploy
+        if: inputs.backend_digest != '' || inputs.ingress_digest != ''
+        env:
+          BACKEND: ${{ inputs.backend }}
+          WEB: ${{ inputs.web }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+          INGRESS_DIGEST: ${{ inputs.ingress_digest }}
+        run: |
+          if [ "$BACKEND" != true ] || [ "$WEB" != false ]; then
+            echo "::error::A pinned redeploy (backend_digest/ingress_digest) deploys only the backend: set backend=true and web=false"
+            exit 1
+          fi
+          for digest in "$BACKEND_DIGEST" "$INGRESS_DIGEST"; do
+            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::backend_digest and ingress_digest must both be sha256:<64 lowercase hex> (tags are refused), got '$digest'"
+              exit 1
+            fi
+          done
 
       - name: Require a stable release, or a confirmed hotfix
         id: target
@@ -111,6 +141,8 @@ jobs:
     with:
       ref: ${{ needs.target.outputs.sha }}
       allow_current_dev_os_until_tc2843: ${{ inputs.allow_current_dev_os_until_tc2843 }}
+      backend_digest: ${{ inputs.backend_digest }}
+      ingress_digest: ${{ inputs.ingress_digest }}
     secrets: inherit
     permissions:
       contents: read
