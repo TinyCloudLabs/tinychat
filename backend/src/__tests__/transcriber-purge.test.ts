@@ -123,7 +123,7 @@ describe("Remove purges upstream and reads it back", () => {
       // Backoff: not due yet right after the in-request tries? The first sweep is due (nextAt 0), fails, and backs off.
       h.ptx.calls.length = 0;
       expect(await h.sweeper.sweep()).toEqual({ attempted: 1, gone: 0 });
-      const attemptsAfterFirst = (await h.index.entries(OWNER)).purging.mtg_1;
+      const attemptsAfterFirst = (await h.index.entries(OWNER)).purging?.mtg_1;
       expect(attemptsAfterFirst).toMatchObject({ attempts: 1, nextAt: h.clock.now + purgeBackoffMs(1) });
       h.ptx.calls.length = 0;
       expect(await h.sweeper.sweep()).toEqual({ attempted: 0, gone: 0 });
@@ -175,7 +175,7 @@ describe("DELETE / (the step before account deletion)", () => {
     expect(h.ptx.store.has("mtg_shared")).toBe(true); // the owner's copy is theirs
     expect([...h.ptx.store.keys()].sort()).toEqual(["mtg_3", "mtg_shared"]);
     expect(await h.index.list(OWNER)).toEqual(["mtg_3"]);
-    expect(Object.keys((await h.index.entries(OWNER)).purging)).toEqual(["mtg_3"]);
+    expect(Object.keys((await h.index.entries(OWNER)).purging ?? {})).toEqual(["mtg_3"]);
 
     h.ptx.modes.set("mtg_3", "ok");
     await withServer(h.app, async (base) => {

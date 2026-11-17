@@ -254,7 +254,7 @@ describe("TC-1006: request reads do not queue behind the auto-join worker", () =
     const release = await holdLane(lane);
     const read = await Promise.race([index.entries("0xalice"), sleep(200).then(() => "blocked" as const)]);
     // Read-your-writes: the awaited add refreshed the cache this read is answered from.
-    expect(read).toEqual({ ids: ["meeting-1"], shared: {}, purging: {} });
+    expect(read).toEqual({ ids: ["meeting-1"], shared: {} });
     expect(await index.list("0xalice")).toEqual(["meeting-1"]);
     await release();
   });

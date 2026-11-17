@@ -36,7 +36,12 @@ export interface PurgeState { since: number; attempts: number; nextAt: number }
 export interface TranscriberIndexEntries {
   ids: string[];
   shared: Record<string, ShareProvenance>;
-  purging: Record<string, PurgeState>;
+  /** Present only while a removal's provider-side purge is unconfirmed. */
+  purging?: Record<string, PurgeState>;
+}
+
+function pendingPurges(row: IndexRecord): { purging?: Record<string, PurgeState> } {
+  return row.purging && Object.keys(row.purging).length > 0 ? { purging: row.purging } : {};
 }
 
 /** The stored document. A legacy `{ ids }` document has no shares and no pending creates. */
@@ -292,7 +297,7 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
   }
 
   entries(address: string): Promise<TranscriberIndexEntries> {
-    return this.view(address, row => structuredClone({ ids: row.ids, shared: row.shared ?? {}, purging: row.purging ?? {} }));
+    return this.view(address, row => structuredClone({ ids: row.ids, shared: row.shared ?? {}, ...pendingPurges(row) }));
   }
 
   markPurging(address: string, meetingId: string): Promise<void> {
@@ -340,7 +345,7 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
         await this.json.put(key, next);
         this.remember(key, next);
       }
-      return structuredClone({ ids: next.ids, shared: next.shared ?? {}, purging: next.purging ?? {} });
+      return structuredClone({ ids: next.ids, shared: next.shared ?? {}, ...pendingPurges(next) });
     });
   }
 

@@ -218,7 +218,7 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     let shares: Record<string, ShareProvenance>;
     let purging: Record<string, PurgeState>;
     try {
-      ({ ids, shared: shares, purging } = await index.entries(address));
+      ({ ids, shared: shares, purging = {} } = await index.entries(address));
     } catch (error) {
       console.warn(`[transcriber] index read failed err=${redactedErrorMessage(error)}`);
       res.status(503).json({ error: "transcriber_unavailable" });

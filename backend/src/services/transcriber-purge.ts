@@ -107,7 +107,7 @@ export class PurgeSweeper {
   async seed(): Promise<void> {
     for (const address of await this.index.listAddresses()) {
       try {
-        if (Object.keys((await this.index.entries(address)).purging).length) this.track(address);
+        if ((await this.index.entries(address)).purging !== undefined) this.track(address);
       } catch {
         // An unreadable address is retried at the next start; it cannot be swept without its index.
         console.warn("[transcriber] purge_seed_unreadable");
@@ -136,9 +136,9 @@ export class PurgeSweeper {
     try {
       const now = (this.options.now ?? Date.now)();
       for (const address of [...this.addresses]) {
-        let purging: TranscriberIndexEntries["purging"];
+        let purging: NonNullable<TranscriberIndexEntries["purging"]>;
         try {
-          purging = (await this.index.entries(address)).purging;
+          purging = (await this.index.entries(address)).purging ?? {};
         } catch {
           continue; // Keep the address; the next pass reads it again.
         }
@@ -162,7 +162,7 @@ export class PurgeSweeper {
           }
         }
         try {
-          if (!Object.keys((await this.index.entries(address)).purging).length) this.addresses.delete(address);
+          if ((await this.index.entries(address)).purging === undefined) this.addresses.delete(address);
         } catch {
           /* keep tracking */
         }
