@@ -18,10 +18,19 @@ const refused: Array<[string, string]> = [
   ["281 code points that are each two UTF-16 units", "😀".repeat(POST_MAX + 1)],
   ["a NUL", "Shipped\u0000 it"],
   ["a tab", "Shipped\tit"],
-  ["a carriage return", "Shipped\r\nit"],
+  ["a lone carriage return", "Shipped\rit"],
   ["an escape", "Shipped \u001b[31mred"],
   ["a DEL", "Shipped\u007fit"],
   ["a C1 control", "Shipped\u0085it"],
+  ["a lone high surrogate", "Shipped \uD83D it"],
+  ["a lone low surrogate", "Shipped \uDE00 it"],
+  ["a reversed surrogate pair", "Shipped \uDE00\uD83D it"],
+  ["a line separator U+2028", "Shipped\u2028it"],
+  ["a paragraph separator U+2029", "Shipped\u2029it"],
+  ["a zero-width space U+200B", "Shipped\u200Bit"],
+  ["a zero-width non-joiner U+200C", "Shipped\u200Cit"],
+  ["a byte order mark inside the text", "Shipped\uFEFFit"],
+  ["a 281st code point after a ZWJ emoji run", "👨‍👩‍👧‍👦".repeat(40) + "a"],
 ];
 
 test("a card of any kind may carry a post, and keeps it trimmed", () => {
@@ -40,6 +49,19 @@ test("a post is at most 280 Unicode code points, counted as code points and not 
     expect(validateRecord("task", withPost("task", post)).ok).toBe(true);
   }
   expect("😀".repeat(280).length).toBe(560);
+});
+
+test("a ZWJ emoji sequence is accepted and counted by code point, and a CRLF post is normalised to LF", () => {
+  const family = "👨‍👩‍👧‍👦";
+  expect([...family].length).toBe(7);
+  const kept = validateRecord("task", withPost("task", family + " shipped"));
+  expect(kept.ok && kept.value.post).toBe(family + " shipped");
+  expect(validateRecord("task", withPost("task", family.repeat(40))).ok).toBe(true);
+  const crlf = validateRecord("task", withPost("task", "\r\nFirst line\r\nSecond line\r\n"));
+  expect(crlf.ok && crlf.value.post).toBe("First line\nSecond line");
+  // A surrogate pair is not a lone surrogate; well-formed astral text passes at 280 and fails at 281.
+  expect(validateRecord("task", withPost("task", "a".repeat(279) + "😀")).ok).toBe(true);
+  expect(validateRecord("task", withPost("task", "a".repeat(280) + "😀")).ok).toBe(false);
 });
 
 test("a post that is empty, too long, or has a control character other than a newline is refused", () => {

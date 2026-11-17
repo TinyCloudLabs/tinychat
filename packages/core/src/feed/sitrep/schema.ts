@@ -38,6 +38,10 @@ export const isKind = (value: unknown): value is Kind => typeof value === "strin
 
 export const BODY_MAX = 600;
 export const POST_MAX = 280;
+/** A UTF-16 surrogate with no partner: what `String.prototype.isWellFormed` rejects (this form runs on every engine the app does). */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+/** Control, format, line and paragraph separators, except a newline and U+200D (the joiner inside an emoji sequence). */
+const POST_FORBIDDEN = /(?![\n\u200D])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 export const ID_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 export const CLAIM_ID_RE = /^[A-Z]-[0-9]{2,}$/;
 export const validRecordId = (kind: Kind, id: string): boolean => kind === "claim" ? id.length <= 80 && CLAIM_ID_RE.test(id) : ID_RE.test(id);
@@ -120,13 +124,18 @@ const common = {
   title: z.string().trim().min(1).max(140),
   /** Markdown, at most 600 characters. Say what changed and what you need, not the whole story. */
   body: z.string().max(BODY_MAX).default(""),
-  /** The card's one-line lead on Home: at most 280 Unicode code points, no control characters except a newline. */
+  /** The card's one-line lead on Home. CRLF becomes LF, then trimmed; well-formed text of 1 to 280 Unicode code points with no control, format, line or paragraph separator characters except a newline and U+200D. The board (roci-board) holds the same rule: a card it accepts is never refused here. */
   post: z
     .string()
-    .trim()
-    .min(1, "post is empty: leave it out, or say what changed in one line")
-    .refine((text) => [...text].length <= POST_MAX, `post is too long: keep it to ${POST_MAX} characters`)
-    .refine((text) => !/(?!\n)\p{Cc}/u.test(text), "post has a control character: use plain text, with newlines only")
+    .transform((text) => text.replace(/\r\n/g, "\n").trim())
+    .pipe(
+      z
+        .string()
+        .min(1, "post is empty: leave it out, or say what changed in one line")
+        .refine((text) => !LONE_SURROGATE.test(text), "post is not well-formed text: it has a lone surrogate")
+        .refine((text) => [...text].length <= POST_MAX, `post is too long: keep it to ${POST_MAX} characters`)
+        .refine((text) => !POST_FORBIDDEN.test(text), "post has a control, invisible or line-separator character: use plain text, with newlines only"),
+    )
     .optional(),
   /** Who owns the work. */
   owner: Name.optional(),

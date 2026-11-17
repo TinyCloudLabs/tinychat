@@ -22,7 +22,8 @@ async function directory(): Promise<string> { const dir = await mkdtemp(join(tmp
 
 const GOOD = "Reconnect fixed; one check left.";
 const EDGE = "😀".repeat(280);
-const bad = ["", "a".repeat(281), "😀".repeat(281), "Shipped\u0000 it"];
+const bad = ["", "a".repeat(281), "😀".repeat(281), "Shipped\u0000 it", "Shipped \uD83D it", "Shipped\u2028it", "Shipped\u200Bit"];
+const ZWJ = "👨‍👩‍👧‍👦 shipped";
 const payloadPost = (card: { payload?: Record<string, unknown> | undefined }) => (card.payload?.sitrep as { record: { post?: string } }).record.post;
 const putBoard = (f: MirrorNode, record: unknown, key: string) =>
   f.legacy.put(key, JSON.stringify(record), { prefix: "", contentType: "application/json" }).then((result) => take(result));
@@ -39,10 +40,12 @@ test("the board index reads a card with a good post (280 code points included) a
   writeIndex(path, [
     { kind: "ask", id: "with-post", record: boardRecord("ask", "with-post", { post: GOOD }) },
     { kind: "task", id: "edge-post", record: boardRecord("task", "edge-post", { post: EDGE }) },
+    { kind: "work", id: "zwj-post", record: boardRecord("work", "zwj-post", { post: ZWJ }) },
+    { kind: "incident", id: "crlf-post", record: { ...boardRecord("incident", "crlf-post"), post: "First line\r\nSecond line" } },
     ...bad.map((post, index) => ({ kind: "ask", id: `bad-${index}`, record: { ...boardRecord("ask", `bad-${index}`), post } })),
   ]);
   const { rows, skipped } = readBoardIndex(path, parseInventoryKinds(undefined));
-  expect(rows.map((row) => [row.record.id, row.record.post])).toEqual([["with-post", GOOD], ["edge-post", EDGE]]);
+  expect(rows.map((row) => [row.record.id, row.record.post])).toEqual([["with-post", GOOD], ["edge-post", EDGE], ["zwj-post", ZWJ], ["crlf-post", "First line\nSecond line"]]);
   expect(skipped.map((skip) => skip.reason)).toEqual(bad.map(() => "unreadable"));
 });
 
