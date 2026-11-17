@@ -8,6 +8,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { writeExtractedMemory } from "../chat/extractedMemory";
 import { markOutsideContent, resetImageGateForTests } from "./imageGate";
 import { clearMemory, getMemory, getMemoryMarked, resetMemoryToTemplate, setMemory } from "./threadStore";
+import { MEMORY_TEMPLATE } from "./memory";
 
 afterEach(() => resetImageGateForTests());
 
@@ -73,14 +74,53 @@ test("an extraction's write is marked exactly when its chat holds outside conten
   expect(await getMemoryMarked(stored.session())).toBe(true);
 });
 
-// Memory saved before the marker existed: nothing records where it came from; by the owner's ruling it counts as not marked.
-test("a memory written before the marker existed counts as not marked, and a clean write over it keeps it so", async () => {
-  const stored = account();
-  await setMemory(stored.session(), "- likes tea");
+// Memory saved before the marker existed (or by a clean chat): marked only if it holds a URL, an image or a link.
+function withoutMarker(stored: ReturnType<typeof account>) {
   stored.sqlite.query("DELETE FROM memory WHERE id = 'user_context_marked'").run();
-  expect(await getMemoryMarked(stored.session())).toBe(false);
-  await setMemory(stored.session(), "- likes tea\n- lives by the sea");
-  expect(await getMemoryMarked(stored.session())).toBe(false);
+}
+
+test("a memory with no marker and no URL, image or link is clean; an empty or template one too", async () => {
+  for (const doc of ["- likes tea\n- lives by the sea", "", MEMORY_TEMPLATE]) {
+    const stored = account(); // one account per doc: a blank doc after a non-blank one would be served from the backup
+    await setMemory(stored.session(), doc);
+    withoutMarker(stored);
+    expect(await getMemoryMarked(stored.session())).toBe(false);
+  }
+});
+
+test("a memory with no marker is marked when it holds a URL, an image or a link", async () => {
+  for (const doc of [
+    "- reads https://example.com/page",
+    "- see http://example.com",
+    "- ![x](example.png)",
+    "- [notes](example.png)",
+    "- [notes][1]\n\n[1]: example.png",
+    "- see <https://example.com>",
+  ]) {
+    const stored = account();
+    await setMemory(stored.session(), doc);
+    withoutMarker(stored);
+    expect(await getMemoryMarked(stored.session())).toBe(true);
+  }
+});
+
+test("a clean chat's write over such a memory records the mark, so a rewrite that drops the link stays marked", async () => {
+  const stored = account();
+  await setMemory(stored.session(), "- reads https://example.com/page");
+  withoutMarker(stored);
+  await setMemory(stored.session(), "- reads a page");
+  expect(await getMemoryMarked(stored.session())).toBe(true);
+});
+
+test("a marker read that fails is not recorded as clean: the next read tells the truth", async () => {
+  const options = { failMarkRead: false };
+  const stored = account(options);
+  await setMemory(stored.session(), "- likes tea", { outside: true });
+  const session = stored.session();
+  options.failMarkRead = true;
+  expect(await getMemoryMarked(session)).toBe(true); // unreadable and nothing known
+  options.failMarkRead = false;
+  expect(await getMemoryMarked(session)).toBe(true); // re-read, not a cached "clean"
 });
 
 test("when the live memory is blank and the last-known-good backup is served in its place, the restore counts as marked", async () => {
