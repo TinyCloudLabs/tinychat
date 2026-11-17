@@ -12,7 +12,7 @@ import { BOTS_STRINGS, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCES
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
 
-function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
+export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   return role === "user" ? (
     <p className="max-w-[80%] self-end whitespace-pre-wrap break-words rounded-3xl bg-muted px-4 py-2.5 text-body">{text}</p>
   ) : (
