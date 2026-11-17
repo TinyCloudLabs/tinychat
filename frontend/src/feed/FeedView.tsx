@@ -187,7 +187,7 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
   // Long unbroken tokens (commit hashes, file paths, URLs) wrap instead of running past the card's edge: overflow-wrap is
   // inherited, and `anywhere` breaks a token only where it cannot fit on a line of its own.
   return (
-    <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] sm:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
+    <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] cq:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
       {/* One meta line, the compact card's (design round 7), so a card keeps its header row when it opens: the agent's
           mark, its name, its platform's mark, the time, and at the right the status and "Show less". */}
       <div className="flex min-w-0 items-center gap-3">
@@ -212,7 +212,7 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
       {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-title-2">{card.title}</h2>}
-      <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>
+      {card.lead.text && <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>}
       {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
       {card.render === "thread" && card.replies?.map((reply, index) => (
         <div key={index} className="mt-3 min-w-0 border-l-2 border-border pl-4 text-sm">
