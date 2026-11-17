@@ -149,7 +149,7 @@ export default {
       addVariant("land", "html[data-land] &");
       addVariant("fine", "@media (pointer: fine)");
       addVariant("coarse", "@media (pointer: coarse)");
-      // A card's own width, not the window's: the Home feed card sets `[container-type:inline-size]` and switches its
+      // A card's own width, not the window's: the Feed card sets `[container-type:inline-size]` and switches its
       // layout (two columns, wider padding) from 520px of card width, so the phone and the desktop column differ.
       addVariant("cq", "@container (min-width: 520px)");
     }),
