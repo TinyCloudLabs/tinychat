@@ -337,9 +337,9 @@ argument conditions, and filters `tools/list` responses, including per SSE event
 | Need | iron-proxy | Fit |
 | --- | --- | --- |
 | Default-deny egress | `allowlist` by domain glob or CIDR; unmatched gets 403 | Good for fixed destinations (model, TinyCloud MCP, search provider). For "fetch any public page" the allowlist has to be wide open, so the deny list does the work. |
-| Built-in DNS | Resolves every name to the proxy so traffic is steered through it | Not used in the sandbox (it has no network). The gateway would use the proxy's HTTP/CONNECT listener instead. Whether the DNS server can be switched off is unchecked. |
+| Built-in DNS | Resolves every name to the proxy so traffic is steered through it | Not used: the sandbox has no network, and the gateway would use the proxy's HTTP/CONNECT listener. The DNS server can be switched off (`dns.enabled: false`, in the config example; a trial ran with it off; v0.42.0 did not have the switch). |
 | Upstream IP deny list | `upstream_deny_cidrs`, enforced in the dialer's `Control` hook after resolution (source: `internal/dnsguard`), so a name that resolves or rebinds to a denied address is refused before the connect; IPv4-mapped IPv6 is unmapped first | Good, and it is the piece we would otherwise write ourselves. **The default list is only cloud metadata and loopback.** Any proxy behind the gateway resolves the name again, so its list must carry the same ranges as the fetch guard (Web access): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (CGNAT, which includes the operators' private overlay network), `169.254.0.0/16`, `0.0.0.0/8`, `fc00::/7`, `fe80::/10`, `fec0::/10`, multicast, and the embedded-IPv4 forms (`::/96`, `64:ff9b::/96`, `64:ff9b:1::/48`, `2002::/16`, `2001::/32`). The gateway does not follow redirects, or re-checks every hop through the proxy. With an upstream proxy configured the check applies to the proxy's address, not the target. |
-| Proxy tokens swapped for real secrets | `secrets` transform: the workload sends a token, the proxy replaces it from env, file, AWS, Vault or 1Password sources, `require: true` rejects requests without it | Fits static service keys (the model key, a search key). Does not fit per-owner, short-lived tokens: sources are static, and a changed value needs a config reload (`POST /v1/reload`) or a `grpc` transform we would write. The gateway keeps per-owner grants itself (section 2). |
+| Proxy tokens swapped for real secrets | `secrets` transform: the workload sends a token, the proxy replaces it from env, file, AWS, Vault or 1Password sources, `require: true` rejects requests without it | Fits static service keys (the model key, a search key). Does not fit per-owner, short-lived tokens: sources are static, and a changed value needs a config reload (`POST /v1/reload`) or a `grpc` transform we would write. The gateway keeps per-owner grants itself (section 2). Also: the `file` source does not trim, so a trailing newline becomes part of the header, and `require: true` on a host-only rule breaks tunnelled requests (#222). Only works in MITM mode. |
 | Per-request audit | JSON per request with the transform trace, secrets swapped (names and locations, not values) and rejections. No headers or bodies, and no query string in a trial run | Mixed. **Paths are logged**, and for web fetch the path is the owner's task content, so raw lines are not shipped as they are: log host only or hash the path (a filter in front of the log, or a patch), and add rotation, since there is none. It is per request, not per owner: it cannot know which bot made a call. |
 | SSE / streamable HTTP | SSE is flushed per chunk, so MCP streamable HTTP over SSE works; WebSocket is HTTP/1 only | Good for MCP and model streaming. Non-SSE chunked responses (NDJSON, Connect, gRPC) are buffered until they end (an open issue, seen in a trial), and the 30 s response-header timeout needs raising for slow tool calls. |
 | MCP pipeline | README for v0.56.0: per-server tool allowlist, `when` conditions on arguments, `tools/list` filtering, `mcp_gateway` routes with credential injection, audit of every JSON-RPC message. An earlier trial found no JSON-RPC awareness, so treat this as newer and unproven here | Not relied on in phases 1 and 2: the gateway's own rebuild, tool list and namespacing stay the gateway's job. Possibly useful later for owner-added servers (argument conditions). v1 limits: Streamable HTTP only, resources and prompts not enforced, a batch with one denied entry is rejected whole, static per-server YAML. |
@@ -368,7 +368,20 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   every outside call, and web fetch would run in the sandbox.
 - **B. As the gateway's outer ring.** The gateway has no direct internet: it sits on a network whose only route out is
   the proxy. The proxy enforces the allowlist and the full deny list at dial time and writes the audit. The gateway
-  trusts the proxy's CA. If iron-proxy is used at all, this is the placement.
+  trusts the proxy's CA only in MITM mode (next section). If iron-proxy is used at all, this is the placement.
+
+### MITM or passthrough: the trust difference
+
+- **With TLS interception (MITM), the proxy sees every token and every byte in plaintext**: owners' MCP bearer tokens,
+  owner-server keys, TinyCloud data, fetched pages. Its CA can also impersonate any upstream to the gateway. So the
+  proxy then holds the same trust as the gateway, not a smaller one, and the gateway is no longer the only component
+  that holds both secrets and internet access.
+- **With `tls.mode: sni-only` and CONNECT passthrough** there is no interception and no CA in the gateway, so the proxy
+  never sees a token or a page. The host allowlist and the dial-time deny list still apply (reported from a trial of an
+  older release; the spike confirms). Path, secret-swap and MCP transforms are lost, which costs little because the
+  gateway already does MCP policy and holds the tokens, and static keys then stay in the gateway.
+- **Leaning:** passthrough, unless the spike shows a need for interception. The spike decides, and the card states the
+  difference so the owner of the decision sees it.
 
 ### Deployment in the CVM (if iron-proxy is chosen; the same network rules apply to any dial-out hop)
 
@@ -381,25 +394,28 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   reach its port can use it. So it listens only on a network that holds the gateway and the proxy and nothing else, is
   never published, and no other service joins that network. On a shared host a local user could otherwise use it.
 - **Fail closed.** The gateway has no direct route, so if the proxy is down a fetch is refused, never sent direct.
+- **Management and metrics listeners.** The management API (`/v1/reload`) is off by default; if enabled, bind it to
+  loopback and keep its bearer in the proxy only. A trial found the metrics listener defaulting to `:9090` on all
+  interfaces; pin it to loopback (recheck on the pinned release).
 - Built from a pinned release tag by our own Dockerfile (module checksums from `go.sum`) and referenced by digest, as
   the other images are. Release signing is thin: only v0.42.0 has a GPG-signed checksum file (it lacks the DNS switch);
   later releases, including v0.56.0, carry `checksums.txt` only, and the published images are unsigned. We pin by tag,
   digest and checksum, and review the diff of every upgrade; we do not pull `latest`.
-- **The MITM CA key can impersonate any site to anything that trusts it.** It is a deploy secret held by the proxy only
-  (key files mode 0600), and only the gateway trusts the CA; it is never put in the sandbox, the supervisor or any
-  other image. Real static keys (a search key) move from the gateway's environment to the proxy's, scoped to exact
-  HTTPS hosts (a secret can be swapped onto plain `http://`, an open issue). Per-owner tokens stay in the gateway.
-  Config is one YAML file in the image; a change is a redeploy.
+- **In MITM mode only: the CA key can impersonate any site to anything that trusts it.** It is a deploy secret held by
+  the proxy only (key files mode 0600), and only the gateway trusts the CA; it is never put in the sandbox, the
+  supervisor or any other image. Real static keys (a search key) may move from the gateway's environment to the
+  proxy's, scoped to exact HTTPS hosts (a secret can be swapped onto plain `http://`, an open issue). Per-owner tokens
+  stay in the gateway. Config is one YAML file in the image; a change is a redeploy.
 - The model leg stays direct from the gateway in phase 1. Putting it through the proxy adds a TLS-terminating hop for
   prompt traffic, and the gateway code shows no certificate pinning but we have not checked what the provider's
   verification relies on. Moving it is a separate decision after the spike.
 
 ### Maturity, licence, maintenance
 
-- Apache-2.0. The repository was created 2026-04-01 and sits under the `paradigmxyz` organisation (873 stars, 13
-  contributors); the Go module path and release badges still say `ironsh`, and the maintainers publish an enterprise
-  product (a managed control plane, dynamic Vault engines, a Kubernetes operator) beside it. We would use the open
-  standalone mode only.
+- Apache-2.0. The repository was created 2026-04-01 and sits under the `paradigmxyz` organisation (873 stars; 13
+  contributors, but one maintainer wrote about 80% of the commits); the Go module path and release badges still say
+  `ironsh`, and the maintainers publish an enterprise product (a managed control plane, dynamic Vault engines, a
+  Kubernetes operator) beside it. We would use the open standalone mode only.
 - Pre-1.0: v0.56.0 (2026-11-04) after releases roughly every one to three weeks, mostly from one dominant maintainer;
   the last commit we saw was 2026-11-04. Expect config and behaviour changes between releases; we pin and review each
   bump, and do not auto-update. It sits on every byte of egress, so a bad release is a bad day.
@@ -446,8 +462,9 @@ or `curl` access; it would then sit behind the gateway.
 
 Spike before phase 3, for the chosen hop (1 to 2 days, throwaway CVM or locally; items 4 and 6 are specific to
 iron-proxy, the rest apply to either):
-1. The gateway's HTTP client reaches a test origin through the proxy's CONNECT listener with the proxy's CA, streaming
-   an SSE response without buffering, and an MCP Streamable HTTP server through it.
+1. The gateway's HTTP client reaches a test origin through the proxy's CONNECT listener, first in `sni-only`
+   passthrough and then, if interception is wanted, with the proxy's CA, streaming an SSE response without buffering,
+   and an MCP Streamable HTTP server through it. Decide MITM or passthrough here.
 2. A rebinding name, a name resolving to each private range, an IPv4-mapped and a NAT64 address, and a decimal-form
    literal are each refused at dial time with the full deny list configured.
 3. A redirect to a denied address ends the fetch.
