@@ -281,16 +281,16 @@ instructions, and the design does not rely on the model to tell the difference:
   does not clear it). The order does not matter: if web content arrived first and a private read follows, the read sets
   the mark and the rule applies from then on. While marked, exactly one of these rules applies, chosen in decision 5, to
   `web__fetch`, `web__search` and every owner-added server's tools:
-  - **(a) Strict.** `web__search`, `web__fetch` and every owner-added server call are all refused. Nothing leaves. That
+  - **(a) Strict. Recommended.** `web__search`, `web__fetch` and every owner-added server call are all refused. Nothing leaves. That
     includes web search: a query is the same channel as a fetch, so while the conversation is marked Main has no web
     search at all (it works again only in a conversation with a fresh context).
-  - **(b) Narrowed. Recommended.** `web__search` still works, with the query capped at 200 characters and shown in the
+  - **(b) Narrowed.** `web__search` still works, with the query capped at 200 characters and shown in the
     owner's activity view. `web__fetch` accepts only a URL that a search in this conversation returned or that the
     owner typed (the gateway records both; the supervisor hands it URLs from the owner's messages). Owner-added server
     calls are refused. This narrows the channel and does not close it: a query or a choice among results can still
     carry a few words.
   - **(c) Owner confirms** (outside the model) each new domain before the first fetch to it, and each owner-added
-    server before its first call, while marked. The first loosening to consider after (b).
+    server before its first call, while marked. A loosening to consider after (a), alongside (b).
 
   Under any of the three, an outbound write is never automatic: a TinyCloud write, an owner-added server tool the
   owner has not marked read-only, or anything that sends data to a third party needs the owner's approval outside the
@@ -683,9 +683,10 @@ flag and does not change the others.
    self-hosted SearXNG. Also decide whether the bots service gets its own key under the same account or shares the
    backend's.
 5. **The exfil rule for phase 2 (pick one).** It applies to any conversation whose context holds owner data (not just
-   the task that read it) and to web fetch, web search and every owner-added server's tool arguments: (a) strict, all
-   refused; (b) narrowed, recommended: search with a capped query, fetch only of search-returned or owner-typed URLs,
-   owner-added server calls refused; or (c) the owner confirms each new domain and each owner-added server. Outbound
+   the task that read it) and to web fetch, web search and every owner-added server's tool arguments: (a) strict,
+   recommended: all refused, web search included; (b) narrowed: search with a capped query, fetch only of
+   search-returned or owner-typed URLs, owner-added server calls refused; or (c) the owner confirms each new domain
+   and each owner-added server. Outbound
    writes need the owner's approval under all three. Without one of these, phase 2 is an exfiltration path whatever the
    egress layer does. See Web access.
 6. **Web access has no expiry** (it carries no owner authority). With the exfil rule above in place, "until I turn it
