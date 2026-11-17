@@ -286,10 +286,15 @@ later check failed; web is not deployed).
 `-f web=false`) to the same gated dispatch, for example
 `gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<SHA> -f web=false -f backend_digest=sha256:… -f ingress_digest=sha256:…`.
 Both digests must be the GHCR index digests that the earlier run of that commit
-pushed (its summary lists them). The workflow then builds and pushes nothing.
-It checks that both digests exist in GHCR as the linux/amd64 backend and ingress
-images whose `org.opencontainers.image.revision` is the gated commit, and that
-the compose diff changes only the backend and ingress `image:` lines to
+pushed. Take them from that run's push log (`pushing manifest for …@sha256:…`
+in its Backend job; its summary lists them too), and record that run id with
+the digests in the dispatch record: that log is the provenance. The workflow
+then builds and pushes nothing. It checks that both digests exist in GHCR as the
+linux/amd64 backend and ingress images whose
+`org.opencontainers.image.revision` is the gated commit. This is a check for a
+wrong or swapped digest, not provenance: labels are whatever the pusher set. It
+also checks that the compose diff changes only the backend and ingress `image:`
+lines to
 `@sha256` pins. It then deploys with the same env step and the same
 post-deploy checks. Env values (including `FRONTEND_URL` from
 `TINYCHAT_FRONTEND_URL`) are the current repo values, sent from Actions as in

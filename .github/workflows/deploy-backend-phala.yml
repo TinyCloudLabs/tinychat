@@ -12,7 +12,9 @@ name: Deploy Backend to Phala Cloud
 # Pinned redeploy (backend_digest + ingress_digest, both sha256:<64 hex>): deploys those exact GHCR images of `ref`
 # instead of building. No build and no push of any tag in that mode; the env file, deploy command and post-deploy
 # checks are the same steps as a normal deploy. Both digests must exist in GHCR, be linux/amd64 images of this
-# repository's backend and ingress, and carry org.opencontainers.image.revision == ref:
+# repository's backend and ingress, and carry org.opencontainers.image.revision == ref. That label check catches
+# mistakes and swaps; it is not provenance. Provenance is the operator's: take the digests from the push log of the
+# run that deployed them and record that run id with the digests in the dispatch record:
 #   gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<ref> -f web=false \
 #     -f backend_digest=sha256:<64 hex> -f ingress_digest=sha256:<64 hex>      (or -f tag=<stable tag> instead)
 
@@ -289,8 +291,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      # Pinned redeploy: the digests must already exist in GHCR as the linux/amd64 backend and ingress images built
-      # from `ref` (the labels the build steps below set), so the post-deploy revision/version checks prove them.
+      # Pinned redeploy: the digests must already exist in GHCR as linux/amd64 backend and ingress images whose labels
+      # (set by the build steps below) name `ref`. This catches a wrong or swapped digest; labels are not provenance.
       - name: Verify the pinned images in GHCR (pinned redeploy)
         if: env.PINNED == 'true'
         run: |
