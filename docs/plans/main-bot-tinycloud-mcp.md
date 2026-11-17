@@ -302,8 +302,9 @@ Question: should the gateway's outbound traffic (all three capabilities) go thro
 [iron-proxy](https://github.com/paradigmxyz/iron-proxy), an open-source egress firewall for untrusted workloads?
 Read from its README, config example and source (`internal/dnsguard`, `internal/mcp`, `internal/transform`) at
 v0.56.0. **Nothing here was run**; every behaviour below is from reading, and the spike at the end is what would
-confirm it. A separate survey of other approaches is tracked outside this document and linked from the review card; it
-is not repeated here.
+confirm it. A separate survey of other approaches (hosted sandboxes' egress firewalls, SSRF-safe forward proxies, MCP
+gateway products, what comparable agent sandboxes do) was done alongside; its findings that change this section are
+summarised under "Other approaches" below and its full text is with the research notes.
 
 ### What it is
 
@@ -350,13 +351,15 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   every outside call, and web fetch would run in the sandbox.
 - **B. As the gateway's outer ring.** The gateway has no direct internet: it sits on a network whose only route out is
   the proxy. The proxy enforces the allowlist and the full deny list at dial time and writes the audit. The gateway
-  trusts the proxy's CA. This is the recommended placement.
+  trusts the proxy's CA. If iron-proxy is used at all, this is the placement.
 
-### Deployment in the CVM
+### Deployment in the CVM (if iron-proxy is chosen; the same network rules apply to any dial-out hop)
 
 - A new `bots-egress` container beside `bots-gateway` in `docker-compose.phala.yml`: unprivileged, read-only, no
-  capabilities, no published port. It sits on the `egress` network; the gateway moves to a network that reaches only
-  it (the existing `bots-internal` network already has `internal: true`). The sandbox never reaches it.
+  capabilities, no published port. **It does not join the existing `egress` network.** That network also holds
+  `dstack-ingress`, which publishes 443 and mounts the CVM's `dstack.sock`, so any outbound component on it can reach
+  ingress by its compose address. The proxy and the gateway get a dedicated network with neither ingress nor any other
+  service on it, and the deny list covers the Docker subnets. The sandbox never reaches it.
 - **The tunnel has no authentication** (`Proxy-Authorization` is not checked and SOCKS5 is no-auth). Anything that can
   reach its port can use it. So it listens only on a network that holds the gateway and the proxy and nothing else, is
   never published, and no other service joins that network. On a shared host a local user could otherwise use it.
@@ -388,18 +391,44 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   TLS (scope secrets rules to exact HTTPS hosts); dependency advisories open on an earlier release (check the pinned
   one); unsigned images; denials return an empty 403 body.
 - It publishes a private vulnerability-reporting contact.
+- From the survey (not rechecked): two security advisories in the last three months (a bypass of the MCP tool allowlist
+  by a non-JSON content type, fixed in 0.50.0, and a PostgreSQL row-level-security bypass, fixed in 0.53.0), about 157 of
+  199 commits from one author, and commit volume down from 92 in April to 3 to 12 a month since July.
 - Exit: the gateway talks to it through the standard proxy environment and a CA, and keeps its own guards, so replacing
   it with our own dial guard (or Squid or Envoy) loses the outer ring and nothing else.
 
+### Other approaches (from the survey)
+
+- **Do not open the sandbox's network; make every capability a gateway route.** This is the choice this plan already
+  makes, and the one comparable sandboxes converge on (Anthropic's sandbox runtime also removes the network namespace and
+  gives the sandbox proxies on Unix sockets; hosted sandbox products put the firewall and the credentials outside the
+  sandbox and key policy on sandbox identity). Our gateway already has that identity: the socket path is the bot.
+- **Smokescreen** (Stripe's forward proxy) as a dial-out hop behind the gateway: resolves names and refuses non-public
+  addresses by default, per-client ACLs, rate and concurrency limits, CONNECT only, no TLS interception and no secret
+  handling. That is a smaller job than iron-proxy's, with no CA to guard, and it matches the one thing phase 3 needs:
+  SSRF-safe dialing of arbitrary owner hosts. Not run or verified by us.
+- **Fetch through the search vendor** (Tavily Extract, Exa contents): the CVM dials only the vendor's fixed host, so
+  SSRF and abuse from our addresses are closed by construction. It costs a per-page fee, the vendor sees the URLs, and it
+  does nothing for the exfil rule.
+- **Hosted sandbox providers and MCP gateway products** move the whole sandbox off our CVM or aim at local containers
+  and corporate sign-in; neither fits a sandbox that must stay inside the attested CVM.
+- Not surveyed: Fly Machines and Envoy's dynamic forward proxy (alternatives to Smokescreen).
+
 ### Recommendation, and the spike that decides it
 
-Place iron-proxy as the gateway's outer ring (B) from phase 2, behind a short spike before any build. Phase 1 (one fixed
-destination) does not need it. The main gain is that the checked-address dial and the audit are someone else's tested
-code and that the gateway, the one component with both secrets and internet, cannot reach anything but the proxy. If
-the spike fails or the owner prefers no new dependency on the data path, the phase 2 guard is built in the gateway as
-designed above and nothing else changes.
+**Recommendation.** Do not adopt iron-proxy for phases 1 and 2. Phase 1 has one fixed destination, which the gateway's
+pinned origin already covers. Phase 2 can be built so the CVM only dials fixed vendor hosts (search, and optionally
+extract) or with the gateway's own guard, and the costs above (an unauthenticated TLS-intercepting tunnel and a CA to
+guard, one dominant maintainer, unsigned releases, recent advisories) buy little there. Phase 3, arbitrary owner hosts,
+is where a dedicated dial-out hop earns its place. Choose between Smokescreen (preferred on the survey's evidence:
+smaller, public-addresses-only by default, no interception) and iron-proxy (more features, all the costs above), after
+the spike below. In every case: a network of its own without ingress, fail closed, the gateway keeps its own guard and
+all per-owner secrets, and iron-proxy's MCP policy ideas (default-deny tools, argument conditions, `tools/list`
+filtering) are copied into the gateway's rules rather than depended on. Revisit iron-proxy if bots ever need raw package
+or `curl` access; it would then sit behind the gateway.
 
-Spike (1 to 2 days, on a throwaway CVM or locally):
+Spike before phase 3, for the chosen hop (1 to 2 days, throwaway CVM or locally; items 4 and 6 are specific to
+iron-proxy, the rest apply to either):
 1. The gateway's HTTP client reaches a test origin through the proxy's CONNECT listener with the proxy's CA, streaming
    an SSE response without buffering, and an MCP Streamable HTTP server through it.
 2. A rebinding name, a name resolving to each private range, an IPv4-mapped and a NAT64 address, and a decimal-form
@@ -425,8 +454,8 @@ Spike (1 to 2 days, on a throwaway CVM or locally):
 3. **Owner-added servers.** Adds the server registry, discovery, the credential flows, tool pinning and the settings
    list. The guard from phase 2 is a prerequisite, so this cannot be built before it.
 
-The egress spike (above) runs before phase 2 starts and decides where the guard lives: a proxy outer ring or the
-gateway only. Each phase ships behind the existing test-account flag and does not change the others.
+The egress spike (above) runs before phase 3 starts and decides the dial-out hop for owner-added servers. Each phase
+ships behind the existing test-account flag and does not change the others.
 
 ## Decisions for the owner of each system (named, not designed here)
 
@@ -452,8 +481,9 @@ gateway only. Each phase ships behind the existing test-account flag and does no
    at 200 characters, plus owner-typed and search-returned URLs; or (c) the owner confirms each new domain. Without
    one of these, phase 2 is an exfiltration path whatever the egress layer does. See Web access.
 6. **Web access has no expiry** (it carries no owner authority). Say so if it should expire like the data grants.
-7. **Egress layer.** Adopt iron-proxy as the gateway's outer ring from phase 2 after the spike (this plan's
-   recommendation), or build the guard in the gateway only. Either way the gateway keeps its own checks.
+7. **Egress layer.** The plan's recommendation: no iron-proxy for phases 1 and 2; for phase 3 a dedicated dial-out hop
+   (Smokescreen preferred, iron-proxy the alternative) chosen after a spike. Or build the guard in the gateway only.
+   Whichever, the gateway keeps its own checks and the per-owner tokens.
 
 ## Smoke check for a later build
 
