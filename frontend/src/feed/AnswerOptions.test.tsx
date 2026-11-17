@@ -53,7 +53,7 @@ test("a tapped option shows its wait with Undo in its own slot; the others are o
   const view = await mountOptions({ pending: { choiceId: "b", seconds: 3 }, onUndo: undo });
   expect(view.slots()).toHaveLength(3);
   const held = view.slots()[1]!;
-  expect(held.textContent).toContain("Sending · 3s");
+  expect(held.textContent).toContain("Sends in 3s");
   expect(view.fieldset.textContent).toContain(`${UNDO_SECONDS} seconds`);
   expect(UNDO_SECONDS).toBe(5);
   expect((buttonIn(view.slots()[0]!, "Raise the limit") as HTMLButtonElement).disabled).toBe(true);
@@ -66,7 +66,7 @@ test("a written answer's wait and Undo lie over the same slot the field was in",
   const undo = mock(() => undefined);
   const view = await mountOptions({ pending: { choiceId: OWN_OPTION.id, seconds: 5 }, onUndo: undo });
   expect(view.slots()).toHaveLength(3);
-  expect(view.slots()[2]!.textContent).toContain("Sending · 5s");
+  expect(view.slots()[2]!.textContent).toContain("Sends in 5s");
   expect(view.fieldset.querySelectorAll("textarea")).toHaveLength(1);
   await act(async () => buttonIn(view.slots()[2]!, "Undo")!.click());
   expect(undo).toHaveBeenCalledTimes(1);
