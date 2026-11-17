@@ -678,20 +678,22 @@ flag and does not change the others.
 3. **What "one task" means, and whether "7 days" renews.** This plan ends the grant's use when Main's turn settles. If
    a follow-up message should reuse it, say so before build. This plan's "For 7 days" does not renew, which is stricter
    than the earlier "7 days, renewing, behind a warning" rule; say which one ships.
-4. **Search provider.** Recommended default: Tavily, which TinyChat already pays for, so there is no new provider or
-   spend. Checked in the code: the backend reads `TAVILY_API_KEY` from its environment and calls `POST
+4. **Search provider.** Recommended default: Tavily, which TinyChat already pays for, so there is no new provider.
+   Checked in the code: the backend reads `TAVILY_API_KEY` from its environment and calls `POST
    https://api.tavily.com/search` (`backend/src/mcp-meetings/web-search.ts`). Not confirmed from code: the plan and
    contract behind that key (no DPA found in the compliance notes), and whether it covers Extract, which the backend
-   does not call today. Key: a separate key under the same account (recommended: separate budget and rotation) or the
-   backend's key shared. Nothing is added until the owner says. Alternatives: Brave Search API, Exa, Kagi, self-hosted
-   SearXNG.
+   does not call today (unchecked). **The key is a credential decision:** the bots service holding the backend's
+   `TAVILY_API_KEY` is a second holder of the same secret in another deployment. Options: a separate key under the same
+   account (recommended: separate budget and rotation), or share the backend's key. The owner decides; nothing is added
+   until then. Alternatives: Brave Search API, Exa, Kagi, self-hosted SearXNG.
 5. **The exfil rule for phase 2 (pick one).** It applies to any conversation whose context holds owner data (not just
    the task that read it) and to web fetch, web search and every owner-added server's tool arguments: (a) strict,
    recommended: for the rest of that conversation, no web search, no page fetch and no calls to owner-added servers
    (web search is off too, because a query is the same channel as a fetch); (b) narrowed: search with a capped query,
    fetch only of search-returned or owner-typed URLs, owner-added server calls refused; or (c) the owner confirms each
    new domain and each owner-added server. Outbound writes need the owner's approval under all three. Without one of
-   these, phase 2 is an exfiltration path whatever the egress layer does. See Web access.
+   these, phase 2 is an exfiltration path whatever the egress layer does. See Web access. Note, not the recommendation:
+   the builder leans (b); (b) narrows the leak path but does not close it. The recommendation to start with is (a).
 6. **Web access has no expiry** (it carries no owner authority). With the exfil rule above in place, "until I turn it
    off" is acceptable; say so if it should expire like the data grants.
 7. **Egress layer.** Recommended: the gateway's own guard alone for phases 1 and 2 (no outbound hop is needed), and
@@ -699,10 +701,11 @@ flag and does not change the others.
    network, reachable only from `bots-gateway`. iron-proxy is not adopted now. Smokescreen has not been run by us, so
    the spike confirms the choice before phase 3 ships rather than choosing between hops. Whichever, the gateway keeps
    its own checks and the per-owner secrets.
-8. **Reply rendering** (TinyChat frontend): in a conversation that holds owner data or outside content, each image
-   asks first with its full address (allowed per address), and links show their full host; notes never load images.
-   Conversations that hold neither are unchanged. Applies on every surface, including the existing general chat
-   where the image path is open today. See Web access.
+8. **Reply rendering** (owner: the TinyChat frontend, as a later ticket; Main's reply is plain text today, so this is
+   needed when replies gain Markdown, images or links, and now for the general chat, where the image path is open):
+   in a conversation that holds owner data or outside content, each image asks first with its full address (allowed
+   per address), and links show their full host; notes never load images. Conversations that hold neither are
+   unchanged. Applies on every surface. See Web access.
 
 ## Smoke check for a later build
 
