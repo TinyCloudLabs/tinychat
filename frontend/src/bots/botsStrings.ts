@@ -35,7 +35,7 @@ export const WEB_ACCESS_STRINGS = {
   offDescription: "Main can't search the web or read pages.",
   presets: {
     off: { label: "Off", description: "Main can't search the web or read pages." },
-    listed: { label: "Only sites I list", description: "Main searches and reads pages only on the sites you list. Tavily, our search provider, gets your list with each search." },
+    listed: { label: "Only sites I list", description: "Main searches and reads pages only on the sites you list." },
     any: { label: "Search and read any public site", description: "Main can search the web and open any public page." },
   },
   listLabel: "Sites Main may use",
@@ -43,7 +43,7 @@ export const WEB_ACCESS_STRINGS = {
   listPlaceholder: "docs.example.com",
   listError: "Use site names like example.com, one per line, up to 50. Shared domains like github.io or co.uk need your own name in front, like you.github.io.",
   warningTitle: "Let Main use the web?",
-  warningBody: "A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches and web addresses go to our search provider, Tavily. A web address also reaches the site it points to. Don't open or paste links Main gives you unless you trust them.",
+  warningBody: "A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Pages are fetched by our server, so the site sees our server, not you. Don't open or paste links Main gives you unless you trust them.",
   warningBodyAny: "This setting lets Main open pages you've never seen, and any of them could try this. \"Only sites I list\" is safer, but anyone who can post on those sites could still try it.",
   warningConfirm: "Turn on",
   warningCancel: "Not now",
