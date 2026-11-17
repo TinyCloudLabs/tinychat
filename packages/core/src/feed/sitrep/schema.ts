@@ -37,6 +37,7 @@ export type Kind = (typeof KINDS)[number];
 export const isKind = (value: unknown): value is Kind => typeof value === "string" && (KINDS as readonly string[]).includes(value);
 
 export const BODY_MAX = 600;
+export const POST_MAX = 280;
 export const ID_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 export const CLAIM_ID_RE = /^[A-Z]-[0-9]{2,}$/;
 export const validRecordId = (kind: Kind, id: string): boolean => kind === "claim" ? id.length <= 80 && CLAIM_ID_RE.test(id) : ID_RE.test(id);
@@ -119,6 +120,14 @@ const common = {
   title: z.string().trim().min(1).max(140),
   /** Markdown, at most 600 characters. Say what changed and what you need, not the whole story. */
   body: z.string().max(BODY_MAX).default(""),
+  /** The card's one-line lead on Home: at most 280 Unicode code points, no control characters except a newline. */
+  post: z
+    .string()
+    .trim()
+    .min(1, "post is empty: leave it out, or say what changed in one line")
+    .refine((text) => [...text].length <= POST_MAX, `post is too long: keep it to ${POST_MAX} characters`)
+    .refine((text) => !/(?!\n)\p{Cc}/u.test(text), "post has a control character: use plain text, with newlines only")
+    .optional(),
   /** Who owns the work. */
   owner: Name.optional(),
   /** Which officer posted it. */
