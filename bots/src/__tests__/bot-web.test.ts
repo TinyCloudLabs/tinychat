@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Bot, RunningLimit, type Sandbox, type SandboxLauncher } from "../bot";
 import { botLayout } from "../layout";
 import { type BotApi, createApp } from "../server";
-import { readWebPolicy } from "../web-policy";
+import { INVALID_HOSTS, readWebPolicy } from "../web-policy";
 
 const OPTIONS = { idleMs: 60_000, turnTimeoutMs: 300_000, maxTurnBytes: 1024 };
 
@@ -108,7 +108,7 @@ describe("the web service routes", () => {
     for (const body of [{ mode: "everything", hosts: [] }, { mode: "listed", hosts: ["127.0.0.1"] }, { mode: "listed" }, "{"]) {
       const response = await put(handler, body);
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ error: "invalid", message: "Use site names like example.com, one per line, up to 50." });
+      expect(await response.json()).toEqual({ error: "invalid", message: INVALID_HOSTS });
     }
     expect(saved).toEqual([]);
   });

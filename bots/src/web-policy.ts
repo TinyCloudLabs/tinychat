@@ -21,7 +21,7 @@ export const MAX_HOSTS = 50;
 const MAX_HOST_CHARS = 253;
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 
-export const INVALID_HOSTS = "Use site names like example.com, one per line, up to 50.";
+export const INVALID_HOSTS = "Use site names like example.com, one per line, up to 50. Shared domains like github.io or co.uk need your own name in front, like you.github.io.";
 
 /**
  * Hosts that are not one site but a place anyone can publish under (a public suffix or a hosting platform's own

@@ -30,7 +30,7 @@ type WebMode = (typeof WEB_MODES)[number];
 const MAX_WEB_HOSTS = 50;
 const MAX_WEB_HOST_LENGTH = 253;
 const MAX_WEB_MESSAGE = 200;
-const WEB_INVALID_MESSAGE = "Those sites weren't accepted. Use site names like example.com, one per line, up to 50.";
+const WEB_INVALID_MESSAGE = "Those sites weren't accepted. Use site names like example.com, one per line, up to 50. Shared domains like github.io or co.uk need your own name in front, like you.github.io.";
 
 const isWebMode = (value: unknown): value is WebMode => WEB_MODES.some(mode => mode === value);
 
