@@ -806,38 +806,48 @@ test("an ask Sam dropped that its agent then closes in a new revision is one car
   expect(await closeInNewRevision(fixture, view.host, "dropped")).toEqual(["Dropped"]);
 });
 
-const LONG_URL = `https://reports.synthetic-example.ts.net/${"a-very-long-report-path-segment/".repeat(6)}final-review-with-a-long-name.md?token=${"x".repeat(80)}`;
+const LONG_HOST_URL = `https://reports-for-the-quarterly-release-review.${"deeply-nested-subdomain.".repeat(5)}synthetic-example.ts.net/final-review.md?token=${"x".repeat(60)}`;
 
-test("an open card's link shows its label first and its address underneath, and the address wraps inside the column", async () => {
-  const fixture = typedFixture({ ...syntheticRecord("ask"), links: [{ label: "Private report", url: LONG_URL }] });
+test("an open card's links are separate chips, each reading its label then its host, keeping the full address", async () => {
+  const links = [{ label: "Private report", url: "https://reports.synthetic-example.ts.net/rehearsal.md" }, { label: "Release review", url: LONG_HOST_URL }, { label: "TC-1149", url: "https://linear.app/tinycloud-labs/issue/TC-1149" }];
+  const fixture = typedFixture({ ...syntheticRecord("ask"), links });
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  const link = article.querySelector<HTMLAnchorElement>('nav[aria-label="Card reports and sources"] a')!;
-  expect(link.getAttribute("href")).toBe(LONG_URL);
-  const lines = [...link.children].filter((node) => node.tagName === "SPAN") as HTMLElement[];
-  expect(lines).toHaveLength(2);
-  expect(lines[0]!.textContent).toBe("Private report");
-  expect(lines[1]!.textContent).toContain("reports.synthetic-example.ts.net/a-very-long-report-path-segment/");
-  expect(lines[1]!.textContent).not.toMatch(/^https?:/);
-  // Stacked, never clipped, never wider than the column: a column flex chip that may shrink (min-w-0, max-w-full), and an address that breaks anywhere.
-  const chip = link.className.split(/\s+/);
-  expect(chip).toEqual(expect.arrayContaining(["flex", "flex-col", "min-w-0", "max-w-full"]));
-  expect(chip).not.toContain("whitespace-nowrap");
-  expect(lines[1]!.className.split(/\s+/)).toEqual(expect.arrayContaining(["break-all", "min-w-0"]));
-  expect(lines[1]!.className).not.toMatch(/truncate|overflow-hidden|text-ellipsis|whitespace-nowrap/);
-  expect(link.parentElement!.className.split(/\s+/)).toEqual(expect.arrayContaining(["flex-wrap", "min-w-0"]));
+  const chips = [...article.querySelectorAll<HTMLAnchorElement>('nav[aria-label="Card reports and sources"] a')];
+  expect(chips.map((chip) => chip.getAttribute("href"))).toEqual(links.map((link) => link.url));
+  // One line each: the label, a separator, the host (no path, no scheme), in that order.
+  expect([...chips[0]!.querySelectorAll("span")].map((node) => node.textContent)).toEqual(["Private report", "·", "reports.synthetic-example.ts.net"]);
+  expect([...chips[1]!.querySelectorAll("span")].map((node) => node.textContent)[0]).toBe("Release review");
+  expect([...chips[1]!.querySelectorAll("span")].map((node) => node.textContent)[2]).toBe(new URL(LONG_HOST_URL).hostname);
+  // A host cut off to fit is still readable in full as the chip's tooltip, and the link opens a new tab safely.
+  expect(chips[1]!.getAttribute("title")).toBe(LONG_HOST_URL);
+  expect(chips[1]!.getAttribute("target")).toBe("_blank");
+  expect(chips[1]!.getAttribute("rel")).toContain("noopener");
 });
 
-test("a card open in its row adds no second card: no border, radius, shadow or background between the list and its content", async () => {
+test("a Linear ticket in card text is a link to its issue; text that only looks like one, and a ticket inside a link, are not", async () => {
+  const base = syntheticRecord("ask") as { context: Record<string, unknown> };
+  const record = { ...base, context: { ...base.context, whyNow: "Waits on TC-1149, hash SHA-256, and https://linear.app/tinycloud-labs/issue/TC-77 for the rest.", known: ["Also gates TC-1162."] } };
+  const fixture = typedFixture(record);
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  const anchors = [...article.querySelectorAll<HTMLAnchorElement>("a")];
+  const ticket = anchors.find((node) => node.textContent === "TC-1149");
+  expect(ticket?.getAttribute("href")).toBe("https://linear.app/tinycloud-labs/issue/TC-1149");
+  expect(ticket?.getAttribute("target")).toBe("_blank");
+  expect(anchors.some((node) => node.textContent === "SHA-256")).toBe(false);
+  // The URL that already contains TC-77 stays one link, and nothing is a link inside a link.
+  expect(anchors.filter((node) => node.getAttribute("href")?.endsWith("/TC-77"))).toHaveLength(1);
+  expect(article.querySelectorAll("a a")).toHaveLength(0);
+  // The fact behind the fold links too.
+  expect(anchors.find((node) => node.textContent === "TC-1162")?.getAttribute("href")).toBe("https://linear.app/tinycloud-labs/issue/TC-1162");
+});
+
+test("a card open in its row is one article inside the list's own item, not a card inside another card", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
   const article = card(view.host, String(fixture.entry.state.card.title));
-  const surface = /(^|\s)(border|rounded|shadow|bg-card|bg-background|ring)(-[^\s]*)?(?=\s|$)/;
-  expect(article.className).not.toMatch(surface);
-  // Walk up to the list: the only box with an edge, radius or surface is the list itself, once.
-  const list = article.closest("ul")!;
-  for (let node: HTMLElement | null = article.parentElement; node && node !== list; node = node.parentElement) expect(node.className).not.toMatch(surface);
-  expect(list.className).toMatch(/rounded-2xl/);
-  // And it sits in the list's own item, beside the rows, as the mock's open row does.
-  expect(article.closest("li")!.parentElement).toBe(list);
+  expect(article.parentElement!.closest("article")).toBeNull();
+  expect(article.querySelector("article")).toBeNull();
+  expect(article.closest("li")!.parentElement!.tagName).toBe("UL");
 });

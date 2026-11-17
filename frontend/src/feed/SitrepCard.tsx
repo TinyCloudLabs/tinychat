@@ -12,7 +12,12 @@ import { HomeCardThread } from "./HomeCardThread";
 import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
 import { shortTime } from "./ShortTime";
 
-function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
+/** Text with its links: URLs and GitHub refs underlined; a Linear ticket (TC-1234) in the link colour with a dotted underline, as the design mock's inline references. */
+function prose(text: string, repo?: string) {
+  return linkify(text, repo).map((part, index) => "href" in part
+    ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className={part.kind === "linear" ? "whitespace-nowrap font-mono text-[0.9em] text-blue-700 underline decoration-dotted decoration-1 underline-offset-[3px] hover:decoration-solid dark:text-blue-400" : "break-words underline underline-offset-[3px]"}>{part.label}</a>
+    : part.text);
+}
 const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
 /** A typed card's times, in the feed's medium style: "13 Nov, 09:00", with the year when it isn't this one. */
 function stamp(at: string) {
@@ -56,22 +61,19 @@ function KnownFold({ facts, children }: { facts: number; children: ReactNode }) 
     {children}
   </details>;
 }
-/** A link's address as shown under its caption: the host and path, with no scheme, "www." or trailing slash. */
-function shownUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.host.replace(/^www\./, "")}${parsed.pathname}${parsed.search}${parsed.hash}`.replace(/\/$/, "");
-  } catch { return url; }
-}
+function hostOf(url: string): string { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; } }
 /**
- * A card's links under its brief, one chip each (Sam, 11-17): the caption on the first line, the address underneath.
- * The chip never runs past the card's column; a long address breaks where it must instead of overflowing.
+ * A card's links under its brief (design mock, 11-17): compact one-line chips, "label · host ↗", small mono in the link
+ * colour with a thin edge and a small radius, side by side and wrapping onto new lines. A long label or host is cut
+ * off inside its chip (the full address is its tooltip), so a chip never runs past the card's column.
  */
 function LinkChips({ links, tight = false }: { links: readonly { url: string; label?: string }[]; tight?: boolean }) {
   return <nav aria-label="Card reports and sources" className={`${tight ? "mt-1.5" : "mt-3"} flex min-w-0 flex-wrap gap-x-1.5 gap-y-2.5`}>{links.map((link) => {
-    return <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer" className={`flex min-h-11 min-w-0 max-w-full flex-col justify-center gap-0.5 rounded border border-blue-700/35 px-2 py-1.5 font-mono text-xs leading-snug text-blue-700 transition-colors hover:border-blue-700 hover:bg-blue-700/5 dark:border-blue-400/40 dark:text-blue-400 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 ${focusRing}`}>
-      <span className="flex min-w-0 items-start gap-1.5 font-semibold"><span className="min-w-0 [overflow-wrap:anywhere]">{linkCaption(link as Parameters<typeof linkCaption>[0]).split(" · ")[0]}</span><ExternalLinkIcon aria-hidden className="mt-0.5 size-3 shrink-0" /></span>
-      <span className="min-w-0 break-all font-normal opacity-80">{shownUrl(link.url)}</span>
+    const host = hostOf(link.url);
+    return <a key={link.url} href={link.url} title={link.url} target="_blank" rel="noopener noreferrer" className={`relative inline-flex h-[26px] min-w-0 max-w-full items-center gap-[5px] whitespace-nowrap rounded border border-blue-700/35 px-[7px] font-mono text-xs leading-none text-blue-700 transition-colors after:absolute after:-inset-x-0.5 after:-inset-y-[5px] after:content-[''] hover:border-blue-700 hover:bg-blue-700/[0.06] dark:border-blue-400/40 dark:text-blue-400 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 ${focusRing}`}>
+      <span className="min-w-0 shrink overflow-hidden text-ellipsis font-semibold">{linkCaption(link as Parameters<typeof linkCaption>[0]).split(" · ")[0]}</span>
+      {host && <><span aria-hidden className="shrink-0 opacity-50">·</span><span className="min-w-0 shrink-[2] overflow-hidden text-ellipsis">{host}</span></>}
+      <ExternalLinkIcon aria-hidden className="size-3 shrink-0" />
     </a>;
   })}</nav>;
 }
@@ -495,7 +497,7 @@ export function SitrepCard(props: Props) {
           ...(typeof entry.state.card.payload?.project === "string" && entry.state.card.payload.project ? [["Project", entry.state.card.payload.project] as [string, ReactNode]] : []),
           ["Reference", <code className="block truncate select-all text-xs">{record.id}</code>],
         ] as [string, ReactNode][]).map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>
-        {record.kind === "ship" && entry.state.card.body && <section aria-label="Ship record" className="mt-2"><p className="mb-1 text-xs font-medium text-muted-foreground">Ship record</p><p className="whitespace-pre-wrap">{entry.state.card.body}</p></section>}
+        {record.kind === "ship" && entry.state.card.body && <section aria-label="Ship record" className="mt-2"><p className="mb-1 text-xs font-medium text-muted-foreground">Ship record</p><p className="whitespace-pre-wrap">{prose(entry.state.card.body, record.repo)}</p></section>}
         {receipt && <p>{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
         {routeReady && <p className="text-[12.5px] leading-[1.4] text-muted-foreground">Messages on this card go to: {destinations.map((recipient) => <span key={recipient.recipientKey} className="block break-all font-mono">{recipient.legacyName} · {recipient.runtimeTarget.agentId}</span>)}</p>}
         {!!state?.notes?.length && <div aria-label="Your private notes" className="space-y-1"><p className={fineClass}>Your private notes. Only you can see them; they aren't sent to the agent.</p>{state.notes.map((note) => <p key={note.id} className="whitespace-pre-wrap">{note.text} <time className={fineClass} dateTime={note.at}>{stamp(note.at)}</time></p>)}</div>}

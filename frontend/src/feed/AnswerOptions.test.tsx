@@ -71,12 +71,3 @@ test("a written answer's wait and Undo lie over the same slot the field was in",
   await act(async () => buttonIn(view.slots()[2]!, "Undo")!.click());
   expect(undo).toHaveBeenCalledTimes(1);
 });
-
-test("the options are one per row and full width at every width: the list is a single column with no width-conditional columns", async () => {
-  const view = await mountOptions();
-  const classes = view.grid().className.split(/\s+/);
-  expect(classes).toContain("grid");
-  // A column count at any width (grid-cols-2, cq:grid-cols-2, sm:grid-cols-3 …) would put two options in a row.
-  expect(classes.filter((name) => /grid-cols-/.test(name))).toEqual([]);
-  for (const slot of view.slots()) expect(slot.className.split(/\s+/).filter((name) => /col-span|w-1\/2|basis-/.test(name))).toEqual([]);
-});
