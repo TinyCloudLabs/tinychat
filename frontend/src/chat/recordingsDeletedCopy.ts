@@ -20,6 +20,8 @@ export const STILL_DELETING = "Your recordings are being deleted. We keep trying
 export const SHARED_REMOVED = "Recordings others shared with you are removed from your list; the people who shared them still have them.";
 /** Own entries the provider does not attribute to the account: dropped from the list, copy NOT deleted. */
 export const NOT_DELETED = "Some recordings were removed from your list but are still with the notetaker service. To have them deleted, email team@tinycloud.xyz.";
+/** The same case on a single recording's own row after Remove (Monica): no subject needed. */
+export const ROW_NOT_DELETED = "Removed from your list but still with the notetaker service. To have it deleted, email team@tinycloud.xyz.";
 
 export const OWN_DELETED = "Your recordings are deleted.";
 

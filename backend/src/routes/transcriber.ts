@@ -462,6 +462,12 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
         res.status(202).json({ id: own.id, status: "deleting" });
         return;
       }
+      // Own entry the provider does not attribute to this address: dropped from the list, copy NOT deleted.
+      // Say so (200 + body) instead of the silent 204. "shared" has no copy of the caller's own to leave behind.
+      if (result === "not_ours") {
+        res.status(200).json({ id: own.id, status: "not_deleted" });
+        return;
+      }
     } catch (error) {
       console.warn(`[transcriber] index write failed err=${redactedErrorMessage(error)}`);
       res.status(503).json({ error: "transcriber_unavailable" });

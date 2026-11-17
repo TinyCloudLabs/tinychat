@@ -138,16 +138,26 @@ describe("Remove purges upstream and reads it back", () => {
     expect(h.ptx.store.has("mtg_1")).toBe(false);
   });
 
-  test("a recording this address did not create is a list-only removal: nothing is deleted upstream", async () => {
+  test("an own entry the provider attributes to someone else is dropped from the list, nothing is deleted upstream, and the caller is told (200 not_deleted)", async () => {
     const h = await setup();
     h.ptx.add("mtg_theirs", OTHER);
     await h.index.add(OWNER, "mtg_theirs");
     await withServer(h.app, async (base) => {
-      expect((await call(base, `${BASE}/mtg_theirs`, "DELETE")).status).toBe(204);
+      expect(await call(base, `${BASE}/mtg_theirs`, "DELETE")).toEqual({ status: 200, body: { id: "mtg_theirs", status: "not_deleted" } });
     });
     expect(h.ptx.calls.filter((c) => c.startsWith("delete:"))).toEqual([]);
     expect(h.ptx.store.has("mtg_theirs")).toBe(true);
     expect(await h.index.list(OWNER)).toEqual([]);
+  });
+
+  test("an own entry with no attribution at all is also reported as not_deleted, never as a clean 204", async () => {
+    const h = await setup();
+    h.ptx.add("mtg_bare", "");
+    await h.index.add(OWNER, "mtg_bare");
+    await withServer(h.app, async (base) => {
+      expect(await call(base, `${BASE}/mtg_bare`, "DELETE")).toEqual({ status: 200, body: { id: "mtg_bare", status: "not_deleted" } });
+    });
+    expect(h.ptx.store.has("mtg_bare")).toBe(true);
   });
 
   test("backoff grows and is capped; a restarted sweeper picks up stuck purges from the index", async () => {

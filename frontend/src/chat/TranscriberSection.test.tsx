@@ -324,6 +324,14 @@ describe("TranscriberView", () => {
     expect(html).not.toContain("Could not be read");
   });
 
+  test("a removed recording whose copy remains says so on its own row, with no Remove button", () => {
+    const html = render({ meetings: [{ id: "mtg_x", unavailable: true, kept: true }] });
+    expect(html).toContain("Removed from your list but still with the notetaker service. To have it deleted, email team@tinycloud.xyz.");
+    expect(html).not.toContain(">Remove<");
+    expect(html).not.toContain("Could not be read");
+    expect(html).not.toContain("Being deleted");
+  });
+
   test("an open transcript renders speaker-attributed segments with timestamps", () => {
     const html = render({
       meetings: [meeting({ status: "completed" })],
@@ -527,12 +535,17 @@ describe("transcriber client", () => {
     expect(await client.remove("mtg_1")).toEqual({ status: "not-found" });
   });
 
-  test("remove tells a confirmed delete (204) from one still being retried (202)", async () => {
-    const answers = [new Response(null, { status: 204 }), new Response(JSON.stringify({ id: "mtg_1", status: "deleting" }), { status: 202 })];
+  test("remove tells a confirmed delete (204), one still being retried (202) and one whose copy remains (200 not_deleted)", async () => {
+    const answers = [
+      new Response(null, { status: 204 }),
+      new Response(JSON.stringify({ id: "mtg_1", status: "deleting" }), { status: 202 }),
+      new Response(JSON.stringify({ id: "mtg_1", status: "not_deleted" }), { status: 200 }),
+    ];
     const fetchImpl = (async () => answers.shift()!) as typeof fetch;
     const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
-    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: false } });
-    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: true } });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: false, notDeleted: false } });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: true, notDeleted: false } });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: false, notDeleted: true } });
   });
 
   test("removeAll sends DELETE to the collection and reports what is still deleting", async () => {

@@ -1794,7 +1794,9 @@ paths:
         TC-3136. The capture provider's copy is deleted and the backend reads the meeting back; only
         not-found counts as gone. A recording shared with this address is only dropped from its list. If the
         purge cannot be confirmed within the request, the entry stays as `deleting` and the backend keeps
-        retrying with backoff until it is. Repeating the call is safe.
+        retrying with backoff until it is. Repeating the call is safe. An entry of this account's own that the
+        provider does not attribute to this address is dropped from the list but its provider copy is NOT
+        deleted; that answers 200 `not_deleted`.
       security:
         - bearerAuth: []
       responses:
@@ -1813,6 +1815,19 @@ paths:
                   status:
                     type: string
                     const: deleting
+        "200":
+          description: Dropped from this account's list, but the provider's copy was not deleted (not attributed to this address)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    const: not_deleted
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "404":
