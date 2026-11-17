@@ -48,16 +48,22 @@ function ImageBudgetPrompt({ budget }: { budget: ReplyImageBudget }) {
 
 /**
  * One reply's images share a budget (lib/imageBudget.ts): wrap the whole reply, and the held images ask once, below it.
- * Inside another scope it adds nothing, so the outermost scope is the reply.
+ * Inside another scope it adds nothing, so the outermost scope is the reply. A different `messageId` starts a fresh budget,
+ * choices included: the thread renders messages by position, so a component can be reused for another message.
  */
-export const ImageBudgetScope: FC<{ children: ReactNode }> = ({ children }) => {
+export const ImageBudgetScope: FC<{ messageId?: string; children: ReactNode }> = ({ messageId, children }) => {
   const parent = useContext(BudgetContext);
-  const [own] = useState(() => (parent ? null : new ReplyImageBudget()));
-  if (!own) return <>{children}</>;
+  const [owned, setOwned] = useState(() => ({ messageId, budget: parent ? null : new ReplyImageBudget() }));
+  let own = owned;
+  if (own.messageId !== messageId) {
+    own = { messageId, budget: parent ? null : new ReplyImageBudget() };
+    setOwned(own);
+  }
+  if (!own.budget) return <>{children}</>;
   return (
-    <BudgetContext.Provider value={own}>
+    <BudgetContext.Provider value={own.budget}>
       {children}
-      <ImageBudgetPrompt budget={own} />
+      <ImageBudgetPrompt budget={own.budget} />
     </BudgetContext.Provider>
   );
 };

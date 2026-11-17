@@ -635,7 +635,7 @@ const AssistantMessage: FC = () => {
         <span>TinyCloud One</span>
       </div>
       <div className="pl-7 text-sm leading-relaxed text-foreground">
-        <ImageBudgetScope key={messageId}>
+        <ImageBudgetScope messageId={messageId}>
           <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
         </ImageBudgetScope>
         <ThinkingIndicator />

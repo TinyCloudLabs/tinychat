@@ -5,6 +5,7 @@ import { TextMessagePartProvider } from "@assistant-ui/react";
 
 import { installDom } from "@/test/dom";
 import { IMAGE_PROMPT_COPY } from "@/lib/imageUrlFilter";
+import { ImageBudgetScope } from "./image-budget";
 import { MarkdownText } from "./markdown-text";
 
 let restore: (() => void) | undefined;
@@ -16,13 +17,15 @@ afterEach(() => {
   restore = undefined;
 });
 
-async function show(root: Root, text: string, host: HTMLElement, isRunning = false) {
+async function show(root: Root, text: string, host: HTMLElement, isRunning = false, messageId?: string) {
   const deadline = Date.now() + 3000;
   await act(async () =>
     root.render(
-      <TextMessagePartProvider text={text} isRunning={isRunning}>
-        <MarkdownText />
-      </TextMessagePartProvider>,
+      <ImageBudgetScope messageId={messageId}>
+        <TextMessagePartProvider text={text} isRunning={isRunning}>
+          <MarkdownText />
+        </TextMessagePartProvider>
+      </ImageBudgetScope>,
     ),
   );
   // The Markdown primitive reveals new text a few characters per animation frame: wait until the page stops changing.
@@ -246,4 +249,16 @@ test("images that go away give their slots up: no prompt is left for an image th
   expect(srcs(host)).toEqual(loaded("d"));
   expect(host.textContent).not.toContain("more image");
   expect(host.querySelector("button")).toBeNull();
+});
+
+test("another message in the same component starts with a fresh budget: an approval does not carry over", async () => {
+  const { host } = await mountRecorded();
+  await show(mounted!, four("a", "b", "c", "d"), host, false, "message-1");
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
+  expect(srcs(host)).toEqual(loaded("a", "b", "c", "d"));
+  await show(mounted!, four("a", "b", "c", "d"), host, false, "message-1");
+  expect(srcs(host)).toEqual(loaded("a", "b", "c", "d"));
+  await show(mounted!, four("a", "b", "c", "d"), host, false, "message-2");
+  expect(srcs(host)).toEqual(loaded("a", "b"));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
 });
