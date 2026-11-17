@@ -1,6 +1,6 @@
 # What Main can reach: TinyCloud MCP, the web, owner-added MCP servers
 
-Details: TC-2808 (follow-on to [`tiny-bots-slice1.md`](tiny-bots-slice1.md)). Design only: nothing here is built.
+Details: TC-2808 (follow-on to [`tiny-bots-slice1.md`](tiny-bots-slice1.md)). Design only: nothing here is built. Research on other egress approaches: the [egress research report](https://linear.app/tinycloud-labs/document/main-bot-egress-research-reportmd-72c8fa544670), attached to TC-2808.
 
 ## Goal
 
@@ -281,9 +281,10 @@ instructions, and the design does not rely on the model to tell the difference:
   does not clear it). The order does not matter: if web content arrived first and a private read follows, the read sets
   the mark and the rule applies from then on. While marked, exactly one of these rules applies, chosen in decision 5, to
   `web__fetch`, `web__search` and every owner-added server's tools:
-  - **(a) Strict. Recommended.** `web__search`, `web__fetch` and every owner-added server call are all refused. Nothing leaves. That
-    includes web search: a query is the same channel as a fetch, so while the conversation is marked Main has no web
-    search at all (it works again only in a conversation with a fresh context).
+  - **(a) Strict. Recommended.** For the rest of the conversation, `web__search`, `web__fetch` and every owner-added
+    server call are all refused. Nothing leaves. That includes web search: a query is the same channel as a fetch, so
+    once a conversation holds owner data Main has no web search at all (it works again only in a conversation with a
+    fresh context).
   - **(b) Narrowed.** `web__search` still works, with the query capped at 200 characters and shown in the
     owner's activity view. `web__fetch` accepts only a URL that a search in this conversation returned or that the
     owner typed (the gateway records both; the supervisor hands it URLs from the owner's messages). Owner-added server
@@ -444,9 +445,9 @@ argument conditions, and filters `tools/list` responses, including per SSE event
 | Built-in DNS | Resolves every name to the proxy so traffic is steered through it | Not used: the sandbox has no network, and the gateway would use the proxy's HTTP/CONNECT listener. The DNS server can be switched off (`dns.enabled: false`, in the config example; a trial ran with it off; v0.42.0 did not have the switch). |
 | Upstream IP deny list | `upstream_deny_cidrs`, enforced in the dialer's `Control` hook after resolution (source: `internal/dnsguard`), so a name that resolves or rebinds to a denied address is refused before the connect; IPv4-mapped IPv6 is unmapped first | Good, and it is the piece we would otherwise write ourselves. **The default list is only cloud metadata and loopback.** Any proxy behind the gateway resolves the name again, so its list must carry the same ranges as the fetch guard (Web access): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (CGNAT, which includes the operators' private overlay network), `169.254.0.0/16`, `0.0.0.0/8`, `fc00::/7`, `fe80::/10`, `fec0::/10`, multicast, and the embedded-IPv4 forms (`::/96`, `64:ff9b::/96`, `64:ff9b:1::/48`, `2002::/16`, `2001::/32`). The gateway does not follow redirects, or re-checks every hop through the proxy. With an upstream proxy configured the check applies to the proxy's address, not the target. |
 | Proxy tokens swapped for real secrets | `secrets` transform: the workload sends a token, the proxy replaces it from env, file, AWS, Vault or 1Password sources, `require: true` rejects requests without it | Fits static service keys (the model key, a search key). Does not fit per-owner, short-lived tokens: sources are static, and a changed value needs a config reload (`POST /v1/reload`) or a `grpc` transform we would write. The gateway keeps per-owner grants itself (section 2). Also: the `file` source does not trim, so a trailing newline becomes part of the header, and `require: true` on a host-only rule breaks tunnelled requests (#222). Only works in MITM mode. |
-| Per-request audit | JSON per request with the transform trace, secrets swapped (names and locations, not values) and rejections. No headers or bodies, and no query string in a trial run | Mixed. **Paths are logged**, and for web fetch the path is the owner's task content, so raw lines are not shipped as they are: log host only or hash the path (a filter in front of the log, or a patch), and add rotation, since there is none. It is per request, not per owner: it cannot know which bot made a call. |
+| Per-request audit | JSON per request with the transform trace, secrets swapped (names and locations, not values) and rejections. No headers or bodies, and no query string (checked in the v0.53.0 loopback trial, 2026-10-13) | Mixed. **Paths are logged**, and for web fetch the path is the owner's task content, so raw lines are not shipped as they are: log host only or hash the path (a filter in front of the log, or a patch), and add rotation, since there is none. It is per request, not per owner: it cannot know which bot made a call. |
 | SSE / streamable HTTP | SSE is flushed per chunk, so MCP streamable HTTP over SSE works; WebSocket is HTTP/1 only | Good for MCP and model streaming. Non-SSE chunked responses (NDJSON, Connect, gRPC) are buffered until they end (an open issue, seen in a trial), and the 30 s response-header timeout needs raising for slow tool calls. |
-| MCP pipeline | README for v0.56.0: per-server tool allowlist, `when` conditions on arguments, `tools/list` filtering, `mcp_gateway` routes with credential injection, audit of every JSON-RPC message. An earlier trial found no JSON-RPC awareness, so treat this as newer and unproven here | Not relied on in phases 1 and 2: the gateway's own rebuild, tool list and namespacing stay the gateway's job. Possibly useful later for owner-added servers (argument conditions). v1 limits: Streamable HTTP only, resources and prompts not enforced, a batch with one denied entry is rejected whole, static per-server YAML. |
+| MCP pipeline | README for v0.56.0: per-server tool allowlist, `when` conditions on arguments, `tools/list` filtering, `mcp_gateway` routes with credential injection, audit of every JSON-RPC message. The v0.53.0 trial did not use any of it, so treat this as newer and unproven here | Not relied on in phases 1 and 2: the gateway's own rebuild, tool list and namespacing stay the gateway's job. Possibly useful later for owner-added servers (argument conditions). v1 limits: Streamable HTTP only, resources and prompts not enforced, a batch with one denied entry is rejected whole, static per-server YAML. |
 
 ### What it would replace in `bots-gateway`
 
@@ -507,8 +508,8 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   rule). On a shared host a local user could otherwise use it. The spike checks that another container is refused.
 - **Fail closed.** The gateway has no direct route, so if the proxy is down a fetch is refused, never sent direct.
 - **Management and metrics listeners.** The management API (`/v1/reload`) is off by default; if enabled, bind it to
-  loopback and keep its bearer in the proxy only. A trial found the metrics listener defaulting to `:9090` on all
-  interfaces; pin it to loopback (recheck on the pinned release).
+  loopback and keep its bearer in the proxy only. A code read of v0.53.0 (`internal/config`) shows the metrics listener
+  defaulting to `:9090` on all interfaces; pin it to loopback (recheck on the pinned release).
 - Built from a pinned release tag by our own Dockerfile (module checksums from `go.sum`) and referenced by digest, as
   the other images are. Release signing is thin: only v0.42.0 has a GPG-signed checksum file (it lacks the DNS switch);
   later releases, including v0.56.0, carry `checksums.txt` only, and the published images are unsigned. We pin by tag,
@@ -677,18 +678,20 @@ flag and does not change the others.
 3. **What "one task" means, and whether "7 days" renews.** This plan ends the grant's use when Main's turn settles. If
    a follow-up message should reuse it, say so before build. This plan's "For 7 days" does not renew, which is stricter
    than the earlier "7 days, renewing, behind a warning" rule; say which one ships.
-4. **Search provider.** Recommended default: Tavily, which is already paid for, with no new provider, key or spend once
-   confirmed to be the backend's existing key and contract (checked in the code: `TAVILY_API_KEY`, `POST /search`;
-   Extract is not used by the backend today, so confirm the plan covers it). Alternatives: Brave Search API, Exa, Kagi,
-   self-hosted SearXNG. Also decide whether the bots service gets its own key under the same account or shares the
-   backend's.
+4. **Search provider.** Recommended default: Tavily, which TinyChat already pays for, so there is no new provider or
+   spend. Checked in the code: the backend reads `TAVILY_API_KEY` from its environment and calls `POST
+   https://api.tavily.com/search` (`backend/src/mcp-meetings/web-search.ts`). Not confirmed from code: the plan and
+   contract behind that key (no DPA found in the compliance notes), and whether it covers Extract, which the backend
+   does not call today. Key: a separate key under the same account (recommended: separate budget and rotation) or the
+   backend's key shared. Nothing is added until the owner says. Alternatives: Brave Search API, Exa, Kagi, self-hosted
+   SearXNG.
 5. **The exfil rule for phase 2 (pick one).** It applies to any conversation whose context holds owner data (not just
    the task that read it) and to web fetch, web search and every owner-added server's tool arguments: (a) strict,
-   recommended: all refused, web search included; (b) narrowed: search with a capped query, fetch only of
-   search-returned or owner-typed URLs, owner-added server calls refused; or (c) the owner confirms each new domain
-   and each owner-added server. Outbound
-   writes need the owner's approval under all three. Without one of these, phase 2 is an exfiltration path whatever the
-   egress layer does. See Web access.
+   recommended: for the rest of that conversation, no web search, no page fetch and no calls to owner-added servers
+   (web search is off too, because a query is the same channel as a fetch); (b) narrowed: search with a capped query,
+   fetch only of search-returned or owner-typed URLs, owner-added server calls refused; or (c) the owner confirms each
+   new domain and each owner-added server. Outbound writes need the owner's approval under all three. Without one of
+   these, phase 2 is an exfiltration path whatever the egress layer does. See Web access.
 6. **Web access has no expiry** (it carries no owner authority). With the exfil rule above in place, "until I turn it
    off" is acceptable; say so if it should expire like the data grants.
 7. **Egress layer.** Recommended: the gateway's own guard alone for phases 1 and 2 (no outbound hop is needed), and
