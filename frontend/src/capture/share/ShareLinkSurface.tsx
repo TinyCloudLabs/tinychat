@@ -12,12 +12,13 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
 import type { AppState } from "@/lib/appState";
 import { PRODUCT_PAGE_URL } from "@/lib/homeSite";
-import { includesLabel, parseRecordingDisplay, shortAddress, type RecordingShareDisplay } from "@/lib/nativeShares/display";
+import { includesLabel, parseRecordingDisplay, type RecordingShareDisplay } from "@/lib/nativeShares/display";
 import { heldShareLink, releaseShareLink, shareLinkId } from "@/lib/nativeShares/link";
 import { receivedShareForLink, receivedShareRecord, receivedShares, sharedNoteId } from "@/lib/nativeShares/receivedShares";
 import { claimShare, openShareLink, ShareLinkError, type OpenedShareLink } from "@/lib/nativeShares/sdk";
 import { bootMessage } from "@/shell/BootSurface";
 import { notePath } from "@/shell/routes";
+import { Sender } from "./Sender";
 import { shareItemLine } from "./shareCopy";
 
 type Problem = "expired" | "invalid" | "unavailable" | "revoked" | "claim-failed";
@@ -126,7 +127,7 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
 
   if (view.status === "problem") {
     if (view.problem === "revoked" && view.display && view.link) {
-      const sender = shortAddress(view.link.owner.address);
+      const sender = <Sender address={view.link.owner.address} />;
       return (
         <Shell>
           <div className="flex flex-col items-start gap-2" data-testid="share-link-revoked">
@@ -166,7 +167,7 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
   }
 
   const { link, display } = view;
-  const sender = shortAddress(link.owner.address);
+  const sender = <Sender address={link.owner.address} />;
   const busy = props.state === "connecting" || props.state === "signing";
   return (
     <Shell>
@@ -194,7 +195,7 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
             props.onSignIn();
           }}>{busy ? "Signing in…" : "Sign in to add"}</Button>
         )}
-        <p className="text-callout text-muted-foreground">{tcw ? "" : "Signing in adds it to your TinyCloud. "}{sender} can stop sharing at any time, and then it’s gone from your Library.</p>
+        <p className="text-callout text-muted-foreground">{tcw ? "" : "Signing in adds it to your Library. "}{sender} can stop sharing at any time, and then it’s no longer available to you.</p>
         {props.error && <p role="status" className="text-callout">{bootMessage(props.state, props.error)}</p>}
       </div>
       <div className="mt-auto pt-10">
@@ -203,7 +204,7 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
           <p className="min-w-0 flex-1 text-callout">Have the app? This link opens there too.</p>
           <a href={PRODUCT_PAGE_URL} target="_blank" rel="noopener noreferrer" className="shrink-0 text-callout font-medium text-primary underline underline-offset-4">Get the app</a>
         </div>
-        <p className="mt-4 text-meta text-muted-foreground">New to TinyCloud? Signing in creates your space. It’s free.</p>
+        {!tcw && <p className="mt-4 text-meta text-muted-foreground">New to TinyCloud? Signing in creates your space. It’s free.</p>}
       </div>
     </Shell>
   );

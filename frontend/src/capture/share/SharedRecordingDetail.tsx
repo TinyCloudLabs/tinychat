@@ -12,7 +12,6 @@ import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getAudio } from "@/lib/audio/audioStore";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
-import { shortAddress } from "@/lib/nativeShares/display";
 import {
   markReceivedShareRevoked,
   removeReceivedShare,
@@ -27,6 +26,7 @@ import { Frame, NotePlaybackProvider, transcriptBlocks } from "../library/NoteDe
 import { SpeakerLabel } from "../library/SpeakerLabel";
 import { TimestampedTranscript } from "../library/TimestampedTranscript";
 import { hasSegmentTimes } from "../library/transcriptSegments";
+import { Sender } from "./Sender";
 import { sharedDetailMeta } from "./shareCopy";
 
 const TOAST_MS = 2400;
@@ -79,7 +79,7 @@ function Toast() {
 }
 
 function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now: Date; pushed: boolean; onRemoved: () => void }) {
-  const sender = shortAddress(props.record.owner.address);
+  const sender = <Sender address={props.record.owner.address} />;
   const [removing, setRemoving] = useState(false);
   const [failed, setFailed] = useState(false);
   const remove = async () => {
@@ -165,7 +165,7 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
   }
 
   const title = record.display.title;
-  const sender = shortAddress(record.owner.address);
+  const sender = <Sender address={record.owner.address} />;
   const audioBase = keys.audioBase;
   const loadAudio = audioBase === null ? null : async (signal: AbortSignal, onProgress: (loaded: number, total: number) => void) => {
     try {
@@ -189,7 +189,7 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
           <>
             <header className={`${props.pushed ? "" : "-mt-4 "}flex flex-col gap-2`} data-testid="shared-detail" data-note-id={record.id}>
               <p className="text-callout text-muted-foreground">{sharedDetailMeta(record, now)}</p>
-              <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" />In your TinyCloud until {sender} stops sharing. Read only.</p>
+              <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" /><span>In your TinyCloud until {sender} stops sharing. Read only.</span></p>
             </header>
             {loadAudio && <MeetingAudioPlayer load={loadAudio} durationSecs={record.display.durationSeconds} />}
             {transcriptKey && (
