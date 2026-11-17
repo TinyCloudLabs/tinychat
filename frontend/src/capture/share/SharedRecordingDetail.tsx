@@ -189,7 +189,7 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
           <>
             <header className={`${props.pushed ? "" : "-mt-4 "}flex flex-col gap-2`} data-testid="shared-detail" data-note-id={record.id}>
               <p className="text-callout text-muted-foreground">{sharedDetailMeta(record, now)}</p>
-              <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" /><span>In your TinyCloud until {sender} stops sharing. Read only.</span></p>
+              <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" /><span>In your Library until {sender} stops sharing. Read only.</span></p>
             </header>
             {loadAudio && <MeetingAudioPlayer load={loadAudio} durationSecs={record.display.durationSeconds} />}
             {transcriptKey && (
