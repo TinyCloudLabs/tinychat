@@ -281,7 +281,9 @@ instructions, and the design does not rely on the model to tell the difference:
   does not clear it). The order does not matter: if web content arrived first and a private read follows, the read sets
   the mark and the rule applies from then on. While marked, exactly one of these rules applies, chosen in decision 5, to
   `web__fetch`, `web__search` and every owner-added server's tools:
-  - **(a) Strict.** `web__search`, `web__fetch` and every owner-added server call are all refused. Nothing leaves.
+  - **(a) Strict.** `web__search`, `web__fetch` and every owner-added server call are all refused. Nothing leaves. That
+    includes web search: a query is the same channel as a fetch, so while the conversation is marked Main has no web
+    search at all (it works again only in a conversation with a fresh context).
   - **(b) Narrowed. Recommended.** `web__search` still works, with the query capped at 200 characters and shown in the
     owner's activity view. `web__fetch` accepts only a URL that a search in this conversation returned or that the
     owner typed (the gateway records both; the supervisor hands it URLs from the owner's messages). Owner-added server
@@ -304,23 +306,27 @@ instructions, and the design does not rely on the model to tell the difference:
     anything. The desktop app's CSP allows `img-src https:` (`desktop/src-tauri/tauri.conf.json`, noted there as "chat
     markdown and avatars"), so it would not stop this, and no CSP for the web build was found in this repo. That chat
     already reads meeting transcripts and does web search, so **this path is open today in the existing chat, not only
-    a future Main risk**, and it needs its own ticket rather than waiting for phase 2.
+    a future Main risk**; its fix is a separate change (tinychat#745) and does not wait for phase 2.
   - *Feed posts* render agent-authored media (`PostPage.tsx` `media.src`, option and page images; avatars in
     `FeedView.tsx`) as remote images by design; article text is plain. That is an agent-to-feed channel, not model
     prose, and outside this plan, but an agent that can read owner data and also post is the same shape of channel.
 
   The rule:
-  1. Text a model wrote is never rendered with remote images, on any surface (chat, a card, a notification, a share).
-     In the Markdown renderer that means an `img` override that renders the alt text and the host as plain text and
-     never sets `src`. Nothing the model wrote loads on its own.
-  2. Links in model text are shown as plain text with the full host, never the label alone (`[docs](https://evil.example)`
-     shows as "docs (evil.example)"). Bare addresses are not auto-linked. The owner opens one by tapping it, through an
-     "Open <host>?" step while the conversation is marked, with `rel="noopener noreferrer"`.
+  1. A conversation that holds no owner data and no outside content is unchanged: its images load. Once it holds
+     either (a search result, a transcript or other data read, a file, a tool or server result, pasted text), the mark
+     is set before the reply that follows is drawn, is derived from the stored history, and never clears. From then on
+     each image in a reply asks first, in the renderer: "Load this image?", with the full address shown (query string
+     included), "Load" and "Not now". Allowing is per image address, not per site, and no `src` exists until then.
+     History that cannot be read as clean (older, imported, shared or unknown) counts as marked. Surfaces that draw
+     model text in a place with no button (notes) never load images.
+  2. Links in model text show the full host next to the label (`[docs](https://evil.example)` shows as "docs
+     (evil.example)"), open with `rel="noopener noreferrer nofollow"` and no referrer, and are not opened by the
+     renderer.
   3. A second layer that does not trust the first: while marked, the layer that sees the final reply text strips
      Markdown image syntax and HTML tags from it.
 
-  Rules 1 and 2 ship for the general chat on their own schedule, and for Main no later than phase 2 (or before Main's
-  replies move to Markdown, whichever is first).
+  Rules 1 and 2 ship for the general chat on their own schedule (tinychat#745), and for Main no later than phase 2 (or
+  before Main's replies move to Markdown, whichever is first).
 
 ## Owner-added MCP servers (phase 3)
 
@@ -360,7 +366,8 @@ malicious server. So:
 - The add screen shows the authorization server's host next to the server's, and requires an explicit confirmation
   when they are different sites ("This server asks you to sign in at <host>").
 - The authorization request carries the RFC 8707 `resource` parameter set to the server's exact URL, and the gateway
-  attaches a token only to the resource it was issued for, never to another server or path.
+  attaches a token only to the resource it was issued for, never to another server or path. That gateway-side rule is
+  the real control: RFC 8707 only helps where the server or its authorization server honours it.
 
 If it takes a bearer key instead, the owner pastes it once into a field that posts it to the supervisor and on to the
 gateway; the browser, backend and supervisor do not keep it, and request-body logging is off for that route in the
@@ -647,7 +654,9 @@ flag and does not change the others.
    requester appears, and the 1-hour one-off as the default with the 7-day choice behind a warning. Until it exists
    Main offers only TinyChat's own prefix, and the owner copy claims nothing about it.
 2. **Step 1 route: how the gateway reaches the owner's TinyCloud data.** **A build precondition, not an option**: both
-   routes need hosted-MCP work before Main can use either. Recommended: **B**.
+   routes need hosted-MCP work before Main can use either, so **phase 1 cannot start until the hosted MCP gives Main
+   its own account space and address, with an audience and callback that OpenKey also accepts**. That is the OpenKey
+   and hosted-MCP owners' call, not this plan's. Recommended: **B**.
 
    | | **A. OpenKey OAuth token in the gateway** | **B. The native-grant pattern the backend uses for transcripts** |
    | --- | --- | --- |
@@ -686,9 +695,10 @@ flag and does not change the others.
    network, reachable only from `bots-gateway`. iron-proxy is not adopted now. Smokescreen has not been run by us, so
    the spike confirms the choice before phase 3 ships rather than choosing between hops. Whichever, the gateway keeps
    its own checks and the per-owner secrets.
-8. **Reply rendering** (TinyChat frontend): text the model wrote never loads remote images, and links show their full
-   host and are never auto-linked, on any surface, including the existing general chat where the image path is open
-   today. See Web access.
+8. **Reply rendering** (TinyChat frontend): in a conversation that holds owner data or outside content, each image
+   asks first with its full address (allowed per address), and links show their full host; notes never load images.
+   Conversations that hold neither are unchanged. Applies on every surface, including the existing general chat
+   where the image path is open today. See Web access.
 
 ## Smoke check for a later build
 
