@@ -33,6 +33,12 @@ const APPROVAL_WORDS: Record<string, string> = { go: "Go-ahead", openkey: "Appro
 function approvalWords(type: string, kind?: string): string | undefined {
   return type === "go" && kind && GO_WORDS[kind] ? GO_WORDS[kind] : APPROVAL_WORDS[type];
 }
+/** "1h" → "1 hour", "12h" → "12 hours", "7d" → "7 days": the access length an approval states, in plain words. */
+function lifetimeWords(value: string): string {
+  const count = Number.parseInt(value, 10);
+  const unit = value.endsWith("d") ? "day" : "hour";
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
 /** The countdown label of an ask's "Drop this card": it shows as "Dropping in Ns", and a refusal names the button. */
 const DROP_LABEL = "Drop this card";
@@ -623,7 +629,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   return <div className="mt-3.5 space-y-3 text-sm" onFocusCapture={() => { engagedOnce.current = true; }}>
     {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
-    <p>{[approvalWords(approval.approvalType, approval.approvalKind), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`].filter(Boolean).join(" · ")}</p>
+    <p>{[approvalWords(approval.approvalType, approval.approvalKind), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`, approval.redeemedAt && `Used ${stamp(approval.redeemedAt)}`, approval.grantLifetime && `Access lasts ${lifetimeWords(approval.grantLifetime)}`].filter(Boolean).join(" · ")}</p>
     {approval.permissions && <p><strong className="font-semibold">Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
     {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
     {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}

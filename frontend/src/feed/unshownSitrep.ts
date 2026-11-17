@@ -35,7 +35,7 @@ const SHAPES: Readonly<Record<BoardRecord["kind"], Fields>> = {
   // Not drawn: deadline, urgencyRaisedAt, name (only `names` is listed), wholeScopeApprovedBy, grantMode, partOf, group.
   // forAsk folds the approval into its ask's card, where skipOn marks it not needed.
   approval: { ...drawn, ...brief, approvalType: true, approvalKind: true, url: true, issuedAt: true, expiresAt: true, permissions: true, names: true, copiedNames: true, keepNames: true,
-    steps: true, profile: true, target: true, codeExpected: true, scope: true, scopeGrant: true, nameWhy: { "[]": { name: true, why: true } }, warning: true, forAsk: true },
+    steps: true, profile: true, target: true, codeExpected: true, scope: true, scopeGrant: true, nameWhy: { "[]": { name: true, why: true } }, warning: true, forAsk: true, redeemedAt: true, grantLifetime: true },
   incident: { ...drawn, severity: true, impact: true, startedAt: true, resolvedAt: true },
   // Not drawn: askIds (the card only says to answer its questions on their own cards), standing.
   work: { ...drawn, next: true, waitsOn: true },
