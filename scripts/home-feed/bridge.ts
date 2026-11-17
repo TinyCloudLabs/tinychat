@@ -62,7 +62,7 @@ const refusalMessages = [
   "Home mirror operation refused", "Invalid node host", "Existing owner session is unavailable",
   "Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file",
   "Home mirror inventory requires a board index, a source and full spaces",
-  "Home mirror inventory leaves approvals, holds and claims on the board",
+  "Home mirror inventory leaves holds and claims on the board",
   "Board index is unreadable",
   "The synthetic check runs only in a QA owner space",
   "Synthetic check requires a profile, full spaces and a source",

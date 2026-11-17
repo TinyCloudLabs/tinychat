@@ -1,7 +1,7 @@
 // The board's open inventory, mirrored into Home in one process (TC-2204). Cards are built from roci-board's local
 // index (~/.local/state/rocinante-sitrep/board-index.sqlite), so building the plan reads nothing from the node.
 // Each card's UUID is derived from its board key, so a re-run names the same cards and the mirror's own idempotency
-// keeps it from posting twice. Approvals, holds and claims stay on the board.
+// keeps it from posting twice. Holds and claims stay on the board.
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -14,9 +14,9 @@ import type { BoardRecord, Kind } from "@tinyboilerplate/core/feed/sitrep";
 import { homeMirrorBindings, homeMirrorDiagnostic, homeMirrorPublicationSha256, homeMirrorRefusal, publishHomeMirror, readHomeMirrorSource } from "./bridge";
 import type { HomeMirrorContext, HomeMirrorPublishInput } from "./bridge-types";
 
-export const INVENTORY_KINDS = ["ask", "task", "incident", "progress", "work"] as const satisfies readonly Kind[];
+export const INVENTORY_KINDS = ["ask", "task", "incident", "progress", "work", "approval"] as const satisfies readonly Kind[];
 export type InventoryKind = (typeof INVENTORY_KINDS)[number];
-const STAYS_ON_BOARD: readonly Kind[] = ["approval", "hold", "claim"];
+const STAYS_ON_BOARD: readonly Kind[] = ["hold", "claim"];
 
 /** Namespace of the board-key UUIDs (RFC 4122 v5). Changing it renames every mirrored card. */
 const BOARD_KEY_NAMESPACE = "3f0b6f1e-2a54-5a8c-9d3e-7c1b2a4d6e80";
@@ -43,7 +43,7 @@ export interface InventorySkip { key: string; reason: InventorySkipReason }
 export function parseInventoryKinds(value: string | undefined): InventoryKind[] {
   if (value === undefined) return [...INVENTORY_KINDS];
   const kinds = value.split(",").map((kind) => kind.trim()).filter(Boolean);
-  if (!kinds.length || kinds.some((kind) => STAYS_ON_BOARD.includes(kind as Kind))) throw homeMirrorRefusal("Home mirror inventory leaves approvals, holds and claims on the board");
+  if (!kinds.length || kinds.some((kind) => STAYS_ON_BOARD.includes(kind as Kind))) throw homeMirrorRefusal("Home mirror inventory leaves holds and claims on the board");
   if (kinds.some((kind) => !(INVENTORY_KINDS as readonly string[]).includes(kind))) throw homeMirrorRefusal("Home mirror inventory requires a board index, a source and full spaces");
   return [...new Set(kinds)] as InventoryKind[];
 }
@@ -82,11 +82,11 @@ export function readBoardIndex(path: string, kinds: readonly InventoryKind[]): {
 
 /**
  * The Home card for one board record, as the import builds it (prepare-import.ts), under its board-key identity.
- * Approvals, holds and claims are refused here as well as at the command line: they stay on the board.
+ * Holds and claims are refused here as well as at the command line: they stay on the board.
  */
 export function boardCard(row: InventoryRow, all: readonly BoardRecord[], now: number): FeedCard {
   const { record } = row;
-  if (STAYS_ON_BOARD.includes(record.kind)) throw homeMirrorRefusal("Home mirror inventory leaves approvals, holds and claims on the board");
+  if (STAYS_ON_BOARD.includes(record.kind)) throw homeMirrorRefusal("Home mirror inventory leaves holds and claims on the board");
   const projection = projectSitrepCard(record, all, emptySitrepOwnerData(), now);
   const card: FeedCard = {
     ...boardCardIdentity(row.key), kind: record.kind, needsResponse: projection.request,
