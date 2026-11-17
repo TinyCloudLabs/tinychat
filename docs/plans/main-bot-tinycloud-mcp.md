@@ -252,8 +252,11 @@ Search queries and page URLs go to the vendor, and the owner copy says so.
 - No cookies, no request body taken from the sandbox, a fixed `User-Agent`. Time and size caps are per call type (an
   owner-added server: 10 s to connect, 20 s per call, 256 KiB per result).
 
-**Budgets** (starting values): per task, 10 searches and 20 fetches; per bot per day, 100 searches and 300 fetches;
-a global daily cap; one web call in flight per bot. Returned text also counts against the token budgets.
+**Budgets** (as built): per bot per day, 100 searches and 300 page reads; all bots together 2,000 and 6,000 a day; one web
+call in flight per bot. There is no per-task cap: the gateway has no notion of a task, so the plan's earlier 10 and 20
+per task are not built. The global cap can be used up by many accounts (about 20 bots at the per-bot cap); while bots are
+limited to an allowlist of accounts that is bounded, and opening them wider needs a fairer split first. Returned text also
+counts against the token budgets.
 
 **Audit and owner view.** Counts by tool and outcome (`ok`, `blocked_url`, `blocked_by_rule`, `too_large`,
 `provider_error`, `timeout`, `budget`), bytes returned. No query, no URL, no page text. The settings row shows "Main
@@ -273,9 +276,12 @@ a change takes effect at the bot's next call, and a gateway restart without a fr
 credential and no owner data, so it has no expiry. In both on-presets a page is read only if its address was typed by the
 owner (the supervisor hands the gateway addresses from the owner's own message, never the sandbox's) or returned by an
 earlier search or page. The conversation mark (decision 5) is separate and not part of this build: Main has no owner-data
-tools yet. Residual risk, stated to the owner: a search query (at most 200 characters) and a choice among addresses a page
-offered can still carry a few words, and a listed site that accepts writes could be abused; this is why the list preset is
-the safer one.
+tools yet. Residual risk, stated to the owner: a search query (at most 200 characters), a choice among the addresses a page offered
+(about 285 bytes a day per bot at the caps), a link the owner is asked to paste or open, and what Main keeps in its own
+state can carry data out; and anyone who can post on a listed site can still try an injection. The owner's list refuses
+shared places (`github.io`, `pages.dev`, `co.uk`, ...) because listing one covers every tenant. The provider is sent exactly
+the checked address without its fragment, and a page is delivered only if the result is for that address. This is why the
+list preset is the safer one.
 
 **Note.** The conversation mark in the exfil rule below still applies to the web and MCP tool rules; only the image prompt no longer depends on it.
 
