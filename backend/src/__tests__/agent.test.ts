@@ -4,7 +4,7 @@ import type { NextFunction, Request, Response } from "express";
 import { createAgentRouter } from "../routes/agent.js";
 import { addressToEntityId, TINYCHAT_AGENT_ID } from "../entity-id.js";
 
-const TEST_ADDRESS = "0x7d0333579c19e8fa149c2dbf8405cb6f66c373f2";
+const TEST_ADDRESS = "0x4db6e7be716ba504cd103bc16b9329fe6bbe41f2";
 const AGENT_DID = "did:pkh:eip155:1:0x83cD9777d4128012F878376aCbd6a092DcdDE01c";
 const OTHER_DID = "did:pkh:eip155:1:0x0000000000000000000000000000000000000000";
 
