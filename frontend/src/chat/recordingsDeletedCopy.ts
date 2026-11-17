@@ -18,8 +18,8 @@ export const NOTHING_OF_YOURS = "You had no recordings of your own to delete.";
 /** At least one of the account's own deletes is not confirmed yet: true whether or not some are already done. */
 export const STILL_DELETING = "Your recordings are being deleted. We keep trying until each one is gone.";
 export const SHARED_REMOVED = "Recordings others shared with you are removed from your list; the people who shared them still have them.";
-/** Provisional until Monica words it. */
-export const NOT_DELETED = "Some recordings were removed from your list, but we couldn't confirm they were deleted from the notetaker service.";
+/** Own entries the provider does not attribute to the account: dropped from the list, copy NOT deleted. */
+export const NOT_DELETED = "Some recordings were removed from your list but are still with the notetaker service. To have them deleted, email team@tinycloud.xyz.";
 
 export const OWN_DELETED = "Your recordings are deleted.";
 

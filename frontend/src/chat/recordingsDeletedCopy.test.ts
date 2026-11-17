@@ -28,7 +28,7 @@ test("(4) nothing at all", () => {
 test("an own entry the provider did not attribute to the account is never called deleted, shared, or absent", () => {
   // Only such entries: not "no recordings of your own", not "deleted".
   const only = doneText({ ...none, notDeleted: 2 });
-  expect(only).toBe(NOT_DELETED);
+  expect(only).toBe("Some recordings were removed from your list but are still with the notetaker service. To have them deleted, email team@tinycloud.xyz.");
   // Alongside confirmed deletes and shared ones: each is said once, in that order.
   expect(doneText({ own: 1, shared: 1, notDeleted: 1 })).toBe(`Your recordings are deleted. ${NOT_DELETED} ${SHARED}`);
   expect(doneText({ ...none, shared: 1, notDeleted: 1 })).toBe(`${NOT_DELETED} ${SHARED}`);
