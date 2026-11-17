@@ -57,6 +57,7 @@ import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
 import { AppLockSettings } from "./AppLockSettings";
+import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -221,6 +222,7 @@ export function SettingsPage({
             </div>
           </SectionCard>
           <AppLockSettings />
+          <HiddenFeaturesSettings />
           <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>

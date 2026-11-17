@@ -41,7 +41,7 @@ export function PendingCard({ items, expanded, onToggle }: { items: readonly Pen
       {items.map((item) => {
         const waiting = item.status.startsWith("Waiting");
         return <li key={item.key} data-card-key={item.key} className="min-w-0">
-          {item.open ? <div className="p-2">{item.open}</div> : <div className="grid min-h-[52px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 px-3.5 py-2">
+          {item.open ? item.open : <div className="grid min-h-[52px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 px-3.5 py-2">
             <button type="button" onClick={item.onOpen} aria-expanded={false} className="grid min-w-0 grid-cols-[22px_minmax(0,1fr)] items-center gap-x-2.5 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <span className="row-span-2"><AgentMark agentKey={item.agentKey} name={item.author} small /></span>
               <span className="truncate text-sm font-medium">{item.title}</span>

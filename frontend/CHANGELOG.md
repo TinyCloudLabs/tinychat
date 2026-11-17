@@ -16,6 +16,38 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.74
+
+### Patch Changes
+
+- 7b5db01: TC-3136: removing a notetaker recording now deletes the capture provider's copy (audio, video, transcript and derived artifacts) and only counts it as gone after reading it back not-found. A delete that cannot be confirmed yet stays listed as "deleting" and is retried with backoff, never dropped. Settings → Account gains "Delete my recordings first", a bulk `DELETE /api/transcriber/meetings`, ahead of deleting the OpenKey account. A recording shared with you is only removed from your list. A recording the notetaker service cannot attribute to you is removed from your list but not deleted there, and says so on its row.
+
+## 0.14.0-beta.73
+
+### Patch Changes
+
+- 38f26f3: An approval card may carry two optional fields: `redeemedAt` (when its grant was used) and `grantLifetime` (how long the access lasts: a whole number of hours or days, up to 30 days). Cards carrying them are now read, imported and archived instead of refused, and the card shows "Used …" and "Access lasts …".
+- 38f26f3: A sitrep card may carry an optional `post`: one line of up to 280 characters, for a card to lead with. Cards with a `post` are now read, imported and archived; a `post` that is empty, over 280 characters or contains a control character other than a newline is refused.
+
+## 0.14.0-beta.72
+
+### Minor Changes
+
+- 4fb80fa: Home no longer shows the "What do you want done?" box or the Agents pill by default. Settings has a new "Show hidden features" switch (off by default, this device only) that brings them back. Details: TC-3119.
+
+## 0.14.0-beta.71
+
+### Patch Changes
+
+- 58a6f2a: The Feed's question card shows why now and what happens if you don't answer as two labelled cells, folds the facts behind the question ("Known so far", open on a wide card), shows the answers as buttons, one per row at every width, puts links under the brief as compact one-line chips (label, host, arrow out; a long host is cut off inside the chip), links Linear ticket numbers in the card's text, and moves the source line into Details. "Your own answer" turns into the text field in its own place instead of opening a box below. A card opens inside its row of the list instead of as a separate rounded card. An update card's first line says what moved. A folded row's second line says why the question is asked now. The Feed column is wider on a desktop screen; the phone layout is the same.
+- 8974164: In Needs you, an open card at urgency 4 or higher now sits above every other card, whatever its pin, deadline, production flag, unblock weight or whether it waits on someone else; urgent cards are ordered by urgency times importance. A card below urgency 4 keeps its place. The reason line for an urgent card reads "urgent: U4·I3".
+
+## 0.14.0-beta.70
+
+### Patch Changes
+
+- 8fcb036: The "Use with your agent" page (`/agents`) calls the product TinyCloud One in its title, header, intro and setup steps instead of TinyChat, and the agent-facing `setup.md` names TinyCloud One's agent-access setting in one sentence. The published skill pack, its tool names and the approval message it prints are unchanged.
+
 ## 0.14.0-beta.69
 
 ### Patch Changes
