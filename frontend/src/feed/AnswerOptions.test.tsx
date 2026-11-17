@@ -8,7 +8,7 @@ import { UNDO_SECONDS } from "./cardKit";
 const OPTIONS = [{ id: "a", label: "Raise the limit" }, { id: "b", label: "Keep the limit" }];
 let restore: (() => void) | undefined;
 const roots = new Set<{ root: Root; host: HTMLElement }>();
-afterEach(async () => { for (const { root, host } of roots) { await act(async () => root.unmount()); host.remove(); } roots.clear(); });
+afterEach(async () => { for (const { root, host } of roots) { await act(async () => root.unmount()); host.remove(); } roots.clear(); restore?.(); restore = undefined; });
 
 function Harness({ pending, onUndo }: { pending?: { choiceId: string; seconds: number } | null; onUndo?: () => void }) {
   const [open, setOpen] = useState(pending?.choiceId === OWN_OPTION.id);
