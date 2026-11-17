@@ -217,6 +217,22 @@
   font-size: 0.85em;
   white-space: nowrap;
 }
+.soft-skin .fmd img.note-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  opacity: 1;
+}
+.soft-skin .nt-fmd-images {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
 .soft-skin .fmd strong {
   font-weight: 700;
 }

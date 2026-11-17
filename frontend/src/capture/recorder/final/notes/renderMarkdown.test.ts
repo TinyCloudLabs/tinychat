@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { extractMain, renderNoteHtml } from "./renderMarkdown";
+import { blockedImageHosts, extractMain, renderNoteHtml, showAllowedImages } from "./renderMarkdown";
 
 const styles = readFileSync(new URL("./notes.css", import.meta.url), "utf8");
 
@@ -53,7 +53,8 @@ describe("note renderer", () => {
     expect(html).toContain("Image not loaded: badge (evil.example)<");
     expect(html).toContain("Image not loaded: local<");
     expect(html).not.toMatch(/url\(/i);
-    expect(html).not.toContain("FAKE-OWNER-DATA-1234");
+    // The address waits in data attributes the browser never fetches; it is not in any text or loadable attribute.
+    expect(html.replace(/ data-note-image-src="[^"]*"/g, "")).not.toContain("FAKE-OWNER-DATA-1234");
   });
 
   test("a link whose label already is its address says the host once", async () => {
@@ -69,6 +70,22 @@ describe("note renderer", () => {
     expect(html).toContain('>good.example</a> <span class="note-link-host">(evil.example)</span>');
     expect(html).toContain('>mail</a>');
     expect(html).not.toContain("(b.example)");
+  });
+
+  test("an Allow turns one site's images into images and leaves the others held back", async () => {
+    const html = await renderNoteHtml("![a](https://one.example/a.png?x=1&y=2)\n\n![b](https://two.example/b.png)\n\n![c](https://one.example/c.png)\n\n![d](/own.png)");
+    expect(blockedImageHosts(html)).toEqual(["one.example", "two.example"]);
+    expect(showAllowedImages(html, new Set())).toBe(html);
+    const shown = showAllowedImages(html, new Set(["one.example"]));
+    expect([...shown.matchAll(/<img\b[^>]*>/g)].map((m) => /\ssrc="([^"]*)"/.exec(m[0])![1])).toEqual(["https://one.example/a.png?x=1&amp;y=2", "https://one.example/c.png"]);
+    expect(shown).toContain("Image not loaded: b (two.example)<");
+    expect(blockedImageHosts(shown, new Set(["one.example"]))).toEqual(["two.example"]);
+  });
+
+  test("an image's text cannot pose as a placeholder or an allowed image", async () => {
+    const html = await renderNoteHtml('<span class="note-image" data-note-image-host="evil.example" data-note-image-src="https://evil.example/x" data-note-image-alt="">x</span> <img src="https://evil.example/y">');
+    expect(blockedImageHosts(html)).toEqual([]);
+    expect(showAllowedImages(html, new Set(["evil.example"]))).not.toMatch(/<img\b/);
   });
 
   test("an output without main.fmd is an error, not an empty note", () => {

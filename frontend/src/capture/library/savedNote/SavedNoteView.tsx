@@ -59,10 +59,11 @@ function Notes({
   screen,
   layout,
   audio,
+  recordingId,
   toolbarHost,
   editButton,
   cancelButton,
-}: Pick<SavedNoteViewProps, "screen" | "layout" | "audio"> & {
+}: Pick<SavedNoteViewProps, "screen" | "layout" | "audio" | "recordingId"> & {
   toolbarHost: HTMLElement | null | undefined;
   editButton: React.RefObject<HTMLButtonElement | null>;
   cancelButton: React.RefObject<HTMLButtonElement | null>;
@@ -221,6 +222,7 @@ function Notes({
               md={savedMd}
               label={COPY.notes}
               onMoment={audio ? screen.playFrom : undefined}
+              noteId={recordingId}
             />
           </div>
         ))}
@@ -254,6 +256,7 @@ export function SavedNoteBody(
       screen={screen}
       layout={layout}
       audio={audio}
+      recordingId={recordingId}
       toolbarHost={toolbarHost}
       editButton={editButton}
       cancelButton={cancelButton}

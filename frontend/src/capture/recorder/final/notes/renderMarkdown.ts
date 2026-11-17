@@ -34,11 +34,13 @@ export function extractMain(document: string): string {
   return document.slice(open + '<main class="fmd">'.length, close).trim();
 }
 
-// A note's text can come from a model (a summary) or from what a meeting said, so it is untrusted. An image the engine
-// draws would be fetched the moment the note opens, with no click, and its address can carry anything. Images are
-// replaced by their description and the site they point to, and no `src` reaches the DOM. A web link keeps its address
-// and gets its full host beside it, so the label cannot hide where it goes. Raw HTML never gets here: the engine
-// escapes it, so every `<img` in the output is one the engine drew from Markdown.
+// A note's text can come from a model (a summary) or from what a meeting said, so every note is untrusted. An image the
+// engine draws would be fetched the moment the note opens, with no click, and its address can carry anything. So the
+// renderer never emits a loadable image: each is a placeholder with its description and host, and its address waits in
+// `data-` attributes, which the browser does not fetch. The note view asks "Load images from <host>?" and only after an
+// Allow does `showAllowedImages` turn that host's placeholders into images. A web link keeps its address and gets its
+// full host beside it, so the label cannot hide where it goes. Raw HTML never gets here: the engine escapes it, so
+// every `<img` in the engine's output is one it drew from Markdown.
 const unescapeAttr = (value: string) =>
   value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 const escapeText = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -59,7 +61,8 @@ function withoutRemoteLoads(html: string): string {
       const alt = attrOf(tag, "alt");
       const src = attrOf(tag, "src");
       const host = src ? webHost(unescapeAttr(src)) : null;
-      return `<span class="note-image">Image not loaded${alt ? `: ${alt}` : ""}${host ? ` (${escapeText(host)})` : ""}</span>`;
+      const place = host && src ? ` data-note-image-host="${escapeText(host).replace(/"/g, "&quot;")}" data-note-image-src="${src}" data-note-image-alt="${alt ?? ""}"` : "";
+      return `<span class="note-image"${place}>Image not loaded${alt ? `: ${alt}` : ""}${host ? ` (${escapeText(host)})` : ""}</span>`;
     })
     .replace(/(<a\b[^>]*\shref="([^"]*)"[^>]*>)([\s\S]*?)<\/a>/gi, (whole, open: string, href: string, inner: string) => {
       const host = webHost(unescapeAttr(href));
@@ -69,6 +72,27 @@ function withoutRemoteLoads(html: string): string {
       if (label === host || label.startsWith(`${host}/`)) return whole;
       return `${open}${inner}</a> <span class="note-link-host">(${escapeText(host)})</span>`;
     });
+}
+
+const PLACEHOLDER = /<span class="note-image" data-note-image-host="([^"]*)" data-note-image-src="([^"]*)" data-note-image-alt="([^"]*)">[\s\S]*?<\/span>/g;
+
+/** The sites whose images this note still holds back, in order of first appearance, as the host text shown to the owner. */
+export function blockedImageHosts(html: string, allowed: ReadonlySet<string> = new Set()): string[] {
+  const hosts: string[] = [];
+  for (const match of html.matchAll(PLACEHOLDER)) {
+    const host = unescapeAttr(match[1]!);
+    if (!allowed.has(host) && !hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
+}
+
+/** Turns the placeholders of the sites the owner allowed into images; every other placeholder stays a placeholder. */
+export function showAllowedImages(html: string, allowed: ReadonlySet<string>): string {
+  if (allowed.size === 0) return html;
+  return html.replace(PLACEHOLDER, (whole, host: string, src: string, alt: string) =>
+    allowed.has(unescapeAttr(host))
+      ? `<img class="note-image" src="${src}" alt="${alt}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
+      : whole);
 }
 
 const cache = new Map<string, string>();
