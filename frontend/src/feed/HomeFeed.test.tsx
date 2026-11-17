@@ -6,6 +6,7 @@ import type { FeedHandling, FeedResponse, FeedSelector, NewFeedResponse } from "
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { HIDDEN_FEATURES_KEY, resetHiddenFeaturesForTest } from "@/lib/hiddenFeatures";
+import { isOriginMoveDeferred } from "@/lib/originMove";
 import { FeedViewEntries } from "./FeedView";
 import type { HomeFeedEntriesProps, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 
@@ -1140,4 +1141,47 @@ test("Home shows the ask box and the Agents pill while Show hidden features is o
   await act(async () => { const { setShowHiddenFeatures } = await import("@/lib/hiddenFeatures"); setShowHiddenFeatures(false); });
   expect(host.querySelector("[data-bots-ask]")).toBeNull();
   expect(host.querySelector('header button[aria-label^="Agents"]')).toBeNull();
+});
+
+test("a page waiting to move to tinycloud.one stays while an undo-bar action counts, and goes on after Undo or once it is sent", async () => {
+  const store = persistence([decision("open-one"), answered("done-one", true)], { defaultSelector: "both" });
+  const view = await mount(store.source());
+  expect(isOriginMoveDeferred()).toBe(false);
+  await act(async () => pendingToggle(view.host)!.click());
+  await act(async () => button(item(view.host, "Question done-one")!, "Acknowledge").click());
+  expect(isOriginMoveDeferred()).toBe(true);
+  await act(async () => undoButton(view.host)!.click());
+  expect(isOriginMoveDeferred()).toBe(false);
+  await act(async () => button(item(view.host, "Question done-one")!, "Acknowledge").click());
+  expect(isOriginMoveDeferred()).toBe(true);
+  await clock!.advance(5000);
+  await act(async () => {});
+  expect(isOriginMoveDeferred()).toBe(false);
+});
+
+test("a typed own answer keeps a page waiting to move to tinycloud.one here even after Show less, until it is cleared", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await open(view.host);
+  await openNote(view.host);
+  expect(isOriginMoveDeferred()).toBe(false);
+  await typeAnswer(view.host, "Draft kept while folded");
+  expect(isOriginMoveDeferred()).toBe(true);
+  await act(async () => item(view.host, "Question decision-one")!.querySelector<HTMLButtonElement>('button[aria-label="Show less"]')!.click());
+  expect(hasAnswerBox(view.host)).toBe(false);
+  expect(isOriginMoveDeferred()).toBe(true);
+  await open(view.host);
+  await typeAnswer(view.host, "");
+  expect(isOriginMoveDeferred()).toBe(false);
+});
+
+test("leaving the feed lets go of a held own-answer draft", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await open(view.host);
+  await openNote(view.host);
+  await typeAnswer(view.host, "Words that go with the page");
+  expect(isOriginMoveDeferred()).toBe(true);
+  await view.unmount();
+  expect(isOriginMoveDeferred()).toBe(false);
 });

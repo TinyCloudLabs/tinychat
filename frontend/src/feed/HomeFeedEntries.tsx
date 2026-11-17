@@ -28,6 +28,7 @@ import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
 import { useUndoBar } from "./UndoBar";
+import { HeldDrafts } from "./heldDrafts";
 import { BriefButton, LazyBriefSheet } from "./BriefButton";
 import { briefOf } from "./brief";
 import { shortTime } from "./ShortTime";
@@ -402,7 +403,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const activeRef = useRef<HomeFeedEntry | null>(null);
   const currentSource = useRef(source);
   const pendingSends = useRef(new Set<() => void>());
-  const ownDrafts = useRef(new Map<string, string>());
+  const ownDrafts = useRef(new HeldDrafts());
+  useEffect(() => () => ownDrafts.current.clear(), []);
   currentSource.current = source;
   const mainRef = useRef<HTMLElement>(null);
   const headerRef = useRef<HTMLElement>(null);
