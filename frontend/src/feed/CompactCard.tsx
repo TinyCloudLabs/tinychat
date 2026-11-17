@@ -2,9 +2,10 @@
 // list, the agent's mark, the title (semibold when it needs you), the agent and a short description, and at the row's
 // end its due date or how long ago it came, with its status. Rows sit together in one bordered list (HomeFeedEntries).
 // Also the status mark the open card shares. Posts add a thumbnail.
-import { AlarmClockIcon, CheckCheckIcon, CheckIcon, CircleAlertIcon, Clock3Icon, MessageCircleIcon, PlayIcon } from "lucide-react";
+import { AlarmClockIcon, ArrowUpRightIcon, CheckCheckIcon, CheckIcon, CircleAlertIcon, Clock3Icon, MailIcon, MessageCircleIcon, PlayIcon, TriangleAlertIcon } from "lucide-react";
 
 import { AgentMark, PlatformName, type Platform } from "./AgentMark";
+import { cardTypeLabel, OUTBOUND_TYPES, type CardType } from "./feedData";
 import { ShortTime } from "./ShortTime";
 
 /** A card's status as the compact card and the grid show it. `status` is cardStatus's word, or a post's progress. */
@@ -18,6 +19,31 @@ export function StatusMark({ status }: { status?: string }) {
   if (status === "Snoozed") return <span className={quiet}><AlarmClockIcon aria-hidden />Snoozed</span>;
   if (status === "Failed") return <span className={`${quiet} text-destructive`}><CircleAlertIcon aria-hidden />Failed</span>;
   return <span className={quiet}>{status}</span>;
+}
+
+/**
+ * What kind of task a card is (`payload.type`), at the top right of the row and of the open card, the same size on
+ * both. A tag, not a control: a small square-cornered label like PriorityMark, never a pill. Colour is used sparingly
+ * and never alone: the four types whose tap makes something leave the building (Spend, Publish, Send, Access) are
+ * outlined in the primary colour with an outward arrow; Alert is in the warning colour with its triangle; the rest are
+ * neutral.
+ */
+export function TypeLabel({ type }: { type?: CardType }) {
+  if (!type) return null;
+  const outbound = OUTBOUND_TYPES.has(type);
+  const tone = outbound ? "border-primary/60 text-primary" : type === "alert" ? "border-transparent bg-warning/10 text-warning" : "border-transparent bg-muted text-muted-foreground";
+  return <span data-card-type={type} className={`inline-flex h-5 shrink-0 items-center gap-0.5 whitespace-nowrap rounded border px-1.5 text-label font-semibold ${tone}`}>
+    {outbound && <ArrowUpRightIcon aria-hidden className="size-3 shrink-0" />}
+    {type === "alert" && <TriangleAlertIcon aria-hidden className="size-3 shrink-0" />}
+    {cardTypeLabel(type)}
+  </span>;
+}
+
+/** A message another team sent over Courier: the mark that leads its card's name line, before its sender. */
+export function CourierMark() {
+  return <span data-courier className="inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border px-1.5 text-label font-semibold text-foreground">
+    <MailIcon aria-hidden className="size-3 shrink-0" />Courier
+  </span>;
 }
 
 /** The agent's replies to your comments, beside the status (the design agent, after QA on 1f17120): the status is
@@ -72,8 +98,15 @@ export function DueMark({ due, now, className = "" }: { due: string; now?: numbe
   return <span title={Number.isNaN(at.getTime()) ? undefined : `Due ${at.toLocaleString()}`} className={`font-medium ${overdue ? "text-destructive" : "text-foreground"} ${className}`}>{text}</span>;
 }
 
-export function CompactCard({ agentKey, author, platform, createdAt, priority, due, now, status, replies, title, description, thumb, onOpen, opensPage = false, layout = "row" }: {
+export function CompactCard({ agentKey, author, platform, createdAt, priority, due, now, status, replies, title, description, thumb, type, courier, onOpen, opensPage = false, layout = "row" }: {
   agentKey: string; author: string; platform?: Platform; createdAt: string;
+  /** The card's task type, at the top of the row's end (TypeLabel). */
+  type?: CardType;
+  /**
+   * A Courier message: the Courier mark and its sender make the name line (no description), and `via`, the agent that
+   * relayed it, is in its accessible name; the open card shows it.
+   */
+  courier?: { from?: string; via: string };
   /** The agent's priority, 0 (highest) to 5 (Sam, 23:30Z). Only P0 and P1 show, at the row's end (PriorityMark). */
   priority?: number;
   /** When the card is due (ISO), at the row's end (DueMark); `now` is the clock it is read against. */
@@ -117,6 +150,7 @@ export function CompactCard({ agentKey, author, platform, createdAt, priority, d
     <span className="row-span-2 self-center"><AgentMark agentKey={agentKey} name={author} small /></span>
     <span className={`line-clamp-2 break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`}>{done && <CheckIcon aria-hidden className="mr-1 inline size-3.5 align-[-2px] text-muted-foreground" />}{title}</span>
     <span className="col-start-3 row-span-2 row-start-1 flex flex-col items-end gap-1 self-center text-meta text-muted-foreground">
+      <TypeLabel type={type} />
       {thumb ? <span className="relative size-11 overflow-hidden rounded-[10px] border border-border bg-muted">
         <img src={thumb.src} alt="" loading="lazy" className="size-full object-cover" />
         {thumb.video && <span aria-hidden className="absolute bottom-0.5 left-0.5 flex size-4 items-center justify-center rounded-full bg-black/60 text-white"><PlayIcon className="size-[9px]" /></span>}
@@ -124,9 +158,13 @@ export function CompactCard({ agentKey, author, platform, createdAt, priority, d
       <span className="flex items-center gap-2 empty:hidden"><PriorityMark priority={priority} /><ReplyCount replies={replies} />{!needsYou && <StatusMark status={status} />}</span>
     </span>
     <span className="col-start-2 flex min-w-0 items-center gap-1.5 text-[13px] leading-[18px] text-muted-foreground">
-      <span className="max-w-[60%] shrink-0 truncate font-medium text-foreground/80">{author}</span>
+      {courier && <CourierMark />}
+      {/* A Courier row has no description, so its sender may take the rest of the line. */}
+      <span className={`${courier ? "min-w-0" : "max-w-[60%] shrink-0"} truncate font-medium text-foreground/80`}>{courier?.from ?? author}</span>
+      {courier?.from && <span className="sr-only">{`via ${courier.via}`}</span>}
       {platform && <span className="flex min-w-0 shrink-0 items-center"><PlatformName platform={platform} logoOnly /></span>}
-      {description && <span className="min-w-0 truncate before:mr-1.5 before:content-['·']">{description}</span>}
+      {/* A Courier row's line is its mark and sender: a description beside them would be cut to a stray dot on a phone. */}
+      {description && !courier && <span className="min-w-0 truncate before:mr-1.5 before:content-['·']">{description}</span>}
     </span>
   </button>;
 }

@@ -10,7 +10,46 @@ export type FeedCard = {
   body?: string;
   url?: string;
   source?: { label: string; url?: string; ref?: string };
+  /** What kind of task the card is (`payload.type`); absent when the card names none or one this app doesn't know. */
+  type?: CardType;
+  /** A message another team sent over Courier (`payload.channel: "courier"`); `from` is its sender (`payload.source.label`). */
+  courier?: { from?: string };
 };
+
+/**
+ * The task types a card can name in `payload.type`, in precedence order: when two fit, the earlier one wins. The first
+ * ten need a tap; News and Alert need none.
+ */
+export const CARD_TYPES = [
+  { id: "spend", label: "Spend" },
+  { id: "publish", label: "Publish" },
+  { id: "send", label: "Send" },
+  { id: "access", label: "Access" },
+  { id: "rule", label: "Rule" },
+  { id: "ship", label: "Ship" },
+  { id: "do", label: "Do" },
+  { id: "review", label: "Review" },
+  { id: "direction", label: "Direction" },
+  { id: "answer", label: "Answer" },
+  { id: "news", label: "News" },
+  { id: "alert", label: "Alert" },
+] as const;
+export type CardType = (typeof CARD_TYPES)[number]["id"];
+/** The types whose tap makes something leave the building: money, a public post, words to someone, access. */
+export const OUTBOUND_TYPES: ReadonlySet<CardType> = new Set(["spend", "publish", "send", "access"]);
+export const cardTypeLabel = (type: CardType): string => CARD_TYPES.find((entry) => entry.id === type)!.label;
+
+/** `payload.type` when it is one of CARD_TYPES; anything else is ignored, never an error. */
+export function parseCardType(value: unknown): CardType | undefined {
+  return CARD_TYPES.find((entry) => entry.id === value)?.id;
+}
+
+/** `payload.channel: "courier"`, with its sender from `payload.source.label` when there is one; any other channel is ignored. */
+export function parseCourier(payload: unknown): FeedCard["courier"] {
+  if (!record(payload) || payload.channel !== "courier") return undefined;
+  const from = record(payload.source) && text(payload.source.label) ? payload.source.label.trim() : undefined;
+  return from ? { from } : {};
+}
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue =>
@@ -54,6 +93,10 @@ function parseCard(key: string, value: unknown, profiles: Map<string, FeedCard["
   if (render === "link" && text(value.url)) card.url = value.url;
   const source = parseSource(value.source);
   if (source) card.source = source;
+  const type = parseCardType(value.type);
+  if (type) card.type = type;
+  const courier = parseCourier(value);
+  if (courier) card.courier = courier;
   return card;
 }
 

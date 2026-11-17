@@ -5,6 +5,7 @@
 import type { FeedCard } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { briefOf } from "./brief";
+import { parseCardType, parseCourier } from "./feedData";
 import { unshownFields, type Shape, type UnshownField } from "./unshown";
 import { sitrepRecordShape } from "./unshownSitrep";
 
@@ -39,7 +40,13 @@ function plainPayload(payload: Record<string, unknown>): Shape {
     report: { label: true, url: true },
     ...(pageDrawn ? { page: PAGE } : {}),
     replies: { "[]": { text: true, at: true, replyTo: true } },
+    ...drawnMarks(payload),
   };
+}
+
+/** The type label and the Courier mark: drawn only for a type and a channel the app knows; any other value is listed. */
+function drawnMarks(payload: Record<string, unknown>): Record<string, Shape> {
+  return { ...(parseCardType(payload.type) ? { type: true } : {}), ...(parseCourier(payload) ? { channel: true } : {}) };
 }
 
 /**
@@ -57,7 +64,7 @@ export function cardUnshown(card: FeedCard, typed?: { record?: BoardRecord }): U
   const payloadShape: Shape = !typed
     ? plainPayload(payload)
     : typed.record
-      ? { sitrep: { version: true, record: sitrepRecordShape(typed.record) }, sitrepThread: true, source: { label: true, url: true, ref: true }, project: true }
+      ? { sitrep: { version: true, record: sitrepRecordShape(typed.record) }, sitrepThread: true, source: { label: true, url: true, ref: true }, project: true, ...drawnMarks(payload) }
       : {};
   return unshownFields(card, { ...BOOKKEEPING, title: true, body: true, choices: { "[]": { id: true, label: true } }, payload: payloadShape })
     .map((field) => typed?.record && QUIET.test(field.path) ? { ...field, quiet: true as const } : field);
