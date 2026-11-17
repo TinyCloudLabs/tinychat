@@ -25,8 +25,8 @@ export function sharedRowMeta(record: ReceivedRecordingShare, now: Date): string
   return state ? `${from} · ${state}` : from;
 }
 
-/** A shared row's second line: the title is the row's one field that came with the link. */
-export const SHARED_ROW_CUE = "Title from the link";
+/** A shared row's second line: the title and the length are the row's fields that came with the link. */
+export const SHARED_ROW_CUE = "Title and length from the link";
 
 /** "Shared by 0xd559…f412 · Nov 16, 2:00 PM · 32 min"; once revoked, "Shared by 0xd559…f412 · Oct 28". */
 export function sharedDetailMeta(record: ReceivedRecordingShare, now: Date): string {

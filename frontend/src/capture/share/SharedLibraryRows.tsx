@@ -1,5 +1,6 @@
-// TC-3195: the Library under "Shared with me": recordings other people shared with this account, under their day,
-// newest first. A share the owner stopped is still listed, muted, until it is removed from the Library.
+// TC-3195: the Library under "Shared with me": recordings other people shared with this account, under the day each
+// was added (the account's own record; the link's recorded date is unchecked), newest first. A share the owner stopped
+// is still listed, muted, until it is removed from the Library.
 import { ChevronRightIcon } from "lucide-react";
 
 import { Empty } from "@/components/ui/empty";
@@ -63,8 +64,8 @@ export function SharedLibraryRows(props: { shared: RecordStoreSnapshot<ReceivedR
     return <Empty data-testid="library-empty" title={shared.state === "failed" ? "Couldn’t load your Library." : emptyFilterText("shared")} />;
   }
   const rows = [...shared.records]
-    .sort((a, b) => b.display.recordedAt.localeCompare(a.display.recordedAt))
-    .map((record) => ({ record, startedAt: record.display.recordedAt }));
+    .sort((a, b) => b.claimedAt.localeCompare(a.claimedAt))
+    .map((record) => ({ record, startedAt: record.claimedAt }));
   return (
     <>
       {groupByDay(rows, now).map((group) => (

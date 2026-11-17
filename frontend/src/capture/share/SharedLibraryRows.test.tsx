@@ -49,20 +49,23 @@ describe("Shared with me", () => {
     expect(html).not.toContain('data-testid="library-item"');
   });
 
-  test("lists each shared recording under its day, newest first, with who shared it and a link to its page", () => {
+  test("lists each shared recording under the day it was added, newest first, never the link's recorded date", () => {
     const html = render({
       shared: ready([
-        share("bafy-old", "Customer call: Northwind", new Date(2026, 9, 28, 15, 0), { revokedAt: new Date(2026, 10, 10).toISOString() }),
-        share("bafy-new", "Product sync with Priya", new Date(2026, 10, 16, 14, 0)),
+        share("bafy-new", "Product sync with Priya", new Date(2026, 10, 16, 14, 0), { claimedAt: new Date(2026, 10, 10, 9, 0).toISOString() }),
+        share("bafy-old", "Customer call: Northwind", new Date(2026, 9, 28, 15, 0), { claimedAt: new Date(2026, 10, 16, 9, 0).toISOString(), revokedAt: new Date(2026, 10, 17).toISOString() }),
       ]),
       selectedId: sharedNoteId("bafy-new"),
     });
     expect(html.match(/data-testid="shared-item"/g)?.length).toBe(2);
-    expect(html.indexOf("Product sync with Priya")).toBeLessThan(html.indexOf("Customer call: Northwind"));
+    expect(html.indexOf(">Yesterday<")).toBeLessThan(html.indexOf("Customer call: Northwind"));
+    expect(html.indexOf("Customer call: Northwind")).toBeLessThan(html.indexOf(">Nov 10<"));
+    expect(html.indexOf(">Nov 10<")).toBeLessThan(html.indexOf("Product sync with Priya"));
+    expect(html).not.toContain(">Oct 28<");
     expect(html).toContain(`href="${notePath(sharedNoteId("bafy-new"))}"`);
     expect(html).toContain("From 0xd559…f412<");
     expect(html).toContain("From 0xd559…f412 · No longer shared<");
-    expect(html.match(/>Title from the link</g)?.length).toBe(2);
+    expect(html.match(/>Title and length from the link</g)?.length).toBe(2);
     expect(html).toContain("32:04");
   });
 
