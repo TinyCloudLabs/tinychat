@@ -2,13 +2,15 @@
 // session has settled and stayed idle. Everything the sandbox says is treated as untrusted input; only checked
 // fields are turned into events, which the server encodes itself.
 
-import { readdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { BOT_ID, botIdFor } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type Frame, RpcError } from "./rpc";
+import { addressesIn } from "./web";
+import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "invalid";
 
@@ -59,6 +61,18 @@ export interface SandboxLauncher {
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
   mountPoints?(): string[];
   provenance?(layout: BotLayout): Promise<unknown>;
+  /** Gives the gateway the bot's saved web setting (read from its data directory). */
+  pushWeb?(layout: BotLayout): Promise<void>;
+  /** Whether the gateway has a search provider and today's web counts for the bot; counts only. */
+  webStatus?(layout: BotLayout): Promise<unknown>;
+  /** Page addresses the owner typed, which the bot may read. */
+  learnAddresses?(layout: BotLayout, urls: string[]): Promise<void>;
+}
+
+/** The owner's web setting plus what the gateway says of it. */
+export interface WebSettings extends WebPolicy {
+  available: boolean;
+  today: { searches: number; pages: number; blocked: number };
 }
 
 /** Repeated while waiting, so idle proxies keep the stream open through slow starts and long turns. */
@@ -225,6 +239,8 @@ export class Bot {
         sandbox = await this.#ensure();
         this.#markUsed();
         await sandbox.refreshEgress();
+        const typed = addressesIn(text, 50);
+        if (typed.length > 0) await this.#launcher.learnAddresses?.(this.layout, typed);
       } catch (error) {
         log("start_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
         sink.error("bot_unavailable");
@@ -270,6 +286,42 @@ export class Bot {
       this.#listing--;
       this.#armIdle();
     }
+  }
+
+  /** The owner's web setting and today's counts. A gateway that cannot answer reads as unavailable, with zero counts. */
+  async webSettings(): Promise<WebSettings> {
+    await this.#deleting;
+    const policy = readWebPolicy(this.layout);
+    const none = { available: false, today: { searches: 0, pages: 0, blocked: 0 } };
+    let status: unknown;
+    try {
+      status = await this.#launcher.webStatus?.(this.layout);
+    } catch {
+      status = undefined;
+    }
+    const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0);
+    if (!isRecord(status) || !isRecord(status.today)) return { ...policy, ...none };
+    const { searches, pages, blocked } = status.today;
+    return { ...policy, available: status.available === true, today: { searches: count(searches), pages: count(pages), blocked: count(blocked) } };
+  }
+
+  /**
+   * Saves the owner's web setting and gives it to the gateway; if the gateway cannot take it, the previous setting
+   * is put back and this throws. Takes effect at the bot's next web call, running or not.
+   */
+  async setWebPolicy(policy: WebPolicy): Promise<WebSettings> {
+    await this.#deleting;
+    const previous = readWebPolicy(this.layout);
+    mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
+    writeWebPolicy(this.layout, policy);
+    try {
+      await this.#launcher.pushWeb?.(this.layout);
+    } catch (error) {
+      writeWebPolicy(this.layout, previous);
+      throw error;
+    }
+    log("web_setting", this.layout.botId, { mode: policy.mode, hosts: policy.hosts.length });
+    return this.webSettings();
   }
 
   /** A message or history request is in flight, including one still starting the sandbox. */

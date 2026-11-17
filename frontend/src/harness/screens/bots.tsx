@@ -62,6 +62,8 @@ const FEED: HomeFeedSource = {
 const ENABLED: BotsApi = {
   getBotsStatus: async () => ({ enabled: true }),
   listMainMessages: async () => [],
+  getMainWeb: async () => ({ mode: "off", hosts: [], available: true, today: { searches: 0, pages: 0, blocked: 0 } }),
+  setMainWeb: () => new Promise(() => {}),
   sendToMain: () => new Promise(() => {}),
 };
 

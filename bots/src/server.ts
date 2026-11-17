@@ -2,7 +2,8 @@
 // Every SSE event is encoded here from checked fields; nothing from a sandbox is passed through raw.
 
 import type { StagedHistory } from "./history";
-import { type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
+import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
+import { type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
 import { isRecord } from "./guards";
 import { authorizedOwner } from "./owner";
 
@@ -17,6 +18,8 @@ export interface BotApi {
   historyNotice?(): Promise<unknown>;
   historyNoticeAck?(id: string, receivedAt: number): Promise<void>;
   historyReceipt?(receipt: unknown): Promise<void>;
+  webSettings?(): Promise<WebSettings>;
+  setWebPolicy?(policy: WebPolicy): Promise<WebSettings>;
 }
 
 export interface AppOptions {
@@ -79,6 +82,20 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (req.method === "GET" && path === "/healthz") return new Response("ok");
     const owner = authorizedOwner(req, options.secret, options.accounts);
     if (!owner) return new Response(null, { status: 401 });
+    if (path === "/v1/bots/main/web") {
+      const bot = options.bots.forOwner(owner);
+      try {
+        if (req.method === "GET" && bot.webSettings) return Response.json(await bot.webSettings());
+        if (req.method === "PUT" && bot.setWebPolicy) {
+          const policy = parseWebPolicy(await req.json().catch(() => null));
+          if (!policy) return Response.json({ error: "invalid", message: INVALID_HOSTS }, { status: 400 });
+          return Response.json(await bot.setWebPolicy(policy));
+        }
+      } catch {
+        return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
+      }
+      return new Response(null, { status: 405 });
+    }
     if (path === "/v1/bots/main/history/stage" && req.method === "POST") {
       try { await options.bots.forOwner(owner).historyStage?.(await req.json()); return new Response(null, { status: 204 }); }
       catch { return new Response(null, { status: 503 }); }

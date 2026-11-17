@@ -87,6 +87,8 @@ services:
       BOTS_BOT_DAILY_TOKENS: ${BOTS_BOT_DAILY_TOKENS:-2000000}
       BOTS_GLOBAL_DAILY_TOKENS: ${BOTS_GLOBAL_DAILY_TOKENS:-20000000}
       BOTS_BODY_TIMEOUT_MS: ${BOTS_BODY_TIMEOUT_MS:-30000}
+      # Main's web access: the search provider's key. Empty: every web call is refused as unavailable.
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
     volumes:
       - bot-egress:/egress
       # Budget counters survive restarts here; an unreadable file stops the gateway rather than resetting them.

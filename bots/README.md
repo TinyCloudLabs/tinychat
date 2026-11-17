@@ -124,6 +124,37 @@ The gateway, per bot socket:
 
 OMP also probes `GET /models` and `GET /props` without a token at startup; the gateway refuses them and logs it.
 
+### Web access
+
+Main can use the web only when its owner turns it on (Main's settings; off by default). The setting is one of `off`,
+`listed` (only the owner's sites, subdomains included) or `any` public site. It is saved by the supervisor in
+`/data/bots/<bot id>/web.json`, outside everything the sandbox mounts, and the supervisor gives it to the gateway
+before each message; the gateway decides every call, so the sandbox cannot widen it. A missing or unreadable file
+reads as `off`.
+
+- The sandbox's OMP has one MCP server, `web`, which is the gateway's `POST /v1/mcp` on the same egress socket
+  (bot token required). Its two tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`.
+  OMP's own `web_search` and `fetch` tools are switched off in the sandbox's `config.yml`.
+- The search provider (Tavily: Search and Extract) makes every outside call. The gateway dials only the provider's
+  API host, pinned like the model's (`BOTS_TEST_WEB_URL` is a loopback mock for tests), never an address a page or
+  the model named. Without `TAVILY_API_KEY` every call answers "isn't available".
+- Per call, in this order: key present, setting not `off`, then for `search` a query of 1 to 200 characters, and for
+  `fetch` a readable address (http or https, no user info, port 80 or 443, a real multi-label host name, no IP address,
+  `localhost` or local-only suffix, at most 2,048 characters), on the owner's list when the setting is `listed`, and
+  one the bot may read: typed by its owner in a message, or returned by an earlier search or page. A listed search is
+  also sent to the provider with the owner's sites and its results are filtered again here. Then the day's budgets
+  (per bot 100 searches and 300 pages, all bots 2,000 and 6,000; counted when a call is made, saved on the budget
+  volume) and one web call at a time per bot.
+- What comes back is cut (pages at 40,000 characters), turned to plain text (Markdown and HTML images become their alt
+  text, so no image address reaches a reply; other tags go) and wrapped in a fixed untrusted-content label. Fetched
+  text reaches the owner only as Main's words; the chat and notes renderers' image rules (ask before loading) still
+  apply to those.
+- Refusals and provider failures answer the model with a fixed sentence, never provider or page text. The log and the
+  saved counts hold counts by tool and outcome only: no query, address or page text.
+- What this does not stop, and the owner is told: a page or search result the bot reads can carry instructions, and
+  Main may put what it knows into a search query or choose among addresses a page offered. The warning shown when the
+  owner turns the setting on says so.
+
 ### Saved state
 
 The supervisor saves each bot's tmpfs to `/data/bots/<bot id>/state`: when a turn settles, with the sandbox paused
@@ -207,9 +238,13 @@ Gateway (`bots-gateway`):
 | `BOTS_UPSTREAM_CONNECT_TIMEOUT_MS` / `BOTS_UPSTREAM_TOTAL_TIMEOUT_MS` | `30000` / `600000` | |
 | `BOTS_BODY_TIMEOUT_MS` | `30000` | request body deadline |
 | `BOTS_BUDGET_FILE` | `/var/lib/bots-gateway/budget.json` | on the `bot-budget` volume |
+| `TAVILY_API_KEY` | empty | Main's web access: the search provider's key; empty refuses every web call as unavailable |
+| `BOTS_WEB_BOT_DAILY_SEARCHES` / `BOTS_WEB_BOT_DAILY_PAGES` | `100` / `300` | per bot, UTC day |
+| `BOTS_WEB_GLOBAL_DAILY_SEARCHES` / `BOTS_WEB_GLOBAL_DAILY_PAGES` | `2000` / `6000` | all bots, UTC day |
+| `BOTS_WEB_TIMEOUT_MS` | `20000` | per provider call |
 
-`BOTS_TEST_UPSTREAM_URL` exists only for the local mock smoke: it must be a loopback `http://` URL, and the compose
-file never passes it.
+`BOTS_TEST_UPSTREAM_URL` and `BOTS_TEST_WEB_URL` exist only for local mocks: each must be a loopback `http://` URL, and
+the compose file never passes either.
 
 ## Pinning
 
@@ -282,6 +317,7 @@ Its configuration lives in the `production-bots` GitHub environment:
 | `PHALA_CLOUD_API_KEY` | secret | deploy tooling only; never a CVM env |
 | `BOTS_SERVICE_SECRET` | secret | the supervisor's secret, the same value as the backend's |
 | `BOTS_REDPILL_API_KEY` | secret | the dedicated RedPill key, written to the CVM as `REDPILL_API_KEY` |
+| `BOTS_TAVILY_API_KEY` | secret | optional; the search provider key for Main's web access, written to the CVM as the gateway's `TAVILY_API_KEY` |
 | `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL` | secrets | the ingress certificate |
 
 `PHALA_GATEWAY_CNAME` is read from the CVM. No other secrets belong in this CVM.

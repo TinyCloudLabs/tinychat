@@ -139,6 +139,35 @@ export interface GatewayConfig {
   bodyTimeoutMs: number;
   /** Where the daily budget counters persist across restarts. */
   budgetFile: string;
+  /** Web access for Main. Absent in a config that predates it; without a key every web call is refused. */
+  web?: WebConfig;
+}
+
+/** The search provider behind Main's web tools and what one bot, and all bots, may use of it per UTC day. */
+export interface WebConfig {
+  /** Undefined until the gateway is given a key: web calls are then refused as unavailable. */
+  key: string | undefined;
+  apiUrl: string;
+  botDailySearches: number;
+  botDailyPages: number;
+  globalDailySearches: number;
+  globalDailyPages: number;
+  /** Per call, against the provider. */
+  timeoutMs: number;
+}
+
+export const PINNED_WEB_API = "https://api.tavily.com";
+
+/** The provider's origin is pinned like the model's; BOTS_TEST_WEB_URL exists only for loopback mocks. */
+function webApi(env: Env): string {
+  const raw = env.BOTS_TEST_WEB_URL?.trim();
+  if (!raw) return PINNED_WEB_API;
+  const url = new URL(raw);
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname)) {
+    throw new Error("BOTS_TEST_WEB_URL may only point at a loopback mock");
+  }
+  console.warn(JSON.stringify({ gateway: "test_web_api", upstream: url.origin }));
+  return url.origin;
 }
 
 /**
@@ -173,5 +202,14 @@ export function gatewayConfig(env: Env): GatewayConfig {
     totalTimeoutMs: int(env, "BOTS_UPSTREAM_TOTAL_TIMEOUT_MS", 10 * 60_000, 100),
     bodyTimeoutMs: int(env, "BOTS_BODY_TIMEOUT_MS", 30_000, 100),
     budgetFile: env.BOTS_BUDGET_FILE ?? "/var/lib/bots-gateway/budget.json",
+    web: {
+      key: env.TAVILY_API_KEY?.trim() || undefined,
+      apiUrl: webApi(env),
+      botDailySearches: int(env, "BOTS_WEB_BOT_DAILY_SEARCHES", 100),
+      botDailyPages: int(env, "BOTS_WEB_BOT_DAILY_PAGES", 300),
+      globalDailySearches: int(env, "BOTS_WEB_GLOBAL_DAILY_SEARCHES", 2000),
+      globalDailyPages: int(env, "BOTS_WEB_GLOBAL_DAILY_PAGES", 6000),
+      timeoutMs: int(env, "BOTS_WEB_TIMEOUT_MS", 20_000, 100),
+    },
   };
 }

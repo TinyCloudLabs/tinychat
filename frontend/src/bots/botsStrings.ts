@@ -26,3 +26,33 @@ export type BotsErrorCode = keyof typeof BOTS_STRINGS.errors;
 // Monica, TC-2808, 2026-11-12. Keep the disclosure in one constant for copy review.
 export const HISTORY_EXPIRY_NOTICE = "Your TinyCloud permission expired on {expiryDate}. Main's chat history on our server will be deleted on {deletionDate}. Reconnect TinyCloud before then to save it to your space.";
 export const HISTORY_RECONNECT_LABEL = "Reconnect TinyCloud";
+
+// Main's web access setting. Draft copy, under review: every owner-visible string of the setting lives here.
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+export const WEB_ACCESS_STRINGS = {
+  title: "Web access",
+  offDescription: "Main can't search the web or read pages.",
+  presets: {
+    off: { label: "Off", description: "Main can't use the web." },
+    listed: { label: "Only sites I list", description: "Main can search and read pages on the sites you list, and nowhere else." },
+    any: { label: "Any public site", description: "Main can search the web and read any public page." },
+  },
+  listLabel: "Sites Main may use",
+  listHint: "One site per line, like docs.example.com. A site includes its subdomains.",
+  listPlaceholder: "docs.example.com",
+  listError: "Use site names like example.com, one per line, up to 50.",
+  warningTitle: "Let Main use the web?",
+  warningBody: "A web page can hide instructions meant for an AI. Main may follow them, and could put what you've told it into a search or a web address. Searches and page addresses go to our search provider.",
+  warningBodyAny: "A page you have never seen can try this. Only choose \"Any public site\" if you are comfortable with that. Searches and page addresses go to our search provider.",
+  warningConfirm: "Turn on",
+  warningCancel: "Not now",
+  save: "Save",
+  saving: "Saving…",
+  unavailable: "Web access isn't available right now.",
+  loadFailed: "Couldn't load Main's web access setting.",
+  saveFailed: "Couldn't save that. Main's web access is unchanged.",
+  /** Today's use, or nothing yet (the line is hidden). */
+  usageLine: (today: { searches: number; pages: number }) =>
+    today.searches + today.pages === 0 ? "" : `Searched ${plural(today.searches, "time", "times")} and read ${plural(today.pages, "page", "pages")} today.`,
+} as const;
