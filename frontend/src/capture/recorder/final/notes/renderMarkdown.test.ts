@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { blockedImageHosts, extractMain, renderNoteHtml, showAllowedImages } from "./renderMarkdown";
+import { extractMain, renderNoteHtml } from "./renderMarkdown";
+import { blockedImageHosts, showAllowedImages } from "./renderMarkdown";
 
 const styles = readFileSync(new URL("./notes.css", import.meta.url), "utf8");
 
