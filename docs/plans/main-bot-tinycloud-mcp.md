@@ -255,6 +255,111 @@ tool changed, over budget.
 | Server, active | "<name> can be used until <time>." / "Used 6 times today." / "Remove" |
 | Server, ended | "<name> access has ended." / "Add it again" |
 
+## Egress layer: iron-proxy and the alternatives
+
+Question: should the gateway's outbound traffic (all three capabilities) go through
+[iron-proxy](https://github.com/paradigmxyz/iron-proxy), an open-source egress firewall for untrusted workloads?
+Read from its README, config example and source (`internal/dnsguard`, `internal/mcp`, `internal/transform`) at
+v0.56.0. **Nothing here was run**; every behaviour below is from reading, and the spike at the end is what would
+confirm it. A separate survey of other approaches is tracked outside this document and linked from the review card; it
+is not repeated here.
+
+### What it is
+
+A single Go binary with one YAML config (Apache-2.0). It runs a DNS server and an HTTP/HTTPS proxy, terminates TLS with
+a CA we provide (MITM), runs each request through an ordered transform pipeline (`allowlist`, `secrets`,
+`header_allowlist`, `annotate`, `body_capture`, `judge`, `oauth_token`, a `grpc` hook to an external service, and
+others), and logs one structured JSON audit line per request (optionally exported over OTLP). It also has a first-class
+MCP policy: for Streamable HTTP it parses JSON-RPC, applies a default-deny `tools/call` allowlist with optional
+argument conditions, and filters `tools/list` responses, including per SSE event.
+
+### How it maps to what we need
+
+| Need | iron-proxy | Fit |
+| --- | --- | --- |
+| Default-deny egress | `allowlist` by domain glob or CIDR; unmatched gets 403 | Good for fixed destinations (model, TinyCloud MCP, search provider). For "fetch any public page" the allowlist has to be wide open, so the deny list does the work. |
+| Built-in DNS | Resolves every name to the proxy so traffic is steered through it | Not used in the sandbox (it has no network). The gateway would use the proxy's HTTP/CONNECT listener instead. Whether the DNS server can be switched off is unchecked. |
+| Upstream IP deny list | `upstream_deny_cidrs`, enforced in the dialer's `Control` hook after resolution, so a name that resolves (or rebinds) to a denied address is refused before the connect; IPv4-mapped IPv6 is unmapped first | Good, and it is the piece we would otherwise write ourselves. **The default list is only cloud metadata and loopback**; RFC 1918, CGNAT, link-local, ULA and multicast are not denied unless we list them. NAT64 forms need listing too. With an upstream proxy configured the check applies to the proxy's address, not the target. |
+| Proxy tokens swapped for real secrets | `secrets` transform: the workload sends a token, the proxy replaces it from env, file, AWS, Vault or 1Password sources, `require: true` rejects requests without it | Fits static service keys (the model key, a search key). Does not fit per-owner, short-lived tokens: sources are static, and a changed value needs a config reload (`POST /v1/reload`) or a `grpc` transform we would write. The gateway keeps per-owner grants itself (section 2). |
+| Per-request audit | JSON per request with the transform trace, secrets swapped (names and locations, not values) and rejections | Good. Matches our counts-only rule if `body_capture` stays off and the log has no query or path of fetched pages we don't want (to confirm). It is per request, not per owner: it cannot know which bot made a call. |
+| SSE / streamable HTTP | SSE and WebSocket proxied natively; MCP policy filters SSE per event | Good for MCP and model streaming. An open issue says non-SSE streams (NDJSON, Connect, gRPC) are buffered until the stream ends; we do not use those. |
+| MCP pipeline | Per-server tool allowlist, `when` conditions on arguments, `tools/list` filtering, `mcp_gateway` routes with credential injection, audit of every JSON-RPC message | Useful for owner-added servers (argument conditions are stronger than our name-only list). v1 limits: Streamable HTTP only, resources and prompts are not enforced, a batch with one denied entry is rejected whole. Server entries are static YAML, so per-owner servers would mean per-owner config. |
+
+### What it would replace in `bots-gateway`
+
+- The outbound network code for web fetch and for MCP upstreams: the checked-address connect, the redirect re-check
+  (the proxy does not follow redirects, so each hop is a new request through it) and the address deny list.
+- Egress audit lines for those destinations.
+- Holding static third-party keys (search provider) in the gateway: it would hold a proxy token instead.
+
+### What we still build
+
+- Everything per bot or per owner: socket and token auth, the one-request slot, the chat body rebuild, token budgets
+  and their reservation and settling, the `/v1/mcp` multiplexer and tool namespacing, grant storage, code exchange and
+  refresh, call and byte budgets, owner events and counts.
+- URL policy the proxy does not express: no user info, ports 80 and 443 only, scheme rules.
+- Response policy: size cap, content-type limits, magic-number check, HTML to text, the untrusted-content wrapper.
+- Tool pinning (name, description and schema hashes) and the owner-facing flows.
+- Our own SSRF checks stay as the inner ring, so the proxy is an outer ring, not the only one.
+
+### Two ways to place it
+
+- **A. As the sandbox's path out** (HTTP proxy over the existing socket bridge, the proxy's CA in the sandbox rootfs).
+  Rejected: it gives the sandbox raw HTTP to whatever the allowlist permits, contrary to the rule that the gateway does
+  every outside call, and web fetch would run in the sandbox.
+- **B. As the gateway's outer ring.** The gateway has no direct internet: it sits on a network whose only route out is
+  the proxy. The proxy enforces the allowlist and the full deny list at dial time and writes the audit. The gateway
+  trusts the proxy's CA. This is the recommended placement.
+
+### Deployment in the CVM
+
+- A new `bots-egress` container beside `bots-gateway` in `docker-compose.phala.yml`: unprivileged, read-only, no
+  capabilities, no published port. It sits on the `egress` network; the gateway moves to a network that reaches only
+  it (the existing `bots-internal` network already has `internal: true`).
+- Built from a pinned release tag by our own Dockerfile (module checksums from `go.sum`, binary checks against the
+  signed `checksums.txt`) and referenced by digest, as the other images are. The project's published images are not
+  signed (open issue), so we do not pull `latest` from the registry.
+- The CA private key is a deploy secret held by the proxy only; the gateway gets the certificate. Real static keys move
+  from the gateway's environment to the proxy's. Config is one YAML file in the image; a change is a redeploy.
+- The model leg stays direct from the gateway in phase 1. Putting it through the proxy adds a TLS-terminating hop for
+  prompt traffic, and the gateway code shows no certificate pinning but we have not checked what the provider's
+  verification relies on. Moving it is a separate decision after the spike.
+
+### Maturity, licence, maintenance
+
+- Apache-2.0. The repository was created 2026-04-01 and sits under the `paradigmxyz` organisation (873 stars, 13
+  contributors); the Go module path and release badges still say `ironsh`, and the maintainers publish an enterprise
+  product (a managed control plane, dynamic Vault engines, a Kubernetes operator) beside it. We would use the open
+  standalone mode only.
+- Pre-1.0: v0.56.0 (2026-11-04) after releases roughly every one to three weeks; the last commit we saw was 2026-11-04.
+  Expect config and behaviour changes between releases; we pin and review each bump, and do not auto-update.
+- Open issues relevant to us (52 open in all): non-SSE streams buffered; request bodies over the buffer cap truncated
+  when a transform reads the body (avoid `match_body`); secrets can be swapped over plain HTTP with no way to require
+  TLS (scope secrets rules to exact HTTPS hosts); dependency advisories open on an earlier release (check the pinned
+  one); unsigned images; denials return an empty 403 body.
+- It publishes a private vulnerability-reporting contact and signs its release checksums.
+- Exit: the gateway talks to it through the standard proxy environment and a CA, and keeps its own guards, so replacing
+  it with our own dial guard (or Squid or Envoy) loses the outer ring and nothing else.
+
+### Recommendation, and the spike that decides it
+
+Place iron-proxy as the gateway's outer ring (B) from phase 2, behind a short spike before any build. Phase 1 (one fixed
+destination) does not need it. The main gain is that the checked-address dial and the audit are someone else's tested
+code and that the gateway, the one component with both secrets and internet, cannot reach anything but the proxy. If
+the spike fails or the owner prefers no new dependency on the data path, the phase 2 guard is built in the gateway as
+designed above and nothing else changes.
+
+Spike (1 to 2 days, on a throwaway CVM or locally):
+1. The gateway's HTTP client reaches a test origin through the proxy's CONNECT listener with the proxy's CA, streaming
+   an SSE response without buffering, and an MCP Streamable HTTP server through it.
+2. A rebinding name, a name resolving to each private range, an IPv4-mapped and a NAT64 address, and a decimal-form
+   literal are each refused at dial time with the full deny list configured.
+3. A redirect to a denied address ends the fetch.
+4. The audit line for a request carries no secret, body or token, and shows the swap for a static key.
+5. Added latency per call, and memory over a 24-hour run.
+6. Whether per-owner tokens can be handled by `file` plus reload or by a `grpc` transform without per-grant restarts; if
+   not, they stay in the gateway as designed.
+
 ## Build order
 
 1. **TinyCloud MCP.** Builds the shared parts the others reuse: the `/v1/mcp` route and JSON-RPC rebuild, the grant
@@ -264,7 +369,8 @@ tool changed, over budget.
 3. **Owner-added servers.** Adds the server registry, discovery, the credential flows, tool pinning and the settings
    list. The guard from phase 2 is a prerequisite, so this cannot be built before it.
 
-Each phase ships behind the existing test-account flag and does not change the others.
+The egress spike (above) runs before phase 2 starts and decides where the guard lives: a proxy outer ring or the
+gateway only. Each phase ships behind the existing test-account flag and does not change the others.
 
 ## Decisions for the owner of each system (named, not designed here)
 
@@ -283,6 +389,8 @@ Each phase ships behind the existing test-account flag and does not change the o
 5. **After owner data is read in a task, should web access stop entirely** (strict), or only narrow to owner-typed and
    search-returned URLs with a query length cap (this plan's default)?
 6. **Web access has no expiry** (it carries no owner authority). Say so if it should expire like the data grants.
+7. **Egress layer.** Adopt iron-proxy as the gateway's outer ring from phase 2 after the spike (this plan's
+   recommendation), or build the guard in the gateway only. Either way the gateway keeps its own checks.
 
 ## Smoke check for a later build
 
