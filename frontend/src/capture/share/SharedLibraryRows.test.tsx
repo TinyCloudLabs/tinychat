@@ -60,8 +60,8 @@ describe("Shared with me", () => {
     expect(html.match(/data-testid="shared-item"/g)?.length).toBe(2);
     expect(html.indexOf("Product sync with Priya")).toBeLessThan(html.indexOf("Customer call: Northwind"));
     expect(html).toContain(`href="${notePath(sharedNoteId("bafy-new"))}"`);
-    expect(html).toContain("From 0xd559…f412 · Nov 16");
-    expect(html).toContain("From 0xd559…f412 · No longer shared");
+    expect(html).toContain("From 0xd559…f412 · From the link");
+    expect(html).toContain("From 0xd559…f412 · No longer shared · From the link");
     expect(html).toContain("32:04");
   });
 

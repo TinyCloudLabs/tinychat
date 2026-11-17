@@ -75,7 +75,7 @@ export async function readSharedTranscript(kv: Pick<TinyCloudKv, "get">, key: st
 function Toast() {
   return (
     <div role="status" className="fixed bottom-[calc(3.5rem+12px)] left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full bg-primary px-4 py-2 text-callout text-primary-foreground shadow-float lg:bottom-6">
-      Added to your TinyCloud
+      Added to your Library
     </div>
   );
 }
