@@ -331,8 +331,14 @@ export class Gateway {
     this.#tokens.set(botId, token);
   }
 
+  /**
+   * The bot's sandbox is gone: its token, its web setting and the addresses it may read go with it. The supervisor
+   * gives the setting again at the next launch. The day's counts stay: stopping and starting must not reset them.
+   */
   dropToken(botId: string): void {
     this.#tokens.delete(botId);
+    this.#policy.delete(botId);
+    this.#known.delete(botId);
   }
 
   /** The owner's current web setting for this bot. Applies from the bot's next call. */

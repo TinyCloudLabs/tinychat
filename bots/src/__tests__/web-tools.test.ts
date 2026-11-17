@@ -86,6 +86,15 @@ describe("provider calls", () => {
     expect(p.sent[0]!.body).toMatchObject({ urls: ["https://a.example.com/"], include_images: false });
   });
 
+  test("a result for another address than the one asked for is not delivered", async () => {
+    const p = provider(() => Response.json({ results: [{ url: "https://other.example.net/", raw_content: "from elsewhere" }] }));
+    expect((await readPage(p, new URL("https://a.example.com/"))).ok).toBe(false);
+    const same = provider(() => Response.json({ results: [{ url: "https://other.example.net/", raw_content: "x" }, { url: "https://a.example.com/#top", raw_content: "right page" }] }));
+    const out = await readPage(same, new URL("https://a.example.com/#asked"));
+    expect(out.ok && out.value.text).toContain("right page");
+    expect(same.sent[0]!.body.urls).toEqual(["https://a.example.com/"]);
+  });
+
   test("an error, a redirect, a malformed body and an oversize body all fail without provider text", async () => {
     for (const respond of [
       () => new Response("secret provider text", { status: 500 }),

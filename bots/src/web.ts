@@ -50,7 +50,7 @@ export const TOOLS = [
 export const WEB_ERRORS = {
   off: "Web access is off. The owner can turn it on in Main's settings.",
   unavailable: "Web access isn't available right now.",
-  query: `Search for something shorter: at most ${MAX_QUERY_CHARS} characters.`,
+  query: `A search must be 1 to ${MAX_QUERY_CHARS} characters.`,
   address: "That address can't be read.",
   site: "That site isn't on the owner's list.",
   unseen: "Only an address the owner typed, or one a search or page returned earlier, can be read.",
@@ -75,7 +75,8 @@ export function addressKey(raw: string): string | undefined {
 /**
  * A page address the tools may read: http or https, no user info, no port but 80 and 443, a real multi-label host
  * name (no IP address of either kind, no `localhost`, no local-only suffix), at most 2,048 characters. The
- * provider connects, so this keeps nonsense from reaching it; it is not what keeps our network closed.
+ * provider connects, so this keeps nonsense from reaching it; it is not what keeps our network closed. It does not
+ * resolve names, so a name that points at a private address passes: it must never stand in for a dial guard.
  */
 export function readableAddress(raw: unknown): URL | undefined {
   if (typeof raw !== "string" || raw.length > MAX_URL_CHARS) return undefined;
@@ -223,14 +224,22 @@ export async function search(provider: WebProvider, query: string, count: number
 
 /** One page, read by the provider; the text is plain, cut at MAX_PAGE_CHARS, and wrapped. */
 export async function readPage(provider: WebProvider, url: URL): Promise<ProviderResult<Delivered>> {
+  // The provider gets exactly the address the gateway checked: its key, without a fragment. A fragment is free text the
+  // gateway's known-address check ignores, so sending it would let the bot attach words to any address it may read.
+  const key = addressKey(url.href);
+  if (key === undefined) return { ok: false };
   const result = await post(provider, "/extract", {
-    urls: [url.href],
+    urls: [key],
     extract_depth: "basic",
     format: "markdown",
     include_images: false,
   });
   if (!result.ok || !Array.isArray(result.value.results)) return { ok: false };
-  const page = result.value.results.find(entry => isRecord(entry) && typeof entry.raw_content === "string");
+  // Only the page that was asked for: a result for another address (a redirect elsewhere) is not delivered, so a
+  // listed site cannot hand the bot another host's content.
+  const page = result.value.results.find(
+    entry => isRecord(entry) && typeof entry.raw_content === "string" && typeof entry.url === "string" && addressKey(entry.url) === key,
+  );
   if (!isRecord(page)) return { ok: false };
   const raw = plainWebText(page.raw_content as string);
   const text = raw.length > MAX_PAGE_CHARS ? `${raw.slice(0, MAX_PAGE_CHARS)}\n[cut]` : raw;

@@ -151,9 +151,17 @@ reads as `off`.
   apply to those.
 - Refusals and provider failures answer the model with a fixed sentence, never provider or page text. The log and the
   saved counts hold counts by tool and outcome only: no query, address or page text.
+- The owner's list refuses shared places (`github.io`, `pages.dev`, `blogspot.com`, `co.uk` and the like), since listing
+  one covers everyone who publishes there; one tenant's own name (`me.github.io`) is fine. The built-in list names the
+  platforms we know of; it is not the full public suffix list, so a listed site that lets others publish is still open
+  to anyone who can post on it.
+- The provider is given exactly the address that was checked, without its fragment, and a page is delivered only if the
+  provider's result is for that address (a redirect to another host delivers nothing).
 - What this does not stop, and the owner is told: a page or search result the bot reads can carry instructions, and
-  Main may put what it knows into a search query or choose among addresses a page offered. The warning shown when the
-  owner turns the setting on says so.
+  Main may put what it knows into a search query (at most 200 characters), choose among the addresses a page offered
+  (a few hundred characters a day at the caps), or ask the owner to paste or open a link that carries data. What Main
+  has put into its own state also persists. Anyone who can post on a listed site can still try this. The warning shown
+  when the owner turns the setting on says so, and the list setting is the safer one.
 
 ### Saved state
 

@@ -191,6 +191,7 @@ export class Bot {
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<void> | undefined;
   #deleting: Promise<void> | undefined;
+  #webSaves: Promise<void> = Promise.resolve();
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -307,21 +308,28 @@ export class Bot {
 
   /**
    * Saves the owner's web setting and gives it to the gateway; if the gateway cannot take it, the previous setting
-   * is put back and this throws. Takes effect at the bot's next web call, running or not.
+   * is put back (in the file and, as far as the gateway answers, there) and this throws. Saves are one at a time, so
+   * two never share the temporary file. Takes effect at the bot's next web call, running or not.
    */
-  async setWebPolicy(policy: WebPolicy): Promise<WebSettings> {
-    await this.#deleting;
-    const previous = readWebPolicy(this.layout);
-    mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
-    writeWebPolicy(this.layout, policy);
-    try {
-      await this.#launcher.pushWeb?.(this.layout);
-    } catch (error) {
-      writeWebPolicy(this.layout, previous);
-      throw error;
-    }
-    log("web_setting", this.layout.botId, { mode: policy.mode, hosts: policy.hosts.length });
-    return this.webSettings();
+  setWebPolicy(policy: WebPolicy): Promise<WebSettings> {
+    const saved = this.#webSaves.then(async () => {
+      await this.#deleting;
+      const previous = readWebPolicy(this.layout);
+      mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
+      writeWebPolicy(this.layout, policy);
+      try {
+        await this.#launcher.pushWeb?.(this.layout);
+      } catch (error) {
+        writeWebPolicy(this.layout, previous);
+        // A push that timed out may still have arrived; say the old setting again. If this fails too, the next
+        // message pushes the saved one before the bot can act.
+        await this.#launcher.pushWeb?.(this.layout).catch(() => {});
+        throw error;
+      }
+      log("web_setting", this.layout.botId, { mode: policy.mode, hosts: policy.hosts.length });
+    });
+    this.#webSaves = saved.catch(() => {});
+    return saved.then(() => this.webSettings());
   }
 
   /** A message or history request is in flight, including one still starting the sandbox. */

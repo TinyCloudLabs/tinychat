@@ -24,9 +24,31 @@ const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 export const INVALID_HOSTS = "Use site names like example.com, one per line, up to 50.";
 
 /**
+ * Hosts that are not one site but a place anyone can publish under (a public suffix or a hosting platform's own
+ * domain). Listing one would cover every tenant, so it is refused; one tenant's own name (`me.github.io`) is fine.
+ * Not the full public suffix list: it names the platforms we know of, plus the country second levels below.
+ */
+const SHARED_HOSTS = new Set([
+  "github.io", "githubusercontent.com", "github.dev", "gitlab.io", "bitbucket.io", "sourceforge.io", "codeberg.page", "pages.dev",
+  "workers.dev", "r2.dev", "netlify.app", "vercel.app", "now.sh", "herokuapp.com", "appspot.com", "web.app", "firebaseapp.com",
+  "blogspot.com", "wordpress.com", "tumblr.com", "substack.com", "notion.site", "glitch.me", "repl.co", "replit.app", "onrender.com",
+  "fly.dev", "azurewebsites.net", "cloudfront.net", "amazonaws.com", "pythonanywhere.com", "wixsite.com", "weebly.com",
+  "myshopify.com", "ghost.io", "readthedocs.io", "surge.sh", "deno.dev", "hf.space", "neocities.org", "itch.io", "ngrok.io",
+  "ngrok-free.app", "trycloudflare.com", "duckdns.org", "vercel.dev",
+]);
+const COUNTRY_SECOND_LEVELS = new Set(["co", "com", "org", "net", "gov", "edu", "ac", "or", "ne", "go", "gob", "mil", "nom", "ltd", "plc"]);
+
+/** Whether `host` is itself a shared place (see SHARED_HOSTS) or a country's second level such as `co.uk`. */
+export function sharedHost(host: string): boolean {
+  if (SHARED_HOSTS.has(host)) return true;
+  const labels = host.split(".");
+  return labels.length === 2 && labels[1]!.length === 2 && COUNTRY_SECOND_LEVELS.has(labels[0]!);
+}
+
+/**
  * A host name an owner may list: ASCII letters, digits, hyphens and dots, at least two labels, not an IP address
- * (every label of an IPv4 address is numeric, and no real top-level domain is), not `localhost`. Non-ASCII names are
- * refused: they can pass for another site. Returns the lowercase name, or undefined.
+ * (every label of an IPv4 address is numeric, and no real top-level domain is), not `localhost`, not a shared
+ * place anyone can publish under. Non-ASCII names are refused: they can pass for another site. Returns the lowercase name, or undefined.
  */
 export function listedHost(input: unknown): string | undefined {
   if (typeof input !== "string") return undefined;
@@ -35,6 +57,7 @@ export function listedHost(input: unknown): string | undefined {
   const labels = host.split(".");
   if (labels.length < 2 || !labels.every(label => LABEL.test(label))) return undefined;
   if (/^[0-9]+$/.test(labels[labels.length - 1]!)) return undefined;
+  if (sharedHost(host)) return undefined;
   return host;
 }
 

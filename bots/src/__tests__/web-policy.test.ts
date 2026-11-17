@@ -19,6 +19,17 @@ describe("listed hosts", () => {
   });
 });
 
+describe("shared places", () => {
+  test.each(["github.io", "pages.dev", "blogspot.com", "co.uk", "com.au", "herokuapp.com", "Netlify.app"])("%p covers everyone who publishes there, so it cannot be listed", input => {
+    expect(listedHost(input)).toBeUndefined();
+    expect(parseWebPolicy({ mode: "listed", hosts: ["example.com", input] })).toBeUndefined();
+  });
+
+  test.each(["me.github.io", "docs.pages.dev", "example.co.uk", "bbc.co.uk", "co.example.com"])("one tenant's own name %p can be listed", input => {
+    expect(listedHost(input)).toBe(input.toLowerCase());
+  });
+});
+
 describe("policy parsing", () => {
   test("lowercases and de-duplicates a list, and clears hosts unless the mode is listed", () => {
     expect(parseWebPolicy({ mode: "listed", hosts: ["Example.com", "example.com", "docs.rs"] })).toEqual({ mode: "listed", hosts: ["example.com", "docs.rs"] });

@@ -101,7 +101,29 @@ describe("the owner's setting is applied by the gateway", () => {
     gateway.learnAddresses(BOT, ["https://docs.example.com/typed"]);
     expect((await call(gateway, "fetch", { url: "https://docs.example.com/typed#frag" })).isError).toBe(false);
     expect(calls.map(entry => entry.url)).toEqual([`${PINNED_WEB_API}/extract`]);
-    expect(calls[0]!.body.urls).toEqual(["https://docs.example.com/typed#frag"]);
+    expect(calls[0]!.body.urls).toEqual(["https://docs.example.com/typed"]);
+  });
+
+  test("the provider never gets a fragment: the bot cannot attach words to an address it may read", async () => {
+    const { gateway, calls } = setup();
+    gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
+    gateway.learnAddresses(BOT, ["https://docs.example.com/typed"]);
+    const smuggled = "https://docs.example.com/typed#" + encodeURIComponent("my private notes ".repeat(40));
+    expect((await call(gateway, "fetch", { url: smuggled })).isError).toBe(false);
+    expect(JSON.stringify(calls[0]!.body)).not.toContain("#");
+    expect(JSON.stringify(calls[0]!.body)).not.toContain("private");
+  });
+
+  test("a stopped bot loses its setting and its readable addresses, but not its day's counts", async () => {
+    const { gateway } = setup();
+    gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
+    await call(gateway, "search", { query: "x" });
+    gateway.dropToken(BOT);
+    gateway.setToken(BOT, TOKEN);
+    expect((await call(gateway, "search", { query: "x" })).text).toBe(WEB_ERRORS.off);
+    expect(gateway.webUsage(BOT)).toMatchObject({ searches: 1, blocked: 1 });
+    gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
+    expect((await call(gateway, "fetch", { url: "https://docs.example.com/guide" })).text).toBe(WEB_ERRORS.unseen);
   });
 
   test("what a search returns can be read next, and what a page names can be read after that; another bot knows none of it", async () => {

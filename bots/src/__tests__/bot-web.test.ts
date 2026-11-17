@@ -38,6 +38,36 @@ describe("the owner's web setting", () => {
     expect(readWebPolicy(layout)).toEqual({ mode: "listed", hosts: ["docs.rs"] });
   });
 
+  test("saves are one at a time, and a failed push says the old setting to the gateway again", async () => {
+    const order: string[] = [];
+    const release = Promise.withResolvers<void>();
+    let pushes = 0;
+    const { bot } = setup({
+      pushWeb: async l => {
+        order.push(`push:${readWebPolicy(l).mode}`);
+        if (++pushes === 1) await release.promise;
+      },
+    });
+    const first = bot.setWebPolicy({ mode: "listed", hosts: ["docs.rs"] });
+    const second = bot.setWebPolicy({ mode: "any", hosts: [] });
+    await Bun.sleep(20);
+    expect(order).toEqual(["push:listed"]);
+    release.resolve();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["push:listed", "push:any"]);
+
+    const attempts: string[] = [];
+    const failing = setup({
+      pushWeb: async l => {
+        attempts.push(readWebPolicy(l).mode);
+        if (attempts.length === 2) throw new Error("timed out");
+      },
+    });
+    await failing.bot.setWebPolicy({ mode: "listed", hosts: ["docs.rs"] });
+    await expect(failing.bot.setWebPolicy({ mode: "any", hosts: [] })).rejects.toThrow("timed out");
+    expect(attempts).toEqual(["listed", "any", "listed"]);
+  });
+
   test("shows counts only; a gateway that cannot answer, or answers with junk, reads as unavailable with zero counts", async () => {
     const answers: unknown[] = [{ available: true, today: { searches: 4, pages: 9, blocked: 1, query: "secret" } }, new Error("down"), { available: true, today: { searches: -1, pages: "x" } }, "junk"];
     const { bot } = setup({
