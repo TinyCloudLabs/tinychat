@@ -42,8 +42,8 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
   return (
     <div>
       <p className="text-xs text-muted-foreground">
-        Before you delete your account, delete your recordings. This permanently removes every meeting recording
-        and transcript, including the copy held by the notetaker service.
+        Before you delete your account, delete your recordings. This permanently deletes your meeting recordings
+        and transcripts, including the notetaker service's copies.
       </p>
       {(state.phase === "idle" || state.phase === "failed") && (
         <Button

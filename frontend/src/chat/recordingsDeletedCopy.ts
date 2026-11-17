@@ -7,19 +7,17 @@
  */
 export const NOTHING_TO_DELETE = "You have no recordings to delete.";
 export const NOTHING_OF_YOURS = "You had no recordings of your own to delete.";
-/** At least one of the account's own deletes is not confirmed yet: nothing is called "deleted". */
-export const STILL_DELETING = "Deleting… this isn't finished yet. We keep retrying until it's confirmed gone.";
+/** At least one of the account's own deletes is not confirmed yet: true whether or not some are already done. */
+export const STILL_DELETING = "Your recordings are being deleted. We keep trying until each one is gone.";
 export const SHARED_REMOVED = "Recordings others shared with you are removed from your list; the people who shared them still have them.";
 
-export function ownDeletedLine(own: number): string {
-  return own === 1 ? "Your recording is deleted." : "Your recordings are deleted.";
-}
+export const OWN_DELETED = "Your recordings are deleted.";
 
-/** Every own delete is confirmed. */
+/** Every own delete is confirmed (one or many: no counts, no singular). */
 export function doneText(own: number, shared: number): string {
   if (own === 0 && shared === 0) return NOTHING_TO_DELETE;
   if (own === 0) return `${NOTHING_OF_YOURS} ${SHARED_REMOVED}`;
-  return shared > 0 ? `${ownDeletedLine(own)} ${SHARED_REMOVED}` : ownDeletedLine(own);
+  return shared > 0 ? `${OWN_DELETED} ${SHARED_REMOVED}` : OWN_DELETED;
 }
 
 /** At least one own delete is still pending; shared removals are already final and may be said. */

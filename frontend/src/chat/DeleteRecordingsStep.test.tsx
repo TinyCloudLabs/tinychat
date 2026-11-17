@@ -38,14 +38,14 @@ async function run(response: { status: number; body: unknown }): Promise<string>
   }
 }
 
-test("(1) own only, confirmed: no counts; exactly one reads singular", async () => {
+test("(1) own only, confirmed: no counts, the same line for one or many", async () => {
   expect(await run({ status: 200, body: { removed: 3, deleting: 0, listOnly: 0 } })).toBe("Your recordings are deleted.");
-  expect(await run({ status: 200, body: { removed: 1, deleting: 0, listOnly: 0 } })).toBe("Your recording is deleted.");
+  expect(await run({ status: 200, body: { removed: 1, deleting: 0, listOnly: 0 } })).toBe("Your recordings are deleted.");
 });
 
 test("(2) own and shared: the shared ones are said to be only removed from the list", async () => {
   expect(await run({ status: 200, body: { removed: 4, deleting: 0, listOnly: 2 } })).toBe(`Your recordings are deleted. ${SHARED}`);
-  expect(await run({ status: 200, body: { removed: 2, deleting: 0, listOnly: 1 } })).toBe(`Your recording is deleted. ${SHARED}`);
+  expect(await run({ status: 200, body: { removed: 2, deleting: 0, listOnly: 1 } })).toBe(`Your recordings are deleted. ${SHARED}`);
 });
 
 test("(3) shared only: nothing is called deleted", async () => {
@@ -60,10 +60,26 @@ test("(4) nothing to delete, and the feature being dark", async () => {
 
 test("an own delete still pending, or the request failing, never says deleted", async () => {
   const pending = await run({ status: 202, body: { removed: 2, deleting: 1, listOnly: 0 } });
-  expect(pending).toBe("Deleting… this isn't finished yet. We keep retrying until it's confirmed gone.");
-  expect(pending).not.toMatch(/\bdeleted\b/);
-  expect(await run({ status: 202, body: { removed: 3, deleting: 1, listOnly: 2 } })).toBe(`Deleting… this isn't finished yet. We keep retrying until it's confirmed gone. ${SHARED}`);
+  expect(pending).toBe("Your recordings are being deleted. We keep trying until each one is gone.");
+  expect(pending).not.toMatch(/\b(is|are) deleted\b/);
+  expect(await run({ status: 202, body: { removed: 3, deleting: 1, listOnly: 2 } })).toBe(`Your recordings are being deleted. We keep trying until each one is gone. ${SHARED}`);
   const failed = await run({ status: 503, body: { error: "transcriber_unavailable", removed: 1, deleting: 0, listOnly: 0, failed: 1 } });
   expect(failed).toContain("We couldn't finish deleting your recordings");
   expect(failed).not.toMatch(/Your recordings? (is|are) deleted/);
+});
+
+test("the intro says it deletes the user's own recordings, not every recording they can see", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    const { DeleteRecordingsStep } = await import("./DeleteRecordingsStep"); // after installDom, as above
+    await act(async () => {
+      root.render(<DeleteRecordingsStep backendUrl="https://api.example" sessionStore={{ getToken: () => "t", isExpired: () => false } as unknown as SessionStore} />);
+    });
+    expect(host.textContent).toContain("Before you delete your account, delete your recordings. This permanently deletes your meeting recordings and transcripts, including the notetaker service's copies.");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
 });
