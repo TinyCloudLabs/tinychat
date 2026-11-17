@@ -32,6 +32,8 @@ const PATTERNS: ReadonlyArray<[reason: string, pattern: RegExp]> = [
   ["a URL carrying a code or token", /[?&#](?:code|token|access_token|id_token|refresh_token|client_secret|api_key|apikey|key|password|user_code|sig|signature|x-amz-signature)=/i],
   ["a Share link (its fragment is the read authority)", /#(?:tc1=|v=\d+&p=)/],
   ["an OpenKey device approval link", /\bopenkey\.so\/device\b/i],
+  // OpenKey's one-tap approval link carries its bearer key in the fragment, which none of the patterns above see. No card field may hold one.
+  ["an OpenKey one-tap approval link", /\bopenkey\.so\/a\/[A-Za-z0-9]/i],
   ["an OAuth/approval URL", /\bhttps?:\/\/[^\s]*\/(?:oauth2?|authorize|login\/device|device\/approve|consent)\b/i],
 ];
 
