@@ -5,6 +5,7 @@ import { holdAnswer, releaseAnswer, type HeldAnswer } from "@/feed/answerOutbox"
 import { AskBox } from "@/bots/AskBox";
 import { CardConversation } from "@/feed/CardConversation";
 import { usePendingSend } from "@/feed/cardKit";
+import { OwnAnswerBox } from "@/feed/AnswerOptions";
 import { RecordingTitleEditor } from "@/capture/library/rename/RecordingTitleEditor";
 import { CANONICAL_ORIGIN, countLocalOnlyRecordingWork, isOriginMoveDeferred, moveWhenClear } from "@/lib/originMove";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -73,6 +74,19 @@ test("a card's comment box keeps a held page here while it holds words", async (
   await type(view.host.querySelector<HTMLTextAreaElement>("textarea")!, "One more thing");
   expect(isOriginMoveDeferred()).toBe(true);
   await view.unmount();
+  expect(isOriginMoveDeferred()).toBe(false);
+});
+
+function OwnAnswer() {
+  const [text, setText] = useState("");
+  return <OwnAnswerBox text={text} disabled={false} onText={setText} onSend={() => {}} />;
+}
+test("words in a card's Your own answer box keep a held page here until they are cleared", async () => {
+  const view = await mount(<OwnAnswer />);
+  expect(isOriginMoveDeferred()).toBe(false);
+  await type(field(view.host), "Not this one");
+  expect(isOriginMoveDeferred()).toBe(true);
+  await type(field(view.host), "");
   expect(isOriginMoveDeferred()).toBe(false);
 });
 

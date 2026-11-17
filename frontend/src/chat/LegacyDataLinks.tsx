@@ -1,7 +1,7 @@
 import { CANONICAL_ORIGIN, LEGACY_HOSTNAMES } from "@/lib/originMove";
 
 export const LEGACY_DATA_INTRO =
-  "Recordings, answers and device preferences saved in this browser on an old address stay there. Open that address to reach them.";
+  "Recordings, answers and settings saved in this browser on an old address are still there. Open that address to get to them.";
 
 const CANONICAL_HOSTNAME = new URL(CANONICAL_ORIGIN).hostname;
 
