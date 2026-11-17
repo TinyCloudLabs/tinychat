@@ -153,6 +153,11 @@ export interface TranscriberClient {
    * or is `null` when the deployment does not use that service (the step then says nothing about it).
    */
   removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number | null }>>;
+  /**
+   * TC-3166: whether the deployment keeps private cloud transcription jobs (voice notes and uploads), from config only.
+   * `feature-dark` means neither the meeting transcriber nor private cloud transcription is on.
+   */
+  scope(): Promise<TranscriberResult<{ privateCloud: boolean }>>;
 }
 
 export function createTranscriberClient(
@@ -240,6 +245,16 @@ export function createTranscriberClient(
 
   return {
     list: () => request("", { method: "GET", missing: "feature-dark" }),
+    scope: () =>
+      request<{ privateCloud: boolean }>("/scope", {
+        method: "GET",
+        missing: "feature-dark",
+        read: async (response) => {
+          const { privateCloud } = (await response.json()) as { privateCloud?: unknown };
+          if (typeof privateCloud !== "boolean") throw new Error("incomplete_scope_response");
+          return { privateCloud };
+        },
+      }),
     create: (input, options) => request("", {
       method: "POST",
       body: input,

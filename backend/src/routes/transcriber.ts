@@ -206,6 +206,12 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     return typeof owner === "string" && owner.toLowerCase() === address;
   }
 
+  /** TC-3166: whether this deployment keeps private cloud transcription jobs, from config only (no PTX call). */
+  router.get("/scope", (req, res) => {
+    if (addressOf(req, res) === null) return;
+    res.json({ privateCloud: options.privateCloud !== undefined });
+  });
+
   router.get("/", async (req, res) => {
     const address = addressOf(req, res);
     if (address === null) return;
@@ -572,6 +578,13 @@ export function createPrivateCloudOnlyBulkDeleteRouter(purger: PrivateCloudPurge
       return;
     }
     res.status(200).json({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: privateCloud.deleted });
+  });
+  router.get("/scope", (req, res) => {
+    if (typeof req.user?.address !== "string" || req.user.address.length === 0) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    res.json({ privateCloud: true });
   });
   return router;
 }

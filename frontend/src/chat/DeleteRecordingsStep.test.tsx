@@ -17,8 +17,18 @@ const OWN = "Your meeting recordings, voice notes and uploads are deleted from t
 const FAILED = "We couldn't finish deleting your recordings, voice notes and uploads. Some may still be there. Try again in a moment.";
 const STILL = "Your voice notes and uploads are deleted. Your meeting recordings are being deleted; we keep trying until each one is gone.";
 
-async function run(response: { status: number; body: unknown }): Promise<string> {
-  globalThis.fetch = (async () => new Response(JSON.stringify(response.body), { status: response.status })) as typeof fetch;
+const PRIVATE_CLOUD_ON = { status: 200, body: { privateCloud: true } };
+
+/** The step's mount-time scope probe (`GET …/scope`) gets `scope`; every other call gets `response`. */
+function stubNetwork(response: { status: number; body: unknown }, scope: { status: number; body: unknown } = PRIVATE_CLOUD_ON): void {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const answer = String(input).endsWith("/scope") ? scope : response;
+    return new Response(JSON.stringify(answer.body), { status: answer.status });
+  }) as typeof fetch;
+}
+
+async function run(response: { status: number; body: unknown }, scope = PRIVATE_CLOUD_ON): Promise<string> {
+  stubNetwork(response, scope);
   // Loaded after beforeAll installs the DOM (its imports read window at load), so a static import cannot work.
   const { DeleteRecordingsStep } = await import("./DeleteRecordingsStep");
   const sessionStore = { getToken: () => "t", isExpired: () => false } as unknown as SessionStore;
@@ -104,6 +114,7 @@ test("a backend that cannot say which removals were real deletes, or that privat
 });
 
 test("the intro says it deletes the user's own recordings, voice notes and uploads, not every recording they can see", async () => {
+  stubNetwork({ status: 200, body: {} });
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -117,4 +128,68 @@ test("the intro says it deletes the user's own recordings, voice notes and uploa
     await act(async () => root.unmount());
     host.remove();
   }
+});
+
+const INTRO = "Before you delete your account, delete your recordings. This permanently deletes your meeting recordings, voice notes and uploads held by the notetaker service and TinyCloud Private Transcription, including their transcripts.";
+const INTRO_MEETINGS_ONLY = "Before you delete your account, delete your recordings. This permanently deletes your meeting recordings and transcripts, including the notetaker service's copies.";
+const FAILED_MEETINGS_ONLY = "We couldn't finish deleting your recordings. Some may still be there. Try again in a moment.";
+
+async function introFor(scope: { status: number; body: unknown }): Promise<string> {
+  stubNetwork({ status: 200, body: {} }, scope);
+  const { DeleteRecordingsStep } = await import("./DeleteRecordingsStep");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(<DeleteRecordingsStep backendUrl="https://api.example" sessionStore={{ getToken: () => "t", isExpired: () => false } as unknown as SessionStore} />);
+    });
+    return host.textContent ?? "";
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+}
+
+test("TC-3166: the intro names voice notes and uploads only where the deployment keeps them", async () => {
+  expect(await introFor({ status: 200, body: { privateCloud: true } })).toContain(INTRO);
+  const without = await introFor({ status: 200, body: { privateCloud: false } });
+  expect(without).toContain(INTRO_MEETINGS_ONLY);
+  expect(without).not.toMatch(/voice notes|uploads|Private Transcription/);
+  // Neither service on (the probe's 404): the same meeting-only wording.
+  const dark = await introFor({ status: 404, body: { error: "not_found" } });
+  expect(dark).toContain(INTRO_MEETINGS_ONLY);
+  expect(dark).not.toMatch(/voice notes|uploads|Private Transcription/);
+});
+
+test("TC-3166: a probe that fails or is unreadable shows the full wording, the one production runs", async () => {
+  expect(await introFor({ status: 503, body: { error: "x" } })).toContain(INTRO);
+  expect(await introFor({ status: 200, body: {} })).toContain(INTRO);
+  expect(await introFor({ status: 401, body: { error: "unauthorized" } })).toContain(INTRO);
+});
+
+test("TC-3166: no intro is shown until the backend has said what the deployment keeps, so it never changes under the reader", async () => {
+  const gate = Promise.withResolvers<Response>();
+  globalThis.fetch = (async () => gate.promise) as typeof fetch;
+  const { DeleteRecordingsStep } = await import("./DeleteRecordingsStep");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(<DeleteRecordingsStep backendUrl="https://api.example" sessionStore={{ getToken: () => "t", isExpired: () => false } as unknown as SessionStore} />);
+    });
+    expect(host.textContent).not.toContain("Before you delete your account");
+    await act(async () => { gate.resolve(new Response(JSON.stringify({ privateCloud: false }), { status: 200 })); });
+    expect(host.textContent).toContain(INTRO_MEETINGS_ONLY);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("TC-3166: without private cloud the failure line does not name voice notes or uploads; with it, it does", async () => {
+  const failure = { status: 503, body: { error: "transcriber_unavailable", removed: 1, deleting: 0, listOnly: 0, notDeleted: 0, failed: 1, privateCloudFailed: false } };
+  expect(await run(failure, { status: 200, body: { privateCloud: false } })).toBe(FAILED_MEETINGS_ONLY);
+  expect(await run(failure, { status: 200, body: { privateCloud: true } })).toBe(FAILED);
 });

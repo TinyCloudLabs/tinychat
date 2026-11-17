@@ -1,8 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { Button } from "@/components/ui/button";
 import { createTranscriberClient } from "@/lib/transcriberApi";
-import { DELETE_FAILED, STEP_INTRO, doneText, pendingText, type Removals } from "./recordingsDeletedCopy";
+import {
+  DELETE_FAILED,
+  DELETE_FAILED_MEETINGS_ONLY,
+  STEP_INTRO,
+  STEP_INTRO_MEETINGS_ONLY,
+  doneText,
+  pendingText,
+  type Removals,
+} from "./recordingsDeletedCopy";
 
 type StepState =
   | { phase: "idle" }
@@ -19,6 +27,11 @@ type StepState =
  * retried by the server; this says so instead of claiming it is gone. TC-3166: the same call deletes the
  * account's voice notes and uploads (private cloud transcription jobs); the server answers 503, so the failure
  * line shows, unless that was confirmed, and an answer without `privateCloudDeleted` is rejected as incomplete.
+ *
+ * The intro and failure line name voice notes and uploads only where the deployment keeps them. The backend says
+ * so (`scope`), and the intro is not shown until that is known, so it never changes under the reader.
+ * `feature-dark` (neither service is on) means no private cloud. Any other probe failure shows the full wording:
+ * that is what production runs, and what is claimed as deleted afterwards is still decided by the delete's own answer.
  */
 export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: SessionStore }) {
   const client = useMemo(
@@ -26,6 +39,24 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
     [props.backendUrl, props.sessionStore],
   );
   const [state, setState] = useState<StepState>({ phase: "idle" });
+  const [privateCloud, setPrivateCloud] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    void (async () => {
+      // Whatever goes wrong, the step must appear: the full wording is what production runs.
+      let value = true;
+      try {
+        const result = await client.scope();
+        if (result.status === "ok") value = result.value.privateCloud;
+        else if (result.status === "feature-dark") value = false;
+      } catch {
+        // keep the full wording
+      }
+      if (current) setPrivateCloud(value);
+    })();
+    return () => { current = false; };
+  }, [client]);
 
   const run = async () => {
     setState({ phase: "working" });
@@ -47,7 +78,7 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
 
   return (
     <div>
-      <p className="text-xs text-muted-foreground">{STEP_INTRO}</p>
+      {privateCloud !== null && <p className="text-xs text-muted-foreground">{privateCloud ? STEP_INTRO : STEP_INTRO_MEETINGS_ONLY}</p>}
       {(state.phase === "idle" || state.phase === "failed") && (
         <Button
           variant="outline"
@@ -76,7 +107,7 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
         <p className="mt-2 text-xs text-muted-foreground" role="status">{pendingText(state)}</p>
       )}
       {state.phase === "failed" && (
-        <p className="mt-2 text-xs text-destructive" role="alert">{DELETE_FAILED}</p>
+        <p className="mt-2 text-xs text-destructive" role="alert">{privateCloud === false ? DELETE_FAILED_MEETINGS_ONLY : DELETE_FAILED}</p>
       )}
     </div>
   );

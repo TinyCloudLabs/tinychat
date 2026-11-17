@@ -1835,6 +1835,30 @@ paths:
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
+  /api/transcriber/meetings/scope:
+    get:
+      operationId: getTranscriberScope
+      summary: Whether this deployment keeps private cloud transcription jobs (voice notes and uploads)
+      description: |
+        From configuration only; it asks no other service. Mounted when the meeting transcriber or private cloud
+        transcription is on; with neither on it is a 404. The account-deletion step uses it to word its intro and
+        failure line, so voice notes and uploads are only named where they are kept.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The scope
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [privateCloud]
+                properties:
+                  privateCloud:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
   /api/transcriber/meetings/{id}/stop:
     post:
       operationId: stopTranscriberMeeting

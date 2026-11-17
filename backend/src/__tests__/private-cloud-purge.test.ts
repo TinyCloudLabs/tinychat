@@ -174,6 +174,15 @@ describe("bulk DELETE /api/transcriber/meetings runs the private cloud purge", (
       expect(await bulk(base)).toMatchObject({ status: 200, body: { privateCloudDeleted: 2 } });
     });
   });
+
+  test("GET /scope says whether private cloud is kept, from config alone", async () => {
+    const scope = async (base: string) => {
+      const response = await fetch(`${base}/api/transcriber/meetings/scope`);
+      return { status: response.status, body: await response.json() as Record<string, unknown> };
+    };
+    expect(await withServer({ purge: async () => 0 }, scope)).toEqual({ status: 200, body: { privateCloud: true } });
+    expect(await withServer(undefined, scope)).toEqual({ status: 200, body: { privateCloud: false } });
+  });
 });
 
 describe("private cloud on, meeting transcriber off: the bulk DELETE is still there", () => {
@@ -211,5 +220,14 @@ describe("private cloud on, meeting transcriber off: the bulk DELETE is still th
     const result = await withOnlyRouter(null, async () => { asked++; return 0; }, bulk);
     expect(result.status).toBe(401);
     expect(asked).toBe(0);
+  });
+
+  test("GET /scope says private cloud is kept, and needs a session", async () => {
+    const scope = async (base: string) => {
+      const response = await fetch(`${base}/api/transcriber/meetings/scope`);
+      return { status: response.status, body: await response.json() as Record<string, unknown> };
+    };
+    expect(await withOnlyRouter({ address: OWNER }, async () => 0, scope)).toEqual({ status: 200, body: { privateCloud: true } });
+    expect((await withOnlyRouter(null, async () => 0, scope)).status).toBe(401);
   });
 });

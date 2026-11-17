@@ -575,6 +575,23 @@ describe("transcriber client", () => {
     expect(await absent.removeAll()).toMatchObject({ status: "rejected" });
   });
 
+  test("scope reads a boolean, calls the scope path, and a 404 is feature-dark", async () => {
+    const urls: string[] = [];
+    const answer = (status: number, body: object) => (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(body), { status });
+    }) as typeof fetch;
+    const on = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: true }) });
+    expect(await on.scope()).toEqual({ status: "ok", value: { privateCloud: true } });
+    expect(urls).toEqual(["https://api.example/api/transcriber/meetings/scope"]);
+    const off = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: false }) });
+    expect(await off.scope()).toEqual({ status: "ok", value: { privateCloud: false } });
+    const dark = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(404, { error: "not_found" }) });
+    expect(await dark.scope()).toEqual({ status: "feature-dark" });
+    const unreadable = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: "yes" }) });
+    expect(await unreadable.scope()).toMatchObject({ status: "rejected" });
+  });
+
   test("create posts JSON; a 400 comes back rejected with its code", async () => {
     const seen: RequestInit[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {

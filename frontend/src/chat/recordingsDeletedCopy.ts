@@ -40,6 +40,10 @@ export const DELETE_FAILED = "We couldn't finish deleting your recordings, voice
 /** The step's intro. */
 export const STEP_INTRO = "Before you delete your account, delete your recordings. This permanently deletes your meeting recordings, voice notes and uploads held by the notetaker service and TinyCloud Private Transcription, including their transcripts.";
 
+/** The step's intro and failure line when the deployment does not use private cloud transcription (Monica's #747 lines). */
+export const STEP_INTRO_MEETINGS_ONLY = "Before you delete your account, delete your recordings. This permanently deletes your meeting recordings and transcripts, including the notetaker service's copies.";
+export const DELETE_FAILED_MEETINGS_ONLY = "We couldn't finish deleting your recordings. Some may still be there. Try again in a moment.";
+
 const join = (...parts: Array<string | false>): string => parts.filter((part) => part !== false).join(" ");
 
 /** Every own delete is confirmed (one or many: no counts, no singular). */

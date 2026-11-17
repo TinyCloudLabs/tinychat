@@ -1478,6 +1478,10 @@ describe("TC-959 backend request contract", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 });
       expect(listed).toEqual(["50"]);
+      const scope = await fetch(boot.url! + "/api/transcriber/meetings/scope", { headers: { authorization: "Bearer test-session" } });
+      expect(scope.status).toBe(200);
+      expect(await scope.json()).toEqual({ privateCloud: true });
+      expect((await fetch(boot.url! + "/api/transcriber/meetings/scope")).status).toBe(401);
     } finally {
       server.closeAllConnections();
       const closed = Promise.withResolvers<void>();
