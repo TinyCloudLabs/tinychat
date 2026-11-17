@@ -14,7 +14,7 @@ type Rendered =
 const allowedByNote = new Map<string, Set<string>>();
 
 /** The line above a note that holds back a site's images; the same words are read aloud. */
-const imagesLine = (host: string) => `Load images from ${host}? That site will see that you opened this note.`;
+const imagesLine = (host: string) => `Load images from ${host}? That site will see that you opened this note, and the image addresses can carry text from it.`;
 
 /**
  * The note as rendered Markdown, drawn once the lazy renderer has loaded. With `onMoment`, each moment's time is a button
