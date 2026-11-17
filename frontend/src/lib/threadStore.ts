@@ -949,10 +949,10 @@ export async function setMemory(tcw: TinyCloudWeb, content: string, options: { o
     markAfter = false;
   } else {
     // A doc with no marker that holds a URL, image or link counts as marked, so what the next write merges from it stays
-    // marked. A marker that cannot be read is never taken as "none".
+    // marked. A marker that cannot be read is never taken as "none", and a doc that could not be read is never vouched for.
     const priorMark = await store(tcw, scope).query("SELECT content FROM memory WHERE id = ?", [MEMORY_MARK_ROW_ID]);
     const priorDoc = prior.ok && prior.data.rows.length > 0 ? cellStr(prior.data.rows[0], 0, "") : null;
-    if (priorMark.ok && priorMark.data.rows.length === 0 && memoryHoldsLinkShape(priorDoc)) {
+    if (priorMark.ok && priorMark.data.rows.length === 0 && (!prior.ok || memoryHoldsLinkShape(priorDoc))) {
       stmts.push({ sql: UPSERT, params: [MEMORY_MARK_ROW_ID, "1", now] });
       markAfter = true;
     }

@@ -130,3 +130,15 @@ test("when the live memory is blank and the last-known-good backup is served in 
   expect(await getMemory(stored.session())).toBe("- likes tea"); // the backup is what a chat would load
   expect(await getMemoryMarked(stored.session())).toBe(true);
 });
+
+test("a write over a memory that could not be read is marked, so a clean write never vouches for an unread doc", async () => {
+  const stored = account();
+  await setMemory(stored.session(), "- reads https://example.com/page");
+  withoutMarker(stored);
+  const real = stored.session() as unknown as { did: string; sql: { db: () => { query: (sql: string, params?: unknown[]) => Promise<unknown> } } };
+  const db = real.sql.db();
+  const failing = { did: real.did, sql: { db: () => ({ ...db, query: async (sql: string, params: unknown[] = []) =>
+    sql.startsWith("SELECT content") && params.includes("user_context") ? { ok: false, error: { code: "TEST", message: "unreadable" } } : db.query(sql, params) }) } } as unknown as TinyCloudWeb;
+  await setMemory(failing, "- reads a page");
+  expect(await getMemoryMarked(stored.session())).toBe(true);
+});
