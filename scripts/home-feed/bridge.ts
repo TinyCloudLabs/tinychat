@@ -280,7 +280,12 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     if (!isDeepStrictEqual(source, requestedSource) || input.legacy.spaceId !== ctx.legacySpaceId) throw failure();
     const typed = parseSitrepCardPayload(input.card.payload?.sitrep);
     const checked = validateRecord(input.legacy.record.kind, input.legacy.record);
-    if (!typed || !checked.ok || typed.record.kind !== input.card.kind || !isDeepStrictEqual(typed.record, homeMirrorRecord(checked.value, Date.parse(ctx.now()))) || input.legacy.fullKey !== boardKey(checked.value.kind, checked.value.id)) throw failure();
+    if (!typed || !checked.ok || typed.record.kind !== input.card.kind || input.legacy.fullKey !== boardKey(checked.value.kind, checked.value.id)) throw failure();
+    // The card is built before it is published, so a link can lapse in between: the gate strips the Home copy itself
+    // (idempotent), and refuses a payload that is neither the board record nor its stripped form.
+    const carried = homeMirrorRecord(checked.value, Date.parse(ctx.now()));
+    if (!isDeepStrictEqual(typed.record, checked.value) && !isDeepStrictEqual(typed.record, carried)) throw failure();
+    const card: HomeMirrorPublishInput["card"] = { ...input.card, payload: { ...input.card.payload, sitrep: { ...(input.card.payload?.sitrep as object), record: carried } } };
     const record = checked.value, body = publication(record, identity.cardId), publicationSha256 = hash(body);
     const owner = privateDatabase(ctx.sql.db(OWNER), ctx);
     const all = (await mirrorRowsFor(ctx, input.legacy.fullKey, { sourceId: source.sourceId, identity })).map((row) => stored(ctx, row));
@@ -288,7 +293,7 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     if (previous && (!isDeepStrictEqual(previous.binding.source, source) || previous.binding.legacy.fullKey !== input.legacy.fullKey || previous.binding.legacy.publicationSha256 !== publicationSha256)) throw failure();
     for (const row of all) if (row.binding.legacy.fullKey === input.legacy.fullKey && (row.binding.source.sourceId !== source.sourceId || row.binding.cardUuid !== identity.cardId)) throw failure();
     // Home is canonical and durable before its mirror is published. No schema is created here.
-    take(await publishFeedCard(privateDatabase(ctx.sql.db(source.output.database), ctx), input.card));
+    take(await publishFeedCard(privateDatabase(ctx.sql.db(source.output.database), ctx), card));
     if (!await currentCard(ctx, source, identity)) throw failure();
     if (previous?.receipt) return previous.binding;
     let head = await readLegacy(ctx, record.kind, input.legacy.fullKey);

@@ -54,24 +54,43 @@ test("a one-tap approval link is never mirrored, open or closed", async () => {
   expect(take(await listFeedCardHistory(f.output)).cards).toHaveLength(0);
 });
 
-test("the mirror gate refuses a card that still carries the code of a closed approval, and a one-tap link anywhere", async () => {
+test("the mirror gate strips a closed approval's Home card itself, refuses a card that is not the board record or its stripped form, and refuses a one-tap link", async () => {
   const f = await node();
   const cancelled = open("g7", { status: "cancelled" });
   take(await f.legacy.put(boardKey("approval", "g7"), JSON.stringify(cancelled), { prefix: "", contentType: "application/json" }));
   const source = await readHomeMirrorSource(f.ctx, SOURCE);
   const row = rowOf(cancelled), card = boardCard(row, [cancelled], NOW_MS);
-  const input = (payload: unknown): HomeMirrorPublishInput => ({
-    source: { ...source, label: "Rocinante" }, card: { ...card, payload: { ...card.payload, sitrep: payload } } as HomeMirrorPublishInput["card"],
-    legacy: { spaceId: f.ctx.legacySpaceId, fullKey: row.key, record: cancelled },
+  const input = (record: unknown, board: BoardRecord = cancelled): HomeMirrorPublishInput => ({
+    source: { ...source, label: "Rocinante" }, card: { ...card, payload: { ...card.payload, sitrep: { version: 1, record } } } as HomeMirrorPublishInput["card"],
+    legacy: { spaceId: f.ctx.legacySpaceId, fullKey: boardKey(board.kind, board.id), record: board },
   });
-  await expect(publishHomeMirror(f.ctx, input({ version: 1, record: cancelled }))).rejects.toThrow();
+  const other = open("g7", { status: "cancelled", url: "https://openkey.so/delegate?user_code=WXYZ-9999" });
+  await expect(publishHomeMirror(f.ctx, input(other))).rejects.toThrow();
   expect(take(await listFeedCardHistory(f.output)).cards).toHaveLength(0);
-  await publishHomeMirror(f.ctx, input(card.payload?.sitrep));
+  // A payload that still holds the closed approval's code is stripped by the gate, not refused.
+  await publishHomeMirror(f.ctx, input(cancelled));
   const [stored] = take(await listFeedCardHistory(f.output)).cards;
   const typed = parseSitrepCardPayload(stored!.payload?.sitrep);
   expect(typed?.record.kind === "approval" && typed.record.url).toBe(BARE_URL);
   // The board's copy is the record as written, code included.
   expect(JSON.parse(f.values.get(boardKey("approval", "g7"))!.text).url).toBe(CODE_URL);
+  const oneTap = open("g11", { url: ONE_TAP, issuedAt: "2026-11-13T09:50:00.000Z", expiresAt: "2026-11-13T10:30:00.000Z" });
+  await expect(publishHomeMirror(f.ctx, input(oneTap, oneTap))).rejects.toThrow();
+});
+
+test("a card built just before its link lapses and published just after reaches Home without the code, not refused", async () => {
+  const f = await node();
+  const record = open("g12", { expiresAt: new Date(NOW_MS + 30_000).toISOString() });
+  take(await f.legacy.put(boardKey("approval", "g12"), JSON.stringify(record), { prefix: "", contentType: "application/json" }));
+  const source = await readHomeMirrorSource(f.ctx, SOURCE);
+  const row = rowOf(record), card = boardCard(row, [record], NOW_MS);
+  expect(parseSitrepCardPayload(card.payload?.sitrep)?.record).toEqual(record);
+  const later = { ...f.ctx, now: () => new Date(NOW_MS + 60_000).toISOString() };
+  await publishHomeMirror(later, { source: { ...source, label: "Rocinante" }, card, legacy: { spaceId: f.ctx.legacySpaceId, fullKey: row.key, record } });
+  const [stored] = take(await listFeedCardHistory(f.output)).cards;
+  const typed = parseSitrepCardPayload(stored!.payload?.sitrep);
+  expect(typed?.record.kind === "approval" && typed.record.url).toBe(BARE_URL);
+  expect(JSON.parse(f.values.get(boardKey("approval", "g12"))!.text).url).toBe(CODE_URL);
 });
 
 test("a closed claude sign-in has no bare form that stays valid, so it is refused", () => {
