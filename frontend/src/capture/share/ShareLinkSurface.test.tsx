@@ -197,4 +197,13 @@ describe("ShareLinkSurface", () => {
     expect(view.container.querySelector("[data-testid=sender-address]")?.textContent).toContain(full);
     expect(view.container.querySelector("[data-testid=first-share]")).toBeNull();
   });
+
+  test("when the owner has stopped sharing, the page still shows the whole sender address", async () => {
+    claimResult = { ok: false, reason: "revoked" };
+    const { container } = await mount(account().tcw);
+    await tap(container, "Add to Library");
+    const revoked = container.querySelector("[data-testid=share-link-revoked]");
+    expect(revoked?.textContent).toContain("0xd559…f412 stopped sharing this recording");
+    expect(revoked?.querySelector("[data-testid=sender-address]")?.textContent).toContain(OWNER);
+  });
 });

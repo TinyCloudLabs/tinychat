@@ -136,6 +136,9 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
             <span aria-hidden="true" className="mb-1 flex size-10 items-center justify-center rounded-lg bg-surface-2 text-muted-foreground [&_svg]:size-5"><Link2OffIcon /></span>
             <h1 className="text-headline">{sender} stopped sharing this recording</h1>
             <p className="max-w-[34ch] text-callout text-muted-foreground">It’s no longer available to you. Ask {sender} if you need it again.</p>
+            <div className="mt-1">
+              <SenderAddress address={view.link.owner.address} firstShare={tcw !== null && firstShareFrom(shared, view.link.owner.address) === true} />
+            </div>
           </div>
         </Shell>
       );
