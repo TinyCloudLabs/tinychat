@@ -2,14 +2,14 @@ import { useMemo, useState } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { Button } from "@/components/ui/button";
 import { createTranscriberClient } from "@/lib/transcriberApi";
-import { doneText, pendingText } from "./recordingsDeletedCopy";
+import { doneText, pendingText, type Removals } from "./recordingsDeletedCopy";
 
 type StepState =
   | { phase: "idle" }
   | { phase: "confirm" }
   | { phase: "working" }
-  | { phase: "done"; own: number; shared: number }
-  | { phase: "deleting"; shared: number }
+  | ({ phase: "done" } & Removals)
+  | ({ phase: "deleting" } & Pick<Removals, "shared" | "notDeleted">)
   | { phase: "failed" };
 
 /**
@@ -29,14 +29,15 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
     setState({ phase: "working" });
     const result = await client.removeAll();
     if (result.status === "ok") {
-      // `removed` counts list-only removals too; `listOnly` is the part that was never ours to delete.
-      const { removed, deleting, listOnly } = result.value;
-      const own = removed - listOnly;
-      setState(deleting > 0 ? { phase: "deleting", shared: listOnly } : { phase: "done", own, shared: listOnly });
+      // `removed` counts the list-only removals too: `listOnly` were shared with this account and `notDeleted`
+      // were not attributed to it by the provider; neither was deleted here.
+      const { removed, deleting, listOnly, notDeleted } = result.value;
+      const own = removed - listOnly - notDeleted;
+      setState(deleting > 0 ? { phase: "deleting", shared: listOnly, notDeleted } : { phase: "done", own, shared: listOnly, notDeleted });
       return;
     }
     // Feature off for this deployment: there are no recordings to delete.
-    setState(result.status === "feature-dark" ? { phase: "done", own: 0, shared: 0 } : { phase: "failed" });
+    setState(result.status === "feature-dark" ? { phase: "done", own: 0, shared: 0, notDeleted: 0 } : { phase: "failed" });
   };
 
   return (
@@ -67,10 +68,10 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
       )}
       {state.phase === "working" && <p className="mt-2 text-xs text-muted-foreground" role="status">Deleting your recordings…</p>}
       {state.phase === "done" && (
-        <p className="mt-2 text-xs text-muted-foreground" role="status">{doneText(state.own, state.shared)}</p>
+        <p className="mt-2 text-xs text-muted-foreground" role="status">{doneText(state)}</p>
       )}
       {state.phase === "deleting" && (
-        <p className="mt-2 text-xs text-muted-foreground" role="status">{pendingText(state.shared)}</p>
+        <p className="mt-2 text-xs text-muted-foreground" role="status">{pendingText(state)}</p>
       )}
       {state.phase === "failed" && (
         <p className="mt-2 text-xs text-destructive" role="alert">

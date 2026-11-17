@@ -319,7 +319,8 @@ describe("TranscriberView", () => {
   test("a recording whose delete is not confirmed yet says it is being deleted, never that it is gone", () => {
     const html = render({ meetings: [{ id: "mtg_x", unavailable: true, deleting: true }] });
     expect(html).toContain("Being deleted. We keep trying until it&#x27;s gone.");
-    expect(html).toContain(">Try again<");
+    expect(html).toContain(">Retry now<");
+    expect(html).not.toContain(">Try again<");
     expect(html).not.toContain("Could not be read");
   });
 
@@ -538,11 +539,18 @@ describe("transcriber client", () => {
     const seen: { url: string; method?: string }[] = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
       seen.push({ url: String(url), method: init?.method });
-      return new Response(JSON.stringify({ removed: 3, deleting: 1 }), { status: 202 });
+      return new Response(JSON.stringify({ removed: 3, deleting: 1, listOnly: 1, notDeleted: 1 }), { status: 202 });
     }) as typeof fetch;
     const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
-    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1, listOnly: 0 } });
+    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1, listOnly: 1, notDeleted: 1 } });
     expect(seen).toEqual([{ url: "https://api.example/api/transcriber/meetings", method: "DELETE" }]);
+  });
+
+  test("removeAll from a backend that cannot say what was really deleted is rejected, never guessed", async () => {
+    // An older backend answers { removed, deleting } only: listOnly/notDeleted are unknown.
+    const fetchImpl = (async () => new Response(JSON.stringify({ removed: 3, deleting: 0 }), { status: 200 })) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.removeAll()).toMatchObject({ status: "rejected" });
   });
 
   test("create posts JSON; a 400 comes back rejected with its code", async () => {

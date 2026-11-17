@@ -3,24 +3,39 @@
  *
  * `own` recordings were the account's own and are confirmed deleted at the provider. `shared` were shared
  * with the account by someone else: they are only dropped from this list, and the person who shared them
- * still has them, so they are never reported as deleted. Only call these once every own delete is confirmed.
+ * still has them, so they are never reported as deleted. `notDeleted` were listed as the account's own but
+ * the provider does not attribute them to it: dropped from the list, NOT deleted at the provider, and never
+ * called deleted or shared. Only call `own` deleted once every own delete is confirmed.
  */
+export interface Removals {
+  own: number;
+  shared: number;
+  notDeleted: number;
+}
+
 export const NOTHING_TO_DELETE = "You have no recordings to delete.";
 export const NOTHING_OF_YOURS = "You had no recordings of your own to delete.";
 /** At least one of the account's own deletes is not confirmed yet: true whether or not some are already done. */
 export const STILL_DELETING = "Your recordings are being deleted. We keep trying until each one is gone.";
 export const SHARED_REMOVED = "Recordings others shared with you are removed from your list; the people who shared them still have them.";
+/** Provisional until Monica words it. */
+export const NOT_DELETED = "Some recordings were removed from your list, but we couldn't confirm they were deleted from the notetaker service.";
 
 export const OWN_DELETED = "Your recordings are deleted.";
 
+const join = (...parts: Array<string | false>): string => parts.filter((part) => part !== false).join(" ");
+
 /** Every own delete is confirmed (one or many: no counts, no singular). */
-export function doneText(own: number, shared: number): string {
-  if (own === 0 && shared === 0) return NOTHING_TO_DELETE;
-  if (own === 0) return `${NOTHING_OF_YOURS} ${SHARED_REMOVED}`;
-  return shared > 0 ? `${OWN_DELETED} ${SHARED_REMOVED}` : OWN_DELETED;
+export function doneText({ own, shared, notDeleted }: Removals): string {
+  if (own === 0 && shared === 0 && notDeleted === 0) return NOTHING_TO_DELETE;
+  return join(
+    own > 0 ? OWN_DELETED : notDeleted === 0 && NOTHING_OF_YOURS,
+    notDeleted > 0 && NOT_DELETED,
+    shared > 0 && SHARED_REMOVED,
+  );
 }
 
-/** At least one own delete is still pending; shared removals are already final and may be said. */
-export function pendingText(shared: number): string {
-  return shared > 0 ? `${STILL_DELETING} ${SHARED_REMOVED}` : STILL_DELETING;
+/** At least one own delete is still pending; the removals that are already final may be said. */
+export function pendingText({ shared, notDeleted }: Pick<Removals, "shared" | "notDeleted">): string {
+  return join(STILL_DELETING, notDeleted > 0 && NOT_DELETED, shared > 0 && SHARED_REMOVED);
 }

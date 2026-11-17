@@ -439,17 +439,18 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   /**
    * TC-3136: purge the upstream copy (and the capture provider's behind it) and prove it is gone. A purge
    * that cannot be confirmed keeps the entry as "deleting" for the sweeper to retry; it is never dropped
-   * silently. Shared entries and recordings this address did not create are list-only removals.
+   * silently. Shared entries are list-only removals ("shared"); an own entry the provider does not attribute to
+   * this address is dropped from the list but its provider copy is NOT deleted ("not_ours").
    */
-  async function removeEntry(address: string, id: string, shared: boolean): Promise<"gone" | "list_only" | "deleting"> {
-    const outcome = shared ? "not_ours" : await purgeMeeting(api, address, id, { delaysMs: options.purgeDelaysMs, sleep: options.purgeSleep });
+  async function removeEntry(address: string, id: string, shared: boolean): Promise<"gone" | "shared" | "not_ours" | "deleting"> {
+    const outcome = shared ? "shared" : await purgeMeeting(api, address, id, { delaysMs: options.purgeDelaysMs, sleep: options.purgeSleep });
     if (outcome === "failed") {
       await index.markPurging(address, id);
       options.purger?.track(address);
       return "deleting";
     }
     await index.remove(address, id);
-    return outcome === "not_ours" ? "list_only" : "gone";
+    return outcome;
   }
 
   router.delete("/:id", async (req, res) => {
@@ -472,8 +473,9 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   /**
    * Removes every recording this address holds (the step before OpenKey account deletion, which
    * TinyChat gets no signal for). 200 when all are confirmed gone, 202 with the count still deleting.
-   * `listOnly` (a subset of `removed`) counts recordings shared with this address or created by someone
-   * else: they were dropped from this list but not deleted at the provider, so the owner still has them.
+   * `listOnly` counts recordings shared with this address: dropped from this list, the sharer still has them.
+   * `notDeleted` counts the address's own entries the provider did not attribute to it: dropped from the list
+   * but NOT deleted at the provider. Both are subsets of `removed`.
    */
   router.delete("/", async (req, res) => {
     const address = addressOf(req, res);
@@ -491,6 +493,7 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     let removed = 0;
     let deleting = 0;
     let listOnly = 0;
+    let notDeleted = 0;
     let failed = 0;
     let cursor = 0;
     async function worker(): Promise<void> {
@@ -501,7 +504,8 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
           if (result === "deleting") deleting++;
           else {
             removed++;
-            if (result === "list_only") listOnly++;
+            if (result === "shared") listOnly++;
+            if (result === "not_ours") notDeleted++;
           }
         } catch (error) {
           failed++;
@@ -511,10 +515,10 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     }
     await Promise.all(Array.from({ length: Math.min(BULK_DELETE_CONCURRENCY, ids.length) }, worker));
     if (failed > 0) {
-      res.status(503).json({ error: "transcriber_unavailable", removed, deleting, listOnly, failed });
+      res.status(503).json({ error: "transcriber_unavailable", removed, deleting, listOnly, notDeleted, failed });
       return;
     }
-    res.status(deleting > 0 ? 202 : 200).json({ removed, deleting, listOnly });
+    res.status(deleting > 0 ? 202 : 200).json({ removed, deleting, listOnly, notDeleted });
   });
 
   return router;

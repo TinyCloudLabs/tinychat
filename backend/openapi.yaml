@@ -2668,19 +2668,25 @@ components:
             retrying with backoff. It is never reported as removed until upstream reads back not-found.
     TranscriberBulkDelete:
       type: object
-      required: [removed, deleting, listOnly]
+      required: [removed, deleting, listOnly, notDeleted]
       properties:
         removed:
           type: integer
-          description: Entries confirmed gone (provider read-back not-found) or dropped from the list (shared with this address)
+          description: Entries confirmed gone (provider read-back not-found) or dropped from the list (shared with this address, or not attributed to it by the provider)
         deleting:
           type: integer
           description: Entries whose provider copy is not yet confirmed gone; retried with backoff
         listOnly:
           type: integer
           description: >-
-            A subset of `removed`: recordings shared with this address (or created by someone else). They were dropped
-            from this list only; the provider's copy is not this address's to delete and the owner still has it.
+            A subset of `removed`: recordings shared with this address. They were dropped from this list only;
+            the provider's copy is not this address's to delete and the sharer still has it.
+        notDeleted:
+          type: integer
+          description: >-
+            A subset of `removed`: this address's own entries the provider did not attribute to it (upstream
+            metadata missing or for another address). They were dropped from the list but the provider's copy
+            was NOT deleted.
     TranscriberTranscript:
       type: object
       required: [meeting_id, status]

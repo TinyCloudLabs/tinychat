@@ -448,7 +448,7 @@ function UnavailableRow(props: { id: string; deleting: boolean; busy: boolean; o
         disabled={props.busy}
         onClick={() => props.onRemove(props.id)}
       >
-        {props.deleting ? "Try again" : "Remove"}
+        {props.deleting ? "Retry now" : "Remove"}
       </Button>
     </div>
   );
