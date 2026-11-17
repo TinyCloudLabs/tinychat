@@ -62,7 +62,6 @@ describe("addresses that ask first", () => {
     expect(reasons("https://a.b.example.com/a.png")).toEqual(["host-labels"]);
     expect(reasons("https://a.b.example.co.uk/a.png")).toEqual(["host-labels"]);
     expect(reasons("https://bucket.s3.us-west-2.amazonaws.com/a.png")).toEqual(["host-labels"]);
-    expect(reasons("https://1.2.3.4/a.png")).toEqual(["host-labels"]);
   });
 
   test("a label above the registrable domain over 24 characters, not 24", () => {
@@ -81,9 +80,34 @@ describe("addresses that ask first", () => {
     expect(reasons(`https://${"q1".repeat(20)}.x.example.com/a.png`)).toEqual(["host-labels", "host-long", "host-encoded"]);
   });
 
+  test("an IP address as the host, in any form", () => {
+    expect(reasons("https://1.2.3.4/a.png")).toEqual(["host-ip"]);
+    expect(reasons("https://16909060/a.png")).toEqual(["host-ip"]);
+    expect(reasons("https://0x1020304/a.png")).toEqual(["host-ip"]);
+    expect(reasons("https://[::1]:8443/a.png")).toEqual(["host-ip"]);
+    expect(reasons("https://[2001:db8:dead:beef:1234:5678:9abc:def0]/a.png")).toEqual(["host-ip"]);
+    expect(reasons("https://[::ffff:10.0.0.1]/a.png")).toEqual(["host-ip"]);
+  });
+
+  test("an address inside the address, on any host, whatever the form", () => {
+    expect(reasons("https://img.shields.io/endpoint?url=https://x.ee/abcdef")).toEqual(["nested-url"]);
+    expect(reasons("https://img.shields.io/endpoint?url=https%3A%2F%2Fx.ee%2Fabc")).toEqual(["nested-url"]);
+    expect(reasons("https://img.shields.io/endpoint?url=https%253A%252F%252Fx.ee%252Fabc")).toEqual(["nested-url"]);
+    expect(reasons("https://images.unsplash.com/photo-1?mark=https://x.ee/abc")).toEqual(["nested-url"]);
+    expect(reasons("https://i.imgur.com/a.png?next=//x.ee/abc")).toEqual(["nested-url"]);
+    expect(reasons("https://example.com/image/fetch/https://x.ee/a.png")).toEqual(["nested-url"]);
+    expect(reasons("https://img.shields.io/badge/build-passing-brightgreen.svg")).toBe("load");
+    expect(reasons("https://example.com/a//b.png")).toBe("load");
+  });
+
+  test("a coarse second-level suffix needs a two-letter country code", () => {
+    expect(reasons("https://a.b.com.xyz/a.png")).toEqual(["host-labels"]);
+    expect(reasons("https://cdn.example.com.au/a.png")).toBe("load");
+  });
+
   test("an allowlisted host is not judged on its host name, but its path and query still are", () => {
-    expect(reasons("https://tee.node.tinycloud.xyz/a.png")).toBe("load");
-    expect(reasons(`https://${"a1".repeat(20)}.tinycloud.one/a.png`)).toBe("load");
+    expect(reasons("https://node.tinycloud.xyz/a.png")).toBe("load");
+    expect(reasons("https://i.imgur.com/a1b2c3d4e5f6g7h8i9j0.png")).toBe("load");
     expect(reasons(`https://node.tinycloud.xyz/a.png?d=${"x".repeat(70)}`)).toEqual(["long-query"]);
   });
 

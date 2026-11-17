@@ -16,11 +16,11 @@ afterEach(() => {
   restore = undefined;
 });
 
-async function show(root: Root, text: string, host: HTMLElement) {
+async function show(root: Root, text: string, host: HTMLElement, isRunning = false) {
   const deadline = Date.now() + 3000;
   await act(async () =>
     root.render(
-      <TextMessagePartProvider text={text} isRunning={false}>
+      <TextMessagePartProvider text={text} isRunning={isRunning}>
         <MarkdownText />
       </TextMessagePartProvider>,
     ),
@@ -145,4 +145,54 @@ test("an approval covers the addresses it named: an image added to the reply aft
   await show(mounted!, `${four}\n\n${photo("e.example")}`, host);
   expect(imageCount(host)).toBe(4);
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["e.example"]));
+});
+
+const srcs = (host: HTMLElement) => [...host.querySelectorAll("img")].map((img) => img.getAttribute("src"));
+
+test("while a reply streams, no image from another host loads; the silent two are chosen from the finished text, in document order", async () => {
+  const text = [
+    "![a][r]",
+    photo("b.example", "b"),
+    photo("c.example", "c"),
+    photo("node.tinycloud.xyz", "own"),
+    "[r]: https://evil.example/real.png",
+  ].join("\n\n");
+  restore = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  mounted = createRoot(host);
+
+  // A reference definition arriving character by character: every prefix that parses as an address is a different image.
+  for (const prefix of [text.slice(0, text.indexOf("[r]:") + 14), text.slice(0, text.indexOf("[r]:") + 21), text]) {
+    await show(mounted, prefix, host, true);
+    expect(srcs(host)).toEqual(prefix.includes("own") ? ["https://node.tinycloud.xyz/own.png"] : []);
+    expect(host.textContent).not.toContain("more image");
+  }
+
+  await show(mounted, text, host, false);
+  const settled = srcs(host);
+  expect(settled).toEqual(["https://evil.example/real.png", "https://b.example/b.png", "https://node.tinycloud.xyz/own.png"]);
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["c.example"]));
+
+  // Reopening the reply decides the same two, whatever happened while it streamed.
+  act(() => mounted!.unmount());
+  host.remove();
+  const reopened = document.createElement("div");
+  document.body.append(reopened);
+  mounted = createRoot(reopened);
+  await show(mounted, text, reopened, false);
+  expect(srcs(reopened)).toEqual(settled);
+  expect(reopened.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["c.example"]));
+});
+
+test("an address that asks shows no prompt for half a reply: it waits until the text is final", async () => {
+  restore = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  mounted = createRoot(host);
+  await show(mounted, `![chart](${carrier})`, host, true);
+  expect(host.querySelector("button")).toBeNull();
+  expect(host.querySelector("img")).toBeNull();
+  await show(mounted, `![chart](${carrier})`, host, false);
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.title("evil.example"));
 });

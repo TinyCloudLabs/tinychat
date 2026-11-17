@@ -23,20 +23,29 @@ export function heldImages(srcs: readonly string[]): HeldImage[] {
   return [...counted].slice(SILENT_THIRD_PARTY_IMAGES).map(([src, host]) => ({ src, host }));
 }
 
-/** One reply's images as they render, and what the reader chose for each held address. Choices are bound to the exact address. */
+/**
+ * One reply's images as they render, and what the reader chose for each held address. Choices are bound to the exact address.
+ * Each image instance claims its current address while it is mounted and releases it when it goes away or changes, so a stale
+ * address (a half-streamed one) never keeps a slot, and the silent set is always computed from the images that are there,
+ * in document order.
+ */
 export class ReplyImageBudget {
-  #claimed: string[] = [];
+  #claims = new Map<string, string>();
   #choices = new Map<string, "load" | "skip">();
   #listeners = new Set<() => void>();
   #waiting: readonly HeldImage[] = [];
 
-  /** An image says it is here; safe to call on every render. */
-  claim(src: string): void {
-    if (!this.#claimed.includes(src)) this.#claimed.push(src);
+  /** An image instance says which address it shows; safe to call on every render. */
+  claim(id: string, src: string): void {
+    this.#claims.set(id, src);
+  }
+
+  release(id: string): void {
+    this.#claims.delete(id);
   }
 
   isHeld(src: string): boolean {
-    return heldImages(this.#claimed).some((held) => held.src === src);
+    return heldImages([...this.#claims.values()]).some((held) => held.src === src);
   }
 
   choice(src: string): "load" | "skip" | undefined {
@@ -53,7 +62,7 @@ export class ReplyImageBudget {
 
   /** Called after render, when claims may have changed. */
   publish(): void {
-    const next = heldImages(this.#claimed).filter((held) => !this.#choices.has(held.src));
+    const next = heldImages([...this.#claims.values()]).filter((held) => !this.#choices.has(held.src));
     if (next.length === this.#waiting.length && next.every((held, i) => held.src === this.#waiting[i]!.src)) return;
     this.#waiting = next;
     for (const listener of this.#listeners) listener();

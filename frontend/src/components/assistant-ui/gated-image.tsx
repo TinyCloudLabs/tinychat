@@ -1,28 +1,44 @@
-import { useEffect, useState, type ComponentPropsWithoutRef, type FC } from "react";
+import { useEffect, useId, useState, type ComponentPropsWithoutRef, type FC } from "react";
+import { INTERNAL } from "@assistant-ui/react";
 
 import { useReplyImageBudget, useWaitingImages } from "@/components/assistant-ui/image-budget";
+import { isAllowlistedImageHost } from "@/lib/imageHosts";
 import { IMAGE_PROMPT_COPY, imageUrlVerdict } from "@/lib/imageUrlFilter";
 
 type ImgProps = ComponentPropsWithoutRef<"img"> & { node?: unknown };
 
 /**
  * A Markdown image in a chat reply. It loads as usual unless its address looks like it carries data (then it asks first), or
- * the reply already holds its share of images from other hosts (then it waits for the reply's one prompt).
+ * the reply already holds its share of images from other hosts (then it waits for the reply's one prompt). While the text is
+ * still streaming only images from our own and the trusted hosts load: half-written addresses must not use the budget, and
+ * the silent set must be the same on every mount, so it is decided once from the finished text, in document order.
  */
 export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) => {
   const budget = useReplyImageBudget();
   useWaitingImages(budget);
+  const id = useId();
+  const streaming = INTERNAL.useSmoothStatus().type === "running";
   // The reader's choice belongs to the address they saw: a streamed reply can change the address under the same image.
   const [decision, setDecision] = useState<{ src: string; choice: "load" | "skip" } | null>(null);
   const address = typeof src === "string" ? src : null;
-  if (address !== null) budget?.claim(address);
-  useEffect(() => budget?.publish(), [budget, address]);
+  const claimed = address !== null && !streaming ? address : null;
+  if (claimed !== null) budget?.claim(id, claimed);
+  useEffect(() => {
+    if (!budget) return;
+    if (claimed !== null) budget.claim(id, claimed);
+    budget.publish();
+    return () => {
+      budget.release(id);
+      budget.publish();
+    };
+  }, [budget, id, claimed]);
 
   const verdict = address === null ? { kind: "block" as const } : imageUrlVerdict(address);
   const picture = <img src={address ?? undefined} alt={alt} referrerPolicy="no-referrer" {...props} />;
   const notLoaded = <span className="text-muted-foreground">{IMAGE_PROMPT_COPY.notLoaded(alt ?? "")}</span>;
 
   if (address === null || verdict.kind === "block") return notLoaded;
+  if (streaming && !(verdict.kind === "load" && isAllowlistedImageHost(new URL(address).hostname))) return notLoaded;
   if (verdict.kind === "load") {
     if (!budget?.isHeld(address)) return picture;
     const held = budget.choice(address);

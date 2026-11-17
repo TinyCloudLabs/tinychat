@@ -7,12 +7,12 @@ const img = (host: string, name = "a") => `https://${host}/${name}.png`;
 const heldSrcs = (srcs: string[]) => heldImages(srcs).map((held) => held.src);
 
 describe("allowlisted hosts", () => {
-  test.each(["tinycloud.one", "app.tinycloud.one", "tinycloud.chat", "api.tinycloud.chat", "node.tinycloud.xyz", "tinycloud.xyz", "i.imgur.com", "avatars.githubusercontent.com", "upload.wikimedia.org", "images.unsplash.com", "img.shields.io"])(
+  test.each(["tinycloud.one", "app.tinycloud.one", "tinycloud.chat", "www.tinycloud.chat", "node.tinycloud.xyz", "tinycloud.xyz", "i.imgur.com", "avatars.githubusercontent.com", "upload.wikimedia.org", "images.unsplash.com"])(
     "%s",
     (host) => expect(isAllowlistedImageHost(host)).toBe(true),
   );
 
-  test.each(["evil-tinycloud.one", "tinycloud.one.evil.example", "tinycloud.xyz.evil.example", "xtinycloud.chat", "example.com", "", "evil.i.imgur.com", "imgur.com", "raw.githubusercontent.com", "res.cloudinary.com", "img.shields.io.evil.example"])(
+  test.each(["evil-tinycloud.one", "tinycloud.one.evil.example", "tinycloud.xyz.evil.example", "xtinycloud.chat", "example.com", "", "evil.i.imgur.com", "imgur.com", "raw.githubusercontent.com", "res.cloudinary.com", "img.shields.io", "api.tinycloud.chat", "share.tinycloud.xyz", "tee.node.tinycloud.xyz"])(
     "%s is not",
     (host) => expect(isAllowlistedImageHost(host)).toBe(false),
   );
@@ -37,7 +37,7 @@ describe("the images of a reply that must wait", () => {
   });
 
   test("a trusted third-party host does not use the budget either", () => {
-    const trusted = ["i.imgur.com", "avatars.githubusercontent.com", "upload.wikimedia.org", "images.unsplash.com", "img.shields.io"].map((h) => img(h));
+    const trusted = ["i.imgur.com", "avatars.githubusercontent.com", "upload.wikimedia.org", "images.unsplash.com"].map((h) => img(h));
     expect(heldSrcs([...trusted, img("a.example"), img("b.example")])).toEqual([]);
   });
 
@@ -60,7 +60,7 @@ describe("a reply's choices", () => {
     const budget = new ReplyImageBudget();
     let changes = 0;
     budget.subscribe(() => changes++);
-    four.forEach((src) => budget.claim(src));
+    four.forEach((src, i) => budget.claim(`i${i}`, src));
     budget.publish();
     budget.publish();
     expect(budget.waiting().map((held) => held.src)).toEqual(four.slice(2));
@@ -71,15 +71,26 @@ describe("a reply's choices", () => {
 
   test("a choice is for the exact address: a changed address is held again", () => {
     const budget = new ReplyImageBudget();
-    four.forEach((src) => budget.claim(src));
+    four.forEach((src, i) => budget.claim(`i${i}`, src));
     budget.publish();
     budget.decide([four[2]!, four[3]!], "load");
     expect(budget.waiting()).toEqual([]);
     expect(budget.choice(four[2]!)).toBe("load");
     const changed = img("c.example", "streamed-longer");
-    budget.claim(changed);
+    budget.claim("i2", changed);
     budget.publish();
     expect(budget.choice(changed)).toBeUndefined();
     expect(budget.waiting().map((held) => held.src)).toEqual([changed]);
+  });
+
+  test("an image that goes away gives its slot up, so a stale address never keeps one", () => {
+    const budget = new ReplyImageBudget();
+    ["https://e", "https://ev", "https://evil.example/real.png"].forEach((src, i) => budget.claim(`i${i}`, src));
+    expect(budget.isHeld("https://evil.example/real.png")).toBe(true);
+    budget.release("i0");
+    budget.release("i1");
+    budget.publish();
+    expect(budget.isHeld("https://evil.example/real.png")).toBe(false);
+    expect(budget.waiting()).toEqual([]);
   });
 });

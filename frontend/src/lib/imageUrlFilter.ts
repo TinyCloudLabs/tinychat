@@ -7,6 +7,8 @@ import { isAllowlistedImageHost } from "./imageHosts";
 export type ImageReason =
   | "insecure"
   | "credentials"
+  | "host-ip"
+  | "nested-url"
   | "host-labels"
   | "host-long"
   | "host-encoded"
@@ -53,6 +55,11 @@ function decode(part: string): string {
 // suffix list this is an approximation; a miss only makes an address ask.
 const SECOND_LEVEL = new Set(["co", "com", "org", "net", "gov", "edu", "ac"]);
 
+// An address inside the address: a proxy, onward fetcher or open redirect (shields.io /endpoint?url=, imgix mark=, ?next=)
+// makes someone else's server request it, and the attacker reads that request. Checked on every host, allowlisted or not.
+const NESTED_URL = /https?:|:\/\/|(?:^|[=&;?])\/\//i;
+const IPV4 = /^\d+\.\d+\.\d+\.\d+$/;
+
 /** The labels of a host name above its registrable domain: "a.b.example.com" -> ["a", "b"]. */
 function labelsAboveRegistrable(hostname: string): string[] {
   const labels = hostname.split(".");
@@ -93,15 +100,20 @@ export function imageUrlVerdict(src: string): ImageVerdict {
 
   // The host name is text too: every label above the registrable domain is chosen by whoever runs that domain's DNS.
   if (!isAllowlistedImageHost(url.hostname)) {
-    const labels = labelsAboveRegistrable(url.hostname);
-    if (labels.length > 1) reasons.push("host-labels");
-    if (labels.some((label) => label.length > MAX_HOST_LABEL_CHARS)) reasons.push("host-long");
-    if (labels.some((label) => label.length >= MIN_MIXED_HOST_LABEL && /[a-z]/i.test(label) && /\d/.test(label))) {
-      reasons.push("host-encoded");
+    if (url.hostname.startsWith("[") || IPV4.test(url.hostname)) {
+      reasons.push("host-ip");
+    } else {
+      const labels = labelsAboveRegistrable(url.hostname);
+      if (labels.length > 1) reasons.push("host-labels");
+      if (labels.some((label) => label.length > MAX_HOST_LABEL_CHARS)) reasons.push("host-long");
+      if (labels.some((label) => label.length >= MIN_MIXED_HOST_LABEL && /[a-z]/i.test(label) && /\d/.test(label))) {
+        reasons.push("host-encoded");
+      }
     }
   }
 
   const query = url.search.slice(1);
+  if (NESTED_URL.test(decode(decode(url.pathname))) || NESTED_URL.test(decode(decode(query)))) reasons.push("nested-url");
   const params = query === "" ? [] : query.split(/[&;]/).filter(Boolean);
   if (query.length > MAX_QUERY_CHARS) reasons.push("long-query");
   if (params.length > MAX_QUERY_PARAMS) reasons.push("many-params");
@@ -141,7 +153,7 @@ export const IMAGE_PROMPT_COPY = {
       const shown = hosts.slice(0, 3);
       const sites =
         hosts.length > 3
-          ? `${shown.join(", ")} and ${hosts.length - 3} more sites`
+          ? `${shown.join(", ")} and ${hosts.length - 3} more ${hosts.length === 4 ? "site" : "sites"}`
           : shown.length > 1
             ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}`
             : (shown[0] ?? "");
