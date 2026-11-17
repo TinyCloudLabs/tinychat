@@ -40,7 +40,7 @@ export function gateNoteImages(html: string, choices: ImageChoices = {}): string
     const verdict = imageUrlVerdict(src);
     if (verdict.kind === "load" || (verdict.kind === "ask" && choices[index] === "load")) return;
     if (verdict.kind === "block" || choices[index] === "skip") {
-      image.replaceWith(note(document, "nt-img-skipped", alt || IMAGE_PROMPT_COPY.notLoaded));
+      image.replaceWith(note(document, "nt-img-skipped", IMAGE_PROMPT_COPY.notLoaded(alt)));
       return;
     }
     const gate = document.createElement("span");
@@ -51,6 +51,7 @@ export function gateNoteImages(html: string, choices: ImageChoices = {}): string
     if (alt) gate.append(note(document, "nt-img-gate-alt", alt));
     gate.append(
       note(document, "nt-img-gate-address", verdict.address),
+      note(document, "nt-img-gate-why", IMAGE_PROMPT_COPY.why(verdict.host)),
       choiceButton(document, "data-img-load", index, IMAGE_PROMPT_COPY.load),
       choiceButton(document, "data-img-skip", index, IMAGE_PROMPT_COPY.notNow),
     );

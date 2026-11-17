@@ -117,6 +117,11 @@
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.soft-skin .nt-img-gate-why {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--dim);
+}
 .soft-skin .nt-img-gate-button {
   min-height: 44px;
   padding: 0 12px 0 0;

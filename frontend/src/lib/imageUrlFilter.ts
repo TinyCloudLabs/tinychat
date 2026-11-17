@@ -93,7 +93,9 @@ export function imageUrlVerdict(src: string): ImageVerdict {
 
 export const IMAGE_PROMPT_COPY = {
   title: (host: string) => `Load image from ${host}?`,
+  why: (host: string) => `${host} will see the full address, which can include text from this page.`,
   load: "Load",
   notNow: "Not now",
-  notLoaded: "Image not loaded",
+  /** What stays where an image did not load. */
+  notLoaded: (description: string) => (description ? `Image not loaded: ${description}` : "Image not loaded"),
 } as const;

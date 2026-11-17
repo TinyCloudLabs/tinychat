@@ -13,7 +13,7 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
     return <img src={src as string} alt={alt} {...props} />;
   }
   if (verdict.kind === "block" || choice === "skip") {
-    return <span className="text-muted-foreground">{alt || IMAGE_PROMPT_COPY.notLoaded}</span>;
+    return <span className="text-muted-foreground">{IMAGE_PROMPT_COPY.notLoaded(alt ?? "")}</span>;
   }
   return (
     <span
@@ -24,6 +24,7 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
       <span className="block font-medium text-foreground">{IMAGE_PROMPT_COPY.title(verdict.host)}</span>
       {alt ? <span className="block text-muted-foreground">{alt}</span> : null}
       <span className="mt-1 block break-all font-mono text-xs text-muted-foreground">{verdict.address}</span>
+      <span className="mt-1 block text-xs text-muted-foreground">{IMAGE_PROMPT_COPY.why(verdict.host)}</span>
       <span className="mt-2 flex gap-2">
         <button
           type="button"
