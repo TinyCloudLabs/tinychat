@@ -90,6 +90,7 @@ import {
   transcriptDeliveryConfigFromEnv,
 } from "./services/transcription-api.js";
 import { KvJsonKv, KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { PurgeSweeper } from "./services/transcriber-purge.js";
 import { TranscriptDeliveryWorker, WriteGovernor } from "./services/transcript-delivery.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -622,6 +623,8 @@ async function main() {
   const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
   const transcriberApi = transcriptionConfig ? createTranscriptionApiClient({ ...transcriptionConfig, requestIdFirstPartyOrigins }) : null;
   const transcriberIndex = new KvTranscriberIndexStore(node, transcriberStorageLane);
+  // TC-3136: retries recording removals whose provider-side purge is not yet confirmed.
+  const transcriberPurgeSweeper = transcriberApi ? new PurgeSweeper(transcriberApi, transcriberIndex) : null;
   const transcriptCoordinator = new TenantCoordinator();
   const transcriptEligibility = (address: string) =>
     transcriptDeliveryConfig.enabled &&
@@ -1219,6 +1222,7 @@ async function main() {
       createTranscriberRouter({
         api: transcriberApi!,
         index: transcriberIndex,
+        purger: transcriberPurgeSweeper ?? undefined,
         webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
         onObservedCompletion: transcriptWorker
           ? async (address, meetingId) => { await transcriptWorker.wake(address, meetingId, "observed"); }
@@ -1322,6 +1326,7 @@ async function main() {
 
   calendarAutojoinWorker?.start();
   transcriptWorker?.start();
+  transcriberPurgeSweeper?.start();
   // TC-1964: optional one-time, log-only count of stored credential rows. Unset = nothing runs.
   // Fired after boot, never awaited, and it cannot throw; it lists through the shared KV lane.
   if (process.env[CREDENTIAL_ROW_COUNT_ENV]?.trim()) {

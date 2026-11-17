@@ -1184,7 +1184,7 @@ describe("TC-581 shares and TC-641 creates share one index document", () => {
     test(`${kind}: pending creates and shares survive each other's writes`, async () => {
       const index: TranscriberIndexStore = kind === "memory"
         ? new MemoryTranscriberIndexStore() : new KvTranscriberIndexStore(kvDocs().node, new BackendStorageLane());
-      expect(await index.beginCreate(ADDRESS_B, intent("manual-v1-a"))).toEqual({ ids: [], shared: {} });
+      expect(await index.beginCreate(ADDRESS_B, intent("manual-v1-a"))).toEqual({ ids: [], shared: {}, purging: {} });
       await index.addShared(ADDRESS_B, "mtg_shared", prov);
       expect(await index.listPending(ADDRESS_B)).toEqual([intent("manual-v1-a")]);
       await index.completeCreate(ADDRESS_B, "manual-v1-a", "mtg_own");
@@ -1192,15 +1192,15 @@ describe("TC-581 shares and TC-641 creates share one index document", () => {
       expect(await index.shares(ADDRESS_B)).toEqual({ mtg_shared: prov });
       expect(await index.listPending(ADDRESS_B)).toEqual([]);
       expect(await index.beginCreate(ADDRESS_B, intent("manual-v1-b"))).toEqual({
-        ids: ["mtg_own", "mtg_shared"], shared: { mtg_shared: prov },
+        ids: ["mtg_own", "mtg_shared"], shared: { mtg_shared: prov }, purging: {},
       });
       await index.remove(ADDRESS_B, "mtg_own");
       await index.add(ADDRESS_B, "mtg_later");
       expect(await index.listPending(ADDRESS_B)).toEqual([intent("manual-v1-b")]);
-      expect(await index.entries(ADDRESS_B)).toEqual({ ids: ["mtg_later", "mtg_shared"], shared: { mtg_shared: prov } });
+      expect(await index.entries(ADDRESS_B)).toEqual({ ids: ["mtg_later", "mtg_shared"], shared: { mtg_shared: prov }, purging: {} });
       await index.abandonCreate(ADDRESS_B, "manual-v1-b");
       await index.remove(ADDRESS_B, "mtg_shared");
-      expect(await index.entries(ADDRESS_B)).toEqual({ ids: ["mtg_later"], shared: {} });
+      expect(await index.entries(ADDRESS_B)).toEqual({ ids: ["mtg_later"], shared: {}, purging: {} });
       expect(await index.listPending(ADDRESS_B)).toEqual([]);
     });
   }
@@ -1213,7 +1213,7 @@ describe("TC-581 shares and TC-641 creates share one index document", () => {
     await writer.addShared(ADDRESS_B, "mtg_shared", prov);
     expect(docs.get(key)).toEqual({ ids: ["mtg_shared"], shared: { mtg_shared: prov }, pending: [intent("manual-v1-a")] });
     const reader = new KvTranscriberIndexStore(node, new BackendStorageLane());
-    expect(await reader.entries(ADDRESS_B)).toEqual({ ids: ["mtg_shared"], shared: { mtg_shared: prov } });
+    expect(await reader.entries(ADDRESS_B)).toEqual({ ids: ["mtg_shared"], shared: { mtg_shared: prov }, purging: {} });
     expect(await reader.listPending(ADDRESS_B)).toEqual([intent("manual-v1-a")]);
   });
 

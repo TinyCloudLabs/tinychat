@@ -408,7 +408,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               {meetings.map((row) => (
                 <li key={row.id} className="py-2.5">
                   {"unavailable" in row ? (
-                    <UnavailableRow id={row.id} busy={busyId === row.id} onRemove={onRemove} />
+                    <UnavailableRow id={row.id} deleting={"deleting" in row && row.deleting === true} busy={busyId === row.id} onRemove={onRemove} />
                   ) : (
                     <MeetingRow
                       meeting={row}
@@ -430,13 +430,15 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   );
 };
 
-function UnavailableRow(props: { id: string; busy: boolean; onRemove: (id: string) => void }) {
+function UnavailableRow(props: { id: string; deleting: boolean; busy: boolean; onRemove: (id: string) => void }) {
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
         <span className="block truncate font-mono text-xs">{props.id}</span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
-          Could not be read right now.
+          {props.deleting
+            ? "Deleting… this isn't finished yet. We keep retrying until it's confirmed gone."
+            : "Could not be read right now."}
         </span>
       </div>
       <Button
@@ -446,7 +448,7 @@ function UnavailableRow(props: { id: string; busy: boolean; onRemove: (id: strin
         disabled={props.busy}
         onClick={() => props.onRemove(props.id)}
       >
-        Remove
+        {props.deleting ? "Try again" : "Remove"}
       </Button>
     </div>
   );
@@ -1047,7 +1049,11 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
       void (async () => {
         const result = await api.remove(id);
         setBusyId(null);
-        if (result.status === "ok" || result.status === "not-found") {
+        if (result.status === "ok" && result.value.deleting) {
+          // Not yet confirmed gone at the provider: keep the row, as "deleting"; the server keeps retrying.
+          setMeetings((current) => current.map((m) => (m.id === id ? { id, unavailable: true as const, deleting: true as const } : m)));
+          setOpen((o) => (o !== null && o.id === id ? null : o));
+        } else if (result.status === "ok" || result.status === "not-found") {
           setMeetings((current) => current.filter((m) => m.id !== id));
           setOpen((o) => (o !== null && o.id === id ? null : o));
         }

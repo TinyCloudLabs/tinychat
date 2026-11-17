@@ -12,7 +12,8 @@ import type { SessionStore } from "@tinyboilerplate/client";
  *   get()           GET    /api/transcriber/meetings/:id
  *   stop()          POST   /api/transcriber/meetings/:id/stop
  *   transcript()    GET    /api/transcriber/meetings/:id/transcript   (202 = pending)
- *   remove()        DELETE /api/transcriber/meetings/:id
+ *   remove()        DELETE /api/transcriber/meetings/:id (202 = still deleting)
+ *   removeAll()     DELETE /api/transcriber/meetings
  *
  * A 404 on the LIST means the backend has no transcriber configured (`feature-dark`); a 404 on
  * one meeting means that meeting is gone (`not-found`). Same distinction meetingsApi.ts draws.
@@ -75,6 +76,8 @@ export interface TranscriberMeeting {
 export interface TranscriberUnavailableMeeting {
   id: string;
   unavailable: true;
+  /** TC-3136: the owner removed it and the provider's copy is not yet confirmed gone; the server is retrying. */
+  deleting?: true;
 }
 
 export type TranscriberListRow = TranscriberMeeting | TranscriberUnavailableMeeting;
@@ -135,7 +138,10 @@ export interface TranscriberClient {
   get(id: string): Promise<TranscriberResult<TranscriberMeeting>>;
   stop(id: string): Promise<TranscriberResult<{ id: string; status: TranscriberMeetingStatus }>>;
   transcript(id: string): Promise<TranscriberResult<TranscriptResult>>;
-  remove(id: string): Promise<TranscriberResult<null>>;
+  /** Resolves ok once the entry is gone (`deleting: false`) or accepted for retry (`deleting: true`). */
+  remove(id: string): Promise<TranscriberResult<{ deleting: boolean }>>;
+  /** Removes every recording this account holds, including the provider's copies; `deleting` counts those still being retried. */
+  removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number }>>;
 }
 
 export function createTranscriberClient(
@@ -246,10 +252,13 @@ export function createTranscriberClient(
         },
       }),
     remove: (value) =>
-      request<null>(`/${id(value)}`, {
+      request<{ deleting: boolean }>(`/${id(value)}`, {
         method: "DELETE",
         missing: "not-found",
-        read: async () => null,
+        // 202 = the provider's copy is not yet confirmed gone; the server keeps retrying.
+        read: async (response) => ({ deleting: response.status === 202 }),
       }),
+    removeAll: () =>
+      request<{ removed: number; deleting: number }>("", { method: "DELETE", missing: "feature-dark" }),
   };
 }

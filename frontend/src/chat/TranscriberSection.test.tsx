@@ -519,6 +519,25 @@ describe("transcriber client", () => {
     expect(await client.remove("mtg_1")).toEqual({ status: "not-found" });
   });
 
+  test("remove tells a confirmed delete (204) from one still being retried (202)", async () => {
+    const answers = [new Response(null, { status: 204 }), new Response(JSON.stringify({ id: "mtg_1", status: "deleting" }), { status: 202 })];
+    const fetchImpl = (async () => answers.shift()!) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: false } });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: true } });
+  });
+
+  test("removeAll sends DELETE to the collection and reports what is still deleting", async () => {
+    const seen: { url: string; method?: string }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(url), method: init?.method });
+      return new Response(JSON.stringify({ removed: 3, deleting: 1 }), { status: 202 });
+    }) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1 } });
+    expect(seen).toEqual([{ url: "https://api.example/api/transcriber/meetings", method: "DELETE" }]);
+  });
+
   test("create posts JSON; a 400 comes back rejected with its code", async () => {
     const seen: RequestInit[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
