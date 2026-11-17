@@ -23,11 +23,13 @@ import {
 } from "../lib/chatApi";
 import { createChatModelAdapter } from "./chatModelAdapter";
 import { adoptStoredHistory, stampProvenance } from "../lib/imageGate";
+import { writeExtractedMemory } from "./extractedMemory";
 import type { CompactionCheckpoint } from "./compaction";
 import {
   appendMessage,
   deleteThread,
   getMemory,
+  getMemoryMarked,
   getThread,
   getThreadTitle,
   isKnownThreadId,
@@ -37,7 +39,6 @@ import {
   readMemoryCache,
   normalizeUserTitle,
   renameThread,
-  setMemory,
   setThreadModel,
   subscribeThreadIndex,
   ThreadListLoadError,
@@ -630,7 +631,7 @@ function useThreadListAdapter(
           return getMemory(origin.tcw);
         },
         setDoc: async (next) => {
-          await setMemory(origin.tcw, next);
+          await writeExtractedMemory(origin.tcw, origin.threadId, next);
           if (depsRef.current.tcw === origin.tcw && d.privateAccessRef.current === access) {
             depsRef.current.memoryRef.current = next;
             depsRef.current.onMemoryUpdated?.(next);
@@ -861,7 +862,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
   }, [selection]);
 
   const chatModel = useMemo(
-    () => createChatModelAdapter({ ...depsRef.current, selection }),
+    () => createChatModelAdapter({ ...depsRef.current, selection, isMemoryMarked: getMemoryMarked }),
     // Access changes replace the ephemeral browser meeting selection state.
     [selection, deps.meetingRetriever],
   );

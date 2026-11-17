@@ -670,4 +670,35 @@ describe("chatModelAdapter marks the chat when outside content enters (images as
     await runTurn(deps);
     expect(isConversationMarked("t1")).toBe(true);
   });
+
+  async function runWithMemory(deps: AdapterDeps, system: string | undefined) {
+    for await (const _ of createChatModelAdapter(deps).run({
+      messages: oneUserMessage(), context: system === undefined ? {} : { system }, abortSignal: new AbortController().signal,
+      unstable_assistantMessageId: "gate-assistant",
+    } as never) as AsyncIterable<unknown>) void _;
+  }
+
+  test("a chat that loads a memory written from a marked chat starts marked", async () => {
+    resetImageGateForTests();
+    globalThis.fetch = (async () => okStreamResponse("Plain answer.")) as typeof fetch;
+    const asked: unknown[] = [];
+    const { deps } = makeDeps({
+      agentEnabledRef: ref(false), contextTokensFor: () => 64_000,
+      isMemoryMarked: async (tcw) => { asked.push(tcw); return true; },
+    });
+    expect(isConversationMarked("t1")).toBe(false);
+    await runWithMemory(deps, "USER MEMORY");
+    expect(asked).toHaveLength(1);
+    expect(isConversationMarked("t1")).toBe(true);
+  });
+
+  test("a memory with no mark, or no memory at all, leaves the chat unmarked", async () => {
+    for (const [system, marked] of [["USER MEMORY", false], [undefined, true]] as const) {
+      resetImageGateForTests();
+      globalThis.fetch = (async () => okStreamResponse("Plain answer.")) as typeof fetch;
+      const { deps } = makeDeps({ agentEnabledRef: ref(false), contextTokensFor: () => 64_000, isMemoryMarked: async () => marked });
+      await runWithMemory(deps, system);
+      expect(isConversationMarked("t1")).toBe(false);
+    }
+  });
 });

@@ -138,12 +138,14 @@ const localStores = new WeakMap<TinyCloudWeb, {
   threads: Map<string, ThreadDoc>;
   settings: Map<string, string>;
   memory: string | null;
+  /** Whether the doc was written from a chat that held outside content (see `getMemoryMarked`). */
+  memoryMarked: boolean;
   compactions: Map<string, CompactionCheckpoint>;
 }>();
 
 export function useLocalThreadStorage(tcw: TinyCloudWeb): TinyCloudWeb {
   if (!localStores.has(tcw)) localStores.set(tcw, {
-    threads: new Map(), settings: new Map(), memory: null, compactions: new Map(),
+    threads: new Map(), settings: new Map(), memory: null, memoryMarked: false, compactions: new Map(),
   });
   return tcw;
 }
@@ -763,6 +765,68 @@ function removeMemoryCache(tcw: TinyCloudWeb): void {
   }
 }
 
+// Memory written from a chat that held outside content (lib/imageGate.ts) may carry text that content planted. The doc
+// keeps no trace of that by itself, so a marker row in the same table (no schema change) says so. It is written in the
+// same batch as the doc, and ends only when the owner clears or resets the memory. A chat that loads a marked doc
+// starts marked. A doc with no marker (written before this existed) is not marked: nothing records where it came from.
+const MEMORY_MARK_ROW_ID = "user_context_marked";
+const memoryMarkedReads = new WeakMap<TinyCloudWeb, Promise<boolean>>();
+
+function memoryMarkCacheKey(tcw: TinyCloudWeb): string | null {
+  const key = memoryCacheKey(tcw);
+  return key ? `${key}:marked` : null;
+}
+
+function readMemoryMarkCache(tcw: TinyCloudWeb): boolean | null {
+  const key = memoryMarkCacheKey(tcw);
+  if (!key) return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw === "1" ? true : raw === "0" ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberMemoryMark(tcw: TinyCloudWeb, marked: boolean): void {
+  memoryMarkedReads.set(tcw, Promise.resolve(marked));
+  const key = memoryMarkCacheKey(tcw);
+  if (!key) return;
+  try {
+    window.localStorage.setItem(key, marked ? "1" : "0");
+  } catch {
+    // localStorage full/disabled — cache is optional.
+  }
+}
+
+/**
+ * Whether the memory doc may hold outside content. Read once per session and kept (this device's own writes update
+ * it; another tab's write shows after a reload, like the doc itself). An unreadable marker is not proof the doc is
+ * clean: this device's last known value is used, and with none the doc counts as marked.
+ */
+export function getMemoryMarked(tcw: TinyCloudWeb): Promise<boolean> {
+  const local = localStores.get(tcw);
+  if (local) return Promise.resolve(local.memoryMarked);
+  const known = memoryMarkedReads.get(tcw);
+  if (known) return known;
+  const scope = storageScopeFor(tcw);
+  const read = (async () => {
+    await null; // the promise is registered before this body can fail
+    try {
+      const res = await store(tcw, scope).query("SELECT content FROM memory WHERE id = ?", [MEMORY_MARK_ROW_ID]);
+      if (!res.ok) throw new SqlOpError(res.error, "getMemoryMarked", scope);
+      const marked = res.data.rows.length > 0;
+      rememberMemoryMark(tcw, marked);
+      return marked;
+    } catch {
+      memoryMarkedReads.delete(tcw);
+      return readMemoryMarkCache(tcw) ?? true;
+    }
+  })();
+  memoryMarkedReads.set(tcw, read);
+  return read;
+}
+
 /**
  * Read the per-space user_context memory doc. Returns null if unset.
  *
@@ -810,11 +874,21 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
   }
 }
 
-/** Upsert the per-space user_context doc and refresh the localStorage cache. */
-export async function setMemory(tcw: TinyCloudWeb, content: string): Promise<void> {
+/**
+ * Upsert the per-space user_context doc and refresh the localStorage cache. `outside` records, in the same write, that
+ * the doc now comes from a chat that held outside content; `resetMark` (the owner starting the doc over) removes that
+ * record. Neither leaves it as it was.
+ */
+export async function setMemory(tcw: TinyCloudWeb, content: string, options: { outside?: boolean; resetMark?: boolean } = {}): Promise<void> {
   const scope = storageScopeFor(tcw);
   const local = localStores.get(tcw);
-  if (local) { _memoryWriteGen++; local.memory = content; return; }
+  if (local) {
+    _memoryWriteGen++;
+    local.memory = content;
+    if (options.outside) local.memoryMarked = true;
+    else if (options.resetMark) local.memoryMarked = false;
+    return;
+  }
   // Bump BEFORE SQL: any in-flight memory read will see a different counter
   // on completion and skip its ref assignment (see memoryWriteGen above).
   _memoryWriteGen++;
@@ -844,10 +918,14 @@ export async function setMemory(tcw: TinyCloudWeb, content: string): Promise<voi
     );
   }
   stmts.push({ sql: UPSERT, params: [MEMORY_ROW_ID, content, now] });
+  if (options.outside) stmts.push({ sql: UPSERT, params: [MEMORY_MARK_ROW_ID, "1", now] });
+  else if (options.resetMark) stmts.push({ sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_MARK_ROW_ID] });
 
   const res = await store(tcw, scope).batch(stmts);
   if (!res.ok) throw new SqlOpError(res.error, "setMemory", scope);
   writeMemoryCache(tcw, content);
+  if (options.outside) rememberMemoryMark(tcw, true);
+  else if (options.resetMark) rememberMemoryMark(tcw, false);
 }
 
 /**
@@ -859,7 +937,7 @@ export async function setMemory(tcw: TinyCloudWeb, content: string): Promise<voi
  * come for free. Returns the template that was written.
  */
 export async function resetMemoryToTemplate(tcw: TinyCloudWeb): Promise<string> {
-  await setMemory(tcw, MEMORY_TEMPLATE);
+  await setMemory(tcw, MEMORY_TEMPLATE, { resetMark: true });
   return MEMORY_TEMPLATE;
 }
 
@@ -869,15 +947,17 @@ export async function resetMemoryToTemplate(tcw: TinyCloudWeb): Promise<string> 
 export async function clearMemory(tcw: TinyCloudWeb): Promise<void> {
   const scope = storageScopeFor(tcw);
   const local = localStores.get(tcw);
-  if (local) { _memoryWriteGen++; local.memory = null; return; }
+  if (local) { _memoryWriteGen++; local.memory = null; local.memoryMarked = false; return; }
   _memoryWriteGen++;
   await ensureSchema(tcw, { forWrite: true }, scope);
   const res = await store(tcw, scope).batch([
     { sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_ROW_ID] },
     { sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_BACKUP_ROW_ID] },
+    { sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_MARK_ROW_ID] },
   ]);
   if (!res.ok) throw new SqlOpError(res.error, "clearMemory", scope);
   removeMemoryCache(tcw);
+  rememberMemoryMark(tcw, false);
 }
 
 // ── Compaction checkpoints (append-only per-thread summaries; §C.7) ──

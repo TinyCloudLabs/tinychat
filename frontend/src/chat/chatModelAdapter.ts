@@ -42,7 +42,7 @@ import {
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type React from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
-import type { ModelSelectionCoordinator } from "./modelSelection";
+import type { ModelSelectionCoordinator, TurnOrigin } from "./modelSelection";
 import { meetingSourceLabel } from "../lib/connectors/meetingExplorer";
 import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import { assembleRequestContext, publishRequestAttempt } from "./canvas/requestContext";
@@ -142,6 +142,8 @@ export interface AdapterDeps {
    */
   meetingRetriever?: MeetingTurnRetriever;
   meetingMessageRegistry: MeetingMessageRegistry;
+  /** Whether the memory doc may hold outside content (written from a marked chat); a chat that loads it starts marked. */
+  isMemoryMarked?: (tcw: TurnOrigin["tcw"]) => Promise<boolean>;
   // ── Compaction deps (injected so unit tests can stub them; §D.3) ─────
   /** Latest checkpoint for a thread (or null). */
   getCheckpoint: (threadId: string) => Promise<CompactionCheckpoint | null>;
@@ -286,6 +288,8 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       const threadId = origin.threadId;
       // Outside content marks the chat (lib/imageGate.ts) the moment it enters, before the reply that follows renders.
       if (takePastedText()) markOutsideContent(threadId);
+      // A memory written from a chat that held outside content may carry what that content planted: this chat starts marked.
+      if (memoryBlock && deps.isMemoryMarked && (await deps.isMemoryMarked(origin.tcw))) markOutsideContent(threadId);
       const modelId = origin.model;
       const agentEnabled = deps.agentEnabledRef.current;
       const assertTurn = () => {
