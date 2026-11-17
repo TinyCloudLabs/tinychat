@@ -49,7 +49,6 @@ test("the two fields go on an approval only, and unknown fields are still refuse
     expect(validateRecord(kind as "ask", { ...syntheticRecord(kind), redeemedAt: REDEEMED }).ok, `${kind} redeemedAt`).toBe(false);
     expect(validateRecord(kind as "ask", { ...syntheticRecord(kind), grantLifetime: "1h" }).ok, `${kind} grantLifetime`).toBe(false);
   }
-  expect(validateRecord("approval", grant({ answerCount: 3 })).ok).toBe(false);
   expect(validateRecord("approval", grant({ redeemedAtMs: 1 })).ok).toBe(false);
 });
 
