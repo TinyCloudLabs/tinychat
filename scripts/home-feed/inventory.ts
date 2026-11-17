@@ -11,7 +11,7 @@ import {
   boardKey, effectivePriority, emptySitrepOwnerData, isClosed, isKind, parseSitrepCardPayload, projectSitrepCard, validateRecord,
 } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord, Kind } from "@tinyboilerplate/core/feed/sitrep";
-import { homeMirrorBindings, homeMirrorDiagnostic, homeMirrorPublicationSha256, homeMirrorRefusal, publishHomeMirror, readHomeMirrorSource } from "./bridge";
+import { homeMirrorBindings, homeMirrorDiagnostic, homeMirrorPublicationSha256, homeMirrorRecord, homeMirrorRefusal, publishHomeMirror, readHomeMirrorSource } from "./bridge";
 import type { HomeMirrorContext, HomeMirrorPublishInput } from "./bridge-types";
 
 export const INVENTORY_KINDS = ["ask", "task", "incident", "progress", "work", "approval"] as const satisfies readonly Kind[];
@@ -87,16 +87,17 @@ export function readBoardIndex(path: string, kinds: readonly InventoryKind[]): {
 export function boardCard(row: InventoryRow, all: readonly BoardRecord[], now: number): FeedCard {
   const { record } = row;
   if (STAYS_ON_BOARD.includes(record.kind)) throw homeMirrorRefusal("Home mirror inventory leaves holds and claims on the board");
+  const carried = homeMirrorRecord(record, now);
   const projection = projectSitrepCard(record, all, emptySitrepOwnerData(), now);
   const card: FeedCard = {
     ...boardCardIdentity(row.key), kind: record.kind, needsResponse: projection.request,
     title: record.title, body: record.body ?? "",
     ...(record.kind === "ask" ? { choices: record.options.map((option) => ({ id: option.id, label: option.label })) } : {}),
     urgency: effectivePriority(record).urgency, createdAt: record.createdAt,
-    payload: { sitrep: { version: 1, record }, source: { label: "Rocinante board", ref: row.key }, ...(record.repo ? { project: record.repo } : {}) },
+    payload: { sitrep: { version: 1, record: carried }, source: { label: "Rocinante board", ref: row.key }, ...(record.repo ? { project: record.repo } : {}) },
   };
   const typed = parseSitrepCardPayload(card.payload?.sitrep);
-  if (!feedCardSchema.safeParse(card).success || !typed || !isDeepStrictEqual(typed.record, record)) throw homeMirrorRefusal("Home mirror operation refused");
+  if (!feedCardSchema.safeParse(card).success || !typed || !isDeepStrictEqual(typed.record, carried)) throw homeMirrorRefusal("Home mirror operation refused");
   return card;
 }
 
