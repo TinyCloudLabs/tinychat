@@ -60,7 +60,7 @@ import {
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
-import { createTranscriberRouter } from "./routes/transcriber.js";
+import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
 import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
 import { WakeQueue } from "./exo/wake-intake.js";
@@ -1245,6 +1245,15 @@ async function main() {
     console.warn(
       "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.",
     );
+    // Private cloud transcription can be on without the meeting transcriber: account deletion still has to
+    // clear its jobs, so the bulk DELETE alone is mounted (TC-3166). Otherwise it would 404 as "dark".
+    if (privateCloudPtxClient && privateCloudTranscription.enabled) {
+      app.use(
+        "/api/transcriber/meetings",
+        authMiddleware,
+        createPrivateCloudOnlyBulkDeleteRouter(createPrivateCloudPurger(privateCloudPtxClient, privateCloudTranscription.tenantKey)),
+      );
+    }
   }
 
   // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can

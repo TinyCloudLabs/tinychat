@@ -566,6 +566,15 @@ describe("transcriber client", () => {
     expect(await client.removeAll()).toMatchObject({ status: "rejected" });
   });
 
+  test("removeAll accepts a null private cloud count (service not used) but rejects an absent one", async () => {
+    const answer = (body: object) => (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
+    const base = { removed: 1, deleting: 0, listOnly: 0, notDeleted: 0 };
+    const used = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer({ ...base, privateCloudDeleted: null }) });
+    expect(await used.removeAll()).toEqual({ status: "ok", value: { ...base, privateCloudDeleted: null } });
+    const absent = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(base) });
+    expect(await absent.removeAll()).toMatchObject({ status: "rejected" });
+  });
+
   test("create posts JSON; a 400 comes back rejected with its code", async () => {
     const seen: RequestInit[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {

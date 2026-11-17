@@ -9,7 +9,7 @@ type StepState =
   | { phase: "confirm" }
   | { phase: "working" }
   | ({ phase: "done" } & Removals)
-  | ({ phase: "deleting" } & Pick<Removals, "shared" | "notDeleted">)
+  | ({ phase: "deleting" } & Pick<Removals, "shared" | "notDeleted" | "voiceNotes">)
   | { phase: "failed" };
 
 /**
@@ -35,11 +35,14 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
       // were not attributed to it by the provider; neither was deleted here.
       const { removed, deleting, listOnly, notDeleted, privateCloudDeleted } = result.value;
       const own = removed - listOnly - notDeleted;
-      setState(deleting > 0 ? { phase: "deleting", shared: listOnly, notDeleted } : { phase: "done", own, shared: listOnly, notDeleted, voiceNotes: privateCloudDeleted });
+      setState(deleting > 0
+        ? { phase: "deleting", shared: listOnly, notDeleted, voiceNotes: privateCloudDeleted }
+        : { phase: "done", own, shared: listOnly, notDeleted, voiceNotes: privateCloudDeleted });
       return;
     }
-    // Feature off for this deployment: there are no recordings to delete.
-    setState(result.status === "feature-dark" ? { phase: "done", own: 0, shared: 0, notDeleted: 0, voiceNotes: 0 } : { phase: "failed" });
+    // Neither the meeting transcriber nor private cloud transcription is on for this deployment: there are no
+    // recordings to delete, and nothing about voice notes or uploads is said (`voiceNotes: null`).
+    setState(result.status === "feature-dark" ? { phase: "done", own: 0, shared: 0, notDeleted: 0, voiceNotes: null } : { phase: "failed" });
   };
 
   return (

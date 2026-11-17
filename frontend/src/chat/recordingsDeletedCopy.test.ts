@@ -44,6 +44,18 @@ test("an own delete still pending never says everything is deleted; the final re
   const pending = "Your voice notes and uploads are deleted. Your meeting recordings are being deleted; we keep trying until each one is gone.";
   expect(pendingText(none)).toBe(pending);
   expect(pendingText(none)).not.toContain("Your meeting recordings, voice notes and uploads are deleted");
-  expect(pendingText({ shared: 2, notDeleted: 0 })).toBe(`${pending} ${SHARED}`);
-  expect(pendingText({ shared: 0, notDeleted: 1 })).toBe(`${pending} ${NOT_DELETED}`);
+  expect(pendingText({ shared: 2, notDeleted: 0, voiceNotes: 0 })).toBe(`${pending} ${SHARED}`);
+  expect(pendingText({ shared: 0, notDeleted: 1, voiceNotes: 0 })).toBe(`${pending} ${NOT_DELETED}`);
+});
+
+test("when private cloud is not used (null) nothing is said about voice notes or uploads, and 0 is never confused with null", () => {
+  const unused = { ...none, voiceNotes: null };
+  expect(doneText({ ...unused, own: 2 })).toBe("Your meeting recordings are deleted, including the notetaker service's copies.");
+  expect(doneText({ ...unused, shared: 1 })).toBe(`You had no meeting recordings of your own to delete. ${SHARED}`);
+  expect(doneText(unused)).toBe("You have no meeting recordings to delete.");
+  expect(pendingText(unused)).toBe("Your meeting recordings are being deleted. We keep trying until each one is gone.");
+  for (const text of [doneText({ ...unused, own: 2 }), doneText(unused), pendingText(unused)]) expect(text).not.toMatch(/voice notes|uploads|Private Transcription/);
+  // Checked and found none is a different answer from not used.
+  expect(doneText({ ...none, own: 2 })).toBe(OWN);
+  expect(doneText(none)).toBe("You have no recordings, voice notes or uploads to delete.");
 });

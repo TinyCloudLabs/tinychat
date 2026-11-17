@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import express from "express";
 
-import { createTranscriberRouter } from "../routes/transcriber.js";
+import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "../routes/transcriber.js";
 import { createPrivateCloudPurger, PrivateCloudPurgeError } from "../services/private-cloud-purge.js";
 import { PtxTransportError, tenantRefFor, type PtxClient, type PtxRequest, type PtxResponse } from "../services/private-cloud-transcription.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
@@ -155,9 +155,9 @@ describe("bulk DELETE /api/transcriber/meetings runs the private cloud purge", (
     expect(ptx.idsOf(OWNER)).toEqual([]);
   });
 
-  test("when the private cloud service is not enabled it is a no-op that reports zero", async () => {
+  test("when the private cloud service is not used the count is null, never 0 (which would read as 'checked, none')", async () => {
     const result = await withServer(undefined, bulk);
-    expect(result).toEqual({ status: 200, body: { removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 } });
+    expect(result).toEqual({ status: 200, body: { removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null } });
   });
 
   test("an unconfirmed private cloud delete is a 503, never a success; the retry succeeds", async () => {
@@ -173,5 +173,43 @@ describe("bulk DELETE /api/transcriber/meetings runs the private cloud purge", (
       ptx.setDown(false);
       expect(await bulk(base)).toMatchObject({ status: 200, body: { privateCloudDeleted: 2 } });
     });
+  });
+});
+
+describe("private cloud on, meeting transcriber off: the bulk DELETE is still there", () => {
+  async function withOnlyRouter<T>(user: { address: string } | null, purge: (address: string) => Promise<number>, fn: (base: string) => Promise<T>): Promise<T> {
+    const app = express();
+    app.use((req, _res, next) => { if (user) req.user = user; next(); });
+    app.use("/api/transcriber/meetings", createPrivateCloudOnlyBulkDeleteRouter({ purge }));
+    const server = await new Promise<Server>((resolve) => { const s = app.listen(0, () => resolve(s)); });
+    try {
+      return await fn(`http://localhost:${(server.address() as { port: number }).port}`);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  }
+  const bulk = async (base: string) => {
+    const response = await fetch(`${base}/api/transcriber/meetings`, { method: "DELETE" });
+    return { status: response.status, body: await response.json() as Record<string, unknown> };
+  };
+
+  test("it asks private cloud for the caller (lower-cased) and reports the count, with no meetings", async () => {
+    const asked: string[] = [];
+    const result = await withOnlyRouter({ address: OWNER.toUpperCase().replace("0X", "0x") }, async (address) => { asked.push(address); return 3; }, bulk);
+    expect(result).toEqual({ status: 200, body: { removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 3 } });
+    expect(asked).toEqual([OWNER]);
+  });
+
+  test("an unconfirmed delete is a 503, not 'nothing to delete'", async () => {
+    const result = await withOnlyRouter({ address: OWNER }, async () => { throw new PrivateCloudPurgeError("not_drained"); }, bulk);
+    expect(result.status).toBe(503);
+    expect(result.body).toMatchObject({ error: "transcriber_unavailable", privateCloudFailed: true });
+  });
+
+  test("without a session it is 401 and private cloud is never asked", async () => {
+    let asked = 0;
+    const result = await withOnlyRouter(null, async () => { asked++; return 0; }, bulk);
+    expect(result.status).toBe(401);
+    expect(asked).toBe(0);
   });
 });

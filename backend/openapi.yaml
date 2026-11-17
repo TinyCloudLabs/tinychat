@@ -2703,12 +2703,13 @@ components:
             metadata missing or for another address). They were dropped from the list but the provider's copy
             was NOT deleted.
         privateCloudDeleted:
-          type: integer
+          type: [integer, "null"]
           description: >-
             TC-3166: private cloud transcription jobs (voice notes and uploads) this address held, deleted and read
-            back gone from the service's own list. 0 while that service is not enabled. If any cannot be confirmed
-            the whole call is a 503 (`privateCloudFailed: true`) and is safe to repeat. The audio file of a deleted
-            job is removed by the service's own cleanup after the call returns.
+            back gone from the service's own list. `null` when that service is not used by this deployment (never 0,
+            which would mean "checked, none"). If any cannot be confirmed the whole call is a 503
+            (`privateCloudFailed: true`) and is safe to repeat. A deleted job's audio file is unlinked inside the
+            service's own delete request; a failed unlink is retried by its cleanup sweep.
     TranscriberTranscript:
       type: object
       required: [meeting_id, status]

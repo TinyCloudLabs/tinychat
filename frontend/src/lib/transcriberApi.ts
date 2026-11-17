@@ -149,9 +149,10 @@ export interface TranscriberClient {
    * Removes every recording this account holds, including the provider's copies, and (TC-3166) every private cloud
    * transcription job (voice notes and uploads). `deleting` counts meeting recordings still being retried; `listOnly`
    * (shared with this account) and `notDeleted` (own entries the provider did not attribute to it) were only dropped
-   * from the list. Both are subsets of `removed`. `privateCloudDeleted` counts the jobs deleted and read back gone.
+   * from the list. Both are subsets of `removed`. `privateCloudDeleted` counts the jobs deleted and read back gone,
+   * or is `null` when the deployment does not use that service (the step then says nothing about it).
    */
-  removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number }>>;
+  removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number | null }>>;
 }
 
 export function createTranscriberClient(
@@ -275,18 +276,18 @@ export function createTranscriberClient(
         },
       }),
     removeAll: () =>
-      request<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number }>("", {
+      request<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number | null }>("", {
         method: "DELETE",
         missing: "feature-dark",
         // A backend that predates `listOnly`/`notDeleted`/`privateCloudDeleted` cannot say which removals were really
-        // deleted, or that voice notes and uploads were checked at all, so a missing field is a rejected response
-        // (the step shows "couldn't finish"), never a guess.
+        // deleted, or whether voice notes and uploads were checked (`null` says it did not use that service), so a
+        // missing field is a rejected response (the step shows "couldn't finish"), never a guess.
         read: async (response) => {
           const body = (await response.json()) as Record<"removed" | "deleting" | "listOnly" | "notDeleted" | "privateCloudDeleted", unknown>;
           const { removed, deleting, listOnly, notDeleted, privateCloudDeleted } = body;
           if (
             typeof removed !== "number" || typeof deleting !== "number" || typeof listOnly !== "number"
-            || typeof notDeleted !== "number" || typeof privateCloudDeleted !== "number"
+            || typeof notDeleted !== "number" || (typeof privateCloudDeleted !== "number" && privateCloudDeleted !== null)
           ) {
             throw new Error("incomplete_bulk_delete_response");
           }

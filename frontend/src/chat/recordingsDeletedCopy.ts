@@ -6,20 +6,28 @@
  * still has them, so they are never reported as deleted. `notDeleted` were listed as the account's own but
  * the provider does not attribute them to it: dropped from the list, NOT deleted at the provider, and never
  * called deleted or shared. Only call `own` deleted once every own delete is confirmed. `voiceNotes` counts the
- * private cloud transcription jobs (voice notes and uploads, TC-3166) deleted and read back gone; the step only
- * reaches `done` or `deleting` after that check succeeded, since a failed check is the failure line.
+ * private cloud transcription jobs (voice notes and uploads, TC-3166) deleted and read back gone, and is `null`
+ * when the deployment does not use that service: then nothing is said about voice notes or uploads, and the
+ * earlier meeting-only lines (also Monica's) apply. The step only reaches `done` or `deleting` after the check
+ * succeeded, since a failed check is the failure line.
  */
 export interface Removals {
   own: number;
   shared: number;
   notDeleted: number;
-  voiceNotes: number;
+  voiceNotes: number | null;
 }
 
 export const NOTHING_TO_DELETE = "You have no recordings, voice notes or uploads to delete.";
 export const NOTHING_OF_YOURS = "You had no recordings, voice notes or uploads of your own to delete.";
 /** At least one meeting recording's delete is not confirmed yet; the voice notes and uploads are already deleted. */
 export const STILL_DELETING = "Your voice notes and uploads are deleted. Your meeting recordings are being deleted; we keep trying until each one is gone.";
+
+/** Used when the private cloud service is not part of the deployment (`voiceNotes` is null): meetings only. */
+export const MEETINGS_ONLY_NOTHING_TO_DELETE = "You have no meeting recordings to delete.";
+export const MEETINGS_ONLY_NOTHING_OF_YOURS = "You had no meeting recordings of your own to delete.";
+export const MEETINGS_ONLY_STILL_DELETING = "Your meeting recordings are being deleted. We keep trying until each one is gone.";
+export const MEETINGS_ONLY_OWN_DELETED = "Your meeting recordings are deleted, including the notetaker service's copies.";
 export const SHARED_REMOVED = "Recordings others shared with you are removed from your list; the people who shared them still have them.";
 /** Own entries the provider does not attribute to the account: dropped from the list, copy NOT deleted. */
 export const NOT_DELETED = "Some recordings were removed from your list but are still with the notetaker service. To have them deleted, email team@tinycloud.xyz.";
@@ -36,15 +44,20 @@ const join = (...parts: Array<string | false>): string => parts.filter((part) =>
 
 /** Every own delete is confirmed (one or many: no counts, no singular). */
 export function doneText({ own, shared, notDeleted, voiceNotes }: Removals): string {
-  if (own === 0 && shared === 0 && notDeleted === 0 && voiceNotes === 0) return NOTHING_TO_DELETE;
+  const privateCloud = voiceNotes !== null;
+  if (own === 0 && shared === 0 && notDeleted === 0 && (voiceNotes ?? 0) === 0) {
+    return privateCloud ? NOTHING_TO_DELETE : MEETINGS_ONLY_NOTHING_TO_DELETE;
+  }
   return join(
-    own + voiceNotes > 0 ? OWN_DELETED : notDeleted === 0 && NOTHING_OF_YOURS,
+    own + (voiceNotes ?? 0) > 0
+      ? (privateCloud ? OWN_DELETED : MEETINGS_ONLY_OWN_DELETED)
+      : notDeleted === 0 && (privateCloud ? NOTHING_OF_YOURS : MEETINGS_ONLY_NOTHING_OF_YOURS),
     notDeleted > 0 && NOT_DELETED,
     shared > 0 && SHARED_REMOVED,
   );
 }
 
 /** At least one own delete is still pending; the removals that are already final may be said. */
-export function pendingText({ shared, notDeleted }: Pick<Removals, "shared" | "notDeleted">): string {
-  return join(STILL_DELETING, notDeleted > 0 && NOT_DELETED, shared > 0 && SHARED_REMOVED);
+export function pendingText({ shared, notDeleted, voiceNotes }: Pick<Removals, "shared" | "notDeleted" | "voiceNotes">): string {
+  return join(voiceNotes === null ? MEETINGS_ONLY_STILL_DELETING : STILL_DELETING, notDeleted > 0 && NOT_DELETED, shared > 0 && SHARED_REMOVED);
 }

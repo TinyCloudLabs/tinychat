@@ -180,7 +180,7 @@ describe("DELETE / (the step before account deletion)", () => {
     await h.index.addShared(OWNER, "mtg_shared", { ownerAddress: OTHER, title: "t", scheduledStart: "" } as never);
     await withServer(h.app, async (base) => {
       const r = await call(base, BASE, "DELETE");
-      expect(r).toEqual({ status: 202, body: { removed: 3, deleting: 1, listOnly: 1, notDeleted: 0, privateCloudDeleted: 0 } }); // listOnly: the shared one
+      expect(r).toEqual({ status: 202, body: { removed: 3, deleting: 1, listOnly: 1, notDeleted: 0, privateCloudDeleted: null } }); // listOnly: the shared one
     });
     expect(h.ptx.store.has("mtg_shared")).toBe(true); // the owner's copy is theirs
     expect([...h.ptx.store.keys()].sort()).toEqual(["mtg_3", "mtg_shared"]);
@@ -190,7 +190,7 @@ describe("DELETE / (the step before account deletion)", () => {
     h.ptx.modes.set("mtg_3", "ok");
     await withServer(h.app, async (base) => {
       // Idempotent: asking again finishes the stuck one and reports a clean 200.
-      expect(await call(base, BASE, "DELETE")).toEqual({ status: 200, body: { removed: 1, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 } });
+      expect(await call(base, BASE, "DELETE")).toEqual({ status: 200, body: { removed: 1, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null } });
     });
     expect(h.ptx.store.has("mtg_3")).toBe(false);
     expect(await h.index.list(OWNER)).toEqual([]);
@@ -203,7 +203,7 @@ describe("DELETE / (the step before account deletion)", () => {
     h.ptx.add("mtg_bare", ""); // no attribution at all (empty metadata)
     await h.index.add(OWNER, "mtg_bare");
     await withServer(h.app, async (base) => {
-      expect(await call(base, BASE, "DELETE")).toEqual({ status: 200, body: { removed: 3, deleting: 0, listOnly: 0, notDeleted: 2, privateCloudDeleted: 0 } });
+      expect(await call(base, BASE, "DELETE")).toEqual({ status: 200, body: { removed: 3, deleting: 0, listOnly: 0, notDeleted: 2, privateCloudDeleted: null } });
     });
     expect([...h.ptx.store.keys()].sort()).toEqual(["mtg_bare", "mtg_foreign"]); // only the confirmed own one was deleted
     expect(await h.index.list(OWNER)).toEqual([]);

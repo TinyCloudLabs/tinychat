@@ -59,7 +59,15 @@ test("(3) shared only: nothing is called deleted", async () => {
 
 test("(4) nothing to delete, and the feature being dark", async () => {
   expect(await run({ status: 200, body: { removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 } })).toBe("You have no recordings, voice notes or uploads to delete.");
-  expect(await run({ status: 404, body: { error: "not_found" } })).toBe("You have no recordings, voice notes or uploads to delete.");
+  expect(await run({ status: 404, body: { error: "not_found" } })).toBe("You have no meeting recordings to delete.");
+});
+
+test("private cloud not used by the deployment (null): the step says nothing about voice notes or uploads; 0 still means checked", async () => {
+  const unused = { deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null };
+  expect(await run({ status: 200, body: { removed: 3, ...unused } })).toBe("Your meeting recordings are deleted, including the notetaker service's copies.");
+  expect(await run({ status: 200, body: { removed: 0, ...unused } })).toBe("You have no meeting recordings to delete.");
+  expect(await run({ status: 202, body: { removed: 2, ...unused, deleting: 1 } })).toBe("Your meeting recordings are being deleted. We keep trying until each one is gone.");
+  expect(await run({ status: 200, body: { removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 } })).toBe("You have no recordings, voice notes or uploads to delete.");
 });
 
 test("an own entry the provider did not attribute to the account is not reported as deleted, shared, or missing", async () => {
