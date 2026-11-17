@@ -12,10 +12,10 @@ import { dirname, join } from "node:path";
 import express from "express";
 import { createNonceStore, verifySessionToken, type NonceStore } from "@tinyboilerplate/server";
 import { NodeWasmBindings } from "@tinycloud/node-sdk";
-import { parseCompactUcanAuthorization, signCompactUcanAuthorization } from "@tinycloud/sdk-core";
+import { parseCompactUcanAuthorization, signCompactUcanAuthorization, signCompactUcanRootAuthorization } from "@tinycloud/sdk-core";
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { createApiBodyParser } from "../body-parsing.js";
-import { VERIFY_RENEWAL_ADDRESS_LIMIT, VERIFY_RENEWAL_IP_LIMIT } from "../rate-limits.js";
+import { VERIFY_RENEWAL_ADDRESS_LIMIT } from "../rate-limits.js";
 import { renewalVerifyConfigFromEnv, type RenewalVerifyConfig } from "../renewal-verify.js";
 import { createAuthRouter } from "../routes/auth.js";
 import { renewalVerifyProof } from "../../../packages/client/src/auth.ts";
@@ -81,8 +81,8 @@ function sessionSigner(jwk: object) {
   return async (bytes: Uint8Array) => new Uint8Array(signEd25519(null, bytes, key));
 }
 
-/** An owner-signed web session grant whose signed end has already passed. */
-async function expiredGrant(account = privateKeyToAccount(generatePrivateKey())): Promise<Grant> {
+/** An owner-signed session grant whose signed end has already passed; a web grant unless `domain` says otherwise. */
+async function expiredGrant(account = privateKeyToAccount(generatePrivateKey()), domain = "localhost"): Promise<Grant> {
   const manager = wasm.createSessionManager();
   const jwk = JSON.parse(manager.jwk("default"));
   const address = account.address;
@@ -92,7 +92,7 @@ async function expiredGrant(account = privateKeyToAccount(generatePrivateKey()))
     abilities: { kv: { "xyz.tinycloud.tinychat/connectors/": ["tinycloud.kv/get", "tinycloud.kv/list"] } },
     address,
     chainId: 1,
-    domain: "localhost",
+    domain,
     issuedAt: iso(now - 2 * HOUR),
     expirationTime: iso(now - 60),
     spaceId,
@@ -441,6 +441,53 @@ describe("POST /api/auth/verify-renewal", () => {
     await refusedBeforeNode(body, "invalid_status_invocation", api);
   });
 
+  /**
+   * The request's status invocation, re-signed by the grant's session key with one field changed. Signed
+   * with sdk-core's root signer: the same compact shape (no proofs), but it does not refuse a lifetime over 60 s.
+   */
+  async function reissuedInvocation(body: { nonce: string }, change: { nonce?: string; audienceDid?: string; notBefore?: number; expiresAt?: number }) {
+    const now = nowSeconds();
+    return (await signCompactUcanRootAuthorization({
+      issuerDid: grant.sessionDid,
+      audienceDid: change.audienceDid ?? node.identity.nodeDid,
+      attenuation: { [`urn:cid:${grant.delegationCid}`]: { "tinycloud.delegation/status": [{}] } },
+      facts: [{}],
+      proofs: [],
+      notBefore: change.notBefore ?? now,
+      expiresAt: change.expiresAt ?? now + 60,
+      nonce: change.nonce ?? body.nonce,
+      sign: grant.signSessionBytes,
+    })).authorization;
+  }
+
+  test("a status invocation carrying another nonce than the request's is refused without calling the node", async () => {
+    const api = backend();
+    const body = await requestBody(grant, lease, api.nonceStore);
+    body.statusInvocation = await reissuedInvocation(body, { nonce: api.nonceStore.generate(grant.address) });
+    await refusedBeforeNode(body, "invalid_status_invocation", api);
+  });
+
+  test("a status invocation addressed to another node is refused without calling the node", async () => {
+    const api = backend();
+    const body = await requestBody(grant, lease, api.nonceStore);
+    body.statusInvocation = await reissuedInvocation(body, { audienceDid: didKey(randomBytes(32)) });
+    await refusedBeforeNode(body, "invalid_status_invocation", api);
+  });
+
+  test("a status invocation valid for longer than 60 s is refused without calling the node", async () => {
+    const api = backend();
+    const body = await requestBody(grant, lease, api.nonceStore);
+    const now = nowSeconds();
+    body.statusInvocation = await reissuedInvocation(body, { notBefore: now - 30, expiresAt: now + 60 });
+    await refusedBeforeNode(body, "invalid_status_invocation", api);
+  });
+
+  test("a native OpenKey grant is refused: only web grants renew here", async () => {
+    const api = backend();
+    const native = await expiredGrant(grant.account, "openkey.so");
+    await refusedBeforeNode(await requestBody(native, await signLease(native), api.nonceStore), "invalid_origin", api);
+  });
+
   /** Refusals the live node check produces: the node was asked once each. */
   async function refusedByNode(code: string, arrange: () => void, expected: 401 | 503 = 401) {
     const api = backend();
@@ -516,31 +563,34 @@ describe("POST /api/auth/verify-renewal", () => {
     }
   });
 
-  test(`its own limiter allows ${VERIFY_RENEWAL_ADDRESS_LIMIT} a minute per address; a limited request keeps its nonce and skips the node`, async () => {
+  test(`each address may renew ${VERIFY_RENEWAL_ADDRESS_LIMIT} times a minute; the next is refused 429 without asking the node`, async () => {
     const api = backend();
     try {
       nodeRenews(grant, lease, nowSeconds() + HOUR);
       for (let i = 0; i < VERIFY_RENEWAL_ADDRESS_LIMIT; i++) {
         expect((await api.post(await requestBody(grant, lease, api.nonceStore))).status).toBe(200);
       }
-      const body = await requestBody(grant, lease, api.nonceStore);
       const calls = nodeCalls();
-      expect(await api.post(body)).toEqual({ status: 429, body: { error: "rate_limited" } });
+      expect(await api.post(await requestBody(grant, lease, api.nonceStore))).toEqual({ status: 429, body: { error: "rate_limited" } });
       expect(nodeCalls()).toBe(calls);
-      expect(api.nonceStore.validate(body.address, body.nonce)).toBe(true);
     } finally {
       api.close();
     }
   });
 
-  test(`its own limiter allows ${VERIFY_RENEWAL_IP_LIMIT} a minute per IP across addresses`, async () => {
+  test("requests without the grant's session key spend no one's budget: not the victim's, not the service's", async () => {
     const api = backend();
     try {
-      for (let i = 0; i < VERIFY_RENEWAL_IP_LIMIT; i++) {
-        const address = privateKeyToAccount(generatePrivateKey()).address;
-        expect((await api.post({ address })).status).toBe(400);
+      nodeRenews(grant, lease, nowSeconds() + HOUR);
+      const otherKey = randomBytes(32);
+      for (let i = 0; i < 4 * VERIFY_RENEWAL_ADDRESS_LIMIT; i++) {
+        // Junk from many claimed addresses, and forged holder proofs for the victim's own address.
+        expect((await api.post({ address: privateKeyToAccount(generatePrivateKey()).address })).status).toBe(400);
+        const forged = await requestBody(grant, lease, api.nonceStore);
+        forged.holderProof = Buffer.from(ed25519.sign(Buffer.from("forged"), otherKey)).toString("base64url");
+        expect(await api.post(forged)).toEqual({ status: 401, body: { error: "invalid_holder_proof" } });
       }
-      expect(await api.post({ address: privateKeyToAccount(generatePrivateKey()).address })).toEqual({ status: 429, body: { error: "rate_limited" } });
+      expect((await api.post(await requestBody(grant, lease, api.nonceStore))).status).toBe(200);
     } finally {
       api.close();
     }

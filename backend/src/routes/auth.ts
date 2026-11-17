@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { issueSessionToken, verifySIWE, type NonceStore } from "@tinyboilerplate/server";
 import { isExpectedSiweOrigin } from "../cors-origins.js";
 import { hasTinyChatNativeAudience } from "../native-siwe-audience.js";
-import { createVerifyRenewalLimiter } from "../rate-limits.js";
+import { createVerifyRenewalBudget } from "../rate-limits.js";
 import { verifyRenewal, type RenewalVerifyConfig } from "../renewal-verify.js";
 
 interface AuthRoutesConfig {
@@ -22,6 +22,7 @@ export function createAuthRouter(config: AuthRoutesConfig) {
   const router = Router();
   const webDomains = config.frontendOrigins.map((origin) => new URL(origin).hostname);
   const nativeDomain = config.nativeSiweDomain ?? "openkey.so";
+  const spendRenewalBudget = createVerifyRenewalBudget();
 
   // Without `address` the nonce is unbound (native OpenKey sign-in binds it to
   // the recovered signer at /verify); it stays single-use and short-lived.
@@ -80,7 +81,7 @@ export function createAuthRouter(config: AuthRoutesConfig) {
    * original grant's signed end. Checks run in D2's order; the nonce is consumed first, and the node is
    * asked only once everything the client signed has passed.
    */
-  router.post("/verify-renewal", createVerifyRenewalLimiter(), async (req: Request, res: Response) => {
+  router.post("/verify-renewal", async (req: Request, res: Response) => {
     if (!config.renewal) {
       res.status(503).json({ error: "renewal_unavailable" });
       return;
@@ -108,7 +109,7 @@ export function createAuthRouter(config: AuthRoutesConfig) {
           holderProof,
           statusInvocation,
         },
-        { config: config.renewal, webDomains, nativeDomain, ...(config.renewalFetch ? { fetch: config.renewalFetch } : {}) },
+        { config: config.renewal, webDomains, nativeDomain, spendBudget: spendRenewalBudget, ...(config.renewalFetch ? { fetch: config.renewalFetch } : {}) },
       );
       if (!result.ok) {
         console.warn("[auth] verify-renewal refused:", result.code);

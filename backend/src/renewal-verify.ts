@@ -87,13 +87,15 @@ export interface RenewalVerifyInput {
 
 export type RenewalVerifyResult =
   | { ok: true; effectiveEnd: number; notAfter: number }
-  | { ok: false; status: 401 | 503; code: string };
+  | { ok: false; status: 401 | 429 | 503; code: string };
 
 export interface RenewalVerifyDependencies {
   config: RenewalVerifyConfig;
   webDomains: readonly string[];
   nativeDomain: string;
   fetch?: typeof fetch;
+  /** Charged once the holder proof passes, before anything else; false refuses with 429 and skips the node. */
+  spendBudget?: (address: string) => Promise<boolean>;
   /** Unix seconds. */
   now?: () => number;
 }
@@ -242,6 +244,8 @@ export async function verifyRenewal(input: RenewalVerifyInput, deps: RenewalVeri
     possessed = verifyDidKeyEd25519Signature(holderDid, new TextEncoder().encode(proofMessage), decodeBase64Url(input.holderProof));
   } catch { /* refused below */ }
   if (!possessed) return refuse("invalid_holder_proof");
+  // Only the key holder gets this far, so only they can spend the account's budget.
+  if (deps.spendBudget && !await deps.spendBudget(session.address)) return { ok: false, status: 429, code: "rate_limited" };
 
   // 4. Lease: owner-signed, to the pinned renewer, renewing only this grant, no proofs, not yet ended.
   let lease: SignedSiweCacao;
