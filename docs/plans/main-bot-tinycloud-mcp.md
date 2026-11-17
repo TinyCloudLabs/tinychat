@@ -484,8 +484,8 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   proxy then holds the same trust as the gateway, not a smaller one, and the gateway is no longer the only component
   that holds both secrets and internet access.
 - **With `tls.mode: sni-only` and CONNECT passthrough** there is no interception and no CA in the gateway, so the proxy
-  never sees a token or a page. The host allowlist and the dial-time deny list still apply (this comes from a read of
-  older code, not a trial on v0.56.0; the spike confirms). Path, secret-swap and MCP transforms are lost, which costs
+  never sees a token or a page. The host allowlist and the dial-time deny list still apply (this comes from a code read of
+  an older release, `tunnel.go`, not a trial on v0.56.0; the spike confirms). Path, secret-swap and MCP transforms are lost, which costs
   little because the
   gateway already does MCP policy and holds the tokens, and static keys then stay in the gateway.
 - **Leaning:** passthrough, unless the spike shows a need for interception. The spike compares both. If interception is
