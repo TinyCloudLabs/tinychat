@@ -1,13 +1,28 @@
-// TC-3195: the adapter over the native-share SDK. A claim refused as REVOKED or AUTH_EXPIRED is the revoked or the
-// expired state; a share's reader takes full keys whether it covers one resource or several.
-import { describe, expect, test } from "bun:test";
+// TC-3195: the adapter over the native-share SDK. An opened link's owner comes from the token's owner signature
+// (inspectShareToken), never from what the link shows; a claim refused as REVOKED or AUTH_EXPIRED is the revoked or
+// the expired state; a share's reader takes full keys whether it covers one resource or several.
+import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import type { DelegationError, InspectedShareToken, Result } from "@tinycloud/sdk-core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { readSharedTranscript } from "@/capture/share/SharedRecordingDetail";
-import { sharedRowMeta } from "@/capture/share/shareCopy";
-import { parseRecordingDisplay } from "./display";
 import type { ReceivedRecordingShare } from "./receivedShares";
-import { claimShare, createShare, isShareRevokedError, openSharedKv, sharedKey } from "./sdk";
+
+// The link reader and the token check stand in for the network and a signed root; every other export is real. Until a
+// test sets them, both run the real SDK, so nothing else in the run sees a fake.
+const realNativeLink = { ...(await import("@tinycloud/share-sdk/native-link")) };
+const realCore = { ...(await import("@tinycloud/sdk-core")) };
+let openLink: typeof realNativeLink.openNativeShareLink = realNativeLink.openNativeShareLink;
+let inspectToken: typeof realCore.inspectShareToken = realCore.inspectShareToken;
+mock.module("@tinycloud/share-sdk/native-link", () => ({ ...realNativeLink, openNativeShareLink: (...args: Parameters<typeof openLink>) => openLink(...args) }));
+mock.module("@tinycloud/sdk-core", () => ({ ...realCore, inspectShareToken: (...args: Parameters<typeof inspectToken>) => inspectToken(...args) }));
+afterAll(() => {
+  mock.module("@tinycloud/share-sdk/native-link", () => realNativeLink);
+  mock.module("@tinycloud/sdk-core", () => realCore);
+});
+const { readSharedTranscript } = await import("@/capture/share/SharedRecordingDetail");
+const { sharedRowMeta } = await import("@/capture/share/shareCopy");
+const { parseRecordingDisplay } = await import("./display");
+const { claimShare, createShare, isShareRevokedError, openShareLink, openSharedKv, ShareLinkError, sharedKey } = await import("./sdk");
 
 const TOKEN = "tc1:eyJzZWNyZXQiOiJ0b2tlbi1ib2R5In0";
 const ACCOUNT = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
@@ -25,6 +40,57 @@ function claimingTcw(result: unknown, calls: unknown[][] = []) {
     },
   } as unknown as TinyCloudWeb;
 }
+
+describe("openShareLink", () => {
+  const SIGNER = { address: "0xd5590000000000000000000000000000000ff412", chainId: 1, spaceId: "tinycloud:pkh:eip155:1:0xd5590000000000000000000000000000000ff412:default" };
+  const ROOT_ENDS = new Date("2027-11-17T10:00:00.000Z");
+  const LINK = "https://tinycloud.one/s/abc";
+  // What a link's maker can write freely: a display naming someone else, and (from an older reader) an owner field.
+  const spoofed = { kind: "recording", display: { title: "Board minutes", senderName: "Sam Lee" }, token: TOKEN, linkExpiresAt: new Date("2026-11-24T10:00:00.000Z"), owner: { address: "0x5a30000000000000000000000000000000000bad", chainId: 1, spaceId: "spoofed" } };
+  const refused = (code: string) => async (): Promise<Result<InspectedShareToken, DelegationError>> => ({ ok: false, error: { code, message: "refused", service: "delegation" } as DelegationError });
+
+  afterEach(() => {
+    openLink = realNativeLink.openNativeShareLink;
+    inspectToken = realCore.inspectShareToken;
+  });
+
+  test("the owner and the access end come from inspecting the token, not from the link", async () => {
+    const inspected: string[] = [];
+    openLink = async () => spoofed;
+    inspectToken = async (token) => {
+      inspected.push(token);
+      return { ok: true, data: { owner: SIGNER, resources: [{ path: TRANSCRIPT, actions: ["tinycloud.kv/get"] }], accessExpiresAt: ROOT_ENDS } };
+    };
+    const opened = await openShareLink(LINK);
+    expect(inspected).toEqual([TOKEN]);
+    expect(opened.owner).toEqual(SIGNER);
+    expect(opened.accessExpiresAt).toBe(ROOT_ENDS.toISOString());
+    expect(opened.token).toBe(TOKEN);
+    expect(opened.linkExpiresAt).toBe("2026-11-24T10:00:00.000Z");
+  });
+
+  test("a token its owner did not sign is an invalid link; an ended root is an expired one", async () => {
+    openLink = async () => spoofed;
+    for (const [code, expected] of [["INVALID_TOKEN", "invalid"], ["AUTH_EXPIRED", "expired"], ["NETWORK_ERROR", "invalid"]] as const) {
+      inspectToken = refused(code);
+      const caught = await openShareLink(LINK).catch((error: unknown) => error);
+      expect(caught).toBeInstanceOf(ShareLinkError);
+      expect((caught as InstanceType<typeof ShareLinkError>).code).toBe(expected);
+      expect(String((caught as Error).message)).not.toContain(TOKEN);
+    }
+  });
+
+  test("a link of another kind is invalid before its token is inspected", async () => {
+    let inspectedTimes = 0;
+    openLink = async () => ({ ...spoofed, kind: "folder" });
+    inspectToken = async () => {
+      inspectedTimes += 1;
+      return refused("INVALID_TOKEN")();
+    };
+    expect(((await openShareLink(LINK).catch((error: unknown) => error)) as InstanceType<typeof ShareLinkError>).code).toBe("invalid");
+    expect(inspectedTimes).toBe(0);
+  });
+});
 
 describe("claimShare", () => {
   test("REVOKED is the revoked state", async () => {

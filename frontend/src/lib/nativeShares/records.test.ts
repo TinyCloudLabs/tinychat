@@ -64,12 +64,13 @@ describe("the owner's sent-share record", () => {
 });
 
 describe("the recipient's received-share record", () => {
-  const opened: OpenedShareLink = { kind: "recording", display: DISPLAY, token: TOKEN, linkExpiresAt: "2026-11-24T10:00:00.000Z", owner: OWNER };
+  // The root's end (from inspectShareToken) is later than the claimed child's: the record keeps the child's.
+  const opened: OpenedShareLink = { kind: "recording", display: DISPLAY, token: TOKEN, linkExpiresAt: "2026-11-24T10:00:00.000Z", owner: OWNER, accessExpiresAt: "2027-11-18T10:00:00.000Z" };
   const claimed: ClaimedShare = { delegation: JSON.stringify({ cid: "bafychild", parentCid: "bafyroot", resources: PATHS.map((path) => ({ path })) }), rootCid: "bafyroot", paths: PATHS, accessExpiresAt: "2027-11-17T10:00:00.000Z" };
 
   test("is built from the opened link's display and owner only, and is written as such", async () => {
     const record = receivedShareRecord(opened, DISPLAY, claimed, NOW);
-    expect(record).toMatchObject({ id: "bafyroot", owner: OWNER, paths: PATHS, claimedAt: NOW.toISOString() });
+    expect(record).toMatchObject({ id: "bafyroot", owner: OWNER, paths: PATHS, claimedAt: NOW.toISOString(), accessExpiresAt: claimed.accessExpiresAt });
     expectNoSecret(JSON.stringify(record));
     const { space, written } = fakeSpace();
     await receivedShares.put(space, record);

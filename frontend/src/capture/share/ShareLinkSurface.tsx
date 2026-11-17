@@ -10,7 +10,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
 import type { AppState } from "@/lib/appState";
 import { PRODUCT_PAGE_URL } from "@/lib/homeSite";
-import { includesLabel, parseRecordingDisplay, senderFirstName, senderLabel, type RecordingShareDisplay } from "@/lib/nativeShares/display";
+import { includesLabel, parseRecordingDisplay, shortAddress, type RecordingShareDisplay } from "@/lib/nativeShares/display";
 import { heldShareLink, releaseShareLink } from "@/lib/nativeShares/link";
 import { receivedShareRecord, receivedShares, sharedNoteId } from "@/lib/nativeShares/receivedShares";
 import { claimShare, openShareLink, ShareLinkError, type OpenedShareLink } from "@/lib/nativeShares/sdk";
@@ -105,13 +105,13 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
 
   if (view.status === "problem") {
     if (view.problem === "revoked" && view.display && view.link) {
-      const first = senderFirstName(view.display, view.link.owner.address);
+      const sender = shortAddress(view.link.owner.address);
       return (
         <Shell>
           <div className="flex flex-col items-start gap-2" data-testid="share-link-revoked">
             <span aria-hidden="true" className="mb-1 flex size-10 items-center justify-center rounded-lg bg-surface-2 text-muted-foreground [&_svg]:size-5"><Link2OffIcon /></span>
-            <h1 className="text-headline">{first} stopped sharing this recording</h1>
-            <p className="max-w-[34ch] text-callout text-muted-foreground">It’s no longer available to you. Ask {first} if you need it again.</p>
+            <h1 className="text-headline">{sender} stopped sharing this recording</h1>
+            <p className="max-w-[34ch] text-callout text-muted-foreground">It’s no longer available to you. Ask {sender} if you need it again.</p>
           </div>
         </Shell>
       );
@@ -145,8 +145,7 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
   }
 
   const { link, display } = view;
-  const sender = senderLabel(display, link.owner.address);
-  const first = senderFirstName(display, link.owner.address);
+  const sender = shortAddress(link.owner.address);
   const busy = props.state === "connecting" || props.state === "signing";
   return (
     <Shell>
@@ -168,7 +167,7 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
         ) : (
           <Button type="button" className="h-11 w-full fine:h-10" disabled={busy} onClick={props.onSignIn}>{busy ? "Signing in…" : "Sign in to open"}</Button>
         )}
-        <p className="text-callout text-muted-foreground">Signing in adds it to your TinyCloud. {first} can stop sharing at any time.</p>
+        <p className="text-callout text-muted-foreground">Signing in adds it to your TinyCloud. {sender} can stop sharing at any time.</p>
         {props.error && <p role="status" className="text-callout">{bootMessage(props.state, props.error)}</p>}
       </div>
       <div className="mt-auto pt-10">

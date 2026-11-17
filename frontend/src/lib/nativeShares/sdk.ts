@@ -4,6 +4,7 @@
 // Secrets: a share token (`tc1:…`) and a link (`…#v=4&k=…`) are bearer secrets. They pass through these
 // functions in memory only; nothing here logs, stores or reports them, and no error message carries them.
 import { openNativeShareLink, publishNativeShareLink, type OpenedNativeShareLink } from "@tinycloud/share-sdk/native-link";
+import { inspectShareToken } from "@tinycloud/sdk-core";
 import { deserializeDelegation, serializeDelegation, type PortableDelegation, type TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import type { TinyCloudKv } from "@/lib/audio/audioStore";
@@ -62,13 +63,19 @@ export async function publishShareLink(input: { token: string; display: Record<s
   return { link: created.link, id: created.id, expiresAt: created.expiresAt };
 }
 
-/** Recipient: what an opened link carries. `token` stays in memory and goes only to `claimShare`. */
+/**
+ * Recipient: what an opened link carries. `token` stays in memory and goes only to `claimShare`. `owner` and
+ * `accessExpiresAt` come from the token's root, which the owner's wallet signed. `display` is what the link's maker
+ * wrote, unsigned: parse it before showing it, and never take who shared it from it.
+ */
 export interface OpenedShareLink {
   kind: string;
   display: unknown;
   token: string;
   linkExpiresAt: string;
   owner: { address: string; chainId: number; spaceId: string };
+  /** When the share's root ends, ISO: nobody can claim it after this. */
+  accessExpiresAt: string;
 }
 
 /** The link origins this app accepts: the share origin and the app's own https origin. */
@@ -81,7 +88,7 @@ function errorField(error: unknown, field: "code" | "message"): unknown {
   return typeof error === "object" && error !== null && field in error ? Reflect.get(error, field) : undefined;
 }
 
-/** Recipient, signed in or not: read the link's record. Throws `ShareLinkError`. */
+/** Recipient, signed in or not: read the link's record and check the token's owner signature. Throws `ShareLinkError`. */
 export async function openShareLink(href: string): Promise<OpenedShareLink> {
   let opened: OpenedNativeShareLink;
   try {
@@ -91,12 +98,16 @@ export async function openShareLink(href: string): Promise<OpenedShareLink> {
     throw new ShareLinkError(code === "gone" || code === "expired" || code === "invalid" ? code : "unavailable");
   }
   if (opened.kind !== SHARE_KIND) throw new ShareLinkError("invalid");
+  const inspected = await inspectShareToken(opened.token);
+  if (!inspected.ok) throw new ShareLinkError(inspected.error.code === "AUTH_EXPIRED" ? "expired" : "invalid");
+  const { owner, accessExpiresAt } = inspected.data;
   return {
     kind: opened.kind,
     display: opened.display,
     token: opened.token,
     linkExpiresAt: opened.linkExpiresAt.toISOString(),
-    owner: { address: opened.owner.address, chainId: opened.owner.chainId, spaceId: opened.owner.spaceId },
+    owner: { address: owner.address, chainId: owner.chainId, spaceId: owner.spaceId },
+    accessExpiresAt: accessExpiresAt.toISOString(),
   };
 }
 

@@ -1,7 +1,7 @@
 // TC-3195: a link's display comes from a record anyone could have made, so every field is checked before it is shown.
 import { describe, expect, test } from "bun:test";
 
-import { includesLabel, parseRecordingDisplay, senderFirstName, senderLabel, shortAddress, sourceLabel } from "./display";
+import { includesLabel, parseRecordingDisplay, shortAddress, sourceLabel } from "./display";
 
 const VALID = {
   title: "Product sync with Priya",
@@ -62,23 +62,19 @@ describe("parseRecordingDisplay", () => {
     for (const source of ["meeting", "voice-note", "upload"]) expect(parseRecordingDisplay({ ...VALID, source })?.source).toBe(source);
   });
 
-  test("a sender name, when present, is checked like the title", () => {
-    expect(parseRecordingDisplay({ ...VALID, senderName: " Alex Chen " })?.senderName).toBe("Alex Chen");
-    expect(parseRecordingDisplay({ ...VALID, senderName: "" })).toBeNull();
-    expect(parseRecordingDisplay({ ...VALID, senderName: 7 })).toBeNull();
-    expect(parseRecordingDisplay(VALID)).not.toHaveProperty("senderName");
+  test("a sender name is unsigned, so it is ignored, never refused or kept", () => {
+    for (const senderName of [" Sam Lee ", "", 7, null]) {
+      const parsed = parseRecordingDisplay({ ...VALID, senderName });
+      expect(parsed).not.toBeNull();
+      expect(parsed).not.toHaveProperty("senderName");
+    }
   });
 });
 
 describe("display labels", () => {
-  test("the sender is the owner's short address when the display names nobody", () => {
-    const display = parseRecordingDisplay(VALID)!;
+  test("the sender is the verified owner's short address", () => {
     expect(shortAddress(OWNER)).toBe("0xd559…f412");
-    expect(senderLabel(display, OWNER)).toBe("0xd559…f412");
-    expect(senderFirstName(display, OWNER)).toBe("0xd559…f412");
-    const named = parseRecordingDisplay({ ...VALID, senderName: "Alex Chen" })!;
-    expect(senderLabel(named, OWNER)).toBe("Alex Chen");
-    expect(senderFirstName(named, OWNER)).toBe("Alex");
+    expect(shortAddress("0xabc")).toBe("0xabc");
   });
 
   test("parts and sources read as the mock does", () => {

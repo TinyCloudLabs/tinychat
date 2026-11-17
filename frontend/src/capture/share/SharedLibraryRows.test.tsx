@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { parseRecordingDisplay } from "@/lib/nativeShares/display";
-import { sharedNoteId, type ReceivedRecordingShare } from "@/lib/nativeShares/receivedShares";
+import { parseReceivedShare, sharedNoteId, type ReceivedRecordingShare } from "@/lib/nativeShares/receivedShares";
 import type { RecordStoreSnapshot } from "@/lib/nativeShares/spaceRecords";
 import { notePath } from "@/shell/routes";
 import { LibraryListView, type LibraryListViewProps } from "../library/LibraryListView";
@@ -63,6 +63,14 @@ describe("Shared with me", () => {
     expect(html).toContain("From 0xd559…f412 · Nov 16");
     expect(html).toContain("From 0xd559…f412 · No longer shared");
     expect(html).toContain("32:04");
+  });
+
+  test("a name in a stored display is unsigned: the row names the verified owner's address", () => {
+    const stored = share("bafy-named", "Board minutes", new Date(2026, 10, 16, 14, 0));
+    const read = parseReceivedShare({ ...stored, display: { ...stored.display, senderName: "Sam Lee" } })!;
+    const html = render({ shared: ready([read]) });
+    expect(html).toContain("From 0xd559…f412");
+    expect(html).not.toContain("Sam Lee");
   });
 
   test("empty, loading and failed", () => {

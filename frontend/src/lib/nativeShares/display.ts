@@ -1,12 +1,11 @@
-// TC-3195: what a recording share link shows before sign-in (the links record's `display`). The owner writes
-// it; a recipient reads it from a link anyone could have made, so every field is checked before it is shown.
+// TC-3195: what a recording share link shows before sign-in (the links record's `display`). The owner writes it but
+// does not sign it: a recipient reads it from a link anyone could have made, so every field is checked before it is
+// shown, and who shared it never comes from here (see `shortAddress`).
 
 export type SharedPart = "transcript" | "audio";
 export type SharedSource = "meeting" | "voice-note" | "upload";
 
 export interface RecordingShareDisplay {
-  /** Not written yet: recipients see the sharing account's short address instead (product decision pending). */
-  senderName?: string;
   title: string;
   /** ISO timestamp. */
   recordedAt: string;
@@ -23,7 +22,7 @@ function text(value: unknown): string | undefined {
   return trimmed && trimmed.length <= MAX_TEXT ? trimmed : undefined;
 }
 
-/** The display of an opened link, or `null` when any field is missing or not what the app writes. */
+/** The display of an opened link, or `null` when any field is missing or not what the app writes. Unknown keys are ignored. */
 export function parseRecordingDisplay(value: unknown): RecordingShareDisplay | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -35,10 +34,8 @@ export function parseRecordingDisplay(value: unknown): RecordingShareDisplay | n
   const parts = Array.isArray(includes) ? includes.filter((part): part is SharedPart => part === "transcript" || part === "audio") : [];
   const partsOk = Array.isArray(includes) && parts.length === includes.length && parts.length > 0 && new Set(parts).size === parts.length;
   const source = record.source === "meeting" || record.source === "voice-note" || record.source === "upload" ? record.source : undefined;
-  const senderOk = record.senderName === undefined || text(record.senderName) !== undefined;
-  if (!title || !recordedAt || !durationOk || !partsOk || !source || !senderOk) return null;
+  if (!title || !recordedAt || !durationOk || !partsOk || !source) return null;
   return {
-    ...(record.senderName === undefined ? {} : { senderName: text(record.senderName) }),
     title,
     recordedAt,
     durationSeconds: typeof duration === "number" ? Math.round(duration) : null,
@@ -47,19 +44,12 @@ export function parseRecordingDisplay(value: unknown): RecordingShareDisplay | n
   };
 }
 
-/** `0xd559…f412`: the sharing account when the display has no name. */
+/**
+ * `0xd559…f412`: who shared it, always the owner's address that `inspectShareToken` checked against the owner's
+ * signature. A name from the display is unsigned, so anyone could write one; a display name needs owner signing first.
+ */
 export function shortAddress(address: string): string {
   return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
-}
-
-/** Who shared it: their name, or their account's short address. */
-export function senderLabel(display: RecordingShareDisplay, ownerAddress: string): string {
-  return display.senderName ?? shortAddress(ownerAddress);
-}
-
-/** The first name in sentences like "Alex can stop sharing at any time." */
-export function senderFirstName(display: RecordingShareDisplay, ownerAddress: string): string {
-  return display.senderName?.split(/\s+/)[0] ?? shortAddress(ownerAddress);
 }
 
 /** "Transcript and audio", "Transcript" or "Audio". */

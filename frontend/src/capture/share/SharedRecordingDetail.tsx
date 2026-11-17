@@ -12,7 +12,7 @@ import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getAudio } from "@/lib/audio/audioStore";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
-import { senderFirstName } from "@/lib/nativeShares/display";
+import { shortAddress } from "@/lib/nativeShares/display";
 import {
   markReceivedShareRevoked,
   removeReceivedShare,
@@ -79,7 +79,7 @@ function Toast() {
 }
 
 function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now: Date; pushed: boolean; onRemoved: () => void }) {
-  const first = senderFirstName(props.record.display, props.record.owner.address);
+  const sender = shortAddress(props.record.owner.address);
   const [removing, setRemoving] = useState(false);
   const [failed, setFailed] = useState(false);
   const remove = async () => {
@@ -98,8 +98,8 @@ function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now
       <p className={`${props.pushed ? "" : "-mt-4 "}text-callout text-muted-foreground`}>{sharedDetailMeta(props.record, props.now)}</p>
       <div className="flex flex-col items-start gap-2 py-6" data-testid="shared-revoked">
         <span aria-hidden="true" className="mb-1 flex size-10 items-center justify-center rounded-lg bg-surface-2 text-muted-foreground [&_svg]:size-5"><Link2OffIcon /></span>
-        <p className="text-headline">{first} stopped sharing this recording</p>
-        <p className="max-w-[34ch] text-callout text-muted-foreground">It’s no longer available to you. Ask {first} if you need it again.</p>
+        <p className="text-headline">{sender} stopped sharing this recording</p>
+        <p className="max-w-[34ch] text-callout text-muted-foreground">It’s no longer available to you. Ask {sender} if you need it again.</p>
         <div className="mt-1 flex flex-wrap gap-2">
           <Button type="button" variant="outline" disabled={removing} onClick={() => void remove()}>Remove from Library</Button>
         </div>
@@ -165,7 +165,7 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
   }
 
   const title = record.display.title;
-  const first = senderFirstName(record.display, record.owner.address);
+  const sender = shortAddress(record.owner.address);
   const audioBase = keys.audioBase;
   const loadAudio = audioBase === null ? null : async (signal: AbortSignal, onProgress: (loaded: number, total: number) => void) => {
     try {
@@ -189,7 +189,7 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
           <>
             <header className={`${props.pushed ? "" : "-mt-4 "}flex flex-col gap-2`} data-testid="shared-detail" data-note-id={record.id}>
               <p className="text-callout text-muted-foreground">{sharedDetailMeta(record, now)}</p>
-              <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" />In your TinyCloud until {first} stops sharing. Read only.</p>
+              <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" />In your TinyCloud until {sender} stops sharing. Read only.</p>
             </header>
             {loadAudio && <MeetingAudioPlayer load={loadAudio} durationSecs={record.display.durationSeconds} />}
             {transcriptKey && (
