@@ -17,6 +17,8 @@ name: Deploy Backend to Phala Cloud
 # run that deployed them and record that run id with the digests in the dispatch record:
 #   gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<ref> -f web=false \
 #     -f backend_digest=sha256:<64 hex> -f ingress_digest=sha256:<64 hex>      (or -f tag=<stable tag> instead)
+# The hotfix opt-in (allow_unreleased + confirm_sha) is an accepted recovery path for a pinned redeploy. Pinned runs come
+# through deploy-production.yml's `backend-pinned` job, whose token has packages: read only: they cannot push to GHCR.
 
 on:
   workflow_call:
@@ -76,10 +78,9 @@ jobs:
     environment:
       name: production-api
       url: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
-    permissions:
-      contents: read
-      packages: write
-      statuses: write
+    # No permissions block: this job uses the calling job's token, as deploy-production.yml grants it: contents: read,
+    # statuses: write, and packages: write for `backend` (build and push) but packages: read for `backend-pinned`, so a
+    # pinned redeploy cannot push to GHCR. A block here could only narrow that, and packages: write would fail pinned runs.
     outputs:
       state: ${{ steps.state.outputs.state }}
       revision: ${{ steps.live.outputs.revision }}

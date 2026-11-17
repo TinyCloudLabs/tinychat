@@ -288,8 +288,10 @@ later check failed; web is not deployed).
 Both digests must be the GHCR index digests that the earlier run of that commit
 pushed. Take them from that run's push log (`pushing manifest for …@sha256:…`
 in its Backend job; its summary lists them too), and record that run id with
-the digests in the dispatch record: that log is the provenance. The workflow
-then builds and pushes nothing. It checks that both digests exist in GHCR as the
+the digests in the dispatch record: that log is the provenance. The run goes
+through the `backend-pinned` job, whose token has `packages: read` only, so it
+builds nothing and cannot push to GHCR. The hotfix opt-in
+(`allow_unreleased` + `confirm_sha`) is an accepted recovery path for it. It checks that both digests exist in GHCR as the
 linux/amd64 backend and ingress images whose
 `org.opencontainers.image.revision` is the gated commit. This is a check for a
 wrong or swapped digest, not provenance: labels are whatever the pusher set. It
