@@ -635,10 +635,10 @@ test("an answer waits 5 seconds: nothing is written before, exactly one write at
   const undo = undoButton(view.host);
   expect(undo).not.toBeNull();
   expect(document.activeElement === undo).toBe(true);
-  expect(answers(view.host)!.textContent).toContain("Sending · 5s");
-  expect(view.host.textContent).toContain("Sending Hold in 5 seconds. Undo is available until then.");
+  expect(answers(view.host)!.textContent).toContain("Sends in 5s");
+  expect(view.host.textContent).toContain("Your answer, Hold, sends in 5 seconds. Undo is available until then.");
   await clock!.advance(2000);
-  expect(answers(view.host)!.textContent).toContain("Sending · 3s");
+  expect(answers(view.host)!.textContent).toContain("Sends in 3s");
   await clock!.advance(2900);
   expect(store.responses).toEqual([]);
   await clock!.advance(100);
@@ -841,7 +841,7 @@ test("a reply-only revision during the countdown re-targets the unanswered answe
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
   expect(view.host.textContent).not.toContain(BANNER);
-  expect(answers(view.host)!.textContent).toContain("Sending · 3s");
+  expect(answers(view.host)!.textContent).toContain("Sends in 3s");
   await clock!.advance(3000);
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
