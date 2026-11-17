@@ -64,7 +64,7 @@ describe("Shared with me", () => {
     expect(html).not.toContain(">Oct 28<");
     expect(html).toContain(`href="${notePath(sharedNoteId("bafy-new"))}"`);
     expect(html).toContain("From 0xd559…f412<");
-    expect(html).toContain("From 0xd559…f412 · No longer shared<");
+    expect(html).toContain("From 0xd559…f412 · No\u00a0longer\u00a0shared<");
     expect(html.match(/>Title and length from the link</g)?.length).toBe(2);
     expect(html).toContain("32:04");
   });

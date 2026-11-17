@@ -36,6 +36,7 @@ function SharedRow(props: { record: ReceivedRecordingShare; now: Date; selected:
       title={<span className={cn(revoked && "text-muted-foreground")}>{quotedTitle(record.display.title)}</span>}
       selected={props.selected}
       meta={meta}
+      metaLines={2}
       subMeta={SHARED_ROW_CUE}
       aside={
         <span className="flex shrink-0 items-center gap-1 text-meta text-muted-foreground">
