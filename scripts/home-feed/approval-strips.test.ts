@@ -97,3 +97,43 @@ test("the board-index read returns open approvals and leaves closed ones out (lo
   expect(found.map((row) => row.key)).toEqual([boardKey("approval", "g10"), boardKey("ask", "a10")]);
   expect(skipped).toEqual([]);
 });
+
+const closedStates = [["cancelled", {}], ["expired", {}], ["lapsed link", { expiresAt: "2026-11-13T09:45:00.000Z" }]] as const;
+
+test("each OpenKey consent page (delegate, device, oauth/consent) is carried whole while open and bare once closed or lapsed", () => {
+  for (const path of ["delegate", "device", "oauth/consent"]) {
+    const url = `https://openkey.so/${path}?user_code=ABCD-1234&state=keep-out-of-history`, slug = path.replace("/", "-");
+    expect(carried(open(`k-${slug}`, { url })).url).toBe(url);
+    for (const [label, patch] of closedStates) {
+      const status = label === "lapsed link" ? "open" : label;
+      expect(carried(open(`k-${slug}-${status}`, { url, status, ...patch })).url).toBe(`https://openkey.so/${path}`);
+    }
+  }
+});
+
+test("a Secrets request is carried whole while open and bare once closed or lapsed", () => {
+  const url = "https://secrets.tinycloud.xyz/request?fixture=synthetic&names=SYNTHETIC_KEY";
+  const secret = (id: string, patch: Record<string, unknown> = {}) => open(id, { approvalType: "secret", codeExpected: false, name: "SYNTHETIC_KEY", url, ...patch });
+  expect(carried(secret("s1")).url).toBe(url);
+  for (const [label, patch] of closedStates) {
+    const status = label === "lapsed link" ? "open" : label;
+    const record = secret(`s-${status}`, { status, ...patch });
+    expect(carried(record).url).toBe("https://secrets.tinycloud.xyz/request");
+    expect(record.kind === "approval" && record.url).toBe(url);
+  }
+});
+
+test("a one-tap link is refused for every kind of approval state, and a Claude sign-in is carried only while open", () => {
+  for (const status of ["open", "cancelled", "expired"]) {
+    expect(() => homeMirrorRecord(open(`o-${status}`, { url: ONE_TAP, issuedAt: "2026-11-13T09:50:00.000Z", expiresAt: "2026-11-13T10:30:00.000Z", status }), NOW_MS)).toThrow("one-tap approval links");
+  }
+  const challenge = "B".repeat(43);
+  const claude = new URL("https://claude.com/cai/oauth/authorize");
+  for (const [key, value] of Object.entries({ code: "true", client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e", response_type: "code", redirect_uri: "https://platform.claude.com/oauth/code/callback", scope: "user:inference", code_challenge: challenge, code_challenge_method: "S256", state: challenge })) claude.searchParams.set(key, value);
+  const seat = (id: string, patch: Record<string, unknown> = {}) => open(id, { approvalType: "claude", url: claude.href, target: "A synthetic seat", ...patch });
+  expect(carried(seat("c1")).url).toBe(claude.href);
+  for (const [label, patch] of closedStates) {
+    const status = label === "lapsed link" ? "open" : label;
+    expect(() => homeMirrorRecord(seat(`c-${status}`, { status, ...patch }), NOW_MS)).toThrow("one-tap approval links");
+  }
+});
