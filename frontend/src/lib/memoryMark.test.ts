@@ -142,3 +142,12 @@ test("a write over a memory that could not be read is marked, so a clean write n
   await setMemory(failing, "- reads a page");
   expect(await getMemoryMarked(stored.session())).toBe(true);
 });
+
+test("a clean write over a blank memory whose backup was being served is marked: the text being edited came from the backup", async () => {
+  const stored = account();
+  await setMemory(stored.session(), "- likes tea");
+  await setMemory(stored.session(), ""); // blanked; the previous doc is the backup a chat would load
+  await setMemory(stored.session(), "- likes tea\n- likes coffee"); // saved from a path that is not marked
+  expect(await getMemory(stored.session())).toBe("- likes tea\n- likes coffee");
+  expect(await getMemoryMarked(stored.session())).toBe(true);
+});

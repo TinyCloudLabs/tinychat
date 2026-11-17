@@ -949,10 +949,16 @@ export async function setMemory(tcw: TinyCloudWeb, content: string, options: { o
     markAfter = false;
   } else {
     // A doc with no marker that holds a URL, image or link counts as marked, so what the next write merges from it stays
-    // marked. A marker that cannot be read is never taken as "none", and a doc that could not be read is never vouched for.
+    // marked. So does a write over a doc that could not be read, and over a blank doc whose last-known-good backup is
+    // what getMemory serves (the text being edited came from there). A marker that cannot be read is never taken as "none".
     const priorMark = await store(tcw, scope).query("SELECT content FROM memory WHERE id = ?", [MEMORY_MARK_ROW_ID]);
     const priorDoc = prior.ok && prior.data.rows.length > 0 ? cellStr(prior.data.rows[0], 0, "") : null;
-    if (priorMark.ok && priorMark.data.rows.length === 0 && (!prior.ok || memoryHoldsLinkShape(priorDoc))) {
+    let unvouched = !prior.ok || memoryHoldsLinkShape(priorDoc);
+    if (!unvouched && (priorDoc ?? "").trim().length === 0) {
+      const backup = await store(tcw, scope).query("SELECT content FROM memory WHERE id = ?", [MEMORY_BACKUP_ROW_ID]);
+      unvouched = !backup.ok || (backup.data.rows.length > 0 && cellStr(backup.data.rows[0], 0, "").trim().length > 0);
+    }
+    if (priorMark.ok && priorMark.data.rows.length === 0 && unvouched) {
       stmts.push({ sql: UPSERT, params: [MEMORY_MARK_ROW_ID, "1", now] });
       markAfter = true;
     }
