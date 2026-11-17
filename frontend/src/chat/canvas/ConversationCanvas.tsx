@@ -23,6 +23,7 @@ import {
 } from "./model";
 import { NextRequestRail } from "./NextRequestRail";
 import { resetRequestAttempt } from "./requestContext";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 
 interface ConversationCanvasProps {
   tcw: TinyCloudWeb;
@@ -48,6 +49,8 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  // A document written here and not yet saved lives only in this page: a held tinycloud.chat page does not move under it.
+  useOriginMoveDeferral(draft.trim() !== "");
   const [documentTitle, setDocumentTitle] = useState("Canvas note");
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
 
