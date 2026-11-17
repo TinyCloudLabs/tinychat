@@ -72,3 +72,14 @@ test("a dry run lists a flagged record as left out, with its card and finding, a
   expect(plan.items.map((item) => item.id)).toEqual(["d1"]);
   expect(plan.refused).toEqual([{ key: boardKey("ask", "d2"), reason: "flagged", detail: "ask/d2: an OpenKey one-tap approval link" }]);
 });
+
+test("a card whose id is itself the secret is named by neither its id nor its board key", async () => {
+  const id = `lin_api_${"k".repeat(30)}`;
+  const record = ask(id);
+  const plan = inventoryPlan([rowOf(record)], NOW_MS);
+  expect(plan.refused).toEqual([{ key: "(key withheld)", reason: "flagged", detail: "ask/(id withheld): a Linear API key" }]);
+  const f = await node();
+  const [item] = await postMany(f.ctx, { sourceId: SOURCE, label: "Rocinante", rows: [rowOf(record)], now: NOW_MS });
+  expect(item?.outcome).toBe("refused");
+  expect(reported([plan, item])).not.toContain("kkkkkk");
+});

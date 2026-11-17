@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { feedCardSchema } from "@tinycloud/sdk-services/feed";
 import type { FeedCard } from "@tinycloud/sdk-services/feed";
 import {
-  boardKey, effectivePriority, emptySitrepOwnerData, isClosed, isKind, parseSitrepCardPayload, projectSitrepCard, validateRecord,
+  boardKey, effectivePriority, emptySitrepOwnerData, findRecordSecrets, isClosed, isKind, parseSitrepCardPayload, projectSitrepCard, validateRecord,
 } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord, Kind } from "@tinyboilerplate/core/feed/sitrep";
 import { homeMirrorBindings, homeMirrorDiagnostic, homeMirrorPublicationSha256, homeMirrorRecord, homeMirrorRefusal, publishHomeMirror, readHomeMirrorSource } from "./bridge";
@@ -104,6 +104,9 @@ export function boardCard(row: InventoryRow, all: readonly BoardRecord[], now: n
 
 export interface InventoryPlanItem { key: string; kind: Kind; id: string; cardId: string; issuanceId: string; needsResponse: boolean }
 
+/** The board key of a card the mirror refused for what it holds, or a placeholder when its id is itself what was flagged (the key carries the id). */
+const refusedKey = (row: InventoryRow): string => findRecordSecrets(row.record.kind, { id: row.record.id }).length ? "(key withheld)" : row.key;
+
 /** The plan for a dry run: what would be posted, and what is left out and why. */
 export function inventoryPlan(rows: readonly InventoryRow[], now: number): { items: InventoryPlanItem[]; refused: InventorySkip[] } {
   const all = rows.map((row) => row.record), items: InventoryPlanItem[] = [], refused: InventorySkip[] = [];
@@ -113,7 +116,7 @@ export function inventoryPlan(rows: readonly InventoryRow[], now: number): { ite
       items.push({ key: row.key, kind: row.record.kind, id: row.record.id, cardId: card.cardId, issuanceId: card.issuanceId, needsResponse: card.needsResponse });
     } catch (error) {
       const { detail } = homeMirrorDiagnostic(error).error;
-      refused.push(detail === undefined ? { key: row.key, reason: "unreadable" } : { key: row.key, reason: "flagged", detail });
+      refused.push(detail === undefined ? { key: row.key, reason: "unreadable" } : { key: refusedKey(row), reason: "flagged", detail });
     }
   }
   return { items, refused };
@@ -137,7 +140,7 @@ export async function postMany(ctx: HomeMirrorContext, options: { sourceId: stri
     let card: FeedCard;
     try { card = boardCard(row, all, options.now); } catch (error) {
       const { detail } = homeMirrorDiagnostic(error).error;
-      results.push({ key: row.key, cardId: boardCardIdentity(row.key).cardId, outcome: "refused", code: "INVALID_INPUT", ...(detail === undefined ? {} : { detail }) });
+      results.push({ key: detail === undefined ? row.key : refusedKey(row), cardId: boardCardIdentity(row.key).cardId, outcome: "refused", code: "INVALID_INPUT", ...(detail === undefined ? {} : { detail }) });
       continue;
     }
     const known = mirrored(row.key);
