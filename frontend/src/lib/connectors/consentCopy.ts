@@ -49,7 +49,7 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
   heading: "Connect Google Meet",
   intro:
     "You'll sign in with Google so TinyCloud One can read your Meet transcripts and Gemini notes and turn on transcription for meetings you host. Your browser fetches them from Google and saves them to your space; our server never keeps your Google token or your meetings.",
-  // The "TinyChat" below is the Google OAuth app's name in the owner's Google account; keep it until the app is renamed in Google Cloud.
+  // Keep "TinyChat" below until the Google OAuth app is renamed in Google Cloud: this line must match what Google shows the owner.
   disconnectNote:
     "**Disconnecting asks Google to revoke this access and deletes the saved token from your " +
     "secrets.** If Google cannot be reached we say so instead of pretending the revoke worked, " +
@@ -57,7 +57,7 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
     "page. Your already-synced meetings stay in your space unless you also choose to delete them.",
 };
 
-// "TinyChat" is the Google OAuth app's name as Google shows it; keep it until the app is renamed in Google Cloud.
+// Keep "TinyChat" until the Google OAuth app is renamed in Google Cloud: this line must match what Google shows the owner.
 export const GOOGLE_TESTING_MODE_REAUTH_COPY =
   "While TinyChat's Google app is in testing, Google asks you to reconnect about once a week.";
 
