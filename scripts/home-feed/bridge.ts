@@ -62,7 +62,8 @@ const refusalMessages = [
   "Home mirror operation refused", "Invalid node host", "Existing owner session is unavailable",
   "Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file",
   "Home mirror inventory requires a board index, a source and full spaces",
-  "Home mirror inventory leaves approvals, holds and claims on the board",
+  "Home mirror inventory leaves holds and claims on the board",
+  "Home mirror leaves the consent code of a closed approval on the board",
   "Board index is unreadable",
   "The synthetic check runs only in a QA owner space",
   "Synthetic check requires a profile, full spaces and a source",
@@ -126,6 +127,19 @@ function tuple(value: FeedCardIdentity): FeedCardIdentity { return { cardId: val
 function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity): boolean { return a.cardId === b.cardId && a.revision === b.revision && a.issuanceId === b.issuanceId; }
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const publication = (record: BoardRecord, cardUuid: string) => JSON.stringify({ ...record, cardUuid });
+/**
+ * The record as the Home card carries it. An approval that is closed, or whose link has lapsed, carries no consent code:
+ * its url is cut back to the bare consent page (no query), and a url that has no valid bare form (a claude sign-in) is
+ * refused. An open approval is carried whole, with its code. The board's own copy is never changed by this.
+ */
+export function homeMirrorRecord(record: BoardRecord, now: number): BoardRecord {
+  if (record.kind !== "approval" || record.url === undefined) return record;
+  if (record.status === "open" && (!record.expiresAt || Date.parse(record.expiresAt) > now)) return record;
+  const page = new URL(record.url), bare = `${page.origin}${page.pathname}`;
+  const stripped = validateRecord("approval", { ...record, url: bare });
+  if (!stripped.ok || stripped.value.kind !== "approval") throw homeMirrorRefusal("Home mirror leaves the consent code of a closed approval on the board");
+  return stripped.value;
+}
 function privateDatabase(database: FeedDatabase, ctx: HomeMirrorContext): FeedDatabase {
   return {
     query<T = Record<string, unknown>>(sql: string, params?: SqlValue[], options?: QueryOptions) {
@@ -263,7 +277,12 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     if (!isDeepStrictEqual(source, requestedSource) || input.legacy.spaceId !== ctx.legacySpaceId) throw failure();
     const typed = parseSitrepCardPayload(input.card.payload?.sitrep);
     const checked = validateRecord(input.legacy.record.kind, input.legacy.record);
-    if (!typed || !checked.ok || typed.record.kind !== input.card.kind || !isDeepStrictEqual(typed.record, checked.value) || input.legacy.fullKey !== boardKey(checked.value.kind, checked.value.id)) throw failure();
+    if (!typed || !checked.ok || typed.record.kind !== input.card.kind || input.legacy.fullKey !== boardKey(checked.value.kind, checked.value.id)) throw failure();
+    // The card is built before it is published, so a link can lapse in between: the gate strips the Home copy itself
+    // (idempotent), and refuses a payload that is neither the board record nor its stripped form.
+    const carried = homeMirrorRecord(checked.value, Date.parse(ctx.now()));
+    if (!isDeepStrictEqual(typed.record, checked.value) && !isDeepStrictEqual(typed.record, carried)) throw failure();
+    const card: HomeMirrorPublishInput["card"] = { ...input.card, payload: { ...input.card.payload, sitrep: { ...(input.card.payload?.sitrep as object), record: carried } } };
     const record = checked.value, body = publication(record, identity.cardId), publicationSha256 = hash(body);
     const owner = privateDatabase(ctx.sql.db(OWNER), ctx);
     const all = (await mirrorRowsFor(ctx, input.legacy.fullKey, { sourceId: source.sourceId, identity })).map((row) => stored(ctx, row));
@@ -271,7 +290,7 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     if (previous && (!isDeepStrictEqual(previous.binding.source, source) || previous.binding.legacy.fullKey !== input.legacy.fullKey || previous.binding.legacy.publicationSha256 !== publicationSha256)) throw failure();
     for (const row of all) if (row.binding.legacy.fullKey === input.legacy.fullKey && (row.binding.source.sourceId !== source.sourceId || row.binding.cardUuid !== identity.cardId)) throw failure();
     // Home is canonical and durable before its mirror is published. No schema is created here.
-    take(await publishFeedCard(privateDatabase(ctx.sql.db(source.output.database), ctx), input.card));
+    take(await publishFeedCard(privateDatabase(ctx.sql.db(source.output.database), ctx), card));
     if (!await currentCard(ctx, source, identity)) throw failure();
     if (previous?.receipt) return previous.binding;
     let head = await readLegacy(ctx, record.kind, input.legacy.fullKey);
