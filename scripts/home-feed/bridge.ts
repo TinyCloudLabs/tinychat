@@ -12,7 +12,7 @@ import type { FeedCard, FeedCardIdentity, FeedDatabase, FeedDeliveryOptions, Fee
 import {
   applyUpsert, boardKey, claimDecisionHistory, closePatch, currentAnswer,
   decodeLegacySendNote, decodeOwnerThreadMessage,
-  emptySitrepOwnerData, holdLiftPatch, isKind, openApprovals, ownerAnswerLookup,
+  emptySitrepOwnerData, findRecordSecrets, holdLiftPatch, isKind, openApprovals, ownerAnswerLookup,
   parseSitrepCardPayload, validateAnswer, validateClaimDecision, validateRecord,
   validateSitrepAction, validateState,
 } from "@tinyboilerplate/core/feed/sitrep";
@@ -47,7 +47,7 @@ const inputSchema = z.object({
   source: sourceSchema.extend({ label: z.string() }).strict(), card: cardSchema,
   legacy: z.object({ spaceId: text, fullKey: text, record: businessSchema }).strict(),
 }).strict();
-type SafeDiagnostic = { name: string; message: string; code: string; step: string; status?: number };
+type SafeDiagnostic = { name: string; message: string; code: string; step: string; status?: number; detail?: string };
 class MirrorFailure extends Error {
   readonly code: string;
   readonly status?: number;
@@ -64,6 +64,7 @@ const refusalMessages = [
   "Home mirror inventory requires a board index, a source and full spaces",
   "Home mirror inventory leaves holds and claims on the board",
   "Home mirror leaves the consent code of a closed approval on the board",
+  "Home mirror leaves a record that holds a secret or an approval link on the board",
   "Board index is unreadable",
   "The synthetic check runs only in a QA owner space",
   "Synthetic check requires a profile, full spaces and a source",
@@ -89,8 +90,11 @@ const argumentMessages = new Set<string>([
 ]);
 const inputFields = new Set(["source", "sourceId", "agentDid", "label", "output", "responses", "spaceId", "database", "card", "cardId", "revision", "issuanceId", "legacy", "fullKey", "record", "recipient", "runner", "renewalSeconds", "responseId", "kind", "createdAt", "sequence", "payloadType", "payloadVersion"]);
 function failure(code: string = ErrorCodes.INVALID_INPUT): Error { return Object.assign(new Error("Home mirror operation refused"), { code }); }
-/** A refusal whose message may reach the diagnostic (it names no input value). */
-export function homeMirrorRefusal(message: HomeMirrorRefusalMessage, code: string = ErrorCodes.INVALID_INPUT): Error { return Object.assign(new Error(message), { code }); }
+/**
+ * A refusal whose message may reach the diagnostic (it names no input value). `detail`, when given, reaches it too:
+ * the caller builds it from the card's id and the kinds of finding only, never from anything the record holds.
+ */
+export function homeMirrorRefusal(message: HomeMirrorRefusalMessage, code: string = ErrorCodes.INVALID_INPUT, detail?: string): Error { return Object.assign(new Error(message), { code, ...(detail === undefined ? {} : { detail }) }); }
 function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
   if (error instanceof MirrorFailure) return error.diagnostic.step === "mirror" && step !== "mirror" ? new MirrorFailure({ ...error.diagnostic, step }) : error;
   const candidate = object(error) ? error.code : undefined;
@@ -111,7 +115,8 @@ function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
     message = error.message;
     if (argumentMessages.has(message)) step = "arguments";
   }
-  return new MirrorFailure({ name, message, code, step, ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {}) });
+  const detail = error instanceof Error && safeMessages.has(error.message) && "detail" in error && typeof error.detail === "string" ? error.detail : undefined;
+  return new MirrorFailure({ name, message, code, step, ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {}), ...(detail === undefined ? {} : { detail }) });
 }
 /** Any failure as the mirror reports it: a code, a safe message and a step, never a node message or HTTP body. */
 export function homeMirrorFailure(error: unknown, step: string): Error { return safeFailure(error, step); }
@@ -133,6 +138,14 @@ const publication = (record: BoardRecord, cardUuid: string) => JSON.stringify({ 
  * refused. An open approval is carried whole, with its code. The board's own copy is never changed by this.
  */
 export function homeMirrorRecord(record: BoardRecord, now: number): BoardRecord {
+  // What reaches Home is what the board's own write guard lets onto the board. A record that holds a secret or an approval
+  // link anyway (written before a pattern existed, or by anything that skips the guard) stays on the board: it is neither
+  // posted nor revised, and the refusal names the card and the kinds of finding, never the value.
+  const found = findRecordSecrets(record.kind, record as unknown as Record<string, unknown>);
+  if (found.length) {
+    const id = found.some((hit) => hit.path === "id") ? "(id withheld)" : record.id;
+    throw homeMirrorRefusal("Home mirror leaves a record that holds a secret or an approval link on the board", ErrorCodes.INVALID_INPUT, `${record.kind}/${id}: ${[...new Set(found.map((hit) => hit.reason))].join("; ")}`);
+  }
   if (record.kind !== "approval" || record.url === undefined) return record;
   if (record.status === "open" && (!record.expiresAt || Date.parse(record.expiresAt) > now)) return record;
   const page = new URL(record.url), bare = `${page.origin}${page.pathname}`;

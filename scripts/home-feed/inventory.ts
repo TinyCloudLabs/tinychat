@@ -37,8 +37,9 @@ export function boardCardIdentity(fullKey: string): { cardId: string; revision: 
 }
 
 export interface InventoryRow { key: string; record: BoardRecord }
-export type InventorySkipReason = "unreadable" | "key-mismatch" | "closed" | "bound-elsewhere";
-export interface InventorySkip { key: string; reason: InventorySkipReason }
+export type InventorySkipReason = "unreadable" | "key-mismatch" | "closed" | "bound-elsewhere" | "flagged";
+/** `detail` is set for "flagged" only: the card's id and the kinds of finding, never a value. */
+export interface InventorySkip { key: string; reason: InventorySkipReason; detail?: string }
 
 export function parseInventoryKinds(value: string | undefined): InventoryKind[] {
   if (value === undefined) return [...INVENTORY_KINDS];
@@ -110,13 +111,16 @@ export function inventoryPlan(rows: readonly InventoryRow[], now: number): { ite
     try {
       const card = boardCard(row, all, now);
       items.push({ key: row.key, kind: row.record.kind, id: row.record.id, cardId: card.cardId, issuanceId: card.issuanceId, needsResponse: card.needsResponse });
-    } catch { refused.push({ key: row.key, reason: "unreadable" }); }
+    } catch (error) {
+      const { detail } = homeMirrorDiagnostic(error).error;
+      refused.push(detail === undefined ? { key: row.key, reason: "unreadable" } : { key: row.key, reason: "flagged", detail });
+    }
   }
   return { items, refused };
 }
 
 export type PostManyOutcome = "posted" | "already" | "changed" | "refused";
-export interface PostManyItem { key: string; cardId: string; outcome: PostManyOutcome; code?: string }
+export interface PostManyItem { key: string; cardId: string; outcome: PostManyOutcome; code?: string; detail?: string }
 
 /**
  * Posts each row through the mirror, one after another, reading the registry and the mirror table once for the
@@ -131,7 +135,11 @@ export async function postMany(ctx: HomeMirrorContext, options: { sourceId: stri
   for (const row of options.rows) {
     if (run.signal?.aborted) break;
     let card: FeedCard;
-    try { card = boardCard(row, all, options.now); } catch { results.push({ key: row.key, cardId: boardCardIdentity(row.key).cardId, outcome: "refused", code: "INVALID_INPUT" }); continue; }
+    try { card = boardCard(row, all, options.now); } catch (error) {
+      const { detail } = homeMirrorDiagnostic(error).error;
+      results.push({ key: row.key, cardId: boardCardIdentity(row.key).cardId, outcome: "refused", code: "INVALID_INPUT", ...(detail === undefined ? {} : { detail }) });
+      continue;
+    }
     const known = mirrored(row.key);
     if (known) {
       const same = known.cardId === card.cardId && known.publicationSha256 === homeMirrorPublicationSha256(row.record, card.cardId);
@@ -143,7 +151,8 @@ export async function postMany(ctx: HomeMirrorContext, options: { sourceId: stri
       await publishHomeMirror(run, input);
       results.push({ key: row.key, cardId: card.cardId, outcome: "posted" });
     } catch (error) {
-      results.push({ key: row.key, cardId: card.cardId, outcome: "refused", code: homeMirrorDiagnostic(error).error.code });
+      const { code, detail } = homeMirrorDiagnostic(error).error;
+      results.push({ key: row.key, cardId: card.cardId, outcome: "refused", code, ...(detail === undefined ? {} : { detail }) });
     }
   }
   return results;
