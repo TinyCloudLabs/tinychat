@@ -754,7 +754,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     try {
       // Status first: once native is no longer finalizing, the list holds the note if it was kept.
       const status = await VoiceNotes.status();
-      // Still being saved: its committed event, or the micState when the save settles, comes back here.
+      // Still being saved: its committed event, or captureFinalized when the save ends, comes back here.
       if (!endedElsewhereCurrent(id) || status.finalizing) return;
       const { recordings } = await VoiceNotes.listPending();
       if (!endedElsewhereCurrent(id)) return;
@@ -985,6 +985,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           acceptNativeOptions(event);
           sendMicState(event);
         }),
+        // iOS: a stop's save ended, committed or not. A stop ended outside the app that waited on it settles now.
+        VoiceNotes.addListener("captureFinalized", () => { if (endedElsewhere) void reconcileWithEngine(); }),
         VoiceNotes.addListener("level", (event) => {
           // Every capture engine emits linear RMS. Convert once at the boundary to the
           // perceptual 0..1 level shared by the halo, bars, trace, and activity gate.

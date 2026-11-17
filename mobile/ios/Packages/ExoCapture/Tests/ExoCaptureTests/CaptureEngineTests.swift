@@ -937,45 +937,56 @@ import XCTest
         }
     }
 
-    /// A Stop the web app did not make (the Live Activity's) reaches it only through status and micState: idle with
-    /// `finalizing` while the note is still being saved, then a micState once it is committed, so the web app can tell a
-    /// note still on its way from one that was never kept.
-    func testStatusReportsAStopStillFinalizingAndAnnouncesWhenItSettles() throws {
-        try withEngine { engine in
-            engine.debugSuppressTaps()
-            let gate = DispatchSemaphore(value: 0)
-            var seam = RecordingFinalizer.WaitSeam()
-            seam.workerOverride = { output, progress in
-                gate.wait()
-                try progress.tick()
-                try Data("m4a".utf8).write(to: output)
+    /// A Stop the web app did not make (the Live Activity's) reaches it only through status and events: idle with
+    /// `finalizing` while the note is still being saved, then exactly one `captureFinalized` when the save ends,
+    /// committed or not. The mic does not change again, so no second micState follows (observers count them).
+    func testAStopStillFinalizingIsAnnouncedOnceWhenItsSaveEnds() throws {
+        for saves in [true, false] {
+            try withEngine { engine in
+                engine.debugSuppressTaps()
+                engine.debugScheduleTimedOutRetry = { _, _, _ in }
+                let gate = DispatchSemaphore(value: 0)
+                var seam = RecordingFinalizer.WaitSeam()
+                seam.workerOverride = { output, progress in
+                    gate.wait()
+                    guard saves else { throw CaptureError.io("mux failed") }
+                    try progress.tick()
+                    try Data("m4a".utf8).write(to: output)
+                }
+                engine.debugMuxWaitSeam = seam
+                let id = try XCTUnwrap(engine.start()["id"] as? String)
+                try enqueueTone(engine)
+                XCTAssertEqual(engine.status()["finalizing"] as? Bool, false)
+                var events: [(name: String, data: [String: Any])] = []
+                let inputStopped = expectation(description: "idle while the note is still being saved")
+                let stopped = expectation(description: "stop completes")
+                let token = engine.observe { name, data, _ in
+                    guard ["micState", "committed", "captureFinalized"].contains(name) else { return }
+                    events.append((name, data))
+                    if name == "micState", data["state"] as? String == "idle", data["finalizing"] as? Bool == true {
+                        inputStopped.fulfill()
+                    }
+                }
+                defer { engine.removeObserver(token) }
+                engine.stop { result in
+                    if saves, case .failure(let error) = result { XCTFail("stop failed: \(error)") }
+                    stopped.fulfill()
+                }
+                wait(for: [inputStopped], timeout: eventTimeout)
+                XCTAssertEqual(engine.status()["finalizing"] as? Bool, true)
+                gate.signal()
+                wait(for: [stopped], timeout: eventTimeout)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+                // Every idle report and save event, in order (a live micState from the stop's own drain may precede them).
+                let names = events.filter { $0.name != "micState" || $0.data["state"] as? String == "idle" }.map(\.name)
+                XCTAssertEqual(names, saves ? ["micState", "committed", "captureFinalized"] : ["micState", "captureFinalized"],
+                               "saves=\(saves)")
+                let finalized = events.last { $0.name == "captureFinalized" }?.data
+                XCTAssertEqual(finalized?["id"] as? String, id)
+                XCTAssertEqual(finalized?["finalizing"] as? Bool, false)
+                XCTAssertEqual(engine.status()["finalizing"] as? Bool, false)
+                XCTAssertEqual(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path), saves)
             }
-            engine.debugMuxWaitSeam = seam
-            let id = try XCTUnwrap(engine.start()["id"] as? String)
-            try enqueueTone(engine)
-            XCTAssertEqual(engine.status()["finalizing"] as? Bool, false)
-            let inputStopped = expectation(description: "idle while the note is still being saved")
-            let settled = expectation(description: "a micState once the note is committed")
-            let stopped = expectation(description: "stop completes")
-            var committed = false
-            let token = engine.observe { name, data, _ in
-                if name == "committed", data["id"] as? String == id { committed = true }
-                guard name == "micState", data["state"] as? String == "idle" else { return }
-                if data["finalizing"] as? Bool == true { inputStopped.fulfill() }
-                if data["finalizing"] as? Bool == false, committed { settled.fulfill() }
-            }
-            defer { engine.removeObserver(token) }
-            engine.stop { result in
-                if case .failure(let error) = result { XCTFail("stop failed: \(error)") }
-                stopped.fulfill()
-            }
-            wait(for: [inputStopped], timeout: eventTimeout)
-            XCTAssertEqual(engine.status()["state"] as? String, "idle")
-            XCTAssertEqual(engine.status()["finalizing"] as? Bool, true)
-            gate.signal()
-            wait(for: [settled, stopped], timeout: eventTimeout)
-            XCTAssertEqual(engine.status()["finalizing"] as? Bool, false)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path))
         }
     }
 
