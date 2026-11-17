@@ -5,7 +5,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { Empty } from "@/components/ui/empty";
 import { ListRow } from "@/components/ui/list-row";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { SharedSource } from "@/lib/nativeShares/display";
+import { quotedTitle, type SharedSource } from "@/lib/nativeShares/display";
 import { sharedNoteId, type ReceivedRecordingShare } from "@/lib/nativeShares/receivedShares";
 import type { RecordStoreSnapshot } from "@/lib/nativeShares/spaceRecords";
 import { cn } from "@/lib/utils";
@@ -26,13 +26,13 @@ function SharedRow(props: { record: ReceivedRecordingShare; now: Date; selected:
   const duration = revoked ? null : record.display.durationSeconds;
   const soft = useSoftHome();
   if (soft) {
-    return <SoftRow icon={Icon} title={record.display.title} meta={meta} durationSecs={duration} href={notePath(sharedNoteId(record.id))} selected={props.selected} testId="shared-item" />;
+    return <SoftRow icon={Icon} title={quotedTitle(record.display.title)} meta={meta} durationSecs={duration} href={notePath(sharedNoteId(record.id))} selected={props.selected} testId="shared-item" />;
   }
   return (
     <ListRow
       href={notePath(sharedNoteId(record.id))}
       leading={<Icon />}
-      title={<span className={cn(revoked && "text-muted-foreground")}>{record.display.title}</span>}
+      title={<span className={cn(revoked && "text-muted-foreground")}>{quotedTitle(record.display.title)}</span>}
       selected={props.selected}
       meta={meta}
       aside={

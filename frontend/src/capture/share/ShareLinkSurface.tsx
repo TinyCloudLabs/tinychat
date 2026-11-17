@@ -1,7 +1,7 @@
 // TC-3195: /s/<id>, a link someone sent you (approved mock, screen 3). It says who shared what: the owner from the
-// owner's signature, the title as the link shows it (in quotes, captioned as the sender's). Nothing is added until you
-// ask: "Sign in to add" adds it once you are signed in, and a signed-in account taps "Add to Library". Then the
-// recording opens.
+// owner's signature (in sentences short, under the headline whole), the title and details as the link carries them
+// (in quotes, captioned as unchecked). Nothing is added until you ask: "Sign in to add" adds it once you are signed
+// in, and a signed-in account taps "Add to Library". Then the recording opens.
 // The link (and its key) was read and removed from the address bar before the app rendered (link.ts); it lives in
 // memory only and is let go once the share is in your TinyCloud.
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -12,13 +12,13 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
 import type { AppState } from "@/lib/appState";
 import { PRODUCT_PAGE_URL } from "@/lib/homeSite";
-import { includesLabel, parseRecordingDisplay, type RecordingShareDisplay } from "@/lib/nativeShares/display";
+import { includesLabel, LINK_DETAILS_CAPTION, parseRecordingDisplay, quotedTitle, type RecordingShareDisplay } from "@/lib/nativeShares/display";
 import { heldShareLink, releaseShareLink, shareLinkId } from "@/lib/nativeShares/link";
-import { receivedShareForLink, receivedShareRecord, receivedShares, sharedNoteId } from "@/lib/nativeShares/receivedShares";
+import { firstShareFrom, receivedShareFor, receivedShareRecord, receivedShares, sharedNoteId, useReceivedShares } from "@/lib/nativeShares/receivedShares";
 import { claimShare, openShareLink, ShareLinkError, type OpenedShareLink } from "@/lib/nativeShares/sdk";
 import { bootMessage } from "@/shell/BootSurface";
 import { notePath } from "@/shell/routes";
-import { Sender } from "./Sender";
+import { Sender, SenderAddress } from "./Sender";
 import { shareItemLine } from "./shareCopy";
 
 type Problem = "expired" | "invalid" | "unavailable" | "revoked" | "claim-failed";
@@ -59,6 +59,8 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
   const now = (props.now ?? (() => new Date()))();
   const [view, setView] = useState<View>({ status: "opening" });
   const [attempt, setAttempt] = useState(0);
+  // The account's Library, for the first-share mark (App binds it to the signed-in account).
+  const shared = useReceivedShares();
   // The recipient asked for the share: by signing in from this page, or with "Add to Library".
   const [addRequested, setAddRequested] = useState(false);
   const claiming = useRef(false);
@@ -96,9 +98,9 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
       navigate(notePath(sharedNoteId(recordId)), { replace: true, state: added ? { shareAdded: true } : null });
     };
     void (async () => {
-      // One delegation per link: a link this account already added opens its record, and when the account's records
-      // cannot be read nothing is claimed.
-      const existing = await receivedShareForLink(tcw, id);
+      // One delegation per share: a share this account already added (from any link) opens its record unchanged,
+      // and when whether it was added cannot be read, nothing is claimed.
+      const existing = await receivedShareFor(tcw, link.rootCid);
       if (existing === undefined) {
         setView({ status: "problem", problem: "claim-failed", link, display });
         return;
@@ -173,12 +175,15 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
     <Shell>
       <p className="text-meta font-semibold text-muted-foreground">Shared with you</p>
       <h1 className="mt-1 font-display text-title-1 [font-size:min(1.75rem,8vw)] [overflow-wrap:anywhere]">{sender} shared a recording with you</h1>
+      <div className="mt-3">
+        <SenderAddress address={link.owner.address} firstShare={tcw !== null && firstShareFrom(shared, link.owner.address) === true} />
+      </div>
       <div className="mt-6 flex items-center gap-3 rounded-lg border border-border p-3">
         <span aria-hidden="true" className="flex size-9 shrink-0 items-center justify-center rounded-md bg-surface-2 text-muted-foreground"><AudioLinesIcon className="size-5" /></span>
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="text-body font-medium [overflow-wrap:anywhere]">“{display.title}”</span>
-          <span className="text-callout text-muted-foreground">Title from the sender</span>
+          <span className="text-body font-medium [overflow-wrap:anywhere]">{quotedTitle(display.title)}</span>
           <span className="text-meta text-muted-foreground">{shareItemLine(display, now)} · {includesLabel(display.includes)}</span>
+          <span className="text-meta text-muted-foreground">{LINK_DETAILS_CAPTION}</span>
         </span>
       </div>
       <div className="mt-6 flex flex-col gap-3">

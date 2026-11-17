@@ -1,6 +1,8 @@
 // TC-3195: what a recording share link shows before sign-in (the links record's `display`). The owner writes it but
 // does not sign it: a recipient reads it from a link anyone could have made, so every field is checked before it is
-// shown, and who shared it never comes from here (see `shortAddress`).
+// shown, shown as coming with the link (`quotedTitle`, `LINK_DETAILS_CAPTION`), and who shared it never comes from
+// here (see `shortAddress`).
+import { getAddress } from "viem";
 
 export type SharedPart = "transcript" | "audio";
 export type SharedSource = "meeting" | "voice-note" | "upload";
@@ -49,11 +51,30 @@ export function parseRecordingDisplay(value: unknown): RecordingShareDisplay | n
 
 /**
  * `0xd559…f412`: who shared it, always the owner's address that `inspectShareToken` checked against the owner's
- * signature. A name from the display is unsigned, so anyone could write one; a display name needs owner signing first.
+ * signature, cased as `fullAddress` shows it. A name from the display is unsigned, so anyone could write one; a
+ * display name needs owner signing first.
  */
 export function shortAddress(address: string): string {
-  return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
+  const full = fullAddress(address);
+  return full.length > 12 ? `${full.slice(0, 6)}…${full.slice(-4)}` : full;
 }
+
+/** The owner's whole address, EIP-55 checksummed, to compare with one the sender gave you. */
+export function fullAddress(address: string): string {
+  try {
+    return getAddress(address);
+  } catch {
+    return address;
+  }
+}
+
+/** A title from a link, in curly quotes: the link's maker wrote it, unchecked. */
+export function quotedTitle(title: string): string {
+  return `“${title}”`;
+}
+
+/** Under the title and details a link carries. */
+export const LINK_DETAILS_CAPTION = "Title and details come with the link and aren’t checked.";
 
 /** "Transcript and audio", "Transcript" or "Audio". */
 export function includesLabel(parts: readonly SharedPart[]): string {

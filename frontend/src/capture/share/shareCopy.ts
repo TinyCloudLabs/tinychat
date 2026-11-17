@@ -12,13 +12,17 @@ export function shareItemLine(display: RecordingShareDisplay, now: Date): string
   return parts.join(" · ");
 }
 
-/** A Shared with me row: "From 0xd559…f412 · Nov 16", "… · Ends Nov 20" near the end, "… · No longer shared". */
+/**
+ * A Shared with me row: "From 0xd559…f412 · Nov 16", "… · Ends Nov 20" near the end, "… · No longer shared", each
+ * ending "· From the link" (the row's title came with the link).
+ */
 export function sharedRowMeta(record: ReceivedRecordingShare, now: Date): string {
   const from = `From ${shortAddress(record.owner.address)}`;
-  if (record.revokedAt) return `${from} · No longer shared`;
   const ends = Date.parse(record.accessExpiresAt);
-  if (ends - now.getTime() < ENDS_SOON_MS) return `${from} · Ends ${shortDate(new Date(ends), now)}`;
-  return `${from} · ${shortDate(new Date(record.display.recordedAt), now)}`;
+  const when = record.revokedAt ? "No longer shared"
+    : ends - now.getTime() < ENDS_SOON_MS ? `Ends ${shortDate(new Date(ends), now)}`
+    : shortDate(new Date(record.display.recordedAt), now);
+  return `${from} · ${when} · From the link`;
 }
 
 /** "Shared by 0xd559…f412 · Nov 16, 2:00 PM · 32 min"; once revoked, "Shared by 0xd559…f412 · Oct 28". */

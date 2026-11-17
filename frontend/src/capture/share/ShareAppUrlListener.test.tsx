@@ -19,6 +19,7 @@ const LINK: OpenedShareLink = {
   linkExpiresAt: "2026-12-16T15:00:00.000Z",
   owner: { address: OWNER, chainId: 1, spaceId: `tinycloud:pkh:eip155:1:${OWNER}:default` },
   accessExpiresAt: "2027-11-16T15:00:00.000Z",
+  rootCid: "bafyroot",
 };
 const LAUNCH = "https://tinycloud.one/s/launchid#v=4&k=key&c=bafyroot";
 

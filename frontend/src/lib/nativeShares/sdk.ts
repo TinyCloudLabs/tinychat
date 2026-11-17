@@ -64,9 +64,9 @@ export async function publishShareLink(input: { token: string; display: Record<s
 }
 
 /**
- * Recipient: what an opened link carries. `token` stays in memory and goes only to `claimShare`. `owner` and
- * `accessExpiresAt` come from the token's root, which the owner's wallet signed. `display` is what the link's maker
- * wrote, unsigned: parse it before showing it, and never take who shared it from it.
+ * Recipient: what an opened link carries. `token` stays in memory and goes only to `claimShare`. `owner`,
+ * `accessExpiresAt` and `rootCid` come from the token's root, which the owner's wallet signed. `display` is what the
+ * link's maker wrote, unsigned: parse it before showing it, and never take who shared it from it.
  */
 export interface OpenedShareLink {
   kind: string;
@@ -76,6 +76,8 @@ export interface OpenedShareLink {
   owner: { address: string; chainId: number; spaceId: string };
   /** When the share's root ends, ISO: nobody can claim it after this. */
   accessExpiresAt: string;
+  /** The share's root CID: one share has one, whichever link carries it. */
+  rootCid: string;
 }
 
 /** The link origins this app accepts: the share origin and the app's own https origin. */
@@ -100,7 +102,7 @@ export async function openShareLink(href: string): Promise<OpenedShareLink> {
   if (opened.kind !== SHARE_KIND) throw new ShareLinkError("invalid");
   const inspected = await inspectShareToken(opened.token);
   if (!inspected.ok) throw new ShareLinkError(inspected.error.code === "AUTH_EXPIRED" ? "expired" : "invalid");
-  const { owner, accessExpiresAt } = inspected.data;
+  const { owner, accessExpiresAt, rootCid } = inspected.data;
   return {
     kind: opened.kind,
     display: opened.display,
@@ -108,6 +110,7 @@ export async function openShareLink(href: string): Promise<OpenedShareLink> {
     linkExpiresAt: opened.linkExpiresAt.toISOString(),
     owner: { address: owner.address, chainId: owner.chainId, spaceId: owner.spaceId },
     accessExpiresAt: accessExpiresAt.toISOString(),
+    rootCid,
   };
 }
 

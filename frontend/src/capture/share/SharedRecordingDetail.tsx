@@ -12,7 +12,9 @@ import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getAudio } from "@/lib/audio/audioStore";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
+import { LINK_DETAILS_CAPTION, quotedTitle } from "@/lib/nativeShares/display";
 import {
+  firstShareFrom,
   markReceivedShareRevoked,
   removeReceivedShare,
   sharedReader,
@@ -26,7 +28,7 @@ import { Frame, NotePlaybackProvider, transcriptBlocks } from "../library/NoteDe
 import { SpeakerLabel } from "../library/SpeakerLabel";
 import { TimestampedTranscript } from "../library/TimestampedTranscript";
 import { hasSegmentTimes } from "../library/transcriptSegments";
-import { Sender } from "./Sender";
+import { Sender, SenderAddress } from "./Sender";
 import { sharedDetailMeta } from "./shareCopy";
 
 const TOAST_MS = 2400;
@@ -78,7 +80,18 @@ function Toast() {
   );
 }
 
-function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now: Date; pushed: boolean; onRemoved: () => void }) {
+/** Under the heading: the meta line, the caption for what came with the link, and who signed the share. */
+function DetailHeading(props: { record: ReceivedRecordingShare; now: Date; firstShare: boolean }) {
+  return (
+    <>
+      <p className="text-callout text-muted-foreground">{sharedDetailMeta(props.record, props.now)}</p>
+      <p className="text-meta text-muted-foreground">{LINK_DETAILS_CAPTION}</p>
+      <SenderAddress address={props.record.owner.address} firstShare={props.firstShare} />
+    </>
+  );
+}
+
+function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now: Date; pushed: boolean; firstShare: boolean; onRemoved: () => void }) {
   const sender = <Sender address={props.record.owner.address} />;
   const [removing, setRemoving] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -95,7 +108,9 @@ function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now
   };
   return (
     <>
-      <p className={`${props.pushed ? "" : "-mt-4 "}text-callout text-muted-foreground`}>{sharedDetailMeta(props.record, props.now)}</p>
+      <div className={`${props.pushed ? "" : "-mt-4 "}flex flex-col gap-2`}>
+        <DetailHeading record={props.record} now={props.now} firstShare={props.firstShare} />
+      </div>
       <div className="flex flex-col items-start gap-2 py-6" data-testid="shared-revoked">
         <span aria-hidden="true" className="mb-1 flex size-10 items-center justify-center rounded-lg bg-surface-2 text-muted-foreground [&_svg]:size-5"><Link2OffIcon /></span>
         <p className="text-headline">{sender} stopped sharing this recording</p>
@@ -164,8 +179,9 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
     );
   }
 
-  const title = record.display.title;
+  const title = quotedTitle(record.display.title);
   const sender = <Sender address={record.owner.address} />;
+  const firstShare = firstShareFrom(shares, record.owner.address, record.id) === true;
   const audioBase = keys.audioBase;
   const loadAudio = audioBase === null ? null : async (signal: AbortSignal, onProgress: (loaded: number, total: number) => void) => {
     try {
@@ -184,11 +200,11 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
       <Frame title={title} pushed={props.pushed} onBack={props.onBack}>
         {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
         {revoked ? (
-          <Revoked record={record} tcw={props.tcw} now={now} pushed={props.pushed} onRemoved={props.onBack} />
+          <Revoked record={record} tcw={props.tcw} now={now} pushed={props.pushed} firstShare={firstShare} onRemoved={props.onBack} />
         ) : (
           <>
             <header className={`${props.pushed ? "" : "-mt-4 "}flex flex-col gap-2`} data-testid="shared-detail" data-note-id={record.id}>
-              <p className="text-callout text-muted-foreground">{sharedDetailMeta(record, now)}</p>
+              <DetailHeading record={record} now={now} firstShare={firstShare} />
               <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" /><span>In your Library until {sender} stops sharing. Read only.</span></p>
             </header>
             {loadAudio && <MeetingAudioPlayer load={loadAudio} durationSecs={record.display.durationSeconds} />}

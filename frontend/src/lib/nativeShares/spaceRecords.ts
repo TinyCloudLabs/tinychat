@@ -17,6 +17,11 @@ export interface SpaceRecordStore<T extends { id: string }> {
   bind(space: RecordSpace | null): Promise<void>;
   snapshot(): RecordStoreSnapshot<T>;
   subscribe(listener: () => void): () => void;
+  /**
+   * One record, read from the space at its own key: `null` when the space holds none, `undefined` when that is not
+   * established (a failed read, a missing space, or a value there that is not this record).
+   */
+  read(space: RecordSpace, id: string): Promise<T | null | undefined>;
   /** Write one record to the space, then show it. */
   put(space: RecordSpace, record: T): Promise<void>;
   /** Delete one record from the space, then drop it. */
@@ -64,6 +69,17 @@ export function createSpaceRecordStore<T extends { id: string }>(prefix: string,
       }
     },
     snapshot: () => current,
+    async read(space, id) {
+      try {
+        const res = await space.kv.get(keyOf(id), { source: "network" });
+        // An un-hosted space also answers KV_NOT_FOUND ("Space not found"): that is not an absent record.
+        if (!res.ok) return res.error.code === "KV_NOT_FOUND" && !/space not found/i.test(res.error.message) ? null : undefined;
+        const record = parse(parseKvValue(res.data.data));
+        return record && record.id === id ? record : undefined;
+      } catch {
+        return undefined;
+      }
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => {

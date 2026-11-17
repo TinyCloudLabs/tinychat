@@ -15,10 +15,10 @@ export function isShareLinkPath(pathname: string): boolean {
   return SHARE_PATH.test(pathname);
 }
 
-/** The link's id (`/s/<id>`), or `null` when `url` is not a share link. */
+/** The link's id (`/s/<id>`), in lower case as the links service makes them, or `null` when `url` is not a share link. */
 export function shareLinkId(url: string): string | null {
   try {
-    return SHARE_PATH.exec(new URL(url).pathname)?.[1] ?? null;
+    return SHARE_PATH.exec(new URL(url).pathname)?.[1]?.toLowerCase() ?? null;
   } catch {
     return null;
   }

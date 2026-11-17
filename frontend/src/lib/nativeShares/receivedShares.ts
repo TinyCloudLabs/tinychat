@@ -16,9 +16,9 @@ const SHARED_NOTE_PREFIX = "shared:";
 
 export interface ReceivedRecordingShare {
   version: 1;
-  /** The share's root CID: claiming the same link twice keeps one record. */
+  /** The share's root CID: claiming the same share twice, from any link, keeps one record. */
   id: string;
-  /** The link it was added from (`/s/<id>`): opening that link again opens this record instead of claiming again. */
+  /** The link it was added from (`/s/<id>`, lower case). For information only: a share is known by its root. */
   linkId?: string;
   display: RecordingShareDisplay;
   owner: { address: string; chainId: number; spaceId: string };
@@ -61,24 +61,21 @@ export function parseReceivedShare(value: unknown): ReceivedRecordingShare | nul
 export const receivedShares = createSpaceRecordStore(RECEIVED_SHARES_PREFIX, parseReceivedShare);
 
 /**
- * The account's record for a link, once its records are loaded: `null` when the link was never added, `undefined`
- * when the records could not be read (so whether it was added is unknown).
+ * The account's record for a share, read from its space by the share's root CID (checked by `inspectShareToken`):
+ * `null` when it was never added, `undefined` when that cannot be established (so nothing may be claimed).
  */
-export async function receivedShareForLink(space: RecordSpace, linkId: string): Promise<ReceivedRecordingShare | null | undefined> {
-  await receivedShares.bind(space);
-  // Not Promise.withResolvers: newer than this project's lib target and some Android WebViews.
-  let unsubscribe = () => {};
-  const settled = await new Promise<RecordStoreSnapshot<ReceivedRecordingShare>>((resolve) => {
-    const check = () => {
-      const snapshot = receivedShares.snapshot();
-      if (snapshot.state === "ready" || snapshot.state === "failed") resolve(snapshot);
-    };
-    unsubscribe = receivedShares.subscribe(check);
-    check();
-  });
-  unsubscribe();
-  if (settled.state !== "ready") return undefined;
-  return settled.records.find((record) => record.linkId === linkId) ?? null;
+export function receivedShareFor(space: RecordSpace, rootCid: string): Promise<ReceivedRecordingShare | null | undefined> {
+  return receivedShares.read(space, rootCid);
+}
+
+/**
+ * Whether this Library holds nothing else from `address` (other than `exceptId`): `null` while its records are not
+ * loaded, since then nobody knows.
+ */
+export function firstShareFrom(shared: RecordStoreSnapshot<ReceivedRecordingShare>, address: string, exceptId?: string): boolean | null {
+  if (shared.state !== "ready") return null;
+  const owner = address.toLowerCase();
+  return !shared.records.some((record) => record.id !== exceptId && record.owner.address.toLowerCase() === owner);
 }
 
 /** The record for a share just claimed. Built from the opened link's display and owner only: never its token. */
