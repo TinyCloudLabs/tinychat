@@ -23,6 +23,7 @@ import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage"
 import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
 import { PlatformContext } from "@/lib/platform";
 import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
+import { DeleteRecordingsStep } from "./DeleteRecordingsStep";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -200,6 +201,9 @@ export function SettingsPage({
                 fixed-URL opener for it yet, so the row is phone and web only. */}
             {appPlatform() !== "tauri" && (
               <div className="mt-4 border-t border-border pt-4">
+                <div className="mb-4">
+                  <DeleteRecordingsStep backendUrl={backendUrl} sessionStore={sessionStore} />
+                </div>
                 <Button
                   variant="outline"
                   size="sm"
