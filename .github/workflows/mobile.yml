@@ -43,6 +43,11 @@ on:
       - ".github/workflows/ios-testflight.yml"
       - "scripts/release/ios-*"
 
+# A newer push cancels the older runs of the same PR or feature branch; main, release/* and tag runs are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && !startsWith(github.ref, 'refs/tags/')) }}
+
 permissions:
   contents: read
 
