@@ -20,12 +20,12 @@ export interface AnswerOption { id: string; label: string; detail?: string; cost
 export const OWN_OPTION: AnswerOption = { id: "own-answer", label: "Your own answer" };
 
 /**
- * A question's options as buttons (design mock, 11-17): one outlined button per option, 56px tall, stacked on a phone
- * and side by side from 520px of card width, with "Suggested" on the one its agent recommends (`suggested`, or else
- * an option whose label ends in "(Recommended)"; the marker comes off the label, as in `displayOptions`). The
- * chosen one stays pressed; while its answer waits (`pending`) or is being saved (`saving`) it reads as the wait,
- * with Undo and a line that runs out, and the others dim. "Your own answer" is the last button: tapping it turns
- * that same slot into the text field (no extra element appears below), and Cancel turns it back.
+ * A question's options as buttons (design mock, 11-17): one outlined button per option, 56px tall, one per row and
+ * full width on every screen (Sam, 11-17: stacked for legibility), with "Suggested" on the one its agent recommends
+ * (`suggested`, or else an option whose label ends in "(Recommended)"; the marker comes off the label, as in
+ * `displayOptions`). The chosen one stays pressed; while its answer waits (`pending`) or is being saved (`saving`) it
+ * reads as the wait, with Undo and a line that runs out, and the others dim. "Your own answer" is the last button:
+ * tapping it turns that same slot into the text field (no extra element appears below), and Cancel turns it back.
  */
 export function AnswerOptions({ options: given, suggested: recommended, pending, saving, chosen, disabled = false, own, note, onChoose, onUndo }: {
   options: readonly AnswerOption[];
@@ -66,12 +66,12 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
     if (event.key !== "Escape" || !pending) return;
     event.preventDefault(); undo();
   }
-  const status = pending && waitingLabel ? `${waitingLabel} sends in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
+  const status = pending && waitingLabel ? `Sending ${waitingLabel} in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
   // The legend and the note share a line while they fit and stack when they don't: both float, the buttons clear them.
   return <fieldset className="text-sm" onKeyDown={escape}>
     <legend className="float-left mb-2 mr-3 p-0 text-xs font-medium leading-4 text-muted-foreground">Choose an option</legend>
     {note && <p className="float-right mb-2 text-xs leading-4 tabular-nums text-muted-foreground">{note}</p>}
-    <div className="clear-both grid gap-2 cq:grid-cols-2">
+    <div className="clear-both grid gap-2">
     {options.map((option) => {
       const held = waitingId === option.id;
       const isOwn = option === OWN_OPTION;
@@ -79,7 +79,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
       const pressed = held || (!waiting && chosen === option.id);
       const off = disabled || (waiting && !held);
       const shell = writing && !held ? "" : isOwn && !pressed ? "bg-muted" : `bg-background ring-inset ${pressed ? "bg-selected ring-[1.5px] ring-foreground" : "ring-1 ring-muted-foreground"}`;
-      return <div key={option.id} className={`relative min-w-0 rounded-xl ${isOwn ? "cq:col-span-full" : ""} ${shell} ${off ? "opacity-50" : ""}`}>
+      return <div key={option.id} className={`relative min-w-0 rounded-xl ${shell} ${off ? "opacity-50" : ""}`}>
         {writing
           ? <div className={held ? "invisible" : ""}>{own?.box}</div>
           : isOwn
@@ -93,7 +93,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
             shortens; the countdown does. A screen reader hears the full status line below instead. */}
         {held && <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden rounded-xl pl-3.5 pr-2">
           <span aria-hidden className="min-w-0 truncate font-semibold">{option.label}</span>
-          <span aria-hidden className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{pending ? `Sends in ${pending.seconds}s` : "Sending…"}</span>
+          <span aria-hidden className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{pending ? `Sending · ${pending.seconds}s` : "Sending…"}</span>
           {/* Focus moves to Undo when the wait starts, so Enter or Escape undoes from the keyboard. */}
           {pending && <button type="button" autoFocus onClick={undo} className="pointer-events-auto min-h-10 shrink-0 rounded-lg border border-border bg-background px-3 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Undo</button>}
           {pending && <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-foreground motion-safe:animate-out motion-safe:slide-out-to-left motion-safe:ease-linear motion-safe:fill-mode-forwards motion-reduce:hidden" style={{ animationDuration: `${UNDO_SECONDS}s` }} />}

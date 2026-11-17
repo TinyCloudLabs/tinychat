@@ -931,7 +931,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     // written to the old identity).
     return <div className="min-w-0 [container-type:inline-size]" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
       {...(unsupported ? {} : { onAuthor: () => { leaveView(); setAgentPage(agentKey(entry, context?.record)); mainRef.current?.scrollTo({ top: 0 }); } })}
-      {...(status ? { status } : {})} collapse={collapse}>
+      {...(status ? { status } : {})} collapse={collapse} inline>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
         ? <SeenAfterUndo onSeen={seenUnsent}><NotSent label={refusedLabel} changed={refused.has(key) || unsent?.outcome !== "closed"} {...wordsOf(refusedLabel)} /></SeenAfterUndo>
         : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
@@ -968,8 +968,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {snoozedOnly && !isOpen(entry) && snoozedNow(entry, clock) && <div className="flex justify-end px-2 pb-2"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}
     </MorphItem>;
   };
-  const asRow = (row: Row) => row.kind === "card" && !row.retained && (!!labPageOf(row.item) || !isOpen(row.item));
-  /** A section's items: open cards and groups on their own, and each run of rows together in one bordered list. */
+  const asRow = (row: Row) => row.kind === "card";
+  /** A section's items: groups on their own, and each run of cards (rows, and a card open in its row) together in one bordered list. */
   function renderList(list: Row[]) {
     const out: ReactNode[] = [];
     let run: ReactNode[] = [];

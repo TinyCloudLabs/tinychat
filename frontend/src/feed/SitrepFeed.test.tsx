@@ -602,7 +602,7 @@ test("a tapped typed option counts down in its own row, Undo there writes nothin
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
   await act(async () => option(article, "Quick option").click());
-  expect(answers(article)?.textContent).toContain("Sends in 5s");
+  expect(answers(article)?.textContent).toContain("Sending · 5s");
   expect(undoPill(article)).toBeNull();
   await act(async () => button(answers(article)!, "Undo").click());
   await timer.advance(10_000);
@@ -804,4 +804,40 @@ test("an ask Sam dropped that its agent then closes in a new revision is one car
   await timer.advance(5000);
   expect(fixture.saved).toHaveLength(1);
   expect(await closeInNewRevision(fixture, view.host, "dropped")).toEqual(["Dropped"]);
+});
+
+const LONG_URL = `https://reports.synthetic-example.ts.net/${"a-very-long-report-path-segment/".repeat(6)}final-review-with-a-long-name.md?token=${"x".repeat(80)}`;
+
+test("an open card's link shows its label first and its address underneath, and the address wraps inside the column", async () => {
+  const fixture = typedFixture({ ...syntheticRecord("ask"), links: [{ label: "Private report", url: LONG_URL }] });
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  const link = article.querySelector<HTMLAnchorElement>('nav[aria-label="Card reports and sources"] a')!;
+  expect(link.getAttribute("href")).toBe(LONG_URL);
+  const lines = [...link.children].filter((node) => node.tagName === "SPAN") as HTMLElement[];
+  expect(lines).toHaveLength(2);
+  expect(lines[0]!.textContent).toBe("Private report");
+  expect(lines[1]!.textContent).toContain("reports.synthetic-example.ts.net/a-very-long-report-path-segment/");
+  expect(lines[1]!.textContent).not.toMatch(/^https?:/);
+  // Stacked, never clipped, never wider than the column: a column flex chip that may shrink (min-w-0, max-w-full), and an address that breaks anywhere.
+  const chip = link.className.split(/\s+/);
+  expect(chip).toEqual(expect.arrayContaining(["flex", "flex-col", "min-w-0", "max-w-full"]));
+  expect(chip).not.toContain("whitespace-nowrap");
+  expect(lines[1]!.className.split(/\s+/)).toEqual(expect.arrayContaining(["break-all", "min-w-0"]));
+  expect(lines[1]!.className).not.toMatch(/truncate|overflow-hidden|text-ellipsis|whitespace-nowrap/);
+  expect(link.parentElement!.className.split(/\s+/)).toEqual(expect.arrayContaining(["flex-wrap", "min-w-0"]));
+});
+
+test("a card open in its row adds no second card: no border, radius, shadow or background between the list and its content", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  const surface = /(^|\s)(border|rounded|shadow|bg-card|bg-background|ring)(-[^\s]*)?(?=\s|$)/;
+  expect(article.className).not.toMatch(surface);
+  // Walk up to the list: the only box with an edge, radius or surface is the list itself, once.
+  const list = article.closest("ul")!;
+  for (let node: HTMLElement | null = article.parentElement; node && node !== list; node = node.parentElement) expect(node.className).not.toMatch(surface);
+  expect(list.className).toMatch(/rounded-2xl/);
+  // And it sits in the list's own item, beside the rows, as the mock's open row does.
+  expect(article.closest("li")!.parentElement).toBe(list);
 });

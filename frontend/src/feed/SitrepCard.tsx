@@ -56,13 +56,22 @@ function KnownFold({ facts, children }: { facts: number; children: ReactNode }) 
     {children}
   </details>;
 }
-function hostOf(url: string): string { try { return new URL(url).hostname; } catch { return ""; } }
-/** A card's links as chips under its brief: the caption, the site it goes to, and an arrow out. */
+/** A link's address as shown under its caption: the host and path, with no scheme, "www." or trailing slash. */
+function shownUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host.replace(/^www\./, "")}${parsed.pathname}${parsed.search}${parsed.hash}`.replace(/\/$/, "");
+  } catch { return url; }
+}
+/**
+ * A card's links under its brief, one chip each (Sam, 11-17): the caption on the first line, the address underneath.
+ * The chip never runs past the card's column; a long address breaks where it must instead of overflowing.
+ */
 function LinkChips({ links, tight = false }: { links: readonly { url: string; label?: string }[]; tight?: boolean }) {
-  return <nav aria-label="Card reports and sources" className={`${tight ? "mt-1.5" : "mt-3.5"} flex flex-wrap gap-2`}>{links.map((link) => {
-    const host = hostOf(link.url);
-    return <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer" className={`inline-flex h-8 max-w-full items-center gap-1.5 rounded-full pl-3 pr-2.5 text-[12.5px] font-semibold ring-1 ring-inset ring-muted-foreground transition-colors hover:bg-muted ${focusRing}`}>
-      <span className="truncate">{linkCaption(link as Parameters<typeof linkCaption>[0]).split(" · ")[0]}</span>{host && <span className="shrink-0 font-normal text-muted-foreground">{host}</span>}<ExternalLinkIcon aria-hidden className="size-[13px] shrink-0 text-muted-foreground" />
+  return <nav aria-label="Card reports and sources" className={`${tight ? "mt-1.5" : "mt-3"} flex min-w-0 flex-wrap gap-x-1.5 gap-y-2.5`}>{links.map((link) => {
+    return <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer" className={`flex min-h-11 min-w-0 max-w-full flex-col justify-center gap-0.5 rounded border border-blue-700/35 px-2 py-1.5 font-mono text-xs leading-snug text-blue-700 transition-colors hover:border-blue-700 hover:bg-blue-700/5 dark:border-blue-400/40 dark:text-blue-400 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 ${focusRing}`}>
+      <span className="flex min-w-0 items-start gap-1.5 font-semibold"><span className="min-w-0 [overflow-wrap:anywhere]">{linkCaption(link as Parameters<typeof linkCaption>[0]).split(" · ")[0]}</span><ExternalLinkIcon aria-hidden className="mt-0.5 size-3 shrink-0" /></span>
+      <span className="min-w-0 break-all font-normal opacity-80">{shownUrl(link.url)}</span>
     </a>;
   })}</nav>;
 }
