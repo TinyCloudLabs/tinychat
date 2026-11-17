@@ -12,6 +12,8 @@ afterEach(async () => {
   for (const { root, host } of mounted) { await act(async () => root.unmount()); host.remove(); }
   mounted.clear();
   resetImageGateForTests();
+  restore?.();
+  restore = undefined;
 });
 
 /** `threadId` undefined renders outside any conversation (a shared or unknown view). */

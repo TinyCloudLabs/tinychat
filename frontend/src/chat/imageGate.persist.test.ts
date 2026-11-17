@@ -16,8 +16,14 @@ import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { getThread } from "../lib/threadStore";
 
 const initialFetch = globalThis.fetch;
+const initialHTMLElement = globalThis.HTMLElement;
+const initialCustomElements = globalThis.customElements;
 afterEach(() => {
   globalThis.fetch = initialFetch;
+  if (initialHTMLElement) globalThis.HTMLElement = initialHTMLElement;
+  else delete (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement;
+  if (initialCustomElements) globalThis.customElements = initialCustomElements;
+  else delete (globalThis as { customElements?: typeof customElements }).customElements;
   resetImageGateForTests();
   historyPrefetch.clear();
   setPrefetchFetcher(async () => null);
