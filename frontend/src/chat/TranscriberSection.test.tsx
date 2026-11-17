@@ -534,7 +534,7 @@ describe("transcriber client", () => {
       return new Response(JSON.stringify({ removed: 3, deleting: 1 }), { status: 202 });
     }) as typeof fetch;
     const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
-    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1 } });
+    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1, listOnly: 0 } });
     expect(seen).toEqual([{ url: "https://api.example/api/transcriber/meetings", method: "DELETE" }]);
   });
 

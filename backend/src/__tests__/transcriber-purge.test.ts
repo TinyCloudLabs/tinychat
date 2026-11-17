@@ -170,7 +170,7 @@ describe("DELETE / (the step before account deletion)", () => {
     await h.index.addShared(OWNER, "mtg_shared", { ownerAddress: OTHER, title: "t", scheduledStart: "" } as never);
     await withServer(h.app, async (base) => {
       const r = await call(base, BASE, "DELETE");
-      expect(r).toEqual({ status: 202, body: { removed: 3, deleting: 1 } });
+      expect(r).toEqual({ status: 202, body: { removed: 3, deleting: 1, listOnly: 1 } }); // listOnly: the shared one
     });
     expect(h.ptx.store.has("mtg_shared")).toBe(true); // the owner's copy is theirs
     expect([...h.ptx.store.keys()].sort()).toEqual(["mtg_3", "mtg_shared"]);
@@ -180,7 +180,7 @@ describe("DELETE / (the step before account deletion)", () => {
     h.ptx.modes.set("mtg_3", "ok");
     await withServer(h.app, async (base) => {
       // Idempotent: asking again finishes the stuck one and reports a clean 200.
-      expect(await call(base, BASE, "DELETE")).toEqual({ status: 200, body: { removed: 1, deleting: 0 } });
+      expect(await call(base, BASE, "DELETE")).toEqual({ status: 200, body: { removed: 1, deleting: 0, listOnly: 0 } });
     });
     expect(h.ptx.store.has("mtg_3")).toBe(false);
     expect(await h.index.list(OWNER)).toEqual([]);

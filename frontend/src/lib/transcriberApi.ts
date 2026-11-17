@@ -140,8 +140,8 @@ export interface TranscriberClient {
   transcript(id: string): Promise<TranscriberResult<TranscriptResult>>;
   /** Resolves ok once the entry is gone (`deleting: false`) or accepted for retry (`deleting: true`). */
   remove(id: string): Promise<TranscriberResult<{ deleting: boolean }>>;
-  /** Removes every recording this account holds, including the provider's copies; `deleting` counts those still being retried. */
-  removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number }>>;
+  /** Removes every recording this account holds, including the provider's copies; `deleting` counts those still being retried, `listOnly` those only dropped from the list (shared with this account). */
+  removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number; listOnly: number }>>;
 }
 
 export function createTranscriberClient(
@@ -259,6 +259,14 @@ export function createTranscriberClient(
         read: async (response) => ({ deleting: response.status === 202 }),
       }),
     removeAll: () =>
-      request<{ removed: number; deleting: number }>("", { method: "DELETE", missing: "feature-dark" }),
+      request<{ removed: number; deleting: number; listOnly: number }>("", {
+        method: "DELETE",
+        missing: "feature-dark",
+        // `listOnly` is a subset of `removed` (shared with this account, dropped from the list only).
+        read: async (response) => {
+          const body = (await response.json()) as { removed: number; deleting: number; listOnly?: number };
+          return { removed: body.removed, deleting: body.deleting, listOnly: body.listOnly ?? 0 };
+        },
+      }),
   };
 }

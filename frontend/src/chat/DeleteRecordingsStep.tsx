@@ -2,13 +2,14 @@ import { useMemo, useState } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { Button } from "@/components/ui/button";
 import { createTranscriberClient } from "@/lib/transcriberApi";
+import { doneLines, sharedRemovedLine } from "./recordingsDeletedCopy";
 
 type StepState =
   | { phase: "idle" }
   | { phase: "confirm" }
   | { phase: "working" }
-  | { phase: "done"; removed: number }
-  | { phase: "deleting"; removed: number; deleting: number }
+  | { phase: "done"; own: number; shared: number }
+  | { phase: "deleting"; own: number; shared: number; deleting: number }
   | { phase: "failed" };
 
 /**
@@ -28,13 +29,14 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
     setState({ phase: "working" });
     const result = await client.removeAll();
     if (result.status === "ok") {
-      setState(result.value.deleting > 0
-        ? { phase: "deleting", ...result.value }
-        : { phase: "done", removed: result.value.removed });
+      // `removed` counts list-only removals too; `listOnly` is the part that was never ours to delete.
+      const { removed, deleting, listOnly } = result.value;
+      const own = removed - listOnly;
+      setState(deleting > 0 ? { phase: "deleting", own, shared: listOnly, deleting } : { phase: "done", own, shared: listOnly });
       return;
     }
     // Feature off for this deployment: there are no recordings to delete.
-    setState(result.status === "feature-dark" ? { phase: "done", removed: 0 } : { phase: "failed" });
+    setState(result.status === "feature-dark" ? { phase: "done", own: 0, shared: 0 } : { phase: "failed" });
   };
 
   return (
@@ -65,15 +67,18 @@ export function DeleteRecordingsStep(props: { backendUrl: string; sessionStore: 
       )}
       {state.phase === "working" && <p className="mt-2 text-xs text-muted-foreground" role="status">Deleting your recordings…</p>}
       {state.phase === "done" && (
-        <p className="mt-2 text-xs text-muted-foreground" role="status">
-          {state.removed > 0 ? "Your recordings are deleted." : "You have no recordings to delete."}
-        </p>
+        <div className="mt-2 space-y-1 text-xs text-muted-foreground" role="status">
+          {doneLines(state.own, state.shared).map((line) => <p key={line}>{line}</p>)}
+        </div>
       )}
       {state.phase === "deleting" && (
-        <p className="mt-2 text-xs text-muted-foreground" role="status">
-          {state.removed} deleted. {state.deleting} {state.deleting === 1 ? "is" : "are"} still being deleted; we keep
-          retrying until each is confirmed gone.
-        </p>
+        <div className="mt-2 space-y-1 text-xs text-muted-foreground" role="status">
+          <p>
+            {state.own > 0 ? `${state.own} deleted. ` : ""}{state.deleting} {state.deleting === 1 ? "is" : "are"} still being deleted; we keep
+            retrying until each is confirmed gone.
+          </p>
+          {state.shared > 0 && <p>{sharedRemovedLine(state.shared)}</p>}
+        </div>
       )}
       {state.phase === "failed" && (
         <p className="mt-2 text-xs text-destructive" role="alert">
