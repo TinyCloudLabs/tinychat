@@ -406,8 +406,9 @@ tool changed, over budget.
 **Decision (the result of this section).** Keep `--network=none` and the per-bot socket: the Bun gateway is the single
 policy point and every capability is a gateway route. iron-proxy is **not** adopted now. Phases 1 and 2 need no outbound
 hop: phase 1 dials one fixed host and phase 2 dials only the search vendor's API host. For phase 3, owner-added
-servers, the outbound hop is **Stripe's Smokescreen**, a CONNECT forward proxy that refuses non-public addresses by
-default, on a network of its own and behind the gateway's own guard; a spike confirms it first. iron-proxy's default-deny
+servers, the outbound hop is **Stripe's Smokescreen**, used only as a plain outbound hop: a CONNECT forward proxy that
+refuses non-public addresses by default, with no TLS termination and no CA, on a network of its own that only
+`bots-gateway` can reach, and behind the gateway's own guard; a spike confirms it first. iron-proxy's default-deny
 per-tool MCP allowlist idea is copied into the gateway. The reasons are under "Recommendation"; the rest of this section
 is the evaluation they come from.
 
@@ -681,7 +682,8 @@ flag and does not change the others.
 6. **Web access has no expiry** (it carries no owner authority). With the exfil rule above in place, "until I turn it
    off" is acceptable; say so if it should expire like the data grants.
 7. **Egress layer.** Recommended: the gateway's own guard alone for phases 1 and 2 (no outbound hop is needed), and
-   Smokescreen for owner-added servers (phase 3). iron-proxy is not adopted now. Smokescreen has not been run by us, so
+   Smokescreen for owner-added servers (phase 3) as a plain outbound hop only: no TLS termination, no CA, on its own
+   network, reachable only from `bots-gateway`. iron-proxy is not adopted now. Smokescreen has not been run by us, so
    the spike confirms the choice before phase 3 ships rather than choosing between hops. Whichever, the gateway keeps
    its own checks and the per-owner secrets.
 8. **Reply rendering** (TinyChat frontend): text the model wrote never loads remote images, and links show their full
