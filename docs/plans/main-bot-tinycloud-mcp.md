@@ -107,7 +107,8 @@ restricted surfaces expose the read tools Main needs is to be confirmed; a new s
   - **Standing**: 7 days, renewing, only if the owner picks it, and only after a warning screen. No default, no nudge.
   - The extra warning and "Reject this permission" for another app's data or cross-app access are OpenKey's to build
     (decision 1). The MCP's delegation approval goes through OpenKey's `/delegate` link flows, which show no such
-    screen today, and the draft that adds it (#538) is reported not to cover them. This plan depends on it and does
+    screen today, and the draft that adds it (#538) does not cover them (its security review confirmed that ticket and
+    link flows skip both the warning and the share rule). This plan depends on it and does
     not rely on it existing.
 - **What these windows bound today.** The gateway enforces them on the token only: it stops attaching the token and
   revokes it at OpenKey. The delegation underneath lasts as long as the MCP's delegation expiry (30 days in
@@ -199,7 +200,8 @@ TinyCloud trust boundary to the provider, and the owner copy must say so.
 - The host is resolved by the gateway and **every** address returned is checked; the connection is then made to the
   address that was checked (not resolved again), with the original host in SNI and `Host`. That closes DNS rebinding
   only if nothing in between resolves the name again: the fetcher ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
-  and talks to the target directly. A proxy placed behind the gateway would resolve the name itself and reopen
+  from its environment, uses only the one outer ring this plan configures explicitly (if any), and otherwise talks to
+  the target directly. A proxy placed behind the gateway would resolve the name itself and reopen
   rebinding, unless its own dial-time deny list carries the same list as below.
 - Refused addresses: loopback, unspecified, private (RFC 1918), shared/CGNAT, link-local (including the cloud metadata
   address `169.254.169.254`), multicast, broadcast, reserved, IPv6 loopback/ULA/link-local, and these forms, named
@@ -512,7 +514,7 @@ ships behind the existing test-account flag and does not change the others.
    default and the 7-day renewing choice behind a warning; a "Reject this permission" control. The approval screen on
    main today has a request-level decline and a "belongs to another user" note and no per-permission reject, and the
    MCP's delegation approval goes through the `/delegate` link flows, which show no extra warning (the draft that adds
-   one is reported not to cover them). This plan depends on this and the owner copy makes no claim about it until it
+   one does not cover them: the #538 security review confirmed it). This plan depends on this and the owner copy makes no claim about it until it
    exists. Also the OAuth client and the name shown ("Main, TinyCloud One").
 2. **Hosted MCP** (js-sdk `packages/mcp`). **A build precondition, not an option.** Delegations are stored per tenant,
    keyed by the OpenKey subject only, so Main would use any delegation the owner approved for another MCP client, and
