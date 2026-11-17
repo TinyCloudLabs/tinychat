@@ -61,11 +61,17 @@ const NESTED_URL = /https?:|:\/\/|(?:^|[=&;?])\/\//i;
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const IPV4 = /^\d+\.\d+\.\d+\.\d+$/;
 
-/** A value as a URL parser would read it: tabs and newlines dropped, `\` as `/`, decoded until stable, width and case folded. */
-function parserView(value: string): string {
+/** A value as a URL parser would read it: tabs and newlines dropped, `\` as `/`, decoded until stable, width and case folded.
+ * `undefined` when a decoding round fails (a stray `%`): the rest can no longer be read, so the caller asks. */
+function parserView(value: string): string | undefined {
   let view = value;
   for (let round = 0; round < 4; round++) {
-    const next = decode(view.replace(/[\t\n\r]/g, ""));
+    let next: string;
+    try {
+      next = decodeURIComponent(view.replace(/[\t\n\r]/g, "").replace(/\+/g, " "));
+    } catch {
+      return undefined;
+    }
     if (next === view) break;
     view = next;
   }
@@ -75,6 +81,7 @@ function parserView(value: string): string {
 function hasNestedAddress(pathname: string, query: string): boolean {
   const path = parserView(pathname);
   const search = parserView(query);
+  if (path === undefined || search === undefined) return true;
   if (NESTED_URL.test(path) || NESTED_URL.test(search)) return true;
   // A query value that is itself an address ("next=ftp:x", "next= //x"); a path segment with a colon is just a file name.
   return search.split(/[&;]/).some((param) => {

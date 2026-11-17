@@ -262,3 +262,13 @@ test("another message in the same component starts with a fresh budget: an appro
   expect(srcs(host)).toEqual(loaded("a", "b"));
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
 });
+
+test("a Load on an asking address belongs to its message: the same address in another message asks again", async () => {
+  const { host } = await mountRecorded();
+  await show(mounted!, `![chart](${carrier})`, host, false, "message-1");
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
+  expect(srcs(host)).toEqual([carrier]);
+  await show(mounted!, `![chart](${carrier})`, host, false, "message-2");
+  expect(host.querySelector("img")).toBeNull(); // the Load was for message-1's image
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.title("evil.example"));
+});

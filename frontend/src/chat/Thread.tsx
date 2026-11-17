@@ -623,7 +623,7 @@ const UserMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
-const AssistantMessage: FC = () => {
+export const AssistantMessage: FC = () => {
   // Messages are keyed by position, so a component can be reused for another message: its images get a fresh budget.
   const messageId = useMessage((message) => message.id);
   return (

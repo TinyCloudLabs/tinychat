@@ -7,12 +7,12 @@ const img = (host: string, name = "a") => `https://${host}/${name}.png`;
 const heldSrcs = (srcs: string[]) => heldImages(srcs).map((held) => held.src);
 
 describe("allowlisted hosts", () => {
-  test.each(["tinycloud.one", "app.tinycloud.one", "tinycloud.chat", "www.tinycloud.chat", "node.tinycloud.xyz", "tinycloud.xyz", "i.imgur.com", "avatars.githubusercontent.com", "upload.wikimedia.org"])(
+  test.each(["tinycloud.one", "app.tinycloud.one", "tinycloud.chat", "www.tinycloud.chat", "node.tinycloud.xyz", "tinycloud.xyz", "i.imgur.com", "avatars.githubusercontent.com"])(
     "%s",
     (host) => expect(isAllowlistedImageHost(host)).toBe(true),
   );
 
-  test.each(["evil-tinycloud.one", "tinycloud.one.evil.example", "tinycloud.xyz.evil.example", "xtinycloud.chat", "example.com", "", "evil.i.imgur.com", "imgur.com", "raw.githubusercontent.com", "res.cloudinary.com", "img.shields.io", "images.unsplash.com", "api.tinycloud.chat", "share.tinycloud.xyz", "tee.node.tinycloud.xyz"])(
+  test.each(["evil-tinycloud.one", "tinycloud.one.evil.example", "tinycloud.xyz.evil.example", "xtinycloud.chat", "example.com", "", "evil.i.imgur.com", "imgur.com", "raw.githubusercontent.com", "res.cloudinary.com", "upload.wikimedia.org", "img.shields.io", "images.unsplash.com", "api.tinycloud.chat", "share.tinycloud.xyz", "tee.node.tinycloud.xyz"])(
     "%s is not",
     (host) => expect(isAllowlistedImageHost(host)).toBe(false),
   );
@@ -37,7 +37,7 @@ describe("the images of a reply that must wait", () => {
   });
 
   test("a trusted third-party host does not use the budget either", () => {
-    const trusted = ["i.imgur.com", "avatars.githubusercontent.com", "upload.wikimedia.org"].map((h) => img(h));
+    const trusted = ["i.imgur.com", "avatars.githubusercontent.com"].map((h) => img(h));
     expect(heldSrcs([...trusted, img("a.example"), img("b.example")])).toEqual([]);
   });
 

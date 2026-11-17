@@ -111,6 +111,8 @@ describe("addresses that ask first", () => {
     expect(next("https%25253A%25252F%25252Fx.ee")).toEqual(["nested-url"]);
     expect(next("%EF%BC%8F%EF%BC%8Fx.ee")).toEqual(["nested-url"]); // fullwidth slashes
     expect(next("ftp:x.ee")).toEqual(["nested-url"]);
+    expect(reasons("https://i.imgur.com/a.png?a=%&next=https%3A%2F%2Fx.ee")).toEqual(["nested-url"]); // a stray % stops decoding
+    expect(reasons("https://i.imgur.com/100%.png")).toEqual(["nested-url"]);
     expect(next("2")).toBe("load");
     expect(reasons("https://upload.wikimedia.org/wikipedia/commons/a/ab/File:Cat.jpg")).toBe("load");
   });

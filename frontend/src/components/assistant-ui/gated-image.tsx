@@ -18,8 +18,9 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
   useWaitingImages(budget);
   const id = useId();
   const streaming = INTERNAL.useSmoothStatus().type === "running";
-  // The reader's choice belongs to the address they saw: a streamed reply can change the address under the same image.
-  const [decision, setDecision] = useState<{ src: string; choice: "load" | "skip" } | null>(null);
+  // The reader's choice belongs to the address they saw, in the reply they saw it in: a streamed reply can change the address
+  // under the same image, and the thread can reuse this component for another message (a new budget).
+  const [decision, setDecision] = useState<{ budget: typeof budget; src: string; choice: "load" | "skip" } | null>(null);
   const address = typeof src === "string" ? src : null;
   const claimed = address !== null && !streaming ? address : null;
   if (claimed !== null) budget?.claim(id, claimed);
@@ -51,7 +52,7 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
     if (held === "skip") return notLoaded;
     return notLoaded; // the reply's prompt says why
   }
-  const choice = decision?.src === address ? decision.choice : null;
+  const choice = decision?.src === address && decision.budget === budget ? decision.choice : null;
   if (choice === "load") return picture;
   if (choice === "skip") return notLoaded;
   return (
@@ -68,14 +69,14 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
         <button
           type="button"
           className="rounded-md border border-border bg-background px-3 py-1 text-sm font-medium"
-          onClick={() => setDecision({ src: address, choice: "load" })}
+          onClick={() => setDecision({ budget, src: address, choice: "load" })}
         >
           {IMAGE_PROMPT_COPY.load}
         </button>
         <button
           type="button"
           className="rounded-md px-3 py-1 text-sm text-muted-foreground"
-          onClick={() => setDecision({ src: address, choice: "skip" })}
+          onClick={() => setDecision({ budget, src: address, choice: "skip" })}
         >
           {IMAGE_PROMPT_COPY.notNow}
         </button>
