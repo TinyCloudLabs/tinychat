@@ -1,6 +1,6 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import "./index.css";
@@ -26,6 +26,26 @@ import { hydrateDurableKeys } from "./lib/durableKeys";
 import { APP_LOCK_PREFS_KEY } from "./lib/appLock";
 import { HIDDEN_FEATURES_KEY } from "./lib/hiddenFeatures";
 import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/openkeyNative";
+import { captureShareLinkFromLocation, holdShareLinkUrl } from "./lib/nativeShares/link";
+
+// A share link's key is in its fragment (TC-3195): read it into memory and take it off the address bar before
+// anything else runs, so no log, report or later navigation can carry it.
+captureShareLinkFromLocation();
+
+/** The phone app opened a share link (an App Link / Universal Link): its in-app page. OAuth returns are not share links. */
+function ShareAppUrlListener() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    const open = (url: string | undefined) => {
+      const path = url ? holdShareLinkUrl(url) : null;
+      if (path) navigate(path);
+    };
+    void CapacitorApp.getLaunchUrl().then((launch) => open(launch?.url)).catch(() => undefined);
+    const listener = CapacitorApp.addListener("appUrlOpen", (event) => open(event.url));
+    return () => void listener.then((handle) => handle.remove());
+  }, [navigate]);
+  return null;
+}
 
 // False on the web and in the desktop (Tauri) app; true only inside the TinyCloud Home mobile app.
 const nativeShell = Capacitor.isNativePlatform();
@@ -109,8 +129,10 @@ void installEd25519Polyfill().catch((error: unknown) => {
             <Route path="/" element={<RootRoute />} />
             <Route path="/about" element={<AboutRedirect />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
+            <Route path="/s/:id" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          {Capacitor.isNativePlatform() && <ShareAppUrlListener />}
           {/* Inside the router: the notice's counts link to the Library and the Recording tab. */}
           {move.kind === "hold" && <OriginMoveHold />}
         </BrowserRouter>

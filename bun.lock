@@ -21,7 +21,7 @@
     },
     "backend": {
       "name": "@tinychat/backend",
-      "version": "0.8.0-beta.21",
+      "version": "0.8.0-beta.24",
       "dependencies": {
         "@phala/aci-verifier": "0.11.0",
         "@scalar/express-api-reference": "^0.4.0",
@@ -50,7 +50,7 @@
     },
     "desktop": {
       "name": "exo-desktop",
-      "version": "0.14.0-beta.60",
+      "version": "0.14.0-beta.73",
       "dependencies": {
         "@tauri-apps/api": "^2.9.0",
       },
@@ -60,7 +60,7 @@
     },
     "frontend": {
       "name": "@tinychat/frontend",
-      "version": "0.14.0-beta.60",
+      "version": "0.14.0-beta.73",
       "dependencies": {
         "@assistant-ui/react": "^0.14.13",
         "@assistant-ui/react-markdown": "0.14.1",
@@ -86,6 +86,7 @@
         "@tinycloud/replica": "0.4.5-beta.6",
         "@tinycloud/sdk-core": "3.12.0-beta.24",
         "@tinycloud/sdk-services": "3.12.0-beta.20",
+        "@tinycloud/share-sdk": "1.5.0-beta.3",
         "@tinycloud/web-sdk": "3.12.0-beta.26",
         "@xyflow/react": "^12.8.5",
         "assistant-stream": "0.3.19",
