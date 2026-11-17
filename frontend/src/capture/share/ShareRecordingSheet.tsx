@@ -87,7 +87,7 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
   const { tcw, recording } = props;
   const now = props.now ?? (() => new Date());
   const audioBase = shareAudioBase(recording);
-  const records = useSyncExternalStore(sentShares.subscribe, sentShares.snapshot).records;
+  const records = useSyncExternalStore(sentShares.subscribe, sentShares.snapshot, sentShares.snapshot).records;
   const live = sharesOf(records, recording.item.id);
   const [phase, setPhase] = useState<Phase>("choose");
   // The link, while this sheet is open. Never stored.
@@ -103,6 +103,7 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
       setLink(null);
       setError(null);
       setCopied(false);
+      setOpenedBy(null);
       return;
     }
     setPhase(live.length > 0 ? "ready" : "choose");
@@ -158,7 +159,6 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
       }
       await sentShares.put(tcw, { ...record, linkId: published.id, linkExpiresAt: new Date(published.expiresAt).toISOString() }).catch(() => undefined);
       setLink(published.link);
-      setOpenedBy(0);
       setPhase("ready");
     } catch {
       setError("Couldn’t create the link. Try again.");
@@ -219,16 +219,13 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
             </Button>
           </div>
         </ResponsiveSheetBody>
-        <ResponsiveSheetFooter>
-          {link ? (
-            <>
-              {canShare && <Button type="button" variant="outline" className="flex-1 lg:flex-none" onClick={() => void navigator.share({ url: link }).catch(() => undefined)}><Share2Icon aria-hidden="true" />Share…</Button>}
-              <Button type="button" className="flex-1 lg:flex-none" onClick={() => void copy()}><CopyIcon aria-hidden="true" />{copied ? "Copied" : "Copy link"}</Button>
-            </>
-          ) : (
-            <Button type="button" className="w-full lg:w-auto" disabled={phase === "stopping"} onClick={() => setPhase("choose")}>Create link</Button>
-          )}
-        </ResponsiveSheetFooter>
+        {/* Reopened later, the link is gone (never kept): the status view has no link, Copy or Share. */}
+        {link && (
+          <ResponsiveSheetFooter>
+            {canShare && <Button type="button" variant="outline" className="flex-1 lg:flex-none" onClick={() => void navigator.share({ url: link }).catch(() => undefined)}><Share2Icon aria-hidden="true" />Share…</Button>}
+            <Button type="button" className="flex-1 lg:flex-none" onClick={() => void copy()}><CopyIcon aria-hidden="true" />{copied ? "Copied" : "Copy link"}</Button>
+          </ResponsiveSheetFooter>
+        )}
       </ResponsiveSheet>
     );
   }

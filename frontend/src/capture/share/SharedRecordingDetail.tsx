@@ -78,7 +78,7 @@ function Toast() {
   );
 }
 
-function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now: Date; onRemoved: () => void }) {
+function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now: Date; pushed: boolean; onRemoved: () => void }) {
   const first = senderFirstName(props.record.display, props.record.owner.address);
   const [removing, setRemoving] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -95,7 +95,7 @@ function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now
   };
   return (
     <>
-      <p className="-mt-4 text-callout text-muted-foreground">{sharedDetailMeta(props.record, props.now)}</p>
+      <p className={`${props.pushed ? "" : "-mt-4 "}text-callout text-muted-foreground`}>{sharedDetailMeta(props.record, props.now)}</p>
       <div className="flex flex-col items-start gap-2 py-6" data-testid="shared-revoked">
         <span aria-hidden="true" className="mb-1 flex size-10 items-center justify-center rounded-lg bg-surface-2 text-muted-foreground [&_svg]:size-5"><Link2OffIcon /></span>
         <p className="text-headline">{first} stopped sharing this recording</p>
@@ -184,10 +184,10 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
       <Frame title={title} pushed={props.pushed} onBack={props.onBack}>
         {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
         {revoked ? (
-          <Revoked record={record} tcw={props.tcw} now={now} onRemoved={props.onBack} />
+          <Revoked record={record} tcw={props.tcw} now={now} pushed={props.pushed} onRemoved={props.onBack} />
         ) : (
           <>
-            <header className="-mt-4 flex flex-col gap-2" data-testid="shared-detail" data-note-id={record.id}>
+            <header className={`${props.pushed ? "" : "-mt-4 "}flex flex-col gap-2`} data-testid="shared-detail" data-note-id={record.id}>
               <p className="text-callout text-muted-foreground">{sharedDetailMeta(record, now)}</p>
               <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" />In your TinyCloud until {first} stops sharing. Read only.</p>
             </header>

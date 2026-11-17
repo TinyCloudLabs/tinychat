@@ -88,7 +88,7 @@ export function sharedRecordingKeys(paths: readonly string[]): { transcriptKey: 
 }
 
 export function useReceivedShares() {
-  return useSyncExternalStore(receivedShares.subscribe, receivedShares.snapshot);
+  return useSyncExternalStore(receivedShares.subscribe, receivedShares.snapshot, receivedShares.snapshot);
 }
 
 // One reader per share for this session: each activation costs the recipient an approval.

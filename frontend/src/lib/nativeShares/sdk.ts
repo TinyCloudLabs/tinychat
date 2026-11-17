@@ -3,7 +3,7 @@
 //
 // Secrets: a share token (`tc1:…`) and a link (`…#v=4&k=…`) are bearer secrets. They pass through these
 // functions in memory only; nothing here logs, stores or reports them, and no error message carries them.
-import * as shareSdk from "@tinycloud/share-sdk";
+import { openNativeShareLink, publishNativeShareLink, type OpenedNativeShareLink } from "@tinycloud/share-sdk/native-link";
 import { deserializeDelegation, serializeDelegation, type PortableDelegation, type TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import type { TinyCloudKv } from "@/lib/audio/audioStore";
@@ -45,13 +45,13 @@ export async function createShare(tcw: TinyCloudWeb, paths: readonly string[], a
   return {
     token: result.data.token,
     rootCid: result.data.delegation.cid,
-    accessExpiresAt: new Date(result.data.expiresAt).toISOString(),
+    accessExpiresAt: (result.data.expiresAt ?? accessExpiresAt).toISOString(),
   };
 }
 
 /** Owner: the short link. `link` is a secret: show and copy it while the sheet is open, never store it. */
 export async function publishShareLink(input: { token: string; display: Record<string, unknown>; linkExpiresAt: Date }): Promise<{ link: string; id: string; expiresAt: string }> {
-  const created = await shareSdk.publishNativeShareLink({
+  const created = await publishNativeShareLink({
     token: input.token,
     kind: SHARE_KIND,
     display: input.display,
@@ -77,24 +77,15 @@ function trustedOrigins(): string[] {
   return [...new Set([SHARE_LINK_ORIGIN, ...own])];
 }
 
-/** The SDK reader's result (`OpenedNativeShareLink`), as this adapter uses it. */
-interface SdkOpenedLink {
-  kind: string;
-  display: unknown;
-  token: string;
-  linkExpiresAt: Date;
-  owner: { address: string; chainId: number; spaceId: string };
-}
-
 function errorField(error: unknown, field: "code" | "message"): unknown {
   return typeof error === "object" && error !== null && field in error ? Reflect.get(error, field) : undefined;
 }
 
 /** Recipient, signed in or not: read the link's record. Throws `ShareLinkError`. */
 export async function openShareLink(href: string): Promise<OpenedShareLink> {
-  let opened: SdkOpenedLink;
+  let opened: OpenedNativeShareLink;
   try {
-    opened = await shareSdk.openNativeShareLink(href, { trustedOrigins: trustedOrigins(), apiOrigin: SHARE_LINKS_API_ORIGIN });
+    opened = await openNativeShareLink(href, { trustedOrigins: trustedOrigins(), apiOrigin: SHARE_LINKS_API_ORIGIN });
   } catch (caught) {
     const code = errorField(caught, "code");
     throw new ShareLinkError(code === "gone" || code === "expired" || code === "invalid" ? code : "unavailable");
@@ -104,7 +95,7 @@ export async function openShareLink(href: string): Promise<OpenedShareLink> {
     kind: opened.kind,
     display: opened.display,
     token: opened.token,
-    linkExpiresAt: new Date(opened.linkExpiresAt).toISOString(),
+    linkExpiresAt: opened.linkExpiresAt.toISOString(),
     owner: { address: opened.owner.address, chainId: opened.owner.chainId, spaceId: opened.owner.spaceId },
   };
 }
@@ -174,7 +165,11 @@ export async function openSharedKv(tcw: TinyCloudWeb, delegation: string): Promi
   });
 }
 
-/** Owner: how many accounts have claimed the share (children of its root), or `null` when unknown. */
+/**
+ * Owner: how many accounts have claimed the share (children of its root), or `null` when unknown. Listing needs
+ * `tinycloud.delegation/list`, which the app's sign-in does not ask for: the node refuses it (PERMISSION_DENIED),
+ * so this is `null` today and the sheet shows no "Opened by" line.
+ */
 export async function countShareClaims(tcw: TinyCloudWeb, rootCid: string): Promise<number | null> {
   let count = 0;
   let cursor: string | undefined;

@@ -75,7 +75,7 @@ export function sharesOf(records: readonly SentRecordingShare[], recordingId: st
 
 /** Whether the owner is sharing `recordingId` (the Library row's and the note's "Shared" badge). */
 export function useRecordingShared(recordingId: string | null): boolean {
-  const snapshot = useSyncExternalStore(sentShares.subscribe, sentShares.snapshot);
+  const snapshot = useSyncExternalStore(sentShares.subscribe, sentShares.snapshot, sentShares.snapshot);
   return recordingId !== null && sharesOf(snapshot.records, recordingId).length > 0;
 }
 
