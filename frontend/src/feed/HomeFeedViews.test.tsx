@@ -46,10 +46,17 @@ class FakeObserver {
   takeRecords() { return []; }
 }
 const observed = (node: Element) => FakeObserver.all.some((observer) => observer.targets.has(node));
-async function scrollIntoView(node: Element) {
+/** Reports how much of a card is on screen (`ratio`), as the browser does: the card's own height and the scroller's. */
+async function report(node: Element, ratio: number, heights = { card: 400, scroller: 800 }) {
   const observer = FakeObserver.all.find((candidate) => candidate.targets.has(node))!;
   expect(observer).toBeDefined();
-  await act(async () => observer.callback([{ target: node, isIntersecting: true } as IntersectionObserverEntry], observer as unknown as IntersectionObserver));
+  const record = { target: node, isIntersecting: ratio > 0, intersectionRatio: ratio, boundingClientRect: { height: heights.card }, rootBounds: { height: heights.scroller } };
+  await act(async () => observer.callback([record as unknown as IntersectionObserverEntry], observer as unknown as IntersectionObserver));
+}
+/** A card scrolled well into view and read for a moment. */
+async function scrollIntoView(node: Element) {
+  await report(node, 1);
+  await clock!.advance(1000);
 }
 
 let restore: (() => void) | undefined;
@@ -177,4 +184,43 @@ test("in Compact and Cards scrolling past a closed card does not mark it seen", 
   await chooseView(view.host, "cards");
   expect(FakeObserver.all.some((observer) => observer.targets.size > 0)).toBe(false);
   expect(seen).toEqual([]);
+});
+
+test("in Expanded a quick scroll past a card marks nothing seen, so no unread comment is cleared", async () => {
+  const view = await mount(source(ENTRIES()));
+  await chooseView(view.host, "expanded");
+  const second = item(view.host, "Second question");
+  await report(second, 1);
+  await clock!.advance(600);
+  await report(second, 0);
+  await clock!.advance(5000);
+  expect(seen).toEqual([]);
+  // Back again and kept: it counts.
+  await scrollIntoView(second);
+  expect(seen).toEqual(["two"]);
+});
+
+test("in Expanded a card with only a sliver on screen never counts, however long, and one half on screen does", async () => {
+  const view = await mount(source(ENTRIES()));
+  await chooseView(view.host, "expanded");
+  const second = item(view.host, "Second question");
+  await report(second, 0.2);
+  await clock!.advance(10_000);
+  expect(seen).toEqual([]);
+  await report(second, 0.5);
+  await clock!.advance(1000);
+  expect(seen).toEqual(["two"]);
+});
+
+test("in Expanded a card taller than the screen counts once the screen is nearly full of it", async () => {
+  const view = await mount(source(ENTRIES()));
+  await chooseView(view.host, "expanded");
+  const second = item(view.host, "Second question");
+  const tall = { card: 4000, scroller: 800 };
+  await report(second, 0.1, tall);
+  await clock!.advance(5000);
+  expect(seen).toEqual([]);
+  await report(second, 0.19, tall);
+  await clock!.advance(1000);
+  expect(seen).toEqual(["two"]);
 });
