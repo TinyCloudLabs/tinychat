@@ -1,7 +1,9 @@
-// Web access for Main (the gateway's MCP route). The gateway offers two tools, `search` and `fetch`, and the search
-// provider makes every outside call: the gateway dials only the provider's API host, never an address a page or the
-// model named. This file holds the pure parts: what a tool call may name, what comes back, and the provider client.
-// What the owner allowed (WebPolicy) and the budgets are applied by the gateway before and around these.
+// Web access for Main (the gateway's MCP route). The gateway offers two tools, `search` and `fetch`. A search goes to the
+// search provider, with the query and nothing else. A page is read by our own key-less fetch process (fetch-main.ts),
+// which the gateway asks for exactly one checked address; the gateway itself dials only the provider's API host and that
+// process, never an address a page or the model named. This file holds the pure parts: what a tool call may name, what
+// comes back, and the two clients. What the owner allowed (WebPolicy) and the budgets are applied by the gateway
+// before and around these.
 
 import { isRecord } from "./guards";
 import { hostListed, type WebPolicy } from "./web-policy";
@@ -57,6 +59,8 @@ export const WEB_ERRORS = {
   budget: "Today's web limit is used up.",
   busy: "Another web call is still running. Try again when it ends.",
   provider: "The web service didn't answer. Try again later.",
+  pageDown: "That page didn't answer. Try again later.",
+  unreadable: "This page couldn't be read: it may be a PDF, or need JavaScript.",
 } as const;
 export type WebError = keyof typeof WEB_ERRORS;
 
@@ -74,9 +78,9 @@ export function addressKey(raw: string): string | undefined {
 
 /**
  * A page address the tools may read: http or https, no user info, no port but 80 and 443, a real multi-label host
- * name (no IP address of either kind, no `localhost`, no local-only suffix), at most 2,048 characters. The
- * provider connects, so this keeps nonsense from reaching it; it is not what keeps our network closed. It does not
- * resolve names, so a name that points at a private address passes: it must never stand in for a dial guard.
+ * name (no IP address of either kind, no `localhost`, no local-only suffix), at most 2,048 characters. It does not
+ * resolve names, so a name that points at a private address passes: it must never stand in for the dial guard, which
+ * resolves every name and refuses any non-public answer (fetch-guard.ts, run by the page reader on every hop).
  */
 export function readableAddress(raw: unknown): URL | undefined {
   if (typeof raw !== "string" || raw.length > MAX_URL_CHARS) return undefined;
@@ -148,13 +152,19 @@ export interface WebProvider {
 
 export type ProviderResult<T> = { ok: true; value: T } | { ok: false };
 
-async function post(provider: WebProvider, path: string, body: unknown): Promise<ProviderResult<Record<string, unknown>>> {
+async function postJson(
+  call: (url: string, init: RequestInit) => Promise<Response>,
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  timeoutMs: number,
+): Promise<ProviderResult<Record<string, unknown>>> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), provider.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await provider.fetch(`${provider.apiUrl}${path}`, {
+    const response = await call(url, {
       method: "POST",
-      headers: { authorization: `Bearer ${provider.key}`, "content-type": "application/json" },
+      headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify(body),
       redirect: "error",
       signal: controller.signal,
@@ -192,20 +202,22 @@ export interface Delivered {
   learned: string[];
 }
 
+/** How many results a listed search asks for: the owner's sites are filtered out of the answer here, so more come back. */
+const LISTED_SEARCH_RESULTS = 20;
+
 /**
- * One search. A listed policy restricts the provider to the listed sites, and the results are filtered again here:
- * the provider's filter is a convenience, the gateway's check is the rule.
+ * One search. The provider gets the query and fixed flags, nothing else: not the owner's list, not an address, not who
+ * is asking. A listed policy is applied here, to the answer: only results on the listed sites are kept.
  */
 export async function search(provider: WebProvider, query: string, count: number, policy: WebPolicy): Promise<ProviderResult<Delivered>> {
-  const result = await post(provider, "/search", {
+  const result = await postJson(provider.fetch, `${provider.apiUrl}/search`, { authorization: `Bearer ${provider.key}` }, {
     query,
-    max_results: count,
+    max_results: policy.mode === "listed" ? LISTED_SEARCH_RESULTS : count,
     search_depth: "basic",
     include_answer: false,
     include_images: false,
     include_raw_content: false,
-    ...(policy.mode === "listed" ? { include_domains: policy.hosts } : {}),
-  });
+  }, provider.timeoutMs);
   if (!result.ok || !Array.isArray(result.value.results)) return { ok: false };
   const lines: string[] = [];
   const learned: string[] = [];
@@ -222,26 +234,51 @@ export async function search(provider: WebProvider, query: string, count: number
   return { ok: true, value: { text: untrusted("search results", lines.length > 0 ? lines.join("\n") : "No results."), learned } };
 }
 
-/** One page, read by the provider; the text is plain, cut at MAX_PAGE_CHARS, and wrapped. */
-export async function readPage(provider: WebProvider, url: URL): Promise<ProviderResult<Delivered>> {
-  // The provider gets exactly the address the gateway checked: its key, without a fragment. A fragment is free text the
-  // gateway's known-address check ignores, so sending it would let the bot attach words to any address it may read.
+/** Our own page-reading process: no key, one address in, plain text out. */
+export interface PageService {
+  /** Its base URL on the private link network (BOTS_FETCH_URL; loopback only in tests). */
+  readonly url: string;
+  readonly timeoutMs: number;
+  readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
+}
+
+export type PageOutcome = { ok: true; value: Delivered } | { ok: false; error: WebError };
+
+/** What the fetch process says went wrong, as the sentence the model gets. Anything unexpected reads as "didn't answer". */
+const PAGE_FAILURES: Record<string, WebError> = {
+  address: "address",
+  blocked: "address",
+  site: "site",
+  type: "unreadable",
+  status: "unreadable",
+  protocol: "unreadable",
+  redirect: "unreadable",
+  empty: "unreadable",
+  timeout: "pageDown",
+  network: "pageDown",
+  busy: "pageDown",
+};
+
+/**
+ * One page, read by our own fetch process, which holds no key and is given the owner's list (or none, for any public
+ * site) to apply on every redirect. The text it returns is plain; here it is checked once more (the page it says it
+ * read must be a readable address, and on the owner's list when there is one), cut at MAX_PAGE_CHARS and wrapped.
+ */
+export async function readPage(service: PageService, url: URL, policy: WebPolicy): Promise<PageOutcome> {
+  // The fetch process gets exactly the address the gateway checked, without a fragment: a fragment is free text the
+  // known-address check ignores, so sending it would let the bot attach words to any address it may read.
   const key = addressKey(url.href);
-  if (key === undefined) return { ok: false };
-  const result = await post(provider, "/extract", {
-    urls: [key],
-    extract_depth: "basic",
-    format: "markdown",
-    include_images: false,
-  });
-  if (!result.ok || !Array.isArray(result.value.results)) return { ok: false };
-  // Only the page that was asked for: a result for another address (a redirect elsewhere) is not delivered, so a
-  // listed site cannot hand the bot another host's content.
-  const page = result.value.results.find(
-    entry => isRecord(entry) && typeof entry.raw_content === "string" && typeof entry.url === "string" && addressKey(entry.url) === key,
-  );
-  if (!isRecord(page)) return { ok: false };
-  const raw = plainWebText(page.raw_content as string);
+  if (key === undefined) return { ok: false, error: "address" };
+  const result = await postJson(service.fetch, `${service.url}/fetch`, {}, { url: key, hosts: policy.mode === "listed" ? policy.hosts : null }, service.timeoutMs);
+  if (!result.ok) return { ok: false, error: "pageDown" };
+  const reply = result.value;
+  if (reply.ok !== true) return { ok: false, error: PAGE_FAILURES[typeof reply.reason === "string" ? reply.reason : ""] ?? "pageDown" };
+  if (typeof reply.text !== "string" || typeof reply.url !== "string") return { ok: false, error: "pageDown" };
+  // The page that came back must itself be allowed: a listed site cannot hand the bot another host's content.
+  const final = readableAddress(reply.url);
+  if (!final || (policy.mode === "listed" && !hostListed(policy, final.hostname))) return { ok: false, error: "site" };
+  const raw = plainWebText(reply.text).trim();
+  if (raw.length === 0) return { ok: false, error: "unreadable" };
   const text = raw.length > MAX_PAGE_CHARS ? `${raw.slice(0, MAX_PAGE_CHARS)}\n[cut]` : raw;
   return { ok: true, value: { text: untrusted("page", text), learned: addressesIn(text, MAX_LEARNED_URLS) } };
 }

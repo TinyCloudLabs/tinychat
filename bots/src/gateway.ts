@@ -10,7 +10,7 @@ import type { GatewayConfig } from "./config";
 import { isRecord } from "./guards";
 import { bearerMatches } from "./owner";
 import {
-  addressKey, MAX_QUERY_CHARS, MAX_RESULTS, MCP_PROTOCOLS, readableAddress, readPage, rpcFailure, rpcResult, search, TOOLS,
+  addressKey, MAX_QUERY_CHARS, MAX_RESULTS, MCP_PROTOCOLS, type PageService, readableAddress, readPage, rpcFailure, rpcResult, search, TOOLS,
   toolText, type WebError, type WebProvider, WEB_ERRORS,
 } from "./web";
 import { hostListed, OFF, type WebPolicy } from "./web-policy";
@@ -542,7 +542,8 @@ export class Gateway {
       return toolText(WEB_ERRORS[error], true);
     };
 
-    if (!web?.key) return refuse("unavailable", "unavailable");
+    // A page needs only our own fetch process; a search needs the provider's key.
+    if (!web || (tool === "search" && !web.key)) return refuse("unavailable", "unavailable");
     if (policy.mode === "off") return refuse("off", "off", true);
 
     let query = "";
@@ -578,12 +579,22 @@ export class Gateway {
         this.#webTotal[field]--;
         return refuse("unavailable", "budget_store");
       }
-      const provider: WebProvider = { apiUrl: web.apiUrl, key: web.key, timeoutMs: web.timeoutMs, fetch: this.#fetch };
-      const result = tool === "search" ? await search(provider, query, count, policy) : await readPage(provider, url!);
-      if (!result.ok) return refuse("provider", "provider_error");
-      this.learnAddresses(botId, result.value.learned);
-      logCall("ok", result.value.text.length);
-      return toolText(result.value.text);
+      let delivered: { text: string; learned: string[] };
+      if (tool === "search") {
+        const provider: WebProvider = { apiUrl: web.apiUrl, key: web.key!, timeoutMs: web.timeoutMs, fetch: this.#fetch };
+        const result = await search(provider, query, count, policy);
+        if (!result.ok) return refuse("provider", "provider_error");
+        delivered = result.value;
+      } else {
+        // The fetch process is given no key: only the address, and the owner's list to apply on every redirect.
+        const service: PageService = { url: web.fetchUrl, timeoutMs: web.fetchTimeoutMs, fetch: this.#fetch };
+        const result = await readPage(service, url!, policy);
+        if (!result.ok) return refuse(result.error, "page_failed");
+        delivered = result.value;
+      }
+      this.learnAddresses(botId, delivered.learned);
+      logCall("ok", delivered.text.length);
+      return toolText(delivered.text);
     } finally {
       this.#calling.delete(botId);
     }

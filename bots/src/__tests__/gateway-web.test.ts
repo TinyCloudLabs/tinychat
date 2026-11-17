@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type GatewayConfig, PINNED_UPSTREAM, PINNED_WEB_API } from "../config";
+import { type GatewayConfig, PINNED_FETCH_URL, PINNED_UPSTREAM, PINNED_WEB_API } from "../config";
 import { type BudgetSnapshot, type BudgetStore, Gateway, type UpstreamFetch } from "../gateway";
 import { WEB_ERRORS } from "../web";
 
@@ -12,7 +12,7 @@ const cfg = (web: Partial<NonNullable<GatewayConfig["web"]>> = {}): GatewayConfi
   egressRoot: "/egress", modelKey: "model-key", upstream: PINNED_UPSTREAM, models: ["m"], maxTokens: 100, botDailyTokens: 1000,
   globalDailyTokens: 1500, maxBodyBytes: 4096, maxResponseBytes: 1024 * 1024, connectTimeoutMs: 1000, totalTimeoutMs: 5000,
   bodyTimeoutMs: 30_000, budgetFile: "/unused",
-  web: { key: "web-key", apiUrl: PINNED_WEB_API, botDailySearches: 3, botDailyPages: 2, globalDailySearches: 100, globalDailyPages: 100, timeoutMs: 1000, ...web },
+  web: { key: "web-key", apiUrl: PINNED_WEB_API, botDailySearches: 3, botDailyPages: 2, globalDailySearches: 100, globalDailyPages: 100, timeoutMs: 1000, fetchUrl: PINNED_FETCH_URL, fetchTimeoutMs: 1000, ...web },
 });
 
 const memoryStore = (): BudgetStore & { saved?: BudgetSnapshot } => {
@@ -21,14 +21,14 @@ const memoryStore = (): BudgetStore & { saved?: BudgetSnapshot } => {
 };
 
 function setup(web: Partial<NonNullable<GatewayConfig["web"]>> = {}, respond?: (path: string, body: Record<string, unknown>) => Response | Promise<Response>, store = memoryStore()) {
-  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const calls: Array<{ url: string; body: Record<string, unknown>; headers: Headers }> = [];
   const fetchImpl: UpstreamFetch = async (url, init) => {
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    calls.push({ url, body });
+    calls.push({ url, body, headers: new Headers(init.headers) });
     const path = new URL(url).pathname;
     return respond ? respond(path, body) : path === "/search"
       ? Response.json({ results: [{ url: "https://docs.example.com/guide", title: "Guide", content: "text" }] })
-      : Response.json({ results: [{ url: body.urls instanceof Array ? body.urls[0] : "", raw_content: "page ![x](https://evil.test/?d=1) and https://docs.example.com/next" }] });
+      : Response.json({ ok: true, url: body.url, text: "page ![x](https://evil.test/?d=1) and https://docs.example.com/next" });
   };
   const gateway = new Gateway(cfg(web), { fetch: fetchImpl, now: () => Date.parse("2026-11-11T12:00:00Z"), store });
   gateway.setToken(BOT, TOKEN);
@@ -100,11 +100,11 @@ describe("the owner's setting is applied by the gateway", () => {
     expect(calls).toEqual([]);
     gateway.learnAddresses(BOT, ["https://docs.example.com/typed"]);
     expect((await call(gateway, "fetch", { url: "https://docs.example.com/typed#frag" })).isError).toBe(false);
-    expect(calls.map(entry => entry.url)).toEqual([`${PINNED_WEB_API}/extract`]);
-    expect(calls[0]!.body.urls).toEqual(["https://docs.example.com/typed"]);
+    expect(calls.map(entry => entry.url)).toEqual([`${PINNED_FETCH_URL}/fetch`]);
+    expect(calls[0]!.body).toEqual({ url: "https://docs.example.com/typed", hosts: ["docs.example.com"] });
   });
 
-  test("the provider never gets a fragment: the bot cannot attach words to an address it may read", async () => {
+  test("the fetch process never gets a fragment: the bot cannot attach words to an address it may read", async () => {
     const { gateway, calls } = setup();
     gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
     gateway.learnAddresses(BOT, ["https://docs.example.com/typed"]);
@@ -137,14 +137,74 @@ describe("the owner's setting is applied by the gateway", () => {
     expect(page.text.startsWith("<<<WEB CONTENT: page.")).toBe(true);
     expect((await call(gateway, "fetch", { url: "https://docs.example.com/next" })).isError).toBe(false);
     expect(await call(gateway, "fetch", { url: "https://docs.example.com/guide" }, OTHER, OTHER_TOKEN)).toEqual({ text: WEB_ERRORS.unseen, isError: true });
-    expect(calls.every(entry => entry.url.startsWith(PINNED_WEB_API))).toBe(true);
+    expect(calls.map(entry => entry.url)).toEqual([`${PINNED_WEB_API}/search`, `${PINNED_FETCH_URL}/fetch`, `${PINNED_FETCH_URL}/fetch`]);
   });
 
-  test("a search in listed mode asks the provider for the owner's sites", async () => {
+  test("the search provider gets the query and fixed flags only: not the owner's sites, not an address, not who asks", async () => {
     const { gateway, calls } = setup();
     gateway.setWebPolicy(BOT, { mode: "listed", hosts: ["docs.example.com"] });
     await call(gateway, "search", { query: "guide" });
-    expect(calls[0]!.body.include_domains).toEqual(["docs.example.com"]);
+    expect(calls[0]!.url).toBe(`${PINNED_WEB_API}/search`);
+    expect(Object.keys(calls[0]!.body).sort()).toEqual(["include_answer", "include_images", "include_raw_content", "max_results", "query", "search_depth"]);
+    expect(JSON.stringify(calls[0]!.body)).not.toContain("docs.example.com");
+    expect([...calls[0]!.headers.keys()].sort()).toEqual(["authorization", "content-type"]);
+  });
+
+  test("the fetch process is given no credential, and the search key never leaves for any address but the provider's", async () => {
+    const { gateway, calls } = setup();
+    gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
+    gateway.learnAddresses(BOT, ["https://docs.example.com/guide"]);
+    await call(gateway, "fetch", { url: "https://docs.example.com/guide" });
+    expect(calls[0]!.url).toBe(`${PINNED_FETCH_URL}/fetch`);
+    expect([...calls[0]!.headers.keys()]).toEqual(["content-type"]);
+    expect(calls[0]!.body).toEqual({ url: "https://docs.example.com/guide", hosts: null });
+    expect(JSON.stringify(calls)).not.toContain("web-key");
+  });
+
+  test("a page that ends up on a site outside the owner's list is not delivered, whatever the fetch process says", async () => {
+    const { gateway } = setup({}, (path, body) => Response.json({ ok: true, url: path === "/fetch" ? "https://elsewhere.example.net/x" : body.url, text: "secret" }));
+    gateway.setWebPolicy(BOT, { mode: "listed", hosts: ["docs.example.com"] });
+    gateway.learnAddresses(BOT, ["https://docs.example.com/guide"]);
+    expect(await call(gateway, "fetch", { url: "https://docs.example.com/guide" })).toEqual({ text: WEB_ERRORS.site, isError: true });
+  });
+
+  test.each([
+    ["blocked", WEB_ERRORS.address], ["address", WEB_ERRORS.address], ["site", WEB_ERRORS.site], ["type", WEB_ERRORS.unreadable], ["status", WEB_ERRORS.unreadable],
+    ["protocol", WEB_ERRORS.unreadable], ["redirect", WEB_ERRORS.unreadable], ["timeout", WEB_ERRORS.pageDown], ["network", WEB_ERRORS.pageDown],
+    ["busy", WEB_ERRORS.pageDown], ["anything else the process might say, even a long secret", WEB_ERRORS.pageDown],
+  ])("when the fetch process says %p the model gets one fixed sentence", async (reason, sentence) => {
+    const { gateway } = setup({}, () => Response.json({ ok: false, reason }));
+    gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
+    gateway.learnAddresses(BOT, ["https://docs.example.com/guide"]);
+    expect(await call(gateway, "fetch", { url: "https://docs.example.com/guide" })).toEqual({ text: sentence, isError: true });
+    expect(gateway.webUsage(BOT).pages).toBe(1);
+  });
+
+  test("a page with no readable text (script only, or a PDF that slipped through) says it could not be read", async () => {
+    const { gateway } = setup({}, (_path, body) => Response.json({ ok: true, url: body.url, text: "  \n <b></b>  " }));
+    gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
+    gateway.learnAddresses(BOT, ["https://docs.example.com/guide"]);
+    expect(await call(gateway, "fetch", { url: "https://docs.example.com/guide" })).toEqual({ text: WEB_ERRORS.unreadable, isError: true });
+  });
+
+  test("a fetch process that is down, answers with an error or sends nonsense is a fixed 'didn't answer'", async () => {
+    for (const respond of [() => new Response("x", { status: 503 }), () => Response.json({ ok: true }), () => Response.json({ ok: true, url: 5, text: "t" }), () => new Response("not json")]) {
+      const { gateway } = setup({}, respond);
+      gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
+      gateway.learnAddresses(BOT, ["https://docs.example.com/guide"]);
+      expect(await call(gateway, "fetch", { url: "https://docs.example.com/guide" })).toEqual({ text: WEB_ERRORS.pageDown, isError: true });
+    }
+  });
+
+  test("in listed mode a search asks for more results and keeps only the owner's sites", async () => {
+    const { gateway, calls } = setup({}, () =>
+      Response.json({ results: ["https://evil.test/a", "https://docs.example.com/a", "https://docs.example.com.evil.test/b", "https://docs.example.com/b"].map(url => ({ url, title: "t", content: "c" })) }));
+    gateway.setWebPolicy(BOT, { mode: "listed", hosts: ["docs.example.com"] });
+    const out = await call(gateway, "search", { query: "guide", max_results: 3 });
+    expect(calls[0]!.body.max_results).toBe(20);
+    expect(out.text).toContain("https://docs.example.com/a");
+    expect(out.text).toContain("https://docs.example.com/b");
+    expect(out.text).not.toContain("evil.test");
   });
 
   test("a change of setting applies to the very next call, and turning it off ends use", async () => {
@@ -177,7 +237,7 @@ describe("the owner's setting is applied by the gateway", () => {
 });
 
 describe("limits and counts", () => {
-  test("no key: every call is unavailable, even with web on", async () => {
+  test("no key: a search is unavailable even with web on; the status says so", async () => {
     const { gateway, calls } = setup({ key: undefined });
     gateway.setWebPolicy(BOT, { mode: "any", hosts: [] });
     expect(await call(gateway, "search", { query: "x" })).toEqual({ text: WEB_ERRORS.unavailable, isError: true });

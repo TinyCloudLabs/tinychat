@@ -135,28 +135,43 @@ reads as `off`.
 - The sandbox's OMP has one MCP server, `web`, which is the gateway's `POST /v1/mcp` on the same egress socket
   (bot token required). Its two tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`.
   OMP's own `web_search` and `fetch` tools are switched off in the sandbox's `config.yml`.
-- The search provider (Tavily: Search and Extract) makes every outside call. The gateway dials only the provider's
-  API host, pinned like the model's (`BOTS_TEST_WEB_URL` is a loopback mock for tests), never an address a page or
-  the model named. Without `TAVILY_API_KEY` every call answers "isn't available".
-- Per call, in this order: key present, setting not `off`, then for `search` a query of 1 to 200 characters, and for
-  `fetch` a readable address (http or https, no user info, port 80 or 443, a real multi-label host name, no IP address,
-  `localhost` or local-only suffix, at most 2,048 characters), on the owner's list when the setting is `listed`, and
-  one the bot may read: typed by its owner in a message, or returned by an earlier search or page. A listed search is
-  also sent to the provider with the owner's sites and its results are filtered again here. Then the day's budgets
-  (per bot 100 searches and 300 pages, all bots 2,000 and 6,000; counted when a call is made, saved on the budget
-  volume) and one web call at a time per bot.
-- What comes back is cut (pages at 40,000 characters), turned to plain text (Markdown and HTML images become their alt
-  text, so no image address reaches a reply; other tags go) and wrapped in a fixed untrusted-content label. Fetched
-  text reaches the owner only as Main's words; the chat and notes renderers' image rules (ask before loading) still
-  apply to those.
-- Refusals and provider failures answer the model with a fixed sentence, never provider or page text. The log and the
-  saved counts hold counts by tool and outcome only: no query, address or page text.
+- Two things make outside calls. The gateway dials only the provider's API host and `bots-fetch`, never an address a
+  page or the model named. A **search**
+  goes to the search provider (Tavily, Search only), pinned like the model's (`BOTS_TEST_WEB_URL` is a loopback mock
+  for tests); it gets the query and fixed flags, nothing else: not the owner's list, not an address, not who is asking.
+  A **page** is read by our own `bots-fetch` container (`src/fetch-main.ts`), which holds no key and shares only the
+  private `fetch-link` network with the gateway; its own way out is the separate `fetch-out` network
+  (`BOTS_TEST_FETCH_URL` is a loopback mock for tests). Without `TAVILY_API_KEY` a search answers "isn't available";
+  a page read needs no key.
+- Per call, in this order: setting not `off` (and a key, for a search), then for `search` a query of 1 to 200
+  characters, and for `fetch` a readable address (http or https, no user info, port 80 or 443, a real multi-label host
+  name, no IP address, `localhost` or local-only suffix, at most 2,048 characters), on the owner's list when the
+  setting is `listed`, and one the bot may read: typed by its owner in a message, or returned by an earlier search or
+  page. A listed search is filtered to the owner's sites here, after the provider answers (it asks for 20 results so
+  enough survive). Then the day's budgets (per bot 100 searches and 300 pages, all bots 2,000 and 6,000; counted when a
+  call is made, saved on the budget volume) and one web call at a time per bot.
+- `bots-fetch` takes `POST /fetch {"url", "hosts"}` (`hosts`: the owner's list, or null for any public site) and
+  applies `src/fetch-guard.ts` whoever asks. It resolves the name itself, refuses the name if **any** answer is not a
+  public address (private, loopback, link-local and cloud-metadata ranges, CGNAT, multicast, reserved, and the IPv6
+  forms that embed IPv4: mapped, NAT64, 6to4, Teredo), connects to a checked address (never the name again, so a
+  resolver that changes its answer gains nothing) and verifies TLS against the name. Each redirect (3 at most) is
+  checked the same way and against the owner's list. Limits: 1 MiB of body (cut, not held), 16 KiB of headers, 20 s for
+  the whole read, text types only (HTML, XHTML, plain text), no compression, no cookie, referer or credential, one fixed
+  `User-Agent`, 8 reads at once. The page's own site sees the bots server's IP address and that User-Agent, not the
+  owner. It does not honour `robots.txt` (a read the owner asked for) and it cannot read PDFs or pages that need
+  JavaScript; the model is told so in one sentence when that happens.
+- Page HTML becomes plain text in the reader (`src/page-text.ts`): scripts, styles and embedded content go, an image
+  becomes its alt text (nothing is fetched or referenced), a link becomes `text (address)` so an address the page really
+  offered can be read next. The gateway then checks that the address the reader says it ended on is readable and on the
+  owner's list, strips what could draw (Markdown and HTML images, other tags), cuts at 40,000 characters and wraps it in
+  a fixed untrusted-content label. Fetched text reaches the owner only as Main's words; the chat and notes renderers'
+  image rules (ask before loading) still apply to those.
+- Refusals and failures answer the model with a fixed sentence, never provider or page text. The log and the saved
+  counts hold counts by tool and outcome only: no query, address or page text.
 - The owner's list refuses shared places (`github.io`, `pages.dev`, `blogspot.com`, `co.uk` and the like), since listing
   one covers everyone who publishes there; one tenant's own name (`me.github.io`) is fine. The built-in list names the
   platforms we know of; it is not the full public suffix list, so a listed site that lets others publish is still open
   to anyone who can post on it.
-- The provider is given exactly the address that was checked, without its fragment, and a page is delivered only if the
-  provider's result is for that address (a redirect to another host delivers nothing).
 - What this does not stop, and the owner is told: a page or search result the bot reads can carry instructions, and
   Main may put what it knows into a search query (at most 200 characters), choose among the addresses a page offered
   (a few hundred characters a day at the caps), or ask the owner to paste or open a link that carries data. What Main

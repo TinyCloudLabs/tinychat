@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { addressesIn, addressKey, plainWebText, readableAddress, readPage, search, untrusted, type WebProvider } from "../web";
+import { addressesIn, addressKey, plainWebText, readableAddress, type PageService, readPage, search, untrusted, type WebProvider } from "../web";
 
 function provider(respond: (path: string, body: Record<string, unknown>) => Response): WebProvider & { sent: Array<{ url: string; body: Record<string, unknown> }> } {
   const sent: Array<{ url: string; body: Record<string, unknown> }> = [];
@@ -54,6 +54,49 @@ describe("page text", () => {
   });
 });
 
+describe("page reads", () => {
+  const service = (respond: (body: Record<string, unknown>) => Response): PageService & { sent: Array<{ url: string; body: Record<string, unknown>; headers: Headers }> } => {
+    const sent: Array<{ url: string; body: Record<string, unknown>; headers: Headers }> = [];
+    return {
+      url: "http://bots-fetch:8080", timeoutMs: 1000, sent,
+      fetch: async (url, init) => {
+        const body = JSON.parse(init.body as string) as Record<string, unknown>;
+        sent.push({ url, body, headers: new Headers(init.headers) });
+        return respond(body);
+      },
+    };
+  };
+
+  test("a page is plain, cut at the cap, and teaches the bot only the addresses it names", async () => {
+    const big = `see https://next.example.com/a ${"x".repeat(50_000)}`;
+    const s = service(body => Response.json({ ok: true, url: body.url, text: big }));
+    const out = await readPage(s, new URL("https://a.example.com/#asked"), { mode: "any", hosts: [] });
+    expect(out.ok && out.value.text.length).toBeLessThan(41_000);
+    expect(out.ok && out.value.learned).toEqual(["https://next.example.com/a"]);
+    expect(s.sent[0]!.url).toBe("http://bots-fetch:8080/fetch");
+    expect(s.sent[0]!.body).toEqual({ url: "https://a.example.com/", hosts: null });
+    expect(s.sent[0]!.headers.has("authorization")).toBe(false);
+  });
+
+  test("the owner's list goes to the fetch process, not to the search provider", async () => {
+    const s = service(body => Response.json({ ok: true, url: body.url, text: "x" }));
+    await readPage(s, new URL("https://docs.example.com/a"), { mode: "listed", hosts: ["docs.example.com"] });
+    expect(s.sent[0]!.body.hosts).toEqual(["docs.example.com"]);
+  });
+
+  test("the page it reports must be readable, and on the list when there is one", async () => {
+    const elsewhere = service(() => Response.json({ ok: true, url: "https://other.example.net/", text: "from elsewhere" }));
+    expect(await readPage(elsewhere, new URL("https://docs.example.com/"), { mode: "listed", hosts: ["docs.example.com"] })).toEqual({ ok: false, error: "site" });
+    for (const url of ["http://127.0.0.1/", "file:///etc/passwd", "nope"]) {
+      const bad = service(() => Response.json({ ok: true, url, text: "x" }));
+      expect(await readPage(bad, new URL("https://docs.example.com/"), { mode: "any", hosts: [] })).toEqual({ ok: false, error: "site" });
+    }
+    const moved = service(() => Response.json({ ok: true, url: "https://docs.example.com/new", text: "right page" }));
+    const out = await readPage(moved, new URL("https://docs.example.com/old"), { mode: "listed", hosts: ["docs.example.com"] });
+    expect(out.ok && out.value.text).toContain("right page");
+  });
+});
+
 describe("provider calls", () => {
   const results = (urls: string[]) =>
     Response.json({ results: urls.map((url, i) => ({ url, title: `T${i}`, content: `<script>x</script>snippet ${i} ![i](https://evil.test/?d=1)` })) });
@@ -68,31 +111,13 @@ describe("provider calls", () => {
     expect(out.ok && out.value.text).not.toContain("evil.test");
   });
 
-  test("a listed search asks the provider for those sites and drops results the provider returns outside them", async () => {
+  test("a listed search sends the provider no list, and drops results outside the owner's sites", async () => {
     const p = provider(() => results(["https://docs.example.com/ok", "https://evil.test/no", "https://badexample.com/no", "http://127.0.0.1/no"]));
     const out = await search(p, "q", 5, { mode: "listed", hosts: ["example.com"] });
-    expect(p.sent[0]!.body.include_domains).toEqual(["example.com"]);
+    expect(JSON.stringify(p.sent[0]!.body)).not.toContain("example.com");
+    expect(p.sent[0]!.body.include_domains).toBeUndefined();
     expect(out.ok && out.value.learned).toEqual(["https://docs.example.com/ok"]);
     expect(out.ok && out.value.text).not.toContain("evil.test");
-  });
-
-  test("a page is plain, cut at the cap, and teaches the bot only the addresses it names", async () => {
-    const big = `see https://next.example.com/a ${"x".repeat(50_000)}`;
-    const p = provider(() => Response.json({ results: [{ url: "https://a.example.com/", raw_content: big }] }));
-    const out = await readPage(p, new URL("https://a.example.com/"));
-    expect(out.ok && out.value.text.length).toBeLessThan(41_000);
-    expect(out.ok && out.value.learned).toEqual(["https://next.example.com/a"]);
-    expect(p.sent[0]!.url).toBe("https://search.example/extract");
-    expect(p.sent[0]!.body).toMatchObject({ urls: ["https://a.example.com/"], include_images: false });
-  });
-
-  test("a result for another address than the one asked for is not delivered", async () => {
-    const p = provider(() => Response.json({ results: [{ url: "https://other.example.net/", raw_content: "from elsewhere" }] }));
-    expect((await readPage(p, new URL("https://a.example.com/"))).ok).toBe(false);
-    const same = provider(() => Response.json({ results: [{ url: "https://other.example.net/", raw_content: "x" }, { url: "https://a.example.com/#top", raw_content: "right page" }] }));
-    const out = await readPage(same, new URL("https://a.example.com/#asked"));
-    expect(out.ok && out.value.text).toContain("right page");
-    expect(same.sent[0]!.body.urls).toEqual(["https://a.example.com/"]);
   });
 
   test("an error, a redirect, a malformed body and an oversize body all fail without provider text", async () => {
