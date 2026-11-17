@@ -58,7 +58,33 @@ const SECOND_LEVEL = new Set(["co", "com", "org", "net", "gov", "edu", "ac"]);
 // An address inside the address: a proxy, onward fetcher or open redirect (shields.io /endpoint?url=, imgix mark=, ?next=)
 // makes someone else's server request it, and the attacker reads that request. Checked on every host, allowlisted or not.
 const NESTED_URL = /https?:|:\/\/|(?:^|[=&;?])\/\//i;
+const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const IPV4 = /^\d+\.\d+\.\d+\.\d+$/;
+
+/** A value as a URL parser would read it: tabs and newlines dropped, `\` as `/`, decoded until stable, width and case folded. */
+function parserView(value: string): string {
+  let view = value;
+  for (let round = 0; round < 4; round++) {
+    const next = decode(view.replace(/[\t\n\r]/g, ""));
+    if (next === view) break;
+    view = next;
+  }
+  return view.replace(/[\t\n\r]/g, "").normalize("NFKC").replace(/\\/g, "/");
+}
+
+function hasNestedAddress(pathname: string, query: string): boolean {
+  const path = parserView(pathname);
+  const search = parserView(query);
+  if (NESTED_URL.test(path) || NESTED_URL.test(search)) return true;
+  // A query value that is itself an address ("next=ftp:x", "next= //x"); a path segment with a colon is just a file name.
+  return search.split(/[&;]/).some((param) => {
+    const value = param.slice(param.indexOf("=") + 1);
+    let start = 0;
+    while (start < value.length && value.charCodeAt(start) <= 0x20) start++; // controls and spaces a parser skips
+    const bare = value.slice(start);
+    return bare.startsWith("//") || SCHEME.test(bare);
+  });
+}
 
 /** The labels of a host name above its registrable domain: "a.b.example.com" -> ["a", "b"]. */
 function labelsAboveRegistrable(hostname: string): string[] {
@@ -113,7 +139,7 @@ export function imageUrlVerdict(src: string): ImageVerdict {
   }
 
   const query = url.search.slice(1);
-  if (NESTED_URL.test(decode(decode(url.pathname))) || NESTED_URL.test(decode(decode(query)))) reasons.push("nested-url");
+  if (hasNestedAddress(url.pathname, query)) reasons.push("nested-url");
   const params = query === "" ? [] : query.split(/[&;]/).filter(Boolean);
   if (query.length > MAX_QUERY_CHARS) reasons.push("long-query");
   if (params.length > MAX_QUERY_PARAMS) reasons.push("many-params");

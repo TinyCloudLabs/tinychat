@@ -23,15 +23,20 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
   const address = typeof src === "string" ? src : null;
   const claimed = address !== null && !streaming ? address : null;
   if (claimed !== null) budget?.claim(id, claimed);
+  // A claim keeps its place when its address changes; it is given up only when the image goes away or stops claiming.
   useEffect(() => {
     if (!budget) return;
     if (claimed !== null) budget.claim(id, claimed);
+    else budget.release(id);
     budget.publish();
-    return () => {
-      budget.release(id);
-      budget.publish();
-    };
   }, [budget, id, claimed]);
+  useEffect(
+    () => () => {
+      budget?.release(id);
+      budget?.publish();
+    },
+    [budget, id],
+  );
 
   const verdict = address === null ? { kind: "block" as const } : imageUrlVerdict(address);
   const picture = <img src={address ?? undefined} alt={alt} referrerPolicy="no-referrer" {...props} />;

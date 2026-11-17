@@ -100,6 +100,21 @@ describe("addresses that ask first", () => {
     expect(reasons("https://example.com/a//b.png")).toBe("load");
   });
 
+  test("an address inside the address in forms a URL parser still reads", () => {
+    const next = (value: string) => reasons(`https://i.imgur.com/a.png?next=${value}`);
+    expect(reasons("https://i.imgur.com/a.png?next=HtTpS://x.ee/a")).toEqual(["nested-url"]);
+    expect(next("ht%09tps:%09//x.ee")).toEqual(["nested-url"]);
+    expect(next("%20//x.ee")).toEqual(["nested-url"]);
+    expect(next("+//x.ee")).toEqual(["nested-url"]);
+    expect(next("%09//x.ee")).toEqual(["nested-url"]);
+    expect(next("%5C%5Cx.ee")).toEqual(["nested-url"]);
+    expect(next("https%25253A%25252F%25252Fx.ee")).toEqual(["nested-url"]);
+    expect(next("%EF%BC%8F%EF%BC%8Fx.ee")).toEqual(["nested-url"]); // fullwidth slashes
+    expect(next("ftp:x.ee")).toEqual(["nested-url"]);
+    expect(next("2")).toBe("load");
+    expect(reasons("https://upload.wikimedia.org/wikipedia/commons/a/ab/File:Cat.jpg")).toBe("load");
+  });
+
   test("a coarse second-level suffix needs a two-letter country code", () => {
     expect(reasons("https://a.b.com.xyz/a.png")).toEqual(["host-labels"]);
     expect(reasons("https://cdn.example.com.au/a.png")).toBe("load");
@@ -212,6 +227,12 @@ describe("the reply-level prompt names the sites", () => {
     expect(title(3, ["c.example"])).toBe("Load 3 more images from c.example?");
     expect(title(2, ["c.example", "d.example"])).toBe("Load 2 more images from c.example and d.example?");
     expect(title(3, ["c.example", "d.example", "e.example"])).toBe("Load 3 more images from c.example, d.example and e.example?");
+  });
+
+  test("exactly four sites leave one uncounted", () => {
+    expect(title(4, ["c.example", "d.example", "e.example", "f.example"])).toBe(
+      "Load 4 more images from c.example, d.example, e.example and 1 more site?",
+    );
   });
 
   test("past three sites, the rest are counted", () => {

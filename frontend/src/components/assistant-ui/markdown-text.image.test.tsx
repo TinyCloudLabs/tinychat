@@ -196,3 +196,54 @@ test("an address that asks shows no prompt for half a reply: it waits until the 
   await show(mounted, `![chart](${carrier})`, host, false);
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.title("evil.example"));
 });
+
+// Every address an <img> ever had, not only the final page: a transient load is a request.
+function recordSrcs() {
+  const ever: string[] = [];
+  const original = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (this: Element, name: string, value: string) {
+    if (this.tagName === "IMG" && name === "src") ever.push(value);
+    return original.call(this, name, value);
+  };
+  return { ever, stop: () => { Element.prototype.setAttribute = original; } };
+}
+
+async function mountRecorded() {
+  restore = installDom();
+  const recorder = recordSrcs();
+  const host = document.createElement("div");
+  document.body.append(host);
+  mounted = createRoot(host);
+  const stop = restore;
+  restore = () => { recorder.stop(); stop(); };
+  return { host, ever: recorder.ever };
+}
+
+const four = (...names: string[]) => names.map((n) => photo(`${n}.example`, n)).join("\n\n");
+const loaded = (...names: string[]) => names.map((n) => `https://${n}.example/${n}.png`);
+
+test("a finished reply loads its first two images and no other address is ever requested, not even once", async () => {
+  const { host, ever } = await mountRecorded();
+  await show(mounted!, four("a", "b", "c", "d"), host, false);
+  expect(new Set(ever)).toEqual(new Set(loaded("a", "b")));
+});
+
+test("an address changed in place while the reply is finished keeps its slot: no held image takes it", async () => {
+  const { host, ever } = await mountRecorded();
+  await show(mounted!, four("a", "b", "c", "d"), host, false);
+  await show(mounted!, four("x", "b", "c", "d"), host, false);
+  await show(mounted!, four("y", "b", "c", "d"), host, false);
+  expect(new Set(ever)).toEqual(new Set(loaded("a", "b", "x", "y")));
+  expect(srcs(host)).toEqual(loaded("y", "b"));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
+});
+
+test("images that go away give their slots up: no prompt is left for an image that is no longer there", async () => {
+  const { host } = await mountRecorded();
+  await show(mounted!, four("a", "b", "c", "d"), host, false);
+  expect(host.textContent).toContain("more images");
+  await show(mounted!, four("d"), host, false);
+  expect(srcs(host)).toEqual(loaded("d"));
+  expect(host.textContent).not.toContain("more image");
+  expect(host.querySelector("button")).toBeNull();
+});

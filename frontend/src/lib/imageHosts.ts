@@ -15,14 +15,14 @@ const OWN_IMAGE_HOSTS = [
 ];
 
 // Other operators' image hosts, each there because the operator's request logs are not readable by whoever wrote the reply
-// [INFERENCE for all four: from how each service is documented to work, not tested].
+// [INFERENCE for all three: from how each service is documented to work, not tested].
 const TRUSTED_IMAGE_HOSTS = [
   "i.imgur.com", // Imgur's image CDN; anyone can upload an image, nobody gets request logs.
   "avatars.githubusercontent.com", // GitHub's avatar service only; not raw.githubusercontent.com, which serves arbitrary repo files.
   "upload.wikimedia.org", // Wikimedia's media store; request logs are the foundation's.
-  "images.unsplash.com", // Unsplash's photo CDN. Its imgix `mark=`/`blend=` take a remote URL; the address filter asks for those.
-  // Left off on purpose: res.cloudinary.com (any customer reads their own cloud's delivery logs) and img.shields.io (its
-  // /endpoint?url= and dynamic badges make shields.io fetch an address of the attacker's choosing).
+  // Left off on purpose: res.cloudinary.com (any customer reads their own cloud's delivery logs), img.shields.io (its
+  // /endpoint?url= and dynamic badges make shields.io fetch an address of the attacker's choosing) and images.unsplash.com
+  // (imgix-backed: mark64=/blend64= take a base64 address that no filter can read cheaply).
 ];
 
 export function isAllowlistedImageHost(hostname: string): boolean {
