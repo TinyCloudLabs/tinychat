@@ -11,7 +11,7 @@
  * Extracted from index.ts so the wiring is unit-testable without booting the
  * full server.
  */
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type { Express, Request, RequestHandler, Response } from "express";
 import { verifySessionToken } from "@tinyboilerplate/server";
 
@@ -158,6 +158,38 @@ export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat", "/api/bots/main/
  */
 export const AUTH_LIMIT = 1200;
 export const AUTH_PATHS = ["/api/auth"] as const;
+
+/**
+ * `POST /api/auth/verify-renewal` asks the TinyCloud node on every accepted request, so besides the
+ * shared `auth` bucket it has its own one-minute buckets: per client IP and per claimed address. They
+ * run before the route reads anything, so a request they refuse never uses its nonce or calls the node.
+ * Behind the Phala gateway every client shares one IP (see above), so there the IP bucket is one
+ * service-wide bucket.
+ */
+export const VERIFY_RENEWAL_WINDOW_MS = 60 * 1000;
+export const VERIFY_RENEWAL_IP_LIMIT = 10;
+export const VERIFY_RENEWAL_ADDRESS_LIMIT = 5;
+
+/** The verify-renewal buckets (see `VERIFY_RENEWAL_IP_LIMIT`), fresh stores per call. Mount after body parsing. */
+export function createVerifyRenewalLimiter(): RequestHandler {
+  const limiter = (limit: number, key: (req: Request) => string) =>
+    rateLimit({
+      windowMs: VERIFY_RENEWAL_WINDOW_MS,
+      limit,
+      keyGenerator: key,
+      standardHeaders: false,
+      legacyHeaders: false,
+      handler: (_req, res) => {
+        res.status(429).json({ error: "rate_limited" });
+      },
+    });
+  const byIp = limiter(VERIFY_RENEWAL_IP_LIMIT, (req) => `ip:${ipKeyGenerator(req.ip ?? "")}`);
+  const byAddress = limiter(VERIFY_RENEWAL_ADDRESS_LIMIT, (req) => {
+    const address: unknown = req.body?.address;
+    return `address:${typeof address === "string" ? address.toLowerCase() : ""}`;
+  });
+  return (req, res, next) => byIp(req, res, (error?: unknown) => (error ? next(error) : byAddress(req, res, next)));
+}
 
 /**
  * The optional authenticated credential count (routes/credential-count.ts) is a one-time, read-only
