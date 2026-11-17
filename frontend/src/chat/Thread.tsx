@@ -33,6 +33,7 @@ import {
   Square,
 } from "lucide-react";
 
+import { ImageBudgetScope } from "@/components/assistant-ui/image-budget";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -631,7 +632,9 @@ const AssistantMessage: FC = () => (
       <span>TinyCloud One</span>
     </div>
     <div className="pl-7 text-sm leading-relaxed text-foreground">
-      <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+      <ImageBudgetScope>
+        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+      </ImageBudgetScope>
       <ThinkingIndicator />
       <StreamingCursor />
       <ToolActivityChip />

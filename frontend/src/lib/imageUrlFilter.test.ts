@@ -21,9 +21,16 @@ describe("images that load without asking", () => {
     "https://cdn.example.com/d41d8cd98f00b204e9800998ecf8427e.png",
     `https://cdn.example.com/${hex(40)}.jpg`,
     `https://cdn.example.com/${hex(64)}.jpg`,
-    "http://example.com:8080/logo.png",
+    "https://example.com:8443/logo.png",
+    "https://d111111abcdef8.cloudfront.net/a.png",
+    "https://lh3.googleusercontent.com/a.png",
+    "https://www.example.co.uk/a.png",
+    "https://cdn.example.co.uk/a.png",
+    "https://abcdefghijklmnopqrstuvwx.example.com/a.png",
+    "https://very-long-registrable-domain-name-that-is-allowed-to-be-long.com/a.png",
     "https://example.com/a.png#a-fragment-that-is-never-sent-to-the-server-and-is-long-enough-to-matter-here",
     "https://example.com/photos/2026/11/team-offsite-group-photo.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Example_image_file_name.jpg/320px-Example_image_file_name.jpg",
   ])("%s", (src) => {
     expect(imageUrlVerdict(src)).toEqual({ kind: "load" });
   });
@@ -46,6 +53,40 @@ describe("addresses that never load", () => {
 });
 
 describe("addresses that ask first", () => {
+  test("http:, however plain", () => {
+    expect(reasons("http://example.com/logo.png")).toEqual(["insecure"]);
+    expect(reasons("http://example.com:8080/logo.png")).toEqual(["insecure"]);
+  });
+
+  test("more than one label above the registrable domain", () => {
+    expect(reasons("https://a.b.example.com/a.png")).toEqual(["host-labels"]);
+    expect(reasons("https://a.b.example.co.uk/a.png")).toEqual(["host-labels"]);
+    expect(reasons("https://bucket.s3.us-west-2.amazonaws.com/a.png")).toEqual(["host-labels"]);
+    expect(reasons("https://1.2.3.4/a.png")).toEqual(["host-labels"]);
+  });
+
+  test("a label above the registrable domain over 24 characters, not 24", () => {
+    expect(reasons(`https://${"a".repeat(24)}.example.com/a.png`)).toBe("load");
+    expect(reasons(`https://${"a".repeat(25)}.example.com/a.png`)).toEqual(["host-long"]);
+    expect(reasons(`https://${"a".repeat(63)}.example.com/a.png`)).toEqual(["host-long"]);
+  });
+
+  test("a label of 16 or more letters and digits mixed, not 15 or all letters", () => {
+    expect(reasons("https://a1b2c3d4e5f6g7h.example.com/a.png")).toBe("load"); // 15
+    expect(reasons("https://a1b2c3d4e5f6g7h8.example.com/a.png")).toEqual(["host-encoded"]); // 16
+    expect(reasons("https://abcdefghijklmnop.example.com/a.png")).toBe("load");
+  });
+
+  test("a long mixed label deep in the host is judged too, and reports every host signal that applies", () => {
+    expect(reasons(`https://${"q1".repeat(20)}.x.example.com/a.png`)).toEqual(["host-labels", "host-long", "host-encoded"]);
+  });
+
+  test("an allowlisted host is not judged on its host name, but its path and query still are", () => {
+    expect(reasons("https://tee.node.tinycloud.xyz/a.png")).toBe("load");
+    expect(reasons(`https://${"a1".repeat(20)}.tinycloud.one/a.png`)).toBe("load");
+    expect(reasons(`https://node.tinycloud.xyz/a.png?d=${"x".repeat(70)}`)).toEqual(["long-query"]);
+  });
+
   test("user:password@", () => {
     expect(reasons("https://user:pw@example.com/a.png")).toEqual(["credentials"]);
     expect(reasons("https://user@example.com/a.png")).toEqual(["credentials"]);
@@ -87,22 +128,40 @@ describe("addresses that ask first", () => {
   });
 
   test("more than 8 percent escapes, not 8", () => {
-    const escaped = (n: number) => "%C3%A9".repeat(n / 2);
+    const escaped = (n: number) => "%41".repeat(n);
     expect(reasons(`https://example.com/a.png?q=${escaped(8)}`)).toBe("load");
-    expect(reasons(`https://example.com/a.png?q=${escaped(10)}`)).toEqual(["encoded"]);
+    expect(reasons(`https://example.com/a.png?q=${escaped(9)}`)).toEqual(["encoded"]);
   });
 
-  test("six or more words joined by - _ + or %20, not five", () => {
-    expect(reasons("https://example.com/one-two-three-four-five.jpg")).toBe("load");
-    expect(reasons("https://example.com/one-two-three-four-five-six.jpg")).toEqual(["text-like"]);
-    expect(reasons("https://example.com/a.png?q=one_two_three_four_five_six")).toEqual(["text-like"]);
-    expect(reasons("https://example.com/a.png?q=one+two+three+four+five+six")).toEqual(["text-like"]);
-    expect(reasons("https://example.com/a.png?q=one%20two%20three%20four%20five%20six")).toEqual(["text-like"]);
+  test("a base64 run split by dots, commas, tildes or semicolons is still a run", () => {
+    const pieces = (separator: string) => [b64(20), b64(20)].join(separator);
+    for (const separator of [".", ",", "~", ";", "!", "*"]) {
+      expect(reasons(`https://example.com/${pieces(separator)}`)).toEqual(["encoded"]);
+    }
+  });
+
+  test("parameters may be split by ; as well as &", () => {
+    const params = (n: number) => Array.from({ length: n }, (_, i) => `p${i}=1`).join(";");
+    expect(reasons(`https://example.com/a.png?${params(9)}`)).toEqual(["many-params"]);
+  });
+
+  test("eight words across the path and query, not seven, however they are joined", () => {
+    const words = (n: number) => ["red", "blue", "green", "pink", "gold", "gray", "cyan", "teal", "lime"].slice(0, n);
+    for (const joiner of ["-", "_", "+", "%20", ".", ",", "~", ";"]) {
+      expect(reasons(`https://example.com/a.png?q=${words(7).join(joiner)}`)).toBe("load");
+      expect(reasons(`https://example.com/a.png?q=${words(8).join(joiner)}`)).toEqual(["text-like"]);
+    }
+    expect(reasons(`https://example.com/a.png?q=${words(8).map((w) => w[0]!.toUpperCase() + w.slice(1)).join("")}`)).toEqual(["text-like"]);
+  });
+
+  test("words are counted across segments and parameters together, not one place at a time", () => {
+    expect(reasons("https://example.com/one-two-three/four-five-six/seven.png?note=eight")).toEqual(["text-like"]);
+    expect(reasons("https://example.com/one-two/three-four/five.png?a=six&b=seven&c=eight")).toEqual(["text-like"]);
   });
 
   test("words need two letters: numbers and single letters do not count", () => {
-    expect(reasons("https://example.com/a-b-c-d-e-f-g-h.jpg")).toBe("load");
-    expect(reasons("https://example.com/2026-11-17-10-30-45-12-34.jpg")).toBe("load");
+    expect(reasons("https://example.com/a-b-c-d-e-f-g-h-i-j.jpg")).toBe("load");
+    expect(reasons("https://example.com/2026-11-17-10-30-45-12-34-56.jpg")).toBe("load");
   });
 
   test("the verdict names the host with its port and the full address", () => {

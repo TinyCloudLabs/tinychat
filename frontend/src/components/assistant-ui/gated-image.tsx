@@ -1,20 +1,38 @@
-import { useState, type ComponentPropsWithoutRef, type FC } from "react";
+import { useEffect, useState, type ComponentPropsWithoutRef, type FC } from "react";
 
+import { useReplyImageBudget, useWaitingImages } from "@/components/assistant-ui/image-budget";
 import { IMAGE_PROMPT_COPY, imageUrlVerdict } from "@/lib/imageUrlFilter";
 
 type ImgProps = ComponentPropsWithoutRef<"img"> & { node?: unknown };
 
-/** A Markdown image in a chat reply: loads as usual unless its address looks like it carries data, then asks first. */
+/**
+ * A Markdown image in a chat reply. It loads as usual unless its address looks like it carries data (then it asks first), or
+ * the reply already holds its share of images from other hosts (then it waits for the reply's one prompt).
+ */
 export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) => {
-  const [choice, setChoice] = useState<"load" | "skip" | null>(null);
-  const verdict = typeof src === "string" ? imageUrlVerdict(src) : { kind: "block" as const };
+  const budget = useReplyImageBudget();
+  useWaitingImages(budget);
+  // The reader's choice belongs to the address they saw: a streamed reply can change the address under the same image.
+  const [decision, setDecision] = useState<{ src: string; choice: "load" | "skip" } | null>(null);
+  const address = typeof src === "string" ? src : null;
+  if (address !== null) budget?.claim(address);
+  useEffect(() => budget?.publish(), [budget, address]);
 
-  if (verdict.kind === "load" || (verdict.kind === "ask" && choice === "load")) {
-    return <img src={src as string} alt={alt} {...props} />;
+  const verdict = address === null ? { kind: "block" as const } : imageUrlVerdict(address);
+  const picture = <img src={address ?? undefined} alt={alt} referrerPolicy="no-referrer" {...props} />;
+  const notLoaded = <span className="text-muted-foreground">{IMAGE_PROMPT_COPY.notLoaded(alt ?? "")}</span>;
+
+  if (address === null || verdict.kind === "block") return notLoaded;
+  if (verdict.kind === "load") {
+    if (!budget?.isHeld(address)) return picture;
+    const held = budget.choice(address);
+    if (held === "load") return picture;
+    if (held === "skip") return notLoaded;
+    return <span className="text-muted-foreground">{IMAGE_PROMPT_COPY.waiting(alt ?? "")}</span>;
   }
-  if (verdict.kind === "block" || choice === "skip") {
-    return <span className="text-muted-foreground">{IMAGE_PROMPT_COPY.notLoaded(alt ?? "")}</span>;
-  }
+  const choice = decision?.src === address ? decision.choice : null;
+  if (choice === "load") return picture;
+  if (choice === "skip") return notLoaded;
   return (
     <span
       role="group"
@@ -29,14 +47,14 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
         <button
           type="button"
           className="rounded-md border border-border bg-background px-3 py-1 text-sm font-medium"
-          onClick={() => setChoice("load")}
+          onClick={() => setDecision({ src: address, choice: "load" })}
         >
           {IMAGE_PROMPT_COPY.load}
         </button>
         <button
           type="button"
           className="rounded-md px-3 py-1 text-sm text-muted-foreground"
-          onClick={() => setChoice("skip")}
+          onClick={() => setDecision({ src: address, choice: "skip" })}
         >
           {IMAGE_PROMPT_COPY.notNow}
         </button>
