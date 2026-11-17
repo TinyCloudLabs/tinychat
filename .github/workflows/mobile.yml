@@ -1,4 +1,4 @@
-name: Mobile (Exo)
+name: Mobile (TinyCloud One)
 
 on:
   workflow_dispatch:
