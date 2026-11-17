@@ -13,17 +13,17 @@ export interface Removals {
   notDeleted: number;
 }
 
-export const NOTHING_TO_DELETE = "You have no recordings to delete.";
-export const NOTHING_OF_YOURS = "You had no recordings of your own to delete.";
+export const NOTHING_TO_DELETE = "You have no meeting recordings to delete.";
+export const NOTHING_OF_YOURS = "You had no meeting recordings of your own to delete.";
 /** At least one of the account's own deletes is not confirmed yet: true whether or not some are already done. */
-export const STILL_DELETING = "Your recordings are being deleted. We keep trying until each one is gone.";
+export const STILL_DELETING = "Your meeting recordings are being deleted. We keep trying until each one is gone.";
 export const SHARED_REMOVED = "Recordings others shared with you are removed from your list; the people who shared them still have them.";
 /** Own entries the provider does not attribute to the account: dropped from the list, copy NOT deleted. */
 export const NOT_DELETED = "Some recordings were removed from your list but are still with the notetaker service. To have them deleted, email team@tinycloud.xyz.";
 /** The same case on a single recording's own row after Remove (Monica): no subject needed. */
 export const ROW_NOT_DELETED = "Removed from your list but still with the notetaker service. To have it deleted, email team@tinycloud.xyz.";
 
-export const OWN_DELETED = "Your recordings are deleted.";
+export const OWN_DELETED = "Your meeting recordings are deleted, including the notetaker service's copies.";
 
 const join = (...parts: Array<string | false>): string => parts.filter((part) => part !== false).join(" ");
 
