@@ -61,30 +61,60 @@ bot's allowlist; `tools/list` answers are rebuilt from that list. The gateway ow
 origin, `mcp.tinycloud.xyz/mcp` (phase 1), the search provider and guarded page fetches (phase 2), and the owner's
 servers (phase 3).
 
+`GET` (the SSE stream) and `DELETE` on `/v1/mcp` are refused (405), so the sandbox cannot open a server-to-client stream
+or end a session. The gateway strips `Mcp-Session-Id` from every reply.
+
 ### 2. Who holds the grant
 
-The credential is an OpenKey OAuth access token (and, for a standing grant, its refresh token) for the owner, kept in
-the gateway, outside the sandbox, like the model key.
+Two things are involved and they must not be confused. The **token** is an OpenKey OAuth access token (and, for a
+standing grant, its refresh token) for the owner, kept in the gateway, outside the sandbox, like the model key. The
+**delegation** behind it (the authority the node checks) is held by the hosted MCP, not by the gateway.
 
-- It gets there once, at approval. The owner approves in OpenKey in their browser and the TinyChat backend receives the
-  authorization code. It passes the code and its PKCE verifier to the supervisor over the existing
-  service-authenticated call, and the supervisor hands them to the gateway over the gateway's admin socket
-  (`PUT /bots/<botId>/mcp-grant`). The gateway does the code exchange, so the token is first seen inside the gateway.
-  The backend and supervisor never see, log or store it.
+**Precondition (decision 2, nothing below ships without it).** The hosted MCP stores delegations per tenant, and a tenant
+is keyed by the OpenKey subject alone, not by OAuth client or audience (js-sdk `packages/mcp`, `remote-store.ts`
+tenant id, and the identity read in `http.ts`). So on `/mcp`:
+- Main would use any delegation the owner approved for another MCP client (a chat app, a desktop client) without an
+  approval for Main; and
+- whatever Main's flow approves becomes usable by those clients.
+
+"You pick what Main can read" is not enforced by anything under that keying, and the gateway's tool list does not
+limit scope. Main therefore needs either its own restricted MCP address with separate tenant state (the pattern the
+restricted per-client addresses use), or an MCP that keys tenants by subject and client. Whether the existing
+restricted surfaces expose the read tools Main needs is to be confirmed; a new surface may be needed.
+
+- It gets to the gateway once, at approval. The owner approves in OpenKey in their browser and the TinyChat backend
+  receives the authorization code. The OAuth flow is bound to the person and the bot:
+  - PKCE is required, and `state` is a single-use value the backend stores server-side with a short life, tied to the
+    signed-in TinyChat user and the `botId`. The callback is rejected if `state` is missing, reused, expired, or does not
+    match that user and bot.
+  - The backend passes the code, the PKCE verifier and the expected OpenKey subject (the user's linked OpenKey
+    identity) to the supervisor over the existing service-authenticated call, and the supervisor hands them to the
+    gateway over its admin socket (`PUT /bots/<botId>/mcp-grant`).
+  - The gateway does the code exchange, then checks that the token's subject equals the expected subject. On a
+    mismatch it discards the token and the grant fails with `owner_mismatch`. Without this check a login CSRF or an
+    OAuth mix-up attaches another person's token to a bot.
+  - The token is first seen inside the gateway; the backend and supervisor never see, log or store it.
 - A one-off grant lives only in the gateway's memory. A gateway restart ends it, which is the same as it expiring.
 - A standing grant (7 days, renewing) must survive a restart, so the gateway writes its refresh token to its own volume,
   encrypted (AES-GCM, key from the gateway's environment like the model key), mode 0600.
-- The sandbox, the supervisor and the saved bot state never hold it. The gateway removes the `Authorization` header and
-  any token from everything it returns, and it strips the approval link from an `authority_required` result (the link
-  goes to the owner through the supervisor's event stream, section 3, never to the model).
-- Lifetime follows the owner's grant rules:
-  - **One-off**: 1 hour at most, for one task, no renewal. The grant ends when Main's turn settles or after 1 hour,
-    whichever is first.
+- The sandbox, the supervisor and the saved bot state never hold the token. The gateway removes the `Authorization`
+  header and any token from everything it returns, and it strips the approval link from an `authority_required` result
+  (the link goes to the owner through the supervisor's event stream, section 3, never to the model).
+- Windows the owner picks:
+  - **One-off**: 1 hour at most, for one task, no renewal. The gateway ends it when Main's turn settles or after 1
+    hour, whichever is first.
   - **Standing**: 7 days, renewing, only if the owner picks it, and only after a warning screen. No default, no nudge.
-  - Anything involving another app's data or cross-app access gets the extra warning on the approval screen, with
-    "Reject this permission".
-- The access token is valid at the MCP for up to 12 hours whatever the grant says. So the gateway enforces the grant's
-  end itself (it stops attaching the token) and also revokes the token at OpenKey when a grant ends (section 3).
+  - The extra warning and "Reject this permission" for another app's data or cross-app access are OpenKey's to build
+    (decision 1). The MCP's delegation approval goes through OpenKey's `/delegate` link flows, which show no such
+    screen today, and the draft that adds it (#538) is reported not to cover them. This plan depends on it and does
+    not rely on it existing.
+- **What these windows bound today.** The gateway enforces them on the token only: it stops attaching the token and
+  revokes it at OpenKey. The delegation underneath lasts as long as the MCP's delegation expiry (30 days in
+  production), cannot be revoked early (TC-1156), and lives in the MCP, so ending the token does not end it. Until
+  decision 2 gives a per-request expiry (or Main's own address with its own shorter delegation), the 1-hour and 7-day
+  windows are token-only, and no owner-facing line may say the access ends at 1 hour or after 7 days.
+- The access token is valid at the MCP for up to 12 hours whatever the grant says, so revoking it at OpenKey (section
+  3) matters even when the gateway has already stopped using it.
 
 ### 3. Limits, budgets, audit, revoke, what the owner sees
 
@@ -101,7 +131,9 @@ authority or return secrets:
   `tinycloud_account_applications_list`. A write phase needs its own plan and its own approval copy.
 
 The delegation is the real limit: the owner picks the space and prefixes or databases when approving, and the node
-refuses anything outside them. The gateway's list is a second layer, not the first.
+refuses anything outside them. The gateway's list is a second layer, not the first. Build confirms that
+`tinycloud_sql_query` is held read-only by the node's delegation (a read-only database permission) and not only by the
+tool's name.
 
 **Budgets** (starting values, tuned after the first run): per task, 30 tool calls and 256 KiB of results; per bot per
 day, 500 calls; one call in flight per bot; 20 s per call; results already capped by the MCP at 100,000 characters.
@@ -112,20 +144,22 @@ Results enter the model's context, so they also count against the existing per-b
 arguments, no results, no token, no approval link. The owner sees the same counts in Main's settings.
 
 **Revoke.** Disconnect in Main's settings tells the backend, which tells the supervisor, which has the gateway delete
-the grant and call OpenKey's revoke for the access and refresh tokens. The gateway checks the grant on every call, so
-the next call is refused. At the MCP the token is inactive within about 30 s. The owner can also remove the connection
-on the OpenKey account page, which ends the token the same way. The delegation underneath cannot be revoked early; it
-stays bounded by the 1-hour or 7-day window, and only the gateway ever held it.
+the in-memory grant **and the encrypted refresh-token file**, and call OpenKey's revoke for the access and refresh
+tokens. The gateway checks the grant on every call, so the next call is refused. At the MCP the token is inactive within
+about 30 s. The owner can also remove the connection on the OpenKey account page, which ends the token the same way.
+The delegation underneath is not ended by any of this: it cannot be revoked early (TC-1156) and stays valid for the
+MCP's delegation expiry (30 days in production). Until decision 2 lands, Disconnect ends Main's use of it, not its
+existence.
 
 **What the owner sees** (copy for review; every string lives in the bots strings module):
 
 | Where | Draft |
 | --- | --- |
 | Main's settings, off | "TinyCloud data" / "Main can't read your TinyCloud data." / button "Let Main read it" |
-| Choice sheet | "Let Main read your TinyCloud data?" / "Main can read what you pick, nothing else. It can't change anything." / options "Just for this task (up to 1 hour)" (selected), "For 7 days" / "You pick what Main can read" (app list, none selected) |
-| After "For 7 days" | warning screen: "Keep Main's access for 7 days?" / "Main will keep reading what you picked, and the access renews on its own, until you turn it off or 7 days pass." / "Keep it to this task" / "Allow 7 days" |
-| Approval | OpenKey's own screen, including its extra warning and "Reject this permission" when another app's data is involved |
-| Active | "Main can read <apps> until <time>." / "Used 12 times today." / button "Disconnect" |
+| Choice sheet | **Held until decision 2 lands** (the 1-hour and 7-day lines are not yet true): "Let Main read your TinyCloud data?" / "Main can read what you pick, nothing else. It can't change anything. What it reads is sent to the AI model service to write its answer." / options "Just for this task" (selected), "For 7 days" / "You pick what Main can read" (app list, none selected) |
+| After "For 7 days" | **Held until decision 2 lands:** warning screen: "Keep Main's access for 7 days?" / "Main will keep reading what you picked, and the access renews on its own, until you turn it off or 7 days pass." / "Keep it to this task" / "Allow 7 days" |
+| Approval | OpenKey's own screen. No claim about an extra warning or "Reject this permission" until decision 1 ships them |
+| Active | **Held until decision 2 lands** (the end time is not yet true of the delegation): "Main can read <apps> until <time>." / "Used 12 times today." / button "Disconnect" |
 | Ended | "Main's access to your TinyCloud data has ended." / "Give Main access again" |
 
 Copy goes to Monica before any of it ships. It makes no claim about encryption or about what Main may do later.
@@ -139,7 +173,7 @@ Each answers the model with a fixed one-line error (no upstream text) and logs a
 | Grant expired, revoked or gateway restarted | `grant_ended`. The model is told access ended. The supervisor sends the owner a `grant_needed` event; the "Ended" line shows. No retry loop. |
 | MCP down, 5xx, timeout, or the MCP's `server_error` because OpenKey is unreachable | `mcp_unavailable`. No retry of the call. After 3 in a row the gateway refuses for 60 s. The turn goes on without the data. |
 | Tool not on the allowlist | Refused locally, `tool_not_permitted`; never sent. |
-| `authority_required` (Main asked for more than the owner approved) | The approval link is stripped from the result; the owner gets "Main needs more access: <what>" with a Review button that opens OpenKey. Nothing is widened automatically. |
+| `authority_required` (Main asked for more than the owner approved) | The approval link is stripped from the result; the owner gets "Main needs more access: <what>" with a Review button that opens OpenKey. `<what>` is built by the gateway from the MCP's structured authority request (space, prefix or database, action), never from model text or the tool's message, so injected text in data Main read cannot word the request. The owner sees exactly what OpenKey will ask. Nothing is widened automatically. |
 | `invalid_token` / 401 | Treated as the grant ending, as the first row. |
 | Over a per-task or per-day budget, or a second call in flight | Refused, `budget`, with the body unread. |
 | Oversize or malformed response | Dropped; `mcp_unavailable`. |
@@ -362,6 +396,9 @@ Spike (1 to 2 days, on a throwaway CVM or locally):
 
 ## Build order
 
+0. **Precondition: decision 2.** No phase builds the TinyCloud grant path before the hosted MCP gives Main separate
+   tenant state (or keys tenants by subject and client). Decision 1 (OpenKey's warning and per-permission reject) gates
+   the approval copy, not the build.
 1. **TinyCloud MCP.** Builds the shared parts the others reuse: the `/v1/mcp` route and JSON-RPC rebuild, the grant
    store and admin-socket hand-off, the budget ledger, the count-only audit, the settings surface and the owner events.
 2. **Web.** Adds the guarded fetcher (the SSRF guard is its own module with its own tests, and is the piece phase 3
@@ -375,13 +412,18 @@ gateway only. Each phase ships behind the existing test-account flag and does no
 ## Decisions for the owner of each system (named, not designed here)
 
 1. **OpenKey** (its owner decides): how a bot requester appears on the approval screen: the 1-hour one-off as the
-   default and the 7-day renewing choice behind a warning; a "Reject this permission" control (the approval screen on
-   main today has a request-level decline and a "belongs to another user" note, and no per-permission reject); the OAuth
-   client and the name shown ("Main, TinyCloud One").
-2. **Hosted MCP** (js-sdk `packages/mcp`): production delegations are 30 days, and the native grant path accepts one
-   fixed shape. The grant rules need a per-request expiry of 1 hour or 7 days and an owner-chosen read scope, either by
-   the MCP honouring the requested expiry or by a new restricted address for Main. A new address is a new OpenKey
-   audience and callback as well, so it joins decision 1.
+   default and the 7-day renewing choice behind a warning; a "Reject this permission" control. The approval screen on
+   main today has a request-level decline and a "belongs to another user" note and no per-permission reject, and the
+   MCP's delegation approval goes through the `/delegate` link flows, which show no extra warning (the draft that adds
+   one is reported not to cover them). This plan depends on this and the owner copy makes no claim about it until it
+   exists. Also the OAuth client and the name shown ("Main, TinyCloud One").
+2. **Hosted MCP** (js-sdk `packages/mcp`). **A build precondition, not an option.** Delegations are stored per tenant,
+   keyed by the OpenKey subject only, so Main would use any delegation the owner approved for another MCP client, and
+   what Main's flow approves would become usable by those clients. Main needs its own restricted MCP address with
+   separate tenant state, or an MCP that keys tenants by subject and client. Separately: production delegations are 30
+   days and cannot be revoked early (TC-1156), and the native grant path accepts one fixed shape, so the 1-hour and
+   7-day windows are token-only until the MCP honours a requested expiry (or Main's address issues shorter
+   delegations). A new address is a new OpenKey audience and callback as well, so it joins decision 1.
 3. **What "one task" means.** This plan ends the grant when Main's turn settles. If a follow-up message should reuse it,
    say so before build.
 4. **Search provider and its key** (a paid credential, so not added without an explicit decision): which of Tavily,
@@ -398,6 +440,11 @@ On a flagged test account:
 - **TinyCloud:** approve "Just for this task" on one app, ask Main to list that app's keys (they come back); ask it to
   read another app (refused by the node); after the turn, a second call is `grant_ended`; Disconnect during a 7-day grant
   and the next call fails; a write tool is `tool_not_permitted`.
+- **Isolation and binding:** with another MCP client's delegation already approved for the same owner, Main still gets
+  `authority_required` (it cannot use it), and what Main's flow approves is refused when a second client calls. A
+  callback with a missing, reused or mismatched `state` (another user or another bot) is rejected, and a code from a
+  different OpenKey account fails with `owner_mismatch` and leaves no grant. Disconnect also removes the refresh-token
+  file. `GET` and `DELETE` on `/v1/mcp` return 405 and no reply carries `Mcp-Session-Id`.
 - **Web:** a fetch of a public page returns text; `http://127.0.0.1`, `http://169.254.169.254`, a name that resolves to a
   private address, and a redirect to either are each refused and counted as `blocked_address`; a 2 MiB page is cut; a
   PDF is `wrong_type`; the 21st fetch in a task is `budget`.
