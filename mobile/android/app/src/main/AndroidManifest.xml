@@ -48,10 +48,11 @@
                     android:path="/google" />
             </intent-filter>
 
-            <!-- Recording share links (TC-3195): https://tinycloud.one/s/<id>#… opens here
-                 (`appUrlOpen`). Verified App Link once tinycloud.one serves assetlinks.json;
-                 until then Android opens the link in the browser. -->
-            <intent-filter android:autoVerify="true">
+            <!-- Recording share links (TC-3195): https://tinycloud.one/s/<id>#… can open here
+                 (`appUrlOpen`). Not auto-verified yet: android:autoVerify="true" goes on in a follow-up once
+                 tinycloud.one serves assetlinks.json with both the upload key and the Play app signing key.
+                 Until then Android opens these links in the browser by default. -->
+            <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
