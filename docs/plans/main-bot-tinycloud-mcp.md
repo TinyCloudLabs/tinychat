@@ -609,8 +609,11 @@ flag and does not change the others.
    signed expiry is the only early end.
 3. **What "one task" means.** This plan ends the grant's use when Main's turn settles. If a follow-up message should
    reuse it, say so before build.
-4. **Search provider key** (a paid credential): Tavily on the backend's existing account is proposed. Decide whether the
-   plan covers Extract, and whether the bots service gets its own key under that account or shares the backend's.
+4. **Search provider.** Recommended default: Tavily, which is already paid for, with no new provider, key or spend once
+   confirmed to be the backend's existing key and contract (checked in the code: `TAVILY_API_KEY`, `POST /search`;
+   Extract is not used by the backend today, so confirm the plan covers it). Alternatives: Brave Search API, Exa, Kagi,
+   self-hosted SearXNG. Also decide whether the bots service gets its own key under the same account or shares the
+   backend's.
 5. **The exfil rule for phase 2 (pick one).** It applies to any conversation whose context holds owner data (not just
    the task that read it) and to web fetch, web search and every owner-added server's tool arguments: (a) strict, all
    refused; (b) narrowed, recommended: search with a capped query, fetch only of search-returned or owner-typed URLs,
@@ -619,8 +622,10 @@ flag and does not change the others.
    egress layer does. See Web access.
 6. **Web access has no expiry** (it carries no owner authority). With the exfil rule above in place, "until I turn it
    off" is acceptable; say so if it should expire like the data grants.
-7. **Egress layer.** No iron-proxy now; phases 1 and 2 need no outbound hop; phase 3 uses Smokescreen after a spike, or
-   the gateway's guard alone if the spike says so. Whichever, the gateway keeps its own checks and the per-owner secrets.
+7. **Egress layer.** Recommended: the gateway's own guard alone for phases 1 and 2 (no outbound hop is needed), and
+   Smokescreen for owner-added servers (phase 3). iron-proxy is not adopted now. Smokescreen has not been run by us, so
+   the spike confirms the choice before phase 3 ships rather than choosing between hops. Whichever, the gateway keeps
+   its own checks and the per-owner secrets.
 8. **Reply rendering** (TinyChat frontend): text the model wrote never loads remote images or auto-links, on any
    surface. See Web access.
 
