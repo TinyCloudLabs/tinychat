@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-In the chat and in notes, an image in the text is no longer loaded: it shows as its description and the site it points to. A link shows its full site name next to its text, and in the chat only web links can be opened.
+In a chat that has used your data or content from other sites (a search, a meeting transcript, pasted text), an image in a reply asks first: it shows the full address and a Load button, and loads one address at a time. Chats that have used neither load images as before. Images in notes show as their description and the site they point to. A link shows its full site name next to its text.

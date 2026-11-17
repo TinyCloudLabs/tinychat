@@ -33,7 +33,8 @@ import {
   Square,
 } from "lucide-react";
 
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { ImageGateScope, MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { notePastedText } from "@/lib/imageGate";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -113,6 +114,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
   return (
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
+        <ImageGateScope threadId={threadId}>
         <ThreadPrimitive.Root className="flex h-full flex-col bg-background">
           <ThreadPrimitive.Viewport ref={viewportRef} autoScroll={!isEmpty} data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
@@ -130,6 +132,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
             <Composer selection={selection} toolbar={composerToolbar} isEmpty={isEmpty} />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
+        </ImageGateScope>
       </ShareThreadProvider>
     </TooltipProvider>
   );
@@ -577,6 +580,9 @@ const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boo
           rows={1}
           placeholder="Message TinyCloud One…"
           disabled={!selection.canSend}
+          // Pasted or dropped text is outside content: the chat asks before loading images from then on (lib/imageGate.ts).
+          onPaste={notePastedText}
+          onDrop={notePastedText}
           // Always 16px: smaller text makes iOS zoom the page when the field
           // gains focus, and the composer reads the same on every device.
           className="max-h-40 min-h-11 resize-none bg-transparent px-4 pb-1 pt-3 text-body outline-none placeholder:text-muted-foreground"

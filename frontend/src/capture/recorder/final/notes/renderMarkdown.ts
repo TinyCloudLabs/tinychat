@@ -59,11 +59,15 @@ function withoutRemoteLoads(html: string): string {
       const alt = attrOf(tag, "alt");
       const src = attrOf(tag, "src");
       const host = src ? webHost(unescapeAttr(src)) : null;
-      return `<span class="note-image">[Image not loaded${alt ? `: ${alt}` : ""}${host ? ` (${escapeText(host)})` : ""}]</span>`;
+      return `<span class="note-image">Image not loaded${alt ? `: ${alt}` : ""}${host ? ` (${escapeText(host)})` : ""}</span>`;
     })
     .replace(/(<a\b[^>]*\shref="([^"]*)"[^>]*>)([\s\S]*?)<\/a>/gi, (whole, open: string, href: string, inner: string) => {
       const host = webHost(unescapeAttr(href));
-      return host ? `${open}${inner}</a> <span class="note-link-host">(${escapeText(host)})</span>` : whole;
+      if (!host) return whole;
+      // A label that already starts with the host (the address itself, or the host name) says it once.
+      const label = unescapeAttr(inner.replace(/<[^>]*>/g, "")).trim().toLowerCase().replace(/^https?:\/\//, "");
+      if (label === host || label.startsWith(`${host}/`)) return whole;
+      return `${open}${inner}</a> <span class="note-link-host">(${escapeText(host)})</span>`;
     });
 }
 

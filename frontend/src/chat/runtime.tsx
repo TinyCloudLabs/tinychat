@@ -22,6 +22,7 @@ import {
   type UsageInfo,
 } from "../lib/chatApi";
 import { createChatModelAdapter } from "./chatModelAdapter";
+import { adoptStoredHistory, stampProvenance } from "../lib/imageGate";
 import type { CompactionCheckpoint } from "./compaction";
 import {
   appendMessage,
@@ -394,6 +395,7 @@ export function createHistoryAdapter(
       const cached = historyPrefetch.get(threadId);
       if (cached) {
         void historyPrefetch.promote(threadId);
+        adoptStoredHistory(threadId, cached.messages);
         return repositoryFromDoc(cached);
       }
       // Miss: promote to the front of the queue and await its fetch (the
@@ -402,6 +404,7 @@ export function createHistoryAdapter(
       // through the single sequential pipe (concurrency-1 constraint).
       const doc = await historyPrefetch.promote(threadId);
       if (!doc) return { messages: [] };
+      adoptStoredHistory(threadId, doc.messages);
       return repositoryFromDoc(doc);
     },
     async append(item: ExportedMessageRepositoryItem): Promise<void> {
@@ -422,6 +425,8 @@ export function createHistoryAdapter(
       // (additive, so a Canvas failure saves nothing and overwrites nothing);
       // other chats never touch Canvas.
       const persist = async (model: TurnOrigin["model"]) => {
+        // What the conversation is at this moment goes onto the stored message (lib/imageGate.ts), so a reload derives it.
+        stampProvenance(item, threadId);
         const recorded = await recordPromotedChatMessage(tcw, threadId, item);
         await appendMessage(tcw, threadId, item, model);
         if (recorded) notifyCanvasChanged(threadId);

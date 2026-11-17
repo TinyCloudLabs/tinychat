@@ -48,11 +48,17 @@ describe("note renderer", () => {
     );
     expect(html).not.toMatch(/<(img|picture|source|video|iframe)\b/i);
     expect(html).not.toMatch(/\s(src|srcset|poster)=/i);
-    expect(html).toContain("[Image not loaded: chart (evil.example)]");
-    expect(html).toContain("[Image not loaded: ref image (evil.example:8443)]");
-    expect(html).toContain("[Image not loaded: badge (evil.example)]");
-    expect(html).toContain("[Image not loaded: local]");
+    expect(html).toContain("Image not loaded: chart (evil.example)<");
+    expect(html).toContain("Image not loaded: ref image (evil.example:8443)<");
+    expect(html).toContain("Image not loaded: badge (evil.example)<");
+    expect(html).toContain("Image not loaded: local<");
+    expect(html).not.toMatch(/url\(/i);
     expect(html).not.toContain("FAKE-OWNER-DATA-1234");
+  });
+
+  test("a link whose label already is its address says the host once", async () => {
+    const html = await renderNoteHtml("see https://bare.example/a/b and [bare.example](https://bare.example)");
+    expect(html).not.toContain("note-link-host");
   });
 
   test("a web link shows its full host beside the label", async () => {

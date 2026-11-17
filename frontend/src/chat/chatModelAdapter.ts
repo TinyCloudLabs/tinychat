@@ -17,6 +17,7 @@ import {
 } from "../lib/chatApi";
 import { AgentStreamError, streamAgentChat, type AgentDelegationErrorCode } from "../lib/agentChatApi";
 import { clearGatewayReceipt, setGatewayReceiptVerified } from "../lib/gatewayReceiptStore";
+import { markOutsideContent, takePastedText } from "../lib/imageGate";
 import {
   clearToolActivity,
   setToolActivity,
@@ -283,6 +284,8 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       deps.selection.assertActive(origin);
       deps.selection.setRunning(origin, true);
       const threadId = origin.threadId;
+      // Outside content marks the chat (lib/imageGate.ts) the moment it enters, before the reply that follows renders.
+      if (takePastedText()) markOutsideContent(threadId);
       const modelId = origin.model;
       const agentEnabled = deps.agentEnabledRef.current;
       const assertTurn = () => {
@@ -327,6 +330,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         // the assistant message id and is consumed by the history adapter; no
         // meeting evidence or provenance travels with the persisted item.
         if (meetingOutcome.status !== "not-applicable") {
+          markOutsideContent(threadId);
           const userMessageId = [...convo].reverse().find((message) => message.role === "user")?.id;
           const classified = deps.meetingMessageRegistry.classify({
             threadId,
@@ -378,6 +382,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
             convo.flatMap((message) => (message.id ? [{ id: message.id, role: message.role, content: message.content }] : [])),
           ).canvas
         : null;
+      if (canvasState && canvasState.placements.length > 0) markOutsideContent(threadId);
       const latestUserMessage = [...convo].reverse().find((message) => message.role === "user")?.content ?? "";
       const latestUserMessageId = [...convo].reverse().find((message) => message.role === "user")?.id;
 
@@ -514,9 +519,11 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
                 // answer. Any other access change still ends the turn.
                 if (before === privateAccess && !after.active) privateAccess = after;
               }),
-              onToolActivity: unstable_assistantMessageId
-                ? (a) => setToolActivity(unstable_assistantMessageId, a)
-                : undefined,
+              // Any tool result is outside or personal content, whatever the tool: unknown tools count too.
+              onToolActivity: (activity) => {
+                markOutsideContent(threadId);
+                if (unstable_assistantMessageId) setToolActivity(unstable_assistantMessageId, activity);
+              },
             })) {
               assertTurn();
               yield { content: [{ type: "text", text }] };
