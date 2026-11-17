@@ -52,3 +52,12 @@ test("the choice is remembered for that note and for no other", async () => {
   expect(other.querySelectorAll("img")).toHaveLength(0);
   expect(other.textContent).toContain("Load images from one.example?");
 });
+
+test("the held-back line says who will see it and what the addresses can hold, and is read aloud as written", async () => {
+  const host = await render(NOTE, "note-words");
+  const row = host.querySelector<HTMLElement>(".nt-fmd-images")!;
+  const line = "Load images from one.example? That site will see that you opened this note, and the image addresses can include text from the note.";
+  expect(row.querySelector("span")!.textContent).toBe(line);
+  expect(row.getAttribute("aria-label")).toBe(line);
+  expect(row.querySelector("button")!.textContent?.trim()).toBe("Allow");
+});

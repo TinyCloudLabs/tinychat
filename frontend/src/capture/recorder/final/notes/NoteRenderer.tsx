@@ -13,6 +13,9 @@ type Rendered =
 /** The sites the owner allowed images from, per note, for as long as the app stays open. Nothing is stored. */
 const allowedByNote = new Map<string, Set<string>>();
 
+/** The line above a note that holds back a site's images; the same words are read aloud. */
+const imagesLine = (host: string) => `Load images from ${host}? That site will see that you opened this note, and the image addresses can include text from the note.`;
+
 /**
  * The note as rendered Markdown, drawn once the lazy renderer has loaded. With `onMoment`, each moment's time is a button
  * that calls it with the seconds. Every note is treated as untrusted: its images are not loaded until the owner taps
@@ -82,8 +85,8 @@ export function NoteRenderer({
   return (
     <>
       {blocked.map((host) => (
-        <p key={host} className="nt-fmd-images" role="group" aria-label={`Load images from ${host}?`}>
-          <span>Load images from {host}? It will see that you opened this note.</span>
+        <p key={host} className="nt-fmd-images" role="group" aria-label={imagesLine(host)}>
+          <span>{imagesLine(host)}</span>
           <button type="button" className="nt-retry" onClick={() => allow(host)}>
             Allow
           </button>
