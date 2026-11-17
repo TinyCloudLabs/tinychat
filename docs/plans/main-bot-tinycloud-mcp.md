@@ -13,7 +13,8 @@ which makes it a chat box. This plan gives it three capabilities, each opt-in pe
 
 All three follow the same rules: the sandbox never holds a credential and never has a network, the gateway holds
 every credential and makes every outside call, the owner sees and controls each one, each has budgets, the audit log
-holds counts and never content, and the owner can revoke each at any time.
+holds counts and never content, and the owner can turn each off at any time. For TinyCloud data, turning it off ends
+Main's use of the access, not the delegation underneath, until decision 2 (section 2).
 
 ## Today
 
@@ -130,8 +131,11 @@ authority or return secrets:
   `tinycloud_sql_execute`, `tinycloud_apps_write`, `tinycloud_apps_query`, `tinycloud_apps_context`,
   `tinycloud_account_applications_list`. A write phase needs its own plan and its own approval copy.
 
-The delegation is the real limit: the owner picks the space and prefixes or databases when approving, and the node
-refuses anything outside them. The gateway's list is a second layer, not the first. Build confirms that
+**Once decision 2 is built**, the delegation is the real limit: the owner picks the space and prefixes or databases when
+approving, and the node refuses anything outside them. Until then it is not: under the shared tenant, delegations the
+owner approved for other MCP clients are usable by Main (section 2), so the gateway's list and budgets are the only
+limit Main has, and nothing in this design ships without decision 2. The gateway's list is a second layer, not the
+first. Build confirms that
 `tinycloud_sql_query` is held read-only by the node's delegation (a read-only database permission) and not only by the
 tool's name.
 
@@ -349,7 +353,8 @@ argument conditions, and filters `tools/list` responses, including per SSE event
 - The outbound network code for web fetch and for MCP upstreams: the checked-address connect, the redirect re-check
   (the proxy does not follow redirects, so each hop is a new request through it) and the address deny list.
 - Egress audit lines for those destinations.
-- Holding static third-party keys (search provider) in the gateway: it would hold a proxy token instead.
+- Holding static third-party keys (search provider) in the gateway: it would hold a proxy token instead. This exists
+  only in MITM mode, which changes the trust (next section).
 
 ### What we still build
 
@@ -359,7 +364,8 @@ argument conditions, and filters `tools/list` responses, including per SSE event
 - URL policy the proxy does not express: no user info, ports 80 and 443 only, scheme rules.
 - Response policy: size cap, content-type limits, magic-number check, HTML to text, the untrusted-content wrapper.
 - Tool pinning (name, description and schema hashes) and the owner-facing flows.
-- Our own SSRF checks stay as the inner ring, so the proxy is an outer ring, not the only one.
+- The gateway's own SSRF guard is always built and always on, whichever hop is chosen (decision 7). A hop is an added
+  outer ring, never a replacement for it.
 
 ### Two ways to place it
 
@@ -368,7 +374,8 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   every outside call, and web fetch would run in the sandbox.
 - **B. As the gateway's outer ring.** The gateway has no direct internet: it sits on a network whose only route out is
   the proxy. The proxy enforces the allowlist and the full deny list at dial time and writes the audit. The gateway
-  trusts the proxy's CA only in MITM mode (next section). If iron-proxy is used at all, this is the placement.
+  trusts the proxy's CA only in MITM mode (next section). In MITM mode this is not a smaller-trust ring: the proxy
+  joins the gateway's trust boundary. If iron-proxy is used at all, this is the placement.
 
 ### MITM or passthrough: the trust difference
 
@@ -380,8 +387,10 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   never sees a token or a page. The host allowlist and the dial-time deny list still apply (reported from a trial of an
   older release; the spike confirms). Path, secret-swap and MCP transforms are lost, which costs little because the
   gateway already does MCP policy and holds the tokens, and static keys then stay in the gateway.
-- **Leaning:** passthrough, unless the spike shows a need for interception. The spike decides, and the card states the
-  difference so the owner of the decision sees it.
+- **Leaning:** passthrough, unless the spike shows a need for interception. The spike compares both. If interception is
+  kept anyway (for the secret swap or MCP transforms), the card must say so plainly: the proxy joins the gateway's trust
+  boundary, it holds the CA key and sees every token and page, and any static key moved into it is exposed to the
+  proxy's supply chain (one dominant maintainer, unsigned images).
 
 ### Deployment in the CVM (if iron-proxy is chosen; the same network rules apply to any dial-out hop)
 
@@ -391,8 +400,10 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   ingress by its compose address. The proxy and the gateway get a dedicated network with neither ingress nor any other
   service on it, and the deny list covers the Docker subnets. The sandbox never reaches it.
 - **The tunnel has no authentication** (`Proxy-Authorization` is not checked and SOCKS5 is no-auth). Anything that can
-  reach its port can use it. So it listens only on a network that holds the gateway and the proxy and nothing else, is
-  never published, and no other service joins that network. On a shared host a local user could otherwise use it.
+  reach its port can use it. So **`bots-gateway` is the only container that can reach `bots-egress`, now and in any
+  later change**: it listens only on a network that holds the gateway and the proxy and nothing else, is never
+  published, and no other service joins that network (a later service joining it, or a published port, breaks the
+  rule). On a shared host a local user could otherwise use it. The spike checks that another container is refused.
 - **Fail closed.** The gateway has no direct route, so if the proxy is down a fetch is refused, never sent direct.
 - **Management and metrics listeners.** The management API (`/v1/reload`) is off by default; if enabled, bind it to
   loopback and keep its bearer in the proxy only. A trial found the metrics listener defaulting to `:9090` on all
@@ -465,15 +476,18 @@ iron-proxy, the rest apply to either):
 1. The gateway's HTTP client reaches a test origin through the proxy's CONNECT listener, first in `sni-only`
    passthrough and then, if interception is wanted, with the proxy's CA, streaming an SSE response without buffering,
    and an MCP Streamable HTTP server through it. Decide MITM or passthrough here.
-2. A rebinding name, a name resolving to each private range, an IPv4-mapped and a NAT64 address, and a decimal-form
-   literal are each refused at dial time with the full deny list configured.
+2. A rebinding name, a name resolving to each private range, each embedded or tunnelled form (IPv4-mapped, `::a.b.c.d`,
+   NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`, 6to4 `2002::/16`, Teredo `2001::/32`, site-local `fec0::/10`) and a
+   decimal-form literal are each refused at dial time. Through a CONNECT hop the proxy resolves the name again, so the
+   gateway's connect-to-the-checked-address does not extend through it: both the proxy and the gateway carry the full
+   deny list, and the test runs against each.
 3. A redirect to a denied address ends the fetch.
 4. The audit line for a request carries no secret, body or token, and shows the swap for a static key.
 5. Added latency per call, and memory over a 24-hour run.
 6. Whether per-owner tokens can be handled by `file` plus reload or by a `grpc` transform without per-grant restarts; if
    not, they stay in the gateway as designed.
-7. With the proxy stopped, a fetch is refused and nothing goes direct; from any container but the gateway the tunnel
-   is unreachable.
+7. With the proxy stopped, a fetch is refused and nothing goes direct; from any container but the gateway (one on the
+   same compose project, one on the host network) the tunnel is unreachable.
 8. The log carries no fetched path or query in the form we ship, and the 30 s header timeout is raised and exercised.
 
 ## Build order
@@ -488,7 +502,8 @@ iron-proxy, the rest apply to either):
 3. **Owner-added servers.** Adds the server registry, discovery, the credential flows, tool pinning and the settings
    list. The guard from phase 2 is a prerequisite, so this cannot be built before it.
 
-The egress spike (above) runs before phase 3 starts and decides the dial-out hop for owner-added servers. Each phase
+The egress spike (above) runs before phase 3 starts and decides the dial-out hop for owner-added servers. The gateway's
+own guard is built in phase 2 whatever it decides. Each phase
 ships behind the existing test-account flag and does not change the others.
 
 ## Decisions for the owner of each system (named, not designed here)
