@@ -44,3 +44,11 @@
 
 /s/*
   Referrer-Policy: no-referrer
+# Share links open in the app (TC-3195): iOS universal links (Release entitlement applinks:tinycloud.one) and Android
+# App Links (autoVerify on https://tinycloud.one/s/). Both verifiers want JSON, served without a redirect.
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+  Cache-Control: public, max-age=3600
+/.well-known/assetlinks.json
+  Content-Type: application/json
+  Cache-Control: public, max-age=3600
