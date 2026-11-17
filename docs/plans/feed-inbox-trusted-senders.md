@@ -49,7 +49,7 @@ No `admin` and no `schema`: the owner creates the databases and their tables whe
 
 What "append-only" means here, honestly: the sender can add cards, publish new revisions of its own, and (because `write` is not create-only) edit or delete its own rows. It cannot read, edit or delete anything else. If the owner wants strict append-only, that needs a node ability (TC-2041); until then the control is the per-sender database, and a deleted card simply disappears from the owner's feed. Decision 3 asks whether that is acceptable.
 
-**Expiry and renewal.** The grant ends at its signed expiry, at most the owner's session window (about 30 days today; the agent grant uses 29). For a standing inbox that means the owner would re-sign monthly unless the app renews it when the owner opens it. Decision 2 asks which: no silent renewal (consistent with the stricter stance in the Main bot plan, the owner re-signs and sees what renews) or renewal of this send-only grant when the owner opens the app.
+**Expiry and renewal.** The grant ends at its signed expiry, at most the owner's session window (about 30 days today; the agent grant uses 29). For a standing inbox that means the owner would re-sign about monthly unless the grant is renewed some other way. How any standing grant renews is part of the owner's separate renewal discussion (where the renewal logic lives, and how little the sign-in service has to do for it); this plan does not decide it, and **proposes no OpenKey renewal work**. Until that discussion settles, this plan assumes only today's behaviour: the owner re-signs when the grant expires, and the sender list shows the expiry. Decision 2 is held for that discussion.
 
 **Revocation.** The owner's app records each delegation's CID in the source's registry row and calls `revokeDelegation(cid)` on Remove or Block. If the CID is missing (an older or imported grant), Remove falls back to the signed expiry and says when that is. Revoking stops new writes; it does not by itself touch rows already in the database (section 4).
 
@@ -108,7 +108,7 @@ What changes in the data model, small and additive:
 1. Whether the node permits a sender's delegation to target exactly one SQL resource and no other (the design relies on it; the shipped bot grants used KV prefixes).
 2. Whether an agent acting for a person can instead receive a sub-delegation from the person; this plan avoids needing it.
 3. Whether a per-delegation write cap or a create-only ability can be added in the node (a node ticket, TC-2041 for create-only).
-4. The delegation lifetime ceiling and renewal path for a standing send-only grant (the 30-day session window is today's limit).
+4. The delegation lifetime ceiling and the renewal path for a standing send-only grant (the 30-day session window is today's limit). Held for the owner's renewal discussion; no OpenKey renewal work is proposed here.
 5. Which OpenKey flow shows the approval when the owner signs a grant to someone else's DID, and whether it needs the cross-app warning screen (the owner's own feed space is TinyChat's prefix, so it may not).
 6. Whether the owner's registry can hold the CID, the `principal` label and the sender state (mute, block, wake) in the existing registry tables or needs a new table.
 
@@ -124,7 +124,7 @@ What changes in the data model, small and additive:
 ## Decisions for the owner
 
 1. **Who may be invited.** Anyone the owner chooses by link or DID (this plan), or only people already in the owner's address book or in a shared team.
-2. **Standing grant renewal.** The owner re-signs about monthly with no silent renewal, or this send-only grant renews when the owner opens the app, with the expiry shown in the sender list.
+2. **Standing grant renewal. Held: it sits under the owner's renewal discussion, and this plan proposes no OpenKey renewal work.** The only question left for this plan is what the sender list shows meanwhile: the expiry, and a prompt to re-sign when it has passed.
 3. **Edit and delete by the sender.** Accept that a sender can edit or delete its own cards (no create-only ability today), or hold the feature until the node adds one.
 4. **Replies to a person.** Default send-only (this plan) with replies per sender, or replies on by default for people the owner invites.
 5. **Remote media from senders.** Load only after a tap for any sender who is not the owner's own agent (this plan), or load as for connected agents.
