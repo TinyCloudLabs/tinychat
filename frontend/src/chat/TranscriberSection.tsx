@@ -437,7 +437,7 @@ function UnavailableRow(props: { id: string; deleting: boolean; busy: boolean; o
         <span className="block truncate font-mono text-xs">{props.id}</span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
           {props.deleting
-            ? "Deleting… this isn't finished yet. We keep retrying until it's confirmed gone."
+            ? "Being deleted. We keep trying until it's gone."
             : "Could not be read right now."}
         </span>
       </div>

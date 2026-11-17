@@ -316,6 +316,13 @@ describe("TranscriberView", () => {
     expect(html).toContain(">Remove<");
   });
 
+  test("a recording whose delete is not confirmed yet says it is being deleted, never that it is gone", () => {
+    const html = render({ meetings: [{ id: "mtg_x", unavailable: true, deleting: true }] });
+    expect(html).toContain("Being deleted. We keep trying until it&#x27;s gone.");
+    expect(html).toContain(">Try again<");
+    expect(html).not.toContain("Could not be read");
+  });
+
   test("an open transcript renders speaker-attributed segments with timestamps", () => {
     const html = render({
       meetings: [meeting({ status: "completed" })],
