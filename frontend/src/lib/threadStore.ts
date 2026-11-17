@@ -821,17 +821,22 @@ export function getMemoryMarked(tcw: TinyCloudWeb): Promise<boolean> {
   const read = (async () => {
     await null; // the promise is registered before this body can fail
     try {
-      const res = await store(tcw, scope).query("SELECT id, content FROM memory WHERE id IN (?, ?)", [MEMORY_MARK_ROW_ID, MEMORY_ROW_ID]);
+      const res = await store(tcw, scope).query("SELECT id, content FROM memory WHERE id IN (?, ?, ?)", [MEMORY_MARK_ROW_ID, MEMORY_ROW_ID, MEMORY_BACKUP_ROW_ID]);
       if (!res.ok) throw new SqlOpError(res.error, "getMemoryMarked", scope);
       let mark: string | null = null;
       let doc: string | null = null;
+      let backup: string | null = null;
       for (const row of res.data.rows) {
         const id = cellStr(row, 0, "");
         if (id === MEMORY_MARK_ROW_ID) mark = cellStr(row, 1, "");
         else if (id === MEMORY_ROW_ID) doc = cellStr(row, 1, "");
+        else if (id === MEMORY_BACKUP_ROW_ID) backup = cellStr(row, 1, "");
       }
-      // "0" is the only value that says clean; anything else on the marker row, or no marker beside real content, is marked.
-      const marked = mark !== null ? mark !== "0" : !memoryDocIsEmpty(doc);
+      // getMemory serves the last-known-good backup when the live doc is blank. That text has no record of where it came
+      // from, so a restore counts as marked. Otherwise "0" is the only value that says clean; anything else on the
+      // marker row, or no marker beside real content, is marked.
+      const restoresBackup = (doc ?? "").trim().length === 0 && (backup ?? "").trim().length > 0;
+      const marked = restoresBackup || (mark !== null ? mark !== "0" : !memoryDocIsEmpty(doc));
       rememberMemoryMark(tcw, marked);
       return marked;
     } catch {

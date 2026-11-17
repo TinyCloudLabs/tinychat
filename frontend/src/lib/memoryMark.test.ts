@@ -104,3 +104,11 @@ test("an empty or template memory has nothing to carry: clean, and a clean write
   expect(await getMemoryMarked(stored.session())).toBe(false);
   expect(stored.sqlite.query("SELECT content FROM memory WHERE id = 'user_context_marked'").values()).toEqual([["0"]]);
 });
+
+test("when the live memory is blank and the last-known-good backup is served in its place, the restore counts as marked", async () => {
+  const stored = account();
+  await setMemory(stored.session(), "- likes tea");
+  await setMemory(stored.session(), ""); // the owner blanks it; the previous doc is kept as the backup
+  expect(await getMemory(stored.session())).toBe("- likes tea"); // the backup is what a chat would load
+  expect(await getMemoryMarked(stored.session())).toBe(true);
+});
