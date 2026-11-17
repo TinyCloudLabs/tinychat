@@ -786,6 +786,8 @@ const exoMailbox = load("./exo/mailbox.ts");
 const exoGrant = load("./routes/exo-grant.ts");
 const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes/assemblyai-hosted.ts");
 const { createPrivateCloudTranscriptionRouter } = load("./routes/private-cloud-transcription.ts");
+const transcriberRoutes = load("./routes/transcriber.ts");
+const privateCloudPurge = load("./services/private-cloud-purge.ts");
 
 interface Boot {
   url: string | null;
@@ -864,6 +866,8 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     },
     "./services/private-cloud-transcription.js": privateCloud,
     "./routes/private-cloud-transcription.js": { createPrivateCloudTranscriptionRouter },
+    "./routes/transcriber.js": transcriberRoutes,
+    "./services/private-cloud-purge.js": privateCloudPurge,
     "./services/assemblyai-hosted.js": { ...hosted, HostedUploadStore: class {
       init() { return Promise.resolve(); }
       shutdown() { return stop.hosted?.() ?? Promise.resolve(); }
@@ -1446,6 +1450,38 @@ describe("TC-959 backend request contract", () => {
       expect(events(boot).find(event => event.event === "tinychat_request")).toMatchObject({
         request_id: id, correlation_id: correlation, status: 503,
       });
+    } finally {
+      server.closeAllConnections();
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
+  test("private cloud on and the meeting transcriber off still mounts the bulk delete, behind auth (TC-3166)", async () => {
+    const upstream = express();
+    const listed: string[] = [];
+    upstream.get("/v1/transcriptions", (req, res) => {
+      listed.push(String(req.query.limit));
+      res.status(200).json({ data: [] });
+    });
+    const listening = Promise.withResolvers<void>();
+    const server = upstream.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Synthetic batch did not listen");
+    const boot = await bootIndex({ ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${address.port}` });
+    try {
+      const anonymous = await fetch(boot.url! + "/api/transcriber/meetings", { method: "DELETE" });
+      expect(anonymous.status).toBe(401);
+      const response = await fetch(boot.url! + "/api/transcriber/meetings", { method: "DELETE", headers: { authorization: "Bearer test-session" } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 });
+      expect(listed).toEqual(["50"]);
+      const scope = await fetch(boot.url! + "/api/transcriber/meetings/scope", { headers: { authorization: "Bearer test-session" } });
+      expect(scope.status).toBe(200);
+      expect(await scope.json()).toEqual({ privateCloud: true });
+      expect((await fetch(boot.url! + "/api/transcriber/meetings/scope")).status).toBe(401);
     } finally {
       server.closeAllConnections();
       const closed = Promise.withResolvers<void>();

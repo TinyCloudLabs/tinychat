@@ -146,11 +146,18 @@ export interface TranscriberClient {
    */
   remove(id: string): Promise<TranscriberResult<{ deleting: boolean; notDeleted: boolean }>>;
   /**
-   * Removes every recording this account holds, including the provider's copies. `deleting` counts those still
-   * being retried; `listOnly` (shared with this account) and `notDeleted` (own entries the provider did not
-   * attribute to it) were only dropped from the list. Both are subsets of `removed`.
+   * Removes every recording this account holds, including the provider's copies, and (TC-3166) every private cloud
+   * transcription job (voice notes and uploads). `deleting` counts meeting recordings still being retried; `listOnly`
+   * (shared with this account) and `notDeleted` (own entries the provider did not attribute to it) were only dropped
+   * from the list. Both are subsets of `removed`. `privateCloudDeleted` counts the jobs deleted and read back gone,
+   * or is `null` when the deployment does not use that service (the step then says nothing about it).
    */
-  removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number; listOnly: number; notDeleted: number }>>;
+  removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number | null }>>;
+  /**
+   * TC-3166: whether the deployment keeps private cloud transcription jobs (voice notes and uploads), from config only.
+   * `feature-dark` means neither the meeting transcriber nor private cloud transcription is on.
+   */
+  scope(): Promise<TranscriberResult<{ privateCloud: boolean }>>;
 }
 
 export function createTranscriberClient(
@@ -238,6 +245,16 @@ export function createTranscriberClient(
 
   return {
     list: () => request("", { method: "GET", missing: "feature-dark" }),
+    scope: () =>
+      request<{ privateCloud: boolean }>("/scope", {
+        method: "GET",
+        missing: "feature-dark",
+        read: async (response) => {
+          const { privateCloud } = (await response.json()) as { privateCloud?: unknown };
+          if (typeof privateCloud !== "boolean") throw new Error("incomplete_scope_response");
+          return { privateCloud };
+        },
+      }),
     create: (input, options) => request("", {
       method: "POST",
       body: input,
@@ -274,18 +291,22 @@ export function createTranscriberClient(
         },
       }),
     removeAll: () =>
-      request<{ removed: number; deleting: number; listOnly: number; notDeleted: number }>("", {
+      request<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number | null }>("", {
         method: "DELETE",
         missing: "feature-dark",
-        // A backend that predates `listOnly`/`notDeleted` cannot say which removals were really deleted, so a
+        // A backend that predates `listOnly`/`notDeleted`/`privateCloudDeleted` cannot say which removals were really
+        // deleted, or whether voice notes and uploads were checked (`null` says it did not use that service), so a
         // missing field is a rejected response (the step shows "couldn't finish"), never a guess.
         read: async (response) => {
-          const body = (await response.json()) as Record<"removed" | "deleting" | "listOnly" | "notDeleted", unknown>;
-          const { removed, deleting, listOnly, notDeleted } = body;
-          if (typeof removed !== "number" || typeof deleting !== "number" || typeof listOnly !== "number" || typeof notDeleted !== "number") {
+          const body = (await response.json()) as Record<"removed" | "deleting" | "listOnly" | "notDeleted" | "privateCloudDeleted", unknown>;
+          const { removed, deleting, listOnly, notDeleted, privateCloudDeleted } = body;
+          if (
+            typeof removed !== "number" || typeof deleting !== "number" || typeof listOnly !== "number"
+            || typeof notDeleted !== "number" || (typeof privateCloudDeleted !== "number" && privateCloudDeleted !== null)
+          ) {
             throw new Error("incomplete_bulk_delete_response");
           }
-          return { removed, deleting, listOnly, notDeleted };
+          return { removed, deleting, listOnly, notDeleted, privateCloudDeleted };
         },
       }),
   };
