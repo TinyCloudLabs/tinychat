@@ -448,10 +448,9 @@ test("a typed question's foot is one row (Ask me later, Drop this card, Details)
   expect(comment.compareDocumentPosition(foot!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // The context sits in its panel above the options, then the card's timing line (this fixture expires).
   const options = article.querySelector("fieldset");
-  const why = [...article.querySelectorAll("strong")].find((node) => node.textContent === "Why now: ");
+  const why = [...article.querySelectorAll("span")].find((node) => node.textContent === "Why now");
   expect(why && options && why.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const expiry = [...article.querySelectorAll("p")].find((node) => node.textContent?.startsWith("Expires "));
-  expect(expiry && options && expiry.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(options?.textContent).toContain("Expires ");
 });
 
 test("Accept recommendation and Drop this card wait under Undo before anything is written", async () => {
@@ -603,7 +602,7 @@ test("a tapped typed option counts down in its own row, Undo there writes nothin
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
   await act(async () => option(article, "Quick option").click());
-  expect(answers(article)?.textContent).toContain("Sending · 5s");
+  expect(answers(article)?.textContent).toContain("Sends in 5s");
   expect(undoPill(article)).toBeNull();
   await act(async () => button(answers(article)!, "Undo").click());
   await timer.advance(10_000);

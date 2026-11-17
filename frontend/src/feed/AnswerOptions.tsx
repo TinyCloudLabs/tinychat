@@ -66,7 +66,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
     if (event.key !== "Escape" || !pending) return;
     event.preventDefault(); undo();
   }
-  const status = pending && waitingLabel ? `Sends in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
+  const status = pending && waitingLabel ? `${waitingLabel} sends in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
   // The legend and the note share a line while they fit and stack when they don't: both float, the buttons clear them.
   return <fieldset className="text-sm" onKeyDown={escape}>
     <legend className="float-left mb-2 mr-3 p-0 text-xs font-medium leading-4 text-muted-foreground">Choose an option</legend>
