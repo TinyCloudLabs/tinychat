@@ -88,6 +88,30 @@ describe("note renderer", () => {
     expect(showAllowedImages(html, new Set(["evil.example"]))).not.toMatch(/<img\b/);
   });
 
+  // A backstop for the engine: if an upgrade starts drawing a new embed, this fails instead of the note loading it.
+  test("whatever Markdown a note holds, the rendered output has nothing the browser would fetch on its own", async () => {
+    const corpus = [
+      "![inline](https://evil.example/a.png?d=1)",
+      "![ref][r]\n\n[r]: https://evil.example/ref.png",
+      "[![linked](https://evil.example/b.png)](https://evil.example/target)",
+      "https://evil.example/autolinked.png",
+      "<https://evil.example/angle.png>",
+      "![data uri](data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)",
+      "![proto relative](//evil.example/c.png)",
+      "<img src=https://evil.example/raw.png>\n\n<video src=https://evil.example/v.mp4 poster=https://evil.example/p.png></video>\n\n<source srcset=https://evil.example/s.png>\n\n<iframe src=https://evil.example/f></iframe>\n\n<object data=https://evil.example/o></object>\n\n<div style=\"background:url(https://evil.example/bg.png)\">x</div>",
+      "[link](https://evil.example/page) and ![x](<https://evil.example/space in.png>)",
+    ].join("\n\n");
+    const html = await renderNoteHtml(corpus);
+    // Escaped raw HTML shows as text, so look at real tags only.
+    const tags = html.match(/<[a-z][^>]*>/gi) ?? [];
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) {
+      expect(tag).not.toMatch(/^<(img|picture|source|video|audio|iframe|object|embed|link|style|script|svg)\b/i);
+      expect(tag).not.toMatch(/\s(src|srcset|poster|data|background|style|ping|action|formaction)=/i);
+      expect(tag).not.toMatch(/url\(/i);
+    }
+  });
+
   test("an output without main.fmd is an error, not an empty note", () => {
     expect(() => extractMain("<html></html>")).toThrow("main");
   });
