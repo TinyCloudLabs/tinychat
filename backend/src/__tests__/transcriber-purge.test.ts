@@ -10,7 +10,7 @@ import express from "express";
 import { createTranscriberRouter } from "../routes/transcriber.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
 import { PurgeSweeper, purgeBackoffMs } from "../services/transcriber-purge.js";
-import { TranscriptionApiError, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
+import { createTranscriptionApiClient, TranscriptionApiError, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
 
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -207,5 +207,54 @@ describe("DELETE / (the step before account deletion)", () => {
     });
     expect([...h.ptx.store.keys()].sort()).toEqual(["mtg_bare", "mtg_foreign"]); // only the confirmed own one was deleted
     expect(await h.index.list(OWNER)).toEqual([]);
+  });
+});
+
+// The attribution the purge relies on must hold end to end: the stamp this router sends on create is the one
+// it reads back on Remove. Real transcription client against a wire-level fake that, like ptx, stores the
+// request's metadata and returns it on every read; nothing here is injected as a pre-stamped meeting.
+describe("the stamp written on create is the stamp Remove reads back", () => {
+  test("a recording created through the router is attributed to its creator, deleted at the provider, and read back gone", async () => {
+    const wire = new Map<string, Record<string, unknown>>();
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const { pathname } = new URL(String(url));
+      const method = init?.method ?? "GET";
+      seen.push(`${method} ${pathname}`);
+      const notFound = () => Response.json({ error: { code: "meeting_not_found", message: "no such meeting" } }, { status: 404 });
+      if (method === "POST" && pathname === "/v1/meetings") {
+        const body = JSON.parse(String(init?.body)) as { meeting_url: string; metadata?: Record<string, unknown> };
+        const meeting = { id: "mtg_wire", object: "meeting", status: "queued", platform: "jitsi", meeting_url: body.meeting_url,
+          created_at: "2026-11-17T10:00:00.000Z", metadata: body.metadata ?? {} };
+        wire.set(meeting.id, meeting);
+        return Response.json(meeting, { status: 201 });
+      }
+      const id = pathname.split("/")[3] ?? "";
+      if (method === "GET") return wire.has(id) ? Response.json(wire.get(id)) : notFound();
+      if (method === "DELETE") {
+        if (!wire.delete(id)) return notFound();
+        return new Response(null, { status: 204 });
+      }
+      return Response.json({ error: { code: "unexpected", message: `${method} ${pathname}` } }, { status: 500 });
+    }) as typeof fetch;
+    const api = createTranscriptionApiClient({ baseUrl: "https://ptx.example", apiKey: "k", fetchImpl, sleep: async () => {} });
+    const index = new MemoryTranscriberIndexStore();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: OWNER }; next(); });
+    app.use("/api/transcriber/meetings", createTranscriberRouter({ api, index, purgeDelaysMs: [0, 0, 0] }));
+    await withServer(app, async (base) => {
+      const created = await fetch(`${base}${BASE}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ meeting_url: "https://meet.jit.si/WireRoom" }),
+      });
+      expect(created.status).toBe(201);
+      expect((wire.get("mtg_wire")?.metadata as { tinychat_address?: string }).tinychat_address).toBe(OWNER);
+      const removed = await fetch(`${base}${BASE}/mtg_wire`, { method: "DELETE" });
+      expect(removed.status).toBe(204); // not 200 not_deleted: the creator is recognised
+    });
+    expect(wire.has("mtg_wire")).toBe(false);
+    expect(seen.filter((s) => s.startsWith("DELETE"))).toEqual(["DELETE /v1/meetings/mtg_wire"]);
+    expect(seen.at(-1)).toBe("GET /v1/meetings/mtg_wire"); // read back after the delete, which found it gone
+    expect(await index.list(OWNER)).toEqual([]);
   });
 });
