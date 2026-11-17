@@ -209,6 +209,14 @@
   color: inherit;
   text-underline-offset: 2px;
 }
+.soft-skin .fmd .note-link-host,
+.soft-skin .fmd .note-image {
+  opacity: 0.7;
+}
+.soft-skin .fmd .note-link-host {
+  font-size: 0.85em;
+  white-space: nowrap;
+}
 .soft-skin .fmd strong {
   font-weight: 700;
 }

