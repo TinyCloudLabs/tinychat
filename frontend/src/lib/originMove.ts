@@ -193,8 +193,14 @@ const deferralEnded = new Set<() => void>();
  * Keeps a held page on this origin until the returned function is called: work that lives only in this page's
  * memory (a chat draft or reply, an unsaved Markdown edit, an OAuth popup waiting to post back here, a sign-in)
  * must finish first. Calling the release twice is harmless. A held page re-checks as soon as the last one ends.
+ *
+ * On a legacy origin it also sets the hold cookie at once, not at the next check: a page that closes with work in
+ * memory (or an undo window running) writes an entry here on its way out, and the edge must not send the next plain
+ * visit on before the app has seen it. The check that finds nothing held clears the cookie again.
  */
-export function deferOriginMove(): () => void {
+export function deferOriginMove(env: { location?: Pick<Location, "hostname">; holdCookie?: (hold: boolean) => void } = {}): () => void {
+  const here = env.location ?? globalThis.location;
+  if (here && isLegacyOrigin(here)) (env.holdCookie ?? setHoldCookie)(true);
   const token = {};
   deferrals.add(token);
   return () => {
@@ -467,8 +473,11 @@ export async function decideOriginMove({
   } catch {
     work = UNKNOWN_WORK;
   }
-  // Unknown counts as held (UNKNOWN_WORK), so a failed check keeps the edge guard too.
-  holdCookie(holdsOriginMove(work));
+  // Unknown counts as held (UNKNOWN_WORK), so a failed check keeps the edge guard too. So does work that lives in this
+  // page for now (a deferral): if the page closes, its flush writes an entry here, and the next plain visit must
+  // still load the app on this origin, not be sent on by the edge, or that entry is never seen. (The next visit that
+  // finds nothing held clears the cookie and moves.)
+  holdCookie(holdsOriginMove(work) || isOriginMoveDeferred());
   if (holdsOriginMove(work)) return { kind: "hold", work };
   const ready = await canonicalReady().catch(() => false);
   return ready ? { kind: "move", url: canonicalUrlFor(location) } : { kind: "stay" };
