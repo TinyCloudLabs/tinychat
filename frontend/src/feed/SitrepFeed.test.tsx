@@ -602,7 +602,7 @@ test("a tapped typed option counts down in its own row, Undo there writes nothin
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
   await act(async () => option(article, "Quick option").click());
-  expect(answers(article)?.textContent).toContain("Sending · 5s");
+  expect(answers(article)?.textContent).toContain("Sends in 5s");
   expect(undoPill(article)).toBeNull();
   await act(async () => button(answers(article)!, "Undo").click());
   await timer.advance(10_000);

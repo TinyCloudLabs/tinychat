@@ -66,7 +66,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
     if (event.key !== "Escape" || !pending) return;
     event.preventDefault(); undo();
   }
-  const status = pending && waitingLabel ? `Sending ${waitingLabel} in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
+  const status = pending && waitingLabel ? `${waitingLabel} sends in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
   // The legend and the note share a line while they fit and stack when they don't: both float, the buttons clear them.
   return <fieldset className="text-sm" onKeyDown={escape}>
     <legend className="float-left mb-2 mr-3 p-0 text-xs font-medium leading-4 text-muted-foreground">Choose an option</legend>
@@ -93,7 +93,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
             shortens; the countdown does. A screen reader hears the full status line below instead. */}
         {held && <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden rounded-xl pl-3.5 pr-2">
           <span aria-hidden className="min-w-0 truncate font-semibold">{option.label}</span>
-          <span aria-hidden className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{pending ? `Sending · ${pending.seconds}s` : "Sending…"}</span>
+          <span aria-hidden className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{pending ? `Sends in ${pending.seconds}s` : "Sending…"}</span>
           {/* Focus moves to Undo when the wait starts, so Enter or Escape undoes from the keyboard. */}
           {pending && <button type="button" autoFocus onClick={undo} className="pointer-events-auto min-h-10 shrink-0 rounded-lg border border-border bg-background px-3 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Undo</button>}
           {pending && <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-foreground motion-safe:animate-out motion-safe:slide-out-to-left motion-safe:ease-linear motion-safe:fill-mode-forwards motion-reduce:hidden" style={{ animationDuration: `${UNDO_SECONDS}s` }} />}
