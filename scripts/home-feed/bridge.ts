@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { ErrorCodes } from "@tinycloud/sdk-services";
@@ -281,10 +281,25 @@ export async function readHomeMirrorBoardRecord(ctx: HomeMirrorContext, binding:
   try { return (await readLegacy(ctx, binding.legacy.kind, binding.legacy.fullKey))?.record; } catch (error) { throw safeFailure(error); }
 }
 
+/**
+ * The revision of an unbound card to publish. Home's newest copy of it decides: a newer revision number than Home
+ * holds goes out as given; the same content as Home's newest keeps its identity (a retry); other content goes out as
+ * the next revision after it, since a published revision cannot change. (A bound card is not asked: the mirror reports
+ * it changed and leaves it.)
+ */
+async function revisionToPublish(ctx: HomeMirrorContext, source: HomeMirrorBinding["source"], card: FeedCard): Promise<FeedCard> {
+  const held = take(await listFeedCards(privateDatabase(ctx.sql.db(source.output.database), ctx))).find((candidate) => candidate.cardId === card.cardId);
+  if (!held || card.revision > held.revision) return card;
+  const content = ({ revision: _revision, issuanceId: _issuanceId, ...rest }: FeedCard): unknown => JSON.parse(JSON.stringify(rest));
+  if (isDeepStrictEqual(content(held), content(card))) return { ...card, revision: held.revision, issuanceId: held.issuanceId };
+  return { ...card, revision: held.revision + 1, issuanceId: randomUUID() };
+}
+
 export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown): Promise<HomeMirrorBinding> {
   try {
     active(ctx);
-    const input = inputSchema.parse(value), identity = identitySchema.parse(tuple(input.card));
+    const input = inputSchema.parse(value);
+    let identity = identitySchema.parse(tuple(input.card));
     const source = await registered(ctx, input.source.sourceId);
     const requestedSource = { sourceId: input.source.sourceId, agentDid: input.source.agentDid, output: input.source.output, responses: input.source.responses };
     if (!isDeepStrictEqual(source, requestedSource) || input.legacy.spaceId !== ctx.legacySpaceId) throw failure();
@@ -295,13 +310,16 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     // (idempotent), and refuses a payload that is neither the board record nor its stripped form.
     const carried = homeMirrorRecord(checked.value, Date.parse(ctx.now()));
     if (!isDeepStrictEqual(typed.record, checked.value) && !isDeepStrictEqual(typed.record, carried)) throw failure();
-    const card: HomeMirrorPublishInput["card"] = { ...input.card, payload: { ...input.card.payload, sitrep: { ...(input.card.payload?.sitrep as object), record: carried } } };
+    let card: HomeMirrorPublishInput["card"] = { ...input.card, payload: { ...input.card.payload, sitrep: { ...(input.card.payload?.sitrep as object), record: carried } } };
     const record = checked.value, body = publication(record, identity.cardId), publicationSha256 = hash(body);
     const owner = privateDatabase(ctx.sql.db(OWNER), ctx);
     const all = (await mirrorRowsFor(ctx, input.legacy.fullKey, { sourceId: source.sourceId, identity })).map((row) => stored(ctx, row));
     const previous = all.find((row) => row.binding.source.sourceId === source.sourceId && sameIdentity(row.binding.identity, identity));
     if (previous && (!isDeepStrictEqual(previous.binding.source, source) || previous.binding.legacy.fullKey !== input.legacy.fullKey || previous.binding.legacy.publicationSha256 !== publicationSha256)) throw failure();
     for (const row of all) if (row.binding.legacy.fullKey === input.legacy.fullKey && (row.binding.source.sourceId !== source.sourceId || row.binding.cardUuid !== identity.cardId)) throw failure();
+    // A card Home holds but the board was never cut over to (no binding) may have been edited since: its revision in
+    // Home is immutable, so its content goes out as the next revision rather than as that one again.
+    if (all.length === 0) { card = await revisionToPublish(ctx, source, card); identity = identitySchema.parse(tuple(card)); }
     // Home is canonical and durable before its mirror is published. No schema is created here.
     take(await publishFeedCard(privateDatabase(ctx.sql.db(source.output.database), ctx), card));
     if (!await currentCard(ctx, source, identity)) throw failure();
