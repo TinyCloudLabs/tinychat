@@ -202,6 +202,30 @@ async function mirrorRows(ctx: HomeMirrorContext): Promise<unknown[][]> {
 export async function homeMirrorBindings(ctx: HomeMirrorContext): Promise<HomeMirrorBinding[]> {
   try { return (await mirrorRows(ctx)).map((row) => stored(ctx, row).binding); } catch (error) { throw safeFailure(error, "binding"); }
 }
+/**
+ * The rows for one board key, plus the row of the issuance in hand when there is one: all a publish or a revise looks at.
+ * With a full read already cached the answer is filtered from it. Otherwise one WHERE-filtered read goes to the node
+ * (the table is read whole only by `mirrorRows`), and its result is never put in the cache: the cache holds the full
+ * table or nothing.
+ */
+async function mirrorRowsFor(ctx: HomeMirrorContext, fullKey: string, issuance?: { sourceId: string; identity: FeedCardIdentity }): Promise<unknown[][]> {
+  if (ctx.cache?.mirrors) {
+    return ctx.cache.mirrors.filter((row) => {
+      const { binding } = stored(ctx, row);
+      return binding.legacy.fullKey === fullKey || (!!issuance && binding.source.sourceId === issuance.sourceId && sameIdentity(binding.identity, issuance.identity));
+    });
+  }
+  const columns = "source_id,card_id,revision,issuance_id,binding_json,close_receipt_json";
+  const byKey = "json_extract(binding_json,'$.legacy.fullKey')=?";
+  const database = privateDatabase(ctx.sql.db(OWNER), ctx);
+  return take(await (issuance
+    ? database.query<unknown>(`SELECT ${columns} FROM feed_sitrep_mirrors WHERE ${byKey} OR (source_id=? AND card_id=? AND revision=? AND issuance_id=?)`, [fullKey, issuance.sourceId, issuance.identity.cardId, issuance.identity.revision, issuance.identity.issuanceId])
+    : database.query<unknown>(`SELECT ${columns} FROM feed_sitrep_mirrors WHERE ${byKey}`, [fullKey]))).rows;
+}
+/** The bindings of one board key (a revise needs only these; the node is asked for just those rows, and nothing is cached). */
+export async function homeMirrorBindingsFor(ctx: HomeMirrorContext, fullKey: string): Promise<HomeMirrorBinding[]> {
+  try { return (await mirrorRowsFor(ctx, fullKey)).map((row) => stored(ctx, row).binding); } catch (error) { throw safeFailure(error, "binding"); }
+}
 /** What a binding records as the board copy's hash, for one record and card UUID. */
 export function homeMirrorPublicationSha256(record: BoardRecord, cardUuid: string): string { return hash(publication(record, cardUuid)); }
 async function currentCard(ctx: HomeMirrorContext, source: HomeMirrorBinding["source"], identity: FeedCardIdentity): Promise<FeedCard | undefined> {
@@ -242,7 +266,7 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     if (!typed || !checked.ok || typed.record.kind !== input.card.kind || !isDeepStrictEqual(typed.record, checked.value) || input.legacy.fullKey !== boardKey(checked.value.kind, checked.value.id)) throw failure();
     const record = checked.value, body = publication(record, identity.cardId), publicationSha256 = hash(body);
     const owner = privateDatabase(ctx.sql.db(OWNER), ctx);
-    const all = (await mirrorRows(ctx)).map((row) => stored(ctx, row));
+    const all = (await mirrorRowsFor(ctx, input.legacy.fullKey, { sourceId: source.sourceId, identity })).map((row) => stored(ctx, row));
     const previous = all.find((row) => row.binding.source.sourceId === source.sourceId && sameIdentity(row.binding.identity, identity));
     if (previous && (!isDeepStrictEqual(previous.binding.source, source) || previous.binding.legacy.fullKey !== input.legacy.fullKey || previous.binding.legacy.publicationSha256 !== publicationSha256)) throw failure();
     for (const row of all) if (row.binding.legacy.fullKey === input.legacy.fullKey && (row.binding.source.sourceId !== source.sourceId || row.binding.cardUuid !== identity.cardId)) throw failure();
