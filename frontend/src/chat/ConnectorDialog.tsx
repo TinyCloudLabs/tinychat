@@ -2447,8 +2447,10 @@ export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null
     case "revoked":
       return null;
     case "no-token":
+      // "TinyChat" is the Google OAuth app's name in the owner's Google account; keep it until the app is renamed in Google Cloud.
       return `We couldn’t read a saved Google connection to revoke — remove TinyChat yourself at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. The rest of the disconnect continues.`;
     case "failed":
+      // "TinyChat" is the Google OAuth app's name in the owner's Google account; keep it until the app is renamed in Google Cloud.
       return `We couldn’t ask Google to revoke this access (${state.message ?? "unknown reason"}), so it may still be live. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. Everything else below still ran.`;
     case "server-unavailable":
       return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyCloud One and retry disconnecting.";
@@ -2651,6 +2653,7 @@ function formatOAuthError(error: OAuthErrorState): string {
       return `Google is rate-limiting us.${retry}${detail}`;
     }
     case "no-refresh-token":
+      // "TinyChat" is the Google OAuth app's name in the owner's Google account; keep it until the app is renamed in Google Cloud.
       return `Google didn’t return the long-lived permission we need to keep syncing. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL} and connect again.`;
     case "connection-not-saved":
       return "Google Meet couldn’t save this connection, so it isn’t connected yet. Connect again to finish setting it up.";
