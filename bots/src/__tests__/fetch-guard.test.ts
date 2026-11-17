@@ -317,6 +317,18 @@ describe("size and time", () => {
     expect(await fetchGuarded("https://a.example.com/", null, w.deps, limits({ totalMs: 70 }))).toEqual({ ok: false, reason: "timeout" });
   });
 
+  test("a connection that opens after the deadline is closed, not left open", async () => {
+    const release = Promise.withResolvers<void>();
+    let destroyed = false;
+    const late: Conn = { write: () => {}, read: () => ({ async *[Symbol.asyncIterator]() {} }), destroy: () => void (destroyed = true) };
+    const deps: GuardDeps = { lookup: async () => [PUBLIC], connect: async () => (await release.promise, late) };
+    expect(await fetchGuarded("https://a.example.com/", null, deps, limits({ totalMs: 30 }))).toEqual({ ok: false, reason: "timeout" });
+    expect(destroyed).toBe(false);
+    release.resolve();
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve(); // lets the late connection's promise settle
+    expect(destroyed).toBe(true);
+  });
+
   test("a lookup or a connection that never answers ends at the deadline", async () => {
     const stuckLookup: GuardDeps = { lookup: () => Promise.withResolvers<string[]>().promise, connect: async () => conn({ parts: [] }, []) };
     expect(await fetchGuarded("https://a.example.com/", null, stuckLookup, limits({ totalMs: 40 }))).toEqual({ ok: false, reason: "timeout" });

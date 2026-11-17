@@ -379,8 +379,13 @@ export async function fetchGuarded(raw: string, allowed: ((host: string) => bool
       if (answers.some(blockedAddress)) return { ok: false, reason: "blocked" };
       const secure = url.protocol === "https:";
       const port = secure ? 443 : 80;
-      const opened = await Promise.race([deps.connect(answers[0]!, port, secure, url.hostname).catch(() => undefined), until]);
-      if (opened === TIMED_OUT) return { ok: false, reason: "timeout" };
+      const pending = deps.connect(answers[0]!, port, secure, url.hostname).catch(() => undefined);
+      const opened = await Promise.race([pending, until]);
+      if (opened === TIMED_OUT) {
+        // A connection that opens after the deadline is closed, so a slow server cannot pin sockets.
+        void pending.then(late => late?.destroy());
+        return { ok: false, reason: "timeout" };
+      }
       if (!opened) return { ok: false, reason: "network" };
       current = opened;
       const result = await hop(opened, url, limits, until).catch((): PageFailure => "network");

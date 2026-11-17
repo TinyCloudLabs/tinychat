@@ -144,7 +144,7 @@ reads as `off`.
   (`BOTS_TEST_FETCH_URL` is a loopback mock for tests). Without `TAVILY_API_KEY` a search answers "isn't available";
   a page read needs no key.
 - Per call, in this order: setting not `off` (and a key, for a search), then for `search` a query of 1 to 200
-  characters, and for `fetch` a readable address (http or https, no user info, port 80 or 443, a real multi-label host
+  characters, and for `fetch` a readable address (http or https, no user info, the scheme's own port (80, 443), a real multi-label host
   name, no IP address, `localhost` or local-only suffix, at most 2,048 characters), on the owner's list when the
   setting is `listed`, and one the bot may read: typed by its owner in a message, or returned by an earlier search or
   page. A listed search is filtered to the owner's sites here, after the provider answers (it asks for 20 results so

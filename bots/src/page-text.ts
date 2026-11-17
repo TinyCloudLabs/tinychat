@@ -36,6 +36,8 @@ export async function htmlToText(html: string, base: URL): Promise<string> {
   const rewriter = new HTMLRewriter()
     .on(SKIPPED, {
       element(element) {
+        // A self-closing <svg/> has no end tag to hook, and asking for one throws.
+        if (!element.canHaveContent) return;
         skipping++;
         element.onEndTag(() => void (skipping = Math.max(0, skipping - 1)));
       },

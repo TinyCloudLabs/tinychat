@@ -77,7 +77,7 @@ export function addressKey(raw: string): string | undefined {
 }
 
 /**
- * A page address the tools may read: http or https, no user info, no port but 80 and 443, a real multi-label host
+ * A page address the tools may read: http or https, no user info, no port but the scheme's own (80 for http, 443 for https), a real multi-label host
  * name (no IP address of either kind, no `localhost`, no local-only suffix), at most 2,048 characters. It does not
  * resolve names, so a name that points at a private address passes: it must never stand in for the dial guard, which
  * resolves every name and refuses any non-public answer (fetch-guard.ts, run by the page reader on every hop).
@@ -92,7 +92,9 @@ export function readableAddress(raw: unknown): URL | undefined {
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
   if (url.username !== "" || url.password !== "") return undefined;
-  if (url.port !== "" && url.port !== "80" && url.port !== "443") return undefined;
+  // Only the scheme's own port: the URL parser drops :80 on http and :443 on https, so any port left is another one
+  // (including https on 80 and http on 443, where the dialled port and the Host header would disagree).
+  if (url.port !== "") return undefined;
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (!host.includes(".") || host.includes(":") || host.startsWith("[")) return undefined;
   if (/^[0-9.]+$/.test(host) || host === "localhost" || /\.(localhost|local|internal|lan|home|corp)$/.test(host)) return undefined;
