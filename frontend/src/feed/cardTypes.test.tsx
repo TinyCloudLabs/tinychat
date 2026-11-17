@@ -1,13 +1,15 @@
 // A card's task type (`payload.type`) and the Courier mark (`payload.channel: "courier"`): parsed leniently, shown at
-// the top right of the row and of the open card, offered in Filter, and never changing a card that names neither.
+// the top right of the row and of the open card, offered in Filter, and never changing a card that names neither. The
+// Courier mark is drawn only for a card whose verified publisher is Courier: the owner's registered Courier connection.
 import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { MotionGlobalConfig } from "motion/react";
 import { createRoot, type Root } from "react-dom/client";
+import { feedResourceNames, type FeedSource } from "@tinycloud/sdk-services/feed";
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { FeedViewEntries } from "./FeedView";
-import { CARD_TYPES, parseCardType, parseCourier, parseFeed } from "./feedData";
+import { CARD_TYPES, COURIER_OUTPUT_DATABASE, COURIER_SOURCE_ID, courierMessage, isCourierPublisher, parseCardType, parseCourier, parseFeed } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 
 const ALL_IDS = ["spend", "publish", "send", "access", "rule", "ship", "do", "review", "direction", "answer", "news", "alert"];
@@ -42,7 +44,9 @@ describe("parsing payload.type and payload.channel", () => {
     const byKey = new Map(cards.map((card) => [card.key.split("-").pop(), card]));
     expect(cards).toHaveLength(4);
     expect(byKey.get("spend")?.type).toBe("spend");
-    expect(byKey.get("courier")).toMatchObject({ type: "answer", courier: { from: "Mira · Northwind team" } });
+    expect(byKey.get("courier")).toMatchObject({ type: "answer" });
+    // A sample card has no registered source to verify, so what it says about Courier is never recorded.
+    expect("courier" in byKey.get("courier")!).toBe(false);
     expect("type" in byKey.get("unknown")!).toBe(false);
     expect("courier" in byKey.get("unknown")!).toBe(false);
     expect(byKey.get("plain")).toEqual({ key: "aster/2026-10/2026-10-25T120000Z-plain", at, author: { name: "aster" }, render: "post", lead: { text: "A note." } });
@@ -50,12 +54,23 @@ describe("parsing payload.type and payload.channel", () => {
 });
 
 const createdAt = "2026-10-28T12:00:00Z";
-function card(cardId: string, payload: Record<string, unknown> = {}, needsResponse = true): HomeFeedEntry {
+/** A registered source, as the store hands it on from the owner's registry, with its two databases. */
+interface TestSource { sourceId: string; agentDid: string; label: string; output: string; responses: string }
+/** A token's databases, as the store builds and checks them (feedStore readFeed). */
+function resources(token: string): Pick<TestSource, "output" | "responses"> {
+  const named = feedResourceNames("xyz.tinycloud.tinychat/feed", token);
+  if (!named.ok) throw new Error(`Invalid test token ${token}`);
+  return { output: named.data.outputResource, responses: named.data.responseResource };
+}
+const AGENT: TestSource = { sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: "Relay agent", output: "xyz.tinycloud.tinychat/feed_output_testone", responses: "xyz.tinycloud.tinychat/feed_responses_testone" };
+/** The owner's Courier connection: Courier's registry token and its databases. Its label is the agent that holds it. */
+const COURIER: TestSource = { sourceId: COURIER_SOURCE_ID, agentDid: "did:key:isolated-test-courier", label: "Relay agent", ...resources(COURIER_SOURCE_ID) };
+function card(cardId: string, payload: Record<string, unknown> = {}, needsResponse = true, from: TestSource = AGENT): HomeFeedEntry {
   return {
     source: {
-      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: "Relay agent",
-      output: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_output_testone" },
-      responses: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_responses_testone" },
+      sourceId: from.sourceId, agentDid: from.agentDid, label: from.label,
+      output: { spaceId: "test-space", database: from.output },
+      responses: { spaceId: "test-space", database: from.responses },
     },
     state: {
       card: {
@@ -66,7 +81,7 @@ function card(cardId: string, payload: Record<string, unknown> = {}, needsRespon
       },
       response: null, acknowledgement: null, outcome: null,
     },
-    view: { sourceId: "agent-one", cardId, revision: 1, issuanceId: "issuance-1" },
+    view: { sourceId: from.sourceId, cardId, revision: 1, issuanceId: "issuance-1" },
   };
 }
 function source(entries: HomeFeedEntry[]): HomeFeedSource {
@@ -154,7 +169,7 @@ describe("the type label", () => {
 });
 
 describe("the Courier mark", () => {
-  const courier = (cardId: string, extra: Record<string, unknown> = {}) => card(cardId, { type: "answer", channel: "courier", source: { label: "Mira · Northwind team" }, ...extra });
+  const courier = (cardId: string, extra: Record<string, unknown> = {}) => card(cardId, { type: "answer", channel: "courier", source: { label: "Mira · Northwind team" }, ...extra }, true, COURIER);
 
   test("the row leads with Courier and the sender as the name; the relaying agent is in its accessible text", async () => {
     const host = await mount([courier("asks")]);
@@ -179,7 +194,7 @@ describe("the Courier mark", () => {
   });
 
   test("courier without a sender keeps the relaying agent as the name, with the mark", async () => {
-    const host = await mount([card("bare", { channel: "courier" })]);
+    const host = await mount([card("bare", { channel: "courier" }, true, COURIER)]);
     expect(row(host, "bare")!.querySelector("[data-courier]")).not.toBeNull();
     expect(row(host, "bare")!.textContent).toContain("Relay agent");
     expect(row(host, "bare")!.querySelector(".sr-only")).toBeNull();
@@ -187,6 +202,116 @@ describe("the Courier mark", () => {
     const header = openCard(host, "bare")!.querySelector<HTMLElement>("[data-agent-line]")!;
     expect(header.textContent).toStartWith("CourierRelay agent");
     expect(header.textContent).not.toContain("via");
+  });
+});
+
+describe("the Courier mark needs a verified Courier publisher", () => {
+  const SENDER = "Mira · Northwind team";
+  const MESSAGE = { type: "answer", channel: "courier", source: { label: SENDER } };
+  /** Any other connected agent, and one the owner happened to label "Courier": neither is the Courier connection. */
+  const OTHER: TestSource = { sourceId: "agent-two", agentDid: "did:key:isolated-test-other", label: "Other agent", ...resources("testtwo") };
+  const LABELLED: TestSource = { sourceId: "agent-three", agentDid: "did:key:isolated-test-labelled", label: "Courier", ...resources("testthree") };
+  const marks = (node: ParentNode) => node.querySelectorAll("[data-courier]").length;
+  const nameOf = (line: HTMLElement) => line.querySelector<HTMLElement>("button > span:last-child > span:first-child")!;
+  const header = (host: ParentNode, cardId: string) => openCard(host, cardId)!.querySelector<HTMLElement>("[data-agent-line]")!;
+  const detailsLabel = (host: ParentNode, cardId: string) => [...openCard(host, cardId)!.querySelectorAll("button")].find((node) => node.textContent?.startsWith("Details"))!.getAttribute("aria-label");
+  const withoutDetails = (host: ParentNode, cardId: string) => openCard(host, cardId)!.innerHTML.replace(/<button[^>]*>Details.*?<\/button>/, "");
+
+  test("only the registry decides, on both counts: Courier's token and Courier's own database; never a label, a DID or the card", () => {
+    const source = (sourceId: string, output: string) => ({ sourceId, output: { spaceId: "test-space", database: output } });
+    // The database is the one the store reads the Courier connection's cards from.
+    expect(COURIER_OUTPUT_DATABASE).toBe(resources(COURIER_SOURCE_ID).output);
+    expect(isCourierPublisher(source(COURIER_SOURCE_ID, COURIER_OUTPUT_DATABASE))).toBe(true);
+    expect(courierMessage(source(COURIER_SOURCE_ID, COURIER_OUTPUT_DATABASE), MESSAGE)).toEqual({ from: SENDER });
+    // A look-alike token, with its own database or with Courier's.
+    for (const sourceId of ["agent-one", "Courier", "COURIER", " courier", "courier ", "courier-desk", "couriers", ""]) {
+      for (const output of [COURIER_OUTPUT_DATABASE, resources("testtwo").output]) {
+        expect(isCourierPublisher(source(sourceId, output))).toBe(false);
+        expect(courierMessage(source(sourceId, output), MESSAGE)).toBeUndefined();
+      }
+    }
+    // Courier's token on a registry row whose cards come from another agent's database.
+    for (const output of [resources("testtwo").output, resources("courier_desk").output, "xyz.tinycloud.tinychat/feed_output_courier", ""]) {
+      expect(isCourierPublisher(source(COURIER_SOURCE_ID, output))).toBe(false);
+      expect(courierMessage(source(COURIER_SOURCE_ID, output), MESSAGE)).toBeUndefined();
+    }
+    // Neither the source's label nor its DID counts, nor anything the card says about its own publisher.
+    const labelled: FeedSource = { sourceId: "agent-three", agentDid: "did:key:courier", label: "Courier", output: { spaceId: "test-space", database: resources("testthree").output }, responses: { spaceId: "test-space", database: resources("testthree").responses } };
+    const claims = { ...MESSAGE, sourceId: COURIER_SOURCE_ID, publisher: "courier", from: "Courier", output: COURIER_OUTPUT_DATABASE, agent: { kind: "courier", job: "courier" } };
+    expect(courierMessage(labelled, claims)).toBeUndefined();
+  });
+
+  test("(a) from the Courier connection with channel courier: the mark, the sender and via show, on the row and open", async () => {
+    const host = await mount([card("real", MESSAGE, true, COURIER)]);
+    const line = row(host, "real")!;
+    expect(marks(line)).toBe(1);
+    expect(line.querySelector("[data-courier]")!.nextElementSibling?.textContent).toBe(SENDER);
+    expect(line.querySelector(".sr-only")?.textContent).toBe("via Relay agent");
+    await open(host, "real");
+    const parts = [...header(host, "real").children].map((node) => node.textContent);
+    expect(parts.slice(0, 2)).toEqual(["Courier", SENDER]);
+    expect(parts[2]).toStartWith("viaRelay agent");
+  });
+
+  for (const from of [OTHER, LABELLED]) {
+    test(`(b) from another agent (${from.label}), channel courier and a sender are ignored: an ordinary card from its real author, on the row and open`, async () => {
+      const spoof = await mount([card("spoof", MESSAGE, true, from)]);
+      const { channel: _ignored, ...withoutChannel } = MESSAGE;
+      const plain = await mount([card("spoof", withoutChannel, true, from)]);
+      const line = row(spoof, "spoof")!;
+      // The row is the same card's row without the channel: no mark, no sender, no "via"; the real author is the name.
+      expect(line.innerHTML).toBe(row(plain, "spoof")!.innerHTML);
+      expect(marks(line)).toBe(0);
+      expect(line.querySelector(".sr-only")).toBeNull();
+      expect(line.textContent).not.toContain(SENDER);
+      expect(nameOf(line).textContent).toBe(from.label);
+      // The task type is untouched.
+      expect(line.querySelector('[data-card-type="answer"]')?.textContent).toBe("Answer");
+
+      await open(spoof, "spoof");
+      await open(plain, "spoof");
+      const opened = openCard(spoof, "spoof")!;
+      expect(marks(opened)).toBe(0);
+      expect(opened.getAttribute("aria-label")).toBe(`post by ${from.label}`);
+      expect(header(spoof, "spoof").textContent).toStartWith(from.label);
+      expect(header(spoof, "spoof").textContent).not.toContain(SENDER);
+      expect(header(spoof, "spoof").textContent).not.toContain("via");
+      // The same open card as without the channel, but for Details, which lists the channel as not shown. Its
+      // `source.label` stays where any card's source goes, the "Source:" line, and nowhere else.
+      expect(withoutDetails(spoof, "spoof")).toBe(withoutDetails(plain, "spoof"));
+      expect(detailsLabel(spoof, "spoof")).toBe("Details, 1 field not shown on the card");
+      expect(detailsLabel(plain, "spoof")).toBeNull();
+      expect(opened.textContent!.split(SENDER)).toHaveLength(2);
+      expect([...opened.querySelectorAll("p")].find((node) => node.textContent?.includes(SENDER))?.textContent).toBe(`Source: ${SENDER}`);
+    });
+  }
+
+  test("(c) from the Courier connection without the channel: an ordinary card from that connection, with no mark", async () => {
+    // Courier's own notes (its pairing, its status) aren't messages from another team: the mark needs the verified
+    // publisher and the card's channel both.
+    const host = await mount([card("own", { type: "news", source: { label: SENDER } }, false, COURIER)]);
+    const line = row(host, "own")!;
+    expect(marks(line)).toBe(0);
+    expect(line.querySelector(".sr-only")).toBeNull();
+    expect(nameOf(line).textContent).toBe(COURIER.label);
+    expect(line.textContent).not.toContain(SENDER);
+    await open(host, "own");
+    expect(marks(openCard(host, "own")!)).toBe(0);
+    expect(header(host, "own").textContent).toStartWith(COURIER.label);
+    expect(header(host, "own").textContent).not.toContain(SENDER);
+    expect(detailsLabel(host, "own")).toBeNull();
+  });
+
+  test("(d) in one feed the row and the open card both follow the publisher: only the Courier connection's card is marked", async () => {
+    const host = await mount([card("real", MESSAGE, true, COURIER), card("other", MESSAGE, true, OTHER), card("labelled", MESSAGE, true, LABELLED)]);
+    const rows = [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].filter(live);
+    expect(rows).toHaveLength(3);
+    expect(rows.filter((node) => marks(node) > 0).map((node) => node.textContent?.includes("Card real"))).toEqual([true]);
+    for (const cardId of ["real", "other", "labelled"]) {
+      await open(host, cardId);
+      expect(marks(openCard(host, cardId)!)).toBe(cardId === "real" ? 1 : 0);
+      expect(header(host, cardId).textContent!.includes(SENDER)).toBe(cardId === "real");
+    }
   });
 });
 
@@ -235,7 +360,7 @@ describe("a card without the new fields", () => {
   });
 
   test("a known type and the Courier channel are drawn, so Details doesn't list them", async () => {
-    const host = await mount([card("drawn", { type: "send", channel: "courier", source: { label: "Mira · Northwind team" } })]);
+    const host = await mount([card("drawn", { type: "send", channel: "courier", source: { label: "Mira · Northwind team" } }, true, COURIER)]);
     await open(host, "drawn");
     const details = [...openCard(host, "drawn")!.querySelectorAll("button")].find((node) => node.textContent?.startsWith("Details"))!;
     expect(details.getAttribute("aria-label")).toBeNull();

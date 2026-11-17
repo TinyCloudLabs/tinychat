@@ -1,16 +1,21 @@
 // The Home feed with every card type (payload.type) and two Courier messages (payload.channel), on made-up cards: one
-// card per type, a Courier question and a Courier update from other teams, and one card that names no type. All of it
-// is invented for the harness; nothing here is anyone's real feed.
+// card per type, a Courier question and a Courier update from other teams, a card that only claims to be a Courier
+// message, and one card that names no type. The two Courier messages come from the Courier connection (the source
+// registered under Courier's token, read from that token's database, held here by Wren), so they carry the mark; the
+// claim comes from Juniper, so it shows as Juniper's own card. All of it is invented for the harness; nothing here is anyone's real feed.
 import { FeedViewEntries } from "@/feed/FeedView";
+import { COURIER_SOURCE_ID } from "@/feed/feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "@/feed/feedStoreTypes";
 import type { HarnessScreen } from "../screen";
 
+type LabAgent = "atlas" | "juniper" | typeof COURIER_SOURCE_ID;
 interface LabCard {
-  id: string; agent: "atlas" | "juniper" | "wren"; title: string; body: string; minutesAgo: number;
+  id: string; agent: LabAgent; title: string; body: string; minutesAgo: number;
   choices?: string[]; payload?: Record<string, unknown>; urgency?: number;
 }
 
-const AGENTS = { atlas: "Atlas", juniper: "Juniper", wren: "Wren" } as const;
+/** Each source's registry label. The Courier connection's is the agent that holds it. */
+const AGENTS: Record<LabAgent, string> = { atlas: "Atlas", juniper: "Juniper", [COURIER_SOURCE_ID]: "Wren" };
 
 const CARDS: LabCard[] = [
   { id: "spend", agent: "atlas", title: "Renew the design tool for a year at the team price?", body: "The monthly plan ends Friday. The yearly plan costs less over twelve months.", minutesAgo: 12, choices: ["Renew yearly", "Stay monthly"], payload: { type: "spend", priority: 1 }, urgency: 3 },
@@ -23,10 +28,12 @@ const CARDS: LabCard[] = [
   { id: "review", agent: "juniper", title: "Review the onboarding screens draft", body: "Four screens. Accept them or say what to change.", minutesAgo: 180, choices: ["Accept", "Ask for changes"], payload: { type: "review" } },
   { id: "direction", agent: "atlas", title: "Which way for the search rewrite?", body: "A keeps the index we have. B starts a new one and is faster later.", minutesAgo: 210, choices: ["A: keep the index", "B: new index"], payload: { type: "direction" } },
   { id: "answer", agent: "juniper", title: "Which address should invoices go to?", body: "The supplier asks for one billing address.", minutesAgo: 240, choices: ["The office", "Home"], payload: { type: "answer" } },
-  { id: "courier-ask", agent: "wren", title: "Can we move Thursday's review to Friday morning?", body: "Our team lead is out on Thursday. Friday 10:00 works for us.", minutesAgo: 20, choices: ["Friday works", "Keep Thursday"], payload: { type: "answer", channel: "courier", source: { label: "Mira · Northwind team" } }, urgency: 2 },
+  { id: "courier-ask", agent: COURIER_SOURCE_ID, title: "Can we move Thursday's review to Friday morning?", body: "Our team lead is out on Thursday. Friday 10:00 works for us.", minutesAgo: 20, choices: ["Friday works", "Keep Thursday"], payload: { type: "answer", channel: "courier", source: { label: "Mira · Northwind team" } }, urgency: 2 },
   { id: "news", agent: "atlas", title: "Nightly backup finished: three spaces checked", body: "Nothing is missing. The next backup runs tonight.", minutesAgo: 40, payload: { type: "news" } },
   { id: "alert", agent: "juniper", title: "Calendar sync stops tomorrow: its sign-in expires", body: "Sign in again in Settings to keep it running.", minutesAgo: 55, payload: { type: "alert" } },
-  { id: "courier-news", agent: "wren", title: "The shared test data is refreshed", body: "Nothing to do. The new set is in the usual folder.", minutesAgo: 80, payload: { type: "news", channel: "courier", source: { label: "Tomas · Harbor team" } } },
+  { id: "courier-news", agent: COURIER_SOURCE_ID, title: "The shared test data is refreshed", body: "Nothing to do. The new set is in the usual folder.", minutesAgo: 80, payload: { type: "news", channel: "courier", source: { label: "Tomas · Harbor team" } } },
+  // A spoof: Juniper writes channel courier and a sender, but isn't the Courier connection, so this is Juniper's card.
+  { id: "courier-spoof", agent: "juniper", title: "Share the team folder with the Northwind team?", body: "Made up to test the rule: this card says it came over Courier from the Northwind team, but Juniper isn't the Courier connection, so it shows as Juniper's own card.", minutesAgo: 25, choices: ["Share it", "No"], payload: { type: "access", channel: "courier", source: { label: "Mira · Northwind team" } } },
   { id: "untyped", agent: "atlas", title: "The weekly digest is ready", body: "A short summary of the week's cards.", minutesAgo: 100 },
 ];
 

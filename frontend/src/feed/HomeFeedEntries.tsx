@@ -5,7 +5,7 @@ import { ChevronRightIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "luci
 import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { HomeCardView } from "./FeedView";
-import { CARD_TYPES, parseCardType, parseCourier, safeUrl, type FeedCard } from "./feedData";
+import { CARD_TYPES, courierMessage, parseCardType, safeUrl, type FeedCard } from "./feedData";
 import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
@@ -138,7 +138,8 @@ function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
       ...(typeof sourceRecord.ref === "string" ? { ref: sourceRecord.ref } : {}),
     } } : {}),
     ...(parseCardType(payload.type) ? { type: parseCardType(payload.type)! } : {}),
-    ...(parseCourier(payload) ? { courier: parseCourier(payload)! } : {}),
+    // The Courier mark only for the owner's Courier connection; from any other agent `payload.channel` is ignored.
+    ...(courierMessage(entry.source, payload) ? { courier: courierMessage(entry.source, payload)! } : {}),
   };
 }
 function ReportLink({ entry }: { entry: HomeFeedEntry }) {
@@ -317,7 +318,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     {/* The card's foot, one row, Details alone in the bottom-right corner: a decision has Ask me later and Drop this
         card; an update has Acknowledge and Show me later, then Comment beside Details. Drop, Acknowledge and the later
         times take the card away with the undo bar at the bottom. */}
-    <div className="border-t border-border pt-2"><CardDetails card={entry.state.card} agent={entry.source.label}
+    <div className="border-t border-border pt-2"><CardDetails card={entry.state.card} agent={entry.source.label} publisher={entry.source}
       close={closed || stale ? undefined : info ? { kind: "acknowledge", onTap: () => foot.onClose("acknowledge") } : attention ? { kind: "drop", onTap: () => foot.onClose("drop") } : undefined}
       actions={<>
         {!info && saved && !asking && <button type="button" className={footActionClass} onClick={() => setFollowup(true)}>Change answer</button>}
@@ -939,7 +940,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const replies = repliesOf(entry);
     const status = statusOf(entry, author);
     const type = parseCardType(entry.state.card.payload?.type);
-    const courier = parseCourier(entry.state.card.payload);
+    const courier = courierMessage(entry.source, entry.state.card.payload);
     return <CompactCard layout={viewMode === "cards" ? "tile" : "row"} agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt}
       title={entry.state.card.title} description={describe(entry)} now={clock} onOpen={() => openCard(entry)}
       {...(priority !== undefined ? { priority } : {})} {...(replies ? { replies } : {})} {...(status ? { status } : {})} {...(due ? { due } : {})}
@@ -999,7 +1000,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
           ? <><p role="status" className="mt-3.5 text-sm text-muted-foreground">Open Details to see this card's content, exactly as {author.name} sent it.</p>
-            <div className="mt-3 border-t border-border pt-2"><CardDetails card={entry.state.card} typed={{}} agent={author.name}>
+            <div className="mt-3 border-t border-border pt-2"><CardDetails card={entry.state.card} typed={{}} agent={author.name} publisher={entry.source}>
               <CardFacts entry={entry} reference={reference} {...(priority !== undefined ? { priority } : {})} />
             </CardDetails></div></>
           : <AnswerForm key={key} drafts={ownDrafts.current} draftKey={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
