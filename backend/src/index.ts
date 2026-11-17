@@ -98,6 +98,7 @@ import {
   privateCloudTranscriptionConfigFromEnv,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
+import { createPrivateCloudPurger } from "./services/private-cloud-purge.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { runInWriteLane } from "./services/write-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
@@ -1209,6 +1210,11 @@ async function main() {
   );
   app.use("/api/billing", createBillingRouter({ authMiddleware, rehydrator: ledgerRehydrator }));
 
+  // One PTX client serves the private cloud relay below and the account-deletion purge (TC-3166).
+  const privateCloudPtxClient = privateCloudTranscription.enabled
+    ? createPtxClient({ ...privateCloudTranscription, requestIdFirstPartyOrigins })
+    : null;
+
   // The TRANSCRIBER surface (routes/transcriber.ts): send a bot to a meeting URL through the
   // TinyCloud Private Transcription API and read the speaker-attributed transcript back. Mounted
   // only when TRANSCRIPTION_API_URL + TRANSCRIPTION_API_KEY are set — the project key stays in
@@ -1223,6 +1229,9 @@ async function main() {
         api: transcriberApi!,
         index: transcriberIndex,
         purger: transcriberPurgeSweeper ?? undefined,
+        ...(privateCloudPtxClient && privateCloudTranscription.enabled
+          ? { privateCloud: createPrivateCloudPurger(privateCloudPtxClient, privateCloudTranscription.tenantKey) }
+          : {}),
         webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
         onObservedCompletion: transcriptWorker
           ? async (address, meetingId) => { await transcriptWorker.wake(address, meetingId, "observed"); }
@@ -1263,7 +1272,7 @@ async function main() {
     PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
     authMiddleware,
     createPrivateCloudTranscriptionRouter({
-      client: privateCloudTranscription.enabled ? createPtxClient({ ...privateCloudTranscription, requestIdFirstPartyOrigins }) : null,
+      client: privateCloudPtxClient,
       tenantKey: privateCloudTranscription.enabled ? privateCloudTranscription.tenantKey : null,
     }),
   );

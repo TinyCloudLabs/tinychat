@@ -5,33 +5,40 @@
  * with the account by someone else: they are only dropped from this list, and the person who shared them
  * still has them, so they are never reported as deleted. `notDeleted` were listed as the account's own but
  * the provider does not attribute them to it: dropped from the list, NOT deleted at the provider, and never
- * called deleted or shared. Only call `own` deleted once every own delete is confirmed.
+ * called deleted or shared. Only call `own` deleted once every own delete is confirmed. `voiceNotes` counts the
+ * private cloud transcription jobs (voice notes and uploads, TC-3166) deleted and read back gone; the step only
+ * reaches `done` or `deleting` after that check succeeded, since a failed check is the failure line.
  */
 export interface Removals {
   own: number;
   shared: number;
   notDeleted: number;
+  voiceNotes: number;
 }
 
-export const NOTHING_TO_DELETE = "You have no meeting recordings to delete.";
-export const NOTHING_OF_YOURS = "You had no meeting recordings of your own to delete.";
-/** At least one of the account's own deletes is not confirmed yet: true whether or not some are already done. */
-export const STILL_DELETING = "Your meeting recordings are being deleted. We keep trying until each one is gone.";
+export const NOTHING_TO_DELETE = "You have no recordings, voice notes or uploads to delete.";
+export const NOTHING_OF_YOURS = "You had no recordings, voice notes or uploads of your own to delete.";
+/** At least one meeting recording's delete is not confirmed yet; the voice notes and uploads are already deleted. */
+export const STILL_DELETING = "Your voice notes and uploads are deleted. Your meeting recordings are being deleted; we keep trying until each one is gone.";
 export const SHARED_REMOVED = "Recordings others shared with you are removed from your list; the people who shared them still have them.";
 /** Own entries the provider does not attribute to the account: dropped from the list, copy NOT deleted. */
 export const NOT_DELETED = "Some recordings were removed from your list but are still with the notetaker service. To have them deleted, email team@tinycloud.xyz.";
 /** The same case on a single recording's own row after Remove (Monica): no subject needed. */
 export const ROW_NOT_DELETED = "Removed from your list but still with the notetaker service. To have it deleted, email team@tinycloud.xyz.";
 
-export const OWN_DELETED = "Your meeting recordings are deleted, including the notetaker service's copies.";
+export const OWN_DELETED = "Your meeting recordings, voice notes and uploads are deleted from the notetaker service and TinyCloud Private Transcription.";
+/** The step's failure line: any unconfirmed delete, meeting recordings or private cloud. */
+export const DELETE_FAILED = "We couldn't finish deleting your recordings, voice notes and uploads. Some may still be there. Try again in a moment.";
+/** The step's intro. */
+export const STEP_INTRO = "Before you delete your account, delete your recordings. This permanently deletes your meeting recordings, voice notes and uploads held by the notetaker service and TinyCloud Private Transcription, including their transcripts.";
 
 const join = (...parts: Array<string | false>): string => parts.filter((part) => part !== false).join(" ");
 
 /** Every own delete is confirmed (one or many: no counts, no singular). */
-export function doneText({ own, shared, notDeleted }: Removals): string {
-  if (own === 0 && shared === 0 && notDeleted === 0) return NOTHING_TO_DELETE;
+export function doneText({ own, shared, notDeleted, voiceNotes }: Removals): string {
+  if (own === 0 && shared === 0 && notDeleted === 0 && voiceNotes === 0) return NOTHING_TO_DELETE;
   return join(
-    own > 0 ? OWN_DELETED : notDeleted === 0 && NOTHING_OF_YOURS,
+    own + voiceNotes > 0 ? OWN_DELETED : notDeleted === 0 && NOTHING_OF_YOURS,
     notDeleted > 0 && NOT_DELETED,
     shared > 0 && SHARED_REMOVED,
   );

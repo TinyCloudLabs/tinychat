@@ -20,6 +20,7 @@ import {
   type TranscriberIndexStore,
 } from "../services/transcriber-index.js";
 import { purgeMeeting } from "../services/transcriber-purge.js";
+import { PrivateCloudPurgeError, type PrivateCloudPurger } from "../services/private-cloud-purge.js";
 import { redactedErrorMessage } from "../services/webhook-tokens.js";
 
 /**
@@ -57,6 +58,8 @@ export interface TranscriberRouterOptions {
   /** Delays between the in-request purge attempts (default: first at once, then 0.4 s and 1.5 s). */
   purgeDelaysMs?: number[];
   purgeSleep?: (ms: number) => Promise<void>;
+  /** TC-3166: account deletion also clears the account's private cloud transcription jobs. Omitted while that service is dark. */
+  privateCloud?: PrivateCloudPurger;
 }
 
 export const MEETING_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -482,6 +485,10 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
    * `listOnly` counts recordings shared with this address: dropped from this list, the sharer still has them.
    * `notDeleted` counts the address's own entries the provider did not attribute to it: dropped from the list
    * but NOT deleted at the provider. Both are subsets of `removed`.
+   *
+   * TC-3166: the same call also deletes the account's private cloud transcription jobs (voice notes and
+   * uploads) and reads back that PTX lists none. `privateCloudDeleted` counts them (0 while that service is
+   * dark). A failure there is a 503 like any other unconfirmed delete; the step is safe to retry.
    */
   router.delete("/", async (req, res) => {
     const address = addressOf(req, res);
@@ -520,11 +527,19 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       }
     }
     await Promise.all(Array.from({ length: Math.min(BULK_DELETE_CONCURRENCY, ids.length) }, worker));
-    if (failed > 0) {
-      res.status(503).json({ error: "transcriber_unavailable", removed, deleting, listOnly, notDeleted, failed });
+    let privateCloudDeleted = 0;
+    let privateCloudFailed = false;
+    try {
+      privateCloudDeleted = (await options.privateCloud?.purge(address)) ?? 0;
+    } catch (error) {
+      privateCloudFailed = true;
+      console.warn(`[transcriber] private_cloud_purge_failed reason=${error instanceof PrivateCloudPurgeError ? error.reason : error instanceof Error ? error.name : "unknown"}`);
+    }
+    if (failed > 0 || privateCloudFailed) {
+      res.status(503).json({ error: "transcriber_unavailable", removed, deleting, listOnly, notDeleted, failed, privateCloudFailed });
       return;
     }
-    res.status(deleting > 0 ? 202 : 200).json({ removed, deleting, listOnly, notDeleted });
+    res.status(deleting > 0 ? 202 : 200).json({ removed, deleting, listOnly, notDeleted, privateCloudDeleted });
   });
 
   return router;

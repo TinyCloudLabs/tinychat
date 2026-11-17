@@ -2683,7 +2683,7 @@ components:
             retrying with backoff. It is never reported as removed until upstream reads back not-found.
     TranscriberBulkDelete:
       type: object
-      required: [removed, deleting, listOnly, notDeleted]
+      required: [removed, deleting, listOnly, notDeleted, privateCloudDeleted]
       properties:
         removed:
           type: integer
@@ -2702,6 +2702,13 @@ components:
             A subset of `removed`: this address's own entries the provider did not attribute to it (upstream
             metadata missing or for another address). They were dropped from the list but the provider's copy
             was NOT deleted.
+        privateCloudDeleted:
+          type: integer
+          description: >-
+            TC-3166: private cloud transcription jobs (voice notes and uploads) this address held, deleted and read
+            back gone from the service's own list. 0 while that service is not enabled. If any cannot be confirmed
+            the whole call is a 503 (`privateCloudFailed: true`) and is safe to repeat. The audio file of a deleted
+            job is removed by the service's own cleanup after the call returns.
     TranscriberTranscript:
       type: object
       required: [meeting_id, status]

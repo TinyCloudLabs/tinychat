@@ -552,16 +552,16 @@ describe("transcriber client", () => {
     const seen: { url: string; method?: string }[] = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
       seen.push({ url: String(url), method: init?.method });
-      return new Response(JSON.stringify({ removed: 3, deleting: 1, listOnly: 1, notDeleted: 1 }), { status: 202 });
+      return new Response(JSON.stringify({ removed: 3, deleting: 1, listOnly: 1, notDeleted: 1, privateCloudDeleted: 2 }), { status: 202 });
     }) as typeof fetch;
     const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
-    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1, listOnly: 1, notDeleted: 1 } });
+    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1, listOnly: 1, notDeleted: 1, privateCloudDeleted: 2 } });
     expect(seen).toEqual([{ url: "https://api.example/api/transcriber/meetings", method: "DELETE" }]);
   });
 
   test("removeAll from a backend that cannot say what was really deleted is rejected, never guessed", async () => {
-    // An older backend answers { removed, deleting } only: listOnly/notDeleted are unknown.
-    const fetchImpl = (async () => new Response(JSON.stringify({ removed: 3, deleting: 0 }), { status: 200 })) as typeof fetch;
+    // An older backend answers { removed, deleting } only, or has no private cloud count: what was really deleted is unknown.
+    const fetchImpl = (async () => new Response(JSON.stringify({ removed: 3, deleting: 0, listOnly: 0, notDeleted: 0 }), { status: 200 })) as typeof fetch;
     const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
     expect(await client.removeAll()).toMatchObject({ status: "rejected" });
   });
