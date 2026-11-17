@@ -16,11 +16,18 @@ export function isShareLinkPath(pathname: string): boolean {
 }
 
 /**
- * At startup, before anything renders: keep a share link's full address in memory and drop its fragment from the
- * address bar. Returns whether the page is a share link.
+ * At startup, before anything renders: keep a share link's full address in memory, drop its fragment from the
+ * address bar, and turn off the Referer for the page (`_headers` does that too, but a page the service worker serves
+ * skips the header). Returns whether the page is a share link.
  */
-export function captureShareLinkFromLocation(location: Location = window.location, history: History = window.history): boolean {
+export function captureShareLinkFromLocation(location: Location = window.location, history: History = window.history, doc: Document = document): boolean {
   if (!isShareLinkPath(location.pathname)) return false;
+  if (!doc.querySelector('meta[name="referrer"]')) {
+    const meta = doc.createElement("meta");
+    meta.name = "referrer";
+    meta.content = "no-referrer";
+    doc.head.prepend(meta);
+  }
   if (location.hash.length > 1) {
     held = location.href;
     history.replaceState(history.state, "", `${location.pathname}${location.search}`);

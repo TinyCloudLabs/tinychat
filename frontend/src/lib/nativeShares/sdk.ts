@@ -84,7 +84,7 @@ function trustedOrigins(): string[] {
   return [...new Set([SHARE_LINK_ORIGIN, ...own])];
 }
 
-function errorField(error: unknown, field: "code" | "message"): unknown {
+function errorField(error: unknown, field: "code" | "cause" | "status" | "error"): unknown {
   return typeof error === "object" && error !== null && field in error ? Reflect.get(error, field) : undefined;
 }
 
@@ -129,7 +129,7 @@ export async function claimShare(tcw: TinyCloudWeb, token: string): Promise<Clai
   if (!tcw.did) return { ok: false, reason: "failed" };
   const claim = await tcw.sharing.delegateReceivedShare(token, { delegateDID: tcw.did });
   if (!claim.ok) {
-    if (claim.error.code === "REVOKED" || isShareRevokedError(claim.error)) return { ok: false, reason: "revoked" };
+    if (isShareRevokedError(claim.error)) return { ok: false, reason: "revoked" };
     if (claim.error.code === "AUTH_EXPIRED") return { ok: false, reason: "expired" };
     return { ok: false, reason: "failed" };
   }
@@ -199,8 +199,26 @@ export async function revokeShare(tcw: TinyCloudWeb, rootCid: string): Promise<v
   if (!result.ok) throw new Error(`stop sharing: ${result.error.code}`);
 }
 
-/** A read or activation refused because the owner stopped sharing. */
+// The SDK's typed codes for a revoked grant: a claim (`REVOKED`), a read (`AUTH_DELEGATION_*`), a replica (`GRANT_REVOKED`).
+const REVOKED_CODES: Record<string, true> = { REVOKED: true, AUTH_DELEGATION_REVOKED: true, AUTH_DELEGATION_ANCESTOR_REVOKED: true, GRANT_REVOKED: true };
+// The node's own codes, in the JSON body of a 401 that `useDelegation` keeps as its error's `cause`.
+const NODE_REVOKED_CODES: Record<string, true> = { delegation_revoked: true, parent_revoked: true, ancestor_revoked: true };
+
+function nodeRefusalCode(body: unknown): unknown {
+  if (typeof body !== "string") return undefined;
+  try {
+    return errorField(JSON.parse(body), "code");
+  } catch {
+    return undefined;
+  }
+}
+
+/** A claim, read or activation refused because the owner stopped sharing. Codes only, matched exactly. */
 export function isShareRevokedError(error: unknown): boolean {
-  const message = typeof error === "string" ? error : errorField(error, "message");
-  return errorField(error, "code") === "REVOKED" || (typeof message === "string" && message.includes("ancestor_revoked"));
+  const code = errorField(error, "code");
+  if (typeof code === "string" && Object.hasOwn(REVOKED_CODES, code)) return true;
+  const cause = errorField(error, "cause");
+  const status = errorField(cause, "status");
+  const nodeCode = nodeRefusalCode(errorField(cause, "error"));
+  return (status === 401 || status === 403) && typeof nodeCode === "string" && Object.hasOwn(NODE_REVOKED_CODES, nodeCode);
 }

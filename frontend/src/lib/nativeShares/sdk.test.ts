@@ -97,8 +97,8 @@ describe("claimShare", () => {
     expect(await claimShare(claimingTcw({ ok: false, error: { code: "REVOKED", message: "Sharing link has been revoked" } }), TOKEN)).toEqual({ ok: false, reason: "revoked" });
   });
 
-  test("a node refusal naming a revoked ancestor is the revoked state too", async () => {
-    expect(await claimShare(claimingTcw({ ok: false, error: { code: "NETWORK_ERROR", message: "403: ancestor_revoked" } }), TOKEN)).toEqual({ ok: false, reason: "revoked" });
+  test("a refusal that only mentions revocation in its text is a failure to retry, not the revoked state", async () => {
+    expect(await claimShare(claimingTcw({ ok: false, error: { code: "NETWORK_ERROR", message: "403: ancestor_revoked" } }), TOKEN)).toEqual({ ok: false, reason: "failed" });
   });
 
   test("AUTH_EXPIRED is the expired state", async () => {
@@ -124,18 +124,26 @@ describe("claimShare", () => {
 });
 
 describe("the revoked state after a claim", () => {
-  test("isShareRevokedError knows REVOKED and ancestor_revoked, nothing else", () => {
-    expect(isShareRevokedError({ code: "REVOKED" })).toBe(true);
-    expect(isShareRevokedError({ message: "activation failed: ancestor_revoked" })).toBe(true);
-    expect(isShareRevokedError("ancestor_revoked")).toBe(true);
+  test("isShareRevokedError matches the revocation codes exactly, never text", () => {
+    for (const code of ["REVOKED", "AUTH_DELEGATION_REVOKED", "AUTH_DELEGATION_ANCESTOR_REVOKED", "GRANT_REVOKED"]) expect(isShareRevokedError({ code })).toBe(true);
+    // useDelegation's activation refusal: the node's 401 body is the error's cause.
+    for (const code of ["ancestor_revoked", "parent_revoked", "delegation_revoked"]) {
+      const refusal = Object.assign(new Error("Failed to activate delegated session"), { cause: { status: 401, error: JSON.stringify({ code, error: "delegation-ancestor-revoked: ancestor=bafyroot" }) } });
+      expect(isShareRevokedError(refusal)).toBe(true);
+    }
+    expect(isShareRevokedError(Object.assign(new Error("x"), { cause: { status: 401, error: JSON.stringify({ code: "lease_revoked" }) } }))).toBe(false);
+    expect(isShareRevokedError(Object.assign(new Error("x"), { cause: { status: 500, error: JSON.stringify({ code: "ancestor_revoked" }) } }))).toBe(false);
+    expect(isShareRevokedError({ code: "NETWORK_ERROR", message: "activation failed: ancestor_revoked" })).toBe(false);
+    expect(isShareRevokedError("ancestor_revoked")).toBe(false);
     expect(isShareRevokedError({ code: "AUTH_EXPIRED", message: "expired" })).toBe(false);
+    expect(isShareRevokedError({ code: "constructor" })).toBe(false);
     expect(isShareRevokedError(new Error("offline"))).toBe(false);
     expect(isShareRevokedError(null)).toBe(false);
   });
 
   test("a read refused as revoked is the revoked state; not found is absent; other errors fail", async () => {
-    expect(await readSharedTranscript({ get: async () => ({ ok: false, error: { code: "REVOKED", message: "x" } }) } as never, TRANSCRIPT)).toEqual({ status: "revoked" });
-    expect(await readSharedTranscript({ get: async () => { throw new Error("ancestor_revoked"); } } as never, TRANSCRIPT)).toEqual({ status: "revoked" });
+    expect(await readSharedTranscript({ get: async () => ({ ok: false, error: { code: "AUTH_DELEGATION_ANCESTOR_REVOKED", message: "x" } }) } as never, TRANSCRIPT)).toEqual({ status: "revoked" });
+    expect(await readSharedTranscript({ get: async () => { throw new Error("ancestor_revoked"); } } as never, TRANSCRIPT)).toEqual({ status: "failed" });
     expect(await readSharedTranscript({ get: async () => ({ ok: false, error: { code: "KV_NOT_FOUND", message: "x" } }) } as never, TRANSCRIPT)).toEqual({ status: "absent" });
     expect(await readSharedTranscript({ get: async () => ({ ok: false, error: { code: "NETWORK_ERROR", message: "x" } }) } as never, TRANSCRIPT)).toEqual({ status: "failed" });
   });

@@ -1,5 +1,6 @@
-// TC-3195: /s/<id>, a link someone sent you (approved mock, screen 3). Signed out, it says who shared what and signs
-// you in with the app's own sign-in; signed in, the share is added to your TinyCloud and the recording opens.
+// TC-3195: /s/<id>, a link someone sent you (approved mock, screen 3). It says who shared what: the owner from the
+// owner's signature, the title as the link shows it. Nothing is added until you ask: "Sign in to open" adds it once
+// you are signed in, and a signed-in account taps "Add to Library". Then the recording opens.
 // The link (and its key) was read and removed from the address bar before the app rendered (link.ts); it lives in
 // memory only and is let go once the share is in your TinyCloud.
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -56,6 +57,8 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
   const now = (props.now ?? (() => new Date()))();
   const [view, setView] = useState<View>({ status: "opening" });
   const [attempt, setAttempt] = useState(0);
+  // The recipient asked for the share: by signing in from this page, or with "Add to Library".
+  const [addRequested, setAddRequested] = useState(false);
   const claiming = useRef(false);
 
   useEffect(() => {
@@ -80,7 +83,7 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
 
   const tcw = props.tcw;
   useEffect(() => {
-    if (view.status !== "open" || !tcw || claiming.current) return;
+    if (view.status !== "open" || !tcw || !addRequested || claiming.current) return;
     claiming.current = true;
     const { link, display } = view;
     void (async () => {
@@ -101,7 +104,7 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
     })().finally(() => {
       claiming.current = false;
     });
-  }, [view, tcw, navigate]);
+  }, [view, tcw, addRequested, navigate]);
 
   if (view.status === "problem") {
     if (view.problem === "revoked" && view.display && view.link) {
@@ -159,15 +162,20 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
         </span>
       </div>
       <div className="mt-6 flex flex-col gap-3">
-        {tcw ? (
+        {tcw && addRequested ? (
           <div role="status" className="flex h-11 items-center justify-center text-muted-foreground fine:h-10">
             <LoaderCircleIcon aria-hidden="true" className="size-5 animate-spin motion-reduce:animate-none" />
             <span className="sr-only">Adding it to your TinyCloud…</span>
           </div>
+        ) : tcw ? (
+          <Button type="button" className="h-11 w-full fine:h-10" onClick={() => setAddRequested(true)}>Add to Library</Button>
         ) : (
-          <Button type="button" className="h-11 w-full fine:h-10" disabled={busy} onClick={props.onSignIn}>{busy ? "Signing in…" : "Sign in to open"}</Button>
+          <Button type="button" className="h-11 w-full fine:h-10" disabled={busy} onClick={() => {
+            setAddRequested(true);
+            props.onSignIn();
+          }}>{busy ? "Signing in…" : "Sign in to open"}</Button>
         )}
-        <p className="text-callout text-muted-foreground">Signing in adds it to your TinyCloud. {sender} can stop sharing at any time.</p>
+        <p className="text-callout text-muted-foreground">{tcw ? "" : "Signing in adds it to your TinyCloud. "}{sender} can stop sharing at any time.</p>
         {props.error && <p role="status" className="text-callout">{bootMessage(props.state, props.error)}</p>}
       </div>
       <div className="mt-auto pt-10">

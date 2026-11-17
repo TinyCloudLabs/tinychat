@@ -24,6 +24,12 @@ describe("parseRecordingDisplay", () => {
     expect(parseRecordingDisplay({ ...VALID, durationSeconds: undefined })?.durationSeconds).toBeNull();
   });
 
+  test("strips control and bidi characters, so a title reads as it is written", () => {
+    expect(parseRecordingDisplay({ ...VALID, title: "Invoice\u202Etxt.exe\u202C" })?.title).toBe("Invoicetxt.exe");
+    expect(parseRecordingDisplay({ ...VALID, title: "Line one\nLine\u0000two\u2066\u2069" })?.title).toBe("Line one Line two");
+    expect(parseRecordingDisplay({ ...VALID, title: "\u200E\u200F\u0007" })).toBeNull();
+  });
+
   test("drops fields it does not know", () => {
     const parsed = parseRecordingDisplay({ ...VALID, extra: "<script>", token: "tc1:secret" });
     expect(parsed).not.toHaveProperty("extra");

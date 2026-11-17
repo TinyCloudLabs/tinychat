@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Window } from "happy-dom";
 
 import { captureShareLinkFromLocation, heldShareLink, holdShareLinkUrl, isShareLinkPath, releaseShareLink } from "./link";
 
@@ -18,7 +19,8 @@ function fakePage(href: string) {
       calls.push({ state, url: next });
     },
   } as unknown as History;
-  return { location, history, calls };
+  const doc = new Window({ url: url.href }).document as unknown as Document;
+  return { location, history, calls, doc };
 }
 
 afterEach(() => releaseShareLink());
@@ -27,25 +29,27 @@ describe("captureShareLinkFromLocation", () => {
   test("keeps the whole link in memory and replaces the address without its fragment", () => {
     const href = `https://tinycloud.one/s/7f3kq9x2m4hz8a1c5vd0wnbe6y?utm=x${FRAGMENT}`;
     const page = fakePage(href);
-    expect(captureShareLinkFromLocation(page.location, page.history)).toBe(true);
+    expect(captureShareLinkFromLocation(page.location, page.history, page.doc)).toBe(true);
     expect(page.calls).toEqual([{ state: { idx: 0 }, url: "/s/7f3kq9x2m4hz8a1c5vd0wnbe6y?utm=x" }]);
     expect(String(page.calls[0]!.url)).not.toContain("#");
     expect(String(page.calls[0]!.url)).not.toContain("k=");
     expect(heldShareLink()).toBe(href);
+    expect(page.doc.querySelector('meta[name="referrer"]')?.getAttribute("content")).toBe("no-referrer");
     releaseShareLink();
     expect(heldShareLink()).toBeNull();
   });
 
   test("leaves other pages alone", () => {
     const page = fakePage(`https://tinycloud.one/chat${FRAGMENT}`);
-    expect(captureShareLinkFromLocation(page.location, page.history)).toBe(false);
+    expect(captureShareLinkFromLocation(page.location, page.history, page.doc)).toBe(false);
     expect(page.calls).toEqual([]);
     expect(heldShareLink()).toBeNull();
+    expect(page.doc.querySelector('meta[name="referrer"]')).toBeNull();
   });
 
   test("a share page without a fragment is still a share page, with nothing to hold", () => {
     const page = fakePage("https://tinycloud.one/s/7f3kq9x2m4hz8a1c5vd0wnbe6y");
-    expect(captureShareLinkFromLocation(page.location, page.history)).toBe(true);
+    expect(captureShareLinkFromLocation(page.location, page.history, page.doc)).toBe(true);
     expect(page.calls).toEqual([]);
     expect(heldShareLink()).toBeNull();
   });

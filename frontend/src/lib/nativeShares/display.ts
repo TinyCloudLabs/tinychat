@@ -15,11 +15,14 @@ export interface RecordingShareDisplay {
 }
 
 const MAX_TEXT = 200;
+// Control characters (C0, DEL, C1) and the bidi controls that can make a title read differently than it is written.
+const CONTROL = /[\u0000-\u001F\u007F-\u009F]/g;
+const BIDI = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 
 function text(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed && trimmed.length <= MAX_TEXT ? trimmed : undefined;
+  const cleaned = value.replace(CONTROL, " ").replace(BIDI, "").replace(/\s+/g, " ").trim();
+  return cleaned && cleaned.length <= MAX_TEXT ? cleaned : undefined;
 }
 
 /** The display of an opened link, or `null` when any field is missing or not what the app writes. Unknown keys are ignored. */
