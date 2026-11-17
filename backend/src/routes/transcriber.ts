@@ -20,6 +20,7 @@ import {
   type TranscriberIndexStore,
 } from "../services/transcriber-index.js";
 import { purgeMeeting } from "../services/transcriber-purge.js";
+import { PrivateCloudPurgeError, type PrivateCloudPurger } from "../services/private-cloud-purge.js";
 import { redactedErrorMessage } from "../services/webhook-tokens.js";
 
 /**
@@ -57,6 +58,8 @@ export interface TranscriberRouterOptions {
   /** Delays between the in-request purge attempts (default: first at once, then 0.4 s and 1.5 s). */
   purgeDelaysMs?: number[];
   purgeSleep?: (ms: number) => Promise<void>;
+  /** TC-3166: account deletion also clears the account's private cloud transcription jobs. Omitted while that service is dark. */
+  privateCloud?: PrivateCloudPurger;
 }
 
 export const MEETING_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -202,6 +205,12 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     const owner = (await api.getMeeting(id)).metadata?.tinychat_address;
     return typeof owner === "string" && owner.toLowerCase() === address;
   }
+
+  /** TC-3166: whether this deployment keeps private cloud transcription jobs, from config only (no PTX call). */
+  router.get("/scope", (req, res) => {
+    if (addressOf(req, res) === null) return;
+    res.json({ privateCloud: options.privateCloud !== undefined });
+  });
 
   router.get("/", async (req, res) => {
     const address = addressOf(req, res);
@@ -482,6 +491,11 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
    * `listOnly` counts recordings shared with this address: dropped from this list, the sharer still has them.
    * `notDeleted` counts the address's own entries the provider did not attribute to it: dropped from the list
    * but NOT deleted at the provider. Both are subsets of `removed`.
+   *
+   * TC-3166: the same call also deletes the account's private cloud transcription jobs (voice notes and
+   * uploads) and reads back that PTX lists none. `privateCloudDeleted` counts them, or is `null` when that
+   * service is not used (never 0, which would read as "checked, none"). A failure there is a 503 like any other
+   * unconfirmed delete; the step is safe to retry.
    */
   router.delete("/", async (req, res) => {
     const address = addressOf(req, res);
@@ -520,12 +534,57 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       }
     }
     await Promise.all(Array.from({ length: Math.min(BULK_DELETE_CONCURRENCY, ids.length) }, worker));
-    if (failed > 0) {
-      res.status(503).json({ error: "transcriber_unavailable", removed, deleting, listOnly, notDeleted, failed });
+    const privateCloud = await purgePrivateCloud(options.privateCloud, address);
+    if (failed > 0 || privateCloud.failed) {
+      res.status(503).json({ error: "transcriber_unavailable", removed, deleting, listOnly, notDeleted, failed, privateCloudFailed: privateCloud.failed });
       return;
     }
-    res.status(deleting > 0 ? 202 : 200).json({ removed, deleting, listOnly, notDeleted });
+    res.status(deleting > 0 ? 202 : 200).json({ removed, deleting, listOnly, notDeleted, privateCloudDeleted: privateCloud.deleted });
   });
 
+  return router;
+}
+
+/**
+ * `privateCloudDeleted` is the number of jobs deleted and read back gone, or `null` when the private cloud
+ * service is not used at all, which the step must never read as "checked, none".
+ */
+async function purgePrivateCloud(purger: PrivateCloudPurger | undefined, address: string): Promise<{ deleted: number | null; failed: boolean }> {
+  if (!purger) return { deleted: null, failed: false };
+  try {
+    return { deleted: await purger.purge(address), failed: false };
+  } catch (error) {
+    console.warn(`[transcriber] private_cloud_purge_failed reason=${error instanceof PrivateCloudPurgeError ? error.reason : error instanceof Error ? error.name : "unknown"}`);
+    return { deleted: null, failed: true };
+  }
+}
+
+/**
+ * TC-3166: the bulk DELETE for a deployment that has private cloud transcription but no meeting transcriber
+ * (so no `createTranscriberRouter`). The account-deletion step still asks the private cloud service; there are no
+ * meetings to remove.
+ */
+export function createPrivateCloudOnlyBulkDeleteRouter(purger: PrivateCloudPurger): Router {
+  const router = Router();
+  router.delete("/", async (req, res) => {
+    const address = req.user?.address;
+    if (typeof address !== "string" || address.length === 0) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    const privateCloud = await purgePrivateCloud(purger, address.toLowerCase());
+    if (privateCloud.failed) {
+      res.status(503).json({ error: "transcriber_unavailable", removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, failed: 0, privateCloudFailed: true });
+      return;
+    }
+    res.status(200).json({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: privateCloud.deleted });
+  });
+  router.get("/scope", (req, res) => {
+    if (typeof req.user?.address !== "string" || req.user.address.length === 0) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    res.json({ privateCloud: true });
+  });
   return router;
 }

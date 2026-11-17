@@ -1835,6 +1835,30 @@ paths:
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
+  /api/transcriber/meetings/scope:
+    get:
+      operationId: getTranscriberScope
+      summary: Whether this deployment keeps private cloud transcription jobs (voice notes and uploads)
+      description: |
+        From configuration only; it asks no other service. Mounted when the meeting transcriber or private cloud
+        transcription is on; with neither on it is a 404. The account-deletion step uses it to word its intro and
+        failure line, so voice notes and uploads are only named where they are kept.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The scope
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [privateCloud]
+                properties:
+                  privateCloud:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
   /api/transcriber/meetings/{id}/stop:
     post:
       operationId: stopTranscriberMeeting
@@ -2683,7 +2707,7 @@ components:
             retrying with backoff. It is never reported as removed until upstream reads back not-found.
     TranscriberBulkDelete:
       type: object
-      required: [removed, deleting, listOnly, notDeleted]
+      required: [removed, deleting, listOnly, notDeleted, privateCloudDeleted]
       properties:
         removed:
           type: integer
@@ -2702,6 +2726,14 @@ components:
             A subset of `removed`: this address's own entries the provider did not attribute to it (upstream
             metadata missing or for another address). They were dropped from the list but the provider's copy
             was NOT deleted.
+        privateCloudDeleted:
+          type: [integer, "null"]
+          description: >-
+            TC-3166: private cloud transcription jobs (voice notes and uploads) this address held, deleted and read
+            back gone from the service's own list. `null` when that service is not used by this deployment (never 0,
+            which would mean "checked, none"). If any cannot be confirmed the whole call is a 503
+            (`privateCloudFailed: true`) and is safe to repeat. A deleted job's audio file is unlinked inside the
+            service's own delete request; a failed unlink is retried by its cleanup sweep.
     TranscriberTranscript:
       type: object
       required: [meeting_id, status]
