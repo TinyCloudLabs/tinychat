@@ -1,10 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { listFeedCardHistory } from "@tinycloud/sdk-services/feed";
 import { boardKey, parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { homeMirrorRecord, publishHomeMirror, readHomeMirrorSource } from "./bridge";
 import type { HomeMirrorPublishInput } from "./bridge-types";
-import { boardCard, postMany } from "./inventory";
+import { boardCard, parseInventoryKinds, postMany, readBoardIndex } from "./inventory";
 import { boardRecord, mirrorNode, NOW, SOURCE, take } from "./mirror-node.fixture";
 import type { MirrorNode } from "./mirror-node.fixture";
 
@@ -78,4 +82,18 @@ test("a closed claude sign-in has no bare form that stays valid, so it is refuse
   expect(homeMirrorRecord(record, NOW_MS)).toEqual(record);
   const cancelled = open("g9", { approvalType: "claude", url: claude.href, target: "A synthetic seat", status: "cancelled" });
   expect(() => homeMirrorRecord(cancelled, NOW_MS)).toThrow("one-tap approval links");
+});
+
+test("the board-index read returns open approvals and leaves closed ones out (local fixture)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "home-approvals-"));
+  cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "board-index.sqlite");
+  const rows = [[open("g10"), 0], [open("g11", { status: "cancelled" }), 1], [boardRecord("ask", "a10"), 0]] as const;
+  const db = new Database(path);
+  db.exec("CREATE TABLE records (key TEXT PRIMARY KEY, etag TEXT NOT NULL DEFAULT '', id TEXT NOT NULL, kind TEXT NOT NULL, closed INTEGER NOT NULL, created_ms INTEGER NOT NULL, record_json TEXT)");
+  rows.forEach(([record, closed], index) => db.query("INSERT INTO records (key,id,kind,closed,created_ms,record_json) VALUES (?,?,?,?,?,?)").run(boardKey(record.kind, record.id), record.id, record.kind, closed, index, JSON.stringify(record)));
+  db.close();
+  const { rows: found, skipped } = readBoardIndex(path, parseInventoryKinds(undefined));
+  expect(found.map((row) => row.key)).toEqual([boardKey("approval", "g10"), boardKey("ask", "a10")]);
+  expect(skipped).toEqual([]);
 });
