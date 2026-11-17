@@ -24,6 +24,7 @@ import { billingLinksAllowed } from "./lib/openManageStorage";
 import { hideSdkPurchaseLinks } from "./lib/sdkPanelPurchaseLinks";
 import { hydrateDurableKeys } from "./lib/durableKeys";
 import { APP_LOCK_PREFS_KEY } from "./lib/appLock";
+import { HIDDEN_FEATURES_KEY } from "./lib/hiddenFeatures";
 import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/openkeyNative";
 
 // False on the web and in the desktop (Tauri) app; true only inside the TinyCloud Home mobile app.
@@ -91,7 +92,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
   // The phone app's settings that outlive its WebView storage (durableKeys.ts), in place before anything reads
   // them. A local file read; the bound only keeps a stuck bridge from holding the app at a blank screen.
   await Promise.race([
-    hydrateDurableKeys([APP_LOCK_PREFS_KEY, NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY]),
+    hydrateDurableKeys([APP_LOCK_PREFS_KEY, NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY, HIDDEN_FEATURES_KEY]),
     new Promise((resolve) => setTimeout(resolve, 2000)),
   ]);
   const move = await originMove;

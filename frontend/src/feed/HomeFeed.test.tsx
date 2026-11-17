@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { FeedHandling, FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
+import { HIDDEN_FEATURES_KEY, resetHiddenFeaturesForTest } from "@/lib/hiddenFeatures";
 import { FeedViewEntries } from "./FeedView";
 import type { HomeFeedEntriesProps, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 
@@ -107,6 +108,7 @@ afterEach(async () => {
   delete (globalThis as { matchMedia?: unknown }).matchMedia;
   MotionGlobalConfig.skipAnimations = false;
   clock?.restore(); clock = undefined;
+  globalThis.localStorage?.removeItem(HIDDEN_FEATURES_KEY); resetHiddenFeaturesForTest();
   restore?.(); restore = undefined;
 });
 async function mount(source: HomeFeedSource) {
@@ -1082,6 +1084,8 @@ test("the top row is Needs you · All · History and a Filter icon; Filter shows
 
 test("the Agents pill opens every agent; an agent's page lists its cards and a card opens back in the feed", async () => {
   const store = persistence([decision("open-one"), answered("waiting-one", false)]);
+  restore ??= installDom({});
+  localStorage.setItem(HIDDEN_FEATURES_KEY, "1");
   const view = await mount(store.source());
   await act(async () => view.host.querySelector<HTMLButtonElement>('header button[aria-label^="Agents"]')!.click());
   const list = view.host.querySelector<HTMLElement>('section[aria-label="Your agents"]')!;
@@ -1099,4 +1103,41 @@ test("the Agents pill opens every agent; an agent's page lists its cards and a c
   await act(async () => button(card(view.host, "Question waiting-one"), "Test agent").click());
   await act(async () => button(view.host, "Open conversation").click());
   expect(view.host.querySelector('section[aria-label="Conversation with Test agent"]')).not.toBeNull();
+});
+
+/** Home with the ask box slot filled by a marker, so the test reads whether Home shows it. */
+async function mountWithAsk(source: HomeFeedSource) {
+  restore ??= installDom({});
+  clock ??= installFakeClock();
+  globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
+  globalThis.matchMedia = window.matchMedia.bind(window);
+  MotionGlobalConfig.skipAnimations = true;
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  roots.add(root);
+  await act(async () => root.render(<FeedViewEntries realEntries={[]} source={source} ask={<form data-bots-ask="" />} />));
+  return host;
+}
+
+test("Home hides the ask box and the Agents pill until Show hidden features is on", async () => {
+  restore ??= installDom({});
+  const store = persistence([decision("open-one")]);
+  const host = await mountWithAsk(store.source());
+  expect(host.querySelector("[data-bots-ask]")).toBeNull();
+  expect(host.querySelector('header button[aria-label^="Agents"]')).toBeNull();
+  // The rest of Home is unchanged: the card is still listed.
+  expect(host.textContent).toContain("Question open-one");
+});
+
+test("Home shows the ask box and the Agents pill while Show hidden features is on, and drops them when it is turned off", async () => {
+  restore ??= installDom({});
+  const store = persistence([decision("open-one")]);
+  localStorage.setItem(HIDDEN_FEATURES_KEY, "1");
+  const host = await mountWithAsk(store.source());
+  expect(host.querySelector("[data-bots-ask]")).not.toBeNull();
+  expect(host.querySelector('header button[aria-label^="Agents"]')).not.toBeNull();
+  await act(async () => { const { setShowHiddenFeatures } = await import("@/lib/hiddenFeatures"); setShowHiddenFeatures(false); });
+  expect(host.querySelector("[data-bots-ask]")).toBeNull();
+  expect(host.querySelector('header button[aria-label^="Agents"]')).toBeNull();
 });
