@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { imageUrlVerdict, type ImageReason } from "./imageUrlFilter";
+import { IMAGE_PROMPT_COPY, imageUrlVerdict, type ImageReason } from "./imageUrlFilter";
 
 const hex = (n: number) => "a1b2c3d4e5f60718".repeat(Math.ceil(n / 16)).slice(0, n);
 const b64 = (n: number) => "Zm9vQmFyMTIzNDU2".repeat(Math.ceil(n / 16)).slice(0, n);
@@ -177,5 +177,22 @@ describe("addresses that ask first", () => {
   test("several signals are all reported", () => {
     const verdict = reasons(`https://example.com/${"x".repeat(70)}?d=${"y".repeat(70)}`);
     expect(verdict).toEqual(["long-query", "long-path"]);
+  });
+});
+
+describe("the reply-level prompt names the sites", () => {
+  const title = IMAGE_PROMPT_COPY.more.title;
+
+  test("one image or several, from one site or more", () => {
+    expect(title(1, ["e.example"])).toBe("Load 1 more image from e.example?");
+    expect(title(3, ["c.example"])).toBe("Load 3 more images from c.example?");
+    expect(title(2, ["c.example", "d.example"])).toBe("Load 2 more images from c.example and d.example?");
+    expect(title(3, ["c.example", "d.example", "e.example"])).toBe("Load 3 more images from c.example, d.example and e.example?");
+  });
+
+  test("past three sites, the rest are counted", () => {
+    expect(title(5, ["c.example", "d.example", "e.example", "f.example", "g.example"])).toBe(
+      "Load 5 more images from c.example, d.example, e.example and 2 more sites?",
+    );
   });
 });

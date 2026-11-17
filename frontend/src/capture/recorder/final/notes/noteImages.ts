@@ -56,7 +56,7 @@ export function gateNoteImages(html: string, choices: ImageChoices = {}): GatedN
     } else if (verdict.kind === "block" || choice === "skip") {
       image.replaceWith(note(document, "nt-img-skipped", IMAGE_PROMPT_COPY.notLoaded(alt)));
     } else if (verdict.kind === "load") {
-      image.replaceWith(note(document, "nt-img-skipped", IMAGE_PROMPT_COPY.waiting(alt)));
+      image.replaceWith(note(document, "nt-img-skipped", IMAGE_PROMPT_COPY.notLoaded(alt)));
     } else if (verdict.kind === "ask") {
       const gate = document.createElement("span");
       gate.className = "nt-img-gate";

@@ -135,14 +135,18 @@ export const IMAGE_PROMPT_COPY = {
   notNow: "Not now",
   /** What stays where an image did not load. */
   notLoaded: (description: string) => (description ? `Image not loaded: ${description}` : "Image not loaded"),
-  /** What stays where an image waits behind the reply's prompt below. */
-  waiting: (description: string) => (description ? `Image waiting: ${description}` : "Image waiting"),
   /** One prompt for the images a reply or note holds beyond what loads on its own (lib/imageBudget.ts). */
   more: {
-    title: (count: number, hosts: readonly string[]) =>
-      `Load ${count} more ${count === 1 ? "image" : "images"} from ${hosts.slice(0, 3).join(", ")}${
-        hosts.length > 3 ? ` and ${hosts.length - 3} more` : ""
-      }?`,
-    why: "These sites will see which images you open.",
+    title: (count: number, hosts: readonly string[]) => {
+      const shown = hosts.slice(0, 3);
+      const sites =
+        hosts.length > 3
+          ? `${shown.join(", ")} and ${hosts.length - 3} more sites`
+          : shown.length > 1
+            ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}`
+            : (shown[0] ?? "");
+      return `Load ${count} more ${count === 1 ? "image" : "images"} from ${sites}?`;
+    },
+    why: "These sites will see the full addresses, which can include text from this page.",
   },
 } as const;

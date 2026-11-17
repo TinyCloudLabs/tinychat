@@ -28,7 +28,7 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
     const held = budget.choice(address);
     if (held === "load") return picture;
     if (held === "skip") return notLoaded;
-    return <span className="text-muted-foreground">{IMAGE_PROMPT_COPY.waiting(alt ?? "")}</span>;
+    return notLoaded; // the reply's prompt says why
   }
   const choice = decision?.src === address ? decision.choice : null;
   if (choice === "load") return picture;

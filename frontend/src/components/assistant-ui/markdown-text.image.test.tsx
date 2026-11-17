@@ -108,24 +108,24 @@ test("Load approves the address the reader saw: if the address changes under the
 });
 
 const photo = (host: string, name = "p") => `![${name}](https://${host}/${name}.png)`;
-const waiting = (host: HTMLElement) => host.querySelectorAll("img").length;
+const imageCount = (host: HTMLElement) => host.querySelectorAll("img").length;
 
 test("a reply's images from other hosts: two load, the rest wait for one prompt for the whole reply", async () => {
   const host = await reply(["a.example", "b.example", "c.example", "d.example"].map((h) => photo(h)).join("\n\n"));
-  expect(waiting(host)).toBe(2);
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.waiting("p"));
+  expect(imageCount(host)).toBe(2);
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("p"));
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.why);
   expect(host.querySelectorAll("button").length).toBe(2); // one prompt: Load and Not now
   await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
-  expect(waiting(host)).toBe(4);
+  expect(imageCount(host)).toBe(4);
   expect(host.querySelector("button")).toBeNull();
 });
 
 test("Not now on the reply's prompt leaves the held images as descriptions and asks no more", async () => {
   const host = await reply(["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n"));
   await click(buttonNamed(host, IMAGE_PROMPT_COPY.notNow));
-  expect(waiting(host)).toBe(2);
+  expect(imageCount(host)).toBe(2);
   expect(host.querySelector("button")).toBeNull();
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("p"));
 });
@@ -133,7 +133,7 @@ test("Not now on the reply's prompt leaves the held images as descriptions and a
 test("our own hosts do not use the reply's budget", async () => {
   const own = [1, 2, 3, 4].map((n) => photo("node.tinycloud.xyz", `n${n}`)).join("\n\n");
   const host = await reply(`${own}\n\n${photo("a.example")}\n\n${photo("b.example")}`);
-  expect(waiting(host)).toBe(6);
+  expect(imageCount(host)).toBe(6);
   expect(host.querySelector("button")).toBeNull();
 });
 
@@ -141,8 +141,8 @@ test("an approval covers the addresses it named: an image added to the reply aft
   const four = ["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n");
   const host = await reply(four);
   await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
-  expect(waiting(host)).toBe(4);
+  expect(imageCount(host)).toBe(4);
   await show(mounted!, `${four}\n\n${photo("e.example")}`, host);
-  expect(waiting(host)).toBe(4);
+  expect(imageCount(host)).toBe(4);
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["e.example"]));
 });

@@ -93,7 +93,7 @@ const photo = (host: string) => `![p](https://${host}/p.png)`;
 test("a note's images from other hosts: two load, the rest wait for one prompt for the whole note", async () => {
   const host = await note(["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n"));
   expect(host.querySelectorAll("img").length).toBe(2);
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.waiting("p"));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("p"));
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
   expect(host.querySelectorAll("button[data-images-load]").length).toBe(1);
   await click(host.querySelector("button[data-images-load]")!);
