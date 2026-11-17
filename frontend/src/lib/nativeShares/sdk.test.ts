@@ -152,7 +152,7 @@ describe("the revoked state after a claim", () => {
   test("a revoked record's Library row says it is no longer shared", () => {
     const display = parseRecordingDisplay({ title: "Customer call: Northwind", recordedAt: "2026-10-28T15:00:00.000Z", durationSeconds: 900, includes: ["transcript"], source: "meeting" })!;
     const record: ReceivedRecordingShare = { version: 1, id: "bafyroot", display, owner: { address: "0xd5590000000000000000000000000000000ff412", chainId: 1, spaceId: "s" }, delegation: "{}", paths: [TRANSCRIPT], claimedAt: "2026-10-29T00:00:00.000Z", accessExpiresAt: "2027-10-28T00:00:00.000Z", revokedAt: "2026-11-10T00:00:00.000Z" };
-    expect(sharedRowMeta(record, new Date("2026-11-17T10:00:00.000Z"))).toBe("From 0xd559…f412 · No longer shared · From the link");
+    expect(sharedRowMeta(record, new Date("2026-11-17T10:00:00.000Z"))).toBe("From 0xd559…f412 · No longer shared");
   });
 });
 

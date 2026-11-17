@@ -14,7 +14,7 @@ import { SoftRow } from "../home/SoftRow";
 import { useSoftHome } from "../home/softHome";
 import { formatClockDuration, groupByDay } from "../library/formatters";
 import { KIND_ICON, emptyFilterText, type LibraryKind } from "../library/libraryKinds";
-import { sharedRowMeta } from "./shareCopy";
+import { SHARED_ROW_CUE, sharedRowMeta } from "./shareCopy";
 
 const KIND_OF: Readonly<Record<SharedSource, LibraryKind>> = { meeting: "meeting", "voice-note": "note", upload: "upload" };
 
@@ -26,7 +26,7 @@ function SharedRow(props: { record: ReceivedRecordingShare; now: Date; selected:
   const duration = revoked ? null : record.display.durationSeconds;
   const soft = useSoftHome();
   if (soft) {
-    return <SoftRow icon={Icon} title={quotedTitle(record.display.title)} meta={meta} durationSecs={duration} href={notePath(sharedNoteId(record.id))} selected={props.selected} testId="shared-item" />;
+    return <SoftRow icon={Icon} title={quotedTitle(record.display.title)} meta={meta} subMeta={SHARED_ROW_CUE} durationSecs={duration} href={notePath(sharedNoteId(record.id))} selected={props.selected} testId="shared-item" />;
   }
   return (
     <ListRow
@@ -35,6 +35,7 @@ function SharedRow(props: { record: ReceivedRecordingShare; now: Date; selected:
       title={<span className={cn(revoked && "text-muted-foreground")}>{quotedTitle(record.display.title)}</span>}
       selected={props.selected}
       meta={meta}
+      subMeta={SHARED_ROW_CUE}
       aside={
         <span className="flex shrink-0 items-center gap-1 text-meta text-muted-foreground">
           {duration !== null && <span className="tnum">{formatClockDuration(duration)}</span>}

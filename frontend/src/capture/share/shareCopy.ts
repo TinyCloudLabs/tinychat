@@ -13,8 +13,8 @@ export function shareItemLine(display: RecordingShareDisplay, now: Date): string
 }
 
 /**
- * A Shared with me row: "From 0xd559…f412 · From the link" (the row's title came with the link; its day header dates
- * it), with "Ends Nov 20" near the end or "No longer shared" once revoked before "From the link".
+ * A Shared with me row's meta: "From 0xd559…f412", with "Ends Nov 20" near the end or "No longer shared" once revoked.
+ * Both come from the account's own record, never the link; its day header dates it.
  */
 export function sharedRowMeta(record: ReceivedRecordingShare, now: Date): string {
   const from = `From ${shortAddress(record.owner.address)}`;
@@ -22,8 +22,11 @@ export function sharedRowMeta(record: ReceivedRecordingShare, now: Date): string
   const state = record.revokedAt ? "No longer shared"
     : ends - now.getTime() < ENDS_SOON_MS ? `Ends ${shortDate(new Date(ends), now)}`
     : null;
-  return state ? `${from} · ${state} · From the link` : `${from} · From the link`;
+  return state ? `${from} · ${state}` : from;
 }
+
+/** A shared row's second line: the title is the row's one field that came with the link. */
+export const SHARED_ROW_CUE = "Title from the link";
 
 /** "Shared by 0xd559…f412 · Nov 16, 2:00 PM · 32 min"; once revoked, "Shared by 0xd559…f412 · Oct 28". */
 export function sharedDetailMeta(record: ReceivedRecordingShare, now: Date): string {
