@@ -73,36 +73,14 @@ test("an extraction's write is marked exactly when its chat holds outside conten
   expect(await getMemoryMarked(stored.session())).toBe(true);
 });
 
-// Memory saved before the marker existed: nothing records where it came from.
-function withoutMarker(stored: ReturnType<typeof account>) {
+// Memory saved before the marker existed: nothing records where it came from; by the owner's ruling it counts as not marked.
+test("a memory written before the marker existed counts as not marked, and a clean write over it keeps it so", async () => {
+  const stored = account();
+  await setMemory(stored.session(), "- likes tea");
   stored.sqlite.query("DELETE FROM memory WHERE id = 'user_context_marked'").run();
-}
-
-test("a memory with content and no record of where it came from counts as marked", async () => {
-  const stored = account();
-  await setMemory(stored.session(), "- likes tea");
-  withoutMarker(stored);
-  expect(await getMemoryMarked(stored.session())).toBe(true);
-});
-
-test("a clean chat's write over such a memory does not vouch for it", async () => {
-  const stored = account();
-  await setMemory(stored.session(), "- likes tea");
-  withoutMarker(stored);
+  expect(await getMemoryMarked(stored.session())).toBe(false);
   await setMemory(stored.session(), "- likes tea\n- lives by the sea");
-  expect(await getMemoryMarked(stored.session())).toBe(true);
-});
-
-test("an empty or template memory has nothing to carry: clean, and a clean write over it is recorded clean", async () => {
-  const stored = account();
-  await setMemory(stored.session(), "");
-  withoutMarker(stored);
   expect(await getMemoryMarked(stored.session())).toBe(false);
-  await resetMemoryToTemplate(stored.session());
-  expect(await getMemoryMarked(stored.session())).toBe(false);
-  await setMemory(stored.session(), "- likes tea");
-  expect(await getMemoryMarked(stored.session())).toBe(false);
-  expect(stored.sqlite.query("SELECT content FROM memory WHERE id = 'user_context_marked'").values()).toEqual([["0"]]);
 });
 
 test("when the live memory is blank and the last-known-good backup is served in its place, the restore counts as marked", async () => {
