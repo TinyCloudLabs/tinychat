@@ -766,11 +766,19 @@ function removeMemoryCache(tcw: TinyCloudWeb): void {
 }
 
 // Memory written from a chat that held outside content (lib/imageGate.ts) may carry text that content planted. The doc
-// keeps no trace of that by itself, so a marker row in the same table (no schema change) says so. It is written in the
-// same batch as the doc, and ends only when the owner clears or resets the memory. A chat that loads a marked doc
-// starts marked. A doc with no marker (written before this existed) is not marked: nothing records where it came from.
+// is one free-form text that the model rewrites whole on each extraction, so a flag per line cannot be kept; the flag
+// is per document. A marker row in the same table (no schema change) records where the doc came from: "1" = written
+// from a chat that held outside content, "0" = known clean. It is written in the same batch as the doc and ends only
+// when the owner clears or resets the memory. A chat that loads a marked doc starts marked. A doc with real content
+// and no marker (written before this existed) has an unknown source and counts as marked; an empty or template doc
+// has nothing to carry and counts as clean.
 const MEMORY_MARK_ROW_ID = "user_context_marked";
 const memoryMarkedReads = new WeakMap<TinyCloudWeb, Promise<boolean>>();
+
+function memoryDocIsEmpty(doc: string | null): boolean {
+  const text = (doc ?? "").trim();
+  return text.length === 0 || text === MEMORY_TEMPLATE.trim();
+}
 
 function memoryMarkCacheKey(tcw: TinyCloudWeb): string | null {
   const key = memoryCacheKey(tcw);
@@ -813,9 +821,17 @@ export function getMemoryMarked(tcw: TinyCloudWeb): Promise<boolean> {
   const read = (async () => {
     await null; // the promise is registered before this body can fail
     try {
-      const res = await store(tcw, scope).query("SELECT content FROM memory WHERE id = ?", [MEMORY_MARK_ROW_ID]);
+      const res = await store(tcw, scope).query("SELECT id, content FROM memory WHERE id IN (?, ?)", [MEMORY_MARK_ROW_ID, MEMORY_ROW_ID]);
       if (!res.ok) throw new SqlOpError(res.error, "getMemoryMarked", scope);
-      const marked = res.data.rows.length > 0;
+      let mark: string | null = null;
+      let doc: string | null = null;
+      for (const row of res.data.rows) {
+        const id = cellStr(row, 0, "");
+        if (id === MEMORY_MARK_ROW_ID) mark = cellStr(row, 1, "");
+        else if (id === MEMORY_ROW_ID) doc = cellStr(row, 1, "");
+      }
+      // "0" is the only value that says clean; anything else on the marker row, or no marker beside real content, is marked.
+      const marked = mark !== null ? mark !== "0" : !memoryDocIsEmpty(doc);
       rememberMemoryMark(tcw, marked);
       return marked;
     } catch {
@@ -877,7 +893,8 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
 /**
  * Upsert the per-space user_context doc and refresh the localStorage cache. `outside` records, in the same write, that
  * the doc now comes from a chat that held outside content; `resetMark` (the owner starting the doc over) removes that
- * record. Neither leaves it as it was.
+ * record. Otherwise the record is left as it was, except that a write over an empty doc with no record states "known
+ * clean", since nothing earlier could have planted anything.
  */
 export async function setMemory(tcw: TinyCloudWeb, content: string, options: { outside?: boolean; resetMark?: boolean } = {}): Promise<void> {
   const scope = storageScopeFor(tcw);
@@ -918,14 +935,26 @@ export async function setMemory(tcw: TinyCloudWeb, content: string, options: { o
     );
   }
   stmts.push({ sql: UPSERT, params: [MEMORY_ROW_ID, content, now] });
-  if (options.outside) stmts.push({ sql: UPSERT, params: [MEMORY_MARK_ROW_ID, "1", now] });
-  else if (options.resetMark) stmts.push({ sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_MARK_ROW_ID] });
+  let markAfter: boolean | null = null; // null: the record is left as it was
+  if (options.outside) {
+    stmts.push({ sql: UPSERT, params: [MEMORY_MARK_ROW_ID, "1", now] });
+    markAfter = true;
+  } else if (options.resetMark) {
+    stmts.push({ sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_MARK_ROW_ID] });
+    markAfter = false;
+  } else {
+    const priorMark = await store(tcw, scope).query("SELECT content FROM memory WHERE id = ?", [MEMORY_MARK_ROW_ID]);
+    const priorDoc = prior.ok && prior.data.rows.length > 0 ? cellStr(prior.data.rows[0], 0, "") : null;
+    if (priorMark.ok && priorMark.data.rows.length === 0 && memoryDocIsEmpty(priorDoc)) {
+      stmts.push({ sql: UPSERT, params: [MEMORY_MARK_ROW_ID, "0", now] });
+      markAfter = false;
+    }
+  }
 
   const res = await store(tcw, scope).batch(stmts);
   if (!res.ok) throw new SqlOpError(res.error, "setMemory", scope);
   writeMemoryCache(tcw, content);
-  if (options.outside) rememberMemoryMark(tcw, true);
-  else if (options.resetMark) rememberMemoryMark(tcw, false);
+  if (markAfter !== null) rememberMemoryMark(tcw, markAfter);
 }
 
 /**
