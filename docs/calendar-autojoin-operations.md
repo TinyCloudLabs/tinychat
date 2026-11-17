@@ -37,6 +37,10 @@ KV lease has no compare-and-set and does not make overlapping instances safe. Do
 perform rolling replacements. Stop the old instance, wait for it to exit, then start its replacement.
 This also applies to HTTP writes, including OAuth, disable, and the recording ownership index.
 
+Deploy rule: exactly one backend; all autojoin and credential writes go through the backend service.
+The worker's duplicate-scheduler lock is per store object in one process; nothing detects a second
+process.
+
 SIGTERM stops new scheduling and new HTTP connections, then drains both before exiting. Compose
 allows 130 seconds for this drain. A timeout exits with failure; wait for the old process to be gone
 before starting the replacement. Persisted unknown outcomes are looked up at startup, including
@@ -47,14 +51,51 @@ events; an incomplete scan suppresses new dispatches until a complete scan succe
 operations can run concurrently, with at most one dispatch per tenant. Retry-After delays are kept
 in full even when they exceed the ordinary 15-minute retry backoff limit.
 
-**Node calls (TC-2917).** The single writer keeps an in-process copy of the connection and
-occurrence rows, rebuilt from the node on the first tick after a restart. A tick reads them from
-memory, so an idle connected user costs about five node calls an hour (one token refresh, one
-hourly `lastScanAt` write), and disabled users and finished meetings cost none. Writes reach the
-node first; identical writes are skipped. Request handlers, the dispatch path's policy checks and
-the restart grant backfill still read the node. A row edited in the space by anything but this
-backend reaches the worker when a request or dispatch next reads it, or after a restart. A second
-worker started on the same store in one process is refused.
+**Node calls (TC-2917).** The backend keeps a bounded in-process copy of the connection and
+occurrence rows (least recently used out, no tombstones), rebuilt from the node after a restart.
+Consent is always read from the node: before each Google scan, before each recording or sharing
+check, at dispatch, by request handlers and by the restart grant backfill.
+
+Every calendar row write and delete is a compare-and-set on the node: `If-Match` on the row's ETag,
+or `If-None-Match: *` for a new row. (The status projection, rebuilt from those rows, is written
+without a condition.) Each write decides on the stored row (connection writes, the
+enable and the OAuth setup re-read it from the node); a row changed in between makes the node answer
+412, and the backend reads it again and decides again, never reusing a decision made on an older row.
+A disable, a new generation or a deletion stored by another writer is therefore not overwritten, an
+expired-setup cleanup never recreates a deleted connection, and a stale enable never re-enables over
+a newer generation. A node that sends no ETag for a stored row gets no write or delete to it: the
+backend refuses (`calendar_row_unversioned`, `credential_unversioned`) rather than write blind.
+
+The node's ETag is a hash of the stored bytes, so a row changed and changed back would carry the same
+ETag. Every calendar row and credential row therefore holds a revision (`rev`, `revision`) that every
+write increases: no two versions of a row have the same bytes. A row written before revisions existed binds a
+decision made on it like any other version; a scan write refused because a due-time timer moved the
+row on is skipped, and the next scan decides on the stored row.
+
+Credential custody follows the same rule. Store, rotate, markUsed and delete are conditional
+(`If-Match`, `If-None-Match` to create); markUsed never creates a credential. A token refresh is bound
+to the grant it read: it is refused when this process changed or queued a change to that credential
+since the read, when the stored grant is no longer that version (replaced or deleted by any process),
+or when the credential read back after the write is not the one written. A refused refresh returns
+and caches no token. Cached access tokens serve only their connection generation and custody
+version, and at most 5 minutes (`ACCESS_TOKEN_TTL_MS`) after custody was last read; past that, the
+next use reads custody again. The cache is bounded, and a token is dropped on expiry and whenever a
+read of its connection, a status read included, shows a disable, a deletion or another generation.
+
+**Residual window.** A credential deleted or replaced by another backend process is not seen by this
+one until it next reads custody, so this process can keep using a token it cached for up to 5
+minutes after the other process's change. With the deploy rule above (one backend) there is no other
+process.
+
+An idle connected user costs 40–60 node calls an hour for the policy read before each scan (one
+scan every 60–90 s), plus 12 custody reads (one per token TTL), an hourly `lastScanAt` write and its
+read, and one token refresh: about 1.2 node reads per scan. Disabled users and finished meetings
+cost none, and identical writes are skipped.
+
+Correctness still rests on the deploy rule above: a writer outside this backend is refused only
+when its write lands between a read and a write of ours, and nothing tells the worker about it
+otherwise. Account deletion does not yet go through this service, so do not describe autojoin as
+deletion-safe. A second worker started on the same store in one process is refused.
 
 ## Two accounts in the same meeting (TC-581)
 
@@ -69,8 +110,9 @@ account's bot is actually in, or about to be in, the call: its ptx meeting is `q
 `waiting_for_admission`, `needs_help` or `in_progress`. From `processing` on, the bot has left. An owner that
 never got a meeting id counts only until its dispatch cutoff plus one minute. The owner's ptx
 status is read before any lock is taken. If the other bot leaves (finished, failed, stopped,
-deleted) while this account is still inside its own dispatch window (one minute before start to
-five minutes after), this account sends its own bot straight away. Back-to-back meetings in the
+deleted) while this account is still inside its own dispatch window (from one minute before start
+until 15 minutes after start or one minute before end, whichever is earlier), this account sends its
+own bot straight away. Back-to-back meetings in the
 same room and last week's occurrence of a recurring meeting never overlap.
 
 **Corroboration.** When an account attaches to another account's capture, it checks its OWN

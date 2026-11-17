@@ -17,6 +17,7 @@ import { AnswerOptions, OWN_OPTION, OwnAnswerBox } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
 import { CompactCard, type Replies } from "./CompactCard";
+import { cardLead } from "./cardLead";
 import { cardStatus } from "./cardStatus";
 import { agentProfile } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
@@ -118,10 +119,11 @@ function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
   const payload = card.payload ?? {};
   const render = ["post", "image", "thread", "article", "link"].includes(String(payload.render)) ? payload.render as FeedCard["render"] : "post";
   const source = payload.source;
-  const sourceRecord = source && typeof source === "object" ? source as Record<string, unknown> : undefined;
+  // A typed card's source line is in its Details (SitrepCard), not on its face.
+  const sourceRecord = !context && source && typeof source === "object" ? source as Record<string, unknown> : undefined;
   return {
     key: keyOf(entry), at: card.createdAt, author: cardAuthor(entry, context?.record), render,
-    title: card.title, lead: { text: card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
+    title: card.title, lead: { text: context?.record.kind === "ship" ? "" : card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
     // Replies on a plain card render in its conversation, not in the body.
     ...(typeof payload.body === "string" ? { body: payload.body } : {}),
     ...(typeof payload.url === "string" ? { url: payload.url } : {}),
@@ -878,7 +880,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       if (label) return `You chose ${optionText(label)}`;
       if (response.text) return `You answered “${response.text}”`;
     }
-    return typeof entry.state.card.payload?.summary === "string" ? entry.state.card.payload.summary : entry.state.card.body;
+    if (typeof entry.state.card.payload?.summary === "string") return entry.state.card.payload.summary;
+    const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
+    return (record && cardLead(record)) ?? entry.state.card.body;
   }
   const dueOf = (entry: HomeFeedEntry) => { const deadline = timingOf(entry).deadline; return deadline && attention(entry) ? deadline : undefined; };
   /** A card as a short item (compact view): its agent, title, short description and where it stands. Tap opens it. */
@@ -928,9 +932,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     // Any touch or focus inside an open card engages it, in every view: a card being answered stays bound to its exact
     // issuance (retained in place when a changed revision arrives mid-countdown, so the countdown is refused, never
     // written to the old identity).
-    return <div className="min-w-0" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
+    return <div className="min-w-0 [container-type:inline-size]" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
       {...(unsupported ? {} : { onAuthor: () => { leaveView(); setAgentPage(agentKey(entry, context?.record)); mainRef.current?.scrollTo({ top: 0 }); } })}
-      {...(status ? { status } : {})} collapse={collapse}>
+      {...(status ? { status } : {})} collapse={collapse} inline>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
         ? <SeenAfterUndo onSeen={seenUnsent}><NotSent label={refusedLabel} changed={refused.has(key) || unsent?.outcome !== "closed"} {...wordsOf(refusedLabel)} /></SeenAfterUndo>
         : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
@@ -967,8 +971,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {snoozedOnly && !isOpen(entry) && snoozedNow(entry, clock) && <div className="flex justify-end px-2 pb-2"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}
     </MorphItem>;
   };
-  const asRow = (row: Row) => row.kind === "card" && !row.retained && (!!labPageOf(row.item) || !isOpen(row.item));
-  /** A section's items: open cards and groups on their own, and each run of rows together in one bordered list. */
+  const asRow = (row: Row) => row.kind === "card";
+  /** A section's items: groups on their own, and each run of cards (rows, and a card open in its row) together in one bordered list. */
   function renderList(list: Row[]) {
     const out: ReactNode[] = [];
     let run: ReactNode[] = [];
@@ -1020,7 +1024,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // edge and the safe-area inset, so its last cards can scroll clear of them (Clarissa, 75eebec).
   return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
     style={undoBar.height ? { paddingBottom: `calc(${undoBar.height + 32}px + env(safe-area-inset-bottom))` } : undefined}>
-    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}>
+    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:max-w-[760px] lg:px-8 lg:pt-10" inert={!!pageEntry}>
     <MorphConfig>
       {/* Sam, 11-13: one header for every state, phone and desktop (briefs/feed-lab/design/toprow). "Home" with the
           Agents pill on its line, the summary, then one row: Needs you · All · History, and the Filter icon. Scrolled,
