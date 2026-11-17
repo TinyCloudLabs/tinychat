@@ -1,6 +1,7 @@
 // TC-3195: /s/<id>, a link someone sent you (approved mock, screen 3). It says who shared what: the owner from the
-// owner's signature, the title as the link shows it. Nothing is added until you ask: "Sign in to open" adds it once
-// you are signed in, and a signed-in account taps "Add to Library". Then the recording opens.
+// owner's signature, the title as the link shows it (in quotes, captioned as the sender's). Nothing is added until you
+// ask: "Sign in to add" adds it once you are signed in, and a signed-in account taps "Add to Library". Then the
+// recording opens.
 // The link (and its key) was read and removed from the address bar before the app rendered (link.ts); it lives in
 // memory only and is let go once the share is in your TinyCloud.
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -174,7 +175,8 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
       <div className="mt-6 flex items-center gap-3 rounded-lg border border-border p-3">
         <span aria-hidden="true" className="flex size-9 shrink-0 items-center justify-center rounded-md bg-surface-2 text-muted-foreground"><AudioLinesIcon className="size-5" /></span>
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="text-body font-medium [overflow-wrap:anywhere]">{display.title}</span>
+          <span className="text-body font-medium [overflow-wrap:anywhere]">“{display.title}”</span>
+          <span className="text-callout text-muted-foreground">Title from the sender</span>
           <span className="text-meta text-muted-foreground">{shareItemLine(display, now)} · {includesLabel(display.includes)}</span>
         </span>
       </div>
@@ -190,9 +192,9 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
           <Button type="button" className="h-11 w-full fine:h-10" disabled={busy} onClick={() => {
             setAddRequested(true);
             props.onSignIn();
-          }}>{busy ? "Signing in…" : "Sign in to open"}</Button>
+          }}>{busy ? "Signing in…" : "Sign in to add"}</Button>
         )}
-        <p className="text-callout text-muted-foreground">{tcw ? "" : "Signing in adds it to your TinyCloud. "}{sender} can stop sharing at any time.</p>
+        <p className="text-callout text-muted-foreground">{tcw ? "" : "Signing in adds it to your TinyCloud. "}{sender} can stop sharing at any time, and then it’s gone from your Library.</p>
         {props.error && <p role="status" className="text-callout">{bootMessage(props.state, props.error)}</p>}
       </div>
       <div className="mt-auto pt-10">

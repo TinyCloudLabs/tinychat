@@ -1,5 +1,5 @@
 // TC-3195: opening a share link adds nothing by itself. A signed-in account sees who shared what and adds it with
-// "Add to Library"; signed out, "Sign in to open" is the request, and the share is added once sign-in finishes. A link
+// "Add to Library"; signed out, "Sign in to add" is the request, and the share is added once sign-in finishes. A link
 // is claimed once per account: opening it again opens the record it added, and nothing is claimed while the
 // account's records cannot be read.
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -111,11 +111,11 @@ describe("ShareLinkSurface", () => {
     expect(claims).toEqual(["tc1:token"]);
   });
 
-  test("signed out, Sign in to open is the request: the share is added once sign-in finishes", async () => {
+  test("signed out, Sign in to add is the request: the share is added once sign-in finishes", async () => {
     let signIns = 0;
     const { container, render } = await mount(null, () => signIns++);
     expect(button(container, "Add to Library")).toBeUndefined();
-    await tap(container, "Sign in to open");
+    await tap(container, "Sign in to add");
     expect(signIns).toBe(1);
     expect(claims).toEqual([]);
     await render(account().tcw);
