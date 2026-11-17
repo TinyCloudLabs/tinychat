@@ -1,4 +1,5 @@
 import { describe, expect, jest, test } from "bun:test";
+import { fakeBackendNode } from "./helpers/fake-backend-node.js";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import {
   BackendStorageLane, BackendStorageLaneTimeout, FOREGROUND_BURST, REQUEST_LANE_WAIT_MS, type BackendStorageLanePriority,
@@ -156,29 +157,11 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function slowNode(values: Map<string, unknown>, delay: { ms: number }) {
   const gets: string[] = [];
   const puts: { key: string; value: unknown }[] = [];
-  const node = { kv: {
-    async get(key: string) {
-      await sleep(delay.ms);
-      gets.push(key);
-      if (!values.has(key)) return { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } };
-      return { ok: true, data: { data: structuredClone(values.get(key)) } };
-    },
-    async put(key: string, value: unknown) {
-      await sleep(delay.ms);
-      puts.push({ key, value: structuredClone(value) });
-      values.set(key, structuredClone(value));
-      return { ok: true, data: {} };
-    },
-    async list({ prefix }: { prefix: string }) {
-      await sleep(delay.ms);
-      return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } };
-    },
-    async delete(key: string) {
-      await sleep(delay.ms);
-      values.delete(key);
-      return { ok: true, data: {} };
-    },
-  } } as unknown as TinyCloudNode;
+  const { node } = fakeBackendNode(values, { async before(op, key, value) {
+    await sleep(delay.ms);
+    if (op === "get") gets.push(key);
+    if (op === "put") puts.push({ key, value: structuredClone(value) });
+  } });
   return { node, gets, puts };
 }
 

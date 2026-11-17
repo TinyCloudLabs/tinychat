@@ -1,5 +1,31 @@
 # exo-desktop
 
+## 0.14.0-beta.73
+
+No changes in this release.
+
+## 0.14.0-beta.72
+
+No changes in this release.
+
+## 0.14.0-beta.71
+
+No changes in this release.
+
+## 0.14.0-beta.70
+
+### Patch Changes
+
+- 8fcb036: The "Use with your agent" page (`/agents`) calls the product TinyCloud One in its title, header, intro and setup steps instead of TinyChat, and the agent-facing `setup.md` names TinyCloud One's agent-access setting in one sentence. The published skill pack, its tool names and the approval message it prints are unchanged.
+
+## 0.14.0-beta.69
+
+No changes in this release.
+
+## 0.14.0-beta.68
+
+No changes in this release.
+
 ## 0.14.0-beta.67
 
 No changes in this release.
