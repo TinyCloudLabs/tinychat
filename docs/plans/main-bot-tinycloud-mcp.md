@@ -206,7 +206,7 @@ Each answers the model with a fixed one-line error (no upstream text) and logs a
 
 ## Web access (phase 2)
 
-The gateway offers two tools, `web__search` and `web__fetch`. The search vendor makes the outside calls: search is
+The gateway offers two tools, `search` and `fetch`, as an MCP server named `web` (OMP shows them as `mcp__web_search` and `mcp__web_fetch`). The search vendor makes the outside calls: search is
 Tavily Search and reading a page is Tavily Extract, so the gateway dials only the vendor's API host. A page's own
 server never sees our addresses, and the gateway never opens a connection to an address a page or the model named. The
 sandbox has no raw network and gets no new route beyond `/v1/mcp`.
@@ -259,9 +259,25 @@ a global daily cap; one web call in flight per bot. Returned text also counts ag
 `provider_error`, `timeout`, `budget`), bytes returned. No query, no URL, no page text. The settings row shows "Main
 searched 4 times and read 9 pages today." Blocked attempts are counted separately so a spike is visible.
 
-**Owner control.** Web access is off by default and is a per-owner switch with two choices, "Just for this task" and
-"Until I turn it off". It carries no owner credential and no owner data, so it has no expiry; the 1-hour and 7-day rules
-are for owner authority. Turning it off ends it at the next call.
+**Owner control (as built, tinychat web-access PR).** Web access is a per-owner setting, off by default, with three
+presets, the same shape as the large assistants' domain controls (Claude's allowed domains, ChatGPT's per-site
+allow list):
+- **Off** (default). Every call is refused at the gateway and counted as blocked.
+- **Only sites I list.** Up to 50 site names, subdomains included. The gateway refuses any other site even if the bot asks
+  for it directly, and a search is sent to the provider with the same list, its results filtered again.
+- **Any public site.** Search the web and read any public page, with a stronger warning.
+
+Turning on either preset shows the prompt-injection warning first, and so does moving from the list to any site. The
+setting is saved by the supervisor outside the sandbox and given to the gateway; the gateway applies it on every call, so
+a change takes effect at the bot's next call, and a gateway restart without a fresh push reads as off. It carries no owner
+credential and no owner data, so it has no expiry. In both on-presets a page is read only if its address was typed by the
+owner (the supervisor hands the gateway addresses from the owner's own message, never the sandbox's) or returned by an
+earlier search or page. The conversation mark (decision 5) is separate and not part of this build: Main has no owner-data
+tools yet. Residual risk, stated to the owner: a search query (at most 200 characters) and a choice among addresses a page
+offered can still carry a few words, and a listed site that accepts writes could be abused; this is why the list preset is
+the safer one.
+
+**Note.** The conversation mark in the exfil rule below still applies to the web and MCP tool rules; only the image prompt no longer depends on it.
 
 **Untrusted text.** Everything that comes back from the web (and from an owner-added server, below) is data, not
 instructions, and the design does not rely on the model to tell the difference:
@@ -307,27 +323,34 @@ instructions, and the design does not rely on the model to tell the difference:
     anything. The desktop app's CSP allows `img-src https:` (`desktop/src-tauri/tauri.conf.json`, noted there as "chat
     markdown and avatars"), so it would not stop this, and no CSP for the web build was found in this repo. That chat
     already reads meeting transcripts and does web search, so **this path is open today in the existing chat, not only
-    a future Main risk**; its fix is a separate change (tinychat#745) and does not wait for phase 2.
+    a future Main risk**; its fix is a separate change (tinychat#757, which supersedes #745) and does not wait for phase 2.
   - *Feed posts* render agent-authored media (`PostPage.tsx` `media.src`, option and page images; avatars in
     `FeedView.tsx`) as remote images by design; article text is plain. That is an agent-to-feed channel, not model
     prose, and outside this plan, but an agent that can read owner data and also post is the same shape of channel.
 
   The rule:
-  1. A conversation that holds no owner data and no outside content is unchanged: its images load. Once it holds
-     either (a search result, a transcript or other data read, a file, a tool or server result, pasted text), the mark
-     is set before the reply that follows is drawn, is derived from the stored history, and never clears. From then on
-     each image in a reply asks first, in the renderer: "Load this image?", with the full address shown (query string
-     included), "Load" and "Not now". Allowing is per image address, not per site, and no `src` exists until then.
-     History that cannot be read as clean (older, imported, shared or unknown) counts as marked. Surfaces that draw
-     model text in a place with no button (notes) never load images.
-  2. Links in model text show the full host next to the label (`[docs](https://evil.example)` shows as "docs
-     (evil.example)"), open with `rel="noopener noreferrer nofollow"` and no referrer, and are not opened by the
-     renderer.
+  1. Image addresses are filtered on every surface that draws model text (chat reply, notes), whatever the conversation holds. An
+     address that does not look like it carries data loads as it always did, within a budget: per reply or note, at most 2
+     different images from hosts outside a short allowlist (our own hosts and two named image hosts) load silently, and the
+     rest wait behind one prompt for the whole reply. An address that does look like it carries data asks first in the
+     renderer: "Load image from <host>?" with the full address, "Load" and "Not now"; no `src` exists until Load, and Load
+     allows that one address. Signals: a query string over 64 characters or more than 8 parameters, a path segment over 64 or a
+     path over 160, a base64 run of 40 or more or more than 8 percent escapes, 8 or more different words across path and query,
+     `user:password@`, `http:`, an IP address as host, a host with more than one label above its domain or a long or
+     mixed-alphanumeric label, or an address inside the address (`url=`, `mark=`, redirects). While a chat reply streams no
+     image outside the allowlist loads; the silent two are chosen from the finished text. `data:`, `blob:` and other non-web
+     addresses never load. The filter keeps no per-site or trust state and judges the address only, so a short payload in a
+     normal-looking address still loads; the accepted ceiling is about 1.3 kbit per image and 2.7 kbit per reply or note (the
+     security review's measurement). It does not need the conversation mark.
+  2. Links in model text send no referrer and no opener (`rel="noopener noreferrer nofollow"`, `referrerPolicy="no-referrer"`).
+     They are not rewritten and the renderer does not open them.
   3. A second layer that does not trust the first: while marked, the layer that sees the final reply text strips
      Markdown image syntax and HTML tags from it.
 
-  Rules 1 and 2 ship for the general chat on their own schedule (tinychat#745), and for Main no later than phase 2 (or
-  before Main's replies move to Markdown, whichever is first).
+  Rules 1 and 2 ship for the general chat and notes on their own schedule (tinychat#757), and for Main no later than phase 2
+  (or before Main's replies move to Markdown, whichever is first); Main's renderer reuses `imageUrlVerdict`. Main's replies
+  are plain text today, so no image loads there. Web pages Main reads never carry an image address into a reply either: the
+  gateway turns images into their alt text before the model sees the page.
 
 ## Owner-added MCP servers (phase 3)
 
@@ -401,7 +424,7 @@ tool changed, over budget.
 | Where | Draft |
 | --- | --- |
 | Web, off | "Web" / "Main can't search the web or read pages." / "Let Main use the web" |
-| Web, choice | "Let Main use the web?" / "Main can search and read public pages. Searches go to a search provider." / "Just for this task" / "Until I turn it off" |
+| Web, choice | "Web access" / "Off" / "Only sites I list" / "Any public site", then "Let Main use the web?" / "A web page can hide instructions meant for an AI. Main may follow them, and could put what you've told it into a search or a web address. Searches and page addresses go to our search provider." / "Turn on" / "Not now" (final wording: copy review on the web-access PR) |
 | Web, on | "Main can use the web." / "Searched 4 times and read 9 pages today." / "Turn off" |
 | Add server | "Add a tool server" / "Paste the address of an MCP server you trust." / "Main can use the tools you allow, nothing else." |
 | Server tools | "<name> (<host>)" / "Choose what Main may use" (none ticked) |
@@ -701,11 +724,11 @@ flag and does not change the others.
    network, reachable only from `bots-gateway`. iron-proxy is not adopted now. Smokescreen has not been run by us, so
    the spike confirms the choice before phase 3 ships rather than choosing between hops. Whichever, the gateway keeps
    its own checks and the per-owner secrets.
-8. **Reply rendering** (owner: the TinyChat frontend, as a later ticket; Main's reply is plain text today, so this is
-   needed when replies gain Markdown, images or links, and now for the general chat, where the image path is open):
-   in a conversation that holds owner data or outside content, each image asks first with its full address (allowed
-   per address), and links show their full host; notes never load images. Conversations that hold neither are
-   unchanged. Applies on every surface. See Web access.
+8. **Reply rendering** (owner: the TinyChat frontend ...): every surface that draws model text filters image addresses and
+   budgets them per reply (see Web access, rule 1): an address that looks like it carries data asks first with its full
+   address, images beyond the first 2 from outside the allowlist wait behind one prompt, a non-web address never loads, the
+   rest load as before; links send no referrer. The conversation mark does not gate images. Residual accepted: about 1.3
+   kbit per silent image, 2 per reply.
 
 ## Smoke check for a later build
 
