@@ -8,7 +8,7 @@ import { boardKey, parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sit
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { homeMirrorRecord, publishHomeMirror, readHomeMirrorSource } from "./bridge";
 import type { HomeMirrorPublishInput } from "./bridge-types";
-import { boardCard, parseInventoryKinds, postMany, readBoardIndex } from "./inventory";
+import { boardCard, parseInventoryKinds, readBoardIndex } from "./inventory";
 import { boardRecord, mirrorNode, NOW, SOURCE, take } from "./mirror-node.fixture";
 import type { MirrorNode } from "./mirror-node.fixture";
 
@@ -19,7 +19,6 @@ async function node(): Promise<MirrorNode> { const f = await mirrorNode(); clean
 const NOW_MS = Date.parse(NOW);
 const CODE_URL = "https://openkey.so/delegate?user_code=ABCD-1234&state=keep-out-of-history";
 const BARE_URL = "https://openkey.so/delegate";
-const ONE_TAP = `https://openkey.so/a/${"a".repeat(26)}#v=4&k=${"A".repeat(43)}&c=bafkrei${"a".repeat(52)}`;
 const base = { approvalType: "openkey", approvalKind: undefined, codeExpected: true, issuedAt: "2026-11-13T09:30:00.000Z" };
 // Through JSON, as a board copy is read back (an undefined field is a missing one).
 const open = (id: string, patch: Record<string, unknown> = {}): BoardRecord => JSON.parse(JSON.stringify(boardRecord("approval", id, { ...base, url: CODE_URL, expiresAt: "2026-11-13T11:00:00.000Z", ...patch })));
@@ -44,17 +43,7 @@ test("a lapsed link, an expired card and a cancelled card reach Home without the
   }
 });
 
-test("a one-tap approval link is never mirrored, open or closed", async () => {
-  const f = await node();
-  const oneTap = open("g5", { url: ONE_TAP, issuedAt: "2026-11-13T09:50:00.000Z", expiresAt: "2026-11-13T10:30:00.000Z" });
-  const closed = open("g6", { url: ONE_TAP, issuedAt: "2026-11-13T09:50:00.000Z", expiresAt: "2026-11-13T10:30:00.000Z", status: "cancelled" });
-  for (const record of [oneTap, closed]) expect(() => boardCard(rowOf(record), [record], NOW_MS)).toThrow("one-tap approval links");
-  const results = await postMany(f.ctx, { sourceId: SOURCE, label: "Rocinante", rows: [oneTap, closed].map(rowOf), now: NOW_MS });
-  expect(results.map((item) => [item.outcome, item.code])).toEqual([["refused", "INVALID_INPUT"], ["refused", "INVALID_INPUT"]]);
-  expect(take(await listFeedCardHistory(f.output)).cards).toHaveLength(0);
-});
-
-test("the mirror gate strips a closed approval's Home card itself, refuses a card that is not the board record or its stripped form, and refuses a one-tap link", async () => {
+test("the mirror gate strips a closed approval's Home card itself and refuses a card that is not the board record or its stripped form", async () => {
   const f = await node();
   const cancelled = open("g7", { status: "cancelled" });
   take(await f.legacy.put(boardKey("approval", "g7"), JSON.stringify(cancelled), { prefix: "", contentType: "application/json" }));
@@ -74,8 +63,6 @@ test("the mirror gate strips a closed approval's Home card itself, refuses a car
   expect(typed?.record.kind === "approval" && typed.record.url).toBe(BARE_URL);
   // The board's copy is the record as written, code included.
   expect(JSON.parse(f.values.get(boardKey("approval", "g7"))!.text).url).toBe(CODE_URL);
-  const oneTap = open("g11", { url: ONE_TAP, issuedAt: "2026-11-13T09:50:00.000Z", expiresAt: "2026-11-13T10:30:00.000Z" });
-  await expect(publishHomeMirror(f.ctx, input(oneTap, oneTap))).rejects.toThrow();
 });
 
 test("a card built just before its link lapses and published just after reaches Home without the code, not refused", async () => {
@@ -100,7 +87,7 @@ test("a closed claude sign-in has no bare form that stays valid, so it is refuse
   const record = open("g8", { approvalType: "claude", url: claude.href, target: "A synthetic seat" });
   expect(homeMirrorRecord(record, NOW_MS)).toEqual(record);
   const cancelled = open("g9", { approvalType: "claude", url: claude.href, target: "A synthetic seat", status: "cancelled" });
-  expect(() => homeMirrorRecord(cancelled, NOW_MS)).toThrow("one-tap approval links");
+  expect(() => homeMirrorRecord(cancelled, NOW_MS)).toThrow("consent code of a closed approval");
 });
 
 test("the board-index read returns open approvals and leaves closed ones out (local fixture)", async () => {
@@ -142,10 +129,7 @@ test("a Secrets request is carried whole while open and bare once closed or laps
   }
 });
 
-test("a one-tap link is refused for every kind of approval state, and a Claude sign-in is carried only while open", () => {
-  for (const status of ["open", "cancelled", "expired"]) {
-    expect(() => homeMirrorRecord(open(`o-${status}`, { url: ONE_TAP, issuedAt: "2026-11-13T09:50:00.000Z", expiresAt: "2026-11-13T10:30:00.000Z", status }), NOW_MS)).toThrow("one-tap approval links");
-  }
+test("a Claude sign-in is carried only while open", () => {
   const challenge = "B".repeat(43);
   const claude = new URL("https://claude.com/cai/oauth/authorize");
   for (const [key, value] of Object.entries({ code: "true", client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e", response_type: "code", redirect_uri: "https://platform.claude.com/oauth/code/callback", scope: "user:inference", code_challenge: challenge, code_challenge_method: "S256", state: challenge })) claude.searchParams.set(key, value);
@@ -153,6 +137,6 @@ test("a one-tap link is refused for every kind of approval state, and a Claude s
   expect(carried(seat("c1")).url).toBe(claude.href);
   for (const [label, patch] of closedStates) {
     const status = label === "lapsed link" ? "open" : label;
-    expect(() => homeMirrorRecord(seat(`c-${status}`, { status, ...patch }), NOW_MS)).toThrow("one-tap approval links");
+    expect(() => homeMirrorRecord(seat(`c-${status}`, { status, ...patch }), NOW_MS)).toThrow("consent code of a closed approval");
   }
 });

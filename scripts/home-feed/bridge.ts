@@ -10,7 +10,7 @@ import {
 } from "@tinycloud/sdk-services/feed";
 import type { FeedCard, FeedCardIdentity, FeedDatabase, FeedDeliveryOptions, FeedHandling, FeedHandoff, FeedHooks, FeedResponse, FeedResponsePayload } from "@tinycloud/sdk-services/feed";
 import {
-  applyUpsert, approvalUrlKind, boardKey, claimDecisionHistory, closePatch, currentAnswer,
+  applyUpsert, boardKey, claimDecisionHistory, closePatch, currentAnswer,
   decodeLegacySendNote, decodeOwnerThreadMessage,
   emptySitrepOwnerData, holdLiftPatch, isKind, openApprovals, ownerAnswerLookup,
   parseSitrepCardPayload, validateAnswer, validateClaimDecision, validateRecord,
@@ -63,7 +63,7 @@ const refusalMessages = [
   "Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file",
   "Home mirror inventory requires a board index, a source and full spaces",
   "Home mirror inventory leaves holds and claims on the board",
-  "Home mirror leaves one-tap approval links, and the consent code of a closed approval, on the board",
+  "Home mirror leaves the consent code of a closed approval on the board",
   "Board index is unreadable",
   "The synthetic check runs only in a QA owner space",
   "Synthetic check requires a profile, full spaces and a source",
@@ -128,19 +128,16 @@ function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity): boolean { retur
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const publication = (record: BoardRecord, cardUuid: string) => JSON.stringify({ ...record, cardUuid });
 /**
- * The record as the Home card carries it. A one-tap OpenKey approval link is a bearer key, so a card that holds one is
- * never mirrored, on any revision. An approval that is closed, or whose link has lapsed, carries no consent code: its url
- * is cut back to the bare consent page (no query), and a url that has no valid bare form (a claude sign-in) is refused.
- * An open approval is carried whole, with its code. The board's own copy is never changed by this.
+ * The record as the Home card carries it. An approval that is closed, or whose link has lapsed, carries no consent code:
+ * its url is cut back to the bare consent page (no query), and a url that has no valid bare form (a claude sign-in) is
+ * refused. An open approval is carried whole, with its code. The board's own copy is never changed by this.
  */
 export function homeMirrorRecord(record: BoardRecord, now: number): BoardRecord {
   if (record.kind !== "approval" || record.url === undefined) return record;
-  const kind = approvalUrlKind(record.url);
-  if (kind === "openkey-link") throw homeMirrorRefusal("Home mirror leaves one-tap approval links, and the consent code of a closed approval, on the board");
   if (record.status === "open" && (!record.expiresAt || Date.parse(record.expiresAt) > now)) return record;
   const page = new URL(record.url), bare = `${page.origin}${page.pathname}`;
   const stripped = validateRecord("approval", { ...record, url: bare });
-  if (!stripped.ok || stripped.value.kind !== "approval") throw homeMirrorRefusal("Home mirror leaves one-tap approval links, and the consent code of a closed approval, on the board");
+  if (!stripped.ok || stripped.value.kind !== "approval") throw homeMirrorRefusal("Home mirror leaves the consent code of a closed approval on the board");
   return stripped.value;
 }
 function privateDatabase(database: FeedDatabase, ctx: HomeMirrorContext): FeedDatabase {
