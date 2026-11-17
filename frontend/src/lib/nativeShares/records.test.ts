@@ -69,8 +69,8 @@ describe("the recipient's received-share record", () => {
   const claimed: ClaimedShare = { delegation: JSON.stringify({ cid: "bafychild", parentCid: "bafyroot", resources: PATHS.map((path) => ({ path })) }), rootCid: "bafyroot", paths: PATHS, accessExpiresAt: "2027-11-17T10:00:00.000Z" };
 
   test("is built from the opened link's display and owner only, and is written as such", async () => {
-    const record = receivedShareRecord(opened, DISPLAY, claimed, NOW);
-    expect(record).toMatchObject({ id: "bafyroot", owner: OWNER, paths: PATHS, claimedAt: NOW.toISOString(), accessExpiresAt: claimed.accessExpiresAt });
+    const record = receivedShareRecord(opened, DISPLAY, claimed, NOW, "linkid");
+    expect(record).toMatchObject({ id: "bafyroot", linkId: "linkid", owner: OWNER, paths: PATHS, claimedAt: NOW.toISOString(), accessExpiresAt: claimed.accessExpiresAt });
     expectNoSecret(JSON.stringify(record));
     const { space, written } = fakeSpace();
     await receivedShares.put(space, record);
@@ -79,7 +79,7 @@ describe("the recipient's received-share record", () => {
   });
 
   test("a stored record carrying a token, a link or k is read back without them", () => {
-    const record = receivedShareRecord(opened, DISPLAY, claimed, NOW);
+    const record = receivedShareRecord(opened, DISPLAY, claimed, NOW, "linkid");
     const parsed = parseReceivedShare({ ...record, token: TOKEN, link: LINK, k: K, display: { ...record.display, token: TOKEN, link: LINK } });
     expect(parsed).toEqual(record);
     expectNoSecret(JSON.stringify(parsed));

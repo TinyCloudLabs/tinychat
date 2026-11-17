@@ -9,7 +9,7 @@ import { CONNECTORS_KV_PREFIX } from "@/lib/connectors/connectorStore";
 import { parseRecordingDisplay, type RecordingShareDisplay } from "./display";
 import { openSharedKv, type ClaimedShare, type OpenedShareLink } from "./sdk";
 import { sentShares } from "./sentShares";
-import { createSpaceRecordStore, type RecordSpace } from "./spaceRecords";
+import { createSpaceRecordStore, type RecordSpace, type RecordStoreSnapshot } from "./spaceRecords";
 
 export const RECEIVED_SHARES_PREFIX = `${CONNECTORS_KV_PREFIX}/shares/received/`;
 const SHARED_NOTE_PREFIX = "shared:";
@@ -18,6 +18,8 @@ export interface ReceivedRecordingShare {
   version: 1;
   /** The share's root CID: claiming the same link twice keeps one record. */
   id: string;
+  /** The link it was added from (`/s/<id>`): opening that link again opens this record instead of claiming again. */
+  linkId?: string;
   display: RecordingShareDisplay;
   owner: { address: string; chainId: number; spaceId: string };
   /** The serialized child delegation. */
@@ -45,6 +47,7 @@ export function parseReceivedShare(value: unknown): ReceivedRecordingShare | nul
   return {
     version: 1,
     id: record.id,
+    ...(isText(record.linkId) ? { linkId: record.linkId } : {}),
     display,
     owner: { address: owner.address, chainId: owner.chainId, spaceId: owner.spaceId },
     delegation: record.delegation,
@@ -57,11 +60,33 @@ export function parseReceivedShare(value: unknown): ReceivedRecordingShare | nul
 
 export const receivedShares = createSpaceRecordStore(RECEIVED_SHARES_PREFIX, parseReceivedShare);
 
+/**
+ * The account's record for a link, once its records are loaded: `null` when the link was never added, `undefined`
+ * when the records could not be read (so whether it was added is unknown).
+ */
+export async function receivedShareForLink(space: RecordSpace, linkId: string): Promise<ReceivedRecordingShare | null | undefined> {
+  await receivedShares.bind(space);
+  // Not Promise.withResolvers: newer than this project's lib target and some Android WebViews.
+  let unsubscribe = () => {};
+  const settled = await new Promise<RecordStoreSnapshot<ReceivedRecordingShare>>((resolve) => {
+    const check = () => {
+      const snapshot = receivedShares.snapshot();
+      if (snapshot.state === "ready" || snapshot.state === "failed") resolve(snapshot);
+    };
+    unsubscribe = receivedShares.subscribe(check);
+    check();
+  });
+  unsubscribe();
+  if (settled.state !== "ready") return undefined;
+  return settled.records.find((record) => record.linkId === linkId) ?? null;
+}
+
 /** The record for a share just claimed. Built from the opened link's display and owner only: never its token. */
-export function receivedShareRecord(opened: Pick<OpenedShareLink, "owner">, display: RecordingShareDisplay, claimed: ClaimedShare, now: Date): ReceivedRecordingShare {
+export function receivedShareRecord(opened: Pick<OpenedShareLink, "owner">, display: RecordingShareDisplay, claimed: ClaimedShare, now: Date, linkId: string): ReceivedRecordingShare {
   return {
     version: 1,
     id: claimed.rootCid,
+    linkId,
     display,
     owner: { address: opened.owner.address, chainId: opened.owner.chainId, spaceId: opened.owner.spaceId },
     delegation: claimed.delegation,

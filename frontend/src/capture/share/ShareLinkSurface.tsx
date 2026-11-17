@@ -12,8 +12,8 @@ import { Button } from "@/components/ui/button";
 import type { AppState } from "@/lib/appState";
 import { PRODUCT_PAGE_URL } from "@/lib/homeSite";
 import { includesLabel, parseRecordingDisplay, shortAddress, type RecordingShareDisplay } from "@/lib/nativeShares/display";
-import { heldShareLink, releaseShareLink } from "@/lib/nativeShares/link";
-import { receivedShareRecord, receivedShares, sharedNoteId } from "@/lib/nativeShares/receivedShares";
+import { heldShareLink, releaseShareLink, shareLinkId } from "@/lib/nativeShares/link";
+import { receivedShareForLink, receivedShareRecord, receivedShares, sharedNoteId } from "@/lib/nativeShares/receivedShares";
 import { claimShare, openShareLink, ShareLinkError, type OpenedShareLink } from "@/lib/nativeShares/sdk";
 import { bootMessage } from "@/shell/BootSurface";
 import { notePath } from "@/shell/routes";
@@ -60,11 +60,13 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
   // The recipient asked for the share: by signing in from this page, or with "Add to Library".
   const [addRequested, setAddRequested] = useState(false);
   const claiming = useRef(false);
+  const linkId = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
     const href = heldShareLink();
-    if (!href) {
+    linkId.current = href ? shareLinkId(href) : null;
+    if (!href || !linkId.current) {
       setView({ status: "problem", problem: "invalid" });
       return;
     }
@@ -83,24 +85,39 @@ export function ShareLinkSurface(props: { tcw: TinyCloudWeb | null; state: AppSt
 
   const tcw = props.tcw;
   useEffect(() => {
-    if (view.status !== "open" || !tcw || !addRequested || claiming.current) return;
+    const id = linkId.current;
+    if (view.status !== "open" || !tcw?.did || !id || !addRequested || claiming.current) return;
     claiming.current = true;
     const { link, display } = view;
+    const open = (recordId: string, added: boolean) => {
+      releaseShareLink();
+      navigate(notePath(sharedNoteId(recordId)), { replace: true, state: added ? { shareAdded: true } : null });
+    };
     void (async () => {
+      // One delegation per link: a link this account already added opens its record, and when the account's records
+      // cannot be read nothing is claimed.
+      const existing = await receivedShareForLink(tcw, id);
+      if (existing === undefined) {
+        setView({ status: "problem", problem: "claim-failed", link, display });
+        return;
+      }
+      if (existing) {
+        open(existing.id, false);
+        return;
+      }
       const claimed = await claimShare(tcw, link.token);
       if (!claimed.ok) {
         setView({ status: "problem", problem: claimed.reason === "failed" ? "claim-failed" : claimed.reason, link, display });
         return;
       }
-      const record = receivedShareRecord(link, display, claimed.share, new Date());
+      const record = receivedShareRecord(link, display, claimed.share, new Date(), id);
       try {
         await receivedShares.put(tcw, record);
       } catch {
         setView({ status: "problem", problem: "claim-failed", link, display });
         return;
       }
-      releaseShareLink();
-      navigate(notePath(sharedNoteId(record.id)), { replace: true, state: { shareAdded: true } });
+      open(record.id, true);
     })().finally(() => {
       claiming.current = false;
     });

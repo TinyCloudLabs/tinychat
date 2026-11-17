@@ -15,6 +15,15 @@ export function isShareLinkPath(pathname: string): boolean {
   return SHARE_PATH.test(pathname);
 }
 
+/** The link's id (`/s/<id>`), or `null` when `url` is not a share link. */
+export function shareLinkId(url: string): string | null {
+  try {
+    return SHARE_PATH.exec(new URL(url).pathname)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * At startup, before anything renders: keep a share link's full address in memory, drop its fragment from the
  * address bar, and turn off the Referer for the page (`_headers` does that too, but a page the service worker serves

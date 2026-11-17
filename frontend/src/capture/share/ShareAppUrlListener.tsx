@@ -4,11 +4,11 @@ import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
 
-import { holdShareLinkUrl } from "@/lib/nativeShares/link";
+import { holdShareLinkUrl, shareLinkId } from "@/lib/nativeShares/link";
 
-// The URL the app was launched with stays the launch URL for the whole process, so it is handled once: going back to
-// it after every navigation would open (and add) the share again and again.
-let launchUrlHandled = false;
+// The URL the app was launched with stays the launch URL for the whole process, so each launch link is consumed once,
+// by its id: going back to it after every navigation would open the share again and again.
+const consumedLaunchLinks = new Set<string>();
 
 export function ShareAppUrlListener() {
   const navigate = useNavigate();
@@ -22,10 +22,13 @@ export function ShareAppUrlListener() {
       const path = url ? holdShareLinkUrl(url) : null;
       if (path) navigateRef.current(path);
     };
-    if (!launchUrlHandled) {
-      launchUrlHandled = true;
-      void CapacitorApp.getLaunchUrl().then((launch) => open(launch?.url)).catch(() => undefined);
-    }
+    void CapacitorApp.getLaunchUrl().then((launch) => {
+      const url = launch?.url;
+      const id = url ? shareLinkId(url) : null;
+      if (!url || !id || consumedLaunchLinks.has(id)) return;
+      consumedLaunchLinks.add(id);
+      open(url);
+    }).catch(() => undefined);
     const listener = CapacitorApp.addListener("appUrlOpen", (event) => open(event.url));
     return () => void listener.then((handle) => handle.remove());
   }, []);
