@@ -7,7 +7,7 @@ import { afterEach, expect, mock, test } from "bun:test";
 import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
+import { findSecrets, parseSitrepCardPayload, redactSecrets } from "@tinyboilerplate/core/feed/sitrep";
 import { installDom } from "@/test/dom";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SITREP_NOW, syntheticRecord } from "./sitrep.fixtures";
@@ -111,4 +111,29 @@ test("a connected agent's plain link card, its source and its report with a one-
   await act(async () => { for (const root of roots) root.unmount(); roots.clear(); host.remove(); });
   const control = await mount(fixture(record, ok));
   expect(anchors(control)).toEqual(expect.arrayContaining(["https://example.test/page", "https://example.test/report"]));
+});
+
+test("redacting takes out every kind of thing the guard refuses, leaves nothing the guard still matches, and leaves plain text alone", () => {
+  const refused = [`Tap ${TAP} now`, `Use ${KEY}.`, "Authorization: Bearer abcdefghijklmnopqrstuv", "api_key = abcdefghijkl", "-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----", "Go to https://openkey.so/delegate?user_code=ABCD-1234 please"];
+  for (const text of refused) {
+    const out = redactSecrets(text);
+    expect(findSecrets(out), text).toEqual([]);
+    expect(out, text).toContain("[link removed]");
+  }
+  expect(redactSecrets(`Tap ${TAP} now`)).toBe("Tap [link removed] now");
+  const plain = "Ship TC-3236 after https://github.com/example/repo/pull/1 lands.";
+  expect(redactSecrets(plain)).toBe(plain);
+});
+
+test("a refused card's Details shows the card as sent without the one-tap link or key", async () => {
+  const record = { ...syntheticRecord("ask"), body: `Open ${TAP} to approve, key ${KEY}.`, links: [{ label: "Approve here", url: TAP }] };
+  const host = await mount(fixture(record));
+  const details = [...host.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent?.trim().startsWith("Details"));
+  expect(details !== undefined).toBe(true);
+  await act(async () => details!.click());
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+  expect(host.textContent).toContain("[link removed]");
+  expect(host.textContent).not.toContain("openkey.so/a/");
+  expect(host.textContent).not.toContain("A".repeat(43));
+  expect(host.textContent).not.toContain("sk-ant-");
 });
