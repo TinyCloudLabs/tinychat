@@ -1,12 +1,13 @@
 import { Link } from "react-router-dom";
 import { PATHS } from "@/shell/routes";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronRightIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronRightIcon, InfoIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { HomeCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
 import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
+import type { FeedCardLink } from "./feedCardLink";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
@@ -41,7 +42,7 @@ import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, findSecrets, gr
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
-import { FEED_SKILL_URL } from "./strings";
+import { FEED_CARD_LINK_COPY, FEED_SKILL_URL } from "./strings";
 
 const LazyAgentView = lazyTab("your agents", () => import("./AgentView").then((module) => module.AgentView));
 const LazyFilterPanel = lazyTab("Filter", () => import("./FilterPanel").then((module) => module.FilterPanel));
@@ -344,8 +345,11 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
 
 type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "group"; name: string; items: HomeFeedEntry[] };
 
-/** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
-export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
+/**
+ * `ask`: the tiny bots ask box, shown under the heading when the account has it. `linked`: the card the address names
+ * (/chat/feed/<card id>), opened once the feed has loaded, or a note when the feed holds no such card.
+ */
+export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null }) {
   // The ask box and the Agents pill are hidden features (Sam, 11-17): shown only while Settings → Show hidden features is on.
   const showHidden = useShowHiddenFeatures();
   useEffect(() => {
@@ -381,6 +385,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // Answers whose agent is no longer connected: no card is left to carry their "Not sent", so each has a notice of its own.
   const [lostAnswers, setLostAnswers] = useState<ReadonlyMap<string, HeldAnswerOutcome>>(() => new Map());
   const [agent, setAgent] = useState("");
+  // Set by a network load (not the device's earlier copy): only that can say a linked card is missing.
+  const [networkLoaded, setNetworkLoaded] = useState(false);
+  // The link's visit that found no card (the note), and the card it opened (outlined for a moment). A visit is handled once.
+  const handledVisit = useRef<string | null>(null);
+  const [missedVisit, setMissedVisit] = useState<string | null>(null);
+  const [outlined, setOutlined] = useState<string | null>(null);
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
   // How the list is drawn (Compact, Expanded, Cards), kept on this device, the same in every tab.
@@ -436,6 +446,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
     activeRef.current = null;
+    setNetworkLoaded(false);
     setSnapshot(null); setSelector(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map()); setLostAnswers(new Map());
     setExpandedGroups(new Set()); setAgentPage(null); setPendingOpen(false); ownDrafts.current.clear();
     const refresh = async () => {
@@ -465,7 +476,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
           loaded = true;
-          setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
+          setSnapshot(next); setNetworkLoaded(true); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
           markFeedFresh();
           if (!hasDefault.current && !chosenView.current) setSelector(next.settings.defaultSelector);
           hasDefault.current = true;
@@ -795,6 +806,25 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     else if (inFeed && view === "needs-action" && !attention(entry)) { chosenView.current = true; setSelector("both"); }
     openCard(entry);
   }
+  // A link to a card: once the feed has loaded, open that card as a tap on its agent's page would (filters cleared, the tab
+  // it lives in, scrolled into view). Not found (removed, expired, never mirrored, or another account's: all alike) is a
+  // note, but only after a network load that reached the feed: the device's earlier copy or a failed load decides nothing.
+  useEffect(() => {
+    if (!linked || !snapshot || handledVisit.current === linked.visit) return;
+    const matches = snapshot.entries.filter((candidate) => candidate.state.card.cardId.toLowerCase() === linked.cardId);
+    if (matches.length !== 1 && (!networkLoaded || snapshot.connectionError)) return;
+    handledVisit.current = linked.visit;
+    const found = matches.length === 1 ? matches[0] : undefined;
+    if (!found) { setMissedVisit(linked.visit); return; }
+    setMissedVisit(null);
+    openFromAgent(found);
+    setOutlined(lineageKey(found));
+  }, [linked, snapshot, networkLoaded]);
+  useEffect(() => {
+    if (!outlined) return;
+    const timer = setTimeout(() => setOutlined(null), 4000);
+    return () => clearTimeout(timer);
+  }, [outlined]);
   function changeSelector(next: FeedSelector) {
     if (next === view && !history && !snoozedOnly) return;
     leaveView();
@@ -1010,7 +1040,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     // Expanded shows every card open (a post keeps its row: it opens a page of its own).
     const openHere = isOpen(entry) || retained || (viewMode === "expanded" && !page);
     const boxed = viewMode === "cards" || viewMode === "expanded";
-    return <MorphItem key={key} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} className={`min-w-0 scroll-mt-4${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
+    return <MorphItem key={key} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} className={`min-w-0 scroll-mt-4${outlined === key ? " shadow-[inset_0_0_0_2px_hsl(var(--ring))]" : ""}${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
       {page ? postCard(entry) : openHere ? fullCard(entry, retained) : compactCard(entry)}
       {/* The Snoozed list: each card can come back now without opening it. */}
       {snoozedOnly && !openHere && snoozedNow(entry, clock) && <div className="flex justify-end px-2 pb-2"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}
@@ -1109,6 +1139,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>
+      </div>}
+      {linked && missedVisit === linked.visit && <div role="status" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+        <InfoIcon aria-hidden className="mt-px size-5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0"><p><b className="font-semibold">{FEED_CARD_LINK_COPY.missingLead}</b> {FEED_CARD_LINK_COPY.missingRest}</p><button type="button" onClick={linked.dismiss} className="mt-2 min-h-11 underline">{FEED_CARD_LINK_COPY.dismiss}</button></div>
       </div>}
       {[...lostAnswers.entries()].map(([lostKey, lost]) => {
         const words = !lost.choiceLabel && lost.text ? quotedWords(lost.text) : undefined;
