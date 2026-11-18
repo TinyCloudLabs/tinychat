@@ -16,6 +16,44 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.79
+
+### Patch Changes
+
+- 9f8d98b: Home now checks every card it shows for secrets and approval links, not only the cards it writes. A card from a connected agent that carries a one-tap approval link, a key or a credential is shown without its links, options or approval button. Details: TC-3236.
+
+## 0.14.0-beta.78
+
+### Minor Changes
+
+- acbf475: tinycloud.one is the canonical address. Visitors on tinycloud.chat or home.tinycloud.xyz move to tinycloud.one once nothing is left only in their browser; anyone with recordings or answers still on the old address stays there, with a notice, until they are saved or sent. Opening the old address with `?legacy=1` keeps the app there so that data can be saved. Each release now checks that all three addresses serve it. Details: TC-3108.
+
+  Settings for this device (theme, notes view, capture preferences and consents) are kept separately for each address, so they start fresh on tinycloud.one. Settings on tinycloud.one links to the old addresses for anything left there. A page with unsaved text, an unsaved title or an answer that can still be undone stays where it is until that's done.
+
+## 0.14.0-beta.77
+
+### Patch Changes
+
+- 3b35dd3: In the Feed's Expanded view, a card counts as seen only after at least half of it (or, for a very tall card, nearly all that fits) has stayed on screen for a second. Scrolling quickly past cards no longer marks them seen or clears their unread comments. Details: TC-3199.
+
+## 0.14.0-beta.76
+
+### Patch Changes
+
+- 17f9687: TC-3166: "Delete my recordings first" (the bulk `DELETE /api/transcriber/meetings`) now also deletes the account's private cloud transcription jobs, so voice notes and uploads left behind by a failed or cancelled run are cleared on account deletion. Queued or running jobs are cancelled, transcripts are deleted, and the call only succeeds once TinyCloud Private Transcription's own list for the account is empty; otherwise it is a 503 and safe to retry. The response gains `privateCloudDeleted` (a count, or `null` when private cloud transcription is not used), which the step requires, so an older backend can never produce a "deleted" claim for voice notes and uploads; with `null` the step says nothing about them. The bulk delete is also mounted when private cloud transcription is on and the meeting transcriber is off. A new `GET /api/transcriber/meetings/scope` (config only) tells the step whether the deployment keeps private cloud jobs, so its intro and failure line name voice notes and uploads only where they are kept; the step waits for it before showing anything.
+
+## 0.14.0-beta.75
+
+### Minor Changes
+
+- 73a32e0: The Feed's Filter panel has a View switch: Compact (the rows the Feed has always had, still the default), Expanded (every card open in full, one after another), and Cards (tiles). The choice is kept on this device. Details: TC-3199.
+
+## 0.14.0-beta.74
+
+### Patch Changes
+
+- 7b5db01: TC-3136: removing a notetaker recording now deletes the capture provider's copy (audio, video, transcript and derived artifacts) and only counts it as gone after reading it back not-found. A delete that cannot be confirmed yet stays listed as "deleting" and is retried with backoff, never dropped. Settings → Account gains "Delete my recordings first", a bulk `DELETE /api/transcriber/meetings`, ahead of deleting the OpenKey account. A recording shared with you is only removed from your list. A recording the notetaker service cannot attribute to you is removed from your list but not deleted there, and says so on its row.
+
 ## 0.14.0-beta.73
 
 ### Patch Changes

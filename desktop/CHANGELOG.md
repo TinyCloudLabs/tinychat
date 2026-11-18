@@ -1,5 +1,29 @@
 # exo-desktop
 
+## 0.14.0-beta.79
+
+No changes in this release.
+
+## 0.14.0-beta.78
+
+No changes in this release.
+
+## 0.14.0-beta.77
+
+No changes in this release.
+
+## 0.14.0-beta.76
+
+No changes in this release.
+
+## 0.14.0-beta.75
+
+No changes in this release.
+
+## 0.14.0-beta.74
+
+No changes in this release.
+
 ## 0.14.0-beta.73
 
 No changes in this release.

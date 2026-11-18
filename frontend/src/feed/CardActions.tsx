@@ -4,10 +4,11 @@
 // this card" on a decision, "Acknowledge" on an information card. Plain cards (HomeFeedEntries.tsx) and typed cards
 // (SitrepCard.tsx) share it. What a closing action writes lives in the store (ownerActions.ts); the page owns the tap
 // and its undo bar.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import type { FeedCard } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
+import { redactSecretsDeep } from "@tinyboilerplate/core/feed/sitrep";
 import type * as DetailsPanel from "./cardDetailsPanel";
 
 /** A Details section's heading ("This card", "Not shown on the card"). */
@@ -45,7 +46,9 @@ export function CardDetails({ children, actions, secondary, close, card, typed, 
 }) {
   const [open, setOpen] = useState(false);
   const lists = useDetailsModule();
-  const unshown = lists ? lists.cardUnshown(card, typed) : [];
+  // "The card as sent" is shown without what the board's guard would have refused (a one-tap link, a key), however the card came.
+  const shown = useMemo(() => redactSecretsDeep(card), [card]);
+  const unshown = lists ? lists.cardUnshown(shown, typed) : [];
   // Only fields meant to be read count; the feed's own bookkeeping is listed in Details but not counted.
   const count = unshown.filter((field) => !field.quiet).length;
   const details = <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}
@@ -77,7 +80,7 @@ export function CardDetails({ children, actions, secondary, close, card, typed, 
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-[18px]">
         <section aria-label="This card"><h3 className={detailsSectionTitle}>This card</h3>{children}</section>
         {lists && <lists.FeedUsedList fields={unshown.filter((field) => field.quiet)} />}
-        {lists && <lists.CardData card={card} />}
+        {lists && <lists.CardData card={shown} />}
       </div>
     </div>}
   </div>;

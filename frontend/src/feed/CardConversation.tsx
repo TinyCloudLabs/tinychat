@@ -16,6 +16,7 @@ import { ComposerField } from "./ComposerField";
 import { StatefulSendButton } from "./StatefulSendButton";
 import { ShortTime } from "./ShortTime";
 import { COMMENT_COPY, UNDO_SECONDS, usePendingSend } from "./cardKit";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import { isOwnerAction } from "./ownerActions";
 
 export interface ConversationLine {
@@ -180,6 +181,9 @@ export function CardConversation({ lines, to, reason, disabled = false, stale = 
   // Comments sent again. The original says "Sent again" until the copy shows in `lines`, which makes it no longer wait.
   const [resent, setResent] = useState<ReadonlySet<string>>(new Set());
   const settle = (key: string, state: Outgoing["state"]) => setOutbox((all) => all.map((out) => out.key === key ? { ...out, state } : out));
+  // A comment being written, or words typed in the box, live only in this page: a held tinycloud.chat page does not move
+  // under them. (A comment inside its undo window is kept by `usePendingSend`.)
+  useOriginMoveDeferral(text.trim() !== "" || outbox.some((out) => out.state === "sending"));
   const hold = usePendingSend({ stale, onRefused: () => {
     const item = held.current;
     held.current = undefined;
