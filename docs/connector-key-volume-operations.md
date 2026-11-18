@@ -7,8 +7,4 @@ Exclude the volume from backups and snapshots, including CVM disk snapshots that
 
 If the volume is lost, initialize a fresh volume. The next startup generates fresh keys. Previously sealed meeting data becomes unreadable and is removed by retention maintenance. Owners with stored Fireflies sign-ins need to sign in again.
 
-Key deletion rewrites the file. Old bytes can remain in freed filesystem or SSD blocks, where they rely on the CVM's disk encryption.
-
-A forward clock jump that passes every live slot's deadline permanently erases all live day keys. Restore the correct clock before starting the backend after a clock fault.
-
 Details: TC-2778
