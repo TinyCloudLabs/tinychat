@@ -16,7 +16,7 @@ const realFetch = globalThis.fetch;
 const spies: Array<{ mockRestore: () => void }> = [];
 let calls: string[];
 let logged: string[];
-let responses: Record<string, Array<{ status: number; body?: unknown }>>;
+let responses: Record<string, Array<{ status: number; body?: unknown; headers?: Record<string, string> }>>;
 
 beforeAll(() => { cleanDom = installDom(); });
 afterAll(() => { cleanDom?.(); });
@@ -32,7 +32,7 @@ beforeEach(() => {
     calls.push(key);
     const next = responses[key]?.[0];
     if (!next) throw new Error(`no answer for ${key} Bearer ${SENTINEL}`);
-    return new Response(JSON.stringify(next.body ?? {}), { status: next.status });
+    return new Response(JSON.stringify(next.body ?? {}), { status: next.status, headers: next.headers });
   }) as typeof fetch;
 });
 afterEach(() => {
@@ -75,7 +75,7 @@ test("a stored sign-in is torn down once, then OpenKey opens", async () => {
 });
 
 test("not connected, or the route dark: no DELETE, no message, OpenKey opens", async () => {
-  for (const reply of [{ status: 200, body: { connected: false } }, { status: 404 }]) {
+  for (const reply of [{ status: 200, body: { connected: false } }, { status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } }]) {
     calls = [];
     responses = { [`GET ${CREDS}`]: [reply] };
     const page = await mount();
@@ -148,4 +148,18 @@ test("the failure text joins each reason with a single space and no doubled full
     expect(text).not.toContain("  ");
     expect(text).toContain(" We couldn't confirm your Fireflies sign-in was removed from our server.");
   }
+});
+
+test("a 404 the backend did not mark is a failure: the text shows, Try again and Continue to OpenKey are offered, no DELETE", async () => {
+  responses = { [`GET ${CREDS}`]: [{ status: 404, body: { error: "not_found" } }] };
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  const alert = page.host.querySelector("[role=alert]")?.textContent ?? "";
+  expect(alert).toContain("We couldn't confirm your Fireflies sign-in was removed from our server.");
+  expect(page.opened()).toBe(0);
+  expect([...page.host.querySelectorAll("button")].map((b) => b.textContent)).toEqual(expect.arrayContaining(["Try again", "Continue to OpenKey"]));
+  expect(calls.filter((c) => c.startsWith("DELETE"))).toHaveLength(0);
+  await page.click("Continue to OpenKey");
+  expect(page.opened()).toBe(1);
+  await page.unmount();
 });

@@ -30,7 +30,7 @@ const CREDS = `${BACKEND}/api/connectors/credentials/fireflies`;
 const CONFIG = `${BACKEND}/api/connectors/webhooks/config`;
 
 interface Call { method: string; url: string; headers: Record<string, string>; body: unknown }
-type Answer = { status: number; body?: unknown } | "network-error";
+type Answer = { status: number; body?: unknown; headers?: Record<string, string> } | "network-error";
 
 let calls: Call[];
 let answers: Record<string, Answer[]>;
@@ -63,7 +63,7 @@ beforeEach(() => {
     const next = queue && queue.length > 0 ? (queue.length > 1 ? queue.shift()! : queue[0]) : undefined;
     if (next === undefined) throw new Error(`unexpected request ${key} Authorization: Bearer ${SENTINEL}`);
     if (next === "network-error") throw new Error(`connect failed Authorization: Bearer ${SENTINEL}`);
-    return new Response(next.status === 204 ? null : JSON.stringify(next.body ?? {}), { status: next.status });
+    return new Response(next.status === 204 ? null : JSON.stringify(next.body ?? {}), { status: next.status, headers: next.headers });
   }) as typeof fetch;
 });
 
@@ -82,6 +82,10 @@ const upstreamFailed = { status: 502, body: { error: "upstream_revoke_failed", d
 const revokeFailed = { status: 503, body: { error: "revoke_failed" } };
 const configOff = { status: 200, body: { status: "disabled", queueDropped: 0 } };
 const purgeOk = { status: 204 };
+// The backend's own marker on a credential-route 404 (not mounted, or the owner is not enrolled).
+const dark = { status: 404, body: { error: "not_found" }, headers: { "X-Route-Unavailable": "connector-credentials" } };
+// A 404 from anywhere else: a proxy, a wrong path.
+const unmarked404 = { status: 404, body: { error: "not_found" } };
 
 const credCalls = () => calls.filter((c) => c.url === CREDS);
 const deleteCreds = () => calls.filter((c) => c.method === "DELETE" && c.url === CREDS);
@@ -107,7 +111,7 @@ describe("teardownCredential (client)", () => {
   });
 
   test("a 404 on the read (route dark) is feature-dark with no DELETE", async () => {
-    answer("GET", CREDS, { status: 404 });
+    answer("GET", CREDS, dark);
     expect(await webhooks().teardownCredential!("fireflies")).toEqual({ status: "feature-dark" });
     expect(deleteCreds()).toHaveLength(0);
   });
@@ -241,7 +245,7 @@ describe("disconnect runs the server teardown", () => {
   });
 
   test("not in the cohort: not connected, or the route dark, is quiet — done, no message, no DELETE", async () => {
-    for (const quiet of [notConnected, { status: 404 }]) {
+    for (const quiet of [notConnected, dark]) {
       calls = [];
       happyWire();
       answer("GET", CREDS, quiet);
@@ -339,7 +343,7 @@ describe("turning sync off runs the server teardown", () => {
   });
 
   test("not in the cohort: quiet — no DELETE, the ordinary off notice, no error", async () => {
-    for (const quiet of [notConnected, { status: 404 }]) {
+    for (const quiet of [notConnected, dark]) {
       calls = [];
       answer("GET", CREDS, quiet);
       answer("DELETE", CONFIG, configOff);
@@ -362,5 +366,42 @@ describe("turning sync off runs the server teardown", () => {
     const net = syncDeps();
     await disableBackgroundSync(net.deps, net.emit);
     expect(JSON.stringify(net.state()) + logged.join("\n")).not.toContain(SENTINEL);
+  });
+});
+
+// ── A 404 is "not available here" only when the backend says so ─────────
+
+describe("an unmarked 404 on the read is a failure, not a skip", () => {
+  test("client: a marked 404 is feature-dark; an unmarked one is retryable; neither sends a DELETE", async () => {
+    answer("GET", CREDS, dark);
+    expect(await webhooks().teardownCredential!("fireflies")).toEqual({ status: "feature-dark" });
+    answer("GET", CREDS, unmarked404);
+    expect(await webhooks().teardownCredential!("fireflies")).toEqual({ status: "retryable", httpStatus: 404, code: "not_found" });
+    expect(deleteCreds()).toHaveLength(0);
+  });
+
+  for (const mode of ["keep-data", "delete-data"] as const) {
+    test(`${mode}: an unmarked 404 stops the disconnect at the server step and keeps the API key`, async () => {
+      happyWire();
+      answer("GET", CREDS, unmarked404);
+      const { deps, ops, emit } = disconnectDeps(mode);
+      const final = await runDisconnect(deps, emit);
+      expect(final.done).toBe(false);
+      expect(final.failure).toMatchObject({ step: "teardown-server-credential", retryable: true });
+      expect(final.completed).not.toContain("disable-webhooks");
+      expect(ops).not.toContain("delete-key");
+      expect(deleteCreds()).toHaveLength(0);
+    });
+  }
+
+  test("sync off: an unmarked 404 leaves sync on with a retryable notice; the config is not disabled", async () => {
+    answer("GET", CREDS, unmarked404);
+    answer("DELETE", CONFIG, configOff);
+    const { deps, state, emit } = syncDeps();
+    await disableBackgroundSync(deps, emit);
+    expect(state().phase).not.toBe("off");
+    expect(state().notice?.retryable).toBe(true);
+    expect(calls.some((c) => c.url === CONFIG)).toBe(false);
+    expect(deleteCreds()).toHaveLength(0);
   });
 });

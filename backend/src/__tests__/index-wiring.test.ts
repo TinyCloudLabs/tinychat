@@ -955,6 +955,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
         return express.Router();
       },
     },
+    "./routes/route-unavailable.js": load("./routes/route-unavailable.ts"),
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
     "./routes/delegations.js": { createDelegationRouter: (config: Record<string, unknown>) => {
       options.capture?.("delegation", config);
@@ -1621,5 +1622,24 @@ describe("TC-959 backend request contract", () => {
         await closed.promise;
       }
     }
+  });
+
+  test("an unmounted credential route answers 404 with the backend's own marker; a mounted one does not add it", async () => {
+    const path = "/api/connectors/credentials/fireflies";
+    const marker = "x-route-unavailable";
+    for (const patch of [{}, { CONNECTOR_WEBHOOKS_ENABLED: "true" }]) {
+      const dark = await bootIndex(patch);
+      const response = await fetch(dark.url! + path, { headers: { authorization: "Bearer test-session" } });
+      expect(response.status).toBe(404);
+      expect(response.headers.get(marker)).toBe("connector-credentials");
+    }
+    const mounted = await bootIndex({
+      CONNECTOR_WEBHOOKS_ENABLED: "true", CONNECTOR_BACKEND_INGEST_ENABLED: "true",
+      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"), CONNECTOR_CONTENT_MASTER: randomBytes(32).toString("hex"),
+      FIREFLIES_OAUTH_CLIENT_ID: "test-fireflies-client", FIREFLIES_OAUTH_CLIENT_SECRET: "test-fireflies-secret",
+      FIREFLIES_OAUTH_REDIRECT_URI: "https://app.invalid/fireflies-callback", CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: "https://app.invalid",
+    });
+    const response = await fetch(mounted.url! + path, { headers: { authorization: "Bearer test-session" } });
+    expect(response.headers.get(marker)).toBeNull();
   });
 });

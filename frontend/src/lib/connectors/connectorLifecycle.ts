@@ -452,9 +452,10 @@ export type ServerCredentialTeardown =
   | { status: "failed"; failure: WebhookFailure };
 
 /**
- * 404 is forgiven unconditionally here, unlike `record-purge`: the credentials
- * router is mounted only behind its flag, so a 404 is "nothing server-held to
- * remove", and the steps that matter for every connector (tombstone,
+ * A 404 is forgiven here, unlike `record-purge`, only when it carries the backend's own
+ * not-available marker (the credentials router is mounted only behind its flag, and answers
+ * 404 to an owner who is not enrolled): that is "nothing server-held to
+ * remove". An unmarked 404 (a proxy, a wrong path) is a retryable failure. The steps that matter for every connector (tombstone,
  * `DELETE /config`, key, rows) are separate and strict. A failed read of whether
  * a sign-in is stored is a failure, never a skip: a cohort owner's sign-in must
  * not be silently kept. Shared with account deletion, which must not carry a

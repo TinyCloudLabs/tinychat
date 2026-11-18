@@ -231,6 +231,13 @@ export type ConnectorWebhooksResult<T> =
 /** The base path of the credential teardown. One segment deep: `/:source`. */
 export const CONNECTOR_CREDENTIALS_BASE_PATH = "/api/connectors/credentials";
 
+/**
+ * The backend's own "this route is not available here" marker on a 404 (not mounted, or the owner
+ * is not enrolled). A 404 without it came from somewhere else and is a failure, not a skip.
+ */
+export const ROUTE_UNAVAILABLE_HEADER = "X-Route-Unavailable";
+export const CREDENTIALS_ROUTE_UNAVAILABLE = "connector-credentials";
+
 /** The base path of the authenticated companions. Every route is ONE segment deep. */
 export const CONNECTOR_WEBHOOKS_BASE_PATH = "/api/connectors/webhooks";
 
@@ -263,8 +270,9 @@ export interface ConnectorWebhooksClient {
   /**
    * Delete the sign-in our server holds for `source` and ask the provider to
    * revoke it. A bare `DELETE` carrying only the session auth: no provider
-   * token is ever read, held or sent from here. `feature-dark` (404) means the
-   * route is not mounted — nothing to do. The `DELETE` runs ONLY when a read-only
+   * token is ever read, held or sent from here. `feature-dark` (a 404 carrying the backend's
+   * not-available marker) means the route is not mounted or the owner is not
+   * enrolled — nothing to do; an unmarked 404 is a retryable failure. The `DELETE` runs ONLY when a read-only
    * `GET` says a sign-in is stored: the teardown writes a purge watermark, which
    * must not be written for an owner who holds no server sign-in. Not connected
    * resolves `ok` with `null`; any other failed read is a failure, never a skip.
@@ -320,6 +328,8 @@ export function createConnectorWebhooksClient(
       method: "GET" | "POST" | "DELETE";
       body?: unknown;
       basePath?: string;
+      /** When set, a 404 is `feature-dark` only if it carries this marker header value; otherwise it is retryable. */
+      darkMarker?: string;
       /** Reads a non-2xx answer the caller treats as a value; `null` falls through to the default failures. */
       onFailure?: (response: Response) => Promise<ConnectorWebhooksResult<T> | null>;
     },
@@ -363,7 +373,15 @@ export function createConnectorWebhooksClient(
     // The router is mounted only when the feature flag is on, and every path
     // inside it exists. A 404 therefore means DARK, which is a product state:
     // do not show a setup control merely because the bundle contains one.
-    if (response.status === 404) return { status: "feature-dark" };
+    if (response.status === 404) {
+      if (
+        init.darkMarker === undefined ||
+        response.headers.get(ROUTE_UNAVAILABLE_HEADER) === init.darkMarker
+      ) {
+        return { status: "feature-dark" };
+      }
+      return { status: "retryable", httpStatus: 404, code: await readErrorCode(response) };
+    }
 
     if (!response.ok) {
       const handled = init.onFailure ? await init.onFailure(response.clone()) : null;
@@ -422,6 +440,7 @@ export function createConnectorWebhooksClient(
       const stored = await request<{ connected?: unknown }>(path, {
         method: "GET",
         basePath: CONNECTOR_CREDENTIALS_BASE_PATH,
+        darkMarker: CREDENTIALS_ROUTE_UNAVAILABLE,
       });
       if (stored.status !== "ok") return stored;
       if (typeof stored.value?.connected !== "boolean") {

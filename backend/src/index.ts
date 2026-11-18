@@ -58,6 +58,7 @@ import {
   DEFAULT_CONNECTOR_SOURCE,
 } from "./routes/connector-webhooks.js";
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
+import { credentialRouteUnavailable } from "./routes/route-unavailable.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
@@ -380,6 +381,7 @@ async function main() {
     console.warn(`[startup] hosted AssemblyAI is off (${assemblyAiHosted.reason}); clients can still use their own key.`);
   }
 
+  let credentialRouteMounted = false;
   if (connectorWebhooksEnabled()) {
     const webhookSecrets = validateConnectorWebhookSecrets(process.env);
     if (!webhookSecrets.ok) {
@@ -899,6 +901,7 @@ async function main() {
         { upstreamRevoker: (secret) => firefliesOAuth().revoke(secret) },
       );
 
+      credentialRouteMounted = true;
       app.use(
         "/api/connectors/credentials",
         authMiddleware,
@@ -1007,6 +1010,11 @@ async function main() {
         { enabled: () => supervisor.guard.isHolder() },
       ).start();
     }
+  }
+  // An unmounted credential route answers 404 with the backend's own marker, so a client can tell
+  // "this deployment does not have it" from a 404 that came from somewhere else.
+  if (!credentialRouteMounted) {
+    app.use("/api/connectors/credentials", (_req, res) => credentialRouteUnavailable(res));
   }
   // Retention runs independently of ingest flags and cohort membership. The sweeper owns index
   // enumeration inside each guarded pass so a KV list failure is logged and retried next interval,
