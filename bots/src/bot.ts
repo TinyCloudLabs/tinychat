@@ -1,12 +1,13 @@
-// One owner's Main bot: at most one message at a time, its sandbox started on demand and stopped once the
-// session has settled and stayed idle. Everything the sandbox says is treated as untrusted input; only checked
-// fields are turned into events, which the server encodes itself.
+// One bot of one owner (Main, or a sibling the backend created): at most one message at a time, its sandbox started
+// on demand and stopped once the session has settled and stayed idle. Everything the sandbox says is treated as
+// untrusted input; only checked fields are turned into events, which the server encodes itself.
 
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
-import { BOT_ID, botIdFor } from "./owner";
+import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type Frame, RpcError } from "./rpc";
 
@@ -176,7 +177,7 @@ export class Bot {
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<void> | undefined;
-  #deleting: Promise<void> | undefined;
+  #deleting: Promise<DeleteSkip | undefined> | undefined;
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -291,8 +292,9 @@ export class Bot {
    * and last-use marker) and its run directory. A failed teardown, a path that is not the bot's own directory, a
    * mount at or under either directory keeps everything and logs
    * state_delete_skipped instead. A request that arrives meanwhile waits for this, then starts a fresh bot.
+   * Resolves to why the state was kept, or to undefined once it is gone.
    */
-  deleteWorkingState(reason: string, closing = () => false): Promise<void> {
+  deleteWorkingState(reason: string, closing = () => false): Promise<DeleteSkip | undefined> {
     this.#deleting ??= (async () => {
       let cause: DeleteSkip | undefined;
       try {
@@ -309,6 +311,7 @@ export class Bot {
       }
       if (cause) log("state_delete_skipped", this.layout.botId, { reason, cause });
       else { this.#history = undefined; log("state_deleted", this.layout.botId, { reason }); }
+      return cause;
     })().finally(() => {
       this.#deleting = undefined;
     });
@@ -327,6 +330,8 @@ export class Bot {
     } finally { this.#listing--; }
   }
   historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
+    // A sibling that has never run has no journal, and a change of permission must not make one (or its directory).
+    if (this.layout.botKey !== undefined && !existsSync(join(this.layout.dataDir, "history.json"))) return Promise.resolve();
     return this.#historyOperation(journal => {
       if (expiresAt === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!); }
       else journal.permissionExpired(expiresAt, owner);
@@ -510,7 +515,7 @@ export class BotManager {
   readonly #launcher: SandboxLauncher;
   readonly #roots: LayoutRoots;
   readonly #options: BotOptions;
-  readonly #deletions = new Set<Promise<void>>();
+  readonly #deletions = new Set<Promise<unknown>>();
   #closing = false;
   readonly #running: RunningLimit;
 
@@ -525,13 +530,26 @@ export class BotManager {
     return this.#bot(botIdFor(ownerDid));
   }
 
+  /** One of the owner's bots by key. The caller has already checked the key's form and that the bot is announced. */
+  forBot(ownerDid: string, key: string): Bot {
+    if (key === MAIN_KEY) return this.forOwner(ownerDid);
+    return this.#bot(botIdFor(ownerDid, key), { botKey: key, ownerId: botIdFor(ownerDid) });
+  }
+
   /** Deletes one bot's working state; see Bot.deleteWorkingState. stopAll waits for it to finish. */
-  deleteWorkingState(botId: string, reason: string): Promise<void> {
-    if (this.#closing) return Promise.resolve();
+  deleteWorkingState(botId: string, reason: string): Promise<DeleteSkip | undefined> {
+    if (this.#closing) return Promise.resolve("closing");
     const deletion = this.#bot(botId).deleteWorkingState(reason, () => this.#closing);
     this.#deletions.add(deletion);
     void deletion.finally(() => this.#deletions.delete(deletion));
     return deletion;
+  }
+
+  /** Deletes the working state of a sibling the backend is deleting. A bot that never ran has none. */
+  deleteBot(ownerDid: string, key: string): Promise<DeleteSkip | undefined> {
+    const bot = this.forBot(ownerDid, key);
+    if (!bot.inUse && !existsSync(bot.layout.dataDir) && !existsSync(bot.layout.bundleDir)) return Promise.resolve(undefined);
+    return this.deleteWorkingState(bot.layout.botId, "deleted");
   }
 
   /**
@@ -564,11 +582,14 @@ export class BotManager {
     }
   }
 
-  #bot(botId: string): Bot {
+  #bot(botId: string, owner?: { botKey: string; ownerId: string }): Bot {
     let bot = this.#bots.get(botId);
     if (!bot) {
-      bot = new Bot(botLayout(botId, this.#roots), this.#launcher, this.#options, this.#running);
+      bot = new Bot(botLayout(botId, this.#roots, owner), this.#launcher, this.#options, this.#running);
       this.#bots.set(botId, bot);
+    } else if (owner) {
+      // A sweep finds a bot by its directory, before anyone has said whose it is.
+      Object.assign(bot.layout, owner);
     }
     return bot;
   }

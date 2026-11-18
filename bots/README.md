@@ -33,11 +33,37 @@ All requests except `/healthz` need `Authorization: Bearer <BOTS_SERVICE_SECRET>
   A reply's `id` equals the `messageId` of its `done` event.
 - `GET /healthz` returns `ok`.
 
+### More than one bot per owner
+
+An owner's bots are named by a key: `main`, or the 32 lower-case hex characters the backend chose when it created
+the bot. Everything above also exists at `/v1/bots/<key>/...`. A key of any other form gets 404 before anything is
+built from it.
+
+The backend's registry decides which bots exist. This service keeps its own copy, one file per owner on the data
+volume (`/data/bots/owners/<sha256(owner DID)>.json`, never mounted into a sandbox), and checks it before a request
+for a sibling may create anything. `main` exists without being announced; a sibling exists only once announced.
+
+- `PUT /v1/bots/<key>` `{ "state": "active" | "suspended" | "deleting", "seq": <integer> }` announces a bot's state
+  and answers `{ "state": <the state now held> }`. `seq` is the registry's counter: an update with a `seq` at or below
+  the one held is ignored, and so is anything after `deleting`. `main` cannot be set to `deleting`.
+- `DELETE /v1/bots/<key>` deletes the working state of a bot that is `deleting` and answers
+  `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" }` (it will go once its
+  history is saved) or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good.
+
+| | active | suspended | deleting | unknown or removed |
+| --- | --- | --- | --- | --- |
+| `POST .../messages` | yes | 409 | 409 | 404 |
+| `GET .../messages` | yes | yes | 409 | 404 |
+| `.../history`, `/history/stage`, `/history/notice`, `/history/permission` | yes | yes | yes | 404 |
+
+A permission update for a sibling that has never run creates no journal and no directory.
+
 Every event is encoded by the supervisor from checked fields; OMP output never passes through.
 
 ## How a message runs
 
-1. The bot id is `sha256(owner DID)`. Every path is built from it, never from the DID.
+1. The bot id is `sha256(owner DID)` for `main`, and `sha256(owner DID + "\n" + key)` for a sibling. Every path is
+   built from it, never from the DID or the key.
 2. On the first message (or the first after an idle stop) the supervisor mounts a fresh tmpfs for the bot's state,
    restores the bot's saved state into it, registers a fresh random token for the bot with the gateway, writes the
    OCI spec (from `runsc spec`) and runs `runsc run` in the foreground. Inside, `bot-start.sh` bridges
@@ -109,7 +135,10 @@ The gateway, per bot socket:
   fallbacks off and always asks for usage;
 - sends to the fixed origin `https://tee.redpill.ai` with the model key, refuses redirects, and forwards only
   `content-type` back;
-- enforces connect and total timeouts, an 8 MiB response cap, a daily token budget per bot and a global daily cap.
+- enforces connect and total timeouts, an 8 MiB response cap, a daily token budget per bot, a daily total for all of
+  one owner's bots, and a global daily cap. The supervisor names a bot's owner when it registers the bot; the map of
+  bots to owners is kept beside the budget file (`owners.json`) and saved the same way, and if it cannot be saved the
+  gateway answers 503 until it can.
   Bots calling at once cannot overshoot either: a prompt whose estimate (bytes / 3) does not fit what is
   left is refused, `max_tokens` is capped by `BOTS_MAX_TOKENS` and by what is left, and the whole estimate (prompt
   plus `max_tokens`) is reserved against both budgets before the call. When the call ends the reservation is settled
@@ -203,10 +232,12 @@ Gateway (`bots-gateway`):
 | `BOTS_MODELS` | `BOTS_MODEL` | comma-separated model allowlist |
 | `BOTS_MAX_TOKENS` | `8192` | |
 | `BOTS_BOT_DAILY_TOKENS` / `BOTS_GLOBAL_DAILY_TOKENS` | `2000000` / `20000000` | UTC day |
+| `BOTS_OWNER_DAILY_TOKENS` | `BOTS_BOT_DAILY_TOKENS` | all of one owner's bots together, UTC day |
 | `BOTS_MAX_BODY_BYTES` / `BOTS_MAX_RESPONSE_BYTES` | 4 MiB / 8 MiB | |
 | `BOTS_UPSTREAM_CONNECT_TIMEOUT_MS` / `BOTS_UPSTREAM_TOTAL_TIMEOUT_MS` | `30000` / `600000` | |
 | `BOTS_BODY_TIMEOUT_MS` | `30000` | request body deadline |
 | `BOTS_BUDGET_FILE` | `/var/lib/bots-gateway/budget.json` | on the `bot-budget` volume |
+| `BOTS_OWNERS_FILE` | `owners.json` beside the budget file | which owner each bot belongs to |
 
 `BOTS_TEST_UPSTREAM_URL` exists only for the local mock smoke: it must be a loopback `http://` URL, and the compose
 file never passes it.

@@ -356,7 +356,7 @@ export class RunscHost implements SandboxLauncher {
     try {
       await this.#mountState(layout);
       restored = true;
-      await this.#control("PUT", layout.botId, token);
+      await this.#control("PUT", layout.botId, token, layout.ownerId);
       const spec = sandboxSpec(this.#baseSpec, {
         rootfs: this.#cfg.rootfs,
         token,
@@ -402,7 +402,7 @@ export class RunscHost implements SandboxLauncher {
         request: (command, timeoutMs) => rpc.request(command, timeoutMs),
         onFrame: listener => rpc.onFrame(listener),
         exited,
-        refreshEgress: () => this.#control("PUT", layout.botId, token),
+        refreshEgress: () => this.#control("PUT", layout.botId, token, layout.ownerId),
         snapshot,
         stop: () =>
           (stopping ??= (async () => {
@@ -506,12 +506,12 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /** The gateway's control socket: register (PUT) or drop (DELETE) one bot's egress socket and token. */
-  async #control(method: "PUT" | "DELETE", botId: string, token?: string): Promise<void> {
+  async #control(method: "PUT" | "DELETE", botId: string, token?: string, owner?: string): Promise<void> {
     const response = await fetch(`http://gateway/bots/${botId}`, {
       unix: join(this.#cfg.egressRoot, "control.sock"),
       method,
       headers: { "content-type": "application/json" },
-      body: token ? JSON.stringify({ token }) : undefined,
+      body: token ? JSON.stringify({ token, owner }) : undefined,
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) throw new Error(`gateway ${method} failed: ${response.status}`);
