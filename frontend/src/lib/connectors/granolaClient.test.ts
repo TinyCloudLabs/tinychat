@@ -126,6 +126,33 @@ describe("GranolaClient", () => {
     expect(res.ok && res.data.truncated).toBe(false);
   });
 
+  test("a transcript ending on the 1,000th page is complete, not rejected", async () => {
+    const calls: Call[] = [];
+    const c = client(fakeFetch(calls, () => {
+      const page = calls.length;
+      return Response.json({
+        transcript: [{ text: `turn ${page}` }],
+        hasMore: page < 1_000,
+        cursor: page < 1_000 ? `page_${page + 1}` : null,
+      });
+    }));
+    const res = await c.getTranscript("not_0001");
+    expect(res.ok && res.data.items).toHaveLength(1_000);
+    expect(res.ok && res.data.items.at(-1)?.text).toBe("turn 1000");
+  });
+
+  test("a transcript still offering fresh cursors at the page cap fails without returning partial turns", async () => {
+    const calls: Call[] = [];
+    const c = client(fakeFetch(calls, () => Response.json({
+      transcript: [{ text: "must not return a partial transcript" }],
+      hasMore: calls.length <= 1_000,
+      cursor: `page_${calls.length + 1}`,
+    })));
+    const res = await c.getTranscript("not_0001");
+    expect(res).toMatchObject({ ok: false, error: { kind: "api-error" } });
+    expect(calls).toHaveLength(1_000);
+  });
+
   test("a repeated cursor fails without returning a duplicate transcript", async () => {
     const calls: Call[] = [];
     const c = client(fakeFetch(calls, () => Response.json({

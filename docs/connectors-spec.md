@@ -530,6 +530,8 @@ per page until the cursor is exhausted, paces requests to at most four per
 second per sync, and stops the run if `Retry-After` cannot be honored in that
 run. The owner's space holds the speaker, verbatim text, and both time offsets;
 `granola_transcript_started_at` records the absolute origin for those offsets.
+If Granola still has more data after 1,000 pages for one meeting, the attempt
+leaves that meeting untouched rather than storing an incomplete transcript.
 Workspace transcript denial discards unfinished pages, syncs the summary, and
 shows a neutral notice. Private notes, attachments, and image URLs are not imported.
 

@@ -17,6 +17,7 @@ export const GRANOLA_DEFAULT_PAGE_BUDGET = 40; // 40 x 30 = 1,200 changed notes 
 export const GRANOLA_DEFAULT_DELAY_MS = 250; // 4 req/s, under Granola's sustained 5 req/s.
 export const GRANOLA_MAX_RATE_LIMIT_RETRIES = 3;
 export const GRANOLA_MAX_RETRY_AFTER_MS = 60_000;
+const MAX_TRANSCRIPT_PAGES = 1_000;
 
 // `createApiClient`'s CSRF header, spelled here for the same reason the other
 // connector clients spell it.
@@ -240,7 +241,7 @@ export class GranolaClient {
     const items: GranolaTranscriptItem[] = [];
     const seenCursors = new Set<string>();
     let cursor: string | null = null;
-    for (;;) {
+    for (let page = 0; page < MAX_TRANSCRIPT_PAGES; page++) {
       const params = new URLSearchParams();
       params.set("page_size", String(GRANOLA_TRANSCRIPT_PAGE_SIZE));
       if (cursor) params.set("cursor", cursor);
@@ -273,6 +274,8 @@ export class GranolaClient {
       }
       seenCursors.add(cursor);
     }
+    // More data after the sanity cap: refuse the entire transcript, not a partial body.
+    return { ok: false, error: { kind: "api-error", message: "Granola returned an unreadable response" } };
   }
 
   /**
