@@ -61,9 +61,15 @@ function Warning({ mode, onConfirm, onCancel }: { mode: MainWebMode; onConfirm: 
       className="flex flex-col gap-3 rounded-xl border border-border bg-muted p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <p id={`${id}-title`} className="text-headline">{COPY.warningTitle}</p>
-      <div id={`${id}-body`} className="flex flex-col gap-2 text-callout text-muted-foreground">
-        <p>{COPY.warningBody}</p>
-        {mode === "any" ? <p>{COPY.warningBodyAny}</p> : null}
+      <div className="flex flex-col gap-2 text-callout text-muted-foreground">
+        <p id={`${id}-body`}>{COPY.warningFace}</p>
+        <details>
+          <summary className="cursor-pointer">{COPY.warningLearnMore}</summary>
+          <div className="mt-2 flex flex-col gap-2">
+            <p>{COPY.warningBody}</p>
+            {mode === "any" ? <p>{COPY.warningBodyAny}</p> : null}
+          </div>
+        </details>
       </div>
       <div className="flex flex-wrap gap-2">
         <Button type="button" onClick={onConfirm}>{COPY.warningConfirm}</Button>
