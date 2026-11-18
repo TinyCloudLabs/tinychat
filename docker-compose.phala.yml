@@ -90,6 +90,7 @@ services:
       # Turning it on requires WEBHOOK_HMAC_MASTER and LOG_HASH_SALT — each generated with
       # `openssl rand -base64 32`, never reused — or the backend refuses to boot.
       CONNECTOR_WEBHOOKS_ENABLED: ${CONNECTOR_WEBHOOKS_ENABLED:-false}
+      CONNECTOR_KEY_STORE_DIR: /var/lib/tinychat/connector-keys
       WEBHOOK_HMAC_MASTER: ${WEBHOOK_HMAC_MASTER:-}
       # Rotation grace key (§4.2/§7.6): set only while a master rotation is draining.
       WEBHOOK_HMAC_MASTER_PREV: ${WEBHOOK_HMAC_MASTER_PREV:-}
@@ -171,6 +172,8 @@ services:
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
       - assemblyai-data:/var/lib/tinychat/assemblyai
+      # Dedicated backend volume. Exclude it from backups and snapshots.
+      - connector-key-data:/var/lib/tinychat/connector-keys
     restart: unless-stopped
     # TC-2136: stdout/stderr also go to the log-shipper below over dockerd's GELF driver (UDP to host loopback).
     # Non-blocking with a bounded buffer: an absent or stopped shipper drops log copies and never slows or fails the
@@ -588,6 +591,7 @@ services:
 volumes:
   cert-data:
   assemblyai-data:
+  connector-key-data:
 
 networks:
   logship:

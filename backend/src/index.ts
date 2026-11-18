@@ -572,9 +572,18 @@ async function main() {
 
   // Share these stores with the optional routes, but keep retention maintenance alive even when
   // the connector webhook feature is disabled.
-  const connectorControl = new ConnectorControlStore(node);
+  const connectorKeyDirectory = process.env.CONNECTOR_KEY_STORE_DIR?.trim();
+  const connectorRetention = connectorKeyDirectory
+    ? await import("./services/connector-key-store.js").then(({ ConnectorKeyStore, startConnectorKeyRotation }) => {
+        const store = ConnectorKeyStore.open(connectorKeyDirectory);
+        return { store, startRotation: () => startConnectorKeyRotation(store) };
+      })
+    : undefined;
+  const connectorKeyStore = connectorRetention?.store;
+  const connectorControl = new ConnectorControlStore(node, undefined, connectorKeyStore);
   const connectorQueue = new ConnectorQueue(node, {
     storageLane: backendStorageLane,
+    retentionKeys: connectorKeyStore,
     isDisabled: async address => (await connectorControl.readDisabled(address)) !== null,
   });
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
@@ -672,7 +681,7 @@ async function main() {
       backendKv: exoBackendKv,
       openOwnerGrant,
       webhooks: new WebhookTokenService(node),
-      controls: new ConnectorControlStore(node),
+      controls: connectorControl,
       grantHolders: exoGrantHolders,
       frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
     });
@@ -1333,6 +1342,8 @@ async function main() {
   // Queue and purge-ledger retention is not an ingestion feature: disconnected records must
   // expire even while webhook routes are disabled. This timer only deletes expired state and
   // reports counts; it never drains or surfaces meeting IDs.
+  // The unref'd rotation stays active through shutdown so the drain cannot delay key erasure.
+  connectorRetention?.startRotation();
   const connectorQueueMaintenance = startConnectorQueueMaintenanceTimer({
     listQueueEntries: createWebhookQueueDirectory(node),
     listLedgerAddresses: createWebhookPurgeLedgerDirectory(node),
