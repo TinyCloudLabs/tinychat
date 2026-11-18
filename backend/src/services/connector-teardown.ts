@@ -1,5 +1,5 @@
 import {
-  PURGE_RECENT_ID_CAP,
+  mergePurgeLedgerIds,
   type PurgeLedger,
   type PurgeLedgerRead,
 } from "../routes/connector-webhooks.js";
@@ -185,7 +185,7 @@ export class ConnectorTeardownService implements ConnectorTeardown {
 
   /**
    * §6.2's ledger, merged the way `POST …/purged` merges it: MONOTONIC watermark (a teardown
-   * never moves it backwards) and `recentIds` capped at {@link PURGE_RECENT_ID_CAP}, newest
+   * never moves it backwards) and recent IDs capped, newest
    * kept. The ids are attribution only — the watermark is what protects, which is why a content
    * index we cannot read is survivable here: the purge still lands, with fewer ids named.
    */
@@ -227,18 +227,10 @@ export class ConnectorTeardownService implements ConnectorTeardown {
       this.now(),
     );
     const purgedThrough = new Date(throughMs).toISOString();
-    const recentIds = [...new Set([...(existing?.recentIds ?? []), ...ids])].slice(
-      -PURGE_RECENT_ID_CAP,
-    );
-
     const stamp = new Date(this.now()).toISOString();
-    const recentIdsAddedAt = Object.fromEntries(recentIds.map(id => [
-      id, existing?.recentIdsAddedAt?.[id] ?? stamp,
-    ]));
     await this.deps.control.writeLedger(source, address, {
       purgedThrough,
-      recentIds,
-      recentIdsAddedAt,
+      ...mergePurgeLedgerIds(existing, ids, stamp),
       updatedAt: stamp,
     });
     return purgedThrough;

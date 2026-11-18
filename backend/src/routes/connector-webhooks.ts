@@ -17,6 +17,15 @@ import {
 // the cycle is erased at compile time. Shared on purpose: a second copy of the tombstone rule is
 // a second thing to forget to update.
 import { isTombstoned } from "../services/connector-drain.js";
+import {
+  isLedgerIdCode,
+  ledgerIdCode,
+  makeLedgerIdCode,
+  slotFor,
+  verifyLedgerIdCode,
+  type ConnectorRetentionKeys,
+  type LedgerIdCode,
+} from "../services/connector-retention-keys.js";
 import type { IngestModeLookup } from "../services/ingest-mode.js";
 import {
   deriveWebhookSecret,
@@ -1223,10 +1232,27 @@ export interface PurgeLedger {
   recentIds: string[];
   /** Backend-owned per-ID retention clocks; absent only in legacy records. */
   recentIdsAddedAt?: Record<string, string>;
+  recentIdCodes?: LedgerIdCode[];
+  matchesRecentIdCode?: (meetingId: string) => boolean;
   updatedAt: string;
 }
 
 export const PURGE_RECENT_ID_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+export function mergePurgeLedgerIds(existing: PurgeLedger | null, ids: string[], stamp: string) {
+  const contributed = ids.filter(id => !existing?.matchesRecentIdCode?.(id));
+  const recentIds = [...new Set([...(existing?.recentIds ?? []), ...contributed])].slice(-PURGE_RECENT_ID_CAP);
+  const recentIdCodes = existing?.recentIdCodes?.slice(
+    Math.max(0, existing.recentIdCodes.length + recentIds.length - PURGE_RECENT_ID_CAP),
+  );
+  return {
+    recentIds,
+    recentIdsAddedAt: Object.fromEntries(recentIds.map(id => [
+      id, existing?.recentIdsAddedAt?.[id] ?? stamp,
+    ])),
+    ...(recentIdCodes === undefined ? {} : { recentIdCodes }),
+  };
+}
 
 /**
  * A ledger read is a three-way answer, not a value-or-null. §6.2 makes the ledger an
@@ -1279,7 +1305,7 @@ function parseDisabledMarker(raw: unknown): DisabledMarker | null {
   };
 }
 
-function parsePurgeLedger(
+function parseLegacyPurgeLedger(
   raw: unknown,
   now: number,
   safetyMarginMs = 0,
@@ -1345,6 +1371,7 @@ export class ConnectorControlStore implements ConnectorControl {
   constructor(
     private readonly node: TinyCloudNode,
     private readonly now: () => number = () => Date.now(),
+    private readonly retentionKeys?: ConnectorRetentionKeys,
   ) {}
 
   async readDisabled(address: string): Promise<DisabledMarker | null> {
@@ -1376,10 +1403,19 @@ export class ConnectorControlStore implements ConnectorControl {
     return this.run(async () => {
       const raw = await this.readJson(key);
       if (raw === null || raw === undefined) return { status: "absent" };
-      const ledger = parsePurgeLedger(raw, this.now(), safetyMarginMs);
+      const value = raw as Record<string, unknown>;
+      if (value.v === 1) {
+        const ledger = this.parseCodedLedger(key, value);
+        if (ledger === null) return { status: "unparseable", raw };
+        if (ledger.recentIdCodes!.length !== (value.recentIdCodes as unknown[]).length) {
+          await this.writeStoredLedger(key, ledger);
+        }
+        return { status: "ok", ledger };
+      }
+      // Existing rows remain readable until their exact cutoff. A rewrite always uses codes.
+      const ledger = parseLegacyPurgeLedger(raw, this.now(), this.retentionKeys ? 0 : safetyMarginMs);
       if (ledger === null) return { status: "unparseable", raw };
 
-      const value = raw as Record<string, unknown>;
       const oldIds = Array.isArray(value.recentIds) ? value.recentIds : [];
       const oldTimes =
         typeof value.recentIdsAddedAt === "object" &&
@@ -1391,7 +1427,13 @@ export class ConnectorControlStore implements ConnectorControl {
         JSON.stringify(oldIds) !== JSON.stringify(ledger.recentIds) ||
         JSON.stringify(oldTimes) !== JSON.stringify(ledger.recentIdsAddedAt)
       ) {
-        await this.writeJson(key, ledger);
+        if (this.retentionKeys === undefined) {
+          await this.writeJson(key, ledger);
+        } else {
+          const encoded = this.encodeLedger(key, ledger);
+          await this.writeJson(key, encoded);
+          return { status: "ok", ledger: this.codedLedgerView(key, encoded) };
+        }
       }
       return { status: "ok", ledger };
     });
@@ -1402,9 +1444,94 @@ export class ConnectorControlStore implements ConnectorControl {
     address: string,
     ledger: PurgeLedger,
   ): Promise<void> {
-    await this.run(() =>
-      this.writeJson(purgeLedgerKey(source, address), ledger),
-    );
+    const key = purgeLedgerKey(source, address);
+    await this.run(async () => {
+      if (this.retentionKeys === undefined) return this.writeStoredLedger(key, ledger);
+      // A teardown and a purge can finish their read/merge steps in either order.
+      const current = await this.readJson(key) as { purgedThrough?: unknown } | null;
+      const previous = current?.purgedThrough;
+      const purgedThrough = typeof previous === "string" && Date.parse(previous) > Date.parse(ledger.purgedThrough)
+        ? previous : ledger.purgedThrough;
+      await this.writeStoredLedger(key, { ...ledger, purgedThrough });
+    });
+  }
+
+  private liveLedgerKeys(): Map<number, Buffer> {
+    if (this.retentionKeys === undefined) throw new Error("Purge ledger keys unavailable");
+    return new Map(this.retentionKeys.getLiveDayKeys().map(({ day, key }) => [day, key]));
+  }
+
+  private parseCodedLedger(storageKey: string, value: Record<string, unknown>): PurgeLedger | null {
+    if (
+      typeof value.purgedThrough !== "string" || !Number.isFinite(Date.parse(value.purgedThrough)) ||
+      typeof value.updatedAt !== "string" || !Number.isFinite(Date.parse(value.updatedAt)) ||
+      !Array.isArray(value.recentIdCodes) || value.recentIdCodes.length > PURGE_RECENT_ID_CAP ||
+      "recentIds" in value || "recentIdsAddedAt" in value
+    ) return null;
+
+    const recentIdCodes: LedgerIdCode[] = [];
+    const keys = value.recentIdCodes.length > 0 ? this.liveLedgerKeys() : undefined;
+    for (const entry of value.recentIdCodes) {
+      if (!isLedgerIdCode(entry)) return null;
+      const addedAt = Date.parse(entry.addedAt);
+      if (!Number.isFinite(addedAt) || addedAt > this.now() || entry.slot !== slotFor(addedAt + PURGE_RECENT_ID_TTL_MS)) {
+        return null;
+      }
+      const key = keys?.get(entry.slot);
+      if (!key) continue; // Erasure of attribution must not erase the watermark.
+      if (!verifyLedgerIdCode(key, storageKey, entry)) return null;
+      recentIdCodes.push(entry);
+    }
+    return this.codedLedgerView(storageKey, {
+      purgedThrough: value.purgedThrough, updatedAt: value.updatedAt, recentIdCodes,
+    });
+  }
+
+  private codedLedgerView(
+    storageKey: string,
+    value: { purgedThrough: string; updatedAt: string; recentIdCodes: LedgerIdCode[] },
+  ): PurgeLedger {
+    return {
+      ...value,
+      recentIds: [],
+      matchesRecentIdCode: meetingId => {
+        if (value.recentIdCodes.length === 0) return false;
+        const keys = this.liveLedgerKeys();
+        const candidateCodes = new Map<number, string>();
+        return value.recentIdCodes.some(entry => {
+          const key = keys.get(entry.slot);
+          if (!key) return false;
+          let candidate = candidateCodes.get(entry.slot);
+          if (candidate === undefined) {
+            candidate = ledgerIdCode(key, storageKey, meetingId);
+            candidateCodes.set(entry.slot, candidate);
+          }
+          return candidate === entry.code;
+        });
+      },
+    };
+  }
+
+  private encodeLedger(storageKey: string, ledger: PurgeLedger) {
+    const keys = this.liveLedgerKeys();
+    const codes = (ledger.recentIdCodes ?? []).filter(entry => keys.has(entry.slot));
+    for (const id of ledger.recentIds) {
+      const addedAt = ledger.recentIdsAddedAt?.[id];
+      if (addedAt === undefined) continue;
+      const slot = slotFor(Date.parse(addedAt) + PURGE_RECENT_ID_TTL_MS);
+      const key = keys.get(slot);
+      if (key) codes.push(makeLedgerIdCode(key, storageKey, slot, addedAt, id));
+    }
+    return {
+      v: 1,
+      purgedThrough: ledger.purgedThrough,
+      updatedAt: ledger.updatedAt,
+      recentIdCodes: codes.slice(-PURGE_RECENT_ID_CAP),
+    };
+  }
+
+  private async writeStoredLedger(storageKey: string, ledger: PurgeLedger): Promise<void> {
+    await this.writeJson(storageKey, this.retentionKeys ? this.encodeLedger(storageKey, ledger) : ledger);
   }
 
   async clearLedger(source: string, address: string): Promise<void> {
@@ -1415,10 +1542,13 @@ export class ConnectorControlStore implements ConnectorControl {
     const key = purgeLedgerKey(source, address);
     await this.run(async () => {
       const raw = await this.readJson(key);
-      if (raw === null || raw === undefined || parsePurgeLedger(raw, this.now()) !== null) return;
+      if (raw === null || raw === undefined) return;
+      const value = raw as Record<string, unknown>;
+      const ledger = value.v === 1 ? this.parseCodedLedger(key, value) : parseLegacyPurgeLedger(raw, this.now());
+      if (ledger !== null) return;
       // Keep authorization fail-closed without keeping corrupt meeting IDs. Explicit re-sync
       // clears this watermark through the existing clearLedger path.
-      await this.writeJson(key, {
+      await this.writeStoredLedger(key, {
         purgedThrough: "9999-12-31T23:59:59.999Z", recentIds: [], recentIdsAddedAt: {},
         updatedAt: new Date(this.now()).toISOString(),
       });
@@ -2650,17 +2780,11 @@ export function createConnectorWebhookCompanionRouter(
         );
       }
 
-      const merged = [...(existing?.recentIds ?? []), ...contributed];
-      const recentIds = [...new Set(merged)].slice(-PURGE_RECENT_ID_CAP);
       const updatedAt = new Date(now()).toISOString();
-      const oldTimes = existing?.recentIdsAddedAt ?? {};
-      const recentIdsAddedAt = Object.fromEntries(
-        recentIds.map((id) => [id, oldTimes[id] ?? updatedAt]),
-      );
+      const retainedIds = mergePurgeLedgerIds(existing, contributed, updatedAt);
       await control.writeLedger(source, user.address, {
         purgedThrough: new Date(nextThroughMs).toISOString(),
-        recentIds,
-        recentIdsAddedAt,
+        ...retainedIds,
         updatedAt,
       });
 
@@ -2669,7 +2793,7 @@ export function createConnectorWebhookCompanionRouter(
 
       logWebhook(
         `op=purge source=${source} aid=${hashedField(user.address)} ids=${ids.length} ` +
-          `stored=${recentIds.length} through=${new Date(nextThroughMs).toISOString()} ` +
+          `stored=${retainedIds.recentIds.length + (retainedIds.recentIdCodes?.length ?? 0)} through=${new Date(nextThroughMs).toISOString()} ` +
           `through_source=${defaultedThrough ? "default_now" : "client"}`,
       );
 

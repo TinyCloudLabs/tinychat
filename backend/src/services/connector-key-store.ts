@@ -69,6 +69,7 @@ function openWriterLock(directory: string): number {
   const lock = openSync(join(directory, ".writer.lock"),
     constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, PRIVATE_FILE_MODE);
   try {
+    // The Linux image needs glibc. A missing libc leaves the store unavailable.
     const libc = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
       flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
     });
@@ -85,6 +86,33 @@ function openWriterLock(directory: string): number {
     closeSync(lock);
     throw error;
   }
+}
+
+/** Rotate independently of queue traffic and node availability. */
+export function startConnectorKeyRotation(store: ConnectorKeyStore): void {
+  let day: number | undefined;
+  let failed = false;
+  const schedule = (retry = false) => {
+    const now = Date.now();
+    const midnight = (utcDay(now) + 1) * DAY_MS;
+    setTimeout(tick, retry ? 1_000 : Math.min(60_000, midnight - now)).unref();
+  };
+  const tick = () => {
+    const current = utcDay(Date.now());
+    try {
+      if (current !== day) {
+        store.advance();
+        day = current;
+      }
+      failed = false;
+      schedule();
+    } catch {
+      if (!failed) console.warn("[connector-retention] op=key-rotation result=failed");
+      failed = true;
+      schedule(true);
+    }
+  };
+  tick();
 }
 
 /** A single writer on a dedicated local volume. Each operation reads the durable key file. */
