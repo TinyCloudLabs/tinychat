@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-Feed: a folded card with no summary shows its title on its second line, not the start of its body or its "why now".
+Feed: when a collapsed card has no summary, its second line shows the card's title instead of the start of its body or its "why now" line.
