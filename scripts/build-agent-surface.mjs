@@ -118,12 +118,13 @@ async function buildPrompts() {
     writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
     execFileSync("tar", ["-xzf", archive, "-C", temp]);
     const checkout = join(temp, readdirSync(temp).find((entry) => entry !== basename(archive)) ?? "");
-    execFileSync("npm", ["ci", "--ignore-scripts", "--silent"], { cwd: checkout, stdio: "inherit" });
-    execFileSync("npm", ["run", "build", "--silent"], {
-      cwd: checkout,
-      env: { ...process.env, SITE_URL },
-      stdio: "inherit",
-    });
+    const env = {
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      SITE_URL,
+    };
+    execFileSync("npm", ["ci", "--ignore-scripts", "--silent"], { cwd: checkout, env, stdio: "inherit" });
+    execFileSync("npm", ["run", "build", "--silent"], { cwd: checkout, env, stdio: "inherit" });
     return { siteDir: join(checkout, "_site"), temp };
   } catch (error) {
     rmSync(temp, { recursive: true, force: true });

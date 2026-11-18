@@ -1,7 +1,11 @@
 # Agent discovery. These headers don't change the SPA route or response body.
-/*
+/
   Link: </llms.txt>; rel="describedby"; type="text/plain", </.well-known/agent-skills/index.json>; rel="describedby"; type="application/json", </.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"; profile="https://www.rfc-editor.org/info/rfc9727", </.well-known/ai-catalog.json>; rel="describedby"; type="application/json", </mcp/server-card>; rel="describedby"; type="application/mcp-server-card+json", </sitemap.xml>; rel="sitemap"; type="application/xml"
   Agentmap: https://tinycloud.one/.well-known/ai-catalog.json
+/index.html
+  Link: </llms.txt>; rel="describedby"; type="text/plain", </.well-known/agent-skills/index.json>; rel="describedby"; type="application/json", </.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"; profile="https://www.rfc-editor.org/info/rfc9727", </.well-known/ai-catalog.json>; rel="describedby"; type="application/json", </mcp/server-card>; rel="describedby"; type="application/mcp-server-card+json", </sitemap.xml>; rel="sitemap"; type="application/xml"
+  Agentmap: https://tinycloud.one/.well-known/ai-catalog.json
+
 
 /llms.txt
   Cache-Control: no-cache
