@@ -6,6 +6,7 @@
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
+import { BotAci } from "./aci";
 import { gatewayConfig } from "./config";
 import { fileBudgetStore, Gateway } from "./gateway";
 import { isRecord } from "./guards";
@@ -13,11 +14,12 @@ import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
 
 const cfg = gatewayConfig(process.env);
+const aci = process.env.BOTS_HISTORY_ENABLED === "true" ? new BotAci(cfg.upstream) : undefined;
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
 function startGateway(): Gateway {
   try {
-    return new Gateway(cfg, { store: fileBudgetStore(cfg.budgetFile) });
+    return new Gateway(cfg, { store: fileBudgetStore(cfg.budgetFile), verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined });
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -69,6 +71,8 @@ function unlisten(botId: string): void {
 const control = Bun.serve({
   unix: join(cfg.egressRoot, "control.sock"),
   async fetch(req) {
+    const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(new URL(req.url).pathname);
+    if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
     const match = /^\/bots\/([0-9a-f]{64})$/.exec(new URL(req.url).pathname);
     if (!match) return new Response(null, { status: 404 });
     const botId = match[1]!;

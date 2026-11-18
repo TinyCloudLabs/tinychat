@@ -11,6 +11,7 @@ mod recorder;
 mod dev_log;
 mod google_oauth;
 mod manage_storage;
+mod privacy_policy;
 // Release-profile library tests validate probe names without putting the
 // self-test in the ordinary shipped binary.
 #[cfg(all(
@@ -67,6 +68,7 @@ pub fn run() {
         google_oauth::google_oauth_cancel,
         google_oauth::google_oauth_open_browser,
         manage_storage::open_manage_storage,
+        privacy_policy::open_privacy_policy,
     ]);
 
     // anarlog (MIT) transcription stack: local capture + on-device Whisper.
@@ -112,6 +114,7 @@ pub fn run() {
             google_oauth::google_oauth_cancel,
             google_oauth::google_oauth_open_browser,
             manage_storage::open_manage_storage,
+            privacy_policy::open_privacy_policy,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,
@@ -162,6 +165,7 @@ pub fn run() {
             google_oauth::google_oauth_cancel,
             google_oauth::google_oauth_open_browser,
             manage_storage::open_manage_storage,
+            privacy_policy::open_privacy_policy,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,

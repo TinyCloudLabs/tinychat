@@ -13,5 +13,12 @@
   "devDependencies": {
     "@types/bun": "1.4.4",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "viem": "2.52.0",
+    "@phala/aci-verifier": "0.11.0"
+  },
+  "overrides": {
+    "@phala/dcap-qvl": "0.7.0"
   }
 }

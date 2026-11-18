@@ -66,7 +66,7 @@ test("matching live pin enrolls only after a real existing index decrypts", asyn
   const address = "0x1111111111111111111111111111111111111111";
   const store = new ContentStore(blobs, { master: () => master });
   const now = new Date().toISOString();
-  expect((await store.upsert({ source, address, sourceId: "meeting-1", kind: "transcript", content: { sentences: ["private meeting"] }, fetchedAt: now, receivedAt: now })).ok).toBe(true);
+  expect((await store.upsert({ source, address, sourceId: "meeting-1", kind: "transcript", content: { sentences: ["private meeting"] }, fetchedAt: now, ts: now, receivedAt: now })).ok).toBe(true);
   const f = fixture();
   f.storage.findIndex = async () => ({ source, address });
   const probe = await store.probeIndex({ source, address });
@@ -100,7 +100,7 @@ test("real stored index under a wrong master refuses enrollment without writes",
   const target = { source: "fireflies", address: "0x1111111111111111111111111111111111111111" };
   const good = new ContentStore(blobs, { master: () => master });
   const now = new Date().toISOString();
-  expect((await good.upsert({ ...target, sourceId: "meeting-1", kind: "transcript", content: { sentences: ["private"] }, receivedAt: now, fetchedAt: now })).ok).toBe(true);
+  expect((await good.upsert({ ...target, sourceId: "meeting-1", kind: "transcript", content: { sentences: ["private"] }, ts: now, receivedAt: now, fetchedAt: now })).ok).toBe(true);
   const f = fixture();
   f.storage.findIndex = async () => target;
   const wrong = createHash("sha256").update("different-key").digest("hex");
@@ -124,7 +124,7 @@ test("startup B delayed before lease claim refuses after A enrolls and writes", 
   const a = f.store();
   await a.assertContinuity(f.storage, fresh, aGuard);
   const now = new Date().toISOString();
-  expect((await a.upsert({ source: "fireflies", address: "0x1111111111111111111111111111111111111111", sourceId: "overlap-meeting", kind: "transcript", content: { sentences: ["A's sealed content"] }, receivedAt: now, fetchedAt: now })).ok).toBe(true);
+  expect((await a.upsert({ source: "fireflies", address: "0x1111111111111111111111111111111111111111", sourceId: "overlap-meeting", kind: "transcript", content: { sentences: ["A's sealed content"] }, ts: now, receivedAt: now, fetchedAt: now })).ok).toBe(true);
   // A has stored real content while B is still booting.
   f.storage.findIndex = async () => ({ source: "fireflies", address: "0x1111111111111111111111111111111111111111" });
   resume();

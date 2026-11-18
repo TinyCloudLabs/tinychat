@@ -1,4 +1,4 @@
-name: iOS TestFlight (Exo)
+name: iOS TestFlight (TinyCloud One)
 
 # Archives Exo for iOS from main, signs it for the App Store and uploads it to TestFlight. Dispatch it from main:
 #   gh workflow run ios-testflight.yml --ref main                  # upload to TestFlight

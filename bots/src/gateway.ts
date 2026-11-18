@@ -254,6 +254,7 @@ export function fileBudgetStore(path: string): BudgetStore {
 
 export interface GatewayDeps {
   fetch?: UpstreamFetch;
+  verifiedFetch?: (botId: string, url: string, init: RequestInit) => Promise<Response>;
   now?: () => number;
   store?: BudgetStore;
 }
@@ -261,6 +262,7 @@ export interface GatewayDeps {
 export class Gateway {
   readonly #cfg: GatewayConfig;
   readonly #fetch: UpstreamFetch;
+  readonly #verifiedFetch: GatewayDeps["verifiedFetch"];
   readonly #now: () => number;
   readonly #store: BudgetStore | undefined;
   readonly #tokens = new Map<string, string>();
@@ -274,6 +276,7 @@ export class Gateway {
   constructor(cfg: GatewayConfig, deps: GatewayDeps = {}) {
     this.#cfg = cfg;
     this.#fetch = deps.fetch ?? fetch;
+    this.#verifiedFetch = deps.verifiedFetch;
     this.#now = deps.now ?? Date.now;
     this.#store = deps.store;
     const saved = this.#store?.load();
@@ -361,13 +364,14 @@ export class Gateway {
   }
 
   /** fetch against the pinned origin with connect and total deadlines; redirects are refused. */
-  async #upstream(path: string, init: RequestInit): Promise<UpstreamCall> {
+  async #upstream(path: string, init: RequestInit, botId?: string): Promise<UpstreamCall> {
     const controller = new AbortController();
     const total = setTimeout(() => controller.abort(), this.#cfg.totalTimeoutMs);
     const connect = setTimeout(() => controller.abort(), this.#cfg.connectTimeoutMs);
     const done = () => clearTimeout(total);
     try {
-      const response = await this.#fetch(`${this.#cfg.upstream}${path}`, {
+      const call = botId && this.#verifiedFetch ? (url: string, options: RequestInit) => this.#verifiedFetch!(botId, url, options) : this.#fetch;
+      const response = await call(`${this.#cfg.upstream}${path}`, {
         ...init,
         headers: { authorization: `Bearer ${this.#cfg.modelKey}`, "content-type": "application/json" },
         redirect: "error",
@@ -441,7 +445,7 @@ export class Gateway {
       streaming();
       let upstream: UpstreamCall;
       try {
-        upstream = await this.#upstream(CHAT_PATH, { method: "POST", body: JSON.stringify(body) });
+        upstream = await this.#upstream(CHAT_PATH, { method: "POST", body: JSON.stringify(body) }, botId);
       } catch {
         this.#charge(botId, -reservation, day);
         return failure(502, "Model unavailable.");

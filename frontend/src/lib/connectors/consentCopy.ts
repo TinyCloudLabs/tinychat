@@ -26,7 +26,7 @@ export const BACKGROUND_SYNC_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "C",
   heading: "Background sync",
   intro:
-    "Fireflies tells our server when a meeting finishes, and TinyChat pulls it into your space the next time you open it. Our server gets only the meeting's ID, never its content or your Fireflies key. Our server keeps those IDs for up to 14 days. You can turn this off at any time, which deletes them.",
+    "Fireflies tells our server when a meeting finishes, and TinyCloud One pulls it into your space the next time you open it. Our server gets only the meeting's ID, never its content or your Fireflies key. Our server keeps those IDs for up to 14 days. You can turn this off at any time, which deletes them.",
 };
 
 
@@ -35,12 +35,11 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "B-ingest",
   heading: "Background sync (server-side)",
   intro:
-    "Our server keeps your Fireflies sign-in and a copy of each finished meeting for up to 14 days, so your meetings are waiting on any device you sign in on. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes both and asks Fireflies to revoke it.",
+    "Our server keeps your Fireflies sign-in and a copy of each finished meeting, so your meetings are waiting on any device you sign in on. Each copy is removed from our server within 14 days of arriving. Deleted data can stay in our storage provider's backups for longer before it's cleared. After that we keep only a scrambled code that can't be turned back into the meeting, for up to 14 more days, so the same meeting isn't added twice. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes the sign-in and asks Fireflies to revoke it; copies we still hold are deleted on the same schedule.",
   disconnectNote:
-    "**Disconnecting undoes all of it, in one click.** We revoke the Fireflies token upstream and " +
-    "delete it, delete every meeting we are holding for you, and stop accepting notifications. " +
-    "If Fireflies is down and we cannot revoke upstream, we tell you so instead of pretending it " +
-    "worked — so you can revoke it yourself from your Fireflies account.",
+    "**Disconnecting removes the Fireflies sign-in and stops new meetings.** We ask Fireflies to revoke the sign-in and delete it from our server. " +
+    "Meetings we still hold are removed from our server within 14 days of arriving. If Fireflies is down and we can't revoke the sign-in, we tell you, " +
+    "so you can revoke it yourself in your Fireflies account.",
 };
 
 /** Google Meet OAuth authorization copy. */
@@ -48,7 +47,8 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "google-oauth",
   heading: "Connect Google Meet",
   intro:
-    "You'll sign in with Google so TinyChat can read your Meet transcripts and Gemini notes and turn on transcription for meetings you host. Your browser fetches them from Google and saves them to your space; our server never keeps your Google token or your meetings. You can disconnect at any time; meetings already saved stay in your space.",
+    "You'll sign in with Google so TinyCloud One can read your Meet transcripts and Gemini notes and turn on transcription for meetings you host. Your browser fetches them from Google and saves them to your space; our server never keeps your Google token or your meetings. You can disconnect at any time; meetings already saved stay in your space.",
+  // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
   disconnectNote:
     "**Disconnecting asks Google to revoke this access and deletes the saved token from your " +
     "secrets.** If Google cannot be reached we say so instead of pretending the revoke worked, " +
@@ -56,6 +56,7 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
     "page. Your already-synced meetings stay in your space unless you also choose to delete them.",
 };
 
+// Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
 export const GOOGLE_TESTING_MODE_REAUTH_COPY =
   "While TinyChat's Google app is in testing, Google asks you to reconnect about once a week.";
 
@@ -67,7 +68,7 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
   variant: "google-calendar-autojoin",
   heading: "Calendar autojoin",
   intro:
-    "TinyChat sends a notetaker to Google Meet events on your main calendar that you organize or have accepted, even while TinyChat is closed; the host still admits it. To do that, our server keeps your Google sign-in and reads your calendar. Turning this off deletes it.",
+    "TinyCloud One sends a notetaker to Google Meet events on your main calendar that you organize or have accepted, even while TinyCloud One is closed; the host still admits it. To do that, our server keeps your Google sign-in and reads your calendar. Turning this off deletes it.",
   disconnectNote: "Disconnecting Google Meet also stops Calendar autojoin, removes the server’s token and asks Google to revoke it. A failed revoke is reported. Your recordings remain available.",
 };
 

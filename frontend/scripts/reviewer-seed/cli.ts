@@ -3,7 +3,8 @@
 // when the process exits. README.md is the contract.
 //
 //   bun frontend/scripts/reviewer-seed/cli.ts --space <space id> --owner <did:pkh> \
-//     --allow-owner <did:pkh> --request-out <file> (--dry-run | --confirm <space id>)
+//     --allow-owner <did:pkh> --request-out <file> (--host <origin> | --production) \
+//     (--dry-run | --confirm <space id>)
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { TinyCloudNode, type DelegatedAccess } from "@tinycloud/node-sdk";

@@ -241,7 +241,7 @@ function HealthSpikeController({ tcw }: { tcw: TinyCloudWeb }) {
             break;
           case "sample": {
             const { inserted } = await Health.insertSampleData();
-            setNotice(`Added ${inserted} sample records as TinyCloud Home. Read again to see them.`);
+            setNotice(`Added ${inserted} sample records as TinyCloud One. Read again to see them.`);
             break;
           }
           case "read":

@@ -77,7 +77,7 @@ export function homeFeatureCoverageEntries(_feature: HomeFeature, address: strin
   const request = composeManifestRequest([{
     manifest_version: 1,
     app_id: APP_ID,
-    name: "TinyCloud Home",
+    name: "TinyCloud One",
     defaults: false,
     permissions: [...CONNECTORS_ENTRIES, encryptionDecryptGrant(address)],
   } as Manifest], { includeAccountRegistryPermissions: false });

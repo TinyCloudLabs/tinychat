@@ -60,7 +60,7 @@ export function FirstScreenControl({ tcw, did }: { tcw: TinyCloudWeb; did?: stri
   return (
     <div className="flex items-center justify-between gap-4">
       <div>
-        <label htmlFor="home-first-screen" className="text-sm font-medium">{text.heading}</label>
+        <label htmlFor="home-first-screen" className="sr-only">{text.heading}</label>
         <p className="text-xs text-muted-foreground">{text.hint}</p>
         {error && <p role="alert" className="mt-2 text-xs text-destructive">{error}</p>}
       </div>

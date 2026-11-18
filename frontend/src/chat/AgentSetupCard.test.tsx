@@ -16,7 +16,7 @@ describe('external agent prompt', () => {
   it('links to public setup without claiming to include the signed-in identity', () => {
     const html = renderToStaticMarkup(<AgentSetupCard />);
     expect(html).toContain('href="https://tinycloud.chat/agents/"');
-    expect(html).toContain('Sign in with your TinyChat account');
+    expect(html).toContain('Sign in with your TinyCloud One account');
     expect(html).not.toContain('account is included');
     expect(html).not.toContain('settings are included');
   });

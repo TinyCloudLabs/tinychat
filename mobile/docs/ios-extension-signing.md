@@ -22,12 +22,12 @@ xcodebuild -project mobile/ios/App/App.xcodeproj -target ExoWidgets -configurati
   EXO_BUNDLE_ID=xyz.tinycloud.home.dev -showBuildSettings | rg PRODUCT_BUNDLE_IDENTIFIER
 ```
 
-For a signed device build, activate Node 22 or newer and use T2's `mobile/scripts/ios-device-install.sh` with `UDID=00008140-0006645414D2801C`, `TEAM=R4QVKA785H`, and `BUNDLE=xyz.tinycloud.home.dev`. Check `pgrep -fl 'devicectl device install|adb .*install'` before installing; never uninstall TinyCloud Home. Inspect both `App.app` and `App.app/PlugIns/ExoWidgets.appex` with `codesign -dvv` and `security cms -D -i …/embedded.mobileprovision`, checking team, bundle IDs, and expiry.
+For a signed device build, activate Node 22 or newer and use T2's `mobile/scripts/ios-device-install.sh` with `UDID=00008140-0006645414D2801C`, `TEAM=R4QVKA785H`, and `BUNDLE=xyz.tinycloud.home.dev`. Check `pgrep -fl 'devicectl device install|adb .*install'` before installing; never uninstall TinyCloud One. Inspect both `App.app` and `App.app/PlugIns/ExoWidgets.appex` with `codesign -dvv` and `security cms -D -i …/embedded.mobileprovision`, checking team, bundle IDs, and expiry.
 
 ## On-device check
 
 1. Add **Record a Voice Note** from the Controls gallery to Control Center and the Lock Screen. Lock the phone and tap it: recording starts and the **Recording** Live Activity appears on the Lock Screen and in the Dynamic Island. Its Stop button saves the note. Filter device logs for `EXO_SHORTCUT`; `source=control` with no `reached the widget extension` line proves app-process routing.
-2. In Shortcuts, run **Record a Voice Note** (TinyCloud Home), then assign it to the Action button and run it there; the app opens on the recorder with the recording running.
+2. In Shortcuts, run **Record a Voice Note** (TinyCloud One), then assign it to the Action button and run it there; the app opens on the recorder with the recording running.
 
 Record each observation, including the iOS version, as pass, fail, or pending.
 

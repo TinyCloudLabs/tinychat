@@ -105,7 +105,7 @@ describe("TC-1100 connector reconnect and off reasons", () => {
           // Only the Meet token's grant bookkeeping is added (and only with a verified identity);
           // policy and credential are untouched.
           expect(await f.store.getConnection(TENANT)).toEqual(subject === undefined ? before
-            : { ...before,
+            : { ...before, rev: before!.rev! + 1,
               googleBrowserBinding: { version: 1, subjectHash: expect.stringMatching(/^[a-f0-9]{64}$/), tokenHashes: [expect.any(String), expect.any(String)] } });
           expect(await f.credentials.status(source, TENANT)).not.toBeNull();
           expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);

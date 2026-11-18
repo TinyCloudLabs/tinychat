@@ -1,12 +1,12 @@
-# TinyCloud Home mobile
+# TinyCloud One mobile
 
-iOS and Android app for **TinyCloud Home**, wrapped in [Capacitor 8](https://capacitorjs.com)
+iOS and Android app for **TinyCloud One**, wrapped in [Capacitor 8](https://capacitorjs.com)
 around the existing `frontend/` React app (the same SPA that ships to the web and
 to the Tauri desktop app), plus native plugins for what a web view cannot do.
 
 ## Layout
 
-- `capacitor.config.ts`: app id `xyz.tinycloud.home`, name `TinyCloud Home`, `webDir`
+- `capacitor.config.ts`: app id `xyz.tinycloud.home`, name `TinyCloud One`, `webDir`
   `../frontend/dist`. `EXO_DEV_SERVER_URL` switches it to live reload.
 - `android/`: Gradle project, applicationId `xyz.tinycloud.home` (the Play
   package) with Kotlin/Java namespace `xyz.tinycloud.exo`. App-local plugin code
@@ -106,10 +106,24 @@ TC-524 prototype: a native `Location` plugin (Android `location/`, iOS `Location
 `LocationPlugin.swift`) that records samples and OS-reported state into an on-device queue, drained into the
 user's space by `frontend/src/lib/location/`. Off by default and absent from release builds: the Android
 permissions and foreground service are in the **debug** manifest only, the iOS code is `#if DEBUG` with its
-Info.plist keys added to Debug builds by `App/location-spike-info-plist.sh`, and the developer card in Connectors
+Info.plist keys added to Debug builds by `App/debug-spikes-info-plist.sh`, and the developer card in Connectors
 → Sources needs `VITE_EXO_LOCATION_SPIKE=true`. Release checks (`verify-android-release.sh`, `ios-build.yml`)
 refuse any location permission, key or code. Findings, store requirements and the recommendation:
 [`docs/location-spike.md`](docs/location-spike.md).
+
+## Native replica store (off by default)
+
+TC-2862: a native `TinyCloudReplicaStore` plugin (iOS `Packages/ReplicaStore` + `App/App/ReplicaStorePlugin.swift`,
+Android `replica/`) keeps the device's local copy of TinyCloud data outside the WebView: one SQLCipher file (raw
+256-bit key, HMAC on, `temp_store=MEMORY`) and one 256-bit secret per account (iOS Keychain
+`AfterFirstUnlockThisDeviceOnly`, not synchronizable; Android wrapped by a non-exportable Keystore key, StrongBox
+where available, no user authentication), rows also sealed with AES-256-GCM under HMAC-opaque keys, files excluded
+from backup (iOS Application Support, Android `noBackupFilesDir`). The JS contract is
+`frontend/src/lib/replication/nativeReplicaStore.ts`. Nothing reads
+or writes it until the SDK can (`VITE_EXO_NATIVE_REPLICA=true`); sign-out always wipes it. Debug smoke: launch with
+`EXO_REPLICA_SMOKE=write`, then `read` (after a restart), then `wipe`, and read the `EXO_REPLICA_SMOKE {json}` line.
+The iOS Keychain needs a signed build: an unsigned (`CODE_SIGNING_ALLOWED=NO`) simulator build rejects with
+`IO` (`-34018`); sign ad hoc (`CODE_SIGN_IDENTITY=-`) as the HealthKit spike step in `mobile.yml` does.
 
 ## Google connectors (OAuth)
 
@@ -139,7 +153,7 @@ app's signing identity, which does not exist yet.
 and `/exchange` accepts any signed-in session. So an app that starts its *own*
 flow, gets a victim to consent on Google's real screen and captures the return
 can redeem the code into its own account (RFC 8252 §8.6). PKCE only protects
-flows TinyCloud Home started. Two switches, both off by default:
+flows TinyCloud One started. Two switches, both off by default:
 
 - backend `GOOGLE_OAUTH_NATIVE_RETURN=true`: accept `native.` states at `/start`
   and `/autojoin/begin`, and let `/callback` redirect them to the deep link.
@@ -297,9 +311,11 @@ code:
   throwaway key generated there and verified against its certificate. No
   environment and no secret; only the unsigned build passes between the jobs,
   and nothing signed is uploaded.
-- Play upload is not wired yet. Until the Play app exists, upload the `.aab` by
-  hand. The workflow header has a TODO for an internal-track upload step with a
-  pinned `r0adkll/upload-google-play` and a `PLAY_SERVICE_ACCOUNT_JSON` secret.
+- Releases (not rehearsals) end by uploading the verified `.aab` to Play's **internal testing**
+  track (pinned `r0adkll/upload-google-play`, status `completed`), so internal
+  testers get every dispatched build. The `PLAY_SERVICE_ACCOUNT_JSON` service
+  account can release to testing tracks of this app only, never production;
+  promote a build in Play Console.
 
 Environment `android-release`:
 
@@ -310,6 +326,7 @@ Environment `android-release`:
 | `ANDROID_KEY_ALIAS` | secret | the key alias, e.g. `exo-upload` |
 | `ANDROID_KEY_PASSWORD` | secret | the key password; for a PKCS12 keystore (keytool's default) it equals the keystore password |
 | `ANDROID_UPLOAD_CERT_SHA256` | variable | the upload certificate's SHA-256 (64 hex digits; colons are fine). Public: Play Console shows it under App integrity |
+| `PLAY_SERVICE_ACCOUNT_JSON` | secret | the JSON key of the `play-publisher` service account, invited in Play Console → Users and permissions with release-to-testing-tracks permissions for TinyCloud One only. `gh secret set PLAY_SERVICE_ACCOUNT_JSON --env android-release --repo $repo < key.json` |
 
 ### Sideloaded APK vs Play installs
 
@@ -318,12 +335,12 @@ delivers with the **app signing key** (Play App Signing), a different
 certificate. Android installs an update only over an app signed with the same
 certificate, so the two can't update each other: a phone with the sideloaded
 APK can't take the Play version (or the reverse) without uninstalling first,
-which deletes TinyCloud Home's local data (sign-in, pending voice notes).
+which deletes TinyCloud One's local data (sign-in, pending voice notes).
 
 - Until the Play app exists, the artifact's APK is for internal testers only.
   Tell them to uninstall it before installing from Play.
 - Once Play has the release, sideload Play's own build instead: Play Console →
-  TinyCloud Home → App bundle explorer → the release → Downloads → **Signed, universal
+  TinyCloud One → App bundle explorer → the release → Downloads → **Signed, universal
   APK**. It is signed with the app signing key, so it and Play installs update
   each other.
 
@@ -390,7 +407,7 @@ which deletes TinyCloud Home's local data (sign-in, pending voice notes).
 ### Play Console checklist (internal testing)
 
 - [ ] Google Play developer account (organization; D-U-N-S number needed) and
-  the app: name **TinyCloud Home**, package `xyz.tinycloud.home` (permanent once uploaded),
+  the app: name **TinyCloud One**, package `xyz.tinycloud.home` (permanent once uploaded),
   app, free.
 - [ ] Play App Signing: accept Google-managed signing on the first upload. The
   CI artifact's `.aab` is signed with the upload key above. Record Play's
@@ -399,14 +416,15 @@ which deletes TinyCloud Home's local data (sign-in, pending voice notes).
 - [ ] **Internal testing** track: create a release, upload the first `.aab` by
   hand (the Play API cannot create an app's first release), add a tester list
   (emails or a Google Group), share the opt-in link.
-- [ ] **Privacy policy URL.** Required for an app that records audio. TinyCloud Home has no
-  privacy policy page yet.
+- [ ] **Privacy policy URL.** Required for an app that records audio:
+  `https://tinycloud.xyz/privacy` (TC-2873). The app links it from Settings → Account and
+  How it works → Your data.
 - [ ] **Data safety.** Answer for the whole app, web view included:
   - Audio, voice or sound recordings: collected, not shared, for app
     functionality. Recording starts only when the user taps Record, and the
     note is stored in the user's own TinyCloud space (KV and SQL in their
     space on the TinyCloud node, written by the app through the TinyCloud
-    SDK, not by the TinyCloud Home backend). Encrypted in transit (HTTPS).
+    SDK, not by the TinyCloud One backend). Encrypted in transit (HTTPS).
   - Also declare the account data used for OpenKey sign-in (email) and the
     chat/meeting content the app stores in the user's space. Check current
     behavior before answering, including what can be deleted and how.
@@ -417,7 +435,7 @@ which deletes TinyCloud Home's local data (sign-in, pending voice notes).
   Play asks for a short video of that flow.
 - [ ] **`RECORD_AUDIO` justification.** It has no Play declaration form;
   Data safety and the store listing cover it. Use: "Records voice notes only
-  after the user taps Record; the system mic indicator and TinyCloud Home's notification
+  after the user taps Record; the system mic indicator and TinyCloud One's notification
   are shown while recording." The OS permission prompt comes from the
   VoiceNotes plugin on first record.
 - [ ] **`POST_NOTIFICATIONS`** (Android 13+) is declared for the recording
@@ -450,9 +468,9 @@ TinyCloud brand blue `#4473B9`:
 - The web app's (PWA) manifest icons, `any` and `maskable` at 192 and 512 px,
   and its 180 px `apple-touch-icon`, in `frontend/public/icons/`.
 
-**TinyCloud Home has no designed mark yet.** The source is the TinyCloud cloud mark
+**TinyCloud One has no designed mark yet.** The source is the TinyCloud cloud mark
 (`logo/tinycloud-icon.png` in TinyCloudLabs/docs; the desktop icons are
-still placeholders). For a real TinyCloud Home icon, replace `tinycloud-mark.png` with
+still placeholders). For a real TinyCloud One icon, replace `tinycloud-mark.png` with
 the designed mark (transparent background, about 3:2) and rerun the script.
 Raster sources up to roughly 500 px wide, like this one, are slightly soft at
 the iOS 1024 px size. A vector or 2048 px export avoids that.
@@ -467,7 +485,7 @@ Xcode 26.6.
   `SceneDelegate` makes that class the window's root. Capacitor 8's template
   builds the window in code with a plain `CAPBridgeViewController`, which
   silently skipped the registration until the smoke test caught it.
-- **Simulator smoke test** (`Mobile (Exo)` → *iOS (simulator build and smoke
+- **Simulator smoke test** (`Mobile (TinyCloud One)` → *iOS (simulator build and smoke
   test)*): a Debug build for the simulator, then
   `mobile/scripts/ios-simulator-smoke.sh`. It boots the newest iPhone
   simulator, installs the app, grants the microphone and launches it. The job
@@ -522,13 +540,13 @@ Xcode 26.6.
   (the 4 bytes after it are padding); when that call is unavailable the run
   records `ps-lstart-etime-coarse`, as the macOS CI run does.
   The script's own cases run against fake `xcrun`, `ps` and `sysctl` binaries on
-  Linux (`Mobile (Exo)` → *iOS smoke script tests (fakes)*):
+  Linux (`Mobile (TinyCloud One)` → *iOS smoke script tests (fakes)*):
   `node --test mobile/scripts/ios-simulator-smoke.test.mjs`. Run it locally the
   same way. `SMOKE_GAP_FAIL_S` (default 30) overrides the hard
   post-publication gap limit so the tests can exercise it quickly.
   To run the smoke against a local build:
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
-- **Release dry run** (`Mobile (Exo)` → *iOS release*): the TestFlight build
+- **Release dry run** (`Mobile (TinyCloud One)` → *iOS release*): the TestFlight build
   (`.github/workflows/ios-build.yml`) without signing. Its archive job produces
   a Release archive of the production frontend and checks:
   - versions and the bundle id;
@@ -543,7 +561,7 @@ Xcode 26.6.
 
 ### Privacy manifest
 
-`App/App/PrivacyInfo.xcprivacy` covers TinyCloud Home's own code: the App target and the
+`App/App/PrivacyInfo.xcprivacy` covers TinyCloud One's own code: the App target and the
 bundled web app. Capacitor and Cordova ship their own manifests, and neither
 uses a required-reason API.
 
@@ -551,11 +569,15 @@ uses a required-reason API.
 |---|---|
 | `NSPrivacyTracking` false, no tracking domains | Exo does no tracking and has no analytics SDK. |
 | System boot time, reason `35F9.1` | `VoiceNotesPlugin` times recordings with `ProcessInfo.systemUptime`. Only in-app elapsed times (duration, silenced and no-signal spans) leave the device. `35F9.1` allows exactly that. |
-| No file-timestamp entry | The plugin reads a recording's size with `URLResourceValues.fileSize`, not `FileManager.attributesOfItem`, which is a file-timestamp API. Keep it that way, or declare `C617.1`. |
+| File timestamp, reason `C617.1` | Recovering a legacy recording reads the file's creation date (`mobile/docs/capture-format.md`). |
 | Audio Data: linked, not tracking, App Functionality | Voice notes are uploaded to the user's TinyCloud space. The upload is not end-to-end encrypted, so Apple counts it as collected even though the space belongs to the user. |
 | Other User Content: same | Chats, notes, meeting transcripts and voice-note metadata go to the Exo backend and the user's space. |
 | Email Address: same | Sign-in with OpenKey uses email + code. |
 | User ID: same | The account's DID/address that owns the space. |
+| Name: same | From Sign in with Apple or Google, or entered on OpenKey; optional. |
+| Purchase History: same | The plan, its renewal date and storage limits, linked to the account address. |
+| Product Interaction: same | Which feature each backend request used and its credits, keyed by a one-way account hash and sent to Better Stack; AI usage per account for plan limits. |
+| Performance Data: same | Backend request status and duration, keyed by the same hash. |
 
 The App Store Connect *App Privacy* answers must say the same. Update both
 whenever a feature sends new data off the device, for example crash reporting
@@ -633,7 +655,7 @@ second only for a run you dispatched.
 
 #### After enrollment completes (Sam)
 
-The iOS app ships as **TinyCloud Home** under the TinyCloud, Inc. organization
+The iOS app ships as **TinyCloud One** under the TinyCloud, Inc. organization
 team (Team ID `R4QVKA785H`), bundle ID `xyz.tinycloud.home`, the same id as the
 Android package. macOS keeps `xyz.tinycloud.exo`; the `xyz.tinycloud.exo://` URL
 scheme is unchanged on both phones.
@@ -642,8 +664,8 @@ scheme is unchanged on both phones.
    the organization team `R4QVKA785H`, not a personal team.
 2. **App IDs**: Certificates, Identifiers & Profiles → Identifiers → **+** →
    App IDs → App. Register two explicit bundle IDs:
-   - description `TinyCloud Home`, bundle ID `xyz.tinycloud.home` (the app);
-   - description `TinyCloud Home Widgets`, bundle ID
+   - description `TinyCloud One`, bundle ID `xyz.tinycloud.home` (the app);
+   - description `TinyCloud One Widgets`, bundle ID
      `xyz.tinycloud.home.widgets` (the embedded `ExoWidgets` WidgetKit
      extension; the App Store export needs a profile for it too).
 
@@ -656,7 +678,7 @@ scheme is unchanged on both phones.
 
    Leave certificates and profiles alone: the export creates them.
 3. **App record**: App Store Connect → Apps → **+** → New App. Platform iOS,
-   name `TinyCloud Home` (if the name is taken, pick another display name; the
+   name `TinyCloud One` (if the name is taken, pick another display name; the
    bundle id is what matters), primary language English, bundle ID
    `xyz.tinycloud.home`, SKU `tinycloud-home-ios`.
 4. **API key**: App Store Connect → Users and Access → Integrations → App Store
@@ -679,7 +701,7 @@ scheme is unchanged on both phones.
    EOF
    gh api -X POST repos/TinyCloudLabs/tinychat/environments/ios-release/deployment-branch-policies -f name=main -f type=branch
    for name in APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
-     secret-bridge request "$name" --reason "TinyCloud Home TestFlight: ios-release environment secret"
+     secret-bridge request "$name" --reason "TinyCloud One TestFlight: ios-release environment secret"
    done
    # once each request is fulfilled:
    for name in APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
@@ -690,12 +712,12 @@ scheme is unchanged on both phones.
 6. **Run**: first `gh workflow run ios-testflight.yml --ref main -f
    mode=validate`, then without `-f mode=validate` to upload. The run summary
    names the version and build.
-7. **TestFlight**: App Store Connect → TinyCloud Home → TestFlight. The build appears
+7. **TestFlight**: App Store Connect → TinyCloud One → TestFlight. The build appears
    after Apple processes it (usually 5 to 30 minutes). Answer the export
    compliance question once. To skip it on later builds, add
    `ITSAppUsesNonExemptEncryption` to Info.plist, which is a legal call.
    Add yourself under Internal Testing, install **TestFlight** from the App
-   Store on the iPhone, and install TinyCloud Home from it.
+   Store on the iPhone, and install TinyCloud One from it.
 
 #### On-device voice-note smoke test (TC-518)
 

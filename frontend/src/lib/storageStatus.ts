@@ -20,13 +20,15 @@ export const STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE = `${TRANSCRIPT_NOT_SAVED_SE
 export const STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE =
   `${TRANSCRIPT_NOT_SAVED_SENTENCE} Your recording is safe on this device. ${TRANSCRIBE_AGAIN_SENTENCE}`;
 const STORAGE_DELETION_NOTE =
-  "Some deletions may lower your storage usage, but TinyCloud Home can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
+  "Some deletions may lower your storage usage, but TinyCloud One can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
 const STORAGE_NO_LARGER_PLAN = "There's no larger plan to buy.";
 /** Detail under the main line on the detailed surfaces. Free sees only the first sentence; paid and unknown get both. */
 export const STORAGE_FULL_DETAIL: Record<"free" | "paid", string> = {
   free: STORAGE_DELETION_NOTE,
   paid: `${STORAGE_DELETION_NOTE} ${STORAGE_NO_LARGER_PLAN}`,
 };
+/** What the iOS and Android apps say where web and desktop offer Manage storage or Upgrade. Plain text: never a link or a button. */
+export const NATIVE_PLAN_NOTE = "Manage your plan on the web at tinycloud.xyz.";
 export const STORAGE_READ_ONLY_NOTICE =
   "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. New changes can't be saved while your storage is full.";
 
