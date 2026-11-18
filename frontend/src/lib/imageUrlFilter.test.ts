@@ -90,10 +90,13 @@ describe("normalisation", () => {
     expect(weight(`https://example.com/a.png?d=${encodeURIComponent(btoa("the account balance is 48213"))}`, "encoded-text")).toBe(100);
   });
 
-  test("a second layer of encoding is a sign of its own, and what is under it is still judged", () => {
+  test("a second layer of encoding asks, and what is under it is still judged, bytes included", () => {
     const twice = `https://example.com/a.png?d=${encodeURIComponent(encodeURIComponent(`${btoa("the account balance is 48213")}==`))}`;
-    expect(weight(twice, "double-encoded")).toBe(40);
+    expect(weight(twice, "double-encoded")).toBe(100);
     expect(weight(twice, "encoded-text")).toBe(100);
+    expect(weight("https://example.com/Annual%2520report.jpg", "double-encoded")).toBe(100);
+    expect(weight("https://example.com/a.png?d=%258f%25a2%25c1%25ff%2500", "binary")).toBe(100);
+    expect(weight("https://example.com/a.png?d=%2541%2542%2543", "escaped-plain")).toBe(100);
   });
 
   test("the fragment is never sent, so it is not judged", () => {
@@ -216,6 +219,68 @@ describe("an address inside the address", () => {
     expect(score("https://upload.wikimedia.org/wikipedia/commons/a/ab/File:Cat.jpg")).toBe(0);
     expect(score("https://example.com/a//b.png")).toBe(0);
     expect(score("https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTx")).toBe(0);
+  });
+
+  test("the inner address must be written exactly as a browser writes one, or the address asks and the whole text is judged", () => {
+    const inner = (value: string) => imageUrlVerdict(`https://example.com/x?u=${value}`);
+    const clean = "https://wikipedia.org/a.png";
+    expect(inner(clean).kind).toBe("load");
+    expect(inner(encodeURIComponent(clean)).kind).toBe("load");
+    for (const value of [
+      `${opaque(20)}${clean}`, // text before the scheme
+      `${clean}%23${opaque(20)}`, // a fragment: the inner request drops it, the outer host receives it
+      `https://wikipedia.org/${opaque(20)}/../a.png`, // a dot-segment: the inner parser removes what is before it
+      `https://wikipedia.org/${opaque(20)}/%252e%252e/a.png`,
+      "https://WIKIPEDIA.org/a.png", // rewritten by the parser
+      "https://wikipedia.org", // the parser adds the slash
+      "https://wikipedia.org/a b.png",
+    ]) {
+      const verdict = inner(value);
+      expect(verdict.kind).toBe("ask");
+      expect(verdict.reasons.find((reason) => reason.code === "nested-url")?.weight).toBe(100);
+    }
+    // The whole text is judged when the inner address is not: the blob in front of it counts.
+    expect(weight(`https://example.com/x?u=${opaque(60)}${clean}`, "blob")).toBe(100);
+    expect(weight(`https://example.com/fetch/x${opaque(60)}${clean}`, "blob")).toBe(100);
+  });
+
+  test("an encoded address is read as an address only when it is all the run holds", () => {
+    const junk = String.fromCharCode(...Array.from({ length: 30 }, (_, i) => 0x80 + ((i * 37) % 0x70)));
+    expect(weight(`https://example.com/x?u=${btoa(`${junk}https://wikipedia.org/a.png`)}`, "encoded-text")).toBe(100);
+    expect(kind(`https://example.com/x?u=${btoa("https://wikipedia.org/a.png")}`)).toBe("load");
+  });
+});
+
+describe("characters outside ASCII", () => {
+  const cyrillic = "парольотпочтыхантердваибанковскийпинчетыре";
+
+  test("a Latin word with diacritics is a word; a short word in another script is counted four characters to a word", () => {
+    expect(score("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Caf%C3%A9_de_Flore.jpg/640px-Caf%C3%A9_de_Flore.jpg")).toBe(0);
+    expect(score("https://example.com/Ayuntamiento_de_M%C3%A1laga_reivindicaci%C3%B3n.jpg")).toBe(0);
+    expect(score(`https://example.com/${encodeURIComponent("富士山")}.jpg`)).toBe(0);
+    expect(score(`https://example.com/${encodeURIComponent("Москва_ночью")}.jpg`)).toBe(0);
+    // 80 Cyrillic letters in words of 10: 20 or more words of four characters.
+    const words = Array.from({ length: 8 }, (_, i) => cyrillic.slice(i * 3, i * 3 + 10)).join("_");
+    expect(weight(`https://example.com/${encodeURIComponent(words)}.jpg`, "text-path")).toBeGreaterThanOrEqual(60);
+  });
+
+  test("their own steps: 64 and 128, with a file name that repeats counted once", () => {
+    const han = (n: number) => Array.from({ length: n }, (_, i) => String.fromCharCode(0x4e00 + ((i * 131) % 0x5000)) + (i % 8 === 7 ? "_" : "")).join("");
+    const at = (n: number) => weight(`https://example.com/${encodeURIComponent(han(n))}.jpg`, "non-ascii");
+    expect([63, 64, 127, 128].map(at)).toEqual([0, 40, 40, 100]);
+    const name = encodeURIComponent(han(40));
+    expect(weight(`https://example.com/thumb/${name}.jpg/640px-${name}.jpg`, "non-ascii")).toBe(0);
+  });
+
+  test("a run with no separator past 32 characters is not a word in any script, and a piece that mixes scripts or digits is opaque", () => {
+    expect(weight(`https://example.com/${encodeURIComponent(cyrillic + cyrillic)}.png`, "blob")).toBe(100);
+    expect(weight(`https://example.com/${opaque(60)}%C3%A9`, "blob")).toBe(100);
+    expect(weight("https://example.com/thepasswordishunter2andherbankpinis4471andthesafecodeis9921%C3%A9.png", "blob")).toBe(100);
+    expect(weight(`https://example.com/a.png?v=${opaque(30)}${encodeURIComponent("д")}`, "blob")).toBe(40);
+  });
+
+  test("in subdomain labels too", () => {
+    expect(weight(`https://${opaque(20).toLowerCase()}é.example.com/a.png`, "host-data")).toBeGreaterThanOrEqual(40);
   });
 });
 
