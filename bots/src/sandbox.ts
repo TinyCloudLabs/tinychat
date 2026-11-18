@@ -387,7 +387,11 @@ export class RunscHost implements SandboxLauncher {
       const exited = child.exited.then(() => destroy()).catch(() => {});
       try {
         await rpc.ready(READY_TIMEOUT_MS);
-        await rpc.request({ type: "set_event_filter", events: ["message_update", "message_end"], messageUpdates: "delta" });
+        await rpc.request({
+          type: "set_event_filter",
+          events: ["message_update", "message_end", "tool_execution_start", "tool_execution_end"],
+          messageUpdates: "delta",
+        });
         await rpc.request(
           { type: "open_session", sessionDir: SANDBOX_SESSION_DIR, provider: "tinycloud", modelId: this.#cfg.model },
           READY_TIMEOUT_MS,

@@ -1,7 +1,7 @@
 // Internal HTTP API, called only by the TinyChat backend (docs/plans/tiny-bots-slice1.md, piece 1).
 // Every SSE event is encoded here from checked fields; nothing from a sandbox is passed through raw.
 
-import type { StagedHistory } from "./history";
+import type { ActivityRecord, StagedHistory } from "./history";
 import { type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState } from "./manifest";
@@ -30,6 +30,7 @@ function operationOf(rest: string, method: string): Operation | undefined {
 export interface BotApi {
   send(text: string, sink: TurnSink, owner?: string): Promise<void>;
   list(): Promise<ListedMessage[]>;
+  listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
   historyStage?(staged: StagedHistory): Promise<void>;
   historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
@@ -64,7 +65,7 @@ function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
   const stream = new ReadableStream<Uint8Array>(
     {
       start(controller) {
-        const send = (event: string, data: Record<string, string>) => {
+        const send = (event: string, data: Record<string, string | number>) => {
           if (!open) return;
           try {
             controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
@@ -80,6 +81,7 @@ function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
         const sink: TurnSink = {
           status: state => send("status", { state }),
           delta: text => send("delta", { text }),
+          activity: ({ type, id, verb, count, at }) => send("activity", { type, id, verb, count, at }),
           done: messageId => send("done", { messageId }),
           error: (code: ErrorCode) => send("error", { code, message: ERROR_MESSAGES[code] }),
         };
@@ -196,7 +198,9 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     }
     if (req.method === "GET") {
       try {
-        return Response.json({ messages: await bot.list() });
+        const messages = await bot.list();
+        const activity = await bot.listActivities?.();
+        return Response.json({ messages, ...(activity?.length ? { activity } : {}) });
       } catch {
         return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
       }

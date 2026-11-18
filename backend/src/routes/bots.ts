@@ -6,6 +6,7 @@
 import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
+import { isBotActivityRecord } from "../bot-history.js";
 
 export interface BotsConfig {
   serviceUrl: string;
@@ -77,7 +78,14 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
         signal: AbortSignal.timeout(10_000),
       });
       if (!upstream.ok) { res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message }); return; }
-      res.json(await upstream.json());
+      const listed = await upstream.json() as { messages: unknown; activity?: unknown };
+      if (listed && Object.hasOwn(listed, "activity")) {
+        const { activity, ...rest } = listed;
+        const records = Array.isArray(activity) ? activity.filter(isBotActivityRecord) : [];
+        res.json({ ...rest, ...(records.length ? { activity: records } : {}) });
+      } else {
+        res.json(listed);
+      }
     } catch {
       res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message });
     }

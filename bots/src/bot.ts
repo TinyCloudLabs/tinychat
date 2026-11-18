@@ -2,9 +2,10 @@
 // on demand and stopped once the session has settled and stayed idle. Everything the sandbox says is treated as
 // untrusted input; only checked fields are turned into events, which the server encodes itself.
 
+import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
+import { type ActivityRecord, HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
@@ -26,6 +27,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
 export interface TurnSink {
   status(state: "starting" | "working"): void;
   delta(text: string): void;
+  activity?(record: ActivityRecord): void;
   done(messageId: string): void;
   error(code: ErrorCode): void;
 }
@@ -99,6 +101,59 @@ export class RunningLimit {
 const LIST_LIMIT = 50;
 const PAGE_LIMIT = 256;
 const MAX_PAGES = 64;
+const MAX_ACTIVITY_COUNT = 256;
+
+/** Only fixed verbs and counters leave the supervisor. Paths are used in memory to count distinct files. */
+class TurnActivity {
+  readonly #calls = new Map<string, { tool: string; completed: boolean }>();
+  readonly #files = new Set<string>();
+  #commands = 0;
+
+  frame(frame: Frame): void {
+    const { toolCallId: id, toolName: tool } = frame;
+    if (typeof id !== "string" || id.length < 1 || id.length > 256) return;
+    if (tool !== "bash" && tool !== "write" && tool !== "edit") return;
+    if (frame.type === "tool_execution_start") {
+      if (this.#calls.size < MAX_ACTIVITY_COUNT && !this.#calls.has(id)) {
+        this.#calls.set(id, { tool, completed: false });
+      }
+      return;
+    }
+    const call = this.#calls.get(id);
+    if (!call || call.completed || call.tool !== tool) return;
+    call.completed = true;
+    if (frame.isError !== undefined && frame.isError !== false) return;
+    if (tool === "bash") {
+      this.#commands++;
+      return;
+    }
+    const details = isRecord(frame.result) ? frame.result.details : undefined;
+    if (!isRecord(details)) return;
+    if (tool === "write") {
+      if (!details.touchesNoFiles) this.#addFile(details.resolvedPath);
+    } else if (Array.isArray(details.perFileResults)) {
+      for (const file of details.perFileResults.slice(0, MAX_ACTIVITY_COUNT)) {
+        if (isRecord(file) && !file.isError) this.#addFile(file.path);
+      }
+    } else if (!details.errorKind) {
+      this.#addFile(details.path);
+    }
+  }
+
+  #addFile(path: unknown): void {
+    if (typeof path === "string" && path.startsWith("/") && path.length <= 4096 && this.#files.size < MAX_ACTIVITY_COUNT) {
+      this.#files.add(path);
+    }
+  }
+
+  records(): ActivityRecord[] {
+    const counts = { ran_commands: this.#commands, changed_files: this.#files.size } as const;
+    return (["ran_commands", "changed_files"] as const).flatMap(verb => {
+      const count = counts[verb];
+      return count === 0 ? [] : [{ type: "activity", id: randomBytes(16).toString("hex"), verb, count, at: new Date().toISOString() }];
+    });
+  }
+}
 
 function log(event: string, botId: string, extra: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ bots: event, bot: botId.slice(0, 12), ...extra }));
@@ -217,6 +272,7 @@ export class Bot {
     sink = {
       status: state => output.status(state),
       delta: text => { this.#history?.delta(text); output.delta(text); },
+      activity: record => { this.#history?.append(record); output.activity?.(record); },
       done: messageId => { this.#history?.finishDraft({ type: "done", messageId }); output.done(messageId); },
       error: code => { this.#history?.finishDraft({ type: "error", code }); output.error(code); },
     };
@@ -283,6 +339,11 @@ export class Bot {
   /** A message or history request is in flight, including one still starting the sandbox. */
   get inUse(): boolean {
     return this.#busy || this.#listing > 0;
+  }
+
+  async listActivities(): Promise<ActivityRecord[]> {
+    if (!this.#options.history) return [];
+    return await this.#historyOperation(journal => journal.activities(), true) ?? [];
   }
 
   /** Stops the sandbox if one is running or starting. False if its teardown failed (logged as stop_failed). */
@@ -380,7 +441,8 @@ export class Bot {
 
   #turn(sandbox: Sandbox, text: string, sink: TurnSink): Promise<void> {
     const id = sandbox.nextId();
-    const { promise, resolve } = Promise.withResolvers<void>();
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const activity = new TurnActivity();
     let firstReplyAt: number | undefined;
     let wroteText = false;
     let separate = false;
@@ -391,9 +453,14 @@ export class Bot {
       finished = true;
       clearTimeout(deadline);
       off();
-      if ("messageId" in outcome) sink.done(outcome.messageId);
-      else sink.error(outcome.code);
-      resolve();
+      try {
+        for (const record of activity.records()) sink.activity?.(record);
+        if ("messageId" in outcome) sink.done(outcome.messageId);
+        else sink.error(outcome.code);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
     };
     // A turn that never reports back (a wedged agent, or one that ignores its tools' limits) loses its sandbox.
     const deadline = setTimeout(() => {
@@ -423,6 +490,8 @@ export class Bot {
         if (!isRecord(frame.message) || frame.message.role !== "assistant") return;
         firstReplyAt ??= timestamp(frame.message.timestamp);
         separate = wroteText;
+      } else if (frame.type === "tool_execution_start" || frame.type === "tool_execution_end") {
+        activity.frame(frame);
       } else if (frame.type === "prompt_result" && frame.id === id) {
         this.#settled = frame.sessionSettled === true;
         if (frame.status === "completed") finish({ messageId: `b-${firstReplyAt ?? Date.now()}` });
