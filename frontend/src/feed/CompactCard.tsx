@@ -100,7 +100,7 @@ export function DueMark({ due, now, className = "" }: { due: string; now?: numbe
 
 export function CompactCard({ agentKey, author, platform, createdAt, priority, due, now, status, replies, title, description, thumb, type, courier, onOpen, opensPage = false, layout = "row" }: {
   agentKey: string; author: string; platform?: Platform; createdAt: string;
-  /** The card's task type, at the top of the row's end (TypeLabel). */
+  /** The card's task type, at the top of the row's end, or at the top right of a tile (TypeLabel). */
   type?: CardType;
   /**
    * A Courier message: the Courier mark and its sender make the name line (no description), and `via`, the agent that
@@ -137,8 +137,12 @@ export function CompactCard({ agentKey, author, platform, createdAt, priority, d
       className={`flex h-full min-h-[132px] w-full min-w-0 flex-col gap-1.5 p-3.5 text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 ${ring}`}>
       <span className="flex min-w-0 items-center gap-2 text-[13px] leading-[18px] text-muted-foreground">
         <AgentMark agentKey={agentKey} name={author} small />
-        <span className="min-w-0 truncate font-medium text-foreground/80">{author}</span>
+        {courier && <CourierMark />}
+        <span className="min-w-0 truncate font-medium text-foreground/80">{courier?.from ?? author}</span>
+        {courier?.from && <span className="sr-only">{`via ${courier.via}`}</span>}
         {platform && <span className="flex min-w-0 shrink-0 items-center"><PlatformName platform={platform} logoOnly /></span>}
+        {/* The task type, at the top right of the tile, as on the row. */}
+        {type && <span className="ml-auto flex shrink-0 items-center"><TypeLabel type={type} /></span>}
       </span>
       <span className={`line-clamp-3 ${titleClass}`}>{doneMark}{title}</span>
       {description && <span className="line-clamp-2 break-words text-[13px] leading-[18px] text-muted-foreground">{description}</span>}

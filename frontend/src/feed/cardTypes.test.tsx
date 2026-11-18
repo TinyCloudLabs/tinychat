@@ -11,6 +11,7 @@ import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { FeedViewEntries } from "./FeedView";
 import { CARD_TYPES, COURIER_OUTPUT_DATABASE, COURIER_SOURCE_ID, courierMessage, isCourierPublisher, parseCardType, parseCourier, parseFeed } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
+import { FEED_VIEW_MODE_KEY, type FeedViewMode } from "./feedViewMode";
 
 const ALL_IDS = ["spend", "publish", "send", "access", "rule", "ship", "do", "review", "direction", "answer", "news", "alert"];
 
@@ -364,5 +365,43 @@ describe("a card without the new fields", () => {
     await open(host, "drawn");
     const details = [...openCard(host, "drawn")!.querySelectorAll("button")].find((node) => node.textContent?.startsWith("Details"))!;
     expect(details.getAttribute("aria-label")).toBeNull();
+  });
+});
+
+describe("the type label and the Courier mark in the other list views", () => {
+  const message = { channel: "courier", type: "answer", source: { label: "Mira · Northwind team" } };
+  async function mountIn(view: FeedViewMode, entries: HomeFeedEntry[]) {
+    restore ??= installDom();
+    window.localStorage.setItem(FEED_VIEW_MODE_KEY, view);
+    return mount(entries);
+  }
+
+  test("Cards: a tile shows the type at its top right, and the Courier mark only for the Courier connection", async () => {
+    const host = await mountIn("cards", [card("spend", { type: "spend" }), card("real", message, true, COURIER), card("spoof", message)]);
+    const label = row(host, "spend")!.querySelector<HTMLElement>('[data-card-type="spend"]');
+    expect(label?.textContent).toBe("Spend");
+    // On the tile's first line, after the agent's name.
+    expect(label!.closest("button")).not.toBeNull();
+    const real = row(host, "real")!;
+    expect(real.querySelector("[data-courier]")).not.toBeNull();
+    expect(real.textContent).toContain("Mira · Northwind team");
+    expect(real.querySelector('[data-card-type="answer"]')?.textContent).toBe("Answer");
+    const spoof = row(host, "spoof")!;
+    expect(spoof.querySelector("[data-courier]")).toBeNull();
+    expect(spoof.textContent).not.toContain("Mira");
+    expect(spoof.textContent).toContain(AGENT.label);
+    // The type is the card's own word about its task, so it still shows.
+    expect(spoof.querySelector('[data-card-type="answer"]')?.textContent).toBe("Answer");
+  });
+
+  test("Expanded: every card is drawn open, with the type beside its title and the same Courier rule", async () => {
+    const host = await mountIn("expanded", [card("spend", { type: "spend" }), card("real", message, true, COURIER), card("spoof", message)]);
+    const spend = openCard(host, "spend")!;
+    expect(spend.querySelector('[data-card-type="spend"]')?.parentElement?.previousElementSibling?.tagName).toBe("H2");
+    expect(openCard(host, "real")!.querySelector("[data-courier]")).not.toBeNull();
+    expect(openCard(host, "real")!.textContent).toContain("Mira · Northwind team");
+    const spoof = openCard(host, "spoof")!;
+    expect(spoof.querySelector("[data-courier]")).toBeNull();
+    expect(spoof.querySelector("[data-agent-line]")?.textContent ?? "").not.toContain("Mira");
   });
 });
