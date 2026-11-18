@@ -35,7 +35,7 @@ function fixture() {
   const kv = new Map<string, unknown>();
   const vault = new Map<string, string>();
   const requests: { url: string; key: string | null; auth: string | null }[] = [];
-  let mode: "ok" | "expired" | "inactive" | "summaries" | "session-expired" = "ok";
+  let mode: "ok" | "expired" | "inactive" | "summaries" | "session-expired" | "provider-invalid-token" = "ok";
   let pauseDetail: Promise<void> | undefined;
   const tcw = {
     did: `did:fixture:${crypto.randomUUID()}`,
@@ -53,7 +53,9 @@ function fixture() {
     secrets: {
       isUnlocked: true,
       put: async (name: string, value: string) => { vault.set(name, value); return ok(undefined); },
-      get: async (name: string) => ok(vault.get(name)),
+      get: async (name: string) => vault.has(name)
+        ? ok(vault.get(name))
+        : { ok: false, error: { code: "KEY_NOT_FOUND", message: `Key not found: ${name}` } },
       delete: async (name: string) => { vault.delete(name); return ok(undefined); },
     },
   } as unknown as TinyCloudWeb;
@@ -67,7 +69,10 @@ function fixture() {
     if (url.origin !== backendUrl || !url.pathname.startsWith(listPath)) throw new Error("Unexpected fixture endpoint");
     if (mode === "expired") return Response.json({ code: "INVALID_API_KEY", message: privateNote }, { status: 401 });
     if (mode === "inactive") return Response.json({ code: "SUBSCRIPTION_INACTIVE", message: privateNote }, { status: 403 });
-    if (mode === "session-expired") return Response.json({ error: "invalid_token" }, { status: 401 });
+    if (mode === "session-expired") return Response.json({ error: "invalid_token" }, {
+      status: 401, headers: { "X-TinyCloud-Session-Rejected": "1" },
+    });
+    if (mode === "provider-invalid-token") return Response.json({ error: "invalid_token", message: privateNote }, { status: 401 });
     if (url.pathname === listPath) return Response.json({ notes: [note], hasMore: false });
     if (url.pathname === notePath) { await pauseDetail; return Response.json(note); }
     if (url.pathname === `${notePath}/transcript`) {
@@ -109,18 +114,23 @@ async function enterKey(value: string) {
   await click(dialog()!, "Continue");
 }
 
-async function mounted(run: (f: ReturnType<typeof fixture>) => Promise<void>) {
+async function mounted(run: (f: ReturnType<typeof fixture> & { remount: () => Promise<void> }) => Promise<void>) {
   const f = fixture();
   const restoreFetch = globalThis.fetch;
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
+  let revision = 0;
+  const remount = async () => {
+    revision++;
+    await act(async () => root.render(<MemoryRouter key={revision}><MeetingSourcesDialog open onOpenChange={() => {}}
+      tcw={f.tcw} backendUrl={backendUrl} sessionStore={sessionStore} /></MemoryRouter>));
+  };
   try {
     globalThis.fetch = f.fetch;
     expect((await ensureSchema(f.tcw)).ok).toBe(true);
-    await act(async () => root.render(<MemoryRouter><MeetingSourcesDialog open onOpenChange={() => {}}
-      tcw={f.tcw} backendUrl={backendUrl} sessionStore={sessionStore} /></MemoryRouter>));
+    await remount();
     await until(() => row() && button(row(), "Connect"), "Flag-on Granola Connect should be available");
-    await run(f);
+    await run({ ...f, remount });
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = restoreFetch;
@@ -200,6 +210,37 @@ test("expired saved key keeps the connection and Reconnect clears just the old k
   await until(() => !row().textContent?.includes("Last sync didn't finish. Sync again."), "Reconnect should clear the warning");
   expect(f.vault.get("GRANOLA_API_KEY")).toBe(replacementKey);
   expect(row().textContent).toContain("1 meeting");
+}));
+
+test("an upstream 401 with a session-shaped body still offers Granola Reconnect", async () => mounted(async f => {
+  await connect(f);
+  f.setMode("provider-invalid-token");
+  await click(row(), "Sync now");
+  await until(() => row().querySelector('[role="alert"]'), "Expected an expired-key warning");
+  expect(row().querySelector('[role="alert"]')?.textContent).toContain("Granola didn’t accept the saved key.");
+  await f.remount();
+  await until(() => row()?.querySelector('[role="alert"]'), "Expected the saved-key warning after reopening");
+  expect(row().querySelector('[role="alert"]')?.textContent).toContain("Granola didn’t accept the saved key.");
+  await click(row(), "Manage");
+  expect(button(row(), "Reconnect Granola")).toBeDefined();
+}));
+
+test("Sync now after cancelling Reconnect prompts for a new key without contacting Granola", async () => mounted(async f => {
+  await connect(f);
+  f.setMode("expired");
+  await click(row(), "Sync now");
+  await until(() => row().textContent?.includes("Granola didn’t accept the saved key."), "Expected the saved-key warning");
+  await click(row(), "Manage");
+  await click(row(), "Reconnect Granola");
+  await until(() => dialog()?.querySelector("input"), "Reconnect should open the key dialog");
+  await click(dialog()!, "Cancel");
+  const requestCount = f.requests.length;
+  await click(row(), "Sync now");
+  await until(() => button(row(), "Sync now") && !button(row(), "Sync now")?.disabled, "Sync now should settle");
+  expect(row().querySelector('[role="alert"]')?.textContent).toContain("Reconnect Granola to sync again.");
+  expect(button(row(), "Reconnect Granola")).toBeDefined();
+  expect(row().textContent).toContain("1 meeting");
+  expect(f.requests).toHaveLength(requestCount);
 }));
 
 test("admin-disabled transcripts sync summaries and keep the neutral notice on a no-change sync", async () => mounted(async f => {

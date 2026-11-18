@@ -22,6 +22,7 @@ import {
   onGmeetLiveStatus,
 } from "@/lib/connectors/gmeetSync";
 import { readBackgroundDrainGeneration } from "@/chat/useBackgroundDrain";
+import { GRANOLA_MISSING_KEY_CODE, GRANOLA_RECONNECT_REQUIRED } from "@/lib/connectors/granolaStatus";
 import type { ConnectorDescriptor, ConnectorId, SyncProgress } from "@/lib/connectors/types";
 import { SECRETS_UNAVAILABLE_IN_APP_MESSAGE, secretsAvailable } from "@/lib/openkeyNative";
 
@@ -131,6 +132,7 @@ export async function runSourceSync(
     if (input.isCurrent?.() === false) return null;
     const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
     if (!key.ok) {
+      if (d.id === "granola" && key.error?.code === GRANOLA_MISSING_KEY_CODE) return GRANOLA_RECONNECT_REQUIRED;
       if (key.error?.code === DECRYPTION_FAILED) return reconnectSourceMessage(d.name);
       return (
         key.error?.message ??

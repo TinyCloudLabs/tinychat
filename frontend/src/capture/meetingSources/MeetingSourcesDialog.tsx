@@ -24,7 +24,7 @@ import { describeGmeetLive, gmeetPressLabel } from "@/chat/GmeetCardStatus";
 import { useBackgroundSync } from "@/chat/useBackgroundSync";
 import { useGmeetRowStatus } from "@/chat/useGmeetRowStatus";
 import * as connectorStore from "@/lib/connectors/connectorStore";
-import { GRANOLA_LAST_SYNC_FAILED, granolaKeyExpired, granolaSummariesOnly } from "@/lib/connectors/granolaStatus";
+import { GRANOLA_LAST_SYNC_FAILED, granolaKeyExpired, granolaSummariesOnly, granolaSyncErrorMessage } from "@/lib/connectors/granolaStatus";
 import { clearGmeetLastRun } from "@/lib/connectors/gmeetLastRun";
 import { getGmeetMeetingCount, onGmeetMeetingCount, refreshGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
 import { onGmeetNotesSettled } from "@/lib/connectors/gmeetSync";
@@ -205,6 +205,7 @@ export function MeetingSourcesDialog({
             syncing,
             connecting,
             syncFailureLabel: d.id === "granola" ? GRANOLA_LAST_SYNC_FAILED : undefined,
+            describePersistedSyncError: d.id === "granola" ? granolaSyncErrorMessage : undefined,
             syncError: sourceSync.error?.id === d.id ? sourceSync.error.message : null,
             rowNote: rowNotes[d.id] ?? null,
             // Meet's count is the saved meetings the Library shows, not the figure cached when a sync last settled.

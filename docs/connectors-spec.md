@@ -520,9 +520,12 @@ the TinyCloud One proxy before saving it as `GRANOLA_API_KEY` in encrypted
 secrets, then sync. Granola requires Business or Enterprise with Personal notes
 enabled on the key. An inactive subscription fails at key entry; rejection of
 a saved key keeps the connection and existing meetings, and Reconnect clears
-the old key before requesting its replacement. Workspace transcript denial
-syncs summaries and shows a neutral notice. Private notes and image URLs are
-not imported.
+the old key before requesting its replacement. If the user cancels then tries
+Sync now, the row asks them to reconnect. A TinyCloud session rejection is
+identified by a backend-owned response header, never by Granola's response
+body. The Granola connection row stores only fixed sync and notice codes, not
+provider error text. Workspace transcript denial syncs summaries and shows a
+neutral notice. Private notes and image URLs are not imported.
 
 Disconnect flow (from the card): confirm dialog (AlertDialog) with a checkbox
 "Also delete the 42 synced meetings from my space" (default OFF). Confirm →

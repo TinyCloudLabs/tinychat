@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { Server } from "node:http";
+import cors from "cors";
 import express from "express";
+import { issueSessionToken } from "@tinyboilerplate/server";
+import { appCorsOptions } from "../cors-origins.js";
+import { createAuthMiddleware } from "../middleware/auth.js";
 import {
   createGranolaProxyRouter,
   granolaProxyEnabled,
-  GRANOLA_API_BASE_URL,
   GRANOLA_KEY_HEADER,
 } from "../routes/granola-proxy.js";
 import { createRequestContextMiddleware, recordMountTemplates } from "../request-context.js";
@@ -63,6 +66,35 @@ describe("granola proxy routes", () => {
     globalThis.fetch = realFetch;
     console.log = realLog;
     console.error = realError;
+  });
+
+  it("exposes the session-rejected marker only for TinyCloud authentication failures", async () => {
+    const app = express();
+    const origin = "https://app.example";
+    const authKey = `0x${"02".repeat(32)}`;
+    const { token } = await issueSessionToken("0x1111111111111111111111111111111111111111", authKey);
+    const path = "/api/connectors/granola/v1/notes";
+    const marker = "X-TinyCloud-Session-Rejected";
+    const upstreamBody = { error: "invalid_token" };
+    app.use(cors(appCorsOptions([origin])));
+    app.use("/api/connectors/granola", createAuthMiddleware(authKey), createGranolaProxyRouter({
+      fetchImpl: async () => Response.json(upstreamBody, { status: 401, headers: { [marker]: "1" } }),
+    }));
+    for (const authorization of [undefined, "Bearer invalid-session"]) {
+      const headers = new Headers({ origin, [GRANOLA_KEY_HEADER]: KEY });
+      if (authorization) headers.set("authorization", authorization);
+      const rejected = await request(app, path, { headers });
+      expect(rejected.status).toBe(401);
+      expect(rejected.headers.get(marker)).toBe("1");
+      expect(rejected.headers.get("access-control-expose-headers")?.toLowerCase().split(/\s*,\s*/))
+        .toContain(marker.toLowerCase());
+    }
+    const expired = await request(app, path, {
+      headers: { origin, authorization: `Bearer ${token}`, [GRANOLA_KEY_HEADER]: KEY },
+    });
+    expect(expired.status).toBe(401);
+    expect(expired.headers.has(marker)).toBe(false);
+    expect(await expired.json()).toEqual(upstreamBody);
   });
 
   it("forwards GET /v1/notes with the caller's key as Bearer, pinned host, allowlisted query", async () => {

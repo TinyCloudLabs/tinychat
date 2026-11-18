@@ -29,7 +29,14 @@ import type {
   GranolaNotePage,
 } from "./granolaClient";
 import { GRANOLA_SECRET_NAME } from "./granolaFeature";
-import { GRANOLA_PLAN_INACTIVE, GRANOLA_SAVED_KEY_WARNING, GRANOLA_SUMMARIES_ONLY } from "./granolaStatus";
+import {
+  GRANOLA_KEY_EXPIRED,
+  GRANOLA_PLAN_INACTIVE,
+  GRANOLA_SAVED_KEY_WARNING,
+  GRANOLA_SUMMARIES_ONLY,
+  GRANOLA_SYNC_ERROR,
+  GRANOLA_SYNC_PARTIAL,
+} from "./granolaStatus";
 import { deleteConnectorKey, saveConnectorKey, type SecretsErr } from "./connectorSecrets";
 import * as connectorStore from "./connectorStore";
 import {
@@ -120,6 +127,7 @@ export type SyncErrorKind = "auth" | "rate-limited" | "network" | "storage";
 export interface SyncError {
   kind: SyncErrorKind;
   message: string;
+  reconnect?: true;
   /** Only present when kind === "rate-limited". */
   retryAfterMs?: number;
 }
@@ -184,7 +192,7 @@ function fromStore(err: StoreError, context: string): SyncError {
 export function fromGranola(err: GranolaError): SyncError {
   switch (err.kind) {
     case "invalid-key":
-      return { kind: "auth", message: GRANOLA_SAVED_KEY_WARNING };
+      return { kind: "auth", message: GRANOLA_SAVED_KEY_WARNING, reconnect: true };
     case "forbidden":
       return { kind: "auth", message: err.code === "SUBSCRIPTION_INACTIVE" ? GRANOLA_PLAN_INACTIVE : err.message };
     case "rate-limited":
@@ -588,11 +596,13 @@ async function runGranolaSync(
         status: "connected",
         lastSyncedAt: finalStatus === "ok" ? attemptAt : previousWatermark,
         lastSyncStatus: finalStatus,
-        lastSyncError: terminal?.message ?? (result.errors.length > 0
-          ? `${result.errors.length} note(s) failed`
-          : finalStatus === "ok" && (transcriptDisabled || (summariesOnly && !transcriptAllowed))
-            ? GRANOLA_SUMMARIES_ONLY
-            : null),
+        lastSyncError: terminal
+          ? terminal.reconnect ? GRANOLA_KEY_EXPIRED : GRANOLA_SYNC_ERROR
+          : result.errors.length > 0
+            ? GRANOLA_SYNC_PARTIAL
+            : finalStatus === "ok" && (transcriptDisabled || (summariesOnly && !transcriptAllowed))
+              ? GRANOLA_SUMMARIES_ONLY
+              : null,
         itemCount,
       });
     });

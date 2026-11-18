@@ -330,6 +330,33 @@ describe("syncGranola", () => {
     if (!res.ok) expect(res.error.kind).toBe("rate-limited");
   });
 
+  test("a failed listing persists a fixed code, never upstream error text", async () => {
+    const store = new FakeStore();
+    const client = new MockClient([]);
+    client.listNotes = async () => ({
+      ok: false,
+      error: { kind: "api-error", message: "PRIVATE_UPSTREAM_ERROR", httpStatus: 502 },
+    });
+    await syncGranola(syncOpts(store, client));
+    expect(store.state).toMatchObject({
+      lastSyncStatus: "error",
+      lastSyncError: "granola:sync-failed",
+    });
+  });
+
+  test("a failed detail persists a fixed partial code rather than a note count or upstream text", async () => {
+    const store = new FakeStore();
+    const client = new MockClient([
+      { notes: [noteSummary("not_0001")], hasMore: false, cursor: null },
+    ]);
+    client.details.set("not_0001", { ok: false, error: { kind: "api-error", message: "PRIVATE_UPSTREAM_ERROR", httpStatus: 502 } });
+    await syncGranola(syncOpts(store, client));
+    expect(store.state).toMatchObject({
+      lastSyncStatus: "partial",
+      lastSyncError: "granola:sync-partial",
+    });
+  });
+
   test("listing pagination follows the cursor to exhaustion", async () => {
     const store = new FakeStore();
     const client = new MockClient([

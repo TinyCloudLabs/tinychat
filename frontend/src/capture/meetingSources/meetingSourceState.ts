@@ -104,6 +104,7 @@ export function sourceRowDisplay(input: {
   syncing: boolean;
   connecting: boolean;
   syncFailureLabel?: string;
+  describePersistedSyncError?: (code: string | null) => string | null;
   /** This window's own sync failure for the row, if the last attempt failed. */
   syncError: string | null;
   /** A disconnect warning left on the row. */
@@ -134,5 +135,8 @@ export function sourceRowDisplay(input: {
         input.syncFailureLabel,
       );
   // The current attempt's failure wins over what the last finished sync saved.
-  return { state, status, error: input.syncError ?? input.rowNote ?? problem?.message ?? null };
+  const problemMessage = !run && input.describePersistedSyncError
+    ? input.describePersistedSyncError(problem?.message ?? null)
+    : problem?.message ?? null;
+  return { state, status, error: input.syncError ?? input.rowNote ?? problemMessage };
 }

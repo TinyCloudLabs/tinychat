@@ -30,7 +30,15 @@ import {
 import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
 import { GranolaClient } from "@/lib/connectors/granolaClient";
 import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
-import { GRANOLA_LAST_SYNC_FAILED, GRANOLA_SYNC_FAILED, granolaKeyExpired, granolaSummariesOnly } from "@/lib/connectors/granolaStatus";
+import {
+  GRANOLA_LAST_SYNC_FAILED,
+  GRANOLA_MISSING_KEY_CODE,
+  GRANOLA_RECONNECT_REQUIRED,
+  GRANOLA_SYNC_FAILED,
+  granolaKeyExpired,
+  granolaSummariesOnly,
+  granolaSyncErrorMessage,
+} from "@/lib/connectors/granolaStatus";
 import { syncGranola } from "@/lib/connectors/granolaSync";
 import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
 import { GranolaReconnect, GranolaSummariesNotice } from "./GranolaConnectionNotices";
@@ -532,10 +540,10 @@ export function ConnectorsCard({
         patchRow(d.id, {
           syncing: false,
           actionError:
-            keyRes.error?.message ??
-            (engine === "gmeet"
-              ? "Could not read the saved Google connection"
-              : "Could not read API key"),
+            engine === "granola" && keyRes.error?.code === GRANOLA_MISSING_KEY_CODE
+              ? GRANOLA_RECONNECT_REQUIRED
+              : keyRes.error?.message ??
+                (engine === "gmeet" ? "Could not read the saved Google connection" : "Could not read API key"),
         });
         return;
       }
@@ -811,6 +819,8 @@ const ConnectorRow: FC<{
 }) => {
   const comingSoon = d.status === "coming-soon";
   const connected = state.connection?.status === "connected";
+  const storedErrorCode = state.connection ? state.connection.lastSyncError : null;
+  const storedError = d.id === "granola" ? granolaSyncErrorMessage(storedErrorCode) : storedErrorCode;
   // A coming-soon row dims only its icon and its status dot; its text keeps
   // full contrast (a dimmed row put muted text under 4.5:1).
   const containerCls = "flex flex-col gap-2 py-3";
@@ -974,9 +984,9 @@ const ConnectorRow: FC<{
         !state.actionError &&
         connected &&
         (state.connection?.lastSyncStatus === "error" || state.connection?.lastSyncStatus === "partial") &&
-        state.connection.lastSyncError && (
+        storedError && (
           <p role="alert" className="text-xs text-destructive">
-            {state.connection.lastSyncError}
+            {storedError}
           </p>
         )}
       {children}

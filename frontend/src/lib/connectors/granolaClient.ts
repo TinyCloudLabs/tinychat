@@ -341,7 +341,8 @@ export class GranolaClient {
         };
       }
       if (response.status === 401) {
-        if (parsed.sessionRejected) {
+        // Only TinyCloud's auth middleware sets this header; the proxy does not relay it.
+        if (response.headers.get("X-TinyCloud-Session-Rejected") === "1") {
           return { ok: false, error: { kind: "network-error", message: "You're signed out of TinyCloud One. Sign in, then try again." } };
         }
         return {
@@ -397,7 +398,7 @@ export class GranolaClient {
 /** Inspect only status codes; the provider's message may contain private data. */
 async function readGranolaBody(
   response: Response,
-): Promise<{ ok: true; body: unknown; code?: string; sessionRejected: boolean } | { ok: false; code?: undefined; sessionRejected?: undefined }> {
+): Promise<{ ok: true; body: unknown; code?: string } | { ok: false; code?: undefined }> {
   let body: unknown;
   try {
     body = await response.json();
@@ -409,7 +410,6 @@ async function readGranolaBody(
     ok: true,
     body,
     code: typeof record.code === "string" ? record.code : undefined,
-    sessionRejected: record.error === "missing_token" || record.error === "invalid_token",
   };
 }
 
