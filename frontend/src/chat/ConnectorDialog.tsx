@@ -236,19 +236,23 @@ interface ConnectorConnectDialogProps {
   onConnected: () => void;
 }
 
-/**
- * The one entry point the card renders. Which machine runs is the registry
- * row's business, not the card's — so the card keeps one `<ConnectorConnectDialog>`
- * and a connector that changes auth style changes nothing there.
- */
-export const ConnectorConnectDialog: FC<ConnectorConnectDialogProps> = (props) =>
-  usesOAuthConnect(props.descriptor) ? (
-    <OAuthConnectDialog {...props} />
-  ) : (
-    <ApiKeyConnectDialog {...props} />
+/** Only connectors with their own credential flow may accept credentials. */
+export const ConnectorConnectDialog: FC<ConnectorConnectDialogProps> = (props) => {
+  if (usesOAuthConnect(props.descriptor)) return <OAuthConnectDialog {...props} />;
+  if (props.descriptor.id === "fireflies") return <FirefliesConnectDialog {...props} />;
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Connect {props.descriptor.name}</DialogTitle>
+          <DialogDescription>This connection is not available yet.</DialogDescription>
+        </DialogHeader>
+      </DialogContent>
+    </Dialog>
   );
+};
 
-const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
+const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
   tcw,
   descriptor,
   open,

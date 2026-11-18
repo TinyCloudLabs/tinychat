@@ -29,6 +29,7 @@ import {
 } from "@/lib/connectors/firefliesClient";
 import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
 import { defaultGranolaClientOptions, GranolaClient } from "@/lib/connectors/granolaClient";
+import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
 import { isGranolaSyncInFlight, syncGranola } from "@/lib/connectors/granolaSync";
 import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
@@ -302,13 +303,8 @@ export async function runGmeetSyncNow(opts: {
 }
 
 /**
- * "Sync now" for Granola (granola plan S3). The API key rides the request to
- * OUR backend proxy (`GranolaClient` resolves `${backendUrl}` + the proxy
- * route); the proxy attaches it to the upstream call and never stores or logs
- * it. Unlike Meet, `signal` goes straight to the engine — Granola has no
- * out-of-press work that must survive an abort, so Stop cuts the client too.
- * The engine's single-flight is shared with the session-start lane, so a
- * press while that run is in flight JOINS it.
+ * The sync flag enables this engine, not the connection UI. The API key is
+ * forwarded in memory to Granola by the backend proxy for this run only.
  */
 export async function runGranolaSyncNow(opts: {
   tcw: TinyCloudWeb;
@@ -318,6 +314,9 @@ export async function runGranolaSyncNow(opts: {
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
 }): Promise<RowSyncOutcome> {
+  if (!granolaConnectorEnabled()) {
+    return { ok: false, message: "Granola sync is not available yet.", retryAfterMs: null };
+  }
   try {
     const client = new GranolaClient({
       backendUrl: opts.backendUrl,

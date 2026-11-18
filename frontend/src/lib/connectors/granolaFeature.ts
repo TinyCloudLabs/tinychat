@@ -1,6 +1,5 @@
-// Granola connector arming flag (granola plan S3). A build-time Vite env,
-// default off: the registry row renders coming-soon and the sync dispatch
-// never runs for it. Set VITE_GRANOLA_CONNECTOR_ENABLED=true to arm.
+// Build-time opt-in for the Granola sync runner only. Connection setup stays
+// unavailable until Granola has its own credential dialog.
 
 /** Exact-match "true", the same contract the backend's *_ENABLED flags use. */
 export function granolaConnectorEnabled(
