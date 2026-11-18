@@ -5,12 +5,12 @@ import { parseApprovalRenewal, type ApprovalRenewal } from "@tinycloud/share-env
 import { BrowserSessionStorage, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
 
 /**
- * TC-2872: the renewal lease OpenKey signs when the owner leaves renewal on at sign-in. OpenKey keeps no copy and
- * doesn't send it to the node: right after sign-in this app checks it against the just-saved session record, has
- * the session's node admit it, and only then keeps it beside the record as the session's receipt
- * (packages/client session-persistence: cleared with the record). It is trusted for nothing until it is checked
- * here against that exact record. The node stays the authority on whether the lease still renews: the SDK's
- * renewal restore asks it before it restores anything.
+ * TC-2872: the renewal lease OpenKey signs when the owner leaves renewal on at sign-in. OpenKey records it, so the
+ * owner's stops can revoke it, but doesn't send it to the node: right after sign-in this app checks it against the
+ * just-saved session record, has the session's node admit it, and only then keeps it beside the record as the
+ * session's receipt (packages/client session-persistence: cleared with the record). It is trusted for nothing until
+ * it is checked here against that exact record. The node stays the authority on whether the lease still renews: the
+ * SDK's renewal restore asks it before it restores anything.
  */
 
 /** The 90-day renewal TinyCloud One asks OpenKey to offer at sign-in. */
@@ -55,20 +55,29 @@ export async function verifiedRenewalLease(value: unknown, record: PersistedSess
 
 /** How long the sign-in waits for the node to admit the lease before going on without renewal. */
 const ADMIT_TIMEOUT_MS = 5_000;
+/**
+ * The latest a lease is sent to the node, after it arrived on this device. A stop at OpenKey leaves a sign-in lease
+ * it can't find at the node on for ten minutes, in case the app is still admitting it; this keeps every admission
+ * well inside that. Measured on this device's monotonic clock, never against OpenKey's `approvedAt`.
+ */
+const ADMIT_DEADLINE_MS = 60_000;
 
 /**
  * Has the signed-in session's node admit the lease OpenKey returned, then keeps it as the session's receipt. The lease
- * must first check out against the session record the sign-in just saved. Without a lease, or when the check or the
- * admission fails, nothing is kept: the session lasts until its signed end. Resolves whether renewal is now on.
+ * must first check out against the session record the sign-in just saved, and is sent only within a minute of
+ * `arrivedAt` (a `performance.now()` reading taken when OpenKey returned it). Without a lease, or when the check, the
+ * deadline or the admission fails, nothing is kept: the session lasts until its signed end. Resolves whether renewal
+ * is now on.
  */
 export async function admitSignInRenewal(input: {
   tcw: Pick<TinyCloudWeb, "activeNodeIdentity">;
   address: string;
   renewal: unknown;
+  arrivedAt: number | undefined;
   storage?: Pick<BrowserSessionStorage, "load">;
 }): Promise<boolean> {
-  const { tcw, address, renewal } = input;
-  if (renewal === undefined || renewal === null) return false;
+  const { tcw, address, renewal, arrivedAt } = input;
+  if (renewal === undefined || renewal === null || arrivedAt === undefined) return false;
   try {
     const storage = input.storage ?? new BrowserSessionStorage();
     const record = await storage.load(address);
@@ -77,6 +86,8 @@ export async function admitSignInRenewal(input: {
     if (!record || !grant || !leaseAuthorization) return false;
     const { receipt } = parseApprovalRenewal(renewal);
     const { origin } = await tcw.activeNodeIdentity();
+    const remaining = arrivedAt + ADMIT_DEADLINE_MS - performance.now();
+    if (!(remaining > 0)) return false;
     await admitOwnerRenewalLease({
       host: origin,
       originalAuthorization: grant.delegationHeader.Authorization.replace(/^Bearer\s+/i, ""),
@@ -88,7 +99,7 @@ export async function admitSignInRenewal(input: {
       leaseAuthorization,
       leaseCid: receipt.leaseCid,
       leaseExpiresAt: receipt.leaseExpiresAt,
-      signal: AbortSignal.timeout(ADMIT_TIMEOUT_MS),
+      signal: AbortSignal.timeout(Math.min(ADMIT_TIMEOUT_MS, remaining)),
     });
     // A sign-out during the admission cleared the record: keep no receipt beside a session that is gone.
     if ((await storage.load(address))?.tinycloudSession?.delegationCid !== grant.delegationCid) return false;

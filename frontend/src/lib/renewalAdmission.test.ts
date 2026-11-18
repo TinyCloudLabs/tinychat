@@ -45,11 +45,12 @@ beforeEach(() => {
 
 afterEach(() => node.stop(true));
 
-function admit(address: string, record: PersistedSessionData, renewal: unknown, load = async () => record as PersistedSessionData | null) {
+function admit(address: string, record: PersistedSessionData, renewal: unknown, load = async () => record as PersistedSessionData | null, arrivedAt: number | undefined = performance.now()) {
   return admitSignInRenewal({
     tcw: { activeNodeIdentity: async () => ({ origin: `http://127.0.0.1:${node.port}`, nodeDid: "did:key:node" }) },
     address,
     renewal,
+    arrivedAt,
     storage: { load },
   });
 }
@@ -119,5 +120,41 @@ describe("renewal chosen at sign-in", () => {
     expect(await admit(owner.address, record, undefined)).toBe(false);
     expect(presented).toEqual([]);
     expect(loadRenewalReceipt(owner.address)).toBeNull();
+  });
+
+  test("is not sent once a minute has passed since it arrived, and not kept", async () => {
+    const { owner, record, receipt } = await fixture();
+    publish(receipt);
+    expect(await admit(owner.address, record, receipt, undefined, performance.now() - 60_001)).toBe(false);
+    // No arrival time (the outcome never came through the sign-in client): not sent.
+    expect(await admitSignInRenewal({ tcw: { activeNodeIdentity: async () => ({ origin: `http://127.0.0.1:${node.port}`, nodeDid: "did:key:node" }) },
+      address: owner.address, renewal: receipt, arrivedAt: undefined, storage: { load: async () => record } })).toBe(false);
+    expect(presented).toEqual([]);
+    expect(loadRenewalReceipt(owner.address)).toBeNull();
+  });
+
+  test("is given up when its minute runs out, even with the five seconds not yet up", async () => {
+    const { owner, record, receipt } = await fixture();
+    publish(receipt);
+    delegateStatus = "hang";
+    const started = performance.now();
+    expect(await admit(owner.address, record, receipt, undefined, started - 59_000)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(presented).toHaveLength(1);
+    expect(loadRenewalReceipt(owner.address)).toBeNull();
+  }, 10_000);
+
+  test("counts its minute from arrival on this device, not from when OpenKey approved it by the wall clock", async () => {
+    const { owner, record, receipt } = await fixture();
+    publish(receipt);
+    // This device's wall clock runs two minutes past OpenKey's `approvedAt`; the lease has only just arrived.
+    const wallClock = Date.now;
+    Date.now = () => wallClock() + 120_000;
+    try {
+      expect(await admit(owner.address, record, receipt)).toBe(true);
+    } finally {
+      Date.now = wallClock;
+    }
+    expect(presented).toHaveLength(1);
   });
 });

@@ -1216,10 +1216,15 @@ export function App() {
       // TC-2872: the web signs in through OpenKey's own window, which offers renewal beside the session it signs.
       // The desktop app keeps the wallet signature. The nonce reaches OpenKey through the config.
       let renewalOutcome: OpenKeyRenewalOutcome = {};
+      // When the lease arrived, on this device's monotonic clock: it is sent to the node only within a minute of it.
+      let renewalArrivedAt: number | undefined;
       const openkeySignIn = appPlatform() === "web"
         ? {
             openkey: {
-              client: openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => { renewalOutcome = outcome; }),
+              client: openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
+                renewalOutcome = outcome;
+                renewalArrivedAt = performance.now();
+              }),
               mode: "iframe" as const,
               expiryChangeable: true,
               maxExpiresAt: () => Date.now() + SESSION_EXPIRATION_MS,
@@ -1242,9 +1247,9 @@ export function App() {
         throw new UserFacingError("Sign-out didn't finish on this device. Sign in again, then sign out.");
       }
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
-      // OpenKey signed the lease but keeps no copy: the session's node admits it here, else this sign-in runs to its
-      // signed end without renewal (lib/renewalReceipt.ts).
-      await admitSignInRenewal({ tcw: signedTcw, address: connectedAddress, renewal: renewalOutcome.renewal });
+      // OpenKey signed and recorded the lease but doesn't send it to the node: the session's node admits it here,
+      // within a minute of its arrival, else this sign-in runs to its signed end without renewal (lib/renewalReceipt.ts).
+      await admitSignInRenewal({ tcw: signedTcw, address: connectedAddress, renewal: renewalOutcome.renewal, arrivedAt: renewalArrivedAt });
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;
