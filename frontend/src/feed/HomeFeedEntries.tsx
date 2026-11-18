@@ -37,7 +37,7 @@ import { shortTime } from "./ShortTime";
 import { PostPreview } from "./PostPreview";
 import { lazyTab } from "@/shell/lazyTab";
 import { labPageOf, postStatus } from "./postAnswers";
-import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, parseSitrepCardPayload, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
+import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, findSecrets, groupCards, groupPriorityFlag, isClosed, orderPriority, parseSitrepCardPayload, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
@@ -117,6 +117,8 @@ function cardTiming(entry: HomeFeedEntry, context?: TypedCardContext): { deadlin
   const expiresAt = isoField(payload.expiresAt) ?? isoField(record?.expiresAt);
   return { ...(deadline ? { deadline } : {}), ...(expiresAt ? { expiresAt } : {}), ...(priority !== undefined ? { priority } : {}) };
 }
+/** An agent's link, as it was posted: one that looks like a secret or an approval link (an OpenKey one-tap link, a code in its query) is not shown, as the board would not have written it. */
+const clean = (url: string): boolean => findSecrets(url).length === 0;
 function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
   const card = entry.state.card;
   const payload = card.payload ?? {};
@@ -129,10 +131,10 @@ function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
     title: card.title, lead: { text: context?.record.kind === "ship" ? "" : card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
     // Replies on a plain card render in its conversation, not in the body.
     ...(typeof payload.body === "string" ? { body: payload.body } : {}),
-    ...(typeof payload.url === "string" ? { url: payload.url } : {}),
+    ...(typeof payload.url === "string" && clean(payload.url) ? { url: payload.url } : {}),
     ...(sourceRecord && typeof sourceRecord.label === "string" ? { source: {
       label: sourceRecord.label,
-      ...(safeUrl(sourceRecord.url) ? { url: sourceRecord.url } : {}),
+      ...(safeUrl(sourceRecord.url) && clean(sourceRecord.url) ? { url: sourceRecord.url } : {}),
       ...(typeof sourceRecord.ref === "string" ? { ref: sourceRecord.ref } : {}),
     } } : {}),
   };
@@ -141,7 +143,7 @@ function ReportLink({ entry }: { entry: HomeFeedEntry }) {
   const report = entry.state.card.payload?.report;
   if (!report || typeof report !== "object") return null;
   const { url, label } = report as Record<string, unknown>;
-  if (!safeUrl(url)) return null;
+  if (!safeUrl(url) || !clean(url)) return null;
   return <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]">{typeof label === "string" ? label : "Full report"}</a>;
 }
 
