@@ -194,7 +194,7 @@ or host check that changes the product.
 - **Edge redirect (the `tinycloud-domain-redirects` Cloudflare Worker, TinyCloudLabs/internal
   `infra/tinycloud-domain-redirects`, routes on `tinycloud.chat/*` and
   `home.tinycloud.xyz/*` in front of this Pages project; the Pages `_redirects`
-  file matches paths only):** a page load gets a 301 to `https://tinycloud.one`
+  file matches paths only):** a page load gets a 302 to `https://tinycloud.one`
   with the same path and query (`no-store`). The Worker's `worker.js` is the
   source of truth for what it lets through to this app instead: a request with
   the `tc_hold=1` cookie; `?legacy=1`; the same-tab Google sign-in return
@@ -205,7 +205,7 @@ or host check that changes the product.
   its imports); any method but `GET` or `HEAD`; and these paths: `/sw.js`,
   `/workbox-<hash>.js`, `/assets/*`, `/manifest.webmanifest`, `/version.json`,
   `/icons/*`, `/fonts/*`, `/agents` and `/agents/*`. Browsers keep the `#hash`
-  across a 301 whose `Location` has none.
+  across a 302 whose `Location` has none.
 - **`tc_hold` cookie:** the edge redirect runs before the app, so it could
   strand local-only work. While the app holds work on a legacy host it sets
   `tc_hold=1` (host-only, `Secure`, `SameSite=Lax`, 400 days) so the rule lets
