@@ -29,6 +29,7 @@ for (const width of [390, 768, 900, 1280, 1440]) {
     await page.clock.install({ time: new Date(Date.parse(SITREP_NOW) + 30 * 60_000) });
     await page.clock.resume();
     await page.goto(`http://127.0.0.1:${server.port}/?screen=home-feed-details&theme=light&platform=web`);
+    await page.locator('li[data-card-key] button[aria-expanded="false"]').first().click();
     const article = page.locator("article").first();
     await article.waitFor({ timeout: 15_000 });
     await article.locator("button[aria-expanded]", { hasText: /^Details/ }).first().click();
