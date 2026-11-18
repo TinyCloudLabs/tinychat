@@ -37,6 +37,7 @@ export function PendingCard({ items }: { items: readonly PendingItem[] }) {
       {items.map((item) => {
         const waiting = item.status.startsWith("Waiting");
         const lead = waiting && item.detail ? item.detail : item.title;
+        const under = item.post || item.title;
         // Hidden (not removed) while its own answer counts: the open card inside keeps its place.
         return <li key={item.key} data-card-key={item.key} hidden={item.waiting} className="min-w-0">
           {item.open ? <div hidden={item.waiting} inert={item.waiting}>{item.open}</div> : <div className="flex items-start gap-3 px-4 pb-3 pt-3.5 min-[600px]:px-5 min-[600px]:pb-3.5 min-[600px]:pt-4">
@@ -44,7 +45,7 @@ export function PendingCard({ items }: { items: readonly PendingItem[] }) {
               <span className="-my-[3px] shrink-0"><AgentMark agentKey={item.agentKey} name={item.author} small /></span>
               <span className="min-w-0 flex-1">
                 <span className="line-clamp-2 break-words text-[15px] font-semibold leading-[22px] min-[600px]:text-base min-[600px]:leading-6">{lead}</span>
-                {(item.post || item.title) !== lead && <span className="mt-0.5 line-clamp-2 break-words text-[15px] leading-[22px] text-muted-foreground min-[600px]:text-base min-[600px]:leading-6">{item.post || item.title}</span>}
+                {under && under !== lead && <span className="mt-0.5 line-clamp-2 break-words text-[15px] leading-[22px] text-muted-foreground min-[600px]:text-base min-[600px]:leading-6">{under}</span>}
               </span>
               {!item.onAcknowledge || waiting
                 ? <span className="inline-flex shrink-0 items-center gap-1 text-meta text-muted-foreground">{waiting && <Clock3Icon aria-hidden className="size-3.5" />}{item.status}</span>

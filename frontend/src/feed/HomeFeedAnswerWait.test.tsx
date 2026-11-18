@@ -592,3 +592,13 @@ test("a post page opened while an answer counts does not send it early: left alo
   expect(feed.writes).toHaveLength(1);
   expect(feed.writes[0]).toMatchObject({ cardId: "alpha", choiceId: "hold" });
 });
+
+test("a Pending row for a card with no title and no post shows only what was chosen, with no empty line under it", async () => {
+  const feed = store([entry("blank", "")]);
+  const host = await mount(feed.source);
+  await answer(host, "blank", "Hold");
+  await clock!.advance(5000);
+  const column = rowOf(host, "blank").querySelector("button")!.children[1]!;
+  expect(column.textContent).toBe("You chose Hold");
+  expect(column.children).toHaveLength(1);
+});
