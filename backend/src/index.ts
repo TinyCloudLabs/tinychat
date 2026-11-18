@@ -894,6 +894,7 @@ async function main() {
       const contentMaster = currentContentMaster();
       const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
       const contentStore = new ContentStore(contentBlobs, {
+        retentionKeys: connectorKeyStore,
         purgeLedger: connectorWebhooks.control,
         master: () => contentMaster,
         mutationGuard: ingestGuard,
@@ -1026,6 +1027,7 @@ async function main() {
       new KvInstanceLeaseStore(node),
     );
     const retentionContent = new ContentStore(retentionBlobs, {
+      retentionKeys: connectorKeyStore,
       purgeLedger: connectorControl,
       mutationGuard: retentionGuard,
     });
