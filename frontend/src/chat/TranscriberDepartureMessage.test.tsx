@@ -19,7 +19,7 @@ describe("departureMessage when the notetaker was refused at the door", () => {
   const message = departureMessage(failedMeeting("awaiting_admission_rejected"))!;
 
   test("tells the owner Meet refused the notetaker and names the Meeting access setting", () => {
-    expect(message).toContain("Google Meet did not let the notetaker in");
+    expect(message).toContain("Google Meet didn't let the notetaker in");
     expect(message).toContain("Meeting access");
   });
 

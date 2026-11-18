@@ -570,7 +570,7 @@ export function departureMessage(meeting: TranscriberMeeting): string | null {
     case "stopped": return "Bot was stopped.";
     case "awaiting_admission_timeout": return "Bot timed out waiting to be admitted.";
     case "awaiting_admission_rejected":
-      return "Google Meet did not let the notetaker in. The host’s Meeting access setting may be keeping out people outside their organization. Ask the host to check it, and to admit the notetaker if it asks to join, then try again.";
+      return "Google Meet didn't let the notetaker in. The host's Meeting access setting may keep out people from outside their organization. Ask the host to check it and to admit the notetaker when it asks to join, then try again.";
     case "join_failure":
     case "auth_session_missing":
     case "validation_error": return "Bot reported a connection or setup failure.";
