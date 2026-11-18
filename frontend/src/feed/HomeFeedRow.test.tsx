@@ -92,11 +92,12 @@ async function open(row: HTMLElement) {
 test("a folded typed card is its post: not its title, its author, its time, or a count of options", async () => {
   const host = await mount([entry("typed", "Ship the node update?", { typed: true, post: "Ship the node update and lose two old databases for now? Nothing is deleted." })]);
   const row = rowOf(host, "typed");
-  expect(row.textContent).toContain("Ship the node update and lose two old databases for now? Nothing is deleted.");
-  expect(row.textContent).not.toContain("Ship the node update?");
-  expect(row.textContent).not.toContain(AUTHOR);
-  expect(row.textContent).not.toMatch(/\boptions?\b|Read more|See \d/);
-  expect(row.querySelector("time")).toBeNull();
+  const own = row.querySelector("button")!;
+  expect(own.textContent).toContain("Ship the node update and lose two old databases for now? Nothing is deleted.");
+  expect(own.textContent).not.toContain("Ship the node update?");
+  expect(own.textContent).not.toContain(AUTHOR);
+  expect(own.textContent).not.toMatch(/\boptions?\b|Read more|See \d/);
+  expect(own.querySelector("time")).toBeNull();
 });
 
 test("a folded plain card with a summary is the summary alone, with no author or time beside it", async () => {

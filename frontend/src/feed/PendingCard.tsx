@@ -44,14 +44,14 @@ export function PendingCard({ items }: { items: readonly PendingItem[] }) {
               <span className="-my-[3px] shrink-0"><AgentMark agentKey={item.agentKey} name={item.author} small /></span>
               <span className="min-w-0 flex-1">
                 <span className="line-clamp-2 break-words text-[15px] font-semibold leading-[22px] min-[600px]:text-base min-[600px]:leading-6">{lead}</span>
-                {item.post && item.post !== lead && <span className="mt-0.5 line-clamp-2 break-words text-[15px] leading-[22px] text-muted-foreground min-[600px]:text-base min-[600px]:leading-6">{item.post}</span>}
+                {(item.post || item.title) !== lead && <span className="mt-0.5 line-clamp-2 break-words text-[15px] leading-[22px] text-muted-foreground min-[600px]:text-base min-[600px]:leading-6">{item.post || item.title}</span>}
               </span>
               {!item.onAcknowledge || waiting
                 ? <span className="inline-flex shrink-0 items-center gap-1 text-meta text-muted-foreground">{waiting && <Clock3Icon aria-hidden className="size-3.5" />}{item.status}</span>
                 : <span className="sr-only">{item.status}</span>}
             </button>
             {item.onAcknowledge && !waiting
-              && <button type="button" onClick={item.onAcknowledge} className="inline-flex min-h-9 shrink-0 items-center rounded-full bg-foreground px-3 text-[13px] font-semibold text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">Acknowledge</button>}
+              && <button type="button" onClick={item.onAcknowledge} className="inline-flex min-h-11 shrink-0 items-center rounded-full bg-foreground px-3 text-[13px] font-semibold text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">Acknowledge</button>}
           </div>}
         </li>;
       })}

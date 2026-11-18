@@ -112,6 +112,7 @@ async function mount(source: HomeFeedSource): Promise<HTMLElement> {
   clock ??= installFakeClock();
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   globalThis.matchMedia = window.matchMedia.bind(window);
+  (globalThis as { history?: History }).history ??= window.history;
   (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = QuietObserver;
   MotionGlobalConfig.skipAnimations = true;
   const host = document.createElement("div");
@@ -560,4 +561,34 @@ test("an agent reply while the hidden card counts changes nothing the owner sees
   await clock!.advance(3000);
   expect(feed.writes).toHaveLength(1);
   expect(feed.writes[0]).toMatchObject({ cardId: "alpha", choiceId: "hold", revision: 2 });
+});
+
+/** An answer counting, then a post page opened over the feed: the feed under it goes inert, the pill does not. */
+async function countingBehindPostPage() {
+  const post = entry("post", "A post", { needs: false });
+  post.state.card.payload = { page: { image: "https://example.org/a.png", imageAlt: "A picture", questions: [] } };
+  const feed = store([entry("alpha", "First?", { summary: "First post" }), post], "both");
+  const host = await mount(feed.source);
+  await answer(host, "alpha", "Hold");
+  await clock!.advance(2000);
+  await act(async () => rowOf(host, "post").querySelector("button")!.click());
+  expect(host.querySelector("main > div > div[inert]")).not.toBeNull();
+  return { feed, host };
+}
+
+test("a post page opened while an answer counts leaves the pill's Undo reachable, and Undo writes nothing", async () => {
+  const { feed, host } = await countingBehindPostPage();
+  expect(undoButtons(host)).toHaveLength(1);
+  await act(async () => undoButtons(host)[0]!.click());
+  await clock!.advance(6000);
+  expect(feed.writes).toEqual([]);
+});
+
+test("a post page opened while an answer counts does not send it early: left alone, the count still ends in exactly one write", async () => {
+  const { feed, host } = await countingBehindPostPage();
+  expect(pillText(host)).toBe("Hold·Undo·3");
+  expect(feed.writes).toEqual([]);
+  await clock!.advance(3000);
+  expect(feed.writes).toHaveLength(1);
+  expect(feed.writes[0]).toMatchObject({ cardId: "alpha", choiceId: "hold" });
 });

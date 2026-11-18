@@ -410,9 +410,11 @@ test("a folded approval step follows skipOn but becomes needed again after the p
   expect(view.host.querySelector('[aria-label="Folded approval step"] button')).toBeNull();
   ask.lastAskedAt = "2099-01-01T00:00:00.000Z";
   await act(async () => fixture.notify());
-  expect(article.querySelector('[aria-label="Folded approval step"]')?.textContent).toContain("Synthetic key requirement");
+  await openAll(view.host);
+  const reasked = card(view.host, String(ask.title));
+  expect(reasked.querySelector('[aria-label="Folded approval step"]')?.textContent).toContain("Synthetic key requirement");
   expect(view.host.querySelector('[aria-label="Folded approval step"] button') !== null).toBe(true);
-  expect(answers(article) !== null).toBe(true);
+  expect(answers(reasked) !== null).toBe(true);
 });
 
 test("a folded approval step opens its own card after an ambiguous snapshot is refreshed", async () => {

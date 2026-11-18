@@ -1053,7 +1053,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const author = cardAuthor(entry, context?.record).name;
     const page = labPageOf(entry)!;
     const status = postStatus(entry, page, statusOf(entry, author) ?? "", answeredIn(entry));
-    return <PostPreview entry={entry} page={page} author={author} agentKey={agentKey(entry, context?.record)} onOpen={() => { undoBar.flushAll(); engage(entry); setPageKey(lineageKey(entry)); }}
+    return <PostPreview entry={entry} page={page} author={author} agentKey={agentKey(entry, context?.record)} onOpen={() => { engage(entry); setPageKey(lineageKey(entry)); }}
       {...(agentProfile(entry.state.card.payload)?.platform ? { platform: agentProfile(entry.state.card.payload)!.platform } : {})} {...(status ? { status } : {})} />;
   }
   /** A card open: its header, body, brief, answers, conversation and foot, with the page's refusal lines. */
@@ -1201,12 +1201,12 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   ];
   const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setTaskType(""); setProject(""); setPriorityMax(""); setSortBy(""); setSnoozedOnly(false); });
   return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}>
-    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:max-w-[760px] lg:px-8 lg:pt-10" inert={!!pageEntry}>
+    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:max-w-[760px] lg:px-8 lg:pt-10">
     <MorphConfig>
       {/* Sam, 11-13: one header for every state, phone and desktop (briefs/feed-lab/design/toprow). "Home" with the
           Agents pill on its line, the summary, then one row: Needs you · All · History, and the Filter icon. Scrolled,
           the row stays at the top over the cards; the title comes back on scroll up. */}
-      <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      <FloatingHeader scrollRef={mainRef} inert={!!pageEntry} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <header ref={headerRef} className="scroll-mt-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="min-w-0 flex-1 font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
@@ -1238,6 +1238,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
         </div>}
       </FloatingHeader>
       <SendPills items={pills} />
+      <div inert={!!pageEntry}>
       {showHidden && ask}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
@@ -1295,6 +1296,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
           onOpen: () => openCard(entry), ...(opened.has(lineageKey(entry)) ? { open: fullCard(entry) } : {}),
           ...(status.startsWith("Waiting") ? {} : { onAcknowledge: () => closeCard(entry, "acknowledge") }) };
       })} /></div>}
+      </div>
     </MorphConfig>
     </div>
     {pageEntry && pageOpen && (() => {
