@@ -7,6 +7,7 @@ import {
   GRANOLA_API_BASE_URL,
   GRANOLA_KEY_HEADER,
 } from "../routes/granola-proxy.js";
+import { createRequestContextMiddleware, recordMountTemplates } from "../request-context.js";
 
 const realFetch = globalThis.fetch;
 const realLog = console.log;
@@ -214,5 +215,27 @@ describe("granola proxy routes", () => {
     expect(all).not.toContain("not_abc123");
     expect(all).not.toContain("cur_secret");
     expect(all).toContain("[granola-proxy]");
+  });
+});
+
+describe("the global request record", () => {
+  it("emits a tinychat_request event for a proxied call that contains no key material", async () => {
+    const emitted: unknown[] = [];
+    const app = express();
+    app.use(createRequestContextMiddleware((event) => emitted.push(event)));
+    recordMountTemplates(app); // index.ts calls this before every mount — same wiring here
+    app.use("/api/connectors/granola", createGranolaProxyRouter({
+      fetchImpl: (async () => new Response("{}", { status: 200 })) as typeof fetch,
+    }));
+    const res = await request(app, "/api/connectors/granola/v1/notes", {
+      headers: { [GRANOLA_KEY_HEADER]: KEY },
+    });
+    expect(res.status).toBe(200);
+    const records = emitted.filter((e): e is Record<string, unknown> =>
+      typeof e === "object" && e !== null && (e as Record<string, unknown>).event === "tinychat_request");
+    expect(records).toHaveLength(1);
+    expect(records[0]!.route).toBe("/api/connectors/granola/v1/notes");
+    // The serialized record is what the log shipper would send — the key must be absent everywhere in it.
+    expect(JSON.stringify(records[0])).not.toContain(KEY);
   });
 });
