@@ -164,9 +164,12 @@ or host check that changes the product.
   `deploy-production.yml` verifies the URL in `TINYCHAT_FRONTEND_URL` (default
   `https://tinycloud.one`) and then every host in `TINYCHAT_ALSO_HOSTS`
   (space-separated, default `tinycloud.chat home.tinycloud.xyz`): each must
-  answer `/version.json` with the deployed commit, or the release is reported
-  changed and unverified. A domain left on another Pages project (an old
-  build, HTML for `/version.json`) fails that check.
+  answer `/version.json` with the deployed commit, or answer a 301, 302, 307 or
+  308 whose `Location` is on the `TINYCHAT_FRONTEND_URL` host (the check does
+  not follow redirects, and its log line says which of the two it saw; a
+  redirecting host is not checked for the commit itself), or the release is
+  reported changed and unverified. A domain left on another Pages project (an
+  old build, HTML for `/version.json`) fails that check.
 - **Moving visitors off the legacy hosts:** origins do not share IndexedDB or
   localStorage, so a redirect would strand work kept only in the browser.
   `frontend/src/lib/originMove.ts` runs only on `tinycloud.chat` and
@@ -227,7 +230,9 @@ or host check that changes the product.
   `home.`/`hometab.`, and a page on `https://tinycloud.one` tags it
   `one.`/`onetab.`, so the backend returns to that origin
   (`HOME_WEB_ORIGIN`); anywhere else the state is untagged and returns to
-  `FRONTEND_URL` (`https://tinycloud.one`).
+  `FRONTEND_URL`, except that when `FRONTEND_URL` is `https://tinycloud.one` or
+  `https://home.tinycloud.xyz` it returns to `https://tinycloud.chat`, where
+  held visitors (`tc_hold`, `?legacy=1`) start their flows.
 - **Backend:** the backend accepts all three web origins through the
   `FRONTEND_ORIGINS` allowlist (default
   `https://tinycloud.chat,https://home.tinycloud.xyz,https://tinycloud.one`,
@@ -238,10 +243,11 @@ or host check that changes the product.
   origin; (2) move `home.tinycloud.xyz` from the `tinycloud-home` Pages project
   to `tinychat` (remove it from `tinycloud-home`, add it to `tinychat`, point
   the `CNAME` at `tinychat-4jq.pages.dev`; keep `tinycloud-home` 7 days as a
-  rollback target and stop deploying it by hand); (3) set `TINYCHAT_FRONTEND_URL`
-  to `https://tinycloud.one` and deploy the backend (it writes the variable as
-  `FRONTEND_URL`: Stripe returns and untagged OAuth returns land on
-  tinycloud.one); (4) deploy this web build and confirm all three hosts serve
+  rollback target and stop deploying it by hand); (3) deploy the backend that
+  carries the untagged-return rule above, with `TINYCHAT_FRONTEND_URL` set to
+  `https://tinycloud.one` just before that deploy and not earlier (the backend
+  writes the variable as `FRONTEND_URL` at deploy: Stripe returns land on
+  tinycloud.one, untagged OAuth returns stay on tinycloud.chat); (4) deploy this web build and confirm all three hosts serve
   it; (5) check a held visitor stays, a clear visitor moves, and `?legacy=1`
   works on both legacy hosts; (6) deploy the Worker's forwards (its README, "Turn the forwards on").
 - **Links the backend generates** keep using `FRONTEND_URL`: the Stripe
