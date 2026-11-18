@@ -2173,7 +2173,10 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
     // connector connected, and its count still stands.
     removeBackgroundDrainConnectorRecord(descriptor.source);
     onDisconnected();
-    if (!showRevokeWarning && final.notice === undefined) onOpenChange(false);
+    // A Fireflies sign-in the server removed but the provider did not confirm revoked is a warning too:
+    // the dialog stays open so the owner reads it.
+    if (final.notice !== undefined) showRevokeWarning = true;
+    if (!showRevokeWarning) onOpenChange(false);
   }, [
     backendUrl,
     descriptor,
