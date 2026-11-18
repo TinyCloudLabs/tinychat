@@ -67,7 +67,7 @@ export function ReplyCount({ replies }: { replies?: Replies }) {
  * show in the card's Details instead. Inside a card's button, so the words are read as text, not a label. */
 export function PriorityMark({ priority }: { priority?: number }) {
   if (priority !== 0 && priority !== 1) return null;
-  return <span className={`inline-flex h-4 shrink-0 items-center rounded px-1 text-[10px] font-semibold tabular-nums ${priority === 0 ? "bg-destructive text-destructive-foreground" : "bg-foreground/10 text-foreground"}`}>
+  return <span className={`inline-flex h-4 shrink-0 items-center rounded px-1 text-[11px] font-semibold tabular-nums ${priority === 0 ? "bg-destructive text-destructive-foreground" : "bg-foreground/10 text-foreground"}`}>
     <span aria-hidden>P{priority}</span><span className="sr-only">{`Priority ${priority}`}</span>
   </span>;
 }
