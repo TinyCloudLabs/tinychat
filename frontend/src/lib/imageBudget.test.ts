@@ -90,7 +90,7 @@ describe("a reply's choices", () => {
 
   test("an image that goes away gives its slot up, so a stale address never keeps one", () => {
     const budget = new ReplyImageBudget();
-    ["https://e", "https://ev", "https://evil.example/real.png"].forEach((src, i) => budget.claim(`i${i}`, src));
+    ["https://evil.ex", "https://evil.exam", "https://evil.example/real.png"].forEach((src, i) => budget.claim(`i${i}`, src));
     expect(budget.isHeld("https://evil.example/real.png")).toBe(true);
     budget.release("i0");
     budget.release("i1");

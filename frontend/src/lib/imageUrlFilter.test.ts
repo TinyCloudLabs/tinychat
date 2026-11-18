@@ -1,223 +1,417 @@
 import { describe, expect, test } from "bun:test";
 
-import { IMAGE_PROMPT_COPY, imageUrlVerdict, type ImageReason } from "./imageUrlFilter";
+import { ASK_THRESHOLD, IMAGE_PROMPT_COPY, imageUrlVerdict, type ImageReasonCode } from "./imageUrlFilter";
 
-const hex = (n: number) => "a1b2c3d4e5f60718".repeat(Math.ceil(n / 16)).slice(0, n);
-const b64 = (n: number) => "Zm9vQmFyMTIzNDU2".repeat(Math.ceil(n / 16)).slice(0, n);
+// What each sign weighs and where its steps are. The corpus (imageUrlFilter.corpus.test.ts) checks whole addresses.
 
-function reasons(src: string): ImageReason[] | "load" | "block" {
+const hex = (text: string) => Array.from(text, (char) => char.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+const MD5 = "205e460b479e2e5b48aec07710c08d50";
+const SHA1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+const SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+/** An opaque id of exactly `n` characters: letters and digits that are not hex, not words and not encoded text. */
+const opaque = (n: number) => "Xk3p9Qw7Rm2Tz8LbN4cWfYd6HsEuGi1Ko5MaXjZt0BqVnCyPlOe7Uh2Sg4Df6Ja8".repeat(2).slice(0, n);
+
+/** The weight the filter gave one sign, or 0 when it did not find it. */
+function weight(src: string, code: ImageReasonCode): number {
   const verdict = imageUrlVerdict(src);
-  return verdict.kind === "ask" ? verdict.reasons : verdict.kind;
+  return verdict.reasons.filter((reason) => reason.code === code).reduce((sum, reason) => sum + reason.weight, 0);
 }
+const kind = (src: string) => imageUrlVerdict(src).kind;
+const score = (src: string) => {
+  const verdict = imageUrlVerdict(src);
+  return verdict.kind === "block" ? NaN : verdict.score;
+};
 
-describe("images that load without asking", () => {
-  test.each([
-    "https://i.imgur.com/AbCd123.png",
-    "https://avatars.githubusercontent.com/u/1?v=4",
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Example.jpg/320px-Example.jpg",
-    "https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=800&q=80",
-    "https://res.cloudinary.com/demo/image/upload/c_fill,w_300,h_200/v1312461204/sample.jpg",
-    "https://img.shields.io/badge/build-passing-brightgreen.svg",
-    "https://cdn.example.com/d41d8cd98f00b204e9800998ecf8427e.png",
-    `https://cdn.example.com/${hex(40)}.jpg`,
-    `https://cdn.example.com/${hex(64)}.jpg`,
-    "https://example.com:8443/logo.png",
-    "https://d111111abcdef8.cloudfront.net/a.png",
-    "https://lh3.googleusercontent.com/a.png",
-    "https://www.example.co.uk/a.png",
-    "https://cdn.example.co.uk/a.png",
-    "https://abcdefghijklmnopqrstuvwx.example.com/a.png",
-    "https://very-long-registrable-domain-name-that-is-allowed-to-be-long.com/a.png",
-    "https://example.com/a.png#a-fragment-that-is-never-sent-to-the-server-and-is-long-enough-to-matter-here",
-    "https://example.com/photos/2026/11/team-offsite-group-photo.jpg",
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Example_image_file_name.jpg/320px-Example_image_file_name.jpg",
-  ])("%s", (src) => {
-    expect(imageUrlVerdict(src)).toEqual({ kind: "load" });
-  });
-});
-
-describe("addresses that never load", () => {
-  test.each([
-    "data:image/png;base64,iVBORw0KGgo=",
-    "javascript:alert(1)",
-    "blob:https://example.com/0b1f",
-    "file:///etc/passwd",
-    "ftp://example.com/a.png",
-    "/relative/a.png",
-    "//example.com/a.png",
-    "not a url",
-    "",
-  ])("%s", (src) => {
-    expect(imageUrlVerdict(src)).toEqual({ kind: "block" });
-  });
-});
-
-describe("addresses that ask first", () => {
-  test("http:, however plain", () => {
-    expect(reasons("http://example.com/logo.png")).toEqual(["insecure"]);
-    expect(reasons("http://example.com:8080/logo.png")).toEqual(["insecure"]);
+describe("the verdict", () => {
+  test("an ordinary address loads with no reasons", () => {
+    expect(imageUrlVerdict("https://example.com/photos/2026/11/team-offsite-group-photo.jpg")).toEqual({ kind: "load", score: 0, reasons: [] });
   });
 
-  test("more than one label above the registrable domain", () => {
-    expect(reasons("https://a.b.example.com/a.png")).toEqual(["host-labels"]);
-    expect(reasons("https://a.b.example.co.uk/a.png")).toEqual(["host-labels"]);
-    expect(reasons("https://bucket.s3.us-west-2.amazonaws.com/a.png")).toEqual(["host-labels"]);
+  test("weak signs are listed on an address that still loads", () => {
+    const verdict = imageUrlVerdict("http://example.com:8080/logo.png");
+    expect(verdict.kind).toBe("load");
+    expect(verdict.reasons.map((reason) => [reason.code, reason.weight])).toEqual([["insecure", 15], ["port", 35]]);
+    expect(score("http://example.com:8080/logo.png")).toBe(50);
   });
 
-  test("a label above the registrable domain over 24 characters, not 24", () => {
-    expect(reasons(`https://${"a".repeat(24)}.example.com/a.png`)).toBe("load");
-    expect(reasons(`https://${"a".repeat(25)}.example.com/a.png`)).toEqual(["host-long"]);
-    expect(reasons(`https://${"a".repeat(63)}.example.com/a.png`)).toEqual(["host-long"]);
+  test("weak signs add up: it asks when they reach the threshold, not before", () => {
+    expect(ASK_THRESHOLD).toBe(100);
+    expect(score("http://example.com:31337/logo.png")).toBe(75); // http 15 + odd port 60
+    expect(kind("http://example.com:31337/logo.png")).toBe("load");
+    expect(score("http://example.com:31337/pixel.gif")).toBe(105); // + tracking 30
+    expect(kind("http://example.com:31337/pixel.gif")).toBe("ask");
   });
 
-  test("a label of 16 or more letters and digits mixed, not 15 or all letters", () => {
-    expect(reasons("https://a1b2c3d4e5f6g7h.example.com/a.png")).toBe("load"); // 15
-    expect(reasons("https://a1b2c3d4e5f6g7h8.example.com/a.png")).toEqual(["host-encoded"]); // 16
-    expect(reasons("https://abcdefghijklmnop.example.com/a.png")).toBe("load");
-  });
-
-  test("a long mixed label deep in the host is judged too, and reports every host signal that applies", () => {
-    expect(reasons(`https://${"q1".repeat(20)}.x.example.com/a.png`)).toEqual(["host-labels", "host-long", "host-encoded"]);
-  });
-
-  test("an IP address as the host, in any form", () => {
-    expect(reasons("https://1.2.3.4/a.png")).toEqual(["host-ip"]);
-    expect(reasons("https://16909060/a.png")).toEqual(["host-ip"]);
-    expect(reasons("https://0x1020304/a.png")).toEqual(["host-ip"]);
-    expect(reasons("https://[::1]:8443/a.png")).toEqual(["host-ip"]);
-    expect(reasons("https://[2001:db8:dead:beef:1234:5678:9abc:def0]/a.png")).toEqual(["host-ip"]);
-    expect(reasons("https://[::ffff:10.0.0.1]/a.png")).toEqual(["host-ip"]);
-  });
-
-  test("an address inside the address, on any host, whatever the form", () => {
-    expect(reasons("https://img.shields.io/endpoint?url=https://x.ee/abcdef")).toEqual(["nested-url"]);
-    expect(reasons("https://img.shields.io/endpoint?url=https%3A%2F%2Fx.ee%2Fabc")).toEqual(["nested-url"]);
-    expect(reasons("https://img.shields.io/endpoint?url=https%253A%252F%252Fx.ee%252Fabc")).toEqual(["nested-url"]);
-    expect(reasons("https://images.unsplash.com/photo-1?mark=https://x.ee/abc")).toEqual(["nested-url"]);
-    expect(reasons("https://i.imgur.com/a.png?next=//x.ee/abc")).toEqual(["nested-url"]);
-    expect(reasons("https://example.com/image/fetch/https://x.ee/a.png")).toEqual(["nested-url"]);
-    expect(reasons("https://img.shields.io/badge/build-passing-brightgreen.svg")).toBe("load");
-    expect(reasons("https://example.com/a//b.png")).toBe("load");
-  });
-
-  test("an address inside the address in forms a URL parser still reads", () => {
-    const next = (value: string) => reasons(`https://i.imgur.com/a.png?next=${value}`);
-    expect(reasons("https://i.imgur.com/a.png?next=HtTpS://x.ee/a")).toEqual(["nested-url"]);
-    expect(next("ht%09tps:%09//x.ee")).toEqual(["nested-url"]);
-    expect(next("%20//x.ee")).toEqual(["nested-url"]);
-    expect(next("+//x.ee")).toEqual(["nested-url"]);
-    expect(next("%09//x.ee")).toEqual(["nested-url"]);
-    expect(next("%5C%5Cx.ee")).toEqual(["nested-url"]);
-    expect(next("https%25253A%25252F%25252Fx.ee")).toEqual(["nested-url"]);
-    expect(next("%EF%BC%8F%EF%BC%8Fx.ee")).toEqual(["nested-url"]); // fullwidth slashes
-    expect(next("ftp:x.ee")).toEqual(["nested-url"]);
-    expect(reasons("https://i.imgur.com/a.png?a=%&next=https%3A%2F%2Fx.ee")).toEqual(["nested-url"]); // a stray % stops decoding
-    expect(reasons("https://i.imgur.com/100%.png")).toEqual(["nested-url"]);
-    expect(next("2")).toBe("load");
-    expect(reasons("https://upload.wikimedia.org/wikipedia/commons/a/ab/File:Cat.jpg")).toBe("load");
-  });
-
-  test("a coarse second-level suffix needs a two-letter country code", () => {
-    expect(reasons("https://a.b.com.xyz/a.png")).toEqual(["host-labels"]);
-    expect(reasons("https://cdn.example.com.au/a.png")).toBe("load");
-  });
-
-  test("an allowlisted host is not judged on its host name, but its path and query still are", () => {
-    expect(reasons("https://node.tinycloud.xyz/a.png")).toBe("load");
-    expect(reasons("https://i.imgur.com/a1b2c3d4e5f6g7h8i9j0.png")).toBe("load");
-    expect(reasons(`https://node.tinycloud.xyz/a.png?d=${"x".repeat(70)}`)).toEqual(["long-query"]);
-  });
-
-  test("user:password@", () => {
-    expect(reasons("https://user:pw@example.com/a.png")).toEqual(["credentials"]);
-    expect(reasons("https://user@example.com/a.png")).toEqual(["credentials"]);
-  });
-
-  test("a query string over 64 characters, not at 64", () => {
-    expect(reasons(`https://example.com/a.png?d=${"x".repeat(62)}`)).toBe("load"); // "d=" + 62 = 64
-    expect(reasons(`https://example.com/a.png?d=${"x".repeat(63)}`)).toEqual(["long-query"]);
-  });
-
-  test("more than 8 query parameters, not 8", () => {
-    const params = (n: number) => Array.from({ length: n }, (_, i) => `p${i}=1`).join("&");
-    expect(reasons(`https://example.com/a.png?${params(8)}`)).toBe("load");
-    expect(reasons(`https://example.com/a.png?${params(9)}`)).toEqual(["many-params"]);
-  });
-
-  test("a path segment over 64 characters, not at 64", () => {
-    expect(reasons(`https://example.com/${"x".repeat(64)}`)).toBe("load");
-    expect(reasons(`https://example.com/${"x".repeat(65)}`)).toEqual(["long-path"]);
-  });
-
-  test("a whole path over 160 characters made of short segments", () => {
-    const segments = (n: number) => Array.from({ length: n }, () => "abcdefghi").join("/"); // 9 chars + "/" each
-    expect(reasons(`https://example.com/${segments(16)}`)).toBe("load"); // 1 + 16*9 + 15 = 160
-    expect(reasons(`https://example.com/${segments(17)}`)).toEqual(["long-path"]);
-  });
-
-  test("a base64 run of 40 or more with upper, lower and digits, in a path segment or a query value or key", () => {
-    expect(reasons(`https://example.com/${b64(39)}`)).toBe("load");
-    expect(reasons(`https://example.com/${b64(40)}`)).toEqual(["encoded"]);
-    expect(reasons(`https://example.com/a.png?k=${b64(40)}`)).toEqual(["encoded"]);
-    expect(reasons(`https://example.com/a.png?${b64(40)}=1`)).toContain("encoded");
-  });
-
-  test("a hex run is a hash up to 64 and an encoded run past it", () => {
-    expect(reasons(`https://example.com/a.png?h=${hex(62)}`)).toBe("load"); // "h=" + 62 = 64
-    expect(reasons(`https://example.com/a.png?h=${hex(66)}`)).toEqual(["long-query"]);
-    expect(reasons(`https://example.com/a.png?h=${hex(66)}`)).not.toContain("encoded");
-  });
-
-  test("more than 8 percent escapes, not 8", () => {
-    const escaped = (n: number) => "%41".repeat(n);
-    expect(reasons(`https://example.com/a.png?q=${escaped(8)}`)).toBe("load");
-    expect(reasons(`https://example.com/a.png?q=${escaped(9)}`)).toEqual(["encoded"]);
-  });
-
-  test("a base64 run split by dots, commas, tildes or semicolons is still a run", () => {
-    const pieces = (separator: string) => [b64(20), b64(20)].join(separator);
-    for (const separator of [".", ",", "~", ";", "!", "*"]) {
-      expect(reasons(`https://example.com/${pieces(separator)}`)).toEqual(["encoded"]);
-    }
-  });
-
-  test("parameters may be split by ; as well as &", () => {
-    const params = (n: number) => Array.from({ length: n }, (_, i) => `p${i}=1`).join(";");
-    expect(reasons(`https://example.com/a.png?${params(9)}`)).toEqual(["many-params"]);
-  });
-
-  test("eight words across the path and query, not seven, however they are joined", () => {
-    const words = (n: number) => ["red", "blue", "green", "pink", "gold", "gray", "cyan", "teal", "lime"].slice(0, n);
-    for (const joiner of ["-", "_", "+", "%20", ".", ",", "~", ";"]) {
-      expect(reasons(`https://example.com/a.png?q=${words(7).join(joiner)}`)).toBe("load");
-      expect(reasons(`https://example.com/a.png?q=${words(8).join(joiner)}`)).toEqual(["text-like"]);
-    }
-    expect(reasons(`https://example.com/a.png?q=${words(8).map((w) => w[0]!.toUpperCase() + w.slice(1)).join("")}`)).toEqual(["text-like"]);
-  });
-
-  test("words are counted across segments and parameters together, not one place at a time", () => {
-    expect(reasons("https://example.com/one-two-three/four-five-six/seven.png?note=eight")).toEqual(["text-like"]);
-    expect(reasons("https://example.com/one-two/three-four/five.png?a=six&b=seven&c=eight")).toEqual(["text-like"]);
-  });
-
-  test("words need two letters: numbers and single letters do not count", () => {
-    expect(reasons("https://example.com/a-b-c-d-e-f-g-h-i-j.jpg")).toBe("load");
-    expect(reasons("https://example.com/2026-11-17-10-30-45-12-34-56.jpg")).toBe("load");
-  });
-
-  test("the verdict names the host with its port and the full address", () => {
+  test("an ask names the host with its port, the full address, the score and every reason with its detail", () => {
     const verdict = imageUrlVerdict("https://user:pw@example.com:8443/a.png?q=1");
     expect(verdict).toEqual({
       kind: "ask",
       host: "example.com:8443",
       address: "https://user:pw@example.com:8443/a.png?q=1",
-      reasons: ["credentials"],
+      score: 135,
+      reasons: [
+        { code: "credentials", weight: 100, detail: "a user name or password before the host" },
+        { code: "port", weight: 35, detail: "port 8443" },
+      ],
     });
   });
+});
 
-  test("several signals are all reported", () => {
-    const verdict = reasons(`https://example.com/${"x".repeat(70)}?d=${"y".repeat(70)}`);
-    expect(verdict).toEqual(["long-query", "long-path"]);
+describe("addresses that never load", () => {
+  test.each(["data:image/png;base64,iVBORw0KGgo=", "javascript:alert(1)", "JaVaScRiPt:alert(1)", "java\tscript:alert(1)", "blob:https://example.com/0b1f", "file:///etc/passwd", "ftp://example.com/a.png", "/relative/a.png", "//example.com/a.png", "not a url", ""])(
+    "%s",
+    (src) => {
+      const verdict = imageUrlVerdict(src);
+      expect(verdict.kind).toBe("block");
+      expect(verdict.reasons.map((reason) => reason.code)).toEqual(["refused"]);
+    },
+  );
+});
+
+describe("normalisation", () => {
+  test("an IPv4 host written as one number, in octal or in hex is still an IP address", () => {
+    for (const src of ["https://1.2.3.4/a.png", "https://16909060/a.png", "https://0x1020304/a.png", "https://0001.0002.0003.0004/a.png"]) {
+      expect(weight(src, "ip-host")).toBe(100);
+    }
+  });
+
+  test("the host is judged in lower case and without a trailing dot", () => {
+    expect(score("https://EXAMPLE.com/Logo.PNG")).toBe(0);
+    expect(weight("https://WEBHOOK.SITE./a.png", "capture-host")).toBe(100);
+  });
+
+  test("an international name is judged in its ASCII form and shown in both", () => {
+    const verdict = imageUrlVerdict("https://münchen.de/rathaus.jpg");
+    expect(verdict.reasons).toEqual([{ code: "idn", weight: 25, detail: 'xn--mnchen-3ya is the international name "münchen"' }]);
+  });
+
+  test("each part is percent-decoded once before it is judged", () => {
+    expect(score("https://example.com/My%20Vacation%20Photos/Day%201/IMG_0042.JPG")).toBe(0);
+    expect(weight(`https://example.com/a.png?d=${encodeURIComponent(btoa("the account balance is 48213"))}`, "encoded-text")).toBe(100);
+  });
+
+  test("a second layer of encoding is a sign of its own, and what is under it is still judged", () => {
+    const twice = `https://example.com/a.png?d=${encodeURIComponent(encodeURIComponent(`${btoa("the account balance is 48213")}==`))}`;
+    expect(weight(twice, "double-encoded")).toBe(40);
+    expect(weight(twice, "encoded-text")).toBe(100);
+  });
+
+  test("the fragment is never sent, so it is not judged", () => {
+    expect(score(`https://example.com/a.png#${btoa("the account balance is 48213")}`)).toBe(0);
+  });
+
+  test("a form the browser silently repairs is a sign", () => {
+    expect(weight("https:\\\\example.com\\a.png", "malformed")).toBe(60);
+    expect(weight("https:example.com/a.png", "malformed")).toBe(60);
+    expect(weight("https://exam\u200bple.com/a.png", "malformed")).toBe(60);
+    expect(weight("  https://example.com/a.png  ", "malformed")).toBe(0);
+  });
+});
+
+describe("the host", () => {
+  test("credentials", () => {
+    expect(weight("https://user:pw@example.com/a.png", "credentials")).toBe(100);
+    expect(weight("https://user@example.com/a.png", "credentials")).toBe(100);
+  });
+
+  test("loopback, private ranges and local names weigh more than a public IP address", () => {
+    for (const src of ["https://127.0.0.1/a.png", "https://10.1.2.3/a.png", "https://172.16.0.1/a.png", "https://192.168.1.1/a.png", "https://169.254.169.254/a.png", "https://[::1]/a.png", "https://[::ffff:10.0.0.1]/a.png", "https://[fd00::1]/a.png", "https://localhost/a.png", "https://printer.local/a.png", "https://intranet/a.png"]) {
+      expect(weight(src, "private-host")).toBe(120);
+    }
+    expect(weight("https://[2001:db8::1]/a.png", "ip-host")).toBe(100);
+    expect(weight("https://172.32.0.1/a.png", "ip-host")).toBe(100);
+  });
+
+  test("request-capture and tunnel services", () => {
+    expect(weight("https://webhook.site/a.png", "capture-host")).toBe(100);
+    expect(weight("https://abc123.ngrok-free.app/a.png", "capture-host")).toBe(100);
+    expect(weight("https://notwebhook.site/a.png", "capture-host")).toBe(0);
+  });
+
+  test("a name in another script that reads as Latin is a look-alike; an ordinary international name is not", () => {
+    expect(weight("https://аpple.com/a.png", "idn-lookalike")).toBe(100); // Cyrillic а
+    expect(weight("https://xn--80ak6aa92e.com/a.png", "idn-lookalike")).toBe(100); // "аррӏе", all Cyrillic
+    expect(weight("https://例え.jp/a.png", "idn-lookalike")).toBe(0);
+    expect(weight("https://例え.jp/a.png", "idn")).toBe(25);
+    expect(weight("https://пример.рф/a.png", "idn-lookalike")).toBe(0);
+  });
+
+  test("ports: the common alternatives weigh less than any other", () => {
+    expect(weight("https://example.com/a.png", "port")).toBe(0);
+    expect(weight("https://example.com:443/a.png", "port")).toBe(0);
+    expect(weight("https://example.com:8443/a.png", "port")).toBe(35);
+    expect(weight("https://example.com:4444/a.png", "port")).toBe(60);
+  });
+
+  test("labels above the registrable domain: 3 are ordinary, 4, 5 and 7 are steps", () => {
+    const deep = (n: number) => `https://${Array.from({ length: n }, (_, i) => `s${i}`).join(".")}.example.com/a.png`;
+    expect([3, 4, 5, 6, 7].map((n) => weight(deep(n), "host-depth"))).toEqual([0, 30, 60, 60, 100]);
+    expect(weight("https://a.b.c.d.example.co.uk/a.png", "host-depth")).toBe(30);
+  });
+
+  test("opaque characters in subdomain labels: 16, 24 and 32 are steps", () => {
+    const label = (n: number) => `https://${opaque(n).toLowerCase()}.example.com/a.png`;
+    expect([15, 16, 23, 24, 31, 32].map((n) => weight(label(n), "host-data"))).toEqual([0, 40, 40, 70, 70, 100]);
+    expect(weight("https://q7w1e9r3t5y2u8i4.o6p0a2s4d6f8g1h3.example.com/a.png", "host-data")).toBe(100); // pooled over labels
+    expect(weight("https://cdn.images.example.com/a.png", "host-data")).toBe(0);
+  });
+
+  test("a hosting platform's customer label is part of the registered name, not data", () => {
+    expect(score(`https://pub-${MD5}.r2.dev/cat.jpg`)).toBe(0);
+    expect(score("https://qwmxkzpvbtnrhdjslfcg.supabase.co/storage/v1/object/public/a.png")).toBe(0);
+    expect(score("https://my-company-assets.s3.us-west-2.amazonaws.com/a.png")).toBe(0);
+    expect(weight(`https://${MD5}.x.r2.dev/cat.jpg`, "host-data")).toBe(100); // a label above the customer's is judged
+  });
+
+  test("subdomain labels that decode to text, in hex or base32", () => {
+    expect(weight(`https://${hex("sam salary 120k")}.example.com/a.png`, "encoded-text")).toBe(100);
+    expect(weight("https://onqw2idtmfwgc4tzeaytembqgaya.example.com/a.png", "encoded-text")).toBe(100); // base32 "sam salary 120000"
+  });
+
+  test("words in subdomain labels: 4 and 6 are steps", () => {
+    expect(weight("https://my-company-prod-assets.example.com/a.png", "host-text")).toBe(0); // "assets" is plumbing
+    expect(weight("https://my-company-prod-team-assets.example.com/a.png", "host-text")).toBe(40);
+    expect(weight("https://sam.salary.is.very.high.now.example.com/a.png", "host-text")).toBe(100);
+  });
+});
+
+describe("an address inside the address", () => {
+  test("an image proxy carrying a clean address loads; the inner address is judged with the outer", () => {
+    expect(score("https://example.com/_next/image?url=https%3A%2F%2Fcdn.example.org%2Fhero.png&w=640&q=75")).toBe(40);
+    expect(score("https://substackcdn.com/image/fetch/w_1456,c_limit/https%3A%2F%2Fexample.org%2Fa.png")).toBe(40);
+    const inner = imageUrlVerdict("https://example.com/_next/image?url=http%3A%2F%2F203.0.113.9%2Fa.png&w=640");
+    expect(inner.reasons.map((reason) => [reason.code, reason.weight])).toEqual([["nested-url", 40], ["insecure", 15], ["ip-host", 100]]);
+    expect(inner.reasons[2]!.detail).toBe("inside the address: 203.0.113.9 is an IP address, not a name");
+  });
+
+  test("a redirect parameter or a redirector path carrying an address asks", () => {
+    for (const src of ["https://example.com/a.png?next=//x.example/a", "https://example.com/a.png?redirect=https://x.example/a", "https://example.com/a.png?Return_To=https%3A%2F%2Fx.example", "https://example.com/url?q=https://x.example/a", "https://example.com/out?u=https://x.example/a"]) {
+      expect(weight(src, "redirect")).toBe(100);
+    }
+    expect(weight("https://example.com/a.png?next=2", "redirect")).toBe(0);
+  });
+
+  test("an address hidden behind repeated or odd encoding asks", () => {
+    const hidden = (value: string) => weight(`https://example.com/a.png?u=${value}`, "hidden-url");
+    for (const value of ["https%253A%252F%252Fx.example", "ht%09tps:%09//x.example", "%5C%5Cx.example", "%EF%BC%8F%EF%BC%8Fx.example", "https%25253A%25252F%25252Fx.example"]) {
+      expect(hidden(value)).toBe(100);
+    }
+    expect(hidden("2")).toBe(0);
+  });
+
+  test("an address that is not a web address, a second address, or one nested twice asks", () => {
+    expect(weight("https://example.com/a.png?u=ftp:x.example", "nested-url")).toBe(100);
+    expect(weight("https://example.com/a.png?u=javascript:alert(1)", "nested-url")).toBe(100);
+    expect(weight("https://example.com/a.png?a=https://x.example/1&b=https://y.example/2", "nested-url")).toBe(140);
+    expect(weight("https://example.com/fetch/https://x.example/p?u=https%3A%2F%2Fy.example%2Fa", "nested-url")).toBe(140);
+  });
+
+  test("an address written in hex or base64 is read and judged as that address", () => {
+    const camo = imageUrlVerdict(`https://camo.githubusercontent.com/${SHA1}/${hex("https://example.com/images/logo.png")}`);
+    expect(camo.reasons).toEqual([{ code: "nested-url", weight: 40, detail: "carries another address (example.com)" }]);
+    expect(kind(`https://images.unsplash.com/photo-1?mark64=${btoa("https://203.0.113.9/a.png").replace(/=+$/, "")}`)).toBe("ask");
+  });
+
+  test("a colon or a doubled slash in a path is not an address", () => {
+    expect(score("https://upload.wikimedia.org/wikipedia/commons/a/ab/File:Cat.jpg")).toBe(0);
+    expect(score("https://example.com/a//b.png")).toBe(0);
+    expect(score("https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTx")).toBe(0);
+  });
+});
+
+describe("opaque characters", () => {
+  test("pooled over the address: 28, 44, 56 and 120 are steps", () => {
+    const at = (n: number) => weight(`https://example.com/i/${opaque(n)}.jpg`, "blob");
+    expect([27, 28, 43, 44, 55, 56, 119, 120].map(at)).toEqual([0, 40, 40, 70, 70, 100, 100, 130]);
+  });
+
+  test("a blob cut across segments and parameters adds up", () => {
+    const [a, b, c, d] = [opaque(64).slice(0, 14), opaque(64).slice(14, 28), opaque(64).slice(28, 42), opaque(64).slice(42, 56)];
+    expect(weight(`https://example.com/${a}/${b}.png?x=${c}&y=${d}`, "blob")).toBe(100);
+    expect(weight(`https://example.com/${a}.png`, "blob")).toBe(0);
+  });
+
+  test("the same opaque piece twice counts once", () => {
+    const name = opaque(30);
+    expect(weight(`https://example.com/thumb/${name}.jpg/120px-${name}.jpg`, "blob")).toBe(40);
+  });
+
+  test("hash-shaped names are free: MD5, SHA-1, SHA-256, UUID, object id, fingerprint, signed digest, IPFS content id", () => {
+    for (const id of [MD5, SHA1, SHA256, SHA256.toUpperCase(), "4f8a2c1d-7b3e-4a6f-9c2d-1e5f8a7b3c4d", "6257adef93867e50d84d30e2", "3f9a2b", "9N_G8FYaBomXUcIDhE--9zBYGK8=", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"]) {
+      expect(score(`https://cdn.example.com/assets/${id}/logo.png`)).toBe(0);
+    }
+  });
+
+  test("128 hash-shaped characters are free per address; more count as opaque", () => {
+    const md5s = (n: number) => `https://example.com/${Array.from({ length: n }, (_, i) => MD5.slice(i) + MD5.slice(0, i)).join("/")}.png`;
+    expect([4, 5, 6].map((n) => weight(md5s(n), "blob"))).toEqual([0, 40, 100]);
+  });
+
+  test("hex of another length, or in mixed case, is not a hash", () => {
+    expect(weight(`https://example.com/${SHA256}${MD5.slice(0, 8)}.png`, "blob")).toBe(100); // 72 hex
+    expect(weight(`https://example.com/${SHA256.replace(/[a-f]/g, (c, i: number) => (i % 2 ? c.toUpperCase() : c))}.png`, "blob")).toBe(100);
+  });
+
+  test("a long number counts: more than 20 digits in one piece, or more than 60 in all", () => {
+    expect(weight(`https://example.com/a.png?n=${"3141592653589793238462643383".repeat(2)}`, "blob")).toBe(100);
+    expect(weight("https://cdn.discordapp.com/attachments/1098765432109876543/1198765432109876543/image.png", "blob")).toBe(0);
+  });
+});
+
+describe("encoded text", () => {
+  const text = "the account balance is 48213";
+
+  test("base64, base64url, hex and base32 that decode to readable text ask, wherever they sit", () => {
+    for (const run of [btoa(text), btoa(text).replace(/=+$/, ""), hex(text), hex(text).toUpperCase(), "ORUGKIDBMNRW65LOOQQGEYLMMFXGGZJANFZSANBYGIYTG"]) {
+      expect(weight(`https://example.com/a.png?v=${run}`, "encoded-text")).toBe(100);
+      expect(weight(`https://example.com/img/${run}.png`, "encoded-text")).toBe(100);
+    }
+  });
+
+  test("text in the shape of a hash or a UUID is still text", () => {
+    expect(weight(`https://example.com/${hex("user password is hunter2 ok!!!!!")}.png`, "encoded-text")).toBe(100); // 64 hex, like a SHA-256
+    expect(weight("https://example.com/68656c6c-6f20-7365-6372-657420776f72.png", "encoded-text")).toBe(100); // "hello secret wor"
+  });
+
+  test("a prefix glued to the run, or separators inside it, do not hide it", () => {
+    expect(weight(`https://example.com/img-${btoa(text).replace(/=+$/, "")}.png`, "encoded-text")).toBe(100);
+    expect(weight(`https://example.com/x${hex(text)}.png`, "encoded-text")).toBe(100);
+    const pieces = btoa(text).replace(/=+$/, "").match(/.{1,10}/g)!;
+    for (const separator of [".", ",", "~", ";", "!", "*", "/"]) {
+      expect(weight(`https://example.com/${pieces.join(separator)}`, "encoded-text")).toBe(100);
+    }
+    expect(weight(`https://example.com/a.png?${pieces.map((piece, i) => `p${i}=${piece}`).join("&")}`, "encoded-text")).toBe(100);
+  });
+
+  test("a real hash, a signature and repeated decimals are not text", () => {
+    expect(weight(`https://example.com/${SHA256}.png`, "encoded-text")).toBe(0);
+    expect(weight(`https://example.com/${opaque(40)}.png`, "encoded-text")).toBe(0);
+    expect(score("https://example.com/file/25840497/a.jpg?crop=16.666666666667%2C0%2C66.666666666667%2C100&w=2400")).toBe(0);
+  });
+
+  test("an encoded run that is exactly an image's file path is judged as that path, not as text", () => {
+    expect(score(`https://img.itch.zone/${btoa("img/31430110.jpg")}/350x196%23c/Zu2lqP.jpg`)).toBe(0);
+    expect(weight(`https://img.itch.zone/${btoa("the pin is 4321.jpg")}/a.jpg`, "encoded-text")).toBe(100);
+  });
+});
+
+describe("text and personal data", () => {
+  test("words in query values: a phrase of 3, 4 and 6 words are steps; keywords are free", () => {
+    const words = ["red", "blue", "green", "pink", "gold", "gray"];
+    const phrase = (n: number) => weight(`https://example.com/a.png?q=${words.slice(0, n).join("+")}`, "text-query");
+    expect([2, 3, 4, 5, 6].map(phrase)).toEqual([0, 30, 60, 60, 100]);
+    expect(score("https://images.example.com/a.jpg?auto=format&fit=crop&crop=faces&fm=jpg&cs=tinysrgb")).toBe(0);
+    expect(score("https://example.com/a.png?lang=en&name=large&parser=parsoid")).toBe(0);
+  });
+
+  test("one-word values add up once there are more than three of them", () => {
+    expect(weight("https://example.com/a.png?a=sam&b=gbafa&c=salary", "text-query")).toBe(0);
+    expect(weight("https://example.com/a.png?a=sam&b=gbafa&c=salary&d=bonus&e=stock&f=options", "text-query")).toBe(30);
+  });
+
+  test("a value that is a path is judged as path", () => {
+    expect(score("https://example.com/_next/image?url=%2Ffront-static%2Fpages%2Fhome%2Fteams-agents-hero%2Fpile_1.webp&w=640")).toBe(0);
+  });
+
+  test("different words in the path: 16, 20 and 24 are steps", () => {
+    const all = "zebra quartz violin harbor meadow copper lantern orchid falcon timber saffron glacier pebble walnut crimson anchor thistle marble ember juniper willow cobalt prairie magnet".split(" ");
+    const slug = (n: number) => weight(`https://example.com/${all.slice(0, n).join("-")}.png`, "text-path");
+    expect([15, 16, 19, 20, 23, 24].map(slug)).toEqual([0, 40, 40, 60, 60, 100]);
+    expect(weight(`https://example.com/${all.slice(0, 12).join("-")}/${all.slice(0, 12).join("_")}.png`, "text-path")).toBe(0); // the same words twice
+  });
+
+  test("an email address, but not a file named @2x", () => {
+    expect(weight("https://example.com/p.gif?e=sam@tinycloud.xyz", "email")).toBe(100);
+    expect(weight("https://example.com/p.gif?e=sam%40tinycloud.xyz", "email")).toBe(100);
+    expect(weight("https://example.com/img/logo@2x.png", "email")).toBe(0);
+    expect(weight("https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f600.png", "email")).toBe(0);
+  });
+
+  test("key and token shapes", () => {
+    // Made-up values, put together here so that no key-shaped literal sits in the source.
+    const jwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"].join(".");
+    for (const value of [jwt, ["sk", "proj", opaque(24)].join("-"), ["ghp", opaque(36)].join("_"), "AKIAIOSFODNN7EXAMPLE"]) {
+      expect(weight(`https://example.com/a.png?k=${value}`, "secret")).toBe(100);
+    }
+  });
+
+  test("serialized data and a parameter named for a payload", () => {
+    expect(weight(`https://example.com/a.png?d=${encodeURIComponent('{"a":1}')}`, "structured-data")).toBe(80);
+    expect(weight("https://example.com/a.png?prompt=hello", "payload-param")).toBe(40);
+    expect(weight("https://example.com/a.png?size=large", "payload-param")).toBe(0);
+  });
+});
+
+describe("the query and the escapes", () => {
+  test("parameters: 8 are ordinary, each one more weighs more", () => {
+    const params = (n: number, separator = "&") => `https://example.com/a.png?${Array.from({ length: n }, (_, i) => `p${i}=1`).join(separator)}`;
+    expect([8, 9, 10, 14].map((n) => weight(params(n), "params"))).toEqual([0, 30, 45, 105]);
+    expect(weight(params(9, ";"), "params")).toBe(30);
+  });
+
+  test("tracking parameters and pixel paths", () => {
+    expect(weight("https://example.com/a.png?utm_source=newsletter", "tracking")).toBe(30);
+    expect(weight("https://example.com/track/open.gif", "tracking")).toBe(30);
+    expect(weight("https://example.com/images/open-source.png", "tracking")).toBe(0);
+  });
+
+  test("letters and digits written as %XX: one or two, then three or more", () => {
+    expect(weight("https://example.com/a.png?q=%41", "escaped-plain")).toBe(60);
+    expect(weight("https://example.com/a.png?q=%41%42%43", "escaped-plain")).toBe(100);
+    expect(weight("https://example.com/Caf%C3%A9%20de%20Flore.jpg", "escaped-plain")).toBe(0);
+  });
+
+  test("escapes that are not text: up to three (an old Latin-1 file name), then more", () => {
+    expect(weight("https://example.com/caf%E9.jpg", "binary")).toBe(60);
+    expect(weight("https://example.com/a.png?d=%8f%a2%c1%ff%00", "binary")).toBe(100);
+  });
+
+  test("a % that is not an escape is a small sign, not a reason to ask", () => {
+    expect(score("https://example.com/100%.png")).toBe(20);
+  });
+
+  test("length of path and query: 300 and 600 are steps", () => {
+    const long = (n: number) => weight(`https://example.com/${"ab-".repeat(n / 3)}`, "long");
+    expect([297, 300, 597, 600].map(long)).toEqual([0, 40, 40, 100]);
+  });
+});
+
+describe("signed URLs, recognised by grammar", () => {
+  const sigv4 = "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261118%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261118T120000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host";
+
+  test("a complete, well-formed signature loads with no reasons, on any host", () => {
+    expect(score(`https://my-bucket.s3.amazonaws.com/photo.jpg?${sigv4}&X-Amz-Signature=${SHA256}`)).toBe(0);
+    expect(score(`https://files.example.com/photo.jpg?${sigv4}&X-Amz-Signature=${SHA256}`)).toBe(0);
+  });
+
+  test("a missing or malformed part means the parameters are judged like any others", () => {
+    expect(kind(`https://my-bucket.s3.amazonaws.com/photo.jpg?${sigv4}&X-Amz-Signature=${SHA256}${MD5}`)).toBe("ask");
+    expect(kind(`https://my-bucket.s3.amazonaws.com/photo.jpg?${sigv4.replace("host", "host;x-data-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}&X-Amz-Signature=${SHA256}`)).toBe("ask");
+    expect(kind(`https://my-bucket.s3.amazonaws.com/photo.jpg?${sigv4}&X-Amz-Signature=${SHA256}&X-Amz-Signature=${SHA256.toUpperCase()}${MD5}`)).toBe("ask");
+  });
+
+  test("a signature that decodes to text is not a signature", () => {
+    expect(weight(`https://my-bucket.s3.amazonaws.com/photo.jpg?${sigv4}&X-Amz-Signature=${hex("the balance is 48213 dollars ok!")}`, "encoded-text")).toBe(100);
+  });
+
+  test("anything beside the signature is judged: a session token asks", () => {
+    expect(kind(`https://my-bucket.s3.amazonaws.com/photo.jpg?${sigv4}&X-Amz-Signature=${SHA256}&X-Amz-Security-Token=${opaque(128)}`)).toBe("ask");
+  });
+});
+
+describe("image CDNs that name files by opaque ids", () => {
+  const id = opaque(100);
+
+  test("a long id loads there and asks elsewhere", () => {
+    expect(score(`https://lh3.googleusercontent.com/pw/${id}=w1200-h800-s-no`)).toBe(0);
+    expect(kind(`https://cdn.example.com/pw/${id}=w1200-h800-s-no`)).toBe("ask");
+    expect(kind(`https://script.googleusercontent.com/macros/echo?user_content_key=${id}`)).toBe("ask");
+  });
+
+  test("everything else is still judged there", () => {
+    expect(kind(`https://user:pw@lh3.googleusercontent.com/pw/${id}`)).toBe("ask");
+    expect(kind(`https://images.unsplash.com/photo-1?mark=https://203.0.113.9/a.png`)).toBe("ask");
+    expect(weight("https://images.unsplash.com/photo-1?next=https://x.example/a", "redirect")).toBe(100);
   });
 });
 
