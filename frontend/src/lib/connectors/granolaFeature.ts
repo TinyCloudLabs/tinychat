@@ -1,5 +1,6 @@
-// Build-time opt-in for the Granola sync runner only. Connection setup stays
-// unavailable until Granola has its own credential dialog.
+export const GRANOLA_SECRET_NAME = "GRANOLA_API_KEY";
+
+// Build-time opt-in for Granola connection setup and sync.
 
 /** Exact-match "true", the same contract the backend's *_ENABLED flags use. */
 export function granolaConnectorEnabled(

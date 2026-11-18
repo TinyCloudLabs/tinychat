@@ -1,6 +1,7 @@
 import { FlameIcon, NotebookPenIcon, VideoIcon } from "lucide-react";
 
 import type { ConnectorDescriptor } from "./types";
+import { GRANOLA_SECRET_NAME, granolaConnectorEnabled } from "./granolaFeature";
 
 export const CONNECTORS: ConnectorDescriptor[] = [
   {
@@ -16,9 +17,8 @@ export const CONNECTORS: ConnectorDescriptor[] = [
     id: "granola",
     name: "Granola",
     description: "Notes and transcripts from Granola.",
-    // The sync flag does not enable connection setup. Granola needs its own dialog first.
-    status: "coming-soon",
-    secretName: "GRANOLA_API_KEY",
+    status: granolaConnectorEnabled() ? "available" : "coming-soon",
+    secretName: GRANOLA_SECRET_NAME,
     source: "granola",
     icon: NotebookPenIcon,
   },

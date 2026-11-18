@@ -19,10 +19,12 @@ import {
   supportsBackgroundNotifications,
 } from "@/chat/backgroundSyncState";
 import { ConnectorConnectDialog } from "@/chat/ConnectorDialog";
+import { GranolaReconnect, GranolaSummariesNotice } from "@/chat/GranolaConnectionNotices";
 import { describeGmeetLive, gmeetPressLabel } from "@/chat/GmeetCardStatus";
 import { useBackgroundSync } from "@/chat/useBackgroundSync";
 import { useGmeetRowStatus } from "@/chat/useGmeetRowStatus";
 import * as connectorStore from "@/lib/connectors/connectorStore";
+import { granolaKeyExpired, granolaSummariesOnly } from "@/lib/connectors/granolaStatus";
 import { clearGmeetLastRun } from "@/lib/connectors/gmeetLastRun";
 import { getGmeetMeetingCount, onGmeetMeetingCount, refreshGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
 import { onGmeetNotesSettled } from "@/lib/connectors/gmeetSync";
@@ -46,6 +48,8 @@ import {
   meetingSourceStatus,
   meetingSourcesSummary,
   sourceRowDisplay,
+  meetingCount,
+  syncedAgo,
 } from "./meetingSourceState";
 import { autojoinDetail, useCalendarAutojoin } from "./useCalendarAutojoin";
 import { useConnectorDisconnect } from "./useConnectorDisconnect";
@@ -192,6 +196,7 @@ export function MeetingSourcesDialog({
           const connected = connection?.status === "connected";
           const connecting = connectDialog?.descriptor.id === d.id && connectDialog.purpose === "browser";
           const syncing = sourceSync.syncingId === d.id;
+          const reconnect = !syncing && granolaKeyExpired(connection);
           const { state, status, error } = sourceRowDisplay({
             comingSoon: d.status === "coming-soon",
             connection,
@@ -245,7 +250,7 @@ export function MeetingSourcesDialog({
                       return log === null ? null : JSON.stringify(log, null, 2);
                     } : null}
                   />
-                ) : undefined
+                ) : granolaSummariesOnly(connection) ? <GranolaSummariesNotice className="ms-note" /> : undefined
               }
               manage={
                 d.id === "fireflies" ? (
@@ -261,7 +266,25 @@ export function MeetingSourcesDialog({
                     onDisconnect={() => requestDisconnect(d.id)}
                   />
                 ) : (
-                  <DisconnectRow name={d.name} syncing={syncing} onDisconnect={() => requestDisconnect(d.id)} />
+                  <>
+                    {d.id === "granola" && syncing && connection?.lastSyncedAt && (
+                      <div className="ms-opt">
+                        <p className="ms-opt-text">
+                          Last synced {syncedAgo(connection.lastSyncedAt)} · {meetingCount(connection.itemCount)}.
+                        </p>
+                      </div>
+                    )}
+                    {reconnect && (
+                      <div className="ms-opt">
+                        <div className="ms-opt-copy">
+                          <GranolaReconnect tcw={tcw} className="ms-link" disabled={connecting}
+                            onReconnect={() => setConnectDialog({ descriptor: d, purpose: "browser" })} />
+                          <p className="ms-opt-text">Paste a new key and sync again.</p>
+                        </div>
+                      </div>
+                    )}
+                    <DisconnectRow name={d.name} syncing={syncing} onDisconnect={() => requestDisconnect(d.id)} />
+                  </>
                 )
               }
               extra={
@@ -336,6 +359,7 @@ export function MeetingSourcesDialog({
             }
           }}
           onConnected={() => {
+            if (connectDialog.descriptor.id === "granola") sourceSync.clearError("granola");
             setRevision((n) => n + 1);
             void refresh(connectDialog.descriptor.id);
           }}

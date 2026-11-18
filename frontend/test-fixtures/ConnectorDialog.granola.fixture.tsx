@@ -17,7 +17,7 @@ const tcw = { sql: { db: () => ({ query: async () => ({ ok: true, data: { rows: 
 const sessionStore = { getToken: () => null } as unknown as SessionStore;
 const backendUrl = "https://backend.invalid";
 
-test("an open Granola connect refuses key entry and never contacts Fireflies", async () => {
+test("an unknown connector refuses key entry and never contacts Fireflies", async () => {
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
   const calls: string[] = [];
@@ -28,7 +28,7 @@ test("an open Granola connect refuses key entry and never contacts Fireflies", a
   }, { preconnect: realFetch.preconnect });
   try {
     await act(async () => root.render(<ConnectorConnectDialog tcw={tcw} backendUrl={backendUrl}
-      sessionStore={sessionStore} descriptor={{ ...granola, status: "available" }} open
+      sessionStore={sessionStore} descriptor={{ ...granola, id: "unknown-fixture" as typeof granola.id, status: "available" }} open
       onOpenChange={() => {}} onConnected={() => {}} />));
     const dialog = document.querySelector('[role="dialog"]');
     const input = dialog?.querySelector("input");
@@ -49,8 +49,8 @@ test("an open Granola connect refuses key entry and never contacts Fireflies", a
   }
 });
 
-test("enabling Granola sync leaves the Settings row coming soon without a Connect button", async () => {
-  expect(import.meta.env.VITE_GRANOLA_CONNECTOR_ENABLED).toBe("true");
+test("flag-off Granola stays coming soon without a Settings Connect button", async () => {
+  expect(import.meta.env.VITE_GRANOLA_CONNECTOR_ENABLED).toBe("false");
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
   try {

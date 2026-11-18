@@ -28,10 +28,12 @@ import {
   FirefliesClient,
 } from "@/lib/connectors/firefliesClient";
 import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
-import { defaultGranolaClientOptions, GranolaClient } from "@/lib/connectors/granolaClient";
+import { GranolaClient } from "@/lib/connectors/granolaClient";
 import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
+import { granolaKeyExpired, granolaSummariesOnly } from "@/lib/connectors/granolaStatus";
 import { syncGranola } from "@/lib/connectors/granolaSync";
 import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
+import { GranolaReconnect, GranolaSummariesNotice } from "./GranolaConnectionNotices";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
@@ -303,8 +305,7 @@ export async function runGmeetSyncNow(opts: {
 }
 
 /**
- * The sync flag enables this engine, not the connection UI. The API key is
- * forwarded in memory to Granola by the backend proxy for this run only.
+ * The API key is forwarded in memory to Granola by the backend proxy.
  */
 export async function runGranolaSyncNow(opts: {
   tcw: TinyCloudWeb;
@@ -313,6 +314,7 @@ export async function runGranolaSyncNow(opts: {
   apiKey: string;
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
+  isCurrent?: () => boolean;
 }): Promise<RowSyncOutcome> {
   if (!granolaConnectorEnabled()) {
     return { ok: false, message: "Granola sync is not available yet.", retryAfterMs: null };
@@ -322,7 +324,6 @@ export async function runGranolaSyncNow(opts: {
       backendUrl: opts.backendUrl,
       sessionStore: opts.sessionStore,
       apiKey: opts.apiKey,
-      ...defaultGranolaClientOptions(),
     });
     const res = await syncGranola({
       client,
@@ -330,6 +331,7 @@ export async function runGranolaSyncNow(opts: {
       tcw: opts.tcw,
       onProgress: opts.onProgress,
       signal: opts.signal,
+      isCurrent: opts.isCurrent,
     });
     if (res.ok) return { ok: true };
     return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
@@ -578,6 +580,7 @@ export function ConnectorsCard({
                 apiKey: keyRes.data,
                 signal: ac.signal,
                 onProgress,
+                isCurrent: () => generation === readBackgroundDrainGeneration(),
               })
             : await runFirefliesSyncNow({
                 tcw,
@@ -697,6 +700,11 @@ export function ConnectorsCard({
                   onCancelWait: () => patchRow(d.id, { queuedSync: null, busyOffer: null }),
                 } : undefined}
               >
+                {d.status === "available" && granolaKeyExpired(rows[d.id].connection) && (
+                  <GranolaReconnect tcw={tcw}
+                    className="inline-flex w-fit items-center gap-1 text-sm font-medium hover:underline [&>svg]:size-4"
+                    disabled={rows[d.id].syncing || dialog !== null} onReconnect={() => handleConnect(d)} />
+                )}
                 {d.id === GMEET_CONNECTOR_ID && d.status === "available" && (
                   <CalendarAutojoinSection backendUrl={backendUrl} sessionStore={sessionStore} revision={autojoinRevision}
                     onEnable={() => setDialog({ kind: "autojoin", id: d.id })} />
@@ -939,6 +947,9 @@ const ConnectorRow: FC<{
           )}
           {gmeet.hasLog && <CopyGmeetSyncLogButton getLog={gmeet.getLog} />}
         </>
+      )}
+      {!comingSoon && granolaSummariesOnly(state.connection) && (
+        <GranolaSummariesNotice className="rounded-md border border-border p-2 text-xs text-muted-foreground" />
       )}
       {!comingSoon && state.syncing && state.joinedBackgroundSync && (
         <p className="text-xs text-muted-foreground">

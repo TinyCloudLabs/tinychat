@@ -54,16 +54,6 @@ export function resolveGranolaClientDefaults(env: GranolaEnvOverrides): GranolaC
   };
 }
 
-export function defaultGranolaClientOptions(): GranolaClientDefaults {
-  let env: GranolaEnvOverrides = {};
-  try {
-    env = (import.meta.env ?? {}) as GranolaEnvOverrides;
-  } catch {
-    // No Vite env injection in this runtime — production defaults.
-  }
-  return resolveGranolaClientDefaults(env);
-}
-
 export type GranolaErrorKind =
   /** 401 MISSING_API_KEY / INVALID_API_KEY — reconnect needed. */
   | "invalid-key"
@@ -247,7 +237,7 @@ export class GranolaClient {
   async getTranscript(
     id: string,
     opts: { signal?: AbortSignal; pageBudget?: number } = {},
-  ): Promise<GranolaResult<{ items: GranolaTranscriptItem[]; truncated: boolean }>> {
+  ): Promise<GranolaResult<{ items: GranolaTranscriptItem[]; truncated: boolean; access?: "allowed" | "disabled" }>> {
     const budget = opts.pageBudget ?? GRANOLA_TRANSCRIPT_PAGE_BUDGET;
     const items: GranolaTranscriptItem[] = [];
     let cursor: string | null = null;
@@ -265,8 +255,9 @@ export class GranolaClient {
       if (!res.ok) {
         // Transcripts disabled by an admin (or auto-deleted) are not a sync
         // failure: the meeting still syncs with its summary.
-        if (res.error.notFound || (res.error.kind === "forbidden" && res.error.code === "FORBIDDEN")) {
-          return { ok: true, data: { items, truncated: false } };
+        if (res.error.notFound) return { ok: true, data: { items, truncated: false } };
+        if (res.error.kind === "forbidden" && res.error.code === "FORBIDDEN") {
+          return { ok: true, data: { items, truncated: items.length > 0, access: "disabled" } };
         }
         return res;
       }
@@ -281,8 +272,8 @@ export class GranolaClient {
       }
       const hasMore = body.hasMore === true || body.has_more === true;
       cursor = typeof body.cursor === "string" ? body.cursor : null;
-      if (!hasMore) return { ok: true, data: { items, truncated: false } };
-      if (!cursor) return { ok: true, data: { items, truncated: true } };
+      if (!hasMore) return { ok: true, data: { items, truncated: false, access: "allowed" } };
+      if (!cursor) return { ok: true, data: { items, truncated: true, access: "allowed" } };
     }
     return { ok: true, data: { items, truncated: true } };
   }
@@ -310,6 +301,7 @@ export class GranolaClient {
       try {
         response = await this.fetchImpl(url, {
           method: "GET",
+          redirect: "error",
           headers: {
             Authorization: `Bearer ${token}`,
             [GRANOLA_KEY_HEADER]: this.apiKey,
@@ -349,6 +341,9 @@ export class GranolaClient {
         };
       }
       if (response.status === 401) {
+        if (parsed.sessionRejected) {
+          return { ok: false, error: { kind: "network-error", message: "TinyChat session is not signed in" } };
+        }
         return {
           ok: false,
           error: {
@@ -363,7 +358,7 @@ export class GranolaClient {
           ok: false,
           error: {
             kind: "forbidden",
-            message: parsed.message ?? "Granola refused this request",
+            message: "Granola refused this request",
             code: parsed.code, httpStatus: 403,
           },
         };
@@ -373,7 +368,7 @@ export class GranolaClient {
           ok: false,
           error: {
             kind: "api-error",
-            message: parsed.message ?? "Granola reported the note does not exist",
+            message: "Granola reported the note does not exist",
             code: parsed.code, httpStatus: 404, notFound: true,
           },
         };
@@ -383,7 +378,7 @@ export class GranolaClient {
           ok: false,
           error: {
             kind: "api-error",
-            message: parsed.message ?? `Granola returned HTTP ${response.status}`,
+            message: `Granola returned HTTP ${response.status}`,
             code: parsed.code, httpStatus: response.status,
           },
         };
@@ -399,10 +394,10 @@ export class GranolaClient {
   }
 }
 
-/** Granola's `{code, message, …}` envelope — read only, never trusted. */
+/** Inspect only status codes; the provider's message may contain private data. */
 async function readGranolaBody(
   response: Response,
-): Promise<{ ok: true; body: unknown; code?: string; message?: string } | { ok: false; code?: string; message?: string }> {
+): Promise<{ ok: true; body: unknown; code?: string; sessionRejected: boolean } | { ok: false; code?: undefined; sessionRejected?: undefined }> {
   let body: unknown;
   try {
     body = await response.json();
@@ -414,7 +409,7 @@ async function readGranolaBody(
     ok: true,
     body,
     code: typeof record.code === "string" ? record.code : undefined,
-    message: typeof record.message === "string" ? record.message : undefined,
+    sessionRejected: record.error === "missing_token" || record.error === "invalid_token",
   };
 }
 

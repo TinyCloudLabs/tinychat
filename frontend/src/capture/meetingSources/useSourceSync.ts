@@ -161,6 +161,7 @@ export async function runSourceSync(
               apiKey: key.data,
               signal,
               onProgress,
+              isCurrent: input.isCurrent,
             })
           : await deps.runFirefliesSyncNow({
               tcw,
@@ -195,6 +196,7 @@ export interface SourceSyncController {
   joined: boolean;
   progress: SyncProgress | null;
   error: { id: ConnectorId; message: string } | null;
+  clearError: (id: ConnectorId) => void;
   /** A press another Google Meet sync refused: offered to wait, or already waiting to start when that sync ends. */
   busy: { id: ConnectorId; mode: DriveMode; queued: boolean } | null;
   /** Accept the offer: start the refused press as soon as nothing is syncing. */
@@ -296,6 +298,7 @@ export function useSourceSync(input: {
     joined,
     progress,
     error,
+    clearError: (id) => setError((last) => last?.id === id ? null : last),
     busy: busyPress !== null && busyPress.did === tcw.did
       ? { id: busyPress.descriptor.id, mode: busyPress.mode, queued: busyPress.queued }
       : null,

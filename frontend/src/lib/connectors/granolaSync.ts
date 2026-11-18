@@ -28,6 +28,10 @@ import type {
   GranolaTranscriptItem,
   GranolaNotePage,
 } from "./granolaClient";
+import { GRANOLA_SECRET_NAME } from "./granolaFeature";
+import { GRANOLA_PLAN_INACTIVE, GRANOLA_SAVED_KEY_WARNING, GRANOLA_SUMMARIES_ONLY } from "./granolaStatus";
+import { deleteConnectorKey, saveConnectorKey, type SecretsErr } from "./connectorSecrets";
+import * as connectorStore from "./connectorStore";
 import {
   type NormalizedMeeting,
   type StoreError,
@@ -45,6 +49,33 @@ export const GRANOLA_INCREMENTAL_OVERLAP_MS = 60_000;
 export const GRANOLA_MAX_RETRY_AFTER_MS = 60_000;
 /** Detail fetches a single run will make — the page budget's own bound. */
 export const GRANOLA_MAX_DETAILS_PER_RUN = 250;
+const GRANOLA_SECRET = { secretName: GRANOLA_SECRET_NAME };
+
+/** Serialize credential and connection writes with Granola's sync writes. */
+export function saveGranolaConnection(
+  tcw: TinyCloudWeb, key: string, current: () => boolean,
+): Promise<boolean> {
+  return runOnSpaceLane(async () => {
+    if (!current() || !(await connectorStore.ensureSchema(tcw)).ok || !current()) return false;
+    const previous = await connectorStore.getConnection(tcw, GRANOLA_SOURCE);
+    if (!previous.ok || !current()) return false;
+    const stored = await saveConnectorKey(tcw, GRANOLA_SECRET, key);
+    if (!stored.ok || !current()) return false;
+    if (previous.data?.status === "connected") return true;
+    return (await connectorStore.updateSyncState(tcw, {
+      connectorId: GRANOLA_SOURCE, status: "connected", lastSyncedAt: null,
+      lastSyncStatus: null, lastSyncError: null, itemCount: 0,
+    })).ok;
+  });
+}
+
+export function clearGranolaKey(tcw: TinyCloudWeb, current: () => boolean): Promise<boolean> {
+  return runOnSpaceLane(async () => {
+    if (!current()) return false;
+    const cleared = await deleteConnectorKey<SecretsErr>(tcw, GRANOLA_SECRET);
+    return cleared.ok || cleared.error.code === "NOT_FOUND";
+  });
+}
 
 /** Structural surface of GranolaClient used by the engine; tests hand-roll a mock. */
 export interface GranolaSyncClient {
@@ -59,7 +90,7 @@ export interface GranolaSyncClient {
   getTranscript(
     id: string,
     opts?: { signal?: AbortSignal; pageBudget?: number },
-  ): Promise<GranolaResult<{ items: GranolaTranscriptItem[]; truncated: boolean }>>;
+  ): Promise<GranolaResult<{ items: GranolaTranscriptItem[]; truncated: boolean; access?: "allowed" | "disabled" }>>;
 }
 
 /** Structural surface of connectorStore used by the engine. */
@@ -79,6 +110,7 @@ export interface GranolaSyncStore {
   getConnection(tcw: TinyCloudWeb, connectorId: "granola"): Promise<StoreResult<{
     status: "connected" | "disconnected";
     lastSyncedAt: string | null;
+    lastSyncError?: string | null;
   } | null>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
 }
@@ -152,8 +184,9 @@ function fromStore(err: StoreError, context: string): SyncError {
 export function fromGranola(err: GranolaError): SyncError {
   switch (err.kind) {
     case "invalid-key":
+      return { kind: "auth", message: GRANOLA_SAVED_KEY_WARNING };
     case "forbidden":
-      return { kind: "auth", message: err.message };
+      return { kind: "auth", message: err.code === "SUBSCRIPTION_INACTIVE" ? GRANOLA_PLAN_INACTIVE : err.message };
     case "rate-limited":
       return { kind: "rate-limited", message: err.message, retryAfterMs: err.retryAfterMs };
     default:
@@ -370,6 +403,9 @@ async function runGranolaSync(
   const attemptAt = opts.now?.() ?? new Date().toISOString();
   let terminal: SyncError | null = null;
   let listingComplete = false;
+  let summariesOnly = false;
+  let transcriptAllowed = false;
+  let transcriptDisabled = false;
   /** The watermark this run started from — preserved verbatim on any non-ok outcome. */
   let previousWatermark: string | null = null;
   if (!current()) return { ok: true, data: result };
@@ -392,6 +428,7 @@ async function runGranolaSync(
           return { ok: false, error: { kind: "network", message: "Granola is not connected" } };
         }
         previousWatermark = connection.lastSyncedAt;
+        summariesOnly = connection.lastSyncError === GRANOLA_SUMMARIES_ONLY;
 
         const storedRes = await inSpace("Granola read stored update times", async () =>
           current() ? store.listMeetingMetadataValues(tcw, GRANOLA_SOURCE, "granola_updated_at") : null);
@@ -435,8 +472,7 @@ async function runGranolaSync(
           }
           if (!current()) return { ok: true, data: result };
           if (listingError) {
-            if (isTerminal(listingError)) terminal = fromGranola(listingError);
-            else result.errors.push(listingError.message);
+            terminal = fromGranola(listingError);
           } else if (pages >= pageBudget && !listingComplete) {
             result.errors.push("Granola listing did not finish inside the page budget");
           }
@@ -481,6 +517,8 @@ async function runGranolaSync(
                 if (isTerminal(txRes.error)) { terminal = fromGranola(txRes.error); break; }
                 continue;
               }
+              transcriptAllowed ||= txRes.data.access === "allowed";
+              transcriptDisabled ||= txRes.data.access === "disabled";
               try {
                 const { meeting, sentences } = await normalizeGranolaNote(
                   noteRes.data, txRes.data.items, txRes.data.truncated,
@@ -552,7 +590,9 @@ async function runGranolaSync(
         lastSyncStatus: finalStatus,
         lastSyncError: terminal?.message ?? (result.errors.length > 0
           ? `${result.errors.length} note(s) failed`
-          : null),
+          : finalStatus === "ok" && (transcriptDisabled || (summariesOnly && !transcriptAllowed))
+            ? GRANOLA_SUMMARIES_ONLY
+            : null),
         itemCount,
       });
     });
