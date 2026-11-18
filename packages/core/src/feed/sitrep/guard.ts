@@ -58,9 +58,17 @@ function parsedLinks(text: string): string[] {
   return out;
 }
 
+/**
+ * An OpenKey one-tap approval link: any openkey.so host whose first path segment is `a`, however the path is spelled. The
+ * path is percent-decoded before it is split (a router decodes it), so `/%61/`, `/a%2F` and an empty first segment
+ * (`//a/`) are the same address. A path that does not decode is treated as one: it cannot be told apart from a spelling.
+ */
 function isOneTapLink(href: string): boolean {
-  const url = new URL(href);
-  return url.hostname.replace(/\.+$/, "") === "openkey.so" && url.pathname.startsWith("/a/");
+  const url = new URL(href), host = url.hostname.replace(/\.+$/, "");
+  if (host !== "openkey.so" && !host.endsWith(".openkey.so")) return false;
+  let path: string;
+  try { path = decodeURIComponent(url.pathname); } catch { return true; }
+  return path.split("/").find((segment) => segment !== "")?.toLowerCase() === "a";
 }
 
 function textReason(text: string): string | undefined {

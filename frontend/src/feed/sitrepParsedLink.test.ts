@@ -21,6 +21,12 @@ const SPELLINGS: Record<string, string> = {
   "tab inside the link": `https://openkey.so/a/\t${KEY}`,
   "newline inside the link": `https://openkey.so/\na/${KEY}`,
   "a path with no key characters after /a/": "https://openkey.so/a/%2e",
+  "percent-encoded a": `https://openkey.so/%61/${KEY}`,
+  "percent-encoded capital A": `https://openkey.so/%41/${KEY}`,
+  "empty first segment": `https://openkey.so//a/${KEY}`,
+  "encoded slash after a": `https://openkey.so/a%2F${KEY}`,
+  "a subdomain of openkey.so": `https://www.openkey.so/a/${KEY}`,
+  "a path that does not decode": `https://openkey.so/a/%E0%A4%A${KEY}`,
 };
 
 test("a one-tap link in any spelling is refused as a field, inside text, and as a card link", () => {
