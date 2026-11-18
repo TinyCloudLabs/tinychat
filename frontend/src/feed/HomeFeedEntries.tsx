@@ -23,6 +23,7 @@ import { agentProfile } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
 import { FeedTabs, type FeedTab } from "./FeedTabs";
 import { readFeedViewMode, saveFeedViewMode, type FeedViewMode } from "./feedViewMode";
+import { SEEN_DWELL_MS, SEEN_THRESHOLDS, visibleEnoughToSee } from "./expandedSeen";
 import { FloatingHeader } from "./FloatingHeader";
 import { AgentsPill } from "./AgentMarks";
 import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
@@ -699,25 +700,40 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   useEffect(() => { if (firstOpenKey) setOpened((current) => current.has(firstOpenKey) ? current : new Set(current).add(firstOpenKey)); }, [firstOpenKey]);
   const isOpen = (entry: HomeFeedEntry) => opened.has(lineageKey(entry)) || lineageKey(entry) === firstOpenKey;
 
-  // In Expanded every card is open, so opening cannot mark it seen: a card counts as seen once it scrolls into view,
-  // not because it is somewhere down the list. A post keeps its row and its own rule.
+  // In Expanded every card is open, so opening cannot mark it seen: a card counts as seen once enough of it has stayed
+  // on screen for a moment (expandedSeen.ts), not because it is somewhere down the list or was scrolled past. A post
+  // keeps its row and its own rule.
   const [inView, setInView] = useState<ReadonlySet<string>>(() => new Set());
   const expandedKeys = viewMode === "expanded" ? shown.filter((entry) => !labPageOf(entry)).map(keyOf).join("|") : "";
   useEffect(() => {
     const root = mainRef.current;
     if (!expandedKeys || !root || typeof IntersectionObserver === "undefined") return;
+    const dwelling = new Map<string, ReturnType<typeof setTimeout>>();
     const observer = new IntersectionObserver((records) => {
-      setInView((current) => {
-        const next = new Set(current);
-        for (const record of records) { const key = (record.target as HTMLElement).dataset.cardKey; if (key && record.isIntersecting) next.add(key); }
-        return next.size === current.size ? current : next;
-      });
-    }, { root });
+      for (const record of records) {
+        const key = (record.target as HTMLElement).dataset.cardKey;
+        if (!key) continue;
+        const enough = record.isIntersecting && visibleEnoughToSee({
+          intersectionRatio: record.intersectionRatio,
+          cardHeight: record.boundingClientRect.height,
+          rootHeight: (record.rootBounds ?? root.getBoundingClientRect()).height,
+        });
+        if (!enough) {
+          clearTimeout(dwelling.get(key));
+          dwelling.delete(key);
+        } else if (!dwelling.has(key)) {
+          dwelling.set(key, setTimeout(() => {
+            dwelling.delete(key);
+            setInView((current) => current.has(key) ? current : new Set(current).add(key));
+          }, SEEN_DWELL_MS));
+        }
+      }
+    }, { root, threshold: [...SEEN_THRESHOLDS] });
     const keys = new Set(expandedKeys.split("|"));
     for (const node of root.querySelectorAll<HTMLElement>("li[data-card-key]")) if (keys.has(node.dataset.cardKey ?? "")) observer.observe(node);
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); for (const timer of dwelling.values()) clearTimeout(timer); };
   }, [expandedKeys]);
-  // A card counts as seen once it shows open (or, in Expanded, once it has scrolled into view).
+  // A card counts as seen once it shows open (or, in Expanded, once enough of it has stayed on screen for a moment).
   const seenAsked = useRef(new Set<string>());
   const seenNow = shown.filter((entry) => (isOpen(entry) || lineageKey(entry) === pageKey || (viewMode === "expanded" && !labPageOf(entry) && inView.has(keyOf(entry)))) && !entry.view.seenAt && !seenAsked.current.has(keyOf(entry)));
   useEffect(() => {
