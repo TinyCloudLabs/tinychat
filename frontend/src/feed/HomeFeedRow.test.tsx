@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { HomeFeedEntries } from "./HomeFeedEntries";
+import { COURIER_OUTPUT_DATABASE, COURIER_SOURCE_ID } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
 import { syntheticRecord } from "./sitrep.fixtures";
 
@@ -129,6 +130,30 @@ test("a folded row from a card with no author gets no empty prefix in its access
   const host = await mount([entry("anon", "Pay now?", { summary: "Pay the invoice today?", label: "" })]);
   const name = rowOf(host, "anon").querySelector("button")!.getAttribute("aria-label")!;
   expect(name.startsWith("Pay the invoice today?")).toBe(true);
+});
+
+const SENDER = "Mira · Northwind team";
+/** A card that says it is a Courier message from SENDER; `verified` puts it on the owner's Courier connection, as the registry has it. */
+function courierCard(cardId: string, verified: boolean, label: string): HomeFeedEntry {
+  const base = entry(cardId, "Book the flight?", { summary: "Book the Thursday train?", label });
+  const payload = { ...base.state.card.payload, type: "answer", channel: "courier", source: { label: SENDER } };
+  const source = verified ? { ...base.source, sourceId: COURIER_SOURCE_ID, output: { ...base.source.output, database: COURIER_OUTPUT_DATABASE } } : base.source;
+  return { ...base, source, state: { ...base.state, card: { ...base.state.card, payload } } };
+}
+const nameOfRow = (host: HTMLElement, cardId: string) => rowOf(host, cardId).querySelector("button")!.getAttribute("aria-label")!;
+
+test("a verified Courier row's accessible name carries the verified sender and the agent that relayed it", async () => {
+  const host = await mount([courierCard("real", true, "Relay agent")]);
+  expect(nameOfRow(host, "real").startsWith(`${SENDER}. Book the Thursday train?`)).toBe(true);
+  expect(nameOfRow(host, "real")).toContain("via Relay agent");
+});
+
+test("a card that only says Courier, from another agent, is named for that agent and never gets the sender", async () => {
+  const host = await mount([courierCard("spoof", false, "Courier")]);
+  const name = nameOfRow(host, "spoof");
+  expect(name.startsWith("Courier. Book the Thursday train?")).toBe(true);
+  expect(name).not.toContain(SENDER);
+  expect(name).not.toContain("via");
 });
 
 test("nothing is open until the owner taps a card, in Needs you", async () => {

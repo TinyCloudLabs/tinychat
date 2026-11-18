@@ -156,8 +156,8 @@ export function CompactCard({ agentKey, author, platform, priority, due, now, st
     </button>;
   }
   const hasEnd = !!thumb || !!type || !!due || hasMarks;
-  // The row prints no author, so its accessible name leads with it; the name replaces the button's own text, so it carries the rest of the row too.
-  const name = [author, text, note, courier && `${courier.from ?? author}, via ${courier.via}`, type && cardTypeLabel(type), !needsYou && status !== "Information" && status, (priority === 0 || priority === 1) && `Priority ${priority}`, replies?.count && repliesWords(replies), due && dueLabel(due, now).text]
+  // The row prints no author, so its accessible name leads with it (a verified Courier message: its verified sender, as the sender line shows); the name replaces the button's own text, so it carries the rest of the row too.
+  const name = [courier?.from ?? author, text, note, courier && `via ${courier.via}`, type && cardTypeLabel(type), !needsYou && status !== "Information" && status, (priority === 0 || priority === 1) && `Priority ${priority}`, replies?.count && repliesWords(replies), due && dueLabel(due, now).text]
     .filter((part): part is string => typeof part === "string" && part.trim() !== "").join(". ");
   return <button type="button" onClick={onOpen} {...opens} aria-label={name}
     className="flex min-h-11 w-full min-w-0 items-start gap-3 px-4 pb-3 pt-3.5 text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none min-[600px]:px-5 min-[600px]:pb-3.5 min-[600px]:pt-4">
