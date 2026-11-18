@@ -572,9 +572,6 @@ async function main() {
   // Share these stores with the optional routes, but keep retention maintenance alive even when
   // the connector webhook feature is disabled.
   const connectorKeyDirectory = process.env.CONNECTOR_KEY_STORE_DIR?.trim();
-  if (!connectorKeyDirectory && process.env.NODE_ENV === "production") {
-    throw new Error("Connector key store volume required");
-  }
   const connectorRetention = connectorKeyDirectory
     ? await import("./services/connector-key-store.js").then(({ ConnectorKeyStore, startConnectorKeyRotation }) => {
         const store = ConnectorKeyStore.open(connectorKeyDirectory);

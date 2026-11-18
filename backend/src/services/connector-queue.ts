@@ -2,6 +2,7 @@ import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import * as serverPackage from "@tinyboilerplate/server";
 import { BackendStorageLane } from "./backend-storage-lane.js";
 import {
+  assertConnectorPlaintextTestMode,
   isSealedQueueEntry,
   openQueueEntry,
   sealQueueEntry,
@@ -1102,6 +1103,7 @@ export class ConnectorQueue {
 
   private async writeQueue<T extends PendingItem>(storageKey: string, items: T[]): Promise<T[]> {
     if (this.retentionKeys === undefined) {
+      assertConnectorPlaintextTestMode();
       await this.writeJson(storageKey, items);
       return items;
     }

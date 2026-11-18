@@ -3,6 +3,12 @@ import { utcDay, type ConnectorKeyStore } from "./connector-key-store.js";
 
 export type ConnectorRetentionKeys = Pick<ConnectorKeyStore, "getLiveDayKeys">;
 
+export function assertConnectorPlaintextTestMode(): void {
+  if (process.env.CONNECTOR_KEY_STORE_TEST_PLAINTEXT !== "1") {
+    throw new Error("Connector key store required for writes");
+  }
+}
+
 /** Slots end at midnight UTC. Use the latest slot that ends by the exact deadline. */
 export function slotFor(expiresAt: number): number {
   return utcDay(expiresAt) - 1;

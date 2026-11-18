@@ -18,6 +18,7 @@ import {
 // a second thing to forget to update.
 import { isTombstoned } from "../services/connector-drain.js";
 import {
+  assertConnectorPlaintextTestMode,
   isLedgerIdCode,
   ledgerIdCode,
   makeLedgerIdCode,
@@ -1428,7 +1429,7 @@ export class ConnectorControlStore implements ConnectorControl {
         JSON.stringify(oldTimes) !== JSON.stringify(ledger.recentIdsAddedAt)
       ) {
         if (this.retentionKeys === undefined) {
-          await this.writeJson(key, ledger);
+          await this.writeStoredLedger(key, ledger);
         } else {
           const encoded = this.encodeLedger(key, ledger);
           await this.writeJson(key, encoded);
@@ -1531,7 +1532,12 @@ export class ConnectorControlStore implements ConnectorControl {
   }
 
   private async writeStoredLedger(storageKey: string, ledger: PurgeLedger): Promise<void> {
-    await this.writeJson(storageKey, this.retentionKeys ? this.encodeLedger(storageKey, ledger) : ledger);
+    if (this.retentionKeys === undefined) {
+      assertConnectorPlaintextTestMode();
+      await this.writeJson(storageKey, ledger);
+    } else {
+      await this.writeJson(storageKey, this.encodeLedger(storageKey, ledger));
+    }
   }
 
   async clearLedger(source: string, address: string): Promise<void> {

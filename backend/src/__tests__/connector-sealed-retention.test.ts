@@ -224,3 +224,22 @@ test("a stale coded-ledger writer cannot move the watermark backwards", async ()
   const result = await control.readLedger(SOURCE, ADDRESS);
   expect(result.status === "ok" && result.ledger.purgedThrough).toBe(later.purgedThrough);
 });
+
+test("queue and ledger writes need a configured store or the explicit test flag", async () => {
+  const node = { kv: {
+    async get() { return { ok: true, data: null }; },
+    async put() { throw new Error("Unexpected plaintext write"); },
+  } } as unknown as TinyCloudNode;
+  const prior = process.env.CONNECTOR_KEY_STORE_TEST_PLAINTEXT;
+  delete process.env.CONNECTOR_KEY_STORE_TEST_PLAINTEXT;
+  try {
+    const queue = new ConnectorQueue(node, { flushWindowMs: 0 });
+    await expect(queue.enqueue(SOURCE, ADDRESS, newEntry)).rejects.toThrow("Connector key store required for writes");
+    const control = new ConnectorControlStore(node);
+    await expect(control.writeLedger(SOURCE, ADDRESS, {
+      purgedThrough: iso(ADDED_AT), recentIds: [NEW_ID], updatedAt: iso(ADDED_AT),
+    })).rejects.toThrow("Connector key store required for writes");
+  } finally {
+    if (prior !== undefined) process.env.CONNECTOR_KEY_STORE_TEST_PLAINTEXT = prior;
+  }
+});
