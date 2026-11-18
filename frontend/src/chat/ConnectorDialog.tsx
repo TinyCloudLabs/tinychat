@@ -2173,7 +2173,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
     // connector connected, and its count still stands.
     removeBackgroundDrainConnectorRecord(descriptor.source);
     onDisconnected();
-    if (!showRevokeWarning) onOpenChange(false);
+    if (!showRevokeWarning && final.notice === undefined) onOpenChange(false);
   }, [
     backendUrl,
     descriptor,

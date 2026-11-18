@@ -97,6 +97,24 @@ export interface ConnectorWebhookDisabled {
   queueDropped: number;
 }
 
+/**
+ * `DELETE /api/connectors/credentials/:source` — the whole server-side teardown
+ * (purge tombstone, stored sign-in, upstream revoke, held content, queue). Both
+ * `ok` shapes mean the sign-in is gone from our server; `upstreamRevoked: false`
+ * on a 502 means the provider did not confirm the revoke.
+ */
+export interface ConnectorCredentialTeardown {
+  deleted: boolean;
+  upstreamRevoked: boolean;
+}
+
+/**
+ * Shown when the server removed the stored sign-in but the provider did not
+ * confirm the revoke, so the owner can revoke it themselves.
+ */
+export const CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE =
+  "Your Fireflies sign-in was removed from our server, but Fireflies didn't confirm it was revoked. Revoke it yourself in your Fireflies account.";
+
 export interface ConnectorPendingItem {
   meetingId: string;
   kind: ConnectorPendingKind;
@@ -210,6 +228,9 @@ export type ConnectorWebhooksResult<T> =
   /** The request never got an answer (network / abort). */
   | { status: "offline" };
 
+/** The base path of the credential teardown. One segment deep: `/:source`. */
+export const CONNECTOR_CREDENTIALS_BASE_PATH = "/api/connectors/credentials";
+
 /** The base path of the authenticated companions. Every route is ONE segment deep. */
 export const CONNECTOR_WEBHOOKS_BASE_PATH = "/api/connectors/webhooks";
 
@@ -239,6 +260,21 @@ export interface ConnectorWebhooksClient {
   }): Promise<ConnectorWebhooksResult<ConnectorWebhookEnabled>>;
   /** The single idempotent teardown. Retry the same call on `retryable`. */
   disable(): Promise<ConnectorWebhooksResult<ConnectorWebhookDisabled>>;
+  /**
+   * Delete the sign-in our server holds for `source` and ask the provider to
+   * revoke it. A bare `DELETE` carrying only the session auth: no provider
+   * token is ever read, held or sent from here. `feature-dark` (404) means the
+   * route is not mounted — nothing to do. The `DELETE` runs ONLY when a read-only
+   * `GET` says a sign-in is stored: the teardown writes a purge watermark, which
+   * must not be written for an owner who holds no server sign-in. Not connected
+   * resolves `ok` with `null`; any other failed read is a failure, never a skip.
+   * A failed provider revoke is still an
+   * `ok` (`upstreamRevoked: false`): the local delete happened. Optional so a
+   * lane that has no server-side sign-in (and test doubles) simply omits it.
+   */
+  teardownCredential?(
+    source: string,
+  ): Promise<ConnectorWebhooksResult<ConnectorCredentialTeardown | null>>;
   getPending(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
   /** The user-visit drain trigger. The response is the drain's OWN surfaced list. */
   drain(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
@@ -280,7 +316,13 @@ export function createConnectorWebhooksClient(
 
   async function request<T>(
     path: string,
-    init: { method: "GET" | "POST" | "DELETE"; body?: unknown },
+    init: {
+      method: "GET" | "POST" | "DELETE";
+      body?: unknown;
+      basePath?: string;
+      /** Reads a non-2xx answer the caller treats as a value; `null` falls through to the default failures. */
+      onFailure?: (response: Response) => Promise<ConnectorWebhooksResult<T> | null>;
+    },
   ): Promise<ConnectorWebhooksResult<T>> {
     // `createApiClient`'s two pre-flight checks. It throws on both; a defined
     // signed-out state is not an exception here, so they resolve instead.
@@ -294,15 +336,18 @@ export function createConnectorWebhooksClient(
     const hasBody = init.body !== undefined;
     let response: Response;
     try {
-      response = await fetchImpl(`${backendUrl}${CONNECTOR_WEBHOOKS_BASE_PATH}${path}`, {
-        method: init.method,
-        headers: {
-          ...(hasBody ? { "Content-Type": "application/json" } : {}),
-          Authorization: `Bearer ${token}`,
-          [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+      response = await fetchImpl(
+        `${backendUrl}${init.basePath ?? CONNECTOR_WEBHOOKS_BASE_PATH}${path}`,
+        {
+          method: init.method,
+          headers: {
+            ...(hasBody ? { "Content-Type": "application/json" } : {}),
+            Authorization: `Bearer ${token}`,
+            [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+          },
+          ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
         },
-        ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
-      });
+      );
     } catch {
       // The error is not narrated: it can carry the delivery URL, and no
       // connector identifier reaches a log from this module (§6.3's browser half).
@@ -321,6 +366,8 @@ export function createConnectorWebhooksClient(
     if (response.status === 404) return { status: "feature-dark" };
 
     if (!response.ok) {
+      const handled = init.onFailure ? await init.onFailure(response.clone()) : null;
+      if (handled !== null) return handled;
       const code = await readErrorCode(response);
       if (response.status === 429 || response.status >= 500) {
         return { status: "retryable", httpStatus: response.status, code };
@@ -369,6 +416,36 @@ export function createConnectorWebhooksClient(
     },
     disable() {
       return request<ConnectorWebhookDisabled>("/config", { method: "DELETE" });
+    },
+    async teardownCredential(source) {
+      const path = `/${encodeURIComponent(source)}`;
+      const stored = await request<{ connected?: unknown }>(path, {
+        method: "GET",
+        basePath: CONNECTOR_CREDENTIALS_BASE_PATH,
+      });
+      if (stored.status !== "ok") return stored;
+      if (typeof stored.value?.connected !== "boolean") {
+        return { status: "rejected", httpStatus: 200, code: null };
+      }
+      if (!stored.value.connected) return { status: "ok", value: null };
+      return request<ConnectorCredentialTeardown | null>(path, {
+        method: "DELETE",
+        basePath: CONNECTOR_CREDENTIALS_BASE_PATH,
+        // 502 `upstream_revoke_failed` + `deleted: true`: the local delete
+        // happened and only the provider's confirmation is missing.
+        async onFailure(response) {
+          if (response.status !== 502) return null;
+          try {
+            const body = (await response.json()) as { error?: unknown; deleted?: unknown };
+            if (body?.error === "upstream_revoke_failed" && body.deleted === true) {
+              return { status: "ok", value: { deleted: true, upstreamRevoked: false } };
+            }
+          } catch {
+            // An unreadable 502 is a plain retryable failure.
+          }
+          return null;
+        },
+      });
     },
     getPending() {
       return request<ConnectorWebhookPending>("/pending", { method: "GET" });

@@ -26,7 +26,7 @@ export const BACKGROUND_SYNC_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "C",
   heading: "Background sync",
   intro:
-    "Fireflies tells our server when a meeting finishes, and TinyCloud One pulls it into your space the next time you open it. Our server gets only the meeting's ID, never its content or your Fireflies key. Our server keeps those IDs for up to 14 days. You can turn this off at any time, which deletes them.",
+    "Fireflies tells our server when a meeting finishes, and TinyCloud One pulls it into your space the next time you open it. Our server gets only the meeting's ID, never its content or your Fireflies key. Our server keeps those IDs for up to 14 days. You can turn this off at any time; our server then gets no new IDs and deletes the ones it has within 14 days. Deleted IDs stay in our storage in encrypted form.",
 };
 
 
@@ -35,10 +35,10 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "B-ingest",
   heading: "Background sync (server-side)",
   intro:
-    "Our server keeps your Fireflies sign-in and a copy of each finished meeting, so your meetings are waiting on any device you sign in on. Each copy is removed from our server within 14 days of arriving. Deleted data can stay in our storage provider's backups for longer before it's cleared. After that we keep only a scrambled code that can't be turned back into the meeting, for up to 14 more days, so the same meeting isn't added twice. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes the sign-in and asks Fireflies to revoke it; copies we still hold are deleted on the same schedule.",
+    "Our server keeps your Fireflies sign-in and a copy of each finished meeting, so your meetings are waiting on any device you sign in on. Our server deletes each copy within 14 days of arriving, then keeps only a scrambled code that can't be turned back into the meeting, for up to 14 more days, so the same meeting isn't added twice. Deleted items stay in our storage in encrypted form. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes the sign-in and asks Fireflies to revoke it; copies we still hold are deleted on the same schedule.",
   disconnectNote:
     "**Disconnecting removes the Fireflies sign-in and stops new meetings.** We ask Fireflies to revoke the sign-in and delete it from our server. " +
-    "Meetings we still hold are removed from our server within 14 days of arriving. If Fireflies is down and we can't revoke the sign-in, we tell you, " +
+    "Meetings we still hold are deleted within 14 days of arriving, and deleted items stay in our storage in encrypted form. If Fireflies is down and we can't revoke the sign-in, we tell you, " +
     "so you can revoke it yourself in your Fireflies account.",
 };
 
