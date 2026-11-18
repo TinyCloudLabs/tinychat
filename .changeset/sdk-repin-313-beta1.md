@@ -3,4 +3,4 @@
 "@tinychat/backend": patch
 ---
 
-Update the TinyCloud SDK to 3.13.0-beta.1. Signing in from an app outside TinyCloud's own sites now needs an existing TinyCloud account; TinyCloud One (web, Android and iOS), tinycloud.chat, home.tinycloud.xyz, the desktop app and previews count as TinyCloud's own and are unaffected.
+Updates the TinyCloud SDK to 3.13.0-beta.1. Apps outside TinyCloud's own sites can now sign in only with an existing TinyCloud account. Signing in is unchanged in TinyCloud One (web, Android and iOS), the desktop app, tinycloud.chat, home.tinycloud.xyz and previews.
