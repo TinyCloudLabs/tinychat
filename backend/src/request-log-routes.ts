@@ -80,6 +80,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/transcriber/meetings/:id",
   "/api/transcriber/meetings/:id/stop",
   "/api/transcriber/meetings/:id/transcript",
+  "/api/transcriber/meetings/scope",
   "/api/transcriber/private-cloud/capabilities",
   "/api/transcriber/private-cloud/transcriptions",
   "/api/transcriber/private-cloud/transcriptions/:id",

@@ -45,7 +45,7 @@ env:
   PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
   PHALA_INGRESS_DOMAIN: ${{ vars.PHALA_INGRESS_DOMAIN || 'api.tinycloud.chat' }}
   PRODUCTION_API_URL: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
-  PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.chat' }}
+  PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.one' }}
   REDPILL_BASE_URL: ${{ vars.REDPILL_BASE_URL || 'https://tee.redpill.ai/v1' }}
   REDPILL_DEFAULT_MODEL: ${{ vars.REDPILL_DEFAULT_MODEL || 'z-ai/glm-5.2' }}
   # Reviewed application stream policy; unset values must fail validation, never default.
