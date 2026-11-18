@@ -45,12 +45,12 @@ beforeEach(() => {
 
 afterEach(() => node.stop(true));
 
-function admit(address: string, record: PersistedSessionData, renewal: unknown) {
+function admit(address: string, record: PersistedSessionData, renewal: unknown, load = async () => record as PersistedSessionData | null) {
   return admitSignInRenewal({
     tcw: { activeNodeIdentity: async () => ({ origin: `http://127.0.0.1:${node.port}`, nodeDid: "did:key:node" }) },
     address,
     renewal,
-    storage: { load: async () => record },
+    storage: { load },
   });
 }
 
@@ -65,6 +65,14 @@ describe("renewal chosen at sign-in", () => {
     expect(await admit(owner.address, record, receipt)).toBe(true);
     expect(presented).toEqual([lease.authorization]);
     expect(loadRenewalReceipt(owner.address)).toEqual(receipt);
+  });
+
+  test("is not kept when the session was signed out while the node admitted it", async () => {
+    const { owner, record, receipt } = await fixture();
+    publish(receipt);
+    expect(await admit(owner.address, record, receipt, async () => (presented.length === 0 ? record : null))).toBe(false);
+    expect(presented).toHaveLength(1);
+    expect(loadRenewalReceipt(owner.address)).toBeNull();
   });
 
   test("is not kept when the node refuses the lease, so the session runs to its signed end", async () => {

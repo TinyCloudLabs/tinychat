@@ -66,18 +66,18 @@ export async function admitSignInRenewal(input: {
   address: string;
   renewal: unknown;
   storage?: Pick<BrowserSessionStorage, "load">;
-  admit?: typeof admitOwnerRenewalLease;
 }): Promise<boolean> {
   const { tcw, address, renewal } = input;
   if (renewal === undefined || renewal === null) return false;
   try {
-    const record = await (input.storage ?? new BrowserSessionStorage()).load(address);
+    const storage = input.storage ?? new BrowserSessionStorage();
+    const record = await storage.load(address);
     const grant = record?.tinycloudSession;
     const leaseAuthorization = record ? await verifiedRenewalLease(renewal, record) : null;
     if (!record || !grant || !leaseAuthorization) return false;
     const { receipt } = parseApprovalRenewal(renewal);
     const { origin } = await tcw.activeNodeIdentity();
-    await (input.admit ?? admitOwnerRenewalLease)({
+    await admitOwnerRenewalLease({
       host: origin,
       originalAuthorization: grant.delegationHeader.Authorization.replace(/^Bearer\s+/i, ""),
       originalCid: grant.delegationCid,
@@ -90,6 +90,8 @@ export async function admitSignInRenewal(input: {
       leaseExpiresAt: receipt.leaseExpiresAt,
       signal: AbortSignal.timeout(ADMIT_TIMEOUT_MS),
     });
+    // A sign-out during the admission cleared the record: keep no receipt beside a session that is gone.
+    if ((await storage.load(address))?.tinycloudSession?.delegationCid !== grant.delegationCid) return false;
     saveRenewalReceipt(address, renewal);
     return true;
   } catch {
