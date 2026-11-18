@@ -2,9 +2,11 @@
 // the model key lives only in the gateway container.
 
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { rootProblem } from "./retention";
 import { BotManager } from "./bot";
 import { supervisorConfig } from "./config";
+import { OwnerManifests } from "./manifest";
 import { RunscHost } from "./sandbox";
 import { createApp } from "./server";
 
@@ -12,7 +14,10 @@ const DAY_MS = 24 * 60 * 60_000;
 const SWEEP_MS = 6 * 60 * 60_000;
 
 const cfg = supervisorConfig(process.env);
-for (const root of [cfg.dataRoot, cfg.runRoot]) {
+// Which siblings the backend has announced, per owner. On the data volume, beside the bots' own directories (which
+// are named by 64 hex characters, so the sweep never takes this one for a bot) and never mounted into a sandbox.
+const manifestRoot = join(cfg.dataRoot, "owners");
+for (const root of [cfg.dataRoot, cfg.runRoot, manifestRoot]) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   if (rootProblem(root, process.geteuid!())) throw new Error("untrusted bot root");
 }
@@ -30,7 +35,7 @@ Bun.serve({
   // Cold starts can take a while before the first byte of a list response.
   idleTimeout: 120,
   maxRequestBodySize: 1024 * 1024,
-  fetch: createApp({ secret: cfg.serviceSecret, accounts: cfg.accounts, bots }),
+  fetch: createApp({ secret: cfg.serviceSecret, accounts: cfg.accounts, bots, manifest: new OwnerManifests(manifestRoot) }),
 });
 console.log(
   JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, retentionDays: cfg.retentionDays, limits: cfg.limits }),

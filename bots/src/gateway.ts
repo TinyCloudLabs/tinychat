@@ -257,6 +257,49 @@ export interface GatewayDeps {
   verifiedFetch?: (botId: string, url: string, init: RequestInit) => Promise<Response>;
   now?: () => number;
   store?: BudgetStore;
+  ownerStore?: OwnerStore;
+}
+
+/** Which owner each bot belongs to (bot id to owner id), so one owner's bots share a daily total across restarts. */
+export interface OwnerStore {
+  load(): Record<string, string> | undefined;
+  save(owners: Record<string, string>): void;
+}
+
+/** The owner map beside the budget file, saved the same way: temporary file, fsync, rename, fsync of the directory. */
+export function fileOwnerStore(path: string): OwnerStore {
+  return {
+    load() {
+      if (!existsSync(path)) return undefined;
+      let value: unknown;
+      try {
+        value = JSON.parse(readFileSync(path, "utf8"));
+      } catch (error) {
+        throw new Error(`owner file ${path} is unreadable (${error instanceof Error ? error.message : "unknown"})`, { cause: error });
+      }
+      if (!isRecord(value) || !Object.entries(value).every(([bot, owner]) => /^[0-9a-f]{64}$/.test(bot) && typeof owner === "string" && /^[0-9a-f]{64}$/.test(owner))) {
+        throw new Error(`owner file ${path} is malformed`);
+      }
+      return value as Record<string, string>;
+    },
+    save(owners) {
+      const fresh = `${path}.new`;
+      const file = openSync(fresh, "w", 0o600);
+      try {
+        writeSync(file, JSON.stringify(owners));
+        fsyncSync(file);
+      } finally {
+        closeSync(file);
+      }
+      renameSync(fresh, path);
+      const dir = openSync(dirname(path), "r");
+      try {
+        fsyncSync(dir);
+      } finally {
+        closeSync(dir);
+      }
+    },
+  };
 }
 
 export class Gateway {
@@ -272,6 +315,11 @@ export class Gateway {
   #day = "";
   /** A save failed, so the file is behind memory: model calls are refused until a save succeeds. */
   #unsaved = false;
+  /** A bot's owner, where it is not the bot itself (Main is its own owner). */
+  readonly #owners = new Map<string, string>();
+  readonly #ownerStore: OwnerStore | undefined;
+  /** The owner map could not be saved: model calls are refused until it is, or a restart could split an owner's total. */
+  #ownersUnsaved = false;
 
   constructor(cfg: GatewayConfig, deps: GatewayDeps = {}) {
     this.#cfg = cfg;
@@ -285,10 +333,19 @@ export class Gateway {
       this.#usedTotal = saved.total;
       for (const [botId, tokens] of Object.entries(saved.perBot)) this.#used.set(botId, tokens);
     }
+    this.#ownerStore = deps.ownerStore;
+    for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
   }
 
-  setToken(botId: string, token: string): void {
+  /**
+   * Registers a bot's token. `ownerId` is the id of its owner's Main; a bot registered without one is its own owner.
+   * A bot's owner never changes once it is known, so a later registration without it, or with another, moves nothing.
+   */
+  setToken(botId: string, token: string, ownerId: string = botId): void {
     this.#tokens.set(botId, token);
+    if (ownerId === botId || this.#owners.has(botId)) return;
+    this.#owners.set(botId, ownerId);
+    this.#persistOwners();
   }
 
   dropToken(botId: string): void {
@@ -315,9 +372,36 @@ export class Gateway {
     return { bot: this.#used.get(botId) ?? 0, total: this.#usedTotal };
   }
 
+  /** Tokens counted today for every bot of this bot's owner. */
+  #ownerUsed(botId: string): number {
+    const ownerId = this.#owners.get(botId) ?? botId;
+    let used = 0;
+    for (const [other, tokens] of this.#used) if ((this.#owners.get(other) ?? other) === ownerId) used += tokens;
+    return used;
+  }
+
   #remaining(botId: string): number {
     const used = this.usage(botId);
-    return Math.min(this.#cfg.botDailyTokens - used.bot, this.#cfg.globalDailyTokens - used.total);
+    return Math.min(
+      this.#cfg.botDailyTokens - used.bot,
+      (this.#cfg.ownerDailyTokens ?? this.#cfg.botDailyTokens) - this.#ownerUsed(botId),
+      this.#cfg.globalDailyTokens - used.total,
+    );
+  }
+
+  #persistOwners(): boolean {
+    if (!this.#ownerStore) return true;
+    try {
+      this.#ownerStore.save(Object.fromEntries(this.#owners));
+      this.#ownersUnsaved = false;
+      return true;
+    } catch (error) {
+      if (!this.#ownersUnsaved) {
+        console.log(JSON.stringify({ gateway: "owner_save_failed", error: error instanceof Error ? error.message : "unknown" }));
+      }
+      this.#ownersUnsaved = true;
+      return false;
+    }
   }
 
   /** Saves the counters. A failure is not just logged: until a later save succeeds, chat calls get 503. */
@@ -348,6 +432,10 @@ export class Gateway {
     this.#day = day;
     this.#used.clear();
     this.#usedTotal = 0;
+    // Yesterday's map is only needed for bots that are still registered; the rest have no usage left to total.
+    let pruned = false;
+    for (const botId of this.#owners.keys()) if (!this.#tokens.has(botId)) pruned = this.#owners.delete(botId) || pruned;
+    if (pruned) this.#persistOwners();
   }
 
   /**
@@ -412,6 +500,7 @@ export class Gateway {
     // bot's one slot.
     if (Number(req.headers.get("content-length") ?? 0) > this.#cfg.maxBodyBytes) return this.#deny(botId, "body_size", 413);
     if (this.#unsaved && !this.#persist()) return this.#deny(botId, "budget_store", 503);
+    if (this.#ownersUnsaved && !this.#persistOwners()) return this.#deny(botId, "budget_store", 503);
     if (this.#remaining(botId) <= 0) return this.#deny(botId, "budget", 429);
     if (this.#inflight.has(botId)) return this.#deny(botId, "concurrency", 429);
     this.#inflight.add(botId);
