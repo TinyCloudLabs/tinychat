@@ -104,6 +104,19 @@ describe("owner total", () => {
     expect(await chat(gateway, STRANGER)).toBe(429);
   });
 
+  test("a sibling registered again without its owner stays under that owner", async () => {
+    const owners = memoryOwners();
+    const gateway = new Gateway(cfg, { fetch: upstream(600), now: () => NOON, ownerStore: owners });
+    register(gateway);
+    gateway.setToken(SIBLING, TOKENS[SIBLING]!);
+    gateway.setToken(SIBLING, TOKENS[SIBLING]!, STRANGER);
+    expect(owners.saved).toEqual({ [SIBLING]: MAIN });
+    expect(await chat(gateway, MAIN)).toBe(200);
+    expect(await chat(gateway, SIBLING)).toBe(200);
+    expect(await chat(gateway, SIBLING)).toBe(429);
+    expect(await chat(gateway, STRANGER)).toBe(200);
+  });
+
   test("the owner map survives a restart, so a restarted gateway still totals the sibling under its owner", async () => {
     const owners = memoryOwners();
     const budget = { saved: undefined as unknown, load: () => budget.saved as never, save: (snapshot: unknown) => { budget.saved = structuredClone(snapshot); } };

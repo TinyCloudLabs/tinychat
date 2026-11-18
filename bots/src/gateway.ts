@@ -337,10 +337,13 @@ export class Gateway {
     for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
   }
 
-  /** Registers a bot's token. `ownerId` is the id of its owner's Main; a bot registered without one is its own owner. */
+  /**
+   * Registers a bot's token. `ownerId` is the id of its owner's Main; a bot registered without one is its own owner.
+   * A bot's owner never changes once it is known, so a later registration without it, or with another, moves nothing.
+   */
   setToken(botId: string, token: string, ownerId: string = botId): void {
     this.#tokens.set(botId, token);
-    if ((this.#owners.get(botId) ?? botId) === ownerId) return;
+    if (ownerId === botId || this.#owners.has(botId)) return;
     this.#owners.set(botId, ownerId);
     this.#persistOwners();
   }

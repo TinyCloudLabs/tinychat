@@ -16,6 +16,10 @@ export const historyHash = (value: string) => createHash("sha256").update(value)
 export const historyOwner = (address: string) => `did:pkh:eip155:1:${address.toLowerCase()}`;
 /** How a bot other than Main is named: 32 hex characters chosen by the backend. Checked before it enters any id, path or storage key. */
 export const HISTORY_BOT_KEY = /^[0-9a-f]{32}$/;
+/** An address is checked before it is hashed or becomes part of a storage key. */
+function checkAddress(address: string): void {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("history_owner_invalid");
+}
 /** `main` and no key both mean Main; anything else must be a well-formed sibling key. */
 function siblingKey(key: string | undefined): string | undefined {
   if (key === undefined || key === "main") return undefined;
@@ -27,7 +31,7 @@ function siblingKey(key: string | undefined): string | undefined {
  * and the key for any other bot. The address is checked first, so nothing but a lower-case did:pkh is ever hashed.
  */
 export function historyBotId(address: string, key?: string): string {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("history_owner_invalid");
+  checkAddress(address);
   const sibling = siblingKey(key);
   return historyHash(sibling ? `${historyOwner(address)}\n${sibling}` : historyOwner(address));
 }
@@ -64,6 +68,7 @@ export class BotHistory {
   }
   /** Main's grant is stored under the address alone, as it always was, and never under `<address>/main`. */
   #keyFor(address: string, key?: string) {
+    checkAddress(address);
     const sibling = siblingKey(key);
     return `bot-history/grants/${address.toLowerCase()}${sibling ? `/${sibling}` : ""}`;
   }

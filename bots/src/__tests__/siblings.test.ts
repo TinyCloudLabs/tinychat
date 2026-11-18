@@ -399,4 +399,53 @@ describe("the service's routes for several bots", () => {
     expect(await (await call("DELETE", KEY_A)).json()).toEqual({ outcome: "gone" });
     expect(deleted).toHaveLength(4);
   });
+
+  test("a permission update that races a deletion does not bring the bot's directory back", async () => {
+    const at = roots();
+    const manager = new BotManager(launcher, at, { ...OPTIONS, history: HISTORY }, 3);
+    const manifest = new OwnerManifests(join(at.dataRoot, "owners"));
+    const app = createApp({ secret: SECRET, accounts: "*", bots: manager, manifest });
+    const bot = manager.forBot(OWNER, KEY_A);
+    const layout = bot.layout;
+    const journal = new HistoryJournal(layout, HISTORY);
+    journal.begin(OWNER, 1000);
+    journal.append({ type: "user", text: "hello" });
+    const batch = journal.pending()!;
+    const path = `xyz.tinycloud.tinychat/threads/bots/v1/${layout.botId}/${batch.generation}/${batch.seq}-${batch.challenge}`;
+    await journal.accept(await receipt(journal, layout.botId, { key: KEY_A, path }));
+    manifest.announce(OWNER, KEY_A, "deleting", 1);
+    const permission = () => app(new Request(url(KEY_A, "/history/permission"), { method: "PUT", headers, body: JSON.stringify({ validUntil: Date.now() + 60_000 }) }));
+    const [deleted, raced] = await Promise.all([app(new Request(url(KEY_A), { method: "DELETE", headers })), permission()]);
+    expect(await deleted.json()).toEqual({ outcome: "gone" });
+    expect(existsSync(layout.dataDir)).toBe(false);
+    // The update that lost the race is refused, not answered as if it had been applied.
+    expect(raced.status).toBe(503);
+    // Nothing reaches the bot afterwards either, through the service or directly.
+    expect((await permission()).status).toBe(404);
+    await expect(bot.historyPermission(OWNER, undefined, Date.now() + 60_000)).rejects.toThrow("bot_retired");
+    await expect(bot.historyPending()).rejects.toThrow("bot_retired");
+    await expect(bot.list()).rejects.toThrow("bot_retired");
+    const events: string[] = [];
+    await bot.send("hi", { status: () => {}, delta: () => {}, done: () => { events.push("done"); }, error: code => { events.push(code); } }, OWNER);
+    expect(events).toEqual(["bot_unavailable"]);
+    expect(existsSync(layout.dataDir)).toBe(false);
+  });
+
+  test("after an unused sibling's state is swept away, a permission update still makes no directory", async () => {
+    const at = roots();
+    const manager = new BotManager(launcher, at, { ...OPTIONS, history: HISTORY }, 3);
+    const bot = manager.forBot(OWNER, KEY_A);
+    const journal = new HistoryJournal(bot.layout, HISTORY);
+    journal.begin(OWNER, 1000);
+    journal.append({ type: "user", text: "hello" });
+    const batch = journal.pending()!;
+    const path = `xyz.tinycloud.tinychat/threads/bots/v1/${bot.layout.botId}/${batch.generation}/${batch.seq}-${batch.challenge}`;
+    await journal.accept(await receipt(journal, bot.layout.botId, { key: KEY_A, path }));
+    const [cause] = await Promise.all([
+      manager.deleteWorkingState(bot.layout.botId, "unused"),
+      bot.historyPermission(OWNER, undefined, Date.now() + 60_000),
+    ]);
+    expect(cause).toBeUndefined();
+    expect(existsSync(bot.layout.dataDir)).toBe(false);
+  });
 });

@@ -184,6 +184,10 @@ export class Bot {
   #idle: Timer | undefined;
   /** This bot holds one BOTS_MAX_RUNNING place: for its sandbox, or for a leftover whose end is unconfirmed. */
   #hasPlace = false;
+  /** The backend is deleting this bot: the deletion that removes its working state retires it. */
+  #retiring = false;
+  /** Set once the backend's deletion of this bot has removed its working state. Nothing runs or writes for it again. */
+  #retired = false;
 
   constructor(layout: BotLayout, launcher: SandboxLauncher, options: BotOptions, running: RunningLimit) {
     this.layout = layout;
@@ -201,6 +205,7 @@ export class Bot {
     if (this.#options.history) {
       this.#busy = true;
       await this.#deleting;
+      if (this.#retired) { this.#busy = false; sink.error("bot_unavailable"); return; }
       try {
         this.#history ??= new HistoryJournal(this.layout, this.#options.history);
         this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
@@ -251,6 +256,7 @@ export class Bot {
   async list(): Promise<ListedMessage[]> {
     if (this.#options.history) {
       await this.#deleting;
+      if (this.#retired) throw new Error("bot_retired");
       this.#history ??= new HistoryJournal(this.layout, this.#options.history);
       if (!this.#history.legacyPending) {
         const messages = this.#history.messages();
@@ -263,6 +269,7 @@ export class Bot {
     try {
       // A bot whose working state is being deleted lists nothing once that is done.
       await this.#deleting;
+      if (this.#retired) throw new Error("bot_retired");
       if (!this.#sandbox && !this.#launcher.hasState(this.layout)) return [];
       const sandbox = await this.#ensure();
       this.#markUsed();
@@ -291,10 +298,13 @@ export class Bot {
    * The one way a bot's working state is deleted: stops its sandbox, then removes its data directory (state snapshot
    * and last-use marker) and its run directory. A failed teardown, a path that is not the bot's own directory, a
    * mount at or under either directory keeps everything and logs
-   * state_delete_skipped instead. A request that arrives meanwhile waits for this, then starts a fresh bot.
+   * state_delete_skipped instead. A request that arrives meanwhile waits for this, then starts a fresh bot; with
+   * `retire` (the backend is deleting the bot) it is refused instead, and nothing is written for the bot again.
    * Resolves to why the state was kept, or to undefined once it is gone.
    */
-  deleteWorkingState(reason: string, closing = () => false): Promise<DeleteSkip | undefined> {
+  deleteWorkingState(reason: string, closing = () => false, retire = false): Promise<DeleteSkip | undefined> {
+    // Also when a deletion is already under way: that one retires the bot when it succeeds.
+    if (retire) this.#retiring = true;
     this.#deleting ??= (async () => {
       let cause: DeleteSkip | undefined;
       try {
@@ -310,7 +320,12 @@ export class Bot {
         cause = "error";
       }
       if (cause) log("state_delete_skipped", this.layout.botId, { reason, cause });
-      else { this.#history = undefined; log("state_deleted", this.layout.botId, { reason }); }
+      else {
+        this.#history = undefined;
+        // Set before this resolves, so a request already waiting on the deletion sees it.
+        if (this.#retiring) this.#retired = true;
+        log("state_deleted", this.layout.botId, { reason });
+      }
       return cause;
     })().finally(() => {
       this.#deleting = undefined;
@@ -322,20 +337,24 @@ export class Bot {
     if (!this.#options.history) throw new Error("history_disabled");
     return this.#history ??= new HistoryJournal(this.layout, this.#options.history);
   }
-  async #historyOperation<T>(run: (journal: HistoryJournal) => T | Promise<T>): Promise<T> {
+  /** With `existing`, the operation is skipped when the bot has no journal, checked after any deletion has finished. */
+  async #historyOperation<T>(run: (journal: HistoryJournal) => T | Promise<T>, existing = false): Promise<T | undefined> {
     this.#listing++;
     try {
       await this.#deleting;
+      if (this.#retired) throw new Error("bot_retired");
+      if (existing && !existsSync(join(this.layout.dataDir, "history.json"))) return undefined;
       return await run(this.#journal());
     } finally { this.#listing--; }
   }
+  /** Marks a bot the backend has deleted and that has no working state left. */
+  retire(): void { this.#retired = true; }
   historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
     // A sibling that has never run has no journal, and a change of permission must not make one (or its directory).
-    if (this.layout.botKey !== undefined && !existsSync(join(this.layout.dataDir, "history.json"))) return Promise.resolve();
     return this.#historyOperation(journal => {
       if (expiresAt === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!); }
       else journal.permissionExpired(expiresAt, owner);
-    });
+    }, this.layout.botKey !== undefined);
   }
   historyStage(staged: StagedHistory) { return this.#historyOperation(journal => journal.stage(staged)); }
   historyNotice() { return this.#options.history ? this.#historyOperation(journal => journal.notice()) : Promise.resolve(undefined); }
@@ -432,6 +451,7 @@ export class Bot {
       // before a deletion of the bot's working state has finished.
       await this.#deleting;
       await this.#stopping;
+      if (this.#retired) throw new Error("bot_retired");
       // At the cap a start is refused, never squeezed into memory the running bots may need. A leftover's place
       // passes to the next start, which first ends the leftover.
       if (!this.#hasPlace) {
@@ -537,19 +557,25 @@ export class BotManager {
   }
 
   /** Deletes one bot's working state; see Bot.deleteWorkingState. stopAll waits for it to finish. */
-  deleteWorkingState(botId: string, reason: string): Promise<DeleteSkip | undefined> {
+  deleteWorkingState(botId: string, reason: string, retire = false): Promise<DeleteSkip | undefined> {
     if (this.#closing) return Promise.resolve("closing");
-    const deletion = this.#bot(botId).deleteWorkingState(reason, () => this.#closing);
+    const deletion = this.#bot(botId).deleteWorkingState(reason, () => this.#closing, retire);
     this.#deletions.add(deletion);
     void deletion.finally(() => this.#deletions.delete(deletion));
     return deletion;
   }
 
-  /** Deletes the working state of a sibling the backend is deleting. A bot that never ran has none. */
+  /**
+   * Deletes the working state of a sibling the backend is deleting, and retires the bot: a request that was already
+   * waiting is refused instead of starting it again. A bot that never ran has no working state.
+   */
   deleteBot(ownerDid: string, key: string): Promise<DeleteSkip | undefined> {
     const bot = this.forBot(ownerDid, key);
-    if (!bot.inUse && !existsSync(bot.layout.dataDir) && !existsSync(bot.layout.bundleDir)) return Promise.resolve(undefined);
-    return this.deleteWorkingState(bot.layout.botId, "deleted");
+    if (!bot.inUse && !existsSync(bot.layout.dataDir) && !existsSync(bot.layout.bundleDir)) {
+      bot.retire();
+      return Promise.resolve(undefined);
+    }
+    return this.deleteWorkingState(bot.layout.botId, "deleted", true);
   }
 
   /**

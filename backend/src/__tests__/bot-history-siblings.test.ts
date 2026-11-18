@@ -106,6 +106,7 @@ describe("a grant for a bot other than Main", () => {
 /** A backend node whose storage is a map, and which reaches the point of looking up the owner's encryption network. */
 function storage() {
   const entries = new Map<string, unknown>();
+  const read: string[] = [];
   const fake = {
     ...node,
     useDelegation: async () => ({}),
@@ -113,12 +114,15 @@ function storage() {
     encryption: { discoverNetwork: async () => ({ ok: false }) },
     kv: {
       put: async (key: string, value: unknown) => { entries.set(key, value); return { ok: true, data: {} }; },
-      get: async (key: string) => entries.has(key)
-        ? { ok: true, data: { data: entries.get(key) } }
-        : { ok: false, error: { code: "KV_NOT_FOUND", message: `Key not found: ${key}`, service: "kv" } },
+      get: async (key: string) => {
+        read.push(key);
+        return entries.has(key)
+          ? { ok: true, data: { data: entries.get(key) } }
+          : { ok: false, error: { code: "KV_NOT_FOUND", message: `Key not found: ${key}`, service: "kv" } };
+      },
     },
   } as unknown as TinyCloudNode;
-  return { entries, history: new BotHistory(fake, privateKey, host) };
+  return { entries, read, history: new BotHistory(fake, privateKey, host) };
 }
 const batchFor = (key?: string) => ({ v: 1, generation: "0".repeat(32), seq: 1, challenge: "1".repeat(64), record: { type: "user", text: "hi" }, ...(key ? { bot: key } : {}) });
 const noStage = async () => {};
@@ -142,6 +146,17 @@ describe("where grants are stored", () => {
     for (const bad of ["AB".repeat(16), "../x", `${KEY_A}/x`, ""]) {
       await expect(history.accept(address, await envelope({ [uri()]: actions }), bad)).rejects.toThrow("history_bot_key_invalid");
     }
+    expect(entries.size).toBe(0);
+  });
+
+  test("a malformed address never becomes a storage key, for Main or for another bot", async () => {
+    const { entries, read, history } = storage();
+    for (const bad of ["0x22", `${address}/x`, `${address}/${KEY_B}`, `../${address}`, ""]) {
+      await expect(history.archive(bad, batchFor(), noStage)).rejects.toThrow("history_owner_invalid");
+      await expect(history.archive(bad, batchFor(KEY_A), noStage, KEY_A)).rejects.toThrow("history_owner_invalid");
+      await expect(history.accept(bad, await envelope({ [uri()]: actions }))).rejects.toThrow("history_owner_invalid");
+    }
+    expect(read).toEqual([]);
     expect(entries.size).toBe(0);
   });
 

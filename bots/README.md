@@ -48,7 +48,8 @@ for a sibling may create anything. `main` exists without being announced; a sibl
   the one held is ignored, and so is anything after `deleting`. `main` cannot be set to `deleting`.
 - `DELETE /v1/bots/<key>` deletes the working state of a bot that is `deleting` and answers
   `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" }` (it will go once its
-  history is saved) or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good.
+  history is saved) or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good, and a
+  request that was still waiting on the deletion is refused (503) instead of starting the bot again.
 
 | | active | suspended | deleting | unknown or removed |
 | --- | --- | --- | --- | --- |
