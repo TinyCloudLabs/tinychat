@@ -30,7 +30,7 @@ import {
 import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
 import { GranolaClient } from "@/lib/connectors/granolaClient";
 import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
-import { granolaKeyExpired, granolaSummariesOnly } from "@/lib/connectors/granolaStatus";
+import { GRANOLA_LAST_SYNC_FAILED, GRANOLA_SYNC_FAILED, granolaKeyExpired, granolaSummariesOnly } from "@/lib/connectors/granolaStatus";
 import { syncGranola } from "@/lib/connectors/granolaSync";
 import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
 import { GranolaReconnect, GranolaSummariesNotice } from "./GranolaConnectionNotices";
@@ -335,10 +335,10 @@ export async function runGranolaSyncNow(opts: {
     });
     if (res.ok) return { ok: true };
     return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
-  } catch (cause) {
+  } catch {
     return {
       ok: false,
-      message: cause instanceof Error ? cause.message : "Granola sync failed",
+      message: GRANOLA_SYNC_FAILED,
       retryAfterMs: null,
     };
   }
@@ -1015,7 +1015,9 @@ function rowStatus(comingSoon: boolean, state: RowState, connectorId: ConnectorI
   if (comingSoon) return { tone: "neutral", label: "Coming soon" };
   if (!state.loaded) return null;
   if (state.connection?.status !== "connected") return { tone: "neutral", label: "Not connected" };
-  if (state.connection.lastSyncStatus === "error") return { tone: "destructive", label: "Last sync failed" };
+  if (state.connection.lastSyncStatus === "error") {
+    return { tone: "destructive", label: connectorId === "granola" ? GRANOLA_LAST_SYNC_FAILED : "Last sync failed" };
+  }
   if (state.connection.lastSyncStatus === "partial") return { tone: "warning", label: "Last sync incomplete" };
   if (connectorId === "fireflies" && state.connection.lastSyncedAt
     && isFirefliesStale(state.connection.lastSyncedAt)) {

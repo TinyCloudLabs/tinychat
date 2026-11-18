@@ -285,7 +285,7 @@ export class GranolaClient {
   private async request(path: string, signal?: AbortSignal): Promise<GranolaResult<unknown>> {
     const token = this.sessionStore.getToken();
     if (!token || this.sessionStore.isExpired()) {
-      return { ok: false, error: { kind: "network-error", message: "TinyChat session is not signed in" } };
+      return { ok: false, error: { kind: "network-error", message: "You're signed out of TinyCloud One. Sign in, then try again." } };
     }
     const url = `${this.base}${path}`;
     let attempt = 0;
@@ -342,7 +342,7 @@ export class GranolaClient {
       }
       if (response.status === 401) {
         if (parsed.sessionRejected) {
-          return { ok: false, error: { kind: "network-error", message: "TinyChat session is not signed in" } };
+          return { ok: false, error: { kind: "network-error", message: "You're signed out of TinyCloud One. Sign in, then try again." } };
         }
         return {
           ok: false,
@@ -358,7 +358,7 @@ export class GranolaClient {
           ok: false,
           error: {
             kind: "forbidden",
-            message: "Granola refused this request",
+            message: "Granola refused this request. Check your API key, then try again.",
             code: parsed.code, httpStatus: 403,
           },
         };
@@ -368,7 +368,7 @@ export class GranolaClient {
           ok: false,
           error: {
             kind: "api-error",
-            message: "Granola reported the note does not exist",
+            message: "Granola couldn't find this note. It may have been deleted in Granola.",
             code: parsed.code, httpStatus: 404, notFound: true,
           },
         };
@@ -378,7 +378,7 @@ export class GranolaClient {
           ok: false,
           error: {
             kind: "api-error",
-            message: `Granola returned HTTP ${response.status}`,
+            message: `Granola didn't respond as expected (error ${response.status}). Try again in a few minutes.`,
             code: parsed.code, httpStatus: response.status,
           },
         };

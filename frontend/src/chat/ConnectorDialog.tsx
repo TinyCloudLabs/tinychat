@@ -88,7 +88,7 @@ import {
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
 import { GranolaClient } from "@/lib/connectors/granolaClient";
 import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
-import { GRANOLA_PLAN_INACTIVE } from "@/lib/connectors/granolaStatus";
+import { GRANOLA_PLAN_INACTIVE, GRANOLA_SYNC_FAILED } from "@/lib/connectors/granolaStatus";
 import { saveGranolaConnection, syncGranola } from "@/lib/connectors/granolaSync";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
@@ -232,6 +232,8 @@ interface ConnectorConnectDialogProps {
   sessionStore: SessionStore;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Granola starts connecting on a valid form submission, not on dialog open. */
+  onGranolaConnectingChange?: (connecting: boolean) => void;
   /**
    * Fires after save+sync finishes (both ok and connected-with-error paths)
    * so the parent card can refetch the persisted connection row.
@@ -262,7 +264,7 @@ const GRANOLA_API_KEY_URL = "https://docs.granola.ai/help-center/sharing/integra
 const GRANOLA_KEY_DETAILS = "Your API key is kept in TinyCloud's encrypted secrets. Each sync sends it through the TinyCloud One server to Granola, and that server never stores or logs it.";
 
 const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
-  tcw, descriptor, backendUrl, sessionStore, open, onOpenChange, onConnected,
+  tcw, descriptor, backendUrl, sessionStore, open, onOpenChange, onConnected, onGranolaConnectingChange,
 }) => {
   const [phase, setPhase] = useState<Exclude<ConnectPhase, "verified">>("key-entry");
   const [apiKey, setApiKey] = useState("");
@@ -288,6 +290,7 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
     const cancelled = () => signal.aborted || !isCurrent();
     setError(null);
     setPhase("validating");
+    onGranolaConnectingChange?.(true);
 
     try {
       const client = new GranolaClient({ apiKey: key, backendUrl, sessionStore });
@@ -306,7 +309,7 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
       setPhase("saving");
       if (!isSecretsUnlocked(tcw) && !(await unlockSecrets<SecretsErr>(tcw)).ok) {
         if (!cancelled()) {
-          setError("Could not unlock secrets");
+          setError("Couldn't unlock your secrets. Try again.");
           setPhase("key-entry");
         }
         return;
@@ -314,7 +317,7 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
       const saved = await saveGranolaConnection(tcw, key, () => !cancelled());
       if (cancelled()) return;
       if (!saved) {
-        setError("Could not save API key");
+        setError("Couldn't save the API key. Try again.");
         setPhase("key-entry");
         return;
       }
@@ -335,9 +338,10 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
       }
     } catch {
       if (cancelled()) return;
-      setError("Granola sync failed");
+      setError(GRANOLA_SYNC_FAILED);
       setPhase("key-entry");
     } finally {
+      if (isCurrent()) onGranolaConnectingChange?.(false);
       inFlight.current = null;
     }
   };

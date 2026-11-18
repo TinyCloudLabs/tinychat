@@ -54,7 +54,7 @@ export function GranolaReconnect({ tcw, onReconnect, className, disabled }: {
       <button type="button" className={className} disabled={disabled || busy} onClick={() => void reconnect()}>
         Reconnect Granola <ChevronRightIcon aria-hidden="true" />
       </button>
-      {error && <p className="text-xs text-destructive" role="alert">Could not clear the saved Granola key. Try again.</p>}
+      {error && <p className="text-xs text-destructive" role="alert">Couldn't remove the saved Granola key. Try again.</p>}
     </>
   );
 }

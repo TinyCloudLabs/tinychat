@@ -24,7 +24,7 @@ import { describeGmeetLive, gmeetPressLabel } from "@/chat/GmeetCardStatus";
 import { useBackgroundSync } from "@/chat/useBackgroundSync";
 import { useGmeetRowStatus } from "@/chat/useGmeetRowStatus";
 import * as connectorStore from "@/lib/connectors/connectorStore";
-import { granolaKeyExpired, granolaSummariesOnly } from "@/lib/connectors/granolaStatus";
+import { GRANOLA_LAST_SYNC_FAILED, granolaKeyExpired, granolaSummariesOnly } from "@/lib/connectors/granolaStatus";
 import { clearGmeetLastRun } from "@/lib/connectors/gmeetLastRun";
 import { getGmeetMeetingCount, onGmeetMeetingCount, refreshGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
 import { onGmeetNotesSettled } from "@/lib/connectors/gmeetSync";
@@ -108,6 +108,7 @@ export function MeetingSourcesDialog({
     descriptor: ConnectorDescriptor;
     purpose: "browser" | "autojoin";
   } | null>(null);
+  const [granolaConnecting, setGranolaConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<ConnectorId | null>(null);
   const [rowNotes, setRowNotes] = useState<Partial<Record<ConnectorId, string>>>({});
   const [featureDark, setFeatureDark] = useState(false);
@@ -194,7 +195,8 @@ export function MeetingSourcesDialog({
           const lookup = read.status;
           const connection = read.status === "ready" ? read.connection : null;
           const connected = connection?.status === "connected";
-          const connecting = connectDialog?.descriptor.id === d.id && connectDialog.purpose === "browser";
+          const dialogOpenForSource = connectDialog?.descriptor.id === d.id && connectDialog.purpose === "browser";
+          const connecting = dialogOpenForSource && (d.id !== "granola" || granolaConnecting);
           const syncing = sourceSync.syncingId === d.id;
           const reconnect = !syncing && granolaKeyExpired(connection);
           const { state, status, error } = sourceRowDisplay({
@@ -202,6 +204,7 @@ export function MeetingSourcesDialog({
             connection,
             syncing,
             connecting,
+            syncFailureLabel: d.id === "granola" ? GRANOLA_LAST_SYNC_FAILED : undefined,
             syncError: sourceSync.error?.id === d.id ? sourceSync.error.message : null,
             rowNote: rowNotes[d.id] ?? null,
             // Meet's count is the saved meetings the Library shows, not the figure cached when a sync last settled.
@@ -277,7 +280,7 @@ export function MeetingSourcesDialog({
                     {reconnect && (
                       <div className="ms-opt">
                         <div className="ms-opt-copy">
-                          <GranolaReconnect tcw={tcw} className="ms-link" disabled={connecting}
+                          <GranolaReconnect tcw={tcw} className="ms-link" disabled={dialogOpenForSource}
                             onReconnect={() => setConnectDialog({ descriptor: d, purpose: "browser" })} />
                           <p className="ms-opt-text">Paste a new key and sync again.</p>
                         </div>
@@ -352,8 +355,10 @@ export function MeetingSourcesDialog({
           backendUrl={backendUrl}
           sessionStore={sessionStore}
           open
+          onGranolaConnectingChange={setGranolaConnecting}
           onOpenChange={(next) => {
             if (!next) {
+              setGranolaConnecting(false);
               setConnectDialog(null);
               setRevision((n) => n + 1);
             }

@@ -140,6 +140,7 @@ async function connect(f: ReturnType<typeof fixture>) {
 
 test("Connect sends the masked key only through TinyCloud and saves summary and transcript", async () => mounted(async f => {
   await click(row(), "Connect");
+  expect(row().textContent).toContain("Not connected");
   expect(dialog()?.textContent).toContain("Your API key is kept in TinyCloud's encrypted secrets. Each sync sends it through the TinyCloud One server to Granola, and that server never stores or logs it.");
   expect(dialog()?.textContent).toContain("API keys need a Granola Business or Enterprise plan.");
   expect(dialog()?.querySelector("input")?.type).toBe("password");
@@ -165,7 +166,7 @@ test("Connect sends the masked key only through TinyCloud and saves summary and 
 for (const [mode, message] of [
   ["expired", "Granola didn’t accept this key. Check that it’s an active API key, then try again."],
   ["inactive", "Your Granola plan isn’t active. Granola’s API needs a Business or Enterprise plan. Check your subscription in the Granola app, then try again."],
-  ["session-expired", "TinyChat session is not signed in"],
+  ["session-expired", "You're signed out of TinyCloud One. Sign in, then try again."],
 ] as const) {
   test(`${mode} key stays at key entry with its own error and no credential write`, async () => mounted(async f => {
     f.setMode(mode);
@@ -184,7 +185,7 @@ test("expired saved key keeps the connection and Reconnect clears just the old k
   f.setMode("expired");
   await click(row(), "Sync now");
   await until(() => row().textContent?.includes("Granola didn’t accept the saved key."), "Expected the saved-key warning");
-  expect(row().textContent).toContain("Last sync failed");
+  expect(row().textContent).toContain("Last sync didn't finish. Sync again.");
   expect(row().textContent).toContain("1 meeting");
   expect(button(row(), "Sync now")).toBeDefined();
   await click(row(), "Manage");
@@ -196,7 +197,7 @@ test("expired saved key keeps the connection and Reconnect clears just the old k
   await enterKey(replacementKey);
   await until(() => button(dialog() ?? document, "Done"), "Replacement key should finish sync");
   await click(dialog()!, "Done");
-  await until(() => !row().textContent?.includes("Last sync failed"), "Reconnect should clear the warning");
+  await until(() => !row().textContent?.includes("Last sync didn't finish. Sync again."), "Reconnect should clear the warning");
   expect(f.vault.get("GRANOLA_API_KEY")).toBe(replacementKey);
   expect(row().textContent).toContain("1 meeting");
 }));
@@ -205,7 +206,7 @@ test("admin-disabled transcripts sync summaries and keep the neutral notice on a
   f.setMode("summaries");
   await connect(f);
   await until(() => row().textContent?.includes("Summaries only."), "Expected neutral summary-only notice");
-  expect(row().textContent).not.toContain("Last sync failed");
+  expect(row().textContent).not.toContain("Last sync didn't finish. Sync again.");
   expect(f.db.query("SELECT summary_overview FROM connector_meeting WHERE source = 'granola'").get()).toEqual({ summary_overview: "A fixture summary" });
   expect(JSON.stringify([...f.kv.values()])).not.toContain("A fixture transcript");
   await click(row(), "Sync now");
