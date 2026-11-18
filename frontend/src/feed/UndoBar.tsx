@@ -1,19 +1,22 @@
 // Sam, 23:5xZ: "there can be a undo at the bottom like in sitrep for some of the actions that are not ui
 // easy to do (like drop should remove the card)". An action that takes a card away (Drop this card, Acknowledge,
-// Ask me later, Show me later) takes it away at once; a bar at the bottom of the screen says what happened, counts
-// the same 5 seconds as every send and offers Undo, which puts the card back where it was. Nothing reaches the agent
-// until the count ends. Several actions in a row stack, newest at the bottom; a page that closes or hides sends them
-// at once, as an answer's count does. A commit is the caller's held send (sendOwnerAction with { hold: true }): it
+// Ask me later, Show me later) takes it away at once; a pill under the heading says what happened, counts the same
+// 5 seconds as every send and offers Undo, which puts the card back where it was. Nothing reaches the agent until
+// the count ends. One wait runs at a time: a new one sends the one before it now; a page that closes or hides sends
+// it at once, as an answer's count does. A commit is the caller's held send (sendOwnerAction with { hold: true }): it
 // lands in the page-close outbox before its first await, so a page that closes mid-write still sends it next launch.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UNDO_SECONDS } from "./cardKit";
+import type { PillItem } from "./SendPills";
 import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 
 export interface UndoItem {
-  /** The card it takes away, hidden from the list while the bar counts. */
+  /** The card it takes away, hidden from the list while the pill counts. */
   key: string;
   /** What happened: "Dropped", "Acknowledged", "Back at 08:00". */
   text: string;
+  /** What a screen reader hears: "Dropping this card in 5 seconds. Undo is available until then." */
+  announce: string;
   /** What the count ends with: the write the agent hears about. */
   commit: () => Promise<unknown>;
   /** Anything to put back on Undo beyond showing the card again. */
@@ -21,9 +24,8 @@ export interface UndoItem {
 }
 interface Pending extends UndoItem { id: number; endsAt: number }
 
-/** At most this many bars show; an older one beyond them is committed at once. */
-const MAX_BARS = 3;
-
+/** At most this many pills show; an older one is committed at once. */
+const MAX_BARS = 1;
 export function useUndoBar(onError: (message: string, cause?: unknown) => void) {
   const [items, setItems] = useState<Pending[]>([]);
   // A page that is about to move to tinycloud.one waits while an action counts: its flush on the way out would write
@@ -84,26 +86,10 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
     item?.undo?.();
   }, []);
   const hidden = useCallback((key: string) => committing.has(key) || items.some((item) => item.key === key), [items, committing]);
-  // The stack's height (0 when no bar shows), so the feed can add it to its bottom padding and its last cards scroll
-  // clear of the bars (QA cb784d4, P3).
-  const [height, setHeight] = useState(0);
-  const observer = useRef<ResizeObserver | null>(null);
-  const stackRef = useCallback((node: HTMLDivElement | null) => {
-    observer.current?.disconnect();
-    observer.current = null;
-    if (!node) { setHeight(0); return; }
-    setHeight(node.offsetHeight);
-    if (typeof ResizeObserver === "undefined") return;
-    observer.current = new ResizeObserver(() => setHeight(node.offsetHeight));
-    observer.current.observe(node);
-  }, []);
-  // Clear of a phone's home indicator in the native shell (safe-area inset), 1.5rem above the edge elsewhere.
-  const bar = !!items.length && <div ref={stackRef} className="pointer-events-none fixed inset-x-0 bottom-[max(1.5rem,calc(env(safe-area-inset-bottom)+0.5rem))] z-30 flex flex-col items-center gap-2 px-3">
-    {/* One width for every bar, so a stack lines up (the design agent). */}
-    {items.map((item) => <p key={item.id} role="status" className="pointer-events-auto flex min-h-11 min-w-[15rem] items-center justify-between gap-3 rounded-full bg-zinc-900 py-1 pl-4 pr-1 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100 dark:text-zinc-900 fine:min-h-10">
-      <span className="tabular-nums">{item.text} · {Math.max(1, Math.ceil((item.endsAt - now) / 1000))}s</span>
-      <button type="button" onClick={() => undo(item.id)} className="min-h-9 rounded-full bg-zinc-100 px-3 font-semibold text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100">Undo</button>
-    </p>)}
-  </div>;
-  return { push, hidden, bar, height };
+  /** Every count that runs ends now: a new wait starts, so only one waits at a time. */
+  const flushAll = useCallback(() => { for (const item of [...live.current]) commit(item); }, [commit]);
+  const pills: PillItem[] = items.map((item) => ({
+    id: `undo:${item.id}`, text: item.text, seconds: Math.max(1, Math.ceil((item.endsAt - now) / 1000)), onUndo: () => undo(item.id), status: item.announce,
+  }));
+  return { push, hidden, pills, flushAll };
 }

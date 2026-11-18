@@ -165,7 +165,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
  * body, then `children` (options, conversation, the foot) inside the same surface. `FeedCardView` above stays for the
  * sample feed and the demo card.
  */
-export function HomeCardView({ card, sample = true, readBody, status, onAuthor, agent, collapse, post, plain = false, inline = false, children }: {
+export function HomeCardView({ card, sample = true, readBody, status, onAuthor, agent, collapse, post, afterPost, plain = false, inline = false, children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
@@ -179,6 +179,8 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
   collapse?: ReactNode;
   /** The card's post, the line its row showed: first in the open card, before its title. */
   post?: string;
+  /** Right under the post: the options control of a card that asks ("Hide options"). */
+  afterPost?: ReactNode;
   /** On a page of its own (a post's page): no card surface around it, so it isn't a card within a card. */
   plain?: boolean;
   /** A card opened inside its row of a list (Sam, 11-17): the row's own padding and nothing else, so it opens into the list instead of floating over it as a second card. */
@@ -234,6 +236,7 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
       {post && <p data-card-post className="mt-3 whitespace-pre-wrap break-words text-[15px] leading-[22px] [text-wrap:pretty] cq:text-base cq:leading-6">{post}</p>}
+      {afterPost}
       {/* The card's task type, at the top right of its content, beside the title's first line (as on the row). */}
       {card.type
         ? card.title && card.render !== "article"

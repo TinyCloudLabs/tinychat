@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
 import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, UNDO_SECONDS, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
+import { CardWaitContext, useAnnounceWait } from "./cardWait";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox, type AnswerOption } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass, type CardClose } from "./CardActions";
 import { safeUrl } from "./feedData";
@@ -40,10 +41,10 @@ function lifetimeWords(value: string): string {
   return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
-/** The countdown label of an ask's "Drop this card": it shows as "Dropping in Ns", and a refusal names the button. */
-const DROP_LABEL = "Drop this card";
+/** The countdown label of an ask's "Drop this card": the feed's pill says "Dropped", and a refusal names the button. */
+export const DROP_LABEL = "Drop this card";
 /** An approval's one action ("Give the go", "Save code", "I've done this step"): a normal-size dark button, as in the lab. */
-const approveClass = "inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50";
+const approveClass = "inline-flex min-h-11 items-center rounded-full bg-foreground px-5 text-sm font-semibold text-background disabled:opacity-50";
 const STEP_WORDS: Record<StepState, string> = { pending: "Waiting for you", done: "Done", "not needed": "Not needed", expired: "Ended", closed: "Closed" };
 /** "A", "A and B", "A, B and C". */
 function names(list: readonly string[]): string {
@@ -174,6 +175,11 @@ export function SitrepCard(props: Props) {
   const [chosen, setChosen] = useState<string>();
   const [justSaved, setJustSaved] = useState(false);
   const countdown = usePendingSend({ stale, onRefused });
+  // Once the undo window ends the card stays out of sight until the write settles; an answer then says it was sent.
+  const wait = useContext(CardWaitContext);
+  const [sending, setSending] = useState(false);
+  const ran = (work: Promise<boolean>, announce: boolean) => { setSending(true); void work.then((ok) => { setSending(false); if (ok && announce) wait?.sent(); }); };
+  useAnnounceWait(countdown.pending, () => { countdown.undo(); setChosen(undefined); }, sending);
   const [reason, setReason] = useState("");
   const [claimNote, setClaimNote] = useState("");
   const [followup, setFollowup] = useState(false);
@@ -252,7 +258,7 @@ export function SitrepCard(props: Props) {
     if (stale || busyRef.current || countdown.pending) return;
     setChosen(choice);
     const own = choice === OWN_OPTION.id;
-    countdown.start(own ? NOT_SENT_COPY.yourAnswer : label, () => void perform(() => askAnswer("answer", own ? undefined : choice, true), ANSWER_FAILED_COPY, true));
+    countdown.start(own ? NOT_SENT_COPY.yourAnswer : label, () => ran(perform(() => askAnswer("answer", own ? undefined : choice, true), ANSWER_FAILED_COPY, true), true));
   }
   async function command(patch: Partial<SamState>, key: string) {
     const matching = owner.commands?.filter((event) => patch.doneAt ? !!event.state.doneAt : patch.lift ? !!event.state.lift : patch.clears?.some((request) => event.state.clears?.some((prior) => prior.ref === request.ref))).at(-1);
@@ -272,7 +278,7 @@ export function SitrepCard(props: Props) {
   function afterUndo(label: string, run: () => Promise<unknown>, answer = false) {
     if (stale || busyRef.current || countdown.pending) return;
     setChosen(undefined);
-    countdown.start(label, () => void perform(run, answer ? ANSWER_FAILED_COPY : undefined, answer));
+    countdown.start(label, () => ran(perform(run, answer ? ANSWER_FAILED_COPY : undefined, answer), answer && label !== DROP_LABEL));
   }
   function threadMessage(value: string, resendOf?: string): ThreadMessage {
     const at = new Date().toISOString();
@@ -363,7 +369,6 @@ export function SitrepCard(props: Props) {
     </PendingAnswer>);
   const waiting = !!countdown.pending;
   const failed = failedAnswer !== null;
-
   return <div className="text-[15px]" aria-label={`${kindWord(record.kind)} details`}>
     {/* The brief (design mock, 11-17): what it is, then why now and what happens if you don't answer as two labelled
         cells, then the facts behind it folded, then the links as chips. */}
@@ -536,6 +541,10 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   const [notSent, setNotSent] = useState<string>();
   const countdown = usePendingSend({ stale, onRefused: () => setNotSent(APPROVAL_CLOSED) });
   const waiting = !!countdown.pending;
+  // The card stays out of sight while the go waits and while it is written (the feed's pill shows both).
+  const wait = useContext(CardWaitContext);
+  const [sending, setSending] = useState(false);
+  useAnnounceWait(countdown.pending, () => countdown.undo(), sending);
   // The response whose write failed: whether it is still held is read when the line renders.
   const [failedId, setFailedId] = useState<string>();
   const pending = useRef<{ key: string; header: NewFeedResponse; payload: FeedResponsePayload } | undefined>(undefined);
@@ -595,7 +604,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     setError(undefined); setFailedId(undefined); setNotSent(undefined);
     const issuedAt = approval.issuedAt;
     // The latest render's `submit` runs when the window ends, so it sees what changed while it waited.
-    countdown.start(label, () => void submitLatest.current(issuedAt));
+    countdown.start(label, () => { setSending(true); void submitLatest.current(issuedAt).then((written) => { setSending(false); if (written) wait?.sent(); }); });
   }
   async function submit(issuedAt: string) {
     // The undo window has ended. A request that expired, closed or was re-issued meanwhile is not written; the card says so.
@@ -616,6 +625,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
       }
       const result = await source.saveResponse(entry, draft.header, draft.payload, { hold: true });
       pending.current = undefined; setCode(""); onSaved(entry, result); onOwnerSaved();
+      return true;
     } catch { if (draft) setFailedId(draft.header.responseId); else setError("Your approval wasn't saved. Try again."); }
     finally { setBusy(false); }
   }
