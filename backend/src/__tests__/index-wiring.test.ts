@@ -508,6 +508,47 @@ describe("backend index middleware wiring", () => {
     expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
   });
 
+  test("the granola proxy mount lives INSIDE the granolaProxyEnabled() branch, behind auth", () => {
+    // Same dark-ship contract as the Google OAuth proxy: flag off ⇒ no mount ⇒ 404, and the
+    // mount sits in the NORMAL window (parser, CSRF, its own rate bucket) after
+    // `applyRateLimiters`. Unlike Google's, EVERY granola route is authenticated — the user's
+    // own key is worthless without our session anyway, and an open proxy would be a Granola
+    // relay anyone could point at a victim account.
+    const gate = INDEX.indexOf("if (granolaProxyEnabled()) {");
+    const mount = INDEX.indexOf('"/api/connectors/granola"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(mount).toBeGreaterThan(gate);
+    expect(INDEX.slice(gate, mount)).not.toMatch(/\n {2}\}/);
+    expect(INDEX.match(/"\/api\/connectors\/granola"/g)).toHaveLength(1);
+    expect(INDEX).toMatch(
+      /app\.use\(\s*\n?\s*"\/api\/connectors\/granola",\s*\n?\s*authMiddleware,\s*\n?\s*createGranolaProxyRouter\(\)\s*\n?\s*\)/,
+    );
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
+    expect(mount).toBeGreaterThan(limiterIndex);
+
+    // Exactly the three documented read paths, all GETs. A fourth route cannot silently
+    // inherit the pass-through.
+    const ROUTES = readFileSync(resolve(import.meta.dir, "../routes/granola-proxy.ts"), "utf8");
+    const registered = [...ROUTES.matchAll(/router\.(get|post|delete|put|patch)\(\s*"([^"]+)"/g)]
+      .map((m) => `${m[1]!.toUpperCase()} ${m[2]!}`);
+    expect(registered).toEqual([
+      "GET /v1/notes",
+      "GET /v1/notes/:id",
+      "GET /v1/notes/:id/transcript",
+    ]);
+    // The upstream host is a constant in the route file, never request-derived.
+    expect(ROUTES).toContain('GRANOLA_API_BASE_URL = "https://public-api.granola.ai"');
+    // The key header and the session bearer are separate channels by contract.
+    expect(ROUTES).toContain('GRANOLA_KEY_HEADER = "x-granola-key"');
+  });
+
+  test("the granola proxy prefix carries its own rate-limit bucket, never the global one", () => {
+    const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
+    expect(LIMITS).toContain('GRANOLA_PROXY_PATHS = ["/api/connectors/granola"]');
+    expect(LIMITS).toContain('[GRANOLA_PROXY_PATHS, "granolaProxy"]');
+    expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
+  });
+
   test("an armed-but-unregistered google OAuth config refuses to boot", () => {
     // The `firefliesOAuthConfigFromEnv` posture (:236): an operator who sets the flag and forgets
     // a client var learns it from a refused start, not from a user's half-finished consent screen.
@@ -788,6 +829,7 @@ const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes
 const { createPrivateCloudTranscriptionRouter } = load("./routes/private-cloud-transcription.ts");
 const transcriberRoutes = load("./routes/transcriber.ts");
 const privateCloudPurge = load("./services/private-cloud-purge.ts");
+const granolaProxyModule = load("./routes/granola-proxy.ts");
 
 interface Boot {
   url: string | null;
@@ -878,6 +920,12 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       googleMeetOAuthEnabled: () => google.googleMeetOAuthEnabled(env),
       googleOAuthConfigFromEnv: () => google.googleOAuthConfigFromEnv(env),
       GoogleOAuthClient: google.GoogleOAuthClient,
+    },
+    // The REAL flag parser reads the harness env (the same contract google-oauth uses), and the
+    // fallback's class-per-property stub would otherwise call a class for `granolaProxyEnabled`.
+    "./routes/granola-proxy.js": {
+      granolaProxyEnabled: () => granolaProxyModule.granolaProxyEnabled(env),
+      createGranolaProxyRouter: router,
     },
     "./routes/google-oauth.js": {
       createGoogleOAuthRouter: (options: Parameters<typeof createGoogleOAuthRouter>[0]) => createGoogleOAuthRouter({

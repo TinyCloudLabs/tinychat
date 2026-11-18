@@ -28,6 +28,8 @@ import {
   FirefliesClient,
 } from "@/lib/connectors/firefliesClient";
 import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
+import { defaultGranolaClientOptions, GranolaClient } from "@/lib/connectors/granolaClient";
+import { isGranolaSyncInFlight, syncGranola } from "@/lib/connectors/granolaSync";
 import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
@@ -138,12 +140,12 @@ const INITIAL_ROW_STATE_MAP: RowStateMap = {
 
 // ── Sync-now engines ───────────────────────────────────────────────────
 //
-// Note that being an INITIAL_ROW_STATE_MAP key forces nothing: `granola` is one
-// too and has no engine. The dispatch in `handleSyncNow` plus the registry's
-// `status` are the forcing functions, and the not-implemented branch is what a
-// row without an engine lands on.
+// Note that being an INITIAL_ROW_STATE_MAP key forces nothing: a connector with
+// no entry in the dispatch below has no engine. The dispatch in `handleSyncNow`
+// plus the registry's `status` are the forcing functions, and the
+// not-implemented branch is what a row without an engine lands on.
 
-type RowSyncEngine = "fireflies" | "gmeet";
+type RowSyncEngine = "fireflies" | "gmeet" | "granola";
 
 /** The two engines' results, flattened to what the row actually renders. */
 type RowSyncOutcome =
@@ -300,6 +302,48 @@ export async function runGmeetSyncNow(opts: {
 }
 
 /**
+ * "Sync now" for Granola (granola plan S3). The API key rides the request to
+ * OUR backend proxy (`GranolaClient` resolves `${backendUrl}` + the proxy
+ * route); the proxy attaches it to the upstream call and never stores or logs
+ * it. Unlike Meet, `signal` goes straight to the engine — Granola has no
+ * out-of-press work that must survive an abort, so Stop cuts the client too.
+ * The engine's single-flight is shared with the session-start lane, so a
+ * press while that run is in flight JOINS it.
+ */
+export async function runGranolaSyncNow(opts: {
+  tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
+  apiKey: string;
+  signal: AbortSignal;
+  onProgress: (p: SyncProgress) => void;
+}): Promise<RowSyncOutcome> {
+  try {
+    const client = new GranolaClient({
+      backendUrl: opts.backendUrl,
+      sessionStore: opts.sessionStore,
+      apiKey: opts.apiKey,
+      ...defaultGranolaClientOptions(),
+    });
+    const res = await syncGranola({
+      client,
+      store: connectorStore,
+      tcw: opts.tcw,
+      onProgress: opts.onProgress,
+      signal: opts.signal,
+    });
+    if (res.ok) return { ok: true };
+    return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+  } catch (cause) {
+    return {
+      ok: false,
+      message: cause instanceof Error ? cause.message : "Granola sync failed",
+      retryAfterMs: null,
+    };
+  }
+}
+
+/**
  * A press the engine cannot take now: a Full rescan cannot join a running sync (it would lose its
  * snapshot intent) and Sync now cannot join the background Notes reconcile.
  */
@@ -423,7 +467,10 @@ export function ConnectorsCard({
       // proxy and runs `syncGoogleMeet`) and never touches FirefliesClient;
       // anything else still gets the explicit not-implemented error.
       const engine: RowSyncEngine | null =
-        d.id === "fireflies" ? "fireflies" : d.id === GMEET_CONNECTOR_ID ? "gmeet" : null;
+        d.id === "fireflies" ? "fireflies"
+        : d.id === GMEET_CONNECTOR_ID ? "gmeet"
+        : d.id === "granola" ? "granola"
+        : null;
       if (engine === null) {
         patchRow(d.id, {
           syncing: false,
@@ -523,14 +570,24 @@ export function ConnectorsCard({
               onProgress,
               onDiagnostics: import.meta.env.DEV ? setGmeetDiagnostics : undefined,
             })
-          : await runFirefliesSyncNow({
-              tcw,
-              apiKey: keyRes.data,
-              signal: ac.signal,
-              onProgress,
-              isCurrent: () => generation === readBackgroundDrainGeneration(),
-              onJoined: () => patchRow(d.id, { joinedBackgroundSync: true }),
-              onJoinSettled: () => patchRow(d.id, { joinedBackgroundSync: false }),
+          : engine === "granola"
+            ? await runGranolaSyncNow({
+                tcw,
+                backendUrl,
+                sessionStore,
+                // Memory only, for this run: the proxy never logs or stores it.
+                apiKey: keyRes.data,
+                signal: ac.signal,
+                onProgress,
+              })
+            : await runFirefliesSyncNow({
+                tcw,
+                apiKey: keyRes.data,
+                signal: ac.signal,
+                onProgress,
+                isCurrent: () => generation === readBackgroundDrainGeneration(),
+                onJoined: () => patchRow(d.id, { joinedBackgroundSync: true }),
+                onJoinSettled: () => patchRow(d.id, { joinedBackgroundSync: false }),
             });
       if (syncAbortRefs.current[d.id] === ac) {
         delete syncAbortRefs.current[d.id];

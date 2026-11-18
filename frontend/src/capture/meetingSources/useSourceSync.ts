@@ -7,7 +7,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-import { formatRowError, runFirefliesSyncNow, runGmeetSyncNow } from "@/chat/ConnectorsCard";
+import { formatRowError, runFirefliesSyncNow, runGmeetSyncNow, runGranolaSyncNow } from "@/chat/ConnectorsCard";
 import { awaitGmeetSessionSync } from "@/chat/useGmeetSessionSync";
 import {
   getConnectorKey,
@@ -73,6 +73,7 @@ export interface SourceSyncDeps {
     },
   ) => Promise<SyncOutcome>;
   runFirefliesSyncNow: (input: SyncEngineInput & { apiKey: string }) => Promise<SyncOutcome>;
+  runGranolaSyncNow: (input: SyncEngineInput & { backendUrl: string; sessionStore: SessionStore; apiKey: string }) => Promise<SyncOutcome>;
 }
 
 const DEFAULT_DEPS: SourceSyncDeps = {
@@ -85,6 +86,7 @@ const DEFAULT_DEPS: SourceSyncDeps = {
   awaitSessionSync: awaitGmeetSessionSync,
   runGmeetSyncNow,
   runFirefliesSyncNow,
+  runGranolaSyncNow,
 };
 
 export interface SourceSyncRun {
@@ -151,15 +153,24 @@ export async function runSourceSync(
             signal,
             onProgress,
           })
-        : await deps.runFirefliesSyncNow({
-            tcw,
-            apiKey: key.data,
-            signal,
-            onProgress,
-            isCurrent: input.isCurrent,
-            onJoined: input.onJoined,
-            onJoinSettled: input.onJoinSettled,
-          });
+        : d.id === "granola"
+          ? await deps.runGranolaSyncNow({
+              tcw,
+              backendUrl,
+              sessionStore,
+              apiKey: key.data,
+              signal,
+              onProgress,
+            })
+          : await deps.runFirefliesSyncNow({
+              tcw,
+              apiKey: key.data,
+              signal,
+              onProgress,
+              isCurrent: input.isCurrent,
+              onJoined: input.onJoined,
+              onJoinSettled: input.onJoinSettled,
+            });
     if (outcome.ok) return null;
     if (outcome.busy) return { busy: "queue" };
     return formatRowError(outcome.message, outcome.retryAfterMs ?? null);

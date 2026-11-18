@@ -1,6 +1,7 @@
 import { FlameIcon, NotebookPenIcon, VideoIcon } from "lucide-react";
 
 import type { ConnectorDescriptor } from "./types";
+import { granolaConnectorEnabled } from "./granolaFeature";
 
 export const CONNECTORS: ConnectorDescriptor[] = [
   {
@@ -16,7 +17,9 @@ export const CONNECTORS: ConnectorDescriptor[] = [
     id: "granola",
     name: "Granola",
     description: "Notes and transcripts from Granola.",
-    status: "coming-soon",
+    // Armed by VITE_GRANOLA_CONNECTOR_ENABLED=true; coming-soon is the default
+    // and the harness/test value, so flag-off never renders a Connect affordance.
+    status: granolaConnectorEnabled() ? "available" : "coming-soon",
     secretName: "GRANOLA_API_KEY",
     source: "granola",
     icon: NotebookPenIcon,

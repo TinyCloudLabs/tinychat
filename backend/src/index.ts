@@ -129,6 +129,7 @@ import {
   googleMeetOAuthEnabled,
   googleOAuthConfigFromEnv,
 } from "./services/google-oauth.js";
+import { createGranolaProxyRouter, granolaProxyEnabled } from "./routes/granola-proxy.js";
 import { ConnectorFetchWorker } from "./services/fetch-worker.js";
 import { FirefliesMeetingFetcher } from "./services/fireflies-fetch.js";
 import { backendIngestEnabled as ingestFlagEnabled, IngestModeService } from "./services/ingest-mode.js";
@@ -1118,6 +1119,15 @@ async function main() {
         frontendOrigins,
       }),
     );
+  }
+
+  // The Granola REST pass-through (granola plan S1). Same dark-ship shape as the Google OAuth
+  // proxy: flag off ⇒ no mount ⇒ 404. It sits in the normal window — JSON parser, global CSRF
+  // (GETs exempt anyway), `applyRateLimiters`' granolaProxy bucket and `authMiddleware` — and
+  // forwards ONLY the three documented read paths to the pinned Granola host. The user's key
+  // arrives per-request in `x-granola-key` and is never stored or logged.
+  if (granolaProxyEnabled()) {
+    app.use("/api/connectors/granola", authMiddleware, createGranolaProxyRouter());
   }
 
   // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
