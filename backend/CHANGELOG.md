@@ -1,5 +1,32 @@
 # @tinychat/backend
 
+## 0.8.0-beta.26
+
+### Patch Changes
+
+- 17f9687: TC-3166: "Delete my recordings first" (the bulk `DELETE /api/transcriber/meetings`) now also deletes the account's private cloud transcription jobs, so voice notes and uploads left behind by a failed or cancelled run are cleared on account deletion. Queued or running jobs are cancelled, transcripts are deleted, and the call only succeeds once TinyCloud Private Transcription's own list for the account is empty; otherwise it is a 503 and safe to retry. The response gains `privateCloudDeleted` (a count, or `null` when private cloud transcription is not used), which the step requires, so an older backend can never produce a "deleted" claim for voice notes and uploads; with `null` the step says nothing about them. The bulk delete is also mounted when private cloud transcription is on and the meeting transcriber is off. A new `GET /api/transcriber/meetings/scope` (config only) tells the step whether the deployment keeps private cloud jobs, so its intro and failure line name voice notes and uploads only where they are kept; the step waits for it before showing anything.
+
+## 0.8.0-beta.25
+
+### Patch Changes
+
+- 7b5db01: TC-3136: removing a notetaker recording now deletes the capture provider's copy (audio, video, transcript and derived artifacts) and only counts it as gone after reading it back not-found. A delete that cannot be confirmed yet stays listed as "deleting" and is retried with backoff, never dropped. Settings → Account gains "Delete my recordings first", a bulk `DELETE /api/transcriber/meetings`, ahead of deleting the OpenKey account. A recording shared with you is only removed from your list. A recording the notetaker service cannot attribute to you is removed from your list but not deleted there, and says so on its row.
+
+## 0.8.0-beta.24
+
+### Patch Changes
+
+- c709e31: TC-2917: calendar autojoin row writes are If-Match compare-and-sets on the node, a token refresh writes custody only if no other change happened since it was read, and the cached access-token map is bounded and evicted on expiry, disable or a new generation.
+- c709e31: TC-2917: calendar autojoin reads consent from the node before every Google scan and recording check, and every connection write re-reads the stored row first, so a disable or deletion stored outside the backend is kept. The row cache is bounded, and a cached access token is dropped when any credential store in the process changes that credential.
+
+  Every calendar row and credential write or delete is now conditional on the version it was decided on (If-Match / If-None-Match; a row the node sends without an ETag is refused, never written blind), and each row carries a revision so the node's content-hash ETag changes on every write. Enable and OAuth setup re-decide on the stored row. A token refresh is bound to the grant it read and re-reads custody after writing; cached access tokens serve at most 5 minutes after their custody read, and a status read showing a disable evicts them. markUsed is conditional and never recreates a deleted credential.
+
+## 0.8.0-beta.23
+
+### Patch Changes
+
+- 6d52413: The per-request log record now names its route only from the fixed list of routes the backend serves (anything else is `unmatched`), reports credits as a range (`0`, `1-9`, `10-99`, `100-999`, `1000+`) instead of an exact count, and uses an account pseudonym that changes every calendar month (UTC), so one account's records can be linked within a month but not across months. Details: TC-3031.
+
 ## 0.8.0-beta.22
 
 ### Patch Changes

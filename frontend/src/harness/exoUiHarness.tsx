@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 
 import { __setBuildInfoForTests } from "@/lib/buildInfo";
+import { setShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
@@ -119,6 +120,9 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
 const params = new URLSearchParams(window.location.search);
 const platform = PLATFORMS.find((p) => p === params.get("platform")) ?? "web";
 if (params.get("freeze") === "1") freezeClock();
+// Hidden features (the Home ask box, the Agents pill) show in every screen, as they did before they were hidden; the
+// `home-hidden-features-off` screen turns them off itself.
+setShowHiddenFeatures(true);
 applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();

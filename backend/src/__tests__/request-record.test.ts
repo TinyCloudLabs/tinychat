@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { setSystemTime } from "bun:test";
 import { EventEmitter } from "node:events";
-import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { join, resolve } from "node:path";
@@ -20,6 +20,8 @@ import {
   type RequestEvent,
 } from "../request-context.js";
 import { createChatRouter } from "../routes/chat.js";
+import { noteRequestRecord, requestLogAccountHash, requestLogCreditsBucket } from "../request-context.js";
+import { REQUEST_LOG_ROUTE_TEMPLATES } from "../request-log-routes.js";
 
 // TC-2537: the per-request record that ships to Better Stack. A representative chat turn carries every kind of
 // sensitive value in its URL, headers, body and streamed reply; none of them may appear in the record the backend
@@ -74,6 +76,10 @@ afterEach(() => {
   _resetCatalogCache();
   configureRequestLogAccountHash(undefined);
 });
+
+// TC-3031: account_hash depends on the UTC month the record is emitted in, so every test runs at a fixed instant.
+beforeEach(() => setSystemTime(new Date("2026-11-14T12:00:00.000Z")));
+afterEach(() => setSystemTime());
 
 function stubUpstream(body: (signal?: AbortSignal) => ReadableStream<Uint8Array> | string): () => void {
   const originalFetch = globalThis.fetch;
@@ -150,7 +156,7 @@ function sensitiveTurn(base: string, signal?: AbortSignal): Promise<globalThis.R
   });
 }
 
-const expectedHash = createHmac("sha256", HMAC_KEY).update(`account\0${ADDRESS.toLowerCase()}`).digest("hex");
+const expectedHash = "370d57055617fdb38bcf25e9d5257c2cf1549b1048b14ff6aa2af2e244cdddf8";
 
 /** Run emitted lines through the real Vector pipeline and return what reaches the sink. */
 async function shipThroughVector(lines: readonly { message: string; level: number }[]): Promise<Record<string, unknown>[]> {
@@ -195,7 +201,7 @@ describe("TC-2537 request record", () => {
       // 1000/1000*2.5 + 500/1000*20 = 12.5 -> 13 credits, recorded after the stream ended.
       expect(record).toEqual({
         event: "tinychat_request", request_id: REQUEST_ID, request_id_replaced: false, method: "POST",
-        route: "/api/chat", status: 200, duration_ms: expect.any(Number), stream: "done", credits: 13,
+        route: "/api/chat", status: 200, duration_ms: expect.any(Number), stream: "done", credits: "10-99",
         account_hash: expectedHash,
       });
       const line = JSON.stringify(record);
@@ -226,7 +232,7 @@ describe("TC-2537 request record", () => {
       client.abort();
       const record = await turn.record;
       expect(record).toMatchObject({ route: "/api/chat", status: 200, stream: "aborted", account_hash: expectedHash });
-      expect(record.credits).toBeGreaterThan(0);
+      expect(["1-9", "10-99", "100-999", "1000+"]).toContain(record.credits);
       const line = JSON.stringify(record);
       for (const value of FORBIDDEN) expect(line).not.toContain(value);
     } finally {
@@ -321,7 +327,7 @@ describe("TC-2537 request record", () => {
         expect(Object.keys(shipped[0]).sort()).toEqual(SHIPPED_FIELDS.filter(key => key !== "code"));
         expect(shipped[0]).toMatchObject({
           svc: "backend", event: "tinychat_request", level: "info", request_id: REQUEST_ID, method: "POST",
-          route_template: "/api/chat", status: 200, stream: "done", credits: 13, account_hash: expectedHash,
+          route_template: "/api/chat", status: 200, stream: "done", credits: "10-99", account_hash: expectedHash,
         });
         const text = JSON.stringify(shipped[0]);
         for (const value of FORBIDDEN) expect(text).not.toContain(value);
@@ -410,7 +416,7 @@ describe("TC-2537 request record", () => {
       { message: JSON.stringify({
         event: "tinychat_request", request_id: REQUEST_ID, method: "CONNECT",
         route: `/${"a".repeat(63)}`, status: 599, duration_ms: 86399999.9,
-        stream: "aborted", code: "a".repeat(60), credits: 1000000000, account_hash: "a".repeat(64),
+        stream: "aborted", code: "a".repeat(60), credits: "1000+", account_hash: "a".repeat(64),
       }), level: 6 },
       { message: "[storage-lane] op=wait-timeout priority=foreground waitedMs=3600000", level: 3 },
       { message: JSON.stringify({
@@ -429,4 +435,78 @@ describe("TC-2537 request record", () => {
       expect(Buffer.byteLength(JSON.stringify(row)) + 2).toBeLessThanOrEqual(bound);
     }
   }, 120_000);
+
+  test.skipIf(!process.env.VECTOR_BIN)("the longest listed route template and credits bucket fit the request envelope", async () => {
+    const longest = REQUEST_LOG_ROUTE_TEMPLATES.reduce((a, b) => (b.length > a.length ? b : a));
+    const shipped = await shipThroughVector([{ message: JSON.stringify({
+      event: "tinychat_request", request_id: REQUEST_ID, method: "CONNECT", route: longest, status: 599,
+      duration_ms: 86399999.9, stream: "aborted", code: "a".repeat(60), credits: "100-999", account_hash: "a".repeat(64),
+    }), level: 6 }]);
+    expect(shipped).toHaveLength(1);
+    expect(shipped[0]).toMatchObject({ route_template: longest, credits: "100-999" });
+    expect(Buffer.byteLength(JSON.stringify(shipped[0])) + 2).toBeLessThanOrEqual(576);
+  }, 120_000);
+});
+
+describe("TC-3031 monthly account hash and credit buckets", () => {
+  // Literal vectors, computed once with openssl, not with this code:
+  // hex(HMAC-SHA256(HMAC_KEY, "account\0" + UTC "YYYY-MM" + "\0" + lowercase ADDRESS)).
+  const NOVEMBER = expectedHash;
+  const DECEMBER = "61a5e61c20025dbdb1aca1e23b2602eb188f45b6ded250a23ce93b517b68db86";
+
+  test("the hash changes at the UTC month boundary and holds within a month", () => {
+    expect(requestLogAccountHash(ADDRESS, new Date("2026-11-30T23:59:59.000Z"))).toBe(NOVEMBER);
+    expect(requestLogAccountHash(ADDRESS, new Date("2026-12-01T00:00:00.000Z"))).toBe(DECEMBER);
+    expect(requestLogAccountHash(ADDRESS, new Date("2026-11-01T00:00:00.000Z"))).toBe(NOVEMBER);
+    expect(requestLogAccountHash(ADDRESS.toLowerCase(), new Date("2026-11-14T12:00:00.000Z"))).toBe(NOVEMBER);
+    // The month is UTC: 00:30 on 1 December at UTC+1 is still November.
+    expect(requestLogAccountHash(ADDRESS, new Date("2026-12-01T00:30:00.000+01:00"))).toBe(NOVEMBER);
+  });
+
+  /** An app whose one route authenticates ADDRESS and charges each credit amount in `?charge=`. */
+  function chargingApp(sink: (event: RequestEvent) => void) {
+    const app = express();
+    app.use(createRequestContextMiddleware(sink));
+    app.get("/charge", (req, res) => {
+      req.user = { address: ADDRESS };
+      for (const credits of String(req.query.charge ?? "").split(",").filter(Boolean)) {
+        noteRequestRecord(res, { credits: Number(credits) });
+      }
+      res.json({ ok: true });
+    });
+    return app;
+  }
+
+  test("a record takes its month from when it is emitted", async () => {
+    setSystemTime(new Date("2026-12-01T00:00:00.000Z"));
+    const turn = recorder();
+    const server = await listen(chargingApp(turn.sink));
+    try {
+      expect((await fetch(`${server.base}/charge`)).status).toBe(200);
+      expect((await turn.record).account_hash).toBe(DECEMBER);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("each credits bucket edge lands on its side", () => {
+    const edges = [[0, "0"], [1, "1-9"], [9, "1-9"], [10, "10-99"], [99, "10-99"], [100, "100-999"], [999, "100-999"], [1000, "1000+"]] as const;
+    expect(edges.map(([credits]) => requestLogCreditsBucket(credits))).toEqual(edges.map(([, bucket]) => bucket));
+  });
+
+  test("a value that is not a count of credits ships as \"0\"", () => {
+    expect([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, -0.5].map(requestLogCreditsBucket))
+      .toEqual(["0", "0", "0", "0", "0"]);
+  });
+
+  test("the record sums every charge, then ships only its bucket", async () => {
+    const turn = recorder();
+    const server = await listen(chargingApp(turn.sink));
+    try {
+      expect((await fetch(`${server.base}/charge?charge=5,4,1`)).status).toBe(200);
+      expect((await turn.record).credits).toBe("10-99");
+    } finally {
+      await server.close();
+    }
+  });
 });

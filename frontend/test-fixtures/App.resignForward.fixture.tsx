@@ -148,8 +148,22 @@ let restoreDom: (() => void) | undefined;
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+/**
+ * Waits until the page has been quiet, in real time, for QUIET_MS: no new event and no DOM change. The app's
+ * startup chain does real async work (IndexedDB, dynamic imports) that takes a varying number of event-loop
+ * turns, so a fixed count of turns ends too early on a slow CPU (TC-3029).
+ */
+const QUIET_MS = 150;
 async function settle() {
-  await act(async () => { await tick(); await tick(); await tick(); });
+  let last = "";
+  let changedAt = performance.now();
+  const giveUpAt = changedAt + 5_000;
+  while (performance.now() < giveUpAt) {
+    await act(async () => { await tick(); });
+    const now = JSON.stringify([events, host?.innerHTML ?? ""]);
+    if (now !== last) { last = now; changedAt = performance.now(); }
+    else if (performance.now() - changedAt >= QUIET_MS) return;
+  }
 }
 
 /** A Chromium web page with the build flag (dev runtime flag) ON and the user's switch ON. */

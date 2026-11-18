@@ -16,6 +16,94 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.14.0-beta.79
+
+### Patch Changes
+
+- 9f8d98b: Home now checks every card it shows for secrets and approval links, not only the cards it writes. A card from a connected agent that carries a one-tap approval link, a key or a credential is shown without its links, options or approval button. Details: TC-3236.
+
+## 0.14.0-beta.78
+
+### Minor Changes
+
+- acbf475: tinycloud.one is the canonical address. Visitors on tinycloud.chat or home.tinycloud.xyz move to tinycloud.one once nothing is left only in their browser; anyone with recordings or answers still on the old address stays there, with a notice, until they are saved or sent. Opening the old address with `?legacy=1` keeps the app there so that data can be saved. Each release now checks that all three addresses serve it. Details: TC-3108.
+
+  Settings for this device (theme, notes view, capture preferences and consents) are kept separately for each address, so they start fresh on tinycloud.one. Settings on tinycloud.one links to the old addresses for anything left there. A page with unsaved text, an unsaved title or an answer that can still be undone stays where it is until that's done.
+
+## 0.14.0-beta.77
+
+### Patch Changes
+
+- 3b35dd3: In the Feed's Expanded view, a card counts as seen only after at least half of it (or, for a very tall card, nearly all that fits) has stayed on screen for a second. Scrolling quickly past cards no longer marks them seen or clears their unread comments. Details: TC-3199.
+
+## 0.14.0-beta.76
+
+### Patch Changes
+
+- 17f9687: TC-3166: "Delete my recordings first" (the bulk `DELETE /api/transcriber/meetings`) now also deletes the account's private cloud transcription jobs, so voice notes and uploads left behind by a failed or cancelled run are cleared on account deletion. Queued or running jobs are cancelled, transcripts are deleted, and the call only succeeds once TinyCloud Private Transcription's own list for the account is empty; otherwise it is a 503 and safe to retry. The response gains `privateCloudDeleted` (a count, or `null` when private cloud transcription is not used), which the step requires, so an older backend can never produce a "deleted" claim for voice notes and uploads; with `null` the step says nothing about them. The bulk delete is also mounted when private cloud transcription is on and the meeting transcriber is off. A new `GET /api/transcriber/meetings/scope` (config only) tells the step whether the deployment keeps private cloud jobs, so its intro and failure line name voice notes and uploads only where they are kept; the step waits for it before showing anything.
+
+## 0.14.0-beta.75
+
+### Minor Changes
+
+- 73a32e0: The Feed's Filter panel has a View switch: Compact (the rows the Feed has always had, still the default), Expanded (every card open in full, one after another), and Cards (tiles). The choice is kept on this device. Details: TC-3199.
+
+## 0.14.0-beta.74
+
+### Patch Changes
+
+- 7b5db01: TC-3136: removing a notetaker recording now deletes the capture provider's copy (audio, video, transcript and derived artifacts) and only counts it as gone after reading it back not-found. A delete that cannot be confirmed yet stays listed as "deleting" and is retried with backoff, never dropped. Settings → Account gains "Delete my recordings first", a bulk `DELETE /api/transcriber/meetings`, ahead of deleting the OpenKey account. A recording shared with you is only removed from your list. A recording the notetaker service cannot attribute to you is removed from your list but not deleted there, and says so on its row.
+
+## 0.14.0-beta.73
+
+### Patch Changes
+
+- 38f26f3: An approval card may carry two optional fields: `redeemedAt` (when its grant was used) and `grantLifetime` (how long the access lasts: a whole number of hours or days, up to 30 days). Cards carrying them are now read, imported and archived instead of refused, and the card shows "Used …" and "Access lasts …".
+- 38f26f3: A sitrep card may carry an optional `post`: one line of up to 280 characters, for a card to lead with. Cards with a `post` are now read, imported and archived; a `post` that is empty, over 280 characters or contains a control character other than a newline is refused.
+
+## 0.14.0-beta.72
+
+### Minor Changes
+
+- 4fb80fa: Home no longer shows the "What do you want done?" box or the Agents pill by default. Settings has a new "Show hidden features" switch (off by default, this device only) that brings them back. Details: TC-3119.
+
+## 0.14.0-beta.71
+
+### Patch Changes
+
+- 58a6f2a: The Feed's question card shows why now and what happens if you don't answer as two labelled cells, folds the facts behind the question ("Known so far", open on a wide card), shows the answers as buttons, one per row at every width, puts links under the brief as compact one-line chips (label, host, arrow out; a long host is cut off inside the chip), links Linear ticket numbers in the card's text, and moves the source line into Details. "Your own answer" turns into the text field in its own place instead of opening a box below. A card opens inside its row of the list instead of as a separate rounded card. An update card's first line says what moved. A folded row's second line says why the question is asked now. The Feed column is wider on a desktop screen; the phone layout is the same.
+- 8974164: In Needs you, an open card at urgency 4 or higher now sits above every other card, whatever its pin, deadline, production flag, unblock weight or whether it waits on someone else; urgent cards are ordered by urgency times importance. A card below urgency 4 keeps its place. The reason line for an urgent card reads "urgent: U4·I3".
+
+## 0.14.0-beta.70
+
+### Patch Changes
+
+- 8fcb036: The "Use with your agent" page (`/agents`) calls the product TinyCloud One in its title, header, intro and setup steps instead of TinyChat, and the agent-facing `setup.md` names TinyCloud One's agent-access setting in one sentence. The published skill pack, its tool names and the approval message it prints are unchanged.
+
+## 0.14.0-beta.69
+
+### Patch Changes
+
+- a45470c: How it works, Your data, goes back to the text it had before the paragraph about end-to-end encryption was added. Details: TC-3121.
+
+## 0.14.0-beta.68
+
+### Patch Changes
+
+- 9d13c13: How it works now says that your TinyCloud space is not end-to-end encrypted: the node that hosts it, and the apps and services you authorize, can read your content in order to serve it to you. Ending an app's or agent's access stops future reads; it cannot recall copies already read.
+
+## 0.14.0-beta.67
+
+### Patch Changes
+
+- 7e4a103: On tinycloud.chat, Home answers still waiting to be sent, answers marked "Not sent" that you have not seen yet, and post answers you have not sent now keep the tab there (with a notice saying why) instead of being left behind by the move to home.tinycloud.xyz; each stops holding 7 days after it was written. When the tab moves, what is left of them on tinycloud.chat is removed.
+
+## 0.14.0-beta.66
+
+### Patch Changes
+
+- 522a554: Feed: an answer you gave just as you left the app is never lost silently. When you come back, the card says "Not sent" with your answer if the card has changed or closed, even if you had it open when it changed; an answer you wrote in words is shown in the line so you can say it again. If the app could not reach the server, the card says the answer isn't sent yet and it goes the next time you open the app. If the agent is no longer connected, a notice says so until you dismiss it. If you leave before you have seen any of these, they appear the next time you open the feed.
+
 ## 0.14.0-beta.65
 
 ### Patch Changes
