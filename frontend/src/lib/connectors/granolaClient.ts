@@ -8,7 +8,6 @@
 // never stores. Everything is Result-style; no throws cross the boundary.
 
 import type { SessionStore } from "@tinyboilerplate/client";
-import type { SyncProgress } from "./types";
 
 export const GRANOLA_PROXY_PATH = "/api/connectors/granola";
 export const GRANOLA_KEY_HEADER = "x-granola-key";
@@ -404,7 +403,7 @@ export class GranolaClient {
 async function readGranolaBody(
   response: Response,
 ): Promise<{ ok: true; body: unknown; code?: string; message?: string } | { ok: false; code?: string; message?: string }> {
-  let body: unknown = null;
+  let body: unknown;
   try {
     body = await response.json();
   } catch {

@@ -30,7 +30,7 @@ import {
 import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
 import { defaultGranolaClientOptions, GranolaClient } from "@/lib/connectors/granolaClient";
 import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
-import { isGranolaSyncInFlight, syncGranola } from "@/lib/connectors/granolaSync";
+import { syncGranola } from "@/lib/connectors/granolaSync";
 import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";

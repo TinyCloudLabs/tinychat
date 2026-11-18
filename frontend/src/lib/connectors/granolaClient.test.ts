@@ -142,9 +142,7 @@ describe("GranolaClient", () => {
 
   test("429 retries within the cap then reports rate-limited with retryAfterMs", async () => {
     const calls: Call[] = [];
-    let n = 0;
     const c = client(fakeFetch(calls, () => {
-      n++;
       return new Response(JSON.stringify({ code: "RATE_LIMITED", message: "slow" }), {
         status: 429, headers: { "retry-after": "1" },
       });

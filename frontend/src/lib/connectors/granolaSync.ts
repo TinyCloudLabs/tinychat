@@ -139,13 +139,6 @@ function granolaSyncIsCurrent(opts: SyncGranolaOptions, sequence: number): boole
     return false;
   }
 }
-function optionIsCurrent(opts: SyncGranolaOptions): boolean {
-  try {
-    return opts.isCurrent?.() !== false;
-  } catch {
-    return false;
-  }
-}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
