@@ -794,7 +794,7 @@ interface GmeetRowExtras {
   onCancelWait: () => void;
 }
 
-const ConnectorRow: FC<{
+export const ConnectorRow: FC<{
   descriptor: ConnectorDescriptor;
   state: RowState;
   onConnect: () => void;
@@ -871,13 +871,20 @@ const ConnectorRow: FC<{
               </p>
             )}
             {state.loaded && !connected && secretsAvailable() && (
-              <Button
-                size="sm"
-                onClick={onConnect}
-                aria-label={`Connect ${d.name}`}
-              >
-                Connect
-              </Button>
+              <div className="flex flex-col items-end gap-1">
+                <Button
+                  size="sm"
+                  onClick={onConnect}
+                  aria-label={`Connect ${d.name}`}
+                >
+                  Connect
+                </Button>
+                {d.id === "fireflies" && (
+                  <p className="max-w-52 text-right text-xs text-muted-foreground">
+                    Connecting imports your meetings from Fireflies.
+                  </p>
+                )}
+              </div>
             )}
             {state.loaded && connected && secretsAvailable() && (
               <>
