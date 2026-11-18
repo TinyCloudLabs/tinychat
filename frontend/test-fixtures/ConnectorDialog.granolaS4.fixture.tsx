@@ -255,6 +255,63 @@ test("admin-disabled transcripts sync summaries and keep the neutral notice on a
   expect(row().textContent).toContain("Summaries only.");
 }));
 
+test("the owner space stores both raw transcript pages with reconstructible timestamps and no private payloads", async () => mounted(async f => {
+  const cursor = "dHVybnM+/w==";
+  const requests: { path: string; search: string }[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname !== `${notePath}/transcript`) return f.fetch(input, init);
+    requests.push({ path: url.pathname, search: url.search });
+    const next = url.searchParams.get("cursor") === cursor;
+    return Response.json({
+      transcript: [next ? {
+        speaker: { source: "speaker", diarization_label: "Speaker B" }, text: "  Verbatim second turn. ",
+        start_time: "2026-11-10T12:07:36.250Z", end_time: "2026-11-10T12:07:38.750Z",
+        attachments: [{ url: attachment }],
+      } : {
+        speaker: { source: "microphone", name: "Ada" }, text: "Verbatim first turn.",
+        start_time: "2026-11-10T12:07:34.125Z", end_time: "2026-11-10T12:07:36.000Z",
+        private_notes_markdown: privateNote,
+      }],
+      hasMore: !next, cursor: next ? null : cursor,
+    });
+  }) as typeof fetch;
+  await connect(f);
+
+  expect(requests).toEqual([
+    { path: `${notePath}/transcript`, search: "?page_size=100" },
+    { path: `${notePath}/transcript`, search: `?${new URLSearchParams({ page_size: "100", cursor })}` },
+  ]);
+  const transcript = f.kv.get(transcriptKvKey("granola", "not_fixture"));
+  const persisted = f.db.query("SELECT * FROM connector_meeting WHERE source = 'granola'").get() as { metadata: string };
+  expect(JSON.parse(persisted.metadata).granola_transcript_started_at).toBe("2026-11-10T12:07:34.125Z");
+  expect(JSON.parse(String(transcript))).toEqual([
+    { index: 0, speaker_name: "Ada", text: "Verbatim first turn.", start_time: 0, end_time: 1.875 },
+    { index: 1, speaker_name: "Speaker B", text: "  Verbatim second turn. ", start_time: 2.125, end_time: 4.625 },
+  ]);
+  const written = JSON.stringify([persisted, ...f.kv.values()]);
+  expect(written).not.toContain(privateNote);
+  expect(written).not.toContain(attachment);
+}));
+
+test("admin denial on a later page discards in-flight turns and still syncs the summary", async () => mounted(async f => {
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname !== `${notePath}/transcript`) return f.fetch(input, init);
+    if (url.searchParams.has("cursor")) return Response.json({ code: "FORBIDDEN" }, { status: 403 });
+    return Response.json({
+      transcript: [{ speaker: { name: "Ada" }, text: "Must not be imported after denial" }],
+      hasMore: true, cursor: "next",
+    });
+  }) as typeof fetch;
+  await connect(f);
+  expect(row().textContent).toContain("Summaries only.");
+  expect(await getConnection(f.tcw, "granola")).toMatchObject({ ok: true, data: { lastSyncStatus: "ok" } });
+  expect(f.db.query("SELECT summary_overview FROM connector_meeting WHERE source = 'granola'").get())
+    .toEqual({ summary_overview: "A fixture summary" });
+  expect(JSON.parse(String(f.kv.get(transcriptKvKey("granola", "not_fixture"))))).toEqual([]);
+}));
+
 test("non-allowlisted IDs cannot accept credentials even while Granola is enabled", async () => {
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);

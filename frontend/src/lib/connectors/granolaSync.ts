@@ -53,7 +53,6 @@ import type { SyncProgress, SyncResult } from "./types";
 export const GRANOLA_SOURCE = "granola" as const;
 /** Re-list a little behind the watermark: an in-flight edit can clock-skew past it. */
 export const GRANOLA_INCREMENTAL_OVERLAP_MS = 60_000;
-export const GRANOLA_MAX_RETRY_AFTER_MS = 60_000;
 /** Detail fetches a single run will make — the page budget's own bound. */
 export const GRANOLA_MAX_DETAILS_PER_RUN = 250;
 const GRANOLA_SECRET = { secretName: GRANOLA_SECRET_NAME };
@@ -96,7 +95,7 @@ export interface GranolaSyncClient {
   getNote(id: string, signal?: AbortSignal): Promise<GranolaResult<GranolaNote>>;
   getTranscript(
     id: string,
-    opts?: { signal?: AbortSignal; pageBudget?: number },
+    opts?: { signal?: AbortSignal },
   ): Promise<GranolaResult<{ items: GranolaTranscriptItem[]; truncated: boolean; access?: "allowed" | "disabled" }>>;
 }
 
@@ -202,11 +201,11 @@ export function fromGranola(err: GranolaError): SyncError {
   }
 }
 
-/** Auth and a stubborn 429 end the run; per-item errors (404, 5xx) are collected. */
+/** Auth and an exhausted 429 end the run; other per-item errors are collected. */
 export function isTerminal(err: GranolaError): boolean {
   return err.kind === "invalid-key"
     || (err.kind === "forbidden" && err.code !== "FORBIDDEN")
-    || (err.kind === "rate-limited" && (err.retryAfterMs ?? 0) > GRANOLA_MAX_RETRY_AFTER_MS);
+    || err.kind === "rate-limited";
 }
 
 function inSpace<T>(_operation: string, run: () => Promise<T>): Promise<T> {
@@ -279,8 +278,8 @@ function membershipNames(value: unknown): string[] {
  *
  * Speaker name: `name` → diarization label → the note owner when Granola says
  * the line came from the microphone ("me") → null. Utterance times arrive as
- * ISO datetimes; the stored body uses seconds from the FIRST utterance, the
- * format `connector_meeting` transcript bodies already use.
+ * ISO datetimes; the body uses seconds from the first timed utterance.
+ * Keep that instant as meeting metadata to recover the original clock times.
  */
 export async function normalizeGranolaNote(
   note: GranolaNote,
@@ -290,12 +289,13 @@ export async function normalizeGranolaNote(
   const ownerName = note.owner?.name ?? null;
 
   const sentences: TranscriptSentence[] = [];
-  const firstMs = items.length > 0 ? parseTime(items[0]!.start_time) : null;
+  let firstMs: number | null = null;
   let index = 0;
   for (const item of items) {
     const text = typeof item.text === "string" ? item.text : "";
     if (text.length === 0) continue;
     const startMs = parseTime(item.start_time);
+    firstMs ??= startMs;
     const endMs = parseTime(item.end_time);
     // Timestamps are ISO instants; offset them against the first utterance.
     // Phone/watch items can share one timestamp — that becomes a zero span.
@@ -343,6 +343,7 @@ export async function normalizeGranolaNote(
     owner_name: ownerName,
     owner_email: note.owner?.email ?? null,
   };
+  if (firstMs !== null) metadata.granola_transcript_started_at = new Date(firstMs).toISOString();
   if (note.attachment_count > 0) metadata.attachment_count = note.attachment_count;
   if (durationSecs !== null) metadata.duration_source = "calendar_event";
 

@@ -131,6 +131,35 @@ describe("granola proxy routes", () => {
     ]);
   });
 
+  it("passes a padded transcript cursor unchanged within the pinned GET", async () => {
+    const calls: FetchCall[] = [];
+    mockFetch(calls, () => Response.json({ transcript: [], hasMore: false, cursor: null }));
+    const cursor = "dHVybnM+/w==";
+    const qs = new URLSearchParams({ page_size: "100", cursor });
+    const res = await request(makeApp(), `/api/connectors/granola/v1/notes/not_abc123/transcript?${qs}`, {
+      headers: { [GRANOLA_KEY_HEADER]: KEY },
+    });
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    const url = new URL(calls[0]!.url);
+    expect(url.origin + url.pathname).toBe("https://public-api.granola.ai/v1/notes/not_abc123/transcript");
+    expect([...url.searchParams]).toEqual([["page_size", "100"], ["cursor", cursor]]);
+    expect(calls[0]!.init?.redirect).toBe("error");
+  });
+
+  it("rejects transcript page sizes outside the provider's integer range", async () => {
+    const calls: FetchCall[] = [];
+    mockFetch(calls, () => Response.json({}));
+    const app = makeApp();
+    for (const value of ["0", "101", "1.5"]) {
+      const res = await request(app, `/api/connectors/granola/v1/notes/not_abc123/transcript?page_size=${value}`, {
+        headers: { [GRANOLA_KEY_HEADER]: KEY },
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("rejects a missing or malformed key WITHOUT calling upstream, and never echoes it", async () => {
     const calls: FetchCall[] = [];
     mockFetch(calls, () => new Response("{}", { status: 200 }));
@@ -205,6 +234,17 @@ describe("granola proxy routes", () => {
     expect(res.status).toBe(429);
     expect(res.headers.get("retry-after")).toBe("7");
     expect(await res.json()).toEqual({ code: "RATE_LIMITED", message: "slow down" });
+  });
+
+  it("relays a 429 Retry-After date from the paginated transcript endpoint", async () => {
+    const retryAt = "Wed, 18 Nov 2026 01:02:03 GMT";
+    const res = await request(makeApp(async () => Response.json({ code: "RATE_LIMITED" }, {
+      status: 429, headers: { "Retry-After": retryAt },
+    })), "/api/connectors/granola/v1/notes/not_abc123/transcript", {
+      headers: { [GRANOLA_KEY_HEADER]: KEY },
+    });
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe(retryAt);
   });
 
   it("answers 502 when the upstream is unreachable, with no key material in the response", async () => {

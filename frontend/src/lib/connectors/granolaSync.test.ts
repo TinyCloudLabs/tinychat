@@ -330,6 +330,22 @@ describe("syncGranola", () => {
     if (!res.ok) expect(res.error.kind).toBe("rate-limited");
   });
 
+  test("a transcript still throttled after retries pauses the entire run, not just the note", async () => {
+    const store = new FakeStore();
+    const oldest = "not_0002";
+    const newest = "not_0001";
+    const client = new MockClient([
+      { notes: [noteSummary(newest), noteSummary(oldest)], hasMore: false, cursor: null },
+    ]);
+    client.details.set(oldest, { ok: true, data: noteDetail(oldest) });
+    client.transcripts.set(oldest, {
+      ok: false, error: { kind: "rate-limited", message: "slow", retryAfterMs: 5_000 },
+    });
+    const result = await syncGranola(syncOpts(store, client));
+    expect(result).toMatchObject({ ok: false, error: { kind: "rate-limited", retryAfterMs: 5_000 } });
+    expect(client.noteCalls).toEqual([oldest]);
+  });
+
   test("a failed listing persists a fixed code, never upstream error text", async () => {
     const store = new FakeStore();
     const client = new MockClient([]);

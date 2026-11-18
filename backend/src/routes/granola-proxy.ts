@@ -48,8 +48,9 @@ const GRANOLA_KEY_PATTERN = /^grn_[A-Za-z0-9._~+-]{8,256}$/;
 /** Granola note ids are `not_` plus base36-ish characters; anchored, no slashes possible. */
 const NOTE_ID_PATTERN = /^not_[A-Za-z0-9]{1,64}$/;
 
-/** ISO-8601-ish datetimes and cursors Granola accepts; bounded and opaque to us. */
+/** Bounded values; opaque cursors may use standard padded base64 as well as base64url. */
 const QUERY_VALUE_PATTERN = /^[A-Za-z0-9._~:+-]{1,128}$/;
+const CURSOR_PATTERN = /^[A-Za-z0-9._~+/-]{1,1024}={0,2}$/;
 
 /** Per-route query allowlists. Anything else is a 400, never a forwarded param. */
 const LIST_QUERY_PARAMS: Record<string, true> = {
@@ -93,7 +94,7 @@ function respondError(res: Response, status: number, code: string, message: stri
 /** Read and validate `x-granola-key`, or answer and return null. Never logs the value. */
 function keyFromRequest(req: Request, res: Response): string | null {
   const raw = req.headers[GRANOLA_KEY_HEADER];
-  // A duplicated header arrives as an array; accept neither copy (the firstQueryValue rule).
+  // Node normally comma-joins duplicate custom headers; neither that nor an array is accepted.
   const key = Array.isArray(raw) ? undefined : raw;
   if (typeof key !== "string" || !GRANOLA_KEY_PATTERN.test(key)) {
     respondError(
@@ -122,7 +123,7 @@ function checkedQuery(
       respondError(res, 400, "VALIDATION_ERROR", `Unsupported query parameter: ${name}`);
       return null;
     }
-    if (typeof value !== "string" || !QUERY_VALUE_PATTERN.test(value)) {
+    if (typeof value !== "string" || !(name === "cursor" ? CURSOR_PATTERN : QUERY_VALUE_PATTERN).test(value)) {
       respondError(res, 400, "VALIDATION_ERROR", `Invalid value for query parameter: ${name}`);
       return null;
     }
@@ -156,6 +157,7 @@ async function relayGranola(
   try {
     upstream = await fetchImpl(url, {
       method: "GET",
+      redirect: "error",
       headers: { authorization: `Bearer ${key}`, accept: "application/json" },
       signal: AbortSignal.timeout(options.timeoutMs ?? UPSTREAM_TIMEOUT_MS),
     });
@@ -172,8 +174,13 @@ async function relayGranola(
     const contentType = upstream.headers.get("content-type");
     if (contentType) res.type(contentType);
     const retryAfter = upstream.headers.get("retry-after");
-    if (upstream.status === 429 && retryAfter && /^\d{1,6}$/.test(retryAfter)) {
-      res.set("Retry-After", retryAfter);
+    if (upstream.status === 429 && retryAfter && retryAfter.length <= 64) {
+      if (/^\d{1,6}$/.test(retryAfter)) {
+        res.set("Retry-After", retryAfter);
+      } else {
+        const date = Date.parse(retryAfter);
+        if (Number.isFinite(date)) res.set("Retry-After", new Date(date).toUTCString());
+      }
     }
     res.status(upstream.status).send(body);
     logGranolaProxy(`op=${op} result=ok status=${upstream.status}`);
@@ -216,6 +223,11 @@ export function createGranolaProxyRouter(options: GranolaProxyOptions = {}): Rou
     }
     const params = checkedQuery(req, res, TRANSCRIPT_QUERY_PARAMS);
     if (params === null) return;
+    const pageSize = params.get("page_size");
+    if (pageSize !== null && !/^(?:[1-9]\d?|100)$/.test(pageSize)) {
+      respondError(res, 400, "VALIDATION_ERROR", "Transcript page_size must be an integer from 1 to 100");
+      return;
+    }
     await relayGranola(req, res, options, "transcript", `/v1/notes/${req.params.id}/transcript`, params);
   });
 

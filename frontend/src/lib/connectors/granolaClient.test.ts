@@ -111,6 +111,31 @@ describe("GranolaClient", () => {
     expect(new URL(calls[1]!.url).searchParams.get("cursor")).toBe("page2");
   });
 
+  test("reads the end of a transcript beyond fifty pages without dropping turns", async () => {
+    const calls: Call[] = [];
+    const c = client(fakeFetch(calls, rawUrl => {
+      const url = new URL(rawUrl);
+      const index = Number(url.searchParams.get("cursor") ?? 0);
+      return Response.json({
+        transcript: [{ text: `turn ${index}` }],
+        hasMore: index < 50, cursor: index < 50 ? String(index + 1) : null,
+      });
+    }));
+    const res = await c.getTranscript("not_0001");
+    expect(res.ok && res.data.items.map(({ text }) => text)).toEqual(Array.from({ length: 51 }, (_, i) => `turn ${i}`));
+    expect(res.ok && res.data.truncated).toBe(false);
+  });
+
+  test("a repeated cursor fails without returning a duplicate transcript", async () => {
+    const calls: Call[] = [];
+    const c = client(fakeFetch(calls, () => Response.json({
+      transcript: [{ text: "page content" }], hasMore: true, cursor: "loop",
+    })));
+    const res = await c.getTranscript("not_0001");
+    expect(res.ok).toBe(false);
+    expect(calls).toHaveLength(2);
+  });
+
   test("an absent transcript (404) resolves as an empty page, not an error", async () => {
     const c = client(fakeFetch([], () =>
       new Response(JSON.stringify({ code: "NOTE_NOT_FOUND", message: "gone" }), { status: 404 })));
@@ -164,6 +189,36 @@ describe("GranolaClient", () => {
     const res = await c.listNotes({});
     expect(res.ok).toBe(true);
     expect(n).toBe(2);
+  });
+
+  test("a 429 waits before retrying the same transcript cursor and retains earlier turns", async () => {
+    const calls: Call[] = [];
+    const events: string[] = [];
+    const c = new GranolaClient({
+      apiKey: KEY, backendUrl: "https://api.tinycloud.test", sessionStore,
+      fetchImpl: fakeFetch(calls, url => {
+        const cursor = new URL(url).searchParams.get("cursor");
+        events.push(`fetch ${cursor ?? "first"}`);
+        return calls.length === 1
+          ? Response.json({ transcript: [{ text: "first turn" }], hasMore: true, cursor: "next" })
+          : calls.length === 2
+            ? Response.json({}, { status: 429, headers: { "Retry-After": "7" } })
+            : Response.json({ transcript: [{ text: "last turn" }], hasMore: false, cursor: null });
+      }),
+      sleepImpl: async ms => { events.push(`sleep ${ms}`); return true; },
+    });
+    const res = await c.getTranscript("not_0001");
+    expect(res.ok && res.data.items.map(({ text }) => text)).toEqual(["first turn", "last turn"]);
+    expect(events).toEqual(["fetch first", "sleep 250", "fetch next", "sleep 7000", "sleep 250", "fetch next"]);
+  });
+
+  test("a Retry-After HTTP date beyond the wait budget is returned without retrying early", async () => {
+    const calls: Call[] = [];
+    const retryAt = new Date(Date.now() + 120_000).toUTCString();
+    const c = client(fakeFetch(calls, () => Response.json({}, { status: 429, headers: { "Retry-After": retryAt } })));
+    const res = await c.getTranscript("not_0001");
+    expect(!res.ok && res.error.retryAfterMs).toBeGreaterThan(60_000);
+    expect(calls).toHaveLength(1);
   });
 
   test("a signed-out session never issues a request", async () => {

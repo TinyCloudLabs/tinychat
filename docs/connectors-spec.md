@@ -524,8 +524,14 @@ the old key before requesting its replacement. If the user cancels then tries
 Sync now, the row asks them to reconnect. A TinyCloud session rejection is
 identified by a backend-owned response header, never by Granola's response
 body. The Granola connection row stores only fixed sync and notice codes, not
-provider error text. Workspace transcript denial syncs summaries and shows a
-neutral notice. Private notes and image URLs are not imported.
+provider error text. The proxy reads transcripts only through the dedicated
+`/v1/notes/{id}/transcript` endpoint during sync. The client requests 100 turns
+per page until the cursor is exhausted, paces requests to at most four per
+second per sync, and stops the run if `Retry-After` cannot be honored in that
+run. The owner's space holds the speaker, verbatim text, and both time offsets;
+`granola_transcript_started_at` records the absolute origin for those offsets.
+Workspace transcript denial discards unfinished pages, syncs the summary, and
+shows a neutral notice. Private notes, attachments, and image URLs are not imported.
 
 Disconnect flow (from the card): confirm dialog (AlertDialog) with a checkbox
 "Also delete the 42 synced meetings from my space" (default OFF). Confirm →

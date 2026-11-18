@@ -14,7 +14,6 @@ export const GRANOLA_KEY_HEADER = "x-granola-key";
 export const GRANOLA_LIST_PAGE_SIZE = 30; // Granola's own max for /v1/notes.
 export const GRANOLA_TRANSCRIPT_PAGE_SIZE = 100; // Granola's own max for /transcript.
 export const GRANOLA_DEFAULT_PAGE_BUDGET = 40; // 40 x 30 = 1,200 changed notes per run.
-export const GRANOLA_TRANSCRIPT_PAGE_BUDGET = 50; // 50 x 100 = 5,000 utterances per meeting.
 export const GRANOLA_DEFAULT_DELAY_MS = 250; // 4 req/s, under Granola's sustained 5 req/s.
 export const GRANOLA_MAX_RATE_LIMIT_RETRIES = 3;
 export const GRANOLA_MAX_RETRY_AFTER_MS = 60_000;
@@ -230,21 +229,18 @@ export class GranolaClient {
   }
 
   /**
-   * ALL transcript pages for a note, paced. Always this route, never
-   * `include=transcript` — the paged endpoint cannot hit the 413. A note whose
-   * transcript was auto-deleted or admin-disabled resolves with `items: []`.
+   * Follow the dedicated paginated route to completion; no inline transcript
+   * or partial transcript is persisted. Missing and admin-disabled transcripts
+   * leave the meeting summary available.
    */
   async getTranscript(
     id: string,
-    opts: { signal?: AbortSignal; pageBudget?: number } = {},
+    opts: { signal?: AbortSignal } = {},
   ): Promise<GranolaResult<{ items: GranolaTranscriptItem[]; truncated: boolean; access?: "allowed" | "disabled" }>> {
-    const budget = opts.pageBudget ?? GRANOLA_TRANSCRIPT_PAGE_BUDGET;
     const items: GranolaTranscriptItem[] = [];
+    const seenCursors = new Set<string>();
     let cursor: string | null = null;
-    let pages = 0;
     for (;;) {
-      if (opts.signal?.aborted || pages >= budget) break;
-      if (pages > 0 && !await this.sleep(this.delayMs, opts.signal)) break;
       const params = new URLSearchParams();
       params.set("page_size", String(GRANOLA_TRANSCRIPT_PAGE_SIZE));
       if (cursor) params.set("cursor", cursor);
@@ -255,13 +251,12 @@ export class GranolaClient {
       if (!res.ok) {
         // Transcripts disabled by an admin (or auto-deleted) are not a sync
         // failure: the meeting still syncs with its summary.
-        if (res.error.notFound) return { ok: true, data: { items, truncated: false } };
+        if (res.error.notFound) return { ok: true, data: { items: [], truncated: false } };
         if (res.error.kind === "forbidden" && res.error.code === "FORBIDDEN") {
-          return { ok: true, data: { items, truncated: items.length > 0, access: "disabled" } };
+          return { ok: true, data: { items: [], truncated: false, access: "disabled" } };
         }
         return res;
       }
-      pages++;
       const body = res.data as {
         transcript?: unknown; items?: unknown; hasMore?: unknown; has_more?: unknown; cursor?: unknown;
       };
@@ -273,9 +268,11 @@ export class GranolaClient {
       const hasMore = body.hasMore === true || body.has_more === true;
       cursor = typeof body.cursor === "string" ? body.cursor : null;
       if (!hasMore) return { ok: true, data: { items, truncated: false, access: "allowed" } };
-      if (!cursor) return { ok: true, data: { items, truncated: true, access: "allowed" } };
+      if (!cursor || seenCursors.has(cursor)) {
+        return { ok: false, error: { kind: "api-error", message: "Granola returned an unreadable response" } };
+      }
+      seenCursors.add(cursor);
     }
-    return { ok: true, data: { items, truncated: true } };
   }
 
   /**
@@ -321,7 +318,7 @@ export class GranolaClient {
 
       const parsed = await readGranolaBody(response);
       if (response.status === 429) {
-        const retryAfterMs = retryAfterSeconds(response.headers.get("retry-after"));
+        const retryAfterMs = retryAfterMilliseconds(response.headers.get("retry-after"));
         if (attempt < GRANOLA_MAX_RATE_LIMIT_RETRIES
           && (retryAfterMs === null || retryAfterMs <= GRANOLA_MAX_RETRY_AFTER_MS)) {
           attempt++;
@@ -413,9 +410,11 @@ async function readGranolaBody(
   };
 }
 
-function retryAfterSeconds(header: string | null): number | null {
-  if (header === null || !/^\d{1,6}$/.test(header)) return null;
-  return Number.parseInt(header, 10) * 1000;
+function retryAfterMilliseconds(header: string | null): number | null {
+  if (header === null) return null;
+  if (/^\d{1,6}$/.test(header)) return Number.parseInt(header, 10) * 1000;
+  const retryAt = Date.parse(header);
+  return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : null;
 }
 
 function str(value: unknown): string | null {
