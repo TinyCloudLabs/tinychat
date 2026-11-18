@@ -14,7 +14,7 @@ import { syntheticRecord } from "./sitrep.fixtures";
  * card is the post, then the title, then the content; nothing opens on its own; updates run newest first.
  */
 const AUTHOR = "Holden";
-function entry(cardId: string, title: string, over: { post?: string; summary?: string; body?: string; createdAt?: string; needs?: boolean; priority?: number; typed?: boolean } = {}): HomeFeedEntry {
+function entry(cardId: string, title: string, over: { post?: string; summary?: string; body?: string; createdAt?: string; needs?: boolean; priority?: number; typed?: boolean; label?: string } = {}): HomeFeedEntry {
   const needs = over.needs ?? true;
   const record = over.typed ? { ...syntheticRecord("ask"), ...(over.post ? { post: over.post } : {}) } : undefined;
   const payload: Record<string, unknown> = {
@@ -24,7 +24,7 @@ function entry(cardId: string, title: string, over: { post?: string; summary?: s
   };
   return {
     source: {
-      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: AUTHOR,
+      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: over.label ?? AUTHOR,
       output: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_output_testone" },
       responses: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_responses_testone" },
     },
@@ -114,6 +114,21 @@ test("a folded card keeps its priority mark beside the post, on the same row", a
   const text = rowOf(host, "urgent").textContent ?? "";
   expect(text).toContain("Pay the invoice today?");
   expect(text).toContain("P0");
+});
+
+test("a folded row's accessible name leads with its author, though the row prints no author", async () => {
+  const host = await mount([entry("named", "Pay now?", { summary: "Pay the invoice today?", priority: 0 })]);
+  const row = rowOf(host, "named");
+  expect(row.textContent).not.toContain(AUTHOR);
+  const name = row.querySelector("button")!.getAttribute("aria-label")!;
+  expect(name.startsWith(`${AUTHOR}. Pay the invoice today?`)).toBe(true);
+  expect(name).toContain("Priority 0");
+});
+
+test("a folded row from a card with no author gets no empty prefix in its accessible name", async () => {
+  const host = await mount([entry("anon", "Pay now?", { summary: "Pay the invoice today?", label: "" })]);
+  const name = rowOf(host, "anon").querySelector("button")!.getAttribute("aria-label")!;
+  expect(name.startsWith("Pay the invoice today?")).toBe(true);
 });
 
 test("nothing is open until the owner taps a card, in Needs you", async () => {
