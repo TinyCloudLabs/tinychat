@@ -6,7 +6,7 @@
 // and its undo bar.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
-import type { FeedCard } from "@tinycloud/sdk-services/feed";
+import type { FeedCard, FeedSource } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { redactSecretsDeep } from "@tinyboilerplate/core/feed/sitrep";
 import type * as DetailsPanel from "./cardDetailsPanel";
@@ -39,16 +39,17 @@ export interface CardClose { kind: "drop" | "acknowledge"; onTap: () => void }
  * away through the undo bar. An update: "Acknowledge" (its one real action, the dark pill) and its quiet `actions` (Show
  * me later), then a bottom row with `secondary` ("Comment") level with Details. `card` is the card as sent, `typed` its
  * board record when it is a typed card (with no record when the app could not read it), and `agent` who sent it.
+ * `publisher` is the registered source the card was read through: only Courier's draws the Courier mark.
  */
-export function CardDetails({ children, actions, secondary, close, card, typed, agent }: {
+export function CardDetails({ children, actions, secondary, close, card, typed, agent, publisher }: {
   children: ReactNode; actions?: ReactNode; secondary?: ReactNode; close?: CardClose;
-  card: FeedCard; typed?: { record?: BoardRecord }; agent: string;
+  card: FeedCard; typed?: { record?: BoardRecord }; agent: string; publisher?: Pick<FeedSource, "sourceId" | "output">;
 }) {
   const [open, setOpen] = useState(false);
   const lists = useDetailsModule();
   // "The card as sent" is shown without what the board's guard would have refused (a one-tap link, a key), however the card came.
   const shown = useMemo(() => redactSecretsDeep(card), [card]);
-  const unshown = lists ? lists.cardUnshown(shown, typed) : [];
+  const unshown = lists ? lists.cardUnshown(shown, typed, publisher) : [];
   // Only fields meant to be read count; the feed's own bookkeeping is listed in Details but not counted.
   const count = unshown.filter((field) => !field.quiet).length;
   const details = <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}

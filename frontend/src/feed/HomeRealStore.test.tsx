@@ -492,12 +492,14 @@ async function tap(element: HTMLElement) {
   await act(async () => { element.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true })); element.click(); });
 }
 
-test("Needs you's first card, open without a tap: any other revision during the countdown refuses the commit too, nothing is written", async () => {
+test("Needs you's first card, opened by a tap: any other revision during the countdown refuses the commit too, nothing is written", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("stale-full");
   value(await publishFeedCard(agent.output, plainCard()));
-  // Not tapped open first (that alone binds the card): Needs you shows its first card open, and the tap on Go must bind it.
+  // Nothing is open until the owner taps a card; the tap on Go then binds it.
   const transport = owner.fresh(); const view = await mount(transport, { open: false });
   await act(async () => view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="needs-action"]')!.click());
+  expect(view.host.querySelector("article")).toBeNull();
+  await openCards(view.host);
   await tap(option(card(view.host, "Book the Thursday flight?"), "Go"));
   await clock.advance(2000);
   value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", body: "Only the 11:40 is left." })));

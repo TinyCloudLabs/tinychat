@@ -353,11 +353,13 @@ test("a retried tap after a failed write reuses its response identity", async ()
   expect(store.responses).toHaveLength(1);
 });
 
-test("Needs you shows what needs you with its first card open; All adds updates as rows; information is nonactionable", async () => {
+test("Needs you shows what needs you with every card folded until a tap; All adds updates as rows; information is nonactionable", async () => {
   const store = persistence([decision(), information()], { defaultSelector: "needs-action" });
   const view = await mount(store.source());
   expect(viewRadio(view.host, "Needs you").checked).toBe(true);
-  // The first card is open without a tap, and that counts as seen.
+  // Nothing is open until a tap; opening a card counts as seen.
+  expect(view.host.querySelector("article")).toBeNull();
+  await open(view.host);
   expect(answers(card(view.host, "Question decision-one"))).not.toBeNull();
   expect(store.durable.entries[0]!.view.seenAt).toBeDefined();
   expect(view.host.textContent).not.toContain("Informational update");
@@ -379,9 +381,11 @@ test("Needs you shows what needs you with its first card open; All adds updates 
   expect(store.responses).toEqual([]);
 });
 
-test("an answer in Needs you leaves once it is saved, to Pending, and the next card opens in its place", async () => {
+test("an answer in Needs you leaves once it is saved, to Pending, and the next card stays folded until it is tapped", async () => {
   const store = persistence([decision("first", 1, 3), decision("second", 1, 2)], { defaultSelector: "needs-action" });
   const view = await mount(store.source());
+  expect(view.host.querySelector("article")).toBeNull();
+  await open(view.host, "Question first");
   expect(answers(card(view.host, "Question first"))).not.toBeNull();
   expect(item(view.host, "Question second")!.querySelector("article")).toBeNull();
   await choose(view.host, "Hold");
@@ -389,6 +393,8 @@ test("an answer in Needs you leaves once it is saved, to Pending, and the next c
   await act(async () => store.notify());
   expect(item(view.host, "Question first")).toBeNull();
   expect(pendingToggle(view.host)?.textContent).toContain("1 · answered, not closed yet");
+  expect(item(view.host, "Question second")!.querySelector("article")).toBeNull();
+  await open(view.host, "Question second");
   expect(answers(card(view.host, "Question second"))).not.toBeNull();
   // Folded by the owner, the first card stays a row.
   await act(async () => card(view.host, "Question second").querySelector<HTMLButtonElement>('button[aria-label="Show less"]')!.click());
