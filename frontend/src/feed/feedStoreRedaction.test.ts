@@ -97,3 +97,9 @@ test("a typed card the guard refuses keeps its record as sent, so it stays unsup
   expect(parseSitrepCardPayload(state.card.payload?.sitrep)).toBeNull();
   expect(JSON.stringify(state.card.title) + JSON.stringify(state.card.body)).not.toContain("openkey.so/a/");
 });
+
+test("an answer button's label loses a key or a one-tap link, and its id, which a saved answer is matched on, is kept", async () => {
+  const source = await connectedAgent({ ...base, choices: [{ id: "go", label: `Use ${KEY}` }, { id: "tap", label: TAP }, { id: "hold", label: "Hold" }] });
+  const { choices } = (await source.load()).entries[0]!.state.card;
+  expect(choices).toEqual([{ id: "go", label: "Use [link removed]" }, { id: "tap", label: "[link removed]" }, { id: "hold", label: "Hold" }]);
+});
