@@ -23,8 +23,9 @@ import type { LibraryItem } from "../library/LibraryRow";
 import { openedByText, shareItemLine } from "./shareCopy";
 
 const DAY_MS = 86_400_000;
-/** Access lasts until the owner stops sharing, at most a year. */
-const ACCESS_MS = 365 * DAY_MS;
+/** Access ends 30 days after Create link (or sooner, once the owner stops sharing), whichever link window was picked. */
+const ACCESS_MS = 30 * DAY_MS;
+const SHEET_DESCRIPTION = "Anyone you send the link to can open it after they sign in. It’s added to their Library.";
 const WINDOWS = [
   { value: "1", label: "1 day" },
   { value: "7", label: "7 days" },
@@ -185,6 +186,8 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
   };
   const canShare = link !== null && typeof navigator !== "undefined" && typeof navigator.share === "function";
   const latest: SentRecordingShare | undefined = live[0];
+  // One access end everywhere: the stored per-share end once a share exists, before that what Create link would sign.
+  const accessEnds = shortDate(latest ? new Date(latest.accessExpiresAt) : new Date(now().getTime() + ACCESS_MS), now());
   const sharedParts = latest ? (latest.paths.length === 2 ? (["transcript", "audio"] as const) : latest.paths[0]!.endsWith("/") ? (["audio"] as const) : (["transcript"] as const)) : includes;
 
   if (shown) {
@@ -194,7 +197,7 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
         onOpenChange={props.onOpenChange}
         dismissible={phase !== "stopping"}
         title="Share recording"
-        description={link ? "Send this link to the people you want to share with. They’ll sign in to open it." : "Anyone you send the link to can open it after they sign in. It’s added to their TinyCloud until you stop sharing."}
+        description={link ? "Send this link to the people you want to share with. They’ll sign in to open it." : SHEET_DESCRIPTION}
         contentProps={{ "data-testid": "share-sheet", "data-phase": "ready" }}
       >
         <ResponsiveSheetBody>
@@ -210,7 +213,7 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
             {latest && (
               <div className="flex flex-col gap-1 rounded-lg bg-surface-2 p-3">
                 {openedBy !== null && <p className="flex items-center gap-2 text-callout"><UsersIcon aria-hidden="true" className="size-4 text-muted-foreground" /><span>{openedByText(openedBy)}</span></p>}
-                <p className="text-meta text-muted-foreground">The link can be opened until {shortDate(new Date(latest.linkExpiresAt), now())}. People who opened it keep access until you stop sharing.</p>
+                <p className="text-meta text-muted-foreground">The link can be opened until {shortDate(new Date(latest.linkExpiresAt), now())}. People who opened it can see it until {accessEnds}, unless you stop sharing sooner.</p>
               </div>
             )}
             {error && <p role="alert" className="text-meta text-[var(--red-text)]">{error}</p>}
@@ -236,7 +239,7 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
       onOpenChange={props.onOpenChange}
       dismissible={phase !== "creating"}
       title="Share recording"
-      description="Anyone you send the link to can open it after they sign in. It’s added to their TinyCloud until you stop sharing."
+      description={SHEET_DESCRIPTION}
       contentProps={{ "data-testid": "share-sheet", "data-phase": "choose" }}
     >
       <ResponsiveSheetBody>
@@ -250,7 +253,7 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
           <div className="flex flex-col gap-2">
             <p className="text-meta font-semibold text-muted-foreground" id="share-window">Link can be opened for</p>
             <SegmentedControl aria-label="Link can be opened for" value={days} onValueChange={setDays} options={WINDOWS} />
-            <p className="text-meta text-muted-foreground">People who open it in that time keep access until you stop sharing, for up to a year.</p>
+            <p className="text-meta text-muted-foreground">Anyone who opens it in that time can see it until {accessEnds}, unless you stop sharing sooner.</p>
           </div>
           {error && <p role="alert" className="text-meta text-[var(--red-text)]">{error}</p>}
         </div>

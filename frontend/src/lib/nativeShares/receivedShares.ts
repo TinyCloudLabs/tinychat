@@ -109,6 +109,11 @@ export function sharedRecordingKeys(paths: readonly string[]): { transcriptKey: 
   return { transcriptKey: paths.find((path) => !path.endsWith("/")) ?? null, audioBase: audio ? audio.slice(0, -1) : null };
 }
 
+/** Access has ended: the share's end (its signed expiry) has passed, so no read can succeed. */
+export function receivedShareEnded(record: ReceivedRecordingShare, now: Date): boolean {
+  return Date.parse(record.accessExpiresAt) <= now.getTime();
+}
+
 export function useReceivedShares() {
   return useSyncExternalStore(receivedShares.subscribe, receivedShares.snapshot, receivedShares.snapshot);
 }

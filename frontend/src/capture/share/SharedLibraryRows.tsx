@@ -1,13 +1,13 @@
 // TC-3195: the Library under "Shared with me": recordings other people shared with this account, under the day each
-// was added (the account's own record; the link's recorded date is unchecked), newest first. A share the owner stopped
-// is still listed, muted, until it is removed from the Library.
+// was added (the account's own record; the link's recorded date is unchecked), newest first. A share the owner stopped,
+// or whose access ended, is still listed, muted, until it is removed from the Library.
 import { ChevronRightIcon } from "lucide-react";
 
 import { Empty } from "@/components/ui/empty";
 import { ListRow } from "@/components/ui/list-row";
 import { Skeleton } from "@/components/ui/skeleton";
 import { quotedTitle, type SharedSource } from "@/lib/nativeShares/display";
-import { sharedNoteId, type ReceivedRecordingShare } from "@/lib/nativeShares/receivedShares";
+import { receivedShareEnded, sharedNoteId, type ReceivedRecordingShare } from "@/lib/nativeShares/receivedShares";
 import type { RecordStoreSnapshot } from "@/lib/nativeShares/spaceRecords";
 import { cn } from "@/lib/utils";
 import { notePath } from "@/shell/routes";
@@ -23,8 +23,8 @@ function SharedRow(props: { record: ReceivedRecordingShare; now: Date; selected:
   const { record } = props;
   const Icon = KIND_ICON[KIND_OF[record.display.source]];
   const meta = sharedRowMeta(record, props.now);
-  const revoked = record.revokedAt !== undefined;
-  const duration = revoked ? null : record.display.durationSeconds;
+  const over = record.revokedAt !== undefined || receivedShareEnded(record, props.now);
+  const duration = over ? null : record.display.durationSeconds;
   const soft = useSoftHome();
   if (soft) {
     return <SoftRow icon={Icon} title={quotedTitle(record.display.title)} meta={meta} subMeta={SHARED_ROW_CUE} durationSecs={duration} href={notePath(sharedNoteId(record.id))} selected={props.selected} testId="shared-item" />;
@@ -33,7 +33,7 @@ function SharedRow(props: { record: ReceivedRecordingShare; now: Date; selected:
     <ListRow
       href={notePath(sharedNoteId(record.id))}
       leading={<Icon />}
-      title={<span className={cn(revoked && "text-muted-foreground")}>{quotedTitle(record.display.title)}</span>}
+      title={<span className={cn(over && "text-muted-foreground")}>{quotedTitle(record.display.title)}</span>}
       selected={props.selected}
       meta={meta}
       metaLines={2}

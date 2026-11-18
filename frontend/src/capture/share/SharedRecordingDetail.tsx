@@ -1,9 +1,9 @@
 // TC-3195: a recording someone shared with you (approved mock, screens 4 and 6). Read only: the transcript and the
-// audio are read from the owner's space through the share; once the owner stops sharing, the page says so and
-// offers to remove it from the Library.
-import { useEffect, useState } from "react";
+// audio are read from the owner's space through the share; once the owner stops sharing, or the access ends, the page
+// says so, reads nothing, and offers to remove it from the Library.
+import { useEffect, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
-import { InfoIcon, Link2OffIcon, RefreshCwIcon } from "lucide-react";
+import { CalendarXIcon, InfoIcon, Link2OffIcon, RefreshCwIcon } from "lucide-react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
@@ -16,6 +16,7 @@ import { LINK_DETAILS_CAPTION, quotedTitle } from "@/lib/nativeShares/display";
 import {
   firstShareFrom,
   markReceivedShareRevoked,
+  receivedShareEnded,
   removeReceivedShare,
   sharedReader,
   sharedRecordingKeys,
@@ -28,6 +29,7 @@ import { Frame, NotePlaybackProvider, transcriptBlocks } from "../library/NoteDe
 import { SpeakerLabel } from "../library/SpeakerLabel";
 import { TimestampedTranscript } from "../library/TimestampedTranscript";
 import { hasSegmentTimes } from "../library/transcriptSegments";
+import { shortDate } from "../library/formatters";
 import { Sender, SenderAddress } from "./Sender";
 import { sharedDetailMeta } from "./shareCopy";
 
@@ -91,8 +93,8 @@ function DetailHeading(props: { record: ReceivedRecordingShare; now: Date; first
   );
 }
 
-function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now: Date; pushed: boolean; firstShare: boolean; onRemoved: () => void }) {
-  const sender = <Sender address={props.record.owner.address} />;
+/** The share can't be read any more (the owner stopped sharing, or the access ended): say why, offer to remove it. */
+function Unavailable(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now: Date; pushed: boolean; firstShare: boolean; onRemoved: () => void; testId: string; icon: ReactNode; headline: ReactNode; body: ReactNode }) {
   const [removing, setRemoving] = useState(false);
   const [failed, setFailed] = useState(false);
   const remove = async () => {
@@ -111,10 +113,10 @@ function Revoked(props: { record: ReceivedRecordingShare; tcw: TinyCloudWeb; now
       <div className={`${props.pushed ? "" : "-mt-4 "}flex flex-col gap-2`}>
         <DetailHeading record={props.record} now={props.now} firstShare={props.firstShare} />
       </div>
-      <div className="flex flex-col items-start gap-2 py-6" data-testid="shared-revoked">
-        <span aria-hidden="true" className="mb-1 flex size-10 items-center justify-center rounded-lg bg-surface-2 text-muted-foreground [&_svg]:size-5"><Link2OffIcon /></span>
-        <p className="text-headline">{sender} stopped sharing this recording</p>
-        <p className="max-w-[34ch] text-callout text-muted-foreground">It’s no longer available to you. Ask {sender} if you need it again.</p>
+      <div className="flex flex-col items-start gap-2 py-6" data-testid={props.testId}>
+        <span aria-hidden="true" className="mb-1 flex size-10 items-center justify-center rounded-lg bg-surface-2 text-muted-foreground [&_svg]:size-5">{props.icon}</span>
+        <p className="text-headline">{props.headline}</p>
+        <p className="max-w-[34ch] text-callout text-muted-foreground">{props.body}</p>
         <div className="mt-1 flex flex-wrap gap-2">
           <Button type="button" variant="outline" disabled={removing} onClick={() => void remove()}>Remove from Library</Button>
         </div>
@@ -134,6 +136,7 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
   const [attempt, setAttempt] = useState(0);
   const keys = record ? sharedRecordingKeys(record.paths) : { transcriptKey: null, audioBase: null };
   const revoked = record?.revokedAt !== undefined || transcript.status === "revoked";
+  const ended = record !== null && receivedShareEnded(record, now);
 
   useEffect(() => {
     if (!toast) return;
@@ -144,7 +147,7 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
   const recordId = record?.id;
   const transcriptKey = keys.transcriptKey;
   useEffect(() => {
-    if (!record || record.revokedAt || !transcriptKey) return;
+    if (!record || record.revokedAt || receivedShareEnded(record, now) || !transcriptKey) return;
     let active = true;
     setTranscript({ status: "loading" });
     void sharedReader(props.tcw, record)
@@ -200,12 +203,16 @@ export function SharedRecordingDetail(props: { tcw: TinyCloudWeb; recordId: stri
       <Frame title={title} pushed={props.pushed} onBack={props.onBack}>
         {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
         {revoked ? (
-          <Revoked record={record} tcw={props.tcw} now={now} pushed={props.pushed} firstShare={firstShare} onRemoved={props.onBack} />
+          <Unavailable record={record} tcw={props.tcw} now={now} pushed={props.pushed} firstShare={firstShare} onRemoved={props.onBack} testId="shared-revoked" icon={<Link2OffIcon />}
+            headline={<>{sender} stopped sharing this recording</>} body={<>It’s no longer available to you. Ask {sender} if you need it again.</>} />
+        ) : ended ? (
+          <Unavailable record={record} tcw={props.tcw} now={now} pushed={props.pushed} firstShare={firstShare} onRemoved={props.onBack} testId="shared-ended" icon={<CalendarXIcon />}
+            headline={`Your access to this recording ended on ${shortDate(new Date(record.accessExpiresAt), now)}`} body={<>Ask {sender} to share it again if you need it.</>} />
         ) : (
           <>
             <header className={`${props.pushed ? "" : "-mt-4 "}flex flex-col gap-2`} data-testid="shared-detail" data-note-id={record.id}>
               <DetailHeading record={record} now={now} firstShare={firstShare} />
-              <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" /><span>In your Library until {sender} stops sharing. Read only.</span></p>
+              <p className="flex items-center gap-2 text-meta text-muted-foreground"><InfoIcon aria-hidden="true" className="size-4 shrink-0" /><span>In your Library until {shortDate(new Date(record.accessExpiresAt), now)}, unless {sender} stops sharing sooner. Read only.</span></p>
             </header>
             {loadAudio && <MeetingAudioPlayer load={loadAudio} durationSecs={record.display.durationSeconds} />}
             {transcriptKey && (
