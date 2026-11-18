@@ -5,11 +5,11 @@
  * left as it is: the Home answer already closes the board record, and the card is already answered.
  */
 import { afterEach, expect, test } from "bun:test";
-import { appendFeedResponse, listFeedCardHistory } from "@tinycloud/sdk-services/feed";
+import { appendFeedResponse, listFeedCardHistory, publishFeedCard } from "@tinycloud/sdk-services/feed";
 import { boardKey, parseSitrepCardPayload } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { homeMirrorBindings } from "./bridge";
-import { closeFromBoard, postMany } from "./inventory";
+import { boardCard, boardCardIdentity, closeFromBoard, postMany } from "./inventory";
 import { boardRecord, mirrorNode, NOW, SOURCE, T1, take } from "./mirror-node.fixture";
 import type { MirrorNode } from "./mirror-node.fixture";
 
@@ -83,5 +83,20 @@ test("a closed board record that was never mirrored, and one still open, post no
   await mirrored(f, boardRecord("ask", "q3"));
   const results = await close(f, [boardRecord("ask", "never-mirrored", { status: "answered" }), boardRecord("ask", "q3")]);
   expect(results.map((result) => result.outcome)).toEqual(["not-mirrored", "still-open"]);
+  expect(await history(f)).toHaveLength(1);
+});
+
+test("a bound card whose record id is itself a secret is refused, and named by neither its id nor its board key", async () => {
+  const f = await node();
+  const id = `lin_api_${"k".repeat(30)}`, key = boardKey("ask", id);
+  // Bound by an earlier pass, before the secret pattern existed.
+  const safe = boardRecord("ask", "bound-earlier");
+  const identity = boardCardIdentity(key);
+  take(await publishFeedCard(f.output, { ...boardCard(row(safe), [safe], NOW_MS), ...identity }));
+  const binding = { version: 1, source: f.source, identity, cardUuid: identity.cardId, legacy: { spaceId: f.ctx.legacySpaceId, fullKey: key, kind: "ask", id, publicationSha256: "0".repeat(64), publishedETag: "\"fixture\"" } };
+  take(await f.owner.execute("INSERT INTO feed_sitrep_mirrors(source_id,card_id,revision,issuance_id,binding_json) VALUES (?,?,?,?,?)", [SOURCE, identity.cardId, identity.revision, identity.issuanceId, JSON.stringify(binding)]));
+  const results = await close(f, [boardRecord("ask", id, { status: "answered" })]);
+  expect(results).toEqual([{ key: "(key withheld)", kind: "ask", cardId: identity.cardId, outcome: "refused", code: "INVALID_INPUT", detail: "ask/(id withheld): a Linear API key" }]);
+  expect(JSON.stringify(results)).not.toContain("kkkkkk");
   expect(await history(f)).toHaveLength(1);
 });

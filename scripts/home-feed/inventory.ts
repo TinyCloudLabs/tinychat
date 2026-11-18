@@ -244,7 +244,8 @@ export async function closeFromBoard(ctx: HomeMirrorContext, options: { sourceId
       results.push(item("closed"));
     } catch (error) {
       const { code, detail } = homeMirrorDiagnostic(error).error;
-      results.push(item("refused", { code, ...(detail === undefined ? {} : { detail }) }));
+      // As in a post: a record whose id is itself what was flagged is named by neither its id nor its board key.
+      results.push({ ...item("refused", { code, ...(detail === undefined ? {} : { detail }) }), key: detail === undefined ? row.key : refusedKey(row) });
     }
   }
   return results;
