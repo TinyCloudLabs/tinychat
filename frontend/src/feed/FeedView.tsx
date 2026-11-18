@@ -165,7 +165,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
  * body, then `children` (options, conversation, the foot) inside the same surface. `FeedCardView` above stays for the
  * sample feed and the demo card.
  */
-export function HomeCardView({ card, sample = true, readBody, status, onAuthor, agent, collapse, plain = false, inline = false, children }: {
+export function HomeCardView({ card, sample = true, readBody, status, onAuthor, agent, collapse, post, plain = false, inline = false, children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
@@ -177,6 +177,8 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
   agent?: { key: string; profile?: AgentProfile };
   /** A card opened in place from a list: its "Show less" control, at the top right beside the status. */
   collapse?: ReactNode;
+  /** The card's post, the line its row showed: first in the open card, before its title. */
+  post?: string;
   /** On a page of its own (a post's page): no card surface around it, so it isn't a card within a card. */
   plain?: boolean;
   /** A card opened inside its row of a list (Sam, 11-17): the row's own padding and nothing else, so it opens into the list instead of floating over it as a second card. */
@@ -190,7 +192,7 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
   // Long unbroken tokens (commit hashes, file paths, URLs) wrap instead of running past the card's edge: overflow-wrap is
   // inherited, and `anywhere` breaks a token only where it cannot fit on a line of its own.
   return (
-    <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : inline ? "min-w-0 px-3.5 py-4 text-foreground [overflow-wrap:anywhere] cq:px-5" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] cq:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
+    <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : inline ? "min-w-0 px-4 py-4 text-foreground [overflow-wrap:anywhere] cq:px-5" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] cq:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
       {/* One meta line, the compact card's (design round 7), so a card keeps its header row when it opens: the agent's
           mark, its name, its platform's mark, the time, and at the right the status and "Show less". */}
       <div className={`flex min-w-0 ${card.courier ? "items-start" : "items-center"} gap-3`}>
@@ -231,6 +233,7 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
         </div>
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
+      {post && <p data-card-post className="mt-3 whitespace-pre-wrap break-words text-[15px] leading-[22px] [text-wrap:pretty] cq:text-base cq:leading-6">{post}</p>}
       {/* The card's task type, at the top right of its content, beside the title's first line (as on the row). */}
       {card.type
         ? card.title && card.render !== "article"

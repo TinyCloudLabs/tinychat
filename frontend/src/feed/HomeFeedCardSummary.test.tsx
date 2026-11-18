@@ -77,9 +77,9 @@ test("a card with a summary shows it under the title, and not the body", async (
   expect(text).not.toContain("Choose a reversible action");
 });
 
-test("a card with no summary shows its title again, not the body", async () => {
+test("a card with no summary shows its title, once, not the body", async () => {
   const text = await rowOf(entry("no-summary", "Ship the node update?"));
-  expect(text.split("Ship the node update?")).toHaveLength(3);
+  expect(text.split("Ship the node update?")).toHaveLength(2);
   expect(text).not.toContain("Choose a reversible action");
 });
 
@@ -87,6 +87,6 @@ test("a question with a why-now but no summary shows its title, not the why-now"
   const record = syntheticRecord("ask");
   const whyNow = SITREP_CONTEXT.whyNow;
   const text = await rowOf(entry("why-now", "Ship the node update?", { sitrep: { version: 1, record } }));
-  expect(text.split("Ship the node update?")).toHaveLength(3);
+  expect(text.split("Ship the node update?")).toHaveLength(2);
   expect(text).not.toContain(whyNow);
 });
