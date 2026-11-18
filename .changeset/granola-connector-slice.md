@@ -3,6 +3,4 @@
 "@tinychat/frontend": patch
 ---
 
-Add flag-gated Granola sync and support for reading Granola meetings. Connecting a Granola account remains unavailable.
-
-Details: TC-3292
+Internal changes for Granola meeting sync; nothing in the app changes. Details: TC-3292
