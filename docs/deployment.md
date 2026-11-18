@@ -165,10 +165,10 @@ or host check that changes the product.
   `https://tinycloud.one`) and then every host in `TINYCHAT_ALSO_HOSTS`
   (space-separated, default `tinycloud.chat home.tinycloud.xyz`): each must
   answer `/version.json` with the deployed commit, or answer a 301, 302, 307 or
-  308 whose `Location` is on the `TINYCHAT_FRONTEND_URL` host (the check does
-  not follow redirects, and its log line says which of the two it saw; a
-  redirecting host is not checked for the commit itself), or the release is
-  reported changed and unverified. A domain left on another Pages project (an
+  308 whose `Location` is on the `TINYCHAT_FRONTEND_URL` host; otherwise the
+  release is reported changed and unverified. The check doesn't follow
+  redirects, so it doesn't check a redirecting host for the commit, and its log
+  line says which answer it saw. A domain left on another Pages project (an
   old build, HTML for `/version.json`) fails that check.
 - **Moving visitors off the legacy hosts:** origins do not share IndexedDB or
   localStorage, so a redirect would strand work kept only in the browser.
@@ -247,7 +247,8 @@ or host check that changes the product.
   carries the untagged-return rule above, with `TINYCHAT_FRONTEND_URL` set to
   `https://tinycloud.one` just before that deploy and not earlier (the backend
   writes the variable as `FRONTEND_URL` at deploy: Stripe returns land on
-  tinycloud.one, untagged OAuth returns stay on tinycloud.chat); (4) deploy this web build and confirm all three hosts serve
+  tinycloud.one, untagged OAuth returns stay on tinycloud.chat); (4) deploy
+  this web build and confirm all three hosts serve
   it; (5) check a held visitor stays, a clear visitor moves, and `?legacy=1`
   works on both legacy hosts; (6) deploy the Worker's forwards (its README, "Turn the forwards on").
 - **Links the backend generates** keep using `FRONTEND_URL`: the Stripe
