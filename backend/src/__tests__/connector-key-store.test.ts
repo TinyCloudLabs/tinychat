@@ -3,6 +3,9 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConnectorKeyStore, utcDay } from "../services/connector-key-store.js";
+import { useRealConnectorStorageInTests } from "./connector-real-storage-test-setup.js";
+
+useRealConnectorStorageInTests();
 
 const MIDNIGHT = Date.parse("2026-11-18T00:00:00.000Z");
 const DAY = 86_400_000;

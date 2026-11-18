@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConnectorControlStore, corruptPurgeLedgerKey, mergePurgeLedgerIds, purgeLedgerKey } from "../routes/connector-webhooks.js";
 import { isTombstoned } from "../services/connector-drain.js";
@@ -8,6 +10,9 @@ import { ConnectorKeyStore, utcDay } from "../services/connector-key-store.js";
 import { ConnectorQueue, deadLetterKey, pendingQueueKey } from "../services/connector-queue.js";
 import { ConnectorTeardownService } from "../services/connector-teardown.js";
 import { ContentStore, InMemoryContentBlobStore, PURGE_TOMBSTONED } from "../services/content-store.js";
+import { useRealConnectorStorageInTests } from "./connector-real-storage-test-setup.js";
+
+useRealConnectorStorageInTests();
 
 const SOURCE = "fireflies";
 const ADDRESS = "0x1111111111111111111111111111111111111111";
@@ -242,4 +247,38 @@ test("queue and ledger writes need a configured store or the explicit test flag"
   } finally {
     if (prior !== undefined) process.env.CONNECTOR_KEY_STORE_TEST_PLAINTEXT = prior;
   }
+});
+
+test("persisted queue and ledger payload files omit the meeting ID and tenant address", async () => {
+  expect(process.env.CONNECTOR_KEY_STORE_TEST_PLAINTEXT).toBeUndefined();
+  const dir = mkdtempSync("/var/tmp/tc2778-connector-payloads-");
+  const now = () => ADDED_AT;
+  const keys = ConnectorKeyStore.open(join(dir, "keys"), now);
+  release.push(() => { keys.close(); rmSync(dir, { recursive: true, force: true }); });
+  const file = (key: string) => join(dir, createHash("sha256").update(key).digest("hex"));
+  const values = new Set<string>();
+  const node = { kv: {
+    async get(key: string) {
+      return { ok: true, data: values.has(key) ? { data: readFileSync(file(key), "utf8") } : null };
+    },
+    async put(key: string, value: unknown) {
+      writeFileSync(file(key), JSON.stringify(value));
+      values.add(key);
+      return { ok: true };
+    },
+  } } as unknown as TinyCloudNode;
+  const queue = new ConnectorQueue(node, { now, flushWindowMs: 0, retentionKeys: keys });
+  const control = new ConnectorControlStore(node, now, keys);
+  await queue.enqueue(SOURCE, ADDRESS, newEntry);
+  await control.writeLedger(SOURCE, ADDRESS, {
+    purgedThrough: iso(ADDED_AT), recentIds: [NEW_ID],
+    recentIdsAddedAt: { [NEW_ID]: iso(ADDED_AT) }, updatedAt: iso(ADDED_AT),
+  });
+  for (const key of [pendingQueueKey(SOURCE, ADDRESS), purgeLedgerKey(SOURCE, ADDRESS)]) {
+    const bytes = readFileSync(file(key), "utf8");
+    expect(bytes.includes(NEW_ID) || bytes.includes(ADDRESS)).toBe(false);
+  }
+  expect(await queue.depth(SOURCE, ADDRESS)).toBe(1);
+  const read = await control.readLedger(SOURCE, ADDRESS);
+  expect(read.status === "ok" && read.ledger.matchesRecentIdCode?.(NEW_ID)).toBe(true);
 });
