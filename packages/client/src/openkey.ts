@@ -84,7 +84,7 @@ export interface OpenKeyRenewalAsk {
 /** What the sign-in result says about renewal. An @openkey/sdk without sign-in renewal leaves both out. */
 export interface OpenKeyRenewalOutcome {
   renewalChoice?: unknown;
-  /** The admitted lease receipt, unverified. */
+  /** The lease receipt OpenKey signed, unverified and not yet admitted at the node. */
   renewal?: unknown;
 }
 

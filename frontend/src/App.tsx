@@ -23,7 +23,6 @@ import {
   renewalVerifyProof,
   requestNonce,
   restoreTinyCloudWebSession,
-  saveRenewalReceipt,
   verifyRenewedSession,
   verifySession,
   type OpenKeyRenewalOutcome,
@@ -35,7 +34,7 @@ import {
   offeredChatModelContextTokens,
   SESSION_EXPIRATION_MS,
 } from "@tinyboilerplate/core";
-import { SIGN_IN_RENEWAL_ASK, renewalRestoreFor } from "./lib/renewalReceipt";
+import { SIGN_IN_RENEWAL_ASK, admitSignInRenewal, renewalRestoreFor } from "./lib/renewalReceipt";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
@@ -1243,8 +1242,9 @@ export function App() {
         throw new UserFacingError("Sign-out didn't finish on this device. Sign in again, then sign out.");
       }
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
-      // Checked against the saved session before every use (lib/renewalReceipt.ts); an older one names an older grant.
-      if (renewalOutcome.renewal !== undefined) saveRenewalReceipt(connectedAddress, renewalOutcome.renewal);
+      // OpenKey signed the lease but keeps no copy: the session's node admits it here, else this sign-in runs to its
+      // signed end without renewal (lib/renewalReceipt.ts).
+      await admitSignInRenewal({ tcw: signedTcw, address: connectedAddress, renewal: renewalOutcome.renewal });
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;
