@@ -912,7 +912,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const seenAt = entry.view.seenAt;
     return { count: theirs.length, unread: theirs.filter((line) => !seenAt || line.at > seenAt).length, from: entry.source.label };
   }
-  /** A card's one or two lines: what was chosen once it is answered, else its summary or body. */
+  /** A card's one or two lines: what was chosen once it is answered, else its summary, else (a ship card) what moved, else its title. */
   function describe(entry: HomeFeedEntry) {
     const until = entry.view.snoozedUntil;
     if (until && Date.parse(until) > clock) return `Back at ${shortTime(until, clock)}`;
@@ -924,7 +924,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     }
     if (typeof entry.state.card.payload?.summary === "string") return entry.state.card.payload.summary;
     const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
-    return (record && cardLead(record)) ?? entry.state.card.body;
+    return (record && cardLead(record)) ?? entry.state.card.title;
   }
   const dueOf = (entry: HomeFeedEntry) => { const deadline = timingOf(entry).deadline; return deadline && attention(entry) ? deadline : undefined; };
   /** A card as a short item (compact view): its agent, title, short description and where it stands. Tap opens it. */
