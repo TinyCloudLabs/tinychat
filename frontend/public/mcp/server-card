@@ -3,7 +3,7 @@
   "name": "xyz.tinycloud/mcp",
   "version": "0.9.0",
   "title": "TinyCloud hosted MCP",
-  "description": "Use the TinyCloud MCP tools as a resumable authority workflow.",
+  "description": "Connect an AI assistant to your TinyCloud space. You approve its access with OpenKey.",
   "websiteUrl": "https://docs.tinycloud.xyz/cli/mcp",
   "remotes": [
     {
