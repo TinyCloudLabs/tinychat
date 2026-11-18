@@ -46,8 +46,8 @@ export function FilterPanel({ agents, agent, kinds, kind, taskTypes, taskType, s
     <div className="grid grid-cols-2 gap-2">
       <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Type</span>
         <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { const value = event.target.value; setFilter(() => setKind(value)); }}><option value="">All types</option>{kinds.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-      {taskTypes.length > 0 && <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Task type</span>
-        <select aria-label="Filter by task type" className={selectClass} value={taskType} onChange={(event) => { const value = event.target.value; setFilter(() => setTaskType(value)); }}><option value="">All tasks</option>{taskTypes.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>}
+      {taskTypes.length > 0 && <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Task</span>
+        <select aria-label="Filter by task" className={selectClass} value={taskType} onChange={(event) => { const value = event.target.value; setFilter(() => setTaskType(value)); }}><option value="">All tasks</option>{taskTypes.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>}
       {projects.length > 0 && <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Project</span>
         <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { const value = event.target.value; setFilter(() => setProject(value)); }}><option value="">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>}
       <label className="mb-2.5 block min-w-0"><span className={fieldLabelClass}>Priority</span>

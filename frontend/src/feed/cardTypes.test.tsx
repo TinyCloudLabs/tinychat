@@ -320,9 +320,9 @@ describe("the task type filter", () => {
   test("offers only the types in the feed, in the list's order, and narrows the list to one", async () => {
     const host = await mount([card("news", { type: "news" }, false), card("spend", { type: "spend" }), card("review", { type: "review" }), card("plain")]);
     const panel = await openFilter(host);
-    const select = panel.querySelector<HTMLSelectElement>('select[aria-label="Filter by task type"]')!;
+    const select = panel.querySelector<HTMLSelectElement>('select[aria-label="Filter by task"]')!;
     expect([...select.options].map((option) => option.textContent)).toEqual(["All tasks", "Spend", "Review", "News"]);
-    expect(select.closest("label")!.textContent).toStartWith("Task type");
+    expect(select.closest("label")!.textContent).toStartWith("TaskAll tasks");
     await act(async () => {
       select.value = "review";
       select.dispatchEvent(new Event("change", { bubbles: true }));
