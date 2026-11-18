@@ -7,6 +7,7 @@
 // lands in the page-close outbox before its first await, so a page that closes mid-write still sends it next launch.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UNDO_SECONDS } from "./cardKit";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 
 export interface UndoItem {
   /** The card it takes away, hidden from the list while the bar counts. */
@@ -25,6 +26,9 @@ const MAX_BARS = 3;
 
 export function useUndoBar(onError: (message: string, cause?: unknown) => void) {
   const [items, setItems] = useState<Pending[]>([]);
+  // A page that is about to move to tinycloud.one waits while an action counts: its flush on the way out would write
+  // the held send after the move had cleared this origin's outbox, and leave it behind.
+  useOriginMoveDeferral(items.length > 0);
   // Cards whose commit is still being written: hidden until it lands (or fails), not only while the bar counts. A card
   // that came back as an open row in the seconds a slow write took was Clarissa's "Acknowledge" finding (production).
   const [committing, setCommitting] = useState<ReadonlyMap<string, number>>(() => new Map());
