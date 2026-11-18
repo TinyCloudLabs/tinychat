@@ -5,7 +5,7 @@ import { ChevronRightIcon, InfoIcon, SlidersHorizontalIcon, TriangleAlertIcon } 
 import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { HomeCardView } from "./FeedView";
-import { safeUrl, type FeedCard } from "./feedData";
+import { CARD_TYPES, courierMessage, parseCardType, safeUrl, type FeedCard } from "./feedData";
 import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import type { FeedCardLink } from "./feedCardLink";
 import { SitrepCard } from "./SitrepCard";
@@ -138,6 +138,9 @@ function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
       ...(safeUrl(sourceRecord.url) && clean(sourceRecord.url) ? { url: sourceRecord.url } : {}),
       ...(typeof sourceRecord.ref === "string" ? { ref: sourceRecord.ref } : {}),
     } } : {}),
+    ...(parseCardType(payload.type) ? { type: parseCardType(payload.type)! } : {}),
+    // The Courier mark only for the owner's Courier connection; from any other agent `payload.channel` is ignored.
+    ...(courierMessage(entry.source, payload) ? { courier: courierMessage(entry.source, payload)! } : {}),
   };
 }
 function ReportLink({ entry }: { entry: HomeFeedEntry }) {
@@ -316,7 +319,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     {/* The card's foot, one row, Details alone in the bottom-right corner: a decision has Ask me later and Drop this
         card; an update has Acknowledge and Show me later, then Comment beside Details. Drop, Acknowledge and the later
         times take the card away with the undo bar at the bottom. */}
-    <div className="border-t border-border pt-2"><CardDetails card={entry.state.card} agent={entry.source.label}
+    <div className="border-t border-border pt-2"><CardDetails card={entry.state.card} agent={entry.source.label} publisher={entry.source}
       close={closed || stale ? undefined : info ? { kind: "acknowledge", onTap: () => foot.onClose("acknowledge") } : attention ? { kind: "drop", onTap: () => foot.onClose("drop") } : undefined}
       actions={<>
         {!info && saved && !asking && <button type="button" className={footActionClass} onClick={() => setFollowup(true)}>Change answer</button>}
@@ -392,6 +395,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const [missedVisit, setMissedVisit] = useState<string | null>(null);
   const [outlined, setOutlined] = useState<string | null>(null);
   const [kind, setKind] = useState("");
+  const [taskType, setTaskType] = useState("");
   const [project, setProject] = useState("");
   // How the list is drawn (Compact, Expanded, Cards), kept on this device, the same in every tab.
   const [viewMode, setViewModeState] = useState<FeedViewMode>(readFeedViewMode);
@@ -600,7 +604,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const tab: FeedTab = history ? "history" : view;
   const timingOf = (entry: HomeFeedEntry) => cardTiming(entry, contextFor(entry));
   const expired = (entry: HomeFeedEntry) => { const at = timingOf(entry).expiresAt; return !!at && Date.parse(at) <= clock; };
-  const matchesFilters = (entry: HomeFeedEntry) => (!agent || entry.source.sourceId === agent) && (!kind || kindOf(entry) === kind) && (!project || projectOf(entry) === project)
+  const matchesFilters = (entry: HomeFeedEntry) => (!agent || entry.source.sourceId === agent) && (!kind || kindOf(entry) === kind) && (!taskType || parseCardType(entry.state.card.payload?.type) === taskType) && (!project || projectOf(entry) === project)
     && (!priorityMax || (timingOf(entry).priority ?? 9) <= Number(priorityMax));
   const attention = (entry: HomeFeedEntry) => needsAttention(entry, clock, contextFor(entry)?.projection) && !answeredIn(entry) && !closureOf(entry) && !expired(entry);
   const folded = (entry: HomeFeedEntry) => {
@@ -798,7 +802,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
    */
   function openFromAgent(entry: HomeFeedEntry) {
     leaveView();
-    setAgent(""); setKind(""); setProject(""); setPriorityMax(""); setSortBy("");
+    setAgent(""); setKind(""); setTaskType(""); setProject(""); setPriorityMax(""); setSortBy("");
     const inFeed = !snoozedNow(entry, clock) && !expired(entry) && !closureOf(entry);
     setHistory(!inFeed && !snoozedNow(entry, clock)); setSnoozedOnly(!inFeed && snoozedNow(entry, clock));
     if (inFeed && !attention(entry) && pendingStatus(entry)) setPendingOpen(true);
@@ -965,9 +969,12 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const priority = timingOf(entry).priority;
     const replies = repliesOf(entry);
     const status = statusOf(entry, author);
+    const type = parseCardType(entry.state.card.payload?.type);
+    const courier = courierMessage(entry.source, entry.state.card.payload);
     return <CompactCard layout={viewMode === "cards" ? "tile" : "row"} agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt}
       title={entry.state.card.title} description={describe(entry)} now={clock} onOpen={() => openCard(entry)}
-      {...(priority !== undefined ? { priority } : {})} {...(replies ? { replies } : {})} {...(status ? { status } : {})} {...(due ? { due } : {})} />;
+      {...(priority !== undefined ? { priority } : {})} {...(replies ? { replies } : {})} {...(status ? { status } : {})} {...(due ? { due } : {})}
+      {...(type ? { type } : {})} {...(courier ? { courier: { ...courier, via: author } } : {})} />;
   }
   /** A post: its row in the list, opening its page. */
   function postCard(entry: HomeFeedEntry) {
@@ -1023,7 +1030,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
           {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
           ? <><p role="status" className="mt-3.5 text-sm text-muted-foreground">Open Details to see this card's content, exactly as {author.name} sent it.</p>
-            <div className="mt-3 border-t border-border pt-2"><CardDetails card={entry.state.card} typed={{}} agent={author.name}>
+            <div className="mt-3 border-t border-border pt-2"><CardDetails card={entry.state.card} typed={{}} agent={author.name} publisher={entry.source}>
               <CardFacts entry={entry} reference={reference} {...(priority !== undefined ? { priority } : {})} />
             </CardDetails></div></>
           : <AnswerForm key={key} drafts={ownDrafts.current} draftKey={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
@@ -1081,7 +1088,10 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const agents = [...new Map((snapshot?.entries ?? []).map((entry) => [entry.source.sourceId, entry.source.label])).entries()];
   const projects = [...new Set((snapshot?.entries ?? []).map(projectOf).filter(Boolean))].sort();
   const kinds = [...new Set((snapshot?.entries ?? []).map(kindOf))].sort();
-  const filtersOn = [agent, kind, project, priorityMax, sortBy].filter(Boolean).length + (snoozedOnly ? 1 : 0);
+  // The task types the feed's cards name, in the list's own order (its precedence), as their words.
+  const presentTypes = new Set((snapshot?.entries ?? []).map((entry) => parseCardType(entry.state.card.payload?.type)));
+  const taskTypes = CARD_TYPES.filter((entry) => presentTypes.has(entry.id)).map((entry): [string, string] => [entry.id, entry.label]);
+  const filtersOn = [agent, kind, taskType, project, priorityMax, sortBy].filter(Boolean).length + (snoozedOnly ? 1 : 0);
   const today = (snapshot?.entries ?? []).filter((entry) => !attention(entry) && new Date(entry.state.card.createdAt).toDateString() === new Date(clock).toDateString()).length;
   // Home shows only the heading and its empty card until the first card arrives; while loading, the controls are
   // already in place so nothing moves when cards land.
@@ -1094,7 +1104,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const unreadReplies = (snapshot?.entries ?? []).some((entry) => (repliesOf(entry)?.unread ?? 0) > 0);
   const pageEntry = pageKey ? all.find((entry) => lineageKey(entry) === pageKey && !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === pageKey)) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
-  const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setProject(""); setPriorityMax(""); setSortBy(""); setSnoozedOnly(false); });
+  const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setTaskType(""); setProject(""); setPriorityMax(""); setSortBy(""); setSnoozedOnly(false); });
   // While undo bars show, the scroll container itself grows at its end by their height, their offset from the bottom
   // edge and the safe-area inset, so its last cards can scroll clear of them (Clarissa, 75eebec).
   return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
@@ -1129,7 +1139,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
             {!!filtersOn && <span aria-hidden className="absolute -right-1 -top-1 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-foreground px-1 text-[11px] font-bold text-background ring-2 ring-background">{filtersOn}</span>}
           </button>
           {/* Sam, 11-13: the dropdowns on top; Snoozed and Clear under them (History is a tab). */}
-          {panel === "filter" && <LazyFilterPanel agents={agents} agent={agent} kinds={kinds} kind={kind} projects={projects} project={project}
+          {panel === "filter" && <LazyFilterPanel agents={agents} agent={agent} kinds={kinds} kind={kind} taskTypes={taskTypes} taskType={taskType} setTaskType={setTaskType} projects={projects} project={project}
             priorityMax={priorityMax} sortBy={sortBy} snoozedOnly={snoozedOnly} filtersOn={filtersOn} setFilter={setFilter}
             setAgent={setAgent} setKind={setKind} setProject={setProject} setPriorityMax={setPriorityMax} setSortBy={setSortBy}
             setSnoozedOnly={setSnoozedOnly} setHistory={setHistory} clearFilters={clearFilters} viewMode={viewMode} setViewMode={setViewMode} />}
