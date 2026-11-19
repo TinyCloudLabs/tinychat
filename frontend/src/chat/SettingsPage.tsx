@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useContext, useEffect } from "react";
 import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
@@ -19,16 +19,20 @@ import {
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { StorageFullMessage } from "./StorageFullDialog";
-import { openManageStorage } from "@/lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
+import { PlatformContext } from "@/lib/platform";
 import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
+import { DeleteRecordingsStep } from "./DeleteRecordingsStep";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
-import { BuildInfoLine } from "@/components/BuildInfoLine";
+import { SettingsBuildFooter } from "@/components/PlaybackDiagnosticsSection";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
+import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
 import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { AppearanceControl } from "./AppearanceControl";
@@ -45,8 +49,6 @@ import { WordFixesSettings } from "./WordFixesSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { ReplicationSettings } from "../lib/replication/ReplicationSettings";
-import { HOME_SITE } from "../lib/homeSite";
-import { HomeFeatureGate, useHomeFeatureAccess } from "../shell/homeFeatureAccess";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
@@ -54,6 +56,9 @@ import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
+import { AppLockSettings } from "./AppLockSettings";
+import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
+import { LegacyDataLinks } from "./LegacyDataLinks";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -103,7 +108,6 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const { hash } = useLocation();
   const agentAccess = useAgentAccess();
-  const recordingCovered = useHomeFeatureAccess().covered("recording");
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
   const compact = useSizeClass().size === "compact";
   const usage = billingStatus?.usage;
@@ -114,6 +118,8 @@ export function SettingsPage({
   const near = pct >= 90;
   const storageFull = useStorageReadOnly();
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
+  // The iOS and Android apps show usage only: no Manage storage, Upgrade or Manage plan (App Store 3.1.1, Play Payments).
+  const billingLinks = billingLinksAllowed(useContext(PlatformContext));
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   useEffect(() => {
     if (hash !== "#agent-access") return;
@@ -137,13 +143,19 @@ export function SettingsPage({
             <p>
               <strong>Storage full</strong> <StorageFullMessage detail />
             </p>
-            <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
-              Manage storage
-            </Button>
-            {canUpgrade && (
-              <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
-                Upgrade
-              </Button>
+            {billingLinks ? (
+              <>
+                <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
+                  Manage storage
+                </Button>
+                {canUpgrade && (
+                  <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
+                    Upgrade
+                  </Button>
+                )}
+              </>
+            ) : (
+              <p className="mt-3 text-muted-foreground">{NATIVE_PLAN_NOTE}</p>
             )}
           </div>
         )}
@@ -189,6 +201,9 @@ export function SettingsPage({
                 fixed-URL opener for it yet, so the row is phone and web only. */}
             {appPlatform() !== "tauri" && (
               <div className="mt-4 border-t border-border pt-4">
+                <div className="mb-4">
+                  <DeleteRecordingsStep backendUrl={backendUrl} sessionStore={sessionStore} />
+                </div>
                 <Button
                   variant="outline"
                   size="sm"
@@ -203,12 +218,15 @@ export function SettingsPage({
                 </p>
               </div>
             )}
+            <div className="mt-4 border-t border-border pt-3 fine:pt-4">
+              <PrivacyPolicyLink />
+            </div>
           </SectionCard>
-          <SectionCard icon={LayoutGridIcon} title="Home">
+          <AppLockSettings />
+          <HiddenFeaturesSettings />
+          <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
-          {/* Agent access offers meeting access to agents, which the Home site does not. */}
-          {!HOME_SITE && (<>
           <SectionCard
             id="agent-access"
             icon={ShieldCheckIcon}
@@ -222,7 +240,6 @@ export function SettingsPage({
             <AgentAccessControls {...agentAccess} />
           </SectionCard>
           <AgentSetupCard />
-          </>)}
           <SectionCard icon={BrainIcon} title="Memory">
             <MemoryPanel
               variant="inline"
@@ -231,10 +248,8 @@ export function SettingsPage({
               onMemoryUpdated={onMemoryUpdated}
             />
           </SectionCard>
-          {/* Recording's sections: on the Home site they ask for Recording's permission in place until it is given. */}
-          <HomeFeatureGate feature="recording"><TranscriptionSettings tcw={tcw} /></HomeFeatureGate>
+          <TranscriptionSettings tcw={tcw} />
           <WordFixesSettings tcw={tcw} />
-          {recordingCovered && (<>
           <SectionCard icon={BookOpenIcon} title="Meeting summaries">
             <AutomaticSummariesSettings tcw={tcw} />
           </SectionCard>
@@ -243,7 +258,6 @@ export function SettingsPage({
               <VoiceNotesTranscriberSettings />
             </SectionCard>
           )}
-          </>)}
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
             <BackendAttestationPanel
               backendUrl={backendUrl}
@@ -251,13 +265,10 @@ export function SettingsPage({
             />
           </SectionCard>
           <DebugLogRow />
-          {recordingCovered && (
-            <SectionCard icon={DatabaseIcon} title="Audio storage">
-              <AudioCacheSettings />
-            </SectionCard>
-          )}
-          {/* Local copy (replication) stays off on the Home site. */}
-          {!HOME_SITE && <ReplicationSettings tcw={tcw} />}
+          <SectionCard icon={DatabaseIcon} title="Audio storage">
+            <AudioCacheSettings />
+          </SectionCard>
+          <ReplicationSettings tcw={tcw} />
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.
@@ -265,6 +276,7 @@ export function SettingsPage({
             <div className="mt-3">
               <ImportDialog tcw={tcw} onImported={onImported} />
             </div>
+            <LegacyDataLinks />
           </SectionCard>
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
@@ -298,15 +310,20 @@ export function SettingsPage({
                   )}
                 </div>
               )}
+              {!billingLinks && (
+                <p className="mt-3 text-xs text-muted-foreground">{NATIVE_PLAN_NOTE}</p>
+              )}
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={onManagePlan}
-                  aria-haspopup="dialog"
-                >
-                  Manage plan
-                </Button>
+                {billingLinks && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={onManagePlan}
+                    aria-haspopup="dialog"
+                  >
+                    Manage plan
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -349,8 +366,8 @@ export function SettingsPage({
             <span className="flex-1">How it works</span>
             <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
           </Link>
-          {/* The build line at the bottom of Settings (TC-840). */}
-          <BuildInfoLine />
+          {/* The build line at the bottom of Settings (TC-840); seven taps reveal playback diagnostics (TC-2857). */}
+          <SettingsBuildFooter />
         </div>
       </div>
     </div>

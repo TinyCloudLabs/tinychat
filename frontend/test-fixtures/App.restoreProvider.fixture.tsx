@@ -1,6 +1,6 @@
-// Mounted-App proof of what the session restore hands to restoreTinyCloudWebSession: with the local copy
-// ON the replication option AND a read-only account provider (so the SDK's restore has a signer to ask,
-// and is not left refused as `gate_unavailable`), with it OFF neither. Run by
+// Mounted-App proof of what the session restore hands to restoreTinyCloudWebSession: always a read-only account
+// provider (so the restored client has a session, TC-3019, and the SDK's restore has a signer to ask), and with
+// the local copy ON also the replication option. Run by
 // src/App.restoreProvider.test.ts in its own process (mock.module is process-wide).
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { act } from "react";
@@ -173,10 +173,13 @@ test("restore with the local copy ON passes the replication option and a provide
   await expect(config.provider!.request({ method: "eth_requestAccounts" })).rejects.toMatchObject({ code: 4200 });
 });
 
-test("restore with the local copy OFF passes neither: no replication option, no provider key at all", async () => {
+test("restore with the local copy OFF passes no replication option, and the read-only account provider", async () => {
   replicationOn = false;
   await signInThenReload();
   expect(restoreConfigs).toHaveLength(1);
-  expect("provider" in restoreConfigs[0]!).toBe(false);
-  expect("replication" in restoreConfigs[0]!).toBe(false);
+  const config = restoreConfigs[0]!;
+  expect(await config.provider!.request({ method: "eth_accounts" })).toEqual([ADDRESS]);
+  await expect(config.provider!.request({ method: "personal_sign" })).rejects.toMatchObject({ code: 4200 });
+  await expect(config.provider!.request({ method: "eth_requestAccounts" })).rejects.toMatchObject({ code: 4200 });
+  expect("replication" in config).toBe(false);
 });

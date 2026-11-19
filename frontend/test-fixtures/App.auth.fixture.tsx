@@ -1,3 +1,4 @@
+import { newIdbEnv } from "@/lib/voiceNotes/web/testing/idb";
 import { afterAll, afterEach, beforeEach, expect, jest, mock, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -30,6 +31,10 @@ const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
 const uploadResumerApi = await import("@/capture/upload/UploadResumer");
 const voiceNotesApi = await import("../src/lib/voiceNotes/nativeVoiceNotes");
 const storageDialogApi = await import("../src/chat/StorageFullDialog");
+const replicationSwitchApi = await import("../src/lib/replication/replicationSwitch");
+const replicationFlagApi = await import("../src/lib/replication/replicationFlag");
+const { REPLICATION_COPY_KEY } = await import("../src/lib/replication/replicationCopyMarker");
+const { REPLICA_PURGE_FAILED_WARNING } = await import("../src/lib/replication/replicationSignOut");
 
 let nativeMode = false;
 let captureInstallCalls = 0;
@@ -46,6 +51,9 @@ let widgetSawSessionsCleared: boolean | null = null;
 const deletedVoiceNoteIds: string[] = [];
 let clearAppSession: (() => void) | null = null;
 let cleanedClients = 0;
+const removeCopyCalls: unknown[][] = [];
+let bindPaused = false;
+let removeCopyOutcome: Promise<{ status: string; code?: string }> | { status: string; code?: string } = { status: "purged" };
 let restoreCalls = 0;
 let restorePause = false;
 let releaseRestore: (() => void) | null = null;
@@ -150,6 +158,11 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
   captureEngineAvailable: () => captureEngineInstalled,
   subscribeCaptureCapabilities: () => () => undefined,
 }));
+mock.module("../src/lib/replication/replicationFlag", () => ({ ...replicationFlagApi, isReplicationBindPaused: () => bindPaused }));
+mock.module("../src/lib/replication/replicationSwitch", () => ({
+  ...replicationSwitchApi,
+  removeLocalCopyNow: async (...args: unknown[]) => { removeCopyCalls.push(args); return removeCopyOutcome; },
+}));
 mock.module("../src/chat/ChatWorkspace", () => ({
   ChatWorkspace: ({ settings }: { settings: React.ReactNode }) => <div data-testid="authenticated-workspace">{settings}</div>,
 }));
@@ -188,6 +201,7 @@ const nativeVoiceNotesFixture = {
   ...voiceNotesApi,
   VoiceNotes: {
     ...voiceNotesApi.VoiceNotes,
+    status: async () => ({ intent: "stopped" }),
     getCaptureDefaults: async () => ({ status: "signed_out", accountDid: null, transitionGen: 0 }),
     setAccountState: async () => {},
     listPending: async () => {
@@ -222,6 +236,8 @@ async function mount(platform: AppPlatform) {
   root = createRoot(host);
   await act(async () => root!.render(<BrowserRouter><PlatformContext.Provider value={platform}><App /></PlatformContext.Provider></BrowserRouter>));
   await settle();
+  const deadline = Date.now() + 1000;
+  while (!restorePause && host!.textContent?.includes("Restoring your session") && Date.now() < deadline) await settle();
 }
 async function remount(platform: AppPlatform) {
   if (root) await act(async () => root!.unmount());
@@ -231,6 +247,8 @@ async function remount(platform: AppPlatform) {
   root = createRoot(host);
   await act(async () => root!.render(<BrowserRouter><PlatformContext.Provider value={platform}><App /></PlatformContext.Provider></BrowserRouter>));
   await settle();
+  const deadline = Date.now() + 1000;
+  while (!restorePause && host!.textContent?.includes("Restoring your session") && Date.now() < deadline) await settle();
 }
 async function click(label: string) {
   const button = [...document.body.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
@@ -247,6 +265,8 @@ async function navigate(path: string) {
 }
 
 beforeEach(() => {
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: newIdbEnv().factory });
+  Object.defineProperty(globalThis, "IDBKeyRange", { configurable: true, value: newIdbEnv().keyRange });
   authStorage.localStorage.clear();
   authStorage.sessionStorage.clear();
   nativeMode = false;
@@ -265,6 +285,9 @@ beforeEach(() => {
   deletedVoiceNoteIds.length = 0;
   clearAppSession = null;
   restoreCalls = 0;
+  removeCopyCalls.length = 0;
+  bindPaused = false;
+  removeCopyOutcome = { status: "purged" };
   restorePause = false;
   releaseRestore = null;
   restoreStarted = null;
@@ -309,7 +332,7 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   await act(async () => { releaseSignOut?.(); releaseSignOut = null; await tick(); await tick(); });
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
-  expect(host!.textContent).toContain("You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.");
+  expect(host!.textContent).toContain("You're signed out of TinyCloud One, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.");
   expect(host!.textContent).not.toContain("Storage full");
   expect(isStorageReadOnly()).toBe(false);
 
@@ -374,6 +397,7 @@ test("web sign-out clears SDK and app sessions before a hung OpenKey confirmatio
   releaseSignOut = () => {};
   await click("Test sign out");
   await startedPromise;
+  await settle();
 
   expect(Boolean(host!.querySelector('[data-testid="authenticated-workspace"]'))).toBe(false);
   expect(host!.textContent).toContain("Sign in");
@@ -394,6 +418,35 @@ test("web sign-out clears SDK and app sessions before a hung OpenKey confirmatio
   expect(Boolean(host!.querySelector('[data-testid="authenticated-workspace"]'))).toBe(false);
   expect(host!.textContent).toContain("Sign in");
 });
+test("TC-2883 a production sign-out with binding paused erases the copy this client never bound, and warns when that fails", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  expect(lastTcw!.replication).toBeUndefined();
+  window.localStorage.setItem(REPLICATION_COPY_KEY, `did:pkh:eip155:1:${loginAddress}`);
+  let failRemoval!: () => void;
+  removeCopyOutcome = new Promise((resolve) => { failRemoval = () => resolve({ status: "failed", code: "DELETE_BLOCKED" }); });
+  bindPaused = true; // a production build
+  await click("Test sign out");
+  await settle();
+  expect(removeCopyCalls).toHaveLength(1);
+  expect(host!.textContent).toContain("Sign in");
+  expect(host!.textContent).not.toContain(REPLICA_PURGE_FAILED_WARNING);
+  await act(async () => { failRemoval(); await tick(); });
+  await settle();
+  expect(host!.textContent).toContain(REPLICA_PURGE_FAILED_WARNING);
+});
+
+test("TC-2883 with binding not paused (dev builds), sign-out leaves an unbound copy to the next page load", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  window.localStorage.setItem(REPLICATION_COPY_KEY, `did:pkh:eip155:1:${loginAddress}`);
+  await click("Test sign out");
+  await settle();
+  expect(removeCopyCalls).toHaveLength(0);
+});
+
 test("a restore finishing after local sign-out cannot restore the session", async () => {
   await mount("web");
   await click("Sign in");
@@ -437,7 +490,7 @@ test("a restore finishing after local sign-out cannot restore the session", asyn
   expect(cleanedClients).toBe(1);
 });
 
-test("sign-out offers save, delete, and cancel for local-only voice notes and stays signed in after save failure", async () => {
+test("TC-2785 sign-out offers keep, delete and cancel and retains local-only notes on keep", async () => {
   const address = loginAddress.toLowerCase();
   const did = `did:pkh:eip155:1:${loginAddress}`;
   setPendingVoiceNotes([{
@@ -454,32 +507,21 @@ test("sign-out offers save, delete, and cancel for local-only voice notes and st
 
   await click("Test sign out");
   await settle();
-  expect(document.body.textContent).toContain("A voice note isn't saved yet");
-  expect(document.body.textContent).toContain("1 voice note is only on this device.");
-  expect(document.body.textContent).toContain("Save and sign out");
-  expect(document.body.textContent).toContain("Sign out and delete it");
-  expect(document.body.textContent).toContain("Cancel");
+  expect(document.body.textContent).toContain("A voice note is still on this browser");
+  expect(document.body.textContent).toContain("It stays on this browser for this account");
+  expect(document.body.textContent).toContain("Keep & sign out");
+  expect(document.body.textContent).toContain("Delete from this browser & sign out");
+  expect(document.body.textContent).toContain("Stay signed in");
   expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
   expect(signOutEvents).toEqual([]);
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
-
-  await click("Cancel");
+  await click("Stay signed in");
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   await click("Test sign out");
-  await click("Save and sign out");
   await settle();
-  expect(document.body.textContent).toContain("Couldn't save your voice note. Try again, or sign out and delete it.");
-  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
-  expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
-  expect(signOutEvents).toEqual([]);
-  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
-
-  await click("Cancel");
-  await click("Test sign out");
+  await click("Keep & sign out");
   await settle();
-  await click("Sign out and delete it");
-  await settle();
-  expect(deletedVoiceNoteIds).toEqual(["pending-note"]);
+  expect(deletedVoiceNoteIds).toEqual([]);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
   expect(window.localStorage.getItem(`tinycloud:session:${address}`)).toBeNull();
   expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
@@ -508,9 +550,9 @@ test("the pending-note dialog uses plural copy for multiple voice notes", async 
   await click("Test sign out");
   await settle();
   expect(document.body.querySelector('[data-testid="pending-voice-note-signout"]')?.textContent)
-    .toContain("2 voice notes are only on this device.");
+    .toContain("2 voice notes haven't been saved to your TinyCloud yet.");
   expect(document.body.querySelector('[data-testid="pending-voice-note-signout"]')?.textContent)
-    .toContain("Sign out and delete them");
+    .toContain("Delete from this browser & sign out");
 });
 
 test("failed pending-note deletion keeps the owner signed in with recovery copy", async () => {
@@ -524,7 +566,7 @@ test("failed pending-note deletion keeps the owner signed in with recovery copy"
   window.localStorage.setItem(`tinycloud:session:${address}`, "sdk session");
   await click("Test sign out");
   await settle();
-  await click("Sign out and delete it");
+  await click("Delete from this browser & sign out");
   await settle();
   expect(document.body.querySelector('[data-testid="pending-voice-note-signout"] [role="alert"]')?.textContent)
     .toBe("Couldn't delete all your voice notes, so you're still signed in. Try again.");
@@ -556,14 +598,14 @@ test("a failed note deletion with a retained sign-out fence reports the signed-i
     },
   });
   try {
-    await click("Sign out and delete it");
+    await click("Delete from this browser & sign out");
     await settle();
     expect(document.body.querySelector('[data-testid="pending-voice-note-signout"] [role="alert"]')?.textContent)
       .toBe("Couldn't delete all your voice notes, so you're still signed in. Try again.");
     expect(host!.textContent)
       .toContain("You're still signed in on this tab. If you reload or close it, you'll need to sign in again.");
     expect(host!.textContent)
-      .not.toContain("You're signed out of TinyChat, but this device didn't finish clearing your session.");
+      .not.toContain("You're signed out of TinyCloud One, but this device didn't finish clearing your session.");
     expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
     expect(window.localStorage.getItem(`tinycloud:session:${address}`)).not.toBeNull();
     expect(window.localStorage.getItem(fenceKey)).not.toBeNull();
@@ -600,7 +642,7 @@ test("sign-out recovery copy distinguishes a local-clear failure from an unfinis
   await click("Test sign out");
   await settle();
   expect(host!.textContent)
-    .toContain("You're signed out of TinyChat, but this device didn't finish clearing your session. Sign in again, then sign out.");
+    .toContain("You're signed out of TinyCloud One, but this device didn't finish clearing your session. Sign in again, then sign out.");
 
   const originalRemoveItem = storage.removeItem.bind(storage);
   Object.defineProperty(storage, "removeItem", {
@@ -720,3 +762,49 @@ test("mounted App shows one shared read-only notice outside Settings and keeps S
   expect(host!.querySelectorAll('[aria-label="Storage full"]')).toHaveLength(1);
 });
 
+
+test("TC-2785 native iOS retains the blocking Save/Delete flow until its ownership port", async () => {
+  const did = `did:pkh:eip155:1:${loginAddress}`;
+  setPendingVoiceNotes([{ id: "ios-only-copy", owner: did, ledger: { audio: { state: "pending" } } }]);
+  await mount("ios");
+  await click("Sign in");
+  await settle();
+  await click("Test sign out");
+  await settle();
+  expect(document.body.textContent).toContain("Save and sign out");
+  expect(document.body.textContent).not.toContain("Keep & sign out");
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+});
+
+test("TC-2785 a local-result clear failure releases the sign-out fence and keeps the session", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  const factory = globalThis.indexedDB;
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: {
+    open(name: string, version?: number) {
+      if (name === "exo-held-results") throw new Error("device storage unavailable");
+      return factory.open(name, version);
+    },
+  } });
+  await click("Test sign out");
+  await settle();
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+  expect(window.localStorage.getItem("xyz.tinycloud.tinychat:signout-pending")).toBeNull();
+  expect(signOutEvents).toEqual([]);
+});
+
+test("a restart that finds a sign-out still pending clears the owner's held answers, unsent answers and post drafts, whatever their space", async () => {
+  const address = loginAddress.toLowerCase();
+  const storage = authStorage.localStorage;
+  // A restart has no client and no space to clear by: these carry the owner's words and must not outlive the account.
+  const answers = ['tinychat.home.answer-outbox.v1:space-a:["agent","card",1,"issuance"]', 'tinychat.home.answer-unsent.v1:space-b:["agent","card"]', 'tinychat.home.post-draft.v1:space-c:["agent","card"]'];
+  for (const key of answers) storage.setItem(key, "{}");
+  storage.setItem("tinycloud:session:active-address", address);
+  storage.setItem(`tinycloud:session:${address}`, "sdk session");
+  storage.setItem("xyz.tinycloud.tinychat:signout-pending", `restart-token|${address}`);
+  await mount("web");
+  await settle();
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
+  for (const key of answers) expect(storage.getItem(key)).toBeNull();
+});

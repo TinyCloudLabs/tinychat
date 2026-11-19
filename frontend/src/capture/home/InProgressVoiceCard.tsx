@@ -67,7 +67,7 @@ export function InProgressVoiceCard(props: {
         <b data-testid="voice-note-summary">{HOME_COPY.inProgressCount(unfinished.length)}</b>
         {onPhone > 0 && <span data-testid="voice-note-on-phone">{HOME_COPY.onPhoneCount(onPhone)}</span>}
         {uploading > 0 && <span data-testid="voice-note-uploading">{uploading} uploading</span>}
-        {hasOffline && <span data-testid="voice-note-offline">Waiting for a connection. TinyCloud Home continues automatically.</span>}
+        {hasOffline && <span data-testid="voice-note-offline">Waiting for a connection. TinyCloud One continues automatically.</span>}
         {props.actionError && <span role="alert" data-testid="voice-note-action-error">{props.actionError}</span>}
       </div>
       {action && (

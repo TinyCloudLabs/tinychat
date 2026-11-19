@@ -24,6 +24,7 @@ import {
   setMemory,
 } from "@/lib/threadStore";
 import { MEMORY_BUDGET_CHARS, clampDocToBudget } from "@/lib/memory";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 
 interface MemoryPanelProps {
   tcw: TinyCloudWeb;
@@ -132,6 +133,8 @@ export function MemoryPanel({
 
   const isEmpty = !doc || doc.trim().length === 0;
   const dirty = draft !== (doc ?? "");
+  // Unsaved edits live only in this page: a held tinycloud.chat page does not move under them (originMove.ts).
+  useOriginMoveDeferral(dirty);
   const overBudget = draft.length > MEMORY_BUDGET_CHARS;
 
   // Closing with unsaved edits must not silently discard them. Escape and

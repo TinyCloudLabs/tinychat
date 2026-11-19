@@ -65,7 +65,7 @@ export const ModelVerificationIndicator: FC<{
         disabled={!interactive}
         aria-expanded={expandable ? open : undefined}
         aria-label={retryable ? "Retry model verification" : "Model verification"}
-        title={retryable ? "Verification failed — click to retry" : undefined}
+        title={retryable ? "Couldn't verify. Click to retry." : undefined}
         className={pillClass(status, interactive)}
       >
         {status === "verifying" ? (
@@ -105,7 +105,7 @@ export const ModelVerificationIndicator: FC<{
                 below.
               </span>
             ) : (
-              "Responses are attested at the enclave level, but not individually signed."
+              "The gateway's enclave is verified, but replies aren't individually signed."
             )}
           </p>
 

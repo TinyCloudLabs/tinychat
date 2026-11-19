@@ -24,21 +24,28 @@ import {
   verifySession,
 } from "@tinyboilerplate/client";
 import {
+  manifestCarriesBundle,
   OFFERED_CHAT_MODELS,
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
-import { homeFeaturesToRequest, homeSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
+import { homeFeaturesToRequest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
+import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
 import { reauthorizeHome } from "./lib/homeReauthorize";
 import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
-import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type FeatureAccessOutcome, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
+import { deferOriginMove } from "./lib/originMove";
+import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { replicationConfigPatch, startReplicationFill, stopReplicationFill } from "./lib/replication/replicationClient";
-import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
+import { rememberReplicationPrincipal, replicationCopyMayExist } from "./lib/replication/replicationCopyMarker";
+import { isReplicationBindPaused } from "./lib/replication/replicationFlag";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
 import { replicationRestorePatch } from "./lib/replication/replicationRestore";
+import { readOnlyAccountProvider } from "./lib/replication/readOnlyAccountProvider";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
-import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { clientHasReplication, REPLICA_PURGE_FAILED_WARNING, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { wipeNativeReplicaOnSignOut } from "./lib/replication/nativeReplicaStore";
+import { removeLocalCopyNow } from "./lib/replication/replicationSwitch";
 import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
 import { uploadRunner } from "./lib/audioUpload";
 import {
@@ -50,7 +57,6 @@ import {
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { createWebSignInPrefetch, WEB_APP_MANIFEST, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
-import { ChatWorkspace } from "./chat/ChatWorkspace";
 import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
 import { UsageIndicator } from "./chat/UsageIndicator";
 import { AgentAccessProvider } from "./chat/useAgentEnablement";
@@ -67,8 +73,9 @@ import {
   subscribeStorageScopeRetired,
   reportStoragePlanTier,
   STORAGE_READ_ONLY_NOTICE,
+  NATIVE_PLAN_NOTE,
 } from "./lib/storageStatus";
-import { openManageStorage } from "./lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "./lib/openManageStorage";
 import { useStorageFreePlan } from "./lib/useStorageFreePlan";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
@@ -78,7 +85,9 @@ import {
 import { resolveLocalValidation, prepareLocalSignIn } from "./lib/localValidation";
 import { DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
+import { bindSharedWithMe } from "./lib/sharedWithMe";
 import { historyPrefetch } from "./lib/historyPrefetch";
+import { noteScreen } from "./lib/localFirst/requestLanes";
 import {
   createBillingClient,
   type BillingClient,
@@ -97,14 +106,12 @@ import {
   type RefetchTrigger,
 } from "./lib/billingConfigPolicy";
 import { Button } from "@/components/ui/button";
-import { SettingsPage } from "./chat/SettingsPage";
-import { AboutPage } from "./chat/AboutPage";
-import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
-import { AppsPage } from "./home/AppsPage";
+import { clearAllHeldAnswers, clearHeldAnswers } from "./feed/answerOutbox";
+import { clearAllPostDrafts, clearPostDrafts } from "./feed/postAnswers";
+import { settleHeldAnswersForSignOut } from "./feed/feedStore";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
-import { CaptureSurface } from "./capture/CaptureSurface";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
@@ -119,15 +126,9 @@ import {
   redirectsWhenSignedOut,
   screenFor,
 } from "./shell/routes";
-import { PlatformContext, sdkUiPlatform } from "./lib/platform";
+import { appPlatform, PlatformContext, sdkUiPlatform } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
-// W5 — the cohort meetings view. It renders NOTHING unless the backend's read
-// API answers for this address (dark flag / non-cohort = 404 = invisible), and
-// it needs neither the vault nor a connector key: a session is the whole
-// requirement, which is what makes the meetings readable on a device that has
-// never opened the app.
-import { MeetingsSection } from "./chat/MeetingsSection";
-// …and W6's headless counterpart: the same meetings copied into the user's OWN
+// …and W6's headless counterpart of MeetingsSection: the same meetings copied into the user's OWN
 // space whenever a session with an unlocked vault happens to be open. Separate
 // from the view on purpose — the view must keep working with no vault at all.
 import { BackendReconciler } from "./chat/BackendReconciler";
@@ -146,8 +147,11 @@ import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable, subscribeCaptureCapabilities } from "./lib/voiceNotes/captureEngine";
 import { deletePendingRecordings, savePendingRecordings } from "./lib/voiceNotes/recorderSaves";
+import { clearHeldResultsForSignOut } from "./lib/voiceNotes/heldResults";
+import { clearPlaybackCacheForSignOut, hasVerifiedSpaceCopy } from "./lib/voiceNotes/audioPlaybackCache";
 import { PendingVoiceNoteSignOutDialog } from "./chat/PendingVoiceNoteSignOutDialog";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
+import { AppLockGate } from "./components/AppLockGate";
 import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
@@ -174,7 +178,7 @@ import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE,
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
-import { applyManifestRevisionGate, browserRevisionStore, createResignPromptGuard, MANIFEST_RESIGN_NOTICE, manifestCarriesCurrentBundle, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
+import { applyManifestRevisionGate, browserRevisionStore, createResignPromptGuard, MANIFEST_RESIGN_NOTICE, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -182,18 +186,34 @@ import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
 import type { AppState } from "./lib/appState";
 import { BootSurface } from "./shell/BootSurface";
 import { SignedOutSurface } from "./shell/SignedOutSurface";
-import { APP_NAME, HOME_SITE } from "./lib/homeSite";
+import { APP_NAME } from "./lib/homeSite";
 import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
+import { lazyTab } from "./shell/lazyTab";
+
+// Every screen but Feed loads from its own chunk (TC-2882): the entry chunk carries boot and Feed only.
+const ChatWorkspace = lazyTab("Chat", () => import("./chat/ChatWorkspace").then((m) => m.ChatWorkspace));
+const CaptureSurface = lazyTab("Recording", () => import("./capture/CaptureSurface").then((m) => m.CaptureSurface));
+// W5 — the cohort meetings view. It renders NOTHING unless the backend's read
+// API answers for this address (dark flag / non-cohort = 404 = invisible), and
+// it needs neither the vault nor a connector key: a session is the whole
+// requirement, which is what makes the meetings readable on a device that has
+// never opened the app.
+const MeetingsSection = lazyTab("Meetings", () => import("./chat/MeetingsSection").then((m) => m.MeetingsSection));
+const ConnectorsPage = lazyTab("Connectors", () => import("./chat/ConnectorsPage").then((m) => m.ConnectorsPage));
+const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.AppsPage));
+const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
+const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
+const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
 
 const OPENKEY_SIGN_OUT_UNPROVEN_NOTE =
-  "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.";
+  "You're signed out of TinyCloud One, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.";
 const WEB_SIGN_OUT_RECOVERY_WARNING =
-  "You're signed out of TinyChat, but this device didn't finish clearing your session. Sign in again, then sign out.";
+  "You're signed out of TinyCloud One, but this device didn't finish clearing your session. Sign in again, then sign out.";
 const WEB_SIGN_OUT_ABORT_WARNING =
   "You're still signed in on this tab. If you reload or close it, you'll need to sign in again.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
@@ -206,6 +226,8 @@ const TINYCLOUD_HOSTS = import.meta.env.VITE_TINYCLOUD_HOST
   : undefined;
 
 export function App() {
+  const platform = useContext(PlatformContext);
+  const mobileRetentionUnsupported = platform === "ios" || platform === "android";
   // Track the visible viewport so the shell shrinks above the soft keyboard
   // instead of letting it cover the composer (iOS Safari `100dvh` does not).
   useVisualViewportFit();
@@ -236,19 +258,21 @@ export function App() {
   const [captureFailClosed, setCaptureFailClosed] = useState(false);
   const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
   const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
-  // Recording and Connectors on the Home site ask for their own sets in place (shell/homeFeatureAccess.tsx). Asking
-  // signs in again on a separate instance, which replaces the session here only once it covers what was asked, is
-  // verified, and the owner is still signed in with nothing running; anything else leaves this session, the feed and
-  // chat exactly as they are.
+  useAudioCacheBoot(LOCAL_VALIDATION ? null : tcw);
+  // Connectors on the web asks for its secrets and decrypt grant in place (shell/homeFeatureAccess.tsx). Asking signs
+  // in again on a separate instance, which replaces the session here only once it covers what was asked, is verified,
+  // and the owner is still signed in with nothing running; anything else leaves this session, the feed, chat and
+  // Recording exactly as they are. The phone and desktop apps never ask: their sign-ins are unchanged.
+  const connectorsAsk = !LOCAL_VALIDATION && appPlatform() === "web";
   const homeFeatureStore = useMemo(() => browserRevisionStore(), []);
-  // Advanced by every sign-in and local sign-out: an ask started under one session is never kept under another.
+  // Advanced by every sign-in and local sign-out: work started under one session is never committed under another.
   const sessionEpochRef = useRef(0);
   const featureInFlightRef = useRef<InFlightWork>(null);
   // One ask at a time: a second Continue while OpenKey is open joins the first instead of starting another sign-in.
   const featureAskRef = useRef<Promise<FeatureAccessOutcome> | null>(null);
   const askForFeature = useCallback(async (feature: HomeFeature): Promise<FeatureAccessOutcome> => {
     const current = tcw;
-    if (!HOME_SITE || state !== "ready" || !current || !address) return "failed";
+    if (!connectorsAsk || state !== "ready" || !current || !address) return "failed";
     // Busy: work a swap would cut off, as the prompt sees it and as the work boundary counts it at this moment.
     const busy = () => featureInFlightRef.current !== null || homeWorkBusyNow();
     if (busy()) return "busy";
@@ -263,7 +287,10 @@ export function App() {
       address,
       // Everything the session has or this device used stays in the new grant, so allowing one never drops another.
       features: homeFeaturesToRequest(homeFeatureStore, current, address, feature),
-      config: { autoCreateSpace: true, includeAccountRegistryPermissions: false, tinycloudHosts: TINYCLOUD_HOSTS, uiPlatform: sdkUiPlatform() },
+      config: {
+        autoCreateSpace: true, includeAccountRegistryPermissions: false, tinycloudHosts: TINYCLOUD_HOSTS, uiPlatform: sdkUiPlatform(),
+        ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(address))),
+      },
       // Checked before and after the snapshot of what is saved, immediately before the new session is written.
       canCommit: () => (signedOut() ? "signed-out" : busy() ? "busy" : null),
     });
@@ -286,42 +313,67 @@ export function App() {
     const scope = storageScopeFor(current);
     if (scope) associateStorageAccountClient(result.tcw, scope);
     openkeyRef.current = result.openkey;
+    rememberReplicationPrincipal(result.tcw);
+    startReplicationFill(result.tcw);
     setTcw(result.tcw);
+    stopReplicationFill(current);
     current.cleanup();
     return "granted";
-  }, [tcw, state, address, homeFeatureStore]);
+  }, [connectorsAsk, tcw, state, address, homeFeatureStore]);
   const requestFeatureAccess = useCallback<RequestFeatureAccess>((feature) => {
     if (featureAskRef.current) return featureAskRef.current;
-    const ask = askForFeature(feature).finally(() => { featureAskRef.current = null; });
+    // OpenKey is open and the session is about to be swapped: a held tinycloud.chat tab must not move under it.
+    const releaseOriginMove = deferOriginMove();
+    const ask = askForFeature(feature).finally(() => { featureAskRef.current = null; releaseOriginMove(); });
     featureAskRef.current = ask;
     return ask;
   }, [askForFeature]);
-  const featureInFlight = useInFlightWork(HOME_SITE && state === "ready");
+  const featureInFlight = useInFlightWork(connectorsAsk && state === "ready");
   useEffect(() => { featureInFlightRef.current = featureInFlight; }, [featureInFlight]);
   const featureAccess = useHomeFeatureAccessState({
-    homeSite: HOME_SITE,
+    enabled: connectorsAsk,
     tcw: state === "ready" ? tcw : null,
     address,
     store: homeFeatureStore,
     requestFeatureAccess,
     inFlight: featureInFlight,
   });
-  useAudioCacheBoot(LOCAL_VALIDATION || !featureAccess.permitted("recording") ? null : tcw);
-  // A device that has not recorded on the Home site registers no recorder at boot; it starts once Recording is covered.
-  const recordingCovered = featureAccess.covered("recording");
   useEffect(() => {
-    if (HOME_SITE && recordingCovered) void enableWebCaptureEngine().catch((caught: unknown) => console.error("[VoiceNotes] Could not start the recorder engine", caught));
-  }, [recordingCovered]);
+    if (connectorsAsk && state === "ready" && tcw && address) {
+      void rememberExistingWebConnectors(homeFeatureStore, tcw, address);
+    }
+  }, [connectorsAsk, state, tcw, address, homeFeatureStore]);
   const captureHandoffInFlight = useRef<Promise<boolean> | null>(null);
   const performCaptureHandoff = useCallback(async () => {
-    if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;
+    if (LOCAL_VALIDATION) return true;
     try {
-      const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
-      if (native.status === "signed_out") {
-        if (voiceNotePipeline?.isAccepting()) { advanceAccountGeneration(); voiceNotePipeline.cancelAll(); }
+      const storedAddress = sessionStoreRef.current.getAddress();
+      const signingOutDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
+      const clearLocalResults = async () => {
+        await Promise.all([signingOutDid ? clearHeldResultsForSignOut(signingOutDid) : Promise.resolve(), clearPlaybackCacheForSignOut()]);
+      };
+      if (!captureEngineAvailable()) {
+        if (signingOutDid) {
+          const { openWebStore, memoryLocks } = await import("./lib/voiceNotes/web/webStore");
+          const local = await openWebStore({ locks: memoryLocks(), decodeCheck: null });
+          try {
+            const defaults = await local.getCaptureDefaults();
+            if (signingOutDid && defaults.accountDid === signingOutDid) {
+              await local.setAccountState({ status: "signed_out", accountDid: null,
+                transitionGen: nextTransitionGen(defaults.transitionGen) });
+            } else await local.sweepTombstones();
+          } finally { local.close(); }
+        }
+        await clearLocalResults();
         return true;
       }
-      const storedAddress = sessionStoreRef.current.getAddress();
+      const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+      if (native.status === "signed_out") {
+        await withCaptureDeadline(VoiceNotes.setAccountState({ status: "signed_out", accountDid: null, transitionGen: native.transitionGen }));
+        if (voiceNotePipeline?.isAccepting()) { advanceAccountGeneration(); voiceNotePipeline.cancelAll(); }
+        await clearLocalResults();
+        return true;
+      }
       const accountDid = did ?? native.accountDid ?? (native.status === "transitioning" && storedAddress
         ? `did:pkh:eip155:1:${storedAddress}` : null);
       if (!accountDid && native.status === "transitioning") {
@@ -343,6 +395,7 @@ export function App() {
         }
         return false;
       }
+      await clearLocalResults();
       setCaptureFailClosed(false);
       return true;
     } catch {
@@ -373,8 +426,16 @@ export function App() {
     uploadRunner.reset();
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
+    const accountSpace = tcw?.spaceId ?? spaceId;
+    // The page-close outbox and post drafts hold the owner's words in this device's storage; both go with the account.
+    // A sign-out that finds no client and no space (a restart with a sign-out still pending) clears the answers device-wide.
+    if (accountSpace) { clearHeldAnswers(accountSpace); clearPostDrafts(accountSpace); } else { clearAllHeldAnswers(); clearAllPostDrafts(); }
     if (storedAddress) clearPersistedSession(storedAddress);
     if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
+    // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.
+    void wipeNativeReplicaOnSignOut(accountDid).then((result) => {
+      if (!result.ok) console.warn("[Replica] Could not delete the native local copy at sign-out", result.code);
+    });
     sessionStoreRef.current.clear();
     if (storedAddress) clearSendIntentsForOwner(storedAddress);
     clearTranscriptDelegationSchedule(storedAddress);
@@ -388,6 +449,14 @@ export function App() {
     if (tcw) {
       const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
       const localSignOut = signOutReplicaAware(tcw);
+      // Binding paused: this client never bound the saved copy, so its signOut cannot erase it. Erase it
+      // now instead of at the next page load (replicationOffPurge.ts); a failure warns like a bound
+      // sign-out's and leaves the retry markers for the next load.
+      if (!clientHasReplication(tcw) && isReplicationBindPaused() && replicationCopyMayExist()) {
+        void removeLocalCopyNow(tcw, undefined).then((outcome) => {
+          if (outcome.status === "failed") setError((current) => (current?.includes(REPLICA_PURGE_FAILED_WARNING) ? current : REPLICA_PURGE_FAILED_WARNING));
+        });
+      }
       void localSignOut
         .then((result) => {
           if (result && !result.ok) setError((current) => (current?.includes(result.message) ? current : result.message));
@@ -414,7 +483,7 @@ export function App() {
     setPricingOpen(false);
     setError(warning);
     setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
-  }, [address, did, tcw, voiceNotePipeline]);
+  }, [address, did, tcw, voiceNotePipeline, spaceId]);
   useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,
     () => completeLocalSignOut(null)), [captureHandoff, completeLocalSignOut]);
   const [models, setModels] = useState<ModelOption[]>(() =>
@@ -461,6 +530,8 @@ export function App() {
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
+  // The iOS and Android apps open no purchase page: no pricing dialog, Manage storage or Upgrade (App Store 3.1.1, Play Payments).
+  const billingLinks = billingLinksAllowed(platform);
   const billingTierName = billingConfig?.tiers.find(
     (tier) => tier.id === billingStatus?.tier,
   )?.name ?? (billingStatus
@@ -602,7 +673,8 @@ export function App() {
           logSession("restore", "done");
           restoreRetryAfterRef.current = 0;
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
-          setNativeSessionActive(true);
+          // Restored, not signed in: the app lock applies as on any cold launch.
+          setNativeSessionActive(true, true);
           const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
           if (!mayCommitRestore()) {
             nativeRenewalRef.current?.stop();
@@ -636,7 +708,7 @@ export function App() {
         if (boot.kind === "unavailable") {
           logSession("restore", "unavailable");
           restoreRetryAfterRef.current = Date.now() + 15_000;
-          setError("TinyCloud Home can't connect right now. Your recordings stay on this phone.");
+          setError(`${APP_NAME} can't connect right now. Your recordings stay on this phone.`);
           setState("offline");
           return;
         }
@@ -684,7 +756,7 @@ export function App() {
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
         isOffline: browserIsOffline,
-        servedManifestCarriesBundle: async () => manifestCarriesCurrentBundle(WEB_APP_MANIFEST),
+        servedManifestCarriesBundle: async () => manifestCarriesBundle(WEB_APP_MANIFEST),
         handoff: captureHandoff,
         clearSession: (address) => {
           if (!mayCommitRestore()) return;
@@ -715,9 +787,12 @@ export function App() {
             includeAccountRegistryPermissions: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
             uiPlatform: sdkUiPlatform(),
-            manifest,
-            // ON: the replication option plus a read-only account provider (so the restore has a signer
-            // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
+            // Restore the base request. Any previously signed connector grants remain in the saved session.
+            manifest: appPlatform() === "web" ? webSignInManifest(manifest, [], storedAddress) : manifest,
+            // A restored session needs a signer for `tcw.session()` to exist (Main's history and the transcript
+            // writer read it); this one answers the stored account and never signs. Details: TC-3019
+            provider: readOnlyAccountProvider(storedAddress),
+            // Local copy ON adds the replication option (and the same provider). See replicationRestore.ts.
             ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
           }),
       });
@@ -740,8 +815,7 @@ export function App() {
           setDid(accountDid);
           setSpaceId(restored.tcw.spaceId ?? null);
           setState("ready");
-          // On the Home site this waits until Recording is permitted; the delegation effect below runs it then.
-          if (!HOME_SITE) void ensureTranscriptWriterDelegation({ tcw: restored.tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+          void ensureTranscriptWriterDelegation({ tcw: restored.tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
           return;
         }
         case "unavailable":
@@ -822,22 +896,19 @@ export function App() {
     };
   }, [state]);
 
-  const recordingPermitted = featureAccess.permitted("recording");
   useEffect(() => {
-    if (state !== "ready" || !tcw || LOCAL_VALIDATION || !recordingPermitted) return;
+    if (state !== "ready" || !tcw || LOCAL_VALIDATION) return;
     const recheck = () => void ensureTranscriptWriterDelegation({
       tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current,
     });
     const visible = () => { if (document.visibilityState === "visible") recheck(); };
-    // The Home site's sign-in and restore skip the check until Recording is permitted, so it starts here.
-    if (HOME_SITE) recheck();
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", visible);
     return () => {
       window.removeEventListener("focus", recheck);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [state, tcw, recordingPermitted]);
+  }, [state, tcw]);
 
   // A1 — keep the policy-input refs in sync with render state.
   useEffect(() => {
@@ -1038,6 +1109,8 @@ export function App() {
     setError(null);
     // Each tab's remembered place belongs to the account that left it.
     resetNavigationMemory();
+    // OpenKey is open and the sign-in is being verified: a held tinycloud.chat tab must not move under it.
+    const releaseOriginMove = deferOriginMove();
     try {
       setState("connecting");
       if (isNativeOpenKeySignIn()) {
@@ -1079,14 +1152,6 @@ export function App() {
       setState("signing");
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
-      //
-      // withEncryptionDecryptGrant is a WORKAROUND that hardcodes an SDK-internal
-      // URN format — see docs/connectors-spec.md §7 "KNOWN BLOCKER" and the header
-      // of lib/connectors/encryptionGrant.ts. Secrets reads are refused without
-      // it, and the grant cannot be declared in the static manifest because its
-      // network id embeds this user's DID. Capabilities are minted from the
-      // manifest passed here, so sign-in is the only moment it can be added.
-      // Delete this call when the SDK carries the capability itself.
       const signInConfig = {
         address: connectedAddress,
         nonce,
@@ -1094,10 +1159,10 @@ export function App() {
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
         uiPlatform: sdkUiPlatform(),
-        // The Home site asks for its base grant plus the sets of the features this device has used; only Connectors
-        // keeps secrets, so only it brings the decrypt grant.
-        manifest: HOME_SITE
-          ? homeSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
+        // The web asks for connector secrets and the decrypt grant only once this device has used Connectors (opening
+        // it asks in place otherwise). The desktop app signs in with them; the phone app signs in above, natively.
+        manifest: appPlatform() === "web"
+          ? webSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
           : withEncryptionDecryptGrant(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
@@ -1136,7 +1201,7 @@ export function App() {
       setTcw(signedInTcw);
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
-      if (!HOME_SITE) void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+      void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
       setState("ready");
     } catch (caught) {
       if (isSignInCancelled(caught)) {
@@ -1147,13 +1212,14 @@ export function App() {
       setError(describeAuthFailure(caught));
       setState("recoverableError");
     } finally {
+      releaseOriginMove();
       if (prefetch) {
         prefetch.cancel();
       }
     }
   }, []);
 
-  const signOut = useCallback(async (options: { terminal?: string; pendingChoice?: "save" | "delete" } = {}) => {
+  const signOut = useCallback(async (options: { terminal?: string; pendingChoice?: "keep" | "save" | "delete" } = {}) => {
     if (signOutInFlightRef.current) return;
     signOutInFlightRef.current = true;
     setSigningOut(true);
@@ -1189,6 +1255,7 @@ export function App() {
       if (!options.terminal && tcw?.did) {
         let pending: Awaited<ReturnType<typeof VoiceNotes.listPending>>["recordings"] = [];
         try {
+          // The boot install normally left an engine; if it did not, install it now so notes kept only here are found.
           if (!captureEngineAvailable()) await enableWebCaptureEngine();
           if (captureEngineAvailable()) ({ recordings: pending } = await VoiceNotes.listPending());
         } catch {
@@ -1197,7 +1264,8 @@ export function App() {
           return;
         }
         const unsaved = pending.filter((note) =>
-          (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
+          (note.owner === tcw.did || (mobileRetentionUnsupported && !note.owner)) &&
+            (mobileRetentionUnsupported ? note.ledger?.audio.state !== "saved" : !hasVerifiedSpaceCopy(note)));
         if (unsaved.length > 0 && !options.pendingChoice) {
           setPendingVoiceNoteSignOut({ count: unsaved.length, error: null });
           return;
@@ -1206,7 +1274,7 @@ export function App() {
           stopForFenceFailure();
           return;
         }
-        if (unsaved.length > 0 && options.pendingChoice === "save") {
+        if (mobileRetentionUnsupported && unsaved.length > 0 && options.pendingChoice === "save") {
           try {
             await savePendingRecordings(tcw);
             const remaining = (await VoiceNotes.listPending()).recordings.filter((note) =>
@@ -1240,7 +1308,8 @@ export function App() {
           } catch {
             const listing = await VoiceNotes.listPending().catch(() => ({ recordings: unsaved }));
             const remaining = listing.recordings.filter((note) =>
-              (!note.owner || note.owner === tcw.did) && note.ledger?.audio.state !== "saved");
+              (note.owner === tcw.did || (mobileRetentionUnsupported && !note.owner)) &&
+            (mobileRetentionUnsupported ? note.ledger?.audio.state !== "saved" : !hasVerifiedSpaceCopy(note)));
             setPendingVoiceNoteSignOut({
               count: remaining.length || unsaved.length,
               error: "Couldn't delete all your voice notes, so you're still signed in. Try again.",
@@ -1260,6 +1329,8 @@ export function App() {
         if (!options.terminal) void nativeRenewalRef.current?.resume();
         return;
       }
+      // Home answers held from a closed page get one bounded try while the session still works.
+      if (tcw) await settleHeldAnswersForSignOut(tcw);
       const openKeyClient = !nativeSession && !options.terminal ? openkeyRef.current : null;
       completeLocalSignOut(nativeFenceStored ? options.terminal ?? null : NATIVE_SIGN_OUT_WARNING,
         Boolean(options.terminal), webFenceToken);
@@ -1292,12 +1363,19 @@ export function App() {
       signOutInFlightRef.current = false;
       setSigningOut(false);
     }
-  }, [captureHandoff, completeLocalSignOut, tcw]);
+  }, [captureHandoff, completeLocalSignOut, tcw, mobileRetentionUnsupported]);
 
   useEffect(() => { signOutRef.current = signOut; }, [signOut]);
 
   const isReady = state === "ready" && tcw !== null;
   useEffect(() => { setSignedIn(isReady); }, [isReady]);
+  useEffect(() => { void bindSharedWithMe(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
+  // The other screens' chunks load once the signed-in shell has shown Feed, so opening one doesn't wait. A failed
+  // load is reported by the screen itself when it is opened: it loads again, or offers a reload when the browser may
+  // have kept the failed chunk (src/shell/lazyTab.tsx).
+  useEffect(() => {
+    if (isReady) for (const screen of LAZY_SCREENS) screen.preload().catch(() => {});
+  }, [isReady]);
   // The offline state still HOLDS a session, so its "Try again" re-runs the
   // restore. Only a settled signed-out state (no restorable session) starts the
   // full OpenKey sign-in.
@@ -1313,7 +1391,6 @@ export function App() {
   const location = useLocation();
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
-  const platform = useContext(PlatformContext);
   const loadFirstScreen = useCallback(() => readFirstScreen(tcw!, did), [tcw, did]);
   const cachedFirstScreen = useCallback(() => readCachedFirstScreen(did), [did]);
   const { size } = useSizeClass();
@@ -1321,6 +1398,11 @@ export function App() {
   // /chat/*: the shell toggles surfaces, so the chat runtime, drafts and
   // streams survive every move between them.
   const screen = useMemo(() => screenFor(location.pathname), [location.pathname]);
+  // An open that lands on the Feed holds the other startup reads until the
+  // Feed's first network load renders; any other screen releases them
+  // (requestLanes.ts, Feed first).
+  const onFeed = !LOCAL_VALIDATION && !shareToken && screen.destination === "feed";
+  useEffect(() => { noteScreen(onFeed); }, [onFeed]);
   const showSettings = !LOCAL_VALIDATION && screen.id === "settings";
   // Retired addresses (/chat/meetings, /chat/connectors/library) still resolve:
   // they are replaced with their new home below.
@@ -1329,7 +1411,6 @@ export function App() {
   // Voice notes exist inside the Exo mobile app only. Once ready, the one
   // recorder (RecorderProvider, below) serves every view of it; a recording
   // still running from the offline screen is picked up there, never restarted.
-  // On the Home site the engine can start later, once Recording is covered.
   const voiceNotesInApp = useSyncExternalStore(subscribeCaptureCapabilities, captureEngineAvailable);
 
   const capabilities = captureCapabilities();
@@ -1430,7 +1511,7 @@ export function App() {
         <UsageIndicator
           status={billingStatus}
           tierName={billingTierName}
-          onClick={openPricing}
+          onClick={billingLinks ? openPricing : undefined}
           onOpenRates={openRates}
         />
       )}
@@ -1443,9 +1524,7 @@ export function App() {
       tcw={isReady ? tcw : null}
       backendUrl={BACKEND_URL}
       sessionStore={sessionStoreRef.current}
-      // The recorder's own checks (on mount and on return to the app) reach the backend and resume consented jobs
-      // unattended, so on the Home site it starts only once Recording is permitted, not merely covered.
-      enabled={voiceNotesInApp && !LOCAL_VALIDATION && featureAccess.permitted("recording")}
+      enabled={voiceNotesInApp && !LOCAL_VALIDATION}
       onAccountReady={setCaptureReadyTcw}
       pipeline={voiceNotePipeline}
       signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}
@@ -1478,10 +1557,9 @@ export function App() {
             />
           </main>
         ) : isReady && tcw ? (
-          // Agent access offers private memory and meeting access to agents; the Home site shows no control for it, so it is off there.
-          <AgentAccessProvider enabled={!HOME_SITE} tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
+          <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
-            <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION && featureAccess.permitted("recording")} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
+            <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
             {/* The shell keeps ChatWorkspace mounted while another surface is
                 shown — a visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
@@ -1517,7 +1595,7 @@ export function App() {
                   billingStatus={billingStatus}
                 />
               }
-              capture={LOCAL_VALIDATION ? null : <HomeFeatureGate feature="recording"><CaptureSurface
+              capture={LOCAL_VALIDATION ? null : <CaptureSurface
                 tcw={tcw}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
@@ -1530,13 +1608,13 @@ export function App() {
                     sessionStore={sessionStoreRef.current}
                   />
                 }
-              /></HomeFeatureGate>}
+              />}
               connectors={LOCAL_VALIDATION ? null : <HomeFeatureGate feature="connectors"><ConnectorsPage
                 tcw={tcw}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
               /></HomeFeatureGate>}
-              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} />}
+              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
               apps={LOCAL_VALIDATION ? null : <AppsPage />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}
@@ -1580,7 +1658,7 @@ export function App() {
             about={null}
           />
         ) : (
-          <SignedOutSurface homeSite={HOME_SITE} platform={platform} state={state} error={error} onAction={authAction}
+          <SignedOutSurface platform={platform} state={state} error={error} onAction={authAction}
             native={nativeSignInFlow.screenShown
               ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
                 onClose={nativeSignInFlow.onClose} socialProviders={socialProviders} />
@@ -1589,8 +1667,10 @@ export function App() {
       </div>
       {shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,
         nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
+      {/* Face ID / passcode over everything in the phone app (TC-2738); the app keeps loading underneath. */}
+      <AppLockGate />
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
-        Recordings are being kept unassigned until TinyCloud Home can update this phone.
+        Recordings are being kept unassigned until TinyCloud One can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
       </div>}
       <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={nativeSignInFlow.micRecoveryContinue} />
@@ -1598,18 +1678,22 @@ export function App() {
         <div data-testid="app-storage-read-only-notice" role="region" aria-label="Storage full" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full</strong>{" "}
           {STORAGE_READ_ONLY_NOTICE}{" "}
-          <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
-            Manage storage
-          </button>
-          {canUpgrade && (
-            <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
-              Upgrade
-            </button>
-          )}
+          {billingLinks ? (
+            <>
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+                Manage storage
+              </button>
+              {canUpgrade && (
+                <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+                  Upgrade
+                </button>
+              )}
+            </>
+          ) : NATIVE_PLAN_NOTE}
         </div>
       )}
 
-      {paywallEnabled && billingConfig && (
+      {billingLinks && paywallEnabled && billingConfig && (
         <PricingDialog
           open={pricingOpen}
           onOpenChange={setPricingOpen}
@@ -1624,7 +1708,8 @@ export function App() {
         count={pendingVoiceNoteSignOut?.count ?? 0}
         error={pendingVoiceNoteSignOut?.error ?? null}
         busy={signingOut}
-        onSave={() => { void signOut({ pendingChoice: "save" }); }}
+        allowKeep={!mobileRetentionUnsupported}
+        onKeep={() => { void signOut({ pendingChoice: mobileRetentionUnsupported ? "save" : "keep" }); }}
         onDelete={() => { void signOut({ pendingChoice: "delete" }); }}
         onCancel={() => setPendingVoiceNoteSignOut(null)}
       />
@@ -1640,7 +1725,7 @@ export function App() {
           visit"). Same gate as the authenticated surfaces; renders nothing in
           every state, coordinates with Settings on a shared lane, and never
           unlocks — see useBackgroundDrain.ts. */}
-      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.covered("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <BackgroundDrainer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1651,7 +1736,7 @@ export function App() {
       {/* TC-515: voice notes left on the phone (recorded offline, or a save that
           failed) are saved once the session is ready, without opening
           Capture. The Voice notes card's own single-flight retry. */}
-      {voiceNotesInApp && !LOCAL_VALIDATION && featureAccess.permitted("recording") && state === "ready" && tcw && captureReadyTcw === tcw && voiceNotePipeline && (
+      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && captureReadyTcw === tcw && voiceNotePipeline && (
         <PendingVoiceNotesSaver
           tcw={tcw}
           pipeline={voiceNotePipeline}
@@ -1664,7 +1749,7 @@ export function App() {
           drainer above (gmeet has no webhook queue). Same ready gate; renders
           nothing, defers silently while the vault is locked, and is a no-op for
           every user while the registry row is coming-soon. */}
-      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.covered("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <GmeetSessionSync
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1677,7 +1762,7 @@ export function App() {
           them. Renders nothing, queues on the drain's lane so the one space has
           a single writer, and is a no-op for every address outside the dark
           cohort — see BackendReconciler.tsx. */}
-      {!LOCAL_VALIDATION && featureAccess.permitted("connectors") && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && featureAccess.covered("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <BackendReconciler
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1689,7 +1774,7 @@ export function App() {
           opening the Upload sheet. Same ready gate; renders nothing, and never
           unlocks: an own-key AssemblyAI upload with the vault locked waits as
           "Upload paused" until the user taps Continue — see UploadResumer.tsx. */}
-      {!LOCAL_VALIDATION && featureAccess.permitted("recording") && state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && (
         <UploadResumer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1746,7 +1831,7 @@ function SharedThreadSurface(props: { token: string; onClose: () => void }) {
         <div className="min-w-0">
           <div className="text-xs font-medium text-muted-foreground">Shared chat</div>
           <h1 className="truncate text-sm font-semibold text-foreground">
-            {thread?.title ?? "TinyCloud Home"}
+            {thread?.title ?? APP_NAME}
           </h1>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={props.onClose}>
@@ -1808,7 +1893,7 @@ function SharedMessage({ item }: { item: StoredMessageItem }) {
         <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
           T
         </span>
-        <span>TinyCloud Home</span>
+        <span>TinyCloud One</span>
       </div>
       <div className="whitespace-pre-wrap break-words pl-7 text-sm leading-relaxed text-foreground">
         {text}

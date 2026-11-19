@@ -243,7 +243,7 @@ export function SourceRow(props: SourceRowProps) {
         )}
         {props.syncing && props.joined && (
           <p className="ms-desc" data-testid="ms-joined-note">
-            A sync that started when you opened TinyCloud Home is still running — this one joined it rather than
+            A sync that started when you opened TinyCloud One is still running — this one joined it rather than
             starting a second pass over the same meetings. It finishes on its own; progress isn’t shown
             for the run that owns it.
           </p>
@@ -431,7 +431,7 @@ export function CalendarAutojoinRow({
         <div className="ms-opt-copy">
           <b>Calendar autojoin</b>
           <p className="ms-opt-text">
-            TinyCloud Home&apos;s notetaker joins the Google Meet calls on your calendar and transcribes them.
+            TinyCloud One&apos;s notetaker joins the Google Meet calls on your calendar and transcribes them.
             Last scan: {scan}.
           </p>
           {detail && <p className="ms-opt-text">{detail}</p>}

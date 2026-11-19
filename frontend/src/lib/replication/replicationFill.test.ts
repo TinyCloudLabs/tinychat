@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { resetLanesForTests } from "../localFirst/requestLanes";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { startReplicationFill, stopReplicationFill } from "./replicationClient";
 import { replicationDebugEnabled, formatReplicationStatus, REPLICATION_DEBUG_KEY } from "./ReplicationStatusLine";
@@ -15,6 +16,8 @@ function clientWith(sync: () => Promise<void>): TinyCloudWeb {
 }
 
 beforeEach(resetReplicationStatus);
+// The fill waits on the request lanes, which are module state: start from idle lanes, not from whatever an earlier test file left in flight.
+beforeEach(resetLanesForTests);
 
 describe("first sync after sign-in / restore", () => {
   test("ON with a controller: sync() is called once", async () => {

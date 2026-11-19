@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Release gate for a signed desktop (TinyCloud Home) build: exits 1 unless the .app and the .dmg are Developer ID signed by the expected
+# Release gate for a signed desktop (TinyCloud One) build: exits 1 unless the .app and the .dmg are Developer ID signed by the expected
 # team, hardened, carry the audio-input entitlement, and are notarized with stapled tickets. Never let an unsigned or
 # unnotarized build through.
 # Usage: verify-desktop-signing.sh <app> <dmg> <team id>

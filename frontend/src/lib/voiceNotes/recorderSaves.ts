@@ -1,3 +1,5 @@
+import { clearDeletedPartialAudioIssue } from "@/capture/recorder/partialAudioIssues";
+import { pruneDeletedFailureNotification } from "@/capture/activity/failureNotifications";
 // The voice-note saves, shared by the recorder and by the app's save after
 // sign-in (PendingVoiceNotesSaver). Module singletons, so there is one set of
 // guards however many views mount (StrictMode mounts effects twice), moved
@@ -299,6 +301,7 @@ export async function deleteDiscarded(id: string): Promise<string | null> {
 }
 
 async function deleteDiscardedOnce(id: string): Promise<string | null> {
+  const owner = activeAccountDid;
   try {
     await withVoiceNoteSaveDeadline(`native deleteAudio id=${id}`, () => VoiceNotes.deleteAudio({ id }));
   } catch (caught) {
@@ -306,10 +309,12 @@ async function deleteDiscardedOnce(id: string): Promise<string | null> {
   }
   try {
     // Keep the discard marker until the local Markdown tombstone is durable.
-    await deleteNote(id);
+    await deleteNote(id, owner);
   } catch (caught) {
     return `Discarded audio, but ${deviceName()} kept its note text: ${messageOf(caught)}`;
   }
+  clearDeletedPartialAudioIssue(id);
+  if (owner) pruneDeletedFailureNotification(owner, id);
   clearDiscarded(id);
   // Saved to the space before it was discarded: the local copy is gone, so that mark goes too.
   if (cloudSaved.delete(id)) {
@@ -976,6 +981,7 @@ async function relistPending(lastError?: string | null): Promise<void> {
   if (lastError !== undefined) generalFailure = lastError;
   try {
     const { recordings } = await withVoiceNoteSaveDeadline("native listPending for pending count", () => VoiceNotes.listPending());
+    if (restoreGeneration !== statusRestoreGeneration) return;
     const visible = activeAccountDid
       ? recordings.filter((recording) => !recording.owner || recording.owner === activeAccountDid)
       : recordings;

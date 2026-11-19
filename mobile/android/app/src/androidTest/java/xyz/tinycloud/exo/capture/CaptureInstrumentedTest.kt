@@ -148,7 +148,7 @@ class CaptureInstrumentedTest {
             UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressHome()
             android.os.ParcelFileDescriptor.AutoCloseInputStream(
                 InstrumentationRegistry.getInstrumentation().uiAutomation
-                    .executeShellCommand("am start -n ${context.packageName}/.MainActivity")
+                    .executeShellCommand("am start -n ${context.packageName}/${MainActivity::class.java.name}")
             ).use { it.readBytes() }
             Thread.sleep(300)
             assertEquals("ordinary resume re-delivered the denial", 2, deniedCount.get())
@@ -157,7 +157,7 @@ class CaptureInstrumentedTest {
             grant(Manifest.permission.RECORD_AUDIO)
             android.os.ParcelFileDescriptor.AutoCloseInputStream(
                 InstrumentationRegistry.getInstrumentation().uiAutomation
-                    .executeShellCommand("am start -n ${context.packageName}/.MainActivity")
+                    .executeShellCommand("am start -n ${context.packageName}/${MainActivity::class.java.name}")
             ).use { it.readBytes() }
             assertTrue("grant on return was not surfaced", granted.await(5, TimeUnit.SECONDS))
             assertFalse(MicShortcutRecovery.denied(context))

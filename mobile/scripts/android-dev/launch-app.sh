@@ -7,8 +7,8 @@ set -euo pipefail
 $ADB wait-for-device
 until [ "$($ADB shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do sleep 2; done
 $ADB reverse tcp:5186 tcp:"$EXO_VITE_PORT" >/dev/null
-$ADB shell am force-stop xyz.tinycloud.exo
-$ADB shell am start -n xyz.tinycloud.exo/.MainActivity >/dev/null
+$ADB shell am force-stop xyz.tinycloud.home
+$ADB shell am start -n xyz.tinycloud.home/xyz.tinycloud.exo.MainActivity >/dev/null
 socket=""
 for _ in $(seq 1 30); do
   socket=$($ADB shell cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*' | head -1 || true)

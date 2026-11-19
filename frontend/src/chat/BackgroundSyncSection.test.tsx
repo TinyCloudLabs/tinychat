@@ -94,7 +94,7 @@ describe("feature-dark and loading", () => {
   test("the first load renders neither an off state nor a queue claim", () => {
     const body = text(render(initialBackgroundSyncState()));
     expect(body.toLowerCase()).not.toContain("nothing waiting");
-    expect(body).not.toContain("Enabled in TinyChat");
+    expect(body).not.toContain("Enabled in TinyCloud One");
   });
 });
 
@@ -110,7 +110,7 @@ describe("the off state", () => {
   test("shows no delivery URL, secret or queue while it is off", () => {
     expect(off).not.toContain(DELIVERY_URL);
     expect(off).not.toContain(DELIVERY_SECRET);
-    expect(text(off)).not.toContain("Enabled in TinyChat");
+    expect(text(off)).not.toContain("Enabled in TinyCloud One");
   });
 });
 
@@ -221,11 +221,11 @@ describe("the one-time reveal", () => {
     expect(text(revealed)).toContain("I've saved these");
   });
 
-  test("labels the status 'Enabled in TinyChat' and never 'Live'", () => {
+  test("labels the status 'Enabled in TinyCloud One' and never 'Live'", () => {
     // The status word is asserted on its own marked-up element: a substring
     // search for "live" would also match "delivery URL", which the reveal
     // legitimately says.
-    expect(revealed).toContain('data-status-label="Enabled in TinyChat"');
+    expect(revealed).toContain('data-status-label="Enabled in TinyCloud One"');
     expect(revealed).not.toContain('data-status-label="Live"');
   });
 

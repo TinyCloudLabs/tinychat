@@ -1,3 +1,5 @@
+import { sharedWithMeLocalKey, signOutSharedWithMe } from "./sharedWithMe";
+
 export type AccountSignOutStorage = Pick<Storage, "length" | "key" | "removeItem">;
 
 /** Remove local metadata that belongs only to the account being signed out. */
@@ -6,12 +8,16 @@ export function clearAccountSignOutStorage(
   address: string,
   storage: AccountSignOutStorage | undefined = browserStorage(),
 ): void {
+  // First, so a shared-list sync still in flight cannot write the copy back.
+  signOutSharedWithMe();
   if (!storage || !did || !address) return;
   const normalizedDid = did.toLowerCase();
   const encodedDid = encodeURIComponent(did).toLowerCase();
   const manifestRevisionPrefix = `xyz.tinycloud.tinychat:manifest-revision:${address.toLowerCase()}`;
   const indexPrefix = `tinychat:index:${normalizedDid}`;
   const memoryPrefix = `tinychat:memory:${normalizedDid}`;
+  // This device's copy only; the shared-with-me list itself lives in the account's space.
+  const sharedWithMeKey = sharedWithMeLocalKey(did);
 
   for (let index = storage.length - 1; index >= 0; index--) {
     let key: string | null;
@@ -21,7 +27,7 @@ export function clearAccountSignOutStorage(
     const accountExoKey = (normalizedKey.startsWith("exo.") || normalizedKey.startsWith("exo-"))
       && (normalizedKey.includes(normalizedDid) || normalizedKey.includes(encodedDid));
     if (normalizedKey.startsWith(indexPrefix) || normalizedKey.startsWith(memoryPrefix)
-      || normalizedKey.startsWith(manifestRevisionPrefix) || accountExoKey) {
+      || normalizedKey.startsWith(manifestRevisionPrefix) || normalizedKey === sharedWithMeKey || accountExoKey) {
       try { storage.removeItem(key); } catch { /* Keep clearing the remaining account keys. */ }
     }
   }

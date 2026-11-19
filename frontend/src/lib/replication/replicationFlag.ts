@@ -10,14 +10,28 @@
 // "Enabled" (a replica is built) additionally requires
 //   4. the user's own opt-in for the signed-in principal (replicationOptIn.ts; ON unless the user explicitly opted out).
 // The build flag stays the master: an OFF build can never replicate, whatever the user setting says.
-// The Home site never replicates: the replica mirrors meeting transcripts, which its sign-in does not grant.
+// Production builds also pause binding (REPLICATION_BIND_PAUSED below): replication stays "enabled", so
+// an existing copy is kept, but no sign-in or restore binds or syncs it.
 // Pattern: chat/useExperimentalFeatures.ts (hard-coded kill switch + opt-in cache).
-import { HOME_SITE } from "../homeSite";
 import { appPlatform, type AppPlatform } from "../platform";
 import { readReplicationOptIn } from "./replicationOptIn";
 
 /** Product kill switch. Set to false to force replication off for every build and browser. */
 export const REPLICATION_AVAILABLE = true;
+
+/**
+ * Binding pause for production builds. web-sdk 3.11.2's restore awaits the node's /info and the replica
+ * bind before the session is ready, which holds Home's first card back by 1.1 to 1.9 s; TC-2773 removes
+ * that wait in web-sdk 3.12. Until 3.12 is stable, production sign-in and restore build no replication
+ * option. Unlike the kill switch this does not make replication OFF, so the page-load purge
+ * (replicationOffPurge.ts) keeps an existing copy; set to false to bind again. Dev and test builds bind.
+ */
+export const REPLICATION_BIND_PAUSED = true;
+
+/** True when sign-in/restore must not bind a replica in this build. */
+export function isReplicationBindPaused(inputs: { paused?: boolean; production?: boolean } = {}): boolean {
+  return (inputs.paused ?? REPLICATION_BIND_PAUSED) && (inputs.production ?? Boolean(import.meta.env.PROD));
+}
 
 export const REPLICATION_RUNTIME_FLAG_KEY = "tinychat:replication:enabled";
 
@@ -85,13 +99,10 @@ export interface ReplicationFlagInputs {
   principal?: string | undefined;
   /** Overrides the stored opt-in (tests). */
   userOptIn?: boolean;
-  /** The Home site never replicates; defaults to this build. */
-  homeSite?: boolean;
 }
 
 /** Kill switch AND (build flag or dev runtime flag) AND qualified platform. The user setting is NOT consulted. */
 export function isReplicationAvailable(inputs: ReplicationFlagInputs = {}): boolean {
-  if (inputs.homeSite ?? HOME_SITE) return false;
   if (!(inputs.killSwitchOpen ?? REPLICATION_AVAILABLE)) return false;
   // ON unless the build flag is exactly "false" (unset, empty or anything else is ON). The dev runtime
   // flag can still switch a "false" dev/test build ON; production never reads it.
