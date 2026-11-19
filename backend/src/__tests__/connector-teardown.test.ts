@@ -905,3 +905,30 @@ test("a signed callback returns 401 while the disconnect marker stands", async (
     expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
   });
 });
+
+test("a newly minted callback returns 401 when reconnect cannot clear the disconnect marker", async () => {
+  const h = harness();
+  await withCallbackServer(h, async base => {
+    const before = await enableCallbacks(base);
+    await h.teardown.run(SOURCE, ADDRESS_A);
+    expect(await h.tokens.config(ADDRESS_A)).toBeNull();
+
+    h.control.clearDisabled = async () => { throw new Error("marker clear failed"); };
+    const enable = await fetch(`${base}/api/connectors/webhooks/config`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: SOURCE }),
+    });
+    expect(enable.status).toBe(503);
+    expect(await h.control.readDisabled(ADDRESS_A)).toMatchObject({ connectionRemoved: true });
+
+    const replacement = await h.tokens.config(ADDRESS_A);
+    expect(replacement).not.toBeNull();
+    const token = replacement!.token;
+    expect(token).not.toBe(new URL(before.url).pathname.split("/").at(-1));
+    expect(await h.tokens.lookup(token)).not.toBeNull();
+
+    const url = `${base}/api/connectors/webhooks/${SOURCE}/${token}`;
+    expect((await callbackDelivery(url, deriveWebhookSecret(SOURCE, token))()).status).toBe(401);
+    expect(await h.queue.list(SOURCE, ADDRESS_A)).toEqual([]);
+    expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
+  });
+});
