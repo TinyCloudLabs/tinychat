@@ -107,6 +107,7 @@ import {
 } from "./lib/billingConfigPolicy";
 import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
+import { ChatSlot } from "./bots/ChatSlot";
 import { clearAllHeldAnswers, clearHeldAnswers } from "./feed/answerOutbox";
 import { clearAllPostDrafts, clearPostDrafts } from "./feed/postAnswers";
 import { settleHeldAnswersForSignOut } from "./feed/feedStore";
@@ -1571,6 +1572,7 @@ export function App() {
               platform={platform}
               pendingMeetings={pendingMeetings}
               chat={
+                <ChatSlot account={LOCAL_VALIDATION ? null : did} tcw={tcw} active={screen.destination === "chat"} onReconnect={authAction} classic={
                 <ChatWorkspace
                   key={importRefreshKey}
                   tcw={tcw}
@@ -1594,6 +1596,7 @@ export function App() {
                   settings={!LOCAL_VALIDATION}
                   billingStatus={billingStatus}
                 />
+                } />
               }
               capture={LOCAL_VALIDATION ? null : <CaptureSurface
                 tcw={tcw}

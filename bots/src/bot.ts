@@ -13,7 +13,7 @@ import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 
-export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "invalid";
+export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
 export const MAX_TEXT = 8000;
 
@@ -22,6 +22,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   bot_unavailable: "Main isn't available. Try again later.",
   model_unavailable: "Main's model isn't answering. Try again later.",
   busy: "Main is still working on your last message. Send this one when it replies.",
+  at_capacity: "Main can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
   invalid: "Messages can be up to 8,000 characters.",
 };
 
@@ -84,6 +85,13 @@ export interface BotOptions {
   history?: HistoryOptions;
 }
 
+/** Thrown by a start refused at BOTS_MAX_RUNNING; the turn ends with at_capacity, never bot_unavailable. */
+class AtCapacity extends Error {
+  constructor() {
+    super("BOTS_MAX_RUNNING sandboxes already running");
+  }
+}
+
 /** How many sandboxes may run at once (BOTS_MAX_RUNNING), shared by every bot. */
 export class RunningLimit {
   readonly #max: number;
@@ -98,6 +106,11 @@ export class RunningLimit {
     if (this.#running >= this.#max) return false;
     this.#running++;
     return true;
+  }
+
+  /** Whether a place is free now. Only a hint: take() decides. */
+  hasRoom(): boolean {
+    return this.#running < this.#max;
   }
 
   release(): void {
@@ -294,6 +307,13 @@ export class Bot {
       sink.error("busy");
       return;
     }
+    // A start that will be refused at the cap must not leave the message in the history, or a retry would show it twice.
+    if (!this.#sandbox && !this.#starting && !this.#hasPlace && !this.#retired && !this.#running.hasRoom()) {
+      log("at_capacity", this.layout.botId);
+      sink.status("starting");
+      sink.error("at_capacity");
+      return;
+    }
     if (this.#options.history) {
       this.#busy = true;
       await this.#deleting;
@@ -325,6 +345,11 @@ export class Bot {
         this.#markUsed();
         await sandbox.refreshEgress();
       } catch (error) {
+        if (error instanceof AtCapacity) {
+          log("at_capacity", this.layout.botId);
+          sink.error("at_capacity");
+          return;
+        }
         log("start_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
         sink.error("bot_unavailable");
         return;
@@ -597,7 +622,7 @@ export class Bot {
       // At the cap a start is refused, never squeezed into memory the running bots may need. A leftover's place
       // passes to the next start, which first ends the leftover.
       if (!this.#hasPlace) {
-        if (!this.#running.take()) throw new Error("BOTS_MAX_RUNNING sandboxes already running");
+        if (!this.#running.take()) throw new AtCapacity();
         this.#hasPlace = true;
       }
       const started = Date.now();

@@ -4,9 +4,9 @@
 import type { ActivityRecord, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
 import { type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
-import { legacyOwnerHeaderAccepted } from "./config";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState } from "./manifest";
+import { legacyOwnerHeaderAccepted } from "./config";
 import { MESSAGING_STRINGS } from "./messaging-strings";
 import { authorizedOwner, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
 import type { DeleteSkip } from "./retention";

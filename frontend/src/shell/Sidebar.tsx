@@ -11,6 +11,7 @@ import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { ActivityPanel } from "@/capture/activity/ActivityPanel";
 import { sidebarActivityStore } from "@/capture/activity/sidebarActivityStore";
+import { SidebarBotRows } from "@/bots/BotNav";
 import { NavBadge } from "./NavBadge";
 import { tabTarget } from "./navigation";
 import { PATHS } from "./routes";
@@ -83,6 +84,7 @@ export function Sidebar({
                 <NavBadge count={item.badge} className="right-2.5 top-1/2 -translate-y-1/2" />
                 {item.id === "capture" && <CaptureDot />}
               </Link>
+              {item.id === "chat" && <SidebarBotRows />}
             </li>
           );
         })}

@@ -17,7 +17,8 @@ const ORIGIN = "http://bots.internal";
 const tmp = mkdtempSync(join(tmpdir(), "signed-call-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-function service(acceptLegacyOwnerHeader = false) {
+/** `from-env`: no acceptLegacyOwnerHeader option, so createApp reads BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
+function service(acceptLegacyOwnerHeader: boolean | "from-env" = false) {
   const reached: string[] = [];
   const bot = (key: string, owner: string): BotApi => ({
     send: async (_text: string, sink: TurnSink) => { reached.push(`${owner} ${key} send`); sink.done("b-1"); },
@@ -29,7 +30,7 @@ function service(acceptLegacyOwnerHeader = false) {
     secret: SECRET,
     accounts: new Set([A.slice(-42), B.slice(-42)]),
     environment: "private",
-    acceptLegacyOwnerHeader,
+    acceptLegacyOwnerHeader: acceptLegacyOwnerHeader === "from-env" ? undefined : acceptLegacyOwnerHeader,
     manifest,
     bots: { forOwner: owner => bot("main", owner), forBot: (owner, key) => bot(key, owner) },
   });
@@ -163,6 +164,21 @@ describe("the legacy owner header during the rollout", () => {
   test("off: the bearer secret and owner header are refused", async () => {
     const { app } = service(false);
     expect((await app(new Request(`${ORIGIN}/v1/bots/main/messages`, { headers: { authorization: `Bearer ${SECRET}`, "x-tinycloud-owner": A } }))).status).toBe(401);
+  });
+
+  test("flag unset: an owner header alone, or with the bearer secret, is refused", async () => {
+    const saved = process.env.BOTS_ACCEPT_LEGACY_OWNER_HEADER;
+    delete process.env.BOTS_ACCEPT_LEGACY_OWNER_HEADER;
+    try {
+      const { app, reached } = service("from-env");
+      const url = `${ORIGIN}/v1/bots/main/messages`;
+      expect((await app(new Request(url, { headers: { "x-tinycloud-owner": A } }))).status).toBe(401);
+      expect((await app(new Request(url, { headers: { authorization: `Bearer ${SECRET}`, "x-tinycloud-owner": A } }))).status).toBe(401);
+      expect(reached).toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env.BOTS_ACCEPT_LEGACY_OWNER_HEADER;
+      else process.env.BOTS_ACCEPT_LEGACY_OWNER_HEADER = saved;
+    }
   });
 
   test("on: both the legacy call and a signed call are accepted", async () => {

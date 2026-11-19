@@ -74,6 +74,7 @@ CAPS=${CAPS:-SYS_ADMIN SYS_CHROOT SETUID SETGID SETFCAP DAC_OVERRIDE FOWNER FSET
 SUPERVISOR_ARGS=(--cap-drop ALL)
 for cap in $CAPS; do SUPERVISOR_ARGS+=(--cap-add "$cap"); done
 echo "capabilities: $CAPS"
+# TODO: sign the smoke's calls and drop BOTS_ACCEPT_LEGACY_OWNER_HEADER=1 when the flag is retired.
 $DOCKER run -d --name "$NAME-supervisor" "${SUPERVISOR_ARGS[@]}" --cgroupns private --memory 7g \
   --security-opt seccomp=unconfined --security-opt apparmor=unconfined -p "127.0.0.1:$PORT:8080" \
   -v "$NAME-data:/data" -v "$NAME-egress:/egress" \
