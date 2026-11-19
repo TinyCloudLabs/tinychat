@@ -75,3 +75,58 @@ export async function carryOutDeletion(ports: DeletionPorts, address: string, ke
   if (bot.revoke) await revokeAndClear(ports, address, key, bot.revoke.cid);
   return (await ports.registry.finishDelete(address, key)) ? "deleted" : "failed";
 }
+
+/** What a pass found. `listed` is false when the owners could not be listed: the pass then did nothing. */
+export interface SweepResult { listed: boolean; ran: number; skipped: number }
+
+/** Runs deletions: one bot's when it is recorded as being deleted, and every outstanding one on each pass. */
+export class BotDeletions {
+  readonly #ports: DeletionPorts & { registry: DeletionPorts["registry"] & Pick<BotsRegistry, "owners"> };
+  readonly #running = new Set<string>();
+
+  constructor(ports: DeletionPorts & { registry: DeletionPorts["registry"] & Pick<BotsRegistry, "owners"> }) {
+    this.#ports = ports;
+  }
+
+  /** Carries out one bot's deletion, unless a run for that bot is already under way. Never throws: a failure is an outcome. */
+  async run(address: string, key: string): Promise<DeletionOutcome | "busy"> {
+    const id = `${address.toLowerCase()}/${key}`;
+    if (this.#running.has(id)) return "busy";
+    this.#running.add(id);
+    try {
+      return await carryOutDeletion(this.#ports, address, key);
+    } catch {
+      return "failed";
+    } finally {
+      this.#running.delete(id);
+    }
+  }
+
+  /** One pass over every owner: each bot that is being deleted, and each deleted bot whose revocation is still owed. */
+  async sweep(): Promise<SweepResult> {
+    let owners: string[];
+    try {
+      owners = await this.#ports.registry.owners();
+    } catch {
+      return { listed: false, ran: 0, skipped: 0 };
+    }
+    let ran = 0;
+    let skipped = 0;
+    for (const address of owners) {
+      let keys: string[];
+      try {
+        const row = await this.#ports.registry.read(address);
+        keys = [...row.bots.filter(bot => bot.state === "deleting").map(bot => bot.key), ...row.deleted.filter(entry => entry.revoke).map(entry => entry.key)];
+      } catch {
+        // One owner's unreadable record does not hold up the others. It is tried again on the next pass.
+        skipped += 1;
+        continue;
+      }
+      for (const key of keys) {
+        await this.run(address, key);
+        ran += 1;
+      }
+    }
+    return { listed: true, ran, skipped };
+  }
+}

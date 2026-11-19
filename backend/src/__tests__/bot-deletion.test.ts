@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { carryOutDeletion, type DeletionPorts } from "../bot-deletion.js";
+import { BotDeletions, carryOutDeletion, type DeletionPorts } from "../bot-deletion.js";
 import { BotsRegistry } from "../bots-registry.js";
 import { fakeRegistryStore } from "./helpers/fake-registry-store.js";
 
@@ -138,5 +138,85 @@ describe("carrying out a deletion", () => {
       expect([key, await carryOutDeletion(run.ports, ADDRESS, key)]).toEqual([key, "not_deleting"]);
     }
     expect([run.log, run.state.stored]).toEqual([[], "cid-1"]);
+  });
+});
+
+describe("running deletions", () => {
+  const A = `0x${"1".repeat(40)}`;
+  const B = `0x${"2".repeat(40)}`;
+  const C = `0x${"3".repeat(40)}`;
+  const K1 = "1".repeat(32);
+  const K2 = "2".repeat(32);
+  const K3 = "3".repeat(32);
+  const bot = (key: string, state: string, extra: Record<string, unknown> = {}) => ({ ...main, key, name: `Bot ${key[0]}`, state, ...(state === "deleting" ? { deletingSince: T0 } : {}), ...extra });
+
+  /** Several owners in one store, and stand-ins that write down which bot they were asked about. The service always says "waiting". */
+  function owners(records: Record<string, { bots: unknown[]; deleted?: unknown[] } | string>) {
+    const kv = fakeRegistryStore();
+    for (const [address, record] of Object.entries(records)) {
+      kv.rows.set(`bots/registry/${address}`, { version: 1, value: typeof record === "string" ? record : JSON.stringify({ v: 1, seq: 3, deleted: record.deleted ?? [], bots: record.bots }) });
+    }
+    const asked: string[] = [];
+    /** `hold` makes the service stand-in wait, `entered` resolves once it has been reached, `release` lets it answer. */
+    let signalEntered!: () => void;
+    const gate = { release: undefined as undefined | (() => void), hold: false, entered: new Promise<void>(resolve => { signalEntered = resolve; }) };
+    const deletions = new BotDeletions({
+      registry: new BotsRegistry(kv),
+      removeFromService: async (address, key) => {
+        asked.push(`service ${address} ${key}`);
+        signalEntered();
+        if (gate.hold) await new Promise<void>(resolve => { gate.release = resolve; });
+        return "waiting";
+      },
+      storedGrantCid: async () => undefined,
+      forgetGrant: async (address, key) => { asked.push(`forget ${address} ${key}`); },
+      revoke: async cid => { asked.push(`revoke ${cid}`); },
+    });
+    return { kv, asked, gate, deletions };
+  }
+
+  test("a second run for the same bot is not started while the first is under way", async () => {
+    const run = owners({ [A]: { bots: [main, bot(K1, "deleting")] } });
+    run.gate.hold = true;
+    const first = run.deletions.run(A, K1);
+    await run.gate.entered;
+    // The same bot, however the address is written, is the same run.
+    expect(await run.deletions.run(A.toUpperCase().replace("0X", "0x"), K1)).toBe("busy");
+    run.gate.release?.();
+    expect(await first).toBe("waiting");
+    expect(run.asked).toEqual([`service ${A} ${K1}`]);
+    // Once it has ended, a new run may start.
+    run.gate.hold = false;
+    expect(await run.deletions.run(A, K1)).toBe("waiting");
+  });
+
+  test("a failure is an outcome, never an exception", async () => {
+    const run = owners({ [A]: { bots: [main, bot(K1, "deleting")] } });
+    run.kv.down = true;
+    expect(await run.deletions.run(A, K1)).toBe("failed");
+    expect(await run.deletions.run("not an address", K1)).toBe("failed");
+  });
+
+  test("a pass runs every outstanding deletion of every owner and every revocation still owed, and nothing else", async () => {
+    const run = owners({
+      [A]: { bots: [main, bot(K1, "deleting"), bot(K2, "active")] },
+      [B]: { bots: [main, bot(K3, "suspended")], deleted: [{ key: K1, name: "Gone" }, { key: K2, name: "Owed", revoke: { cid: "cid-7" } }] },
+      [C]: { bots: [main] },
+    });
+    expect(await run.deletions.sweep()).toEqual({ listed: true, ran: 2, skipped: 0 });
+    expect(run.asked.sort()).toEqual([`forget ${B} ${K2}`, "revoke cid-7", `service ${A} ${K1}`].sort());
+  });
+
+  test("an owner whose record cannot be read is skipped, and the others are still done", async () => {
+    const run = owners({ [A]: "not a record", [B]: { bots: [main, bot(K1, "deleting")] } });
+    expect(await run.deletions.sweep()).toEqual({ listed: true, ran: 1, skipped: 1 });
+    expect(run.asked).toEqual([`service ${B} ${K1}`]);
+  });
+
+  test("when the owners cannot be listed, the pass does nothing and says so", async () => {
+    const run = owners({ [A]: { bots: [main, bot(K1, "deleting")] } });
+    run.kv.cutShort = true;
+    expect(await run.deletions.sweep()).toEqual({ listed: false, ran: 0, skipped: 0 });
+    expect(run.asked).toEqual([]);
   });
 });
