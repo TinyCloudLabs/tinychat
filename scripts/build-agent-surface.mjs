@@ -52,9 +52,9 @@ function prefixRedirects(text) {
 
 function mergeRedirects(current, generated) {
   const lines = current.trim().split("\n");
+  // Generated rules go before an explicit SPA fallback; without one (Pages' implicit SPA mode), they go last.
   const fallback = lines.findIndex((line) => /^\/\*\s+\/index\.html\s+200\s*$/.test(line));
-  if (fallback === -1) throw new Error("frontend redirect file is missing its final SPA fallback");
-  lines.splice(fallback, 0, ...generated.split("\n"));
+  lines.splice(fallback === -1 ? lines.length : fallback, 0, ...generated.split("\n"));
   return `${lines.join("\n")}\n`;
 }
 
