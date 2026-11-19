@@ -1,4 +1,4 @@
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
@@ -10,12 +10,22 @@ import { BotRosterError, type CreateBotInput } from "./botRosterApi";
 import type { ControllerBot } from "./BotsChat";
 
 // Radix portals do not attach in happy-dom: the dialogs' chrome is an inline stand-in; everything inside is real.
+// bun's mock.module is process-wide: each stand-in keeps every other export of the real module, and the real
+// modules are put back when this file is done.
+const actualSheet = { ...(await import("../components/ui/responsive-sheet")) };
+const actualAlert = { ...(await import("../components/ui/alert-dialog")) };
+afterAll(() => {
+  mock.module("../components/ui/responsive-sheet", () => actualSheet);
+  mock.module("../components/ui/alert-dialog", () => actualAlert);
+});
 mock.module("../components/ui/responsive-sheet", () => ({
+  ...actualSheet,
   ResponsiveSheet: (props: { open: boolean; title: ReactNode; children?: ReactNode; footer?: ReactNode; contentProps?: Record<string, string> }) =>
     props.open ? <div role="dialog" {...props.contentProps}><h2>{props.title}</h2>{props.children}<div>{props.footer}</div></div> : null,
   ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
 }));
 mock.module("../components/ui/alert-dialog", () => ({
+  ...actualAlert,
   AlertDialog: (props: { open: boolean; children?: ReactNode }) => (props.open ? <div role="alertdialog">{props.children}</div> : null),
   AlertDialogContent: (props: { children?: ReactNode } & Record<string, unknown>) => <div {...{ "data-delete-bot-confirm": props["data-delete-bot-confirm"] }}>{props.children}</div>,
   AlertDialogHeader: (props: { children?: ReactNode }) => <div>{props.children}</div>,

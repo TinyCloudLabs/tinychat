@@ -1,4 +1,4 @@
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
@@ -11,7 +11,14 @@ import type { ControllerBot } from "./BotsChat";
 
 // Radix portals do not attach in happy-dom: the sheet's chrome is an inline stand-in (a dynamic import so the mock
 // is in place first); everything inside it is real.
+// bun's mock.module is process-wide: the stand-in keeps every other export of the real module, and the real module
+// is put back when this file is done.
+const actualSheet = { ...(await import("../components/ui/responsive-sheet")) };
+afterAll(() => {
+  mock.module("../components/ui/responsive-sheet", () => actualSheet);
+});
 mock.module("../components/ui/responsive-sheet", () => ({
+  ...actualSheet,
   ResponsiveSheet: (props: { open: boolean; title: ReactNode; children?: ReactNode; footer?: ReactNode; contentProps?: Record<string, string> }) =>
     props.open ? <div role="dialog" {...props.contentProps}><h2>{props.title}</h2>{props.children}<div>{props.footer}</div></div> : null,
   ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
