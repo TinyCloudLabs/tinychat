@@ -50,8 +50,8 @@ for a sibling may create anything. `main` exists without being announced; a sibl
   has `BOTS_MAX_PER_OWNER` bots here, `main` included. Bots that are `deleting` or gone are not counted, a bot first
   announced as `deleting` is not refused, and an update to a bot already held is never refused.
 - `DELETE /v1/bots/<key>` deletes the working state of a bot that is `deleting` and answers
-  `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" }` (it will go once its
-  history is saved) or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good, and a
+  `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" | "gateway_cleanup_pending" }`
+  or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good, and a
   request that was still waiting on the deletion is refused (503) instead of starting the bot again.
 
 | | active | suspended | deleting | unknown or removed |
@@ -87,11 +87,11 @@ file counts from the snapshot's modification time. The supervisor checks every b
 are skipped) at startup and every 6 hours, and skips a bot with a request in flight.
 
 Deleting goes through one path. It stops the bot's sandbox (unmounting its state snapshot) and then checks that the
-teardown succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories (not symlinks) directly
+teardown and gateway cleanup succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories directly
 under their roots, that nothing is mounted at or under either (`/proc/self/mountinfo`). If all hold, it removes both directories and logs `state_deleted`. Otherwise it removes
-nothing and logs `state_delete_skipped` with a `cause` (`teardown_failed`, `unsafe_path`, `mounted`
-or `error`), and the next sweep tries again. A message that arrives meanwhile waits for the deletion, then starts a
-fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
+nothing and logs `state_delete_skipped` with the cause. The backend retries explicit deletes while the bot is
+`deleting`, and the next supervisor sweep retries retention deletes. A message arriving during a retention deletion
+waits, then starts a fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
 
 The supervisor creates data and run roots with mode 0700 and refuses roots that are symlinks, owned by another user, or writable by group or others.
 

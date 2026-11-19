@@ -3,7 +3,7 @@
 // untrusted input; only checked fields are turned into events, which the server encodes itself.
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type ActivityRecord, HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
 import { isRecord } from "./guards";
@@ -46,6 +46,8 @@ export interface BotMessenger {
   dispatch(targetKey: string, text: string, signal: AbortSignal): Promise<HostToolReply>;
 }
 
+type StopFailure = "teardown_failed" | "gateway_cleanup_pending";
+
 /** A running sandbox with OMP's RPC channel on its stdio, already bound to the bot's session. */
 export interface Sandbox {
   nextId(): string;
@@ -58,7 +60,7 @@ export interface Sandbox {
   refreshEgress(): Promise<void>;
   /** Saves the bot's state to disk while the sandbox is paused. Never rejects; a failure keeps the previous copy. */
   snapshot(): Promise<void>;
-  stop(): Promise<void>;
+  stop(): Promise<void | "gateway_cleanup_pending">;
 }
 
 export interface SandboxLauncher {
@@ -67,6 +69,8 @@ export interface SandboxLauncher {
   /** Unconfirmed sandbox or copier teardown; sandboxOnly counts just sandboxes for running slots. */
   leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
   launch(layout: BotLayout): Promise<Sandbox>;
+  /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
+  cleanupEgress?(layout: BotLayout): Promise<boolean>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
   mountPoints?(): string[];
   provenance?(layout: BotLayout): Promise<unknown>;
@@ -281,7 +285,7 @@ export class Bot {
   #history: HistoryJournal | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
-  #stopping: Promise<void> | undefined;
+  #stopping: Promise<StopFailure | undefined> | undefined;
   #deleting: Promise<DeleteSkip | undefined> | undefined;
   #busy = false;
   #listing = 0;
@@ -424,13 +428,15 @@ export class Bot {
     return await this.#historyOperation(journal => journal.activities(), true) ?? [];
   }
 
-  /** Stops the sandbox if one is running or starting. False if its teardown failed (logged as stop_failed). */
+  /** Stops the sandbox if one is running or starting. False if its teardown is incomplete. */
   async stop(): Promise<boolean> {
+    return (await this.#stopSandbox()) === undefined;
+  }
+
+  async #stopSandbox(): Promise<StopFailure | undefined> {
     this.#clearIdle();
     const sandbox = this.#sandbox ?? (await this.#starting?.catch(() => undefined));
-    const stopped = sandbox ? await this.#stop(sandbox) : true;
-    await this.#stopping;
-    return stopped;
+    return sandbox ? this.#stop(sandbox) : this.#stopping;
   }
 
   /**
@@ -447,13 +453,20 @@ export class Bot {
     this.#deleting ??= (async () => {
       let cause: DeleteSkip | undefined;
       try {
-        const stopped = await this.stop();
-        if (!stopped || this.#launcher.leftover(this.layout)) cause = "teardown_failed";
+        const stopFailure = await this.#stopSandbox();
+        if (this.#launcher.leftover(this.layout)) cause = "teardown_failed";
+        else if (stopFailure) cause = stopFailure;
+        else if (await this.#launcher.cleanupEgress?.(this.layout) === false) cause = "gateway_cleanup_pending";
         else {
-          const covered = await this.historyCovered();
+          const noWorkingState = this.#retiring && !this.inUse && !lstatSync(this.layout.dataDir, { throwIfNoEntry: false })
+            && !lstatSync(this.layout.bundleDir, { throwIfNoEntry: false });
+          const covered = noWorkingState || await this.historyCovered();
           // Signature checks await: closing or a newly appended message can change eligibility meanwhile.
-          cause = closing() ? "closing" : this.#options.history && (!covered || !this.#history?.covered) && !this.#history?.expiryDue() ? "archive_pending"
-            : await removeWorkingState(this.layout, this.#launcher);
+          if (closing()) cause = "closing";
+          else if (!noWorkingState) {
+            cause = this.#options.history && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
+              ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
+          }
         }
       } catch {
         cause = "error";
@@ -486,8 +499,6 @@ export class Bot {
       return await run(this.#journal());
     } finally { this.#listing--; }
   }
-  /** Marks a bot the backend has deleted and that has no working state left. */
-  retire(): void { this.#retired = true; }
   historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
     // A sibling that has never run has no journal, and a change of permission must not make one (or its directory).
     return this.#historyOperation(journal => {
@@ -665,21 +676,21 @@ export class Bot {
     this.#running.release();
   }
 
-  async #stop(sandbox: Sandbox): Promise<boolean> {
+  async #stop(sandbox: Sandbox): Promise<StopFailure | undefined> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
-    let stopped = true;
     this.#stopping = sandbox
       .stop()
+      .then(cause => cause || undefined)
       .catch(error => {
-        stopped = false;
         log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
+        return "teardown_failed" as const;
       })
       .finally(() => {
         this.#stopping = undefined;
       });
-    await this.#stopping;
+    const cause = await this.#stopping;
     log("stopped", this.layout.botId);
-    return stopped;
+    return cause;
   }
 
   #clearIdle(): void {
@@ -738,10 +749,6 @@ export class BotManager {
    */
   deleteBot(ownerDid: string, key: string): Promise<DeleteSkip | undefined> {
     const bot = this.forBot(ownerDid, key);
-    if (!bot.inUse && !existsSync(bot.layout.dataDir) && !existsSync(bot.layout.bundleDir)) {
-      bot.retire();
-      return Promise.resolve(undefined);
-    }
     return this.deleteWorkingState(bot.layout.botId, "deleted", true);
   }
 
