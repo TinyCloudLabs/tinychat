@@ -53,6 +53,44 @@ export interface DesktopCaptureExtras {
   };
   systemAudio: { get(): Promise<boolean>; set(on: boolean): Promise<void> };
   systemAudioConsent: { get(): Promise<boolean>; set(consented: boolean): Promise<void> };
+  /**
+   * Names in the call: reading the names of the people in a call from the meeting app's own window while a recording
+   * of both sides runs. A setting of this Mac, off until the user turns it on. Absent where the app cannot do it,
+   * and from the moment a build without it has refused a call: read the member each time, do not keep it.
+   */
+  callNames?: CallNames;
+}
+
+/** Whether macOS lets the app read other apps' windows (Accessibility); "unsupported" off macOS. */
+export type CallNamesPermission = "granted" | "missing" | "unsupported";
+
+export interface CallNamesState {
+  enabled: boolean;
+  permission: CallNamesPermission;
+}
+
+/** `answer` as the setting's state; null for anything but `{ enabled: boolean, permission: "granted" | "missing" | "unsupported" }`. */
+export function readCallNamesState(answer: unknown): CallNamesState | null {
+  if (answer === null || typeof answer !== "object") return null;
+  const { enabled, permission } = answer as { enabled?: unknown; permission?: unknown };
+  if (typeof enabled !== "boolean") return null;
+  return permission === "granted" || permission === "missing" || permission === "unsupported" ? { enabled, permission } : null;
+}
+
+export interface CallNames {
+  /** The setting as the app answers it: a `CallNamesState`, to be checked with `readCallNamesState` before use. */
+  get(): Promise<unknown>;
+  /** Turning it on also has macOS ask for the permission when it is missing. */
+  set(enabled: boolean): Promise<void>;
+  /** Opens Privacy & Security > Accessibility in System Settings. */
+  openSettings(): Promise<void>;
+  /**
+   * The people read during the recording `id` (the recording's id, not its row's), as the app stored them: the
+   * `call_participants` object, or null when there are none. Validate it before use.
+   */
+  read(id: string): Promise<unknown>;
+  /** Forgets what was read during the recording `id`, once its row holds it. */
+  clear(id: string): Promise<void>;
 }
 
 let registered: DesktopCaptureExtras | null = null;

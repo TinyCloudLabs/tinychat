@@ -2,6 +2,7 @@
 // absence, not a stand-in for it.
 import { LOCAL_WHISPER_MODELS } from "@/lib/localTranscriber";
 import type {
+  CallNamesPermission,
   DesktopCaptureExtras,
   DownloadProgress,
   WhisperModelId,
@@ -15,6 +16,11 @@ export interface FakeDesktopCaptureExtrasOptions {
   downloading?: Partial<Record<WhisperModelId, number | null>>;
   systemAudio?: boolean;
   systemAudioConsent?: boolean;
+  /**
+   * Names in the call. Without it the fake has no `callNames`, like a build without it. `read` holds what each
+   * recording's reader stored, by recording id.
+   */
+  callNames?: { enabled?: boolean; permission?: CallNamesPermission; read?: Record<string, unknown> };
 }
 
 export type FakeCall =
@@ -25,7 +31,12 @@ export type FakeCall =
   | "systemAudio.get"
   | "systemAudio.set"
   | "systemAudioConsent.get"
-  | "systemAudioConsent.set";
+  | "systemAudioConsent.set"
+  | "callNames.get"
+  | "callNames.set"
+  | "callNames.openSettings"
+  | "callNames.read"
+  | "callNames.clear";
 
 export interface FakeDesktopCaptureExtras {
   extras: DesktopCaptureExtras;
@@ -41,6 +52,10 @@ export interface FakeDesktopCaptureExtras {
   finishDownload(id: WhisperModelId): void;
   /** Ends an in-flight download with an error: "error" is emitted, then `download` rejects. */
   failDownload(id: WhisperModelId, message: string): void;
+  /** The user allows the app in System Settings (or revokes it): what `callNames.get` reports next. */
+  setCallNamesPermission(permission: CallNamesPermission): void;
+  /** What the reader holds for a recording now: undefined once it is cleared. */
+  callNamesRead(id: string): unknown;
 }
 
 export function createFakeDesktopCaptureExtras(
@@ -50,6 +65,9 @@ export function createFakeDesktopCaptureExtras(
   let selected: WhisperModelId | null = options.selected ?? null;
   let systemAudio = options.systemAudio ?? false;
   let systemAudioConsent = options.systemAudioConsent ?? false;
+  let callNamesEnabled = options.callNames?.enabled ?? false;
+  let callNamesPermission: CallNamesPermission = options.callNames?.permission ?? "missing";
+  const callNamesStored = new Map<string, unknown>(Object.entries(options.callNames?.read ?? {}));
   const calls: string[] = [];
   const failures = new Map<FakeCall, string>();
   const listeners = new Set<(progress: DownloadProgress) => void>();
@@ -140,6 +158,29 @@ export function createFakeDesktopCaptureExtras(
         systemAudioConsent = consented;
       },
     },
+    ...(options.callNames === undefined ? {} : {
+      callNames: {
+        async get() {
+          enter("callNames.get");
+          return { enabled: callNamesEnabled, permission: callNamesPermission };
+        },
+        async set(enabled: boolean) {
+          enter("callNames.set", enabled);
+          callNamesEnabled = enabled;
+        },
+        async openSettings() {
+          enter("callNames.openSettings");
+        },
+        async read(id: string) {
+          enter("callNames.read", id);
+          return callNamesStored.get(id) ?? null;
+        },
+        async clear(id: string) {
+          enter("callNames.clear", id);
+          callNamesStored.delete(id);
+        },
+      },
+    }),
   };
 
   const settle = (id: WhisperModelId) => {
@@ -175,5 +216,7 @@ export function createFakeDesktopCaptureExtras(
       emit({ id, fraction, status: "error", error: message });
       pending?.reject(new Error(message));
     },
+    setCallNamesPermission: (permission) => { callNamesPermission = permission; },
+    callNamesRead: (id) => callNamesStored.get(id),
   };
 }

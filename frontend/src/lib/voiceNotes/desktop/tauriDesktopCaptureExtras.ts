@@ -1,4 +1,5 @@
 import type {
+  CallNames,
   DesktopCaptureExtras,
   DownloadProgress,
   WhisperModelId,
@@ -8,7 +9,18 @@ import type { DesktopBridge } from "./desktopVoiceNotes";
 
 const PROGRESS_EVENT = "exo://recorder-model-progress";
 
-/** DesktopCaptureExtras bound to the recorder model and system audio commands. */
+/**
+ * Tauri's own refusals of `command`: the native side does not have it, or does not let this window call it (the
+ * wordings `ipc_selftest.rs` checks). A failure the command itself reports is not one of these.
+ */
+function commandAbsent(command: string, error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return text === `Command ${command} not found` || text === `${command} not allowed. Command not found`
+    || text === `Command ${command} not allowed by ACL`
+    || (text.includes(command) && (text.includes("not allowed. Permissions associated with this command:") || text.includes("explicitly denied")));
+}
+
+/** DesktopCaptureExtras bound to the recorder model, system audio and call names commands. */
 export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopCaptureExtras {
   const subscribe = (callback: (progress: DownloadProgress) => void) =>
     bridge.listen<DownloadProgress>(PROGRESS_EVENT, callback);
@@ -29,6 +41,26 @@ export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopC
     };
   };
 
+  // Names in the call. A build whose native side lacks these commands refuses the first call. From then on the
+  // feature is absent for the session: `callNames` reads as undefined, so the setting stays hidden, recordings
+  // save without names, and nothing asks (or warns) again.
+  let callNamesAbsent = false;
+  const callNamesInvoke = <T>(command: string, args?: Record<string, unknown>) =>
+    bridge.invoke<T>(command, args).catch((error: unknown) => {
+      if (!callNamesAbsent && commandAbsent(command, error)) {
+        callNamesAbsent = true;
+        console.info("[DesktopCaptureExtras] This build has no names in the call");
+      }
+      throw error;
+    });
+  const callNames: CallNames = {
+    get: () => callNamesInvoke<unknown>("call_names_get"),
+    set: (enabled) => callNamesInvoke<void>("call_names_set", { enabled }),
+    openSettings: () => callNamesInvoke<void>("call_names_open_settings"),
+    read: (id) => callNamesInvoke<unknown>("call_names_read", { id }),
+    clear: (id) => callNamesInvoke<void>("call_names_clear", { id }),
+  };
+
   return {
     models: {
       list: () => bridge.invoke<WhisperModelInfo[]>("recorder_models_list"),
@@ -46,6 +78,9 @@ export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopC
     systemAudioConsent: {
       get: () => bridge.invoke<boolean>("recorder_system_audio_consent_get"),
       set: (consented) => bridge.invoke<void>("recorder_system_audio_consent_set", { consented }),
+    },
+    get callNames() {
+      return callNamesAbsent ? undefined : callNames;
     },
   };
 }

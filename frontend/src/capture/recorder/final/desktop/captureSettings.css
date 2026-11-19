@@ -238,6 +238,10 @@
 .cs-tgl .cs-error {
   margin: 4px 0 0;
 }
+/* A button under a switch's label (Open System Settings): its text lines up with the label. */
+.cs-tgl .cs-get {
+  margin: 4px 0 0 -8px;
+}
 .cs-switch {
   flex: none;
   margin-top: 1px;
