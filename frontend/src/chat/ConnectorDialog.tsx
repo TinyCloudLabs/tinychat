@@ -45,6 +45,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
+import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   AlertTriangleIcon,
@@ -407,6 +408,8 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
 const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
   tcw,
   descriptor,
+  backendUrl,
+  sessionStore,
   open,
   onOpenChange,
   onConnected,
@@ -511,6 +514,7 @@ const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
       syncRes = await syncFireflies({
         client,
         store: connectorStore,
+        checkPurge: createConnectorWebhooksClient(backendUrl, { sessionStore }).checkPurge,
         tcw,
         onProgress: setProgress,
         signal: ac.signal,
@@ -551,7 +555,7 @@ const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
     }
     setSummary(syncRes.data);
     setPhase("done");
-  }, [apiKey, descriptor, onConnected, tcw]);
+  }, [apiKey, backendUrl, descriptor, onConnected, sessionStore, tcw]);
 
   const handleStopSync = useCallback(() => {
     abortRef.current?.abort();
@@ -2329,6 +2333,9 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
     // connector connected, and its count still stands.
     removeBackgroundDrainConnectorRecord(descriptor.source);
     onDisconnected();
+    // A Fireflies sign-in the server removed but the provider did not confirm revoked is a warning too:
+    // the dialog stays open so the owner reads it.
+    if (final.notice !== undefined) showRevokeWarning = true;
     if (!showRevokeWarning) onOpenChange(false);
   }, [
     backendUrl,

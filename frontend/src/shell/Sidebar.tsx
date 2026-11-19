@@ -11,8 +11,10 @@ import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { ActivityPanel } from "@/capture/activity/ActivityPanel";
 import { sidebarActivityStore } from "@/capture/activity/sidebarActivityStore";
+import { SidebarBotRows } from "@/bots/lazyBotNav";
 import { NavBadge } from "./NavBadge";
-import { tabTarget } from "./navigation";
+import { NavLink } from "./NavLink";
+import { navTarget } from "./navItems";
 import { PATHS } from "./routes";
 import type { NavProps } from "./TabBar";
 
@@ -67,22 +69,24 @@ export function Sidebar({
           const active = item.id === current;
           return (
             <li key={item.id}>
-              <Link
-                to={tabTarget(item.id, active)}
+              <NavLink
+                item={item}
+                to={navTarget(item, active)}
                 replace={replace}
                 aria-current={active ? "page" : undefined}
                 aria-label={item.ariaLabel}
                 onClick={(event: MouseEvent) => {
                   if (!active || pathname !== item.href) return;
                   event.preventDefault();
-                  onReselect(item.id);
+                  onReselect(item.destination);
                 }}
                 className={cn(ROW, rowState(active), item.badge ? "pr-[40px]" : undefined)}
               >
                 <RowContent icon={item.icon} label={item.label} active={active} />
                 <NavBadge count={item.badge} className="right-2.5 top-1/2 -translate-y-1/2" />
                 {item.id === "capture" && <CaptureDot />}
-              </Link>
+              </NavLink>
+              {item.id === "chat" && <SidebarBotRows />}
             </li>
           );
         })}

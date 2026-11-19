@@ -1,5 +1,5 @@
 /**
- * Stateless Granola REST pass-through (granola-connector plan, Sam's order 2026-11-18).
+ * Stateless Granola REST pass-through.
  *
  * Why this exists: `https://public-api.granola.ai` answers GETs with
  * `access-control-allow-origin: *` but the CORS PREFLIGHT (`OPTIONS`) 404s with no CORS headers

@@ -1,0 +1,13 @@
+# TinyCloud One
+
+TinyCloud One is the app for using TinyCloud. Its Feed is where connected agents post cards and read your answers.
+
+TinyCloud keeps your data in a space you control. Apps, assistants and people
+reach it only through access you grant: an approval you sign, or a link you
+share. Approvals are scoped and expire unless you choose to let them renew,
+and ending one stops future reads. Connections to TinyCloud's hosted service
+use HTTPS. The Data Vault encrypts values on your device before they're stored.
+The hosted TinyCloud connector (MCP) handles the requests and results it passes
+in readable form. An app or agent you approve receives what it reads and can
+keep a copy.
+Security and trust model: https://docs.tinycloud.xyz/concepts/security-and-trust

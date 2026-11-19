@@ -19,11 +19,22 @@ interface OwnerFile { v: 1; owner: string; bots: Record<string, Entry> }
 const isState = (value: unknown): value is BotState =>
   value === "active" || value === "suspended" || value === "deleting" || value === "removed";
 
+/** A new bot was announced for an owner who already has as many as this service allows one owner. */
+export class OwnerBotLimit extends Error {
+  constructor() { super("owner_bot_limit"); }
+}
+
 export class OwnerManifests {
   readonly #root: string;
+  readonly #maxPerOwner: number;
 
-  constructor(root: string) {
+  /**
+   * `maxPerOwner` is this service's own limit on one owner's bots, Main included. The backend has its own; this one
+   * holds even if that one is wrong, so one owner cannot be announced into every place the service has.
+   */
+  constructor(root: string, maxPerOwner: number = Number.POSITIVE_INFINITY) {
     this.#root = root;
+    this.#maxPerOwner = maxPerOwner;
   }
 
   #path(ownerDid: string): string {
@@ -71,6 +82,12 @@ export class OwnerManifests {
     const held = file.bots[key];
     const settled = held !== undefined && (held.state === "deleting" || held.state === "removed");
     if (held && (settled || seq <= held.seq)) return held.state;
+    // A bot not seen before takes a place, unless it is announced as already on its way out. Main always has one,
+    // announced or not. A bot already held is never refused here: its updates, a deletion above all, must get through.
+    if (!held && key !== MAIN_KEY && state !== "deleting") {
+      const others = Object.entries(file.bots).filter(([other, entry]) => other !== MAIN_KEY && (entry.state === "active" || entry.state === "suspended")).length;
+      if (1 + others >= this.#maxPerOwner) throw new OwnerBotLimit();
+    }
     file.bots[key] = { state, seq };
     this.#save(ownerDid, file);
     return state;

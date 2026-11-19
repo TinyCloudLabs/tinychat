@@ -38,6 +38,8 @@ export interface Screen {
   destination: Destination | null;
   /** The `connector_meeting.id` of an open note (decoded), else null. */
   noteId: string | null;
+  /** One Apps: the app id an `/chat/apps/<appId>` address names (decoded); absent elsewhere. */
+  appId?: string;
 }
 
 /** Connectors, one page (its address before the shell, kept for the links that name it). */
@@ -113,7 +115,17 @@ export function screenFor(pathname: string): Screen {
   if (path === PATHS.settings) return { id: "settings", destination: null, noteId: null };
   if (path === PATHS.about) return { id: "about", destination: null, noteId: null };
   if (path === PATHS.feed || path.startsWith(`${PATHS.feed}/`)) return { id: "feed", destination: "feed", noteId: null };
-  if (path === PATHS.apps || path.startsWith(`${PATHS.apps}/`)) return { id: "apps", destination: "apps", noteId: null };
+  if (path.startsWith(`${PATHS.apps}/`)) {
+    const raw = path.slice(PATHS.apps.length + 1);
+    let appId: string;
+    try {
+      appId = decodeURIComponent(raw);
+    } catch {
+      appId = raw;
+    }
+    return { id: "apps", destination: "apps", noteId: null, appId };
+  }
+  if (path === PATHS.apps) return { id: "apps", destination: "apps", noteId: null };
   if (path === PATHS.connectors || path.startsWith(`${PATHS.connectors}/`)) {
     return { id: "connectors", destination: "connectors", noteId: null };
   }
