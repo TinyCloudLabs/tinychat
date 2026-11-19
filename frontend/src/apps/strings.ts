@@ -84,7 +84,9 @@ function otherSpacesLine(app: string, names: readonly string[], none: boolean): 
       ? `${app} uses ${space}, which isn't set up in your TinyCloud. Open ${space} once to set it up, then come back to give ${app} access.`
       : `${app} also uses ${space}, which isn't set up in your TinyCloud. Open ${space} once to set it up, then come back to give ${app} access to it.`;
   }
-  return `${app} ${none ? "uses" : "also uses"} ${joinNames(names)}, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give ${app} access to them.`;
+  return none
+    ? `${app} uses ${joinNames(names)}, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give ${app} access.`
+    : `${app} also uses ${joinNames(names)}, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give ${app} access to them.`;
 }
 
 /**
