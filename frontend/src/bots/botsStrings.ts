@@ -28,8 +28,8 @@ export const HISTORY_EXPIRY_NOTICE = "Your TinyCloud permission expired on {expi
 export const HISTORY_RECONNECT_LABEL = "Reconnect TinyCloud";
 
 export const CREATE_BOT_STRINGS = {
-  title: "Create New Bot",
-  name: "Name your Bot",
+  title: "New bot",
+  name: "Name your bot",
   shape: "Shape",
   colour: "Colour",
   cancel: "Cancel",

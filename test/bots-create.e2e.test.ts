@@ -24,10 +24,10 @@ async function open(screen = "bots-create") {
   page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
   page.setDefaultTimeout(10_000);
   await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen}&theme=light&platform=web`);
-  const dialog = page.getByRole("dialog", { name: "Create New Bot" });
+  const dialog = page.getByRole("dialog", { name: "New bot" });
   await dialog.waitFor();
   return {
-    dialog, name: dialog.getByLabel("Name your Bot"), create: dialog.getByRole("button", { name: "Create", exact: true }),
+    dialog, name: dialog.getByLabel("Name your bot"), create: dialog.getByRole("button", { name: "Create", exact: true }),
     status: dialog.getByRole("status"),
   };
 }
