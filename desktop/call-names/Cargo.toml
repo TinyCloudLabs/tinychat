@@ -9,6 +9,10 @@ description = "Display names of the people in a call, read from the meeting app'
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 
+# The macOS reader (src/ax.rs): CoreFoundation types plus hand-declared Accessibility functions.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
+
 # Standalone on purpose: not a member of desktop/Cargo.toml's workspace (its
 # manifest and lock trigger the transcript-eval jobs) and not of src-tauri's.
 [workspace]

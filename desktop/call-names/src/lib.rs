@@ -10,11 +10,14 @@
 //! - [`names`]: cleaning and caps; a `Debug` that never prints a name.
 //! - [`roster`]: the people of one recording with stable ids, and the `call_participants` JSON.
 //! - [`session`]: one tick, with its node, depth and time budget; an overrun discards the tick.
+//! - [`ax`]: the macOS reader (Accessibility API); on other platforms a stub that reports
+//!   "unsupported".
 //!
-//! Everything here is pure and runs on any platform.
+//! Everything except the macOS half of [`ax`] is pure and runs on any platform.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
+pub mod ax;
 pub mod extract;
 pub mod names;
 pub mod roster;
