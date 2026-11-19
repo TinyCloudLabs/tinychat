@@ -3,11 +3,10 @@
 #   docker build -f bots-regular/Dockerfile --target sandbox -t bots-regular-sandbox .   every bot's sandbox
 #   docker build -f bots-regular/Dockerfile -t bots-regular .                             service and gateway
 # The service image runs as two containers (deploy/bots-regular.yaml): the service (bun src/main.ts) and the gateway
-# (bun src/gateway-main.ts, the only holder of the model key). Neither image holds a key.
+# (bun src/gateway-main.ts).
 ARG BUN_IMAGE=oven/bun:1.4.4-debian@sha256:93d5032fe06d163427822dc1598f420363759bb18155c9cc90eb1be05a64a19e
 
-# A bot's sandbox: OMP from the private runtime's committed lockfile, and the stdio bridge the sandbox host starts with
-# every pod. The host saves this root filesystem when the bot sleeps.
+# A bot's sandbox: OMP from bots/sandbox's lockfile, and the bridge the sandbox host starts with every pod.
 FROM ${BUN_IMAGE} AS sandbox
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -31,7 +30,7 @@ COPY bots-regular/package.json bots-regular/bun.lock bots-regular/tsconfig.json 
 RUN bun install --frozen-lockfile --production
 COPY bots-regular/src ./src
 COPY bots-regular/sandbox ./sandbox
-# The opt-in real check runs from the deployed container (README, "Real cluster check").
+# The cluster check runs from the deployed container (README, "Cluster check").
 COPY bots-regular/scripts ./scripts
 ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
 USER 65532:65532

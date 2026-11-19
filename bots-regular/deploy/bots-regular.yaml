@@ -1,10 +1,8 @@
-# The regular bots runtime on a gke-sandboxes cluster (TC-3325). Apply AFTER the library's own manifests
-# (`terraform -chdir=infra output -raw manifests | kubectl apply -f -` in gke-sandboxes): the NetworkPolicy named
-# "sandboxes" below replaces the library's policy of the same name, and re-applying the library's manifests puts the
-# wider one back. See "Deploying" in bots-regular/README.md.
+# The regular bots runtime on a gke-sandboxes cluster (TC-3325). Apply after the library's manifests; see "Deploying"
+# in bots-regular/README.md.
 #
-# ${BOTS_REGULAR_IMAGE} and ${BOTS_REGULAR_SANDBOX_IMAGE} are digests, filled in by envsubst at deploy time.
-# The Secret bots-regular is created by hand (README) and is never in this file.
+# ${BOTS_REGULAR_IMAGE} and ${BOTS_REGULAR_SANDBOX_IMAGE} are image digests, filled in by envsubst at deploy time.
+# The Secret bots-regular is created by hand (README).
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -17,7 +15,7 @@ metadata:
   name: bots-regular
 automountServiceAccountToken: false
 ---
-# The service drives sandboxes with the library's own Role, as the library's sweeper does.
+# Binds the service account to the library's sandbox-controller Role in the sandboxes namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -61,7 +59,7 @@ metadata:
   name: bots-regular
 spec:
   replicas: 1
-  # One process owns the bots' state; two would race for the same sandboxes.
+  # Stops the old pod before starting the new one.
   strategy:
     type: Recreate
   selector:
@@ -73,7 +71,7 @@ spec:
         app: bots-regular
     spec:
       serviceAccountName: bots-regular
-      # The Kubernetes token is mounted into the service container only, never the gateway.
+      # The Kubernetes token is mounted into the service container only (volume kube-api).
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -134,7 +132,7 @@ spec:
               value: /data/bots
             - name: BOTS_RUN_ROOT
               value: /run/bots
-            # Bun does not trust the cluster's own certificate authority by default.
+            # The cluster's certificate authority, for calls to the Kubernetes API.
             - name: NODE_EXTRA_CA_CERTS
               value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
           volumeMounts:
@@ -205,7 +203,7 @@ spec:
       port: 8081
       targetPort: 8081
 ---
-# The internal API. Reaching it from the backend (your own ingress and TLS) is a separate step; see the README.
+# The internal API on port 8080.
 apiVersion: v1
 kind: Service
 metadata:
@@ -219,7 +217,7 @@ spec:
       port: 8080
       targetPort: 8080
 ---
-# The service pod: sandboxes reach the gateway port and nothing else; everything except the sandboxes reaches the API.
+# The service pod: allows ingress to port 8081 from sandbox pods, and to port 8080 from every namespace except sandboxes.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -251,9 +249,8 @@ spec:
         - protocol: TCP
           port: 8080
 ---
-# REPLACES the library's policy "sandboxes", which lets sandboxes reach the whole internet. Policies add up, so a second
-# policy cannot narrow it; this one takes its name. A sandbox may resolve names and reach the gateway, and only the
-# service may reach its bridge.
+# Sandbox pods: allows egress to DNS and to the service pod's port 8081 only, and ingress to port 7070 from the service
+# pod only. Takes the place of the library's policy with the same name.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

@@ -1,10 +1,7 @@
-// The model gateway as the regular runtime runs it: the private runtime's Gateway (allowlisted body, one request slot
-// per bot, daily budgets per bot, per owner and in total, the only holder of the model key), reached by sandboxes over
-// TCP instead of a socket per bot. A request names its bot in the path; the Gateway accepts it only with that bot's
-// current token, so one bot's token never opens another bot's slot.
+// The model gateway from bots/ (Gateway), served over TCP with the bot id in the path, plus its control API.
 //
 //   sandboxes  ANY    /bots/<botId>/v1/...   forwarded to Gateway.handle(botId) as /v1/...
-//   service    PUT    /bots/<botId>          {"token": "<64 hex>", "owner": "<64 hex>"}   on the control socket only
+//   service    PUT    /bots/<botId>          {"token": "<64 hex>", "owner": "<64 hex>"}   on the control socket
 //              DELETE /bots/<botId>
 //              GET    /bots/<botId>/receipts
 
@@ -14,7 +11,7 @@ import { BOT_ID } from "../../bots/src/owner";
 
 const BOT_PATH = /^\/bots\/([0-9a-f]{64})(\/v1\/.*)$/;
 
-/** What sandboxes reach. `streaming` lifts the server's idle timeout once a call is accepted. */
+/** The TCP handler. `streaming` lifts the server's idle timeout once a call is accepted. */
 export function sandboxFetch(gateway: Pick<Gateway, "handle">) {
   return (req: Request, streaming: () => void = () => {}): Promise<Response> | Response => {
     const url = new URL(req.url);
@@ -24,7 +21,7 @@ export function sandboxFetch(gateway: Pick<Gateway, "handle">) {
   };
 }
 
-/** What the service reaches, on a socket no sandbox can. */
+/** The control socket's handler. */
 export function controlFetch(gateway: Pick<Gateway, "setToken" | "dropToken">, receipts?: (botId: string) => unknown[]) {
   return async (req: Request): Promise<Response> => {
     const path = new URL(req.url).pathname;

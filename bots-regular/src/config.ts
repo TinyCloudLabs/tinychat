@@ -1,5 +1,4 @@
-// Environment for the regular runtime service. It holds its own service secret, never the private runtime's, never
-// the model key (the gateway container holds that) and never anything that opens an owner's history.
+// Environment for the regular runtime service. The model key is read by the gateway container (gateway-main.ts).
 
 type Env = Record<string, string | undefined>;
 
@@ -23,7 +22,7 @@ function required(env: Env, name: string): string {
 
 export type ProviderConfig =
   | { kind: "gke"; apiUrl: string; namespace: string; serviceAccount: string; image: string }
-  /** Bridges as processes on this machine with a stand-in agent: tests and the local check only. */
+  /** Bridges as processes on this machine with a stand-in agent: tests and local runs. */
   | { kind: "local"; root: string; agent: string[] };
 
 export interface RegularConfig {
@@ -41,7 +40,7 @@ export interface RegularConfig {
   retentionDays: number;
   startTimeoutMs: number;
   touchMs: number;
-  /** The gateway container's control socket, on a volume only the service and the gateway mount. */
+  /** The gateway container's control socket. */
   gatewayControlSocket: string;
   /** The gateway as sandboxes reach it. */
   gatewayOrigin: string;

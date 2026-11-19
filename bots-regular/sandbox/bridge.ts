@@ -1,16 +1,10 @@
-// The stdio bridge: the boot process of every regular bot sandbox. OMP speaks its RPC on stdin/stdout, and the sandbox
-// host runs commands with stdin closed, so this process holds OMP's stdio and offers it to the service as one
-// WebSocket.
+// The stdio bridge: the boot process of every regular bot sandbox. It runs OMP and carries OMP's stdin and stdout over
+// one WebSocket.
 //
-//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model"}  from `arm.ts`, which the service
-//                       runs through the host's exec channel with the values in its environment. Tokens live in this
-//                       process's memory only, never in the sandbox's files, so never in a snapshot. Arming again
-//                       replaces them and ends any open connection.
+//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model"}  from `arm.ts`. Kept in memory.
+//                       Arming again replaces them and closes any open connection.
 //   0.0.0.0:BRIDGE_PORT GET /rpc   WebSocket, `Authorization: Bearer <bridgeToken>`. One connection at a time. Opening
 //                       it starts OMP; closing it ends OMP, and OMP ending closes it.
-//
-// Everything in the sandbox can reach the arm port, OMP included; that is the bot itself, which can only lock itself
-// out. Another bot never holds this bridge's token.
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -41,7 +35,7 @@ function log(event: string, extra: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ bridge: event, ...extra }));
 }
 
-/** OMP's provider config: the model behind this bot's own path on the gateway. BOT_TOKEN names an env var, not a value. */
+/** OMP's provider config: the model at the bot's path on the gateway. `apiKey: BOT_TOKEN` names an env var. */
 function modelsYml(gatewayUrl: string, model: string): string {
   return [
     "# Written by the bridge. BOT_TOKEN is the bot's own gateway token, never a model key.",

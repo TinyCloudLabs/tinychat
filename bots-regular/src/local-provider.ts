@@ -1,6 +1,5 @@
-// A sandbox host on this machine, for the tests and the local check: each sandbox is a bridge process on loopback
-// with its own home directory as its files, and sleeping copies those files to a snapshot named by the sandbox id and
-// removes them, as the real host saves a root filesystem. NOT isolation: never use it for anyone's bot.
+// A sandbox host on this machine, for tests and local runs: each sandbox is a bridge process on loopback with its own
+// home directory as its files. Sleeping copies those files to a snapshot named by the sandbox id and removes them.
 
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";

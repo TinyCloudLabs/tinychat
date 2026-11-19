@@ -1,7 +1,6 @@
-// Starts and stops regular bots on a sandbox host. Each launch: the bot's own sandbox (its id built from the bot id),
-// woken from its own snapshot; a fresh bridge token and a fresh gateway token, both made here and handed to the sandbox
-// through the host's exec channel; the gateway told to accept that token for this bot only; and OMP's RPC over the
-// bridge, fed into the same RPC client the private runtime uses. Bot and BotManager are the private runtime's own.
+// Starts and stops regular bots on a sandbox host. Each launch: acquires the bot's sandbox, makes a new bridge token
+// and a new gateway token, registers the gateway token for the bot, arms the bridge through `exec`, connects to it and
+// runs OMP's RPC through the RPC client from bots/.
 
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -21,7 +20,7 @@ export interface LauncherOptions {
   gatewayOrigin: string;
   /** The command that arms the bridge, run in the sandbox with the tokens in its environment. */
   armCommand: string;
-  /** How often a running sandbox reports itself in use, so the host's sweeper leaves it awake. */
+  /** How often a running sandbox is touched. */
   touchMs: number;
   /** Waking or creating a sandbox, arming its bridge and OMP's ready, together. */
   startTimeoutMs: number;
@@ -42,17 +41,17 @@ export class RegularLauncher implements SandboxLauncher {
     this.#options = options;
   }
 
-  /** The bot has run: its marker names the sandbox that holds its files. */
+  /** The bot has run: its marker file holds its sandbox id. */
   hasState(layout: BotLayout): boolean {
     return existsSync(layout.stateSnapshot);
   }
 
-  /** A sandbox that did not go to sleep is left to the host's sweeper; it holds no place here. */
+  /** Always false: a sandbox that did not sleep is left to the host's sweeper. */
   leftover(): boolean {
     return false;
   }
 
-  /** Nothing of a regular bot is mounted on the service's machine. */
+  /** No mounts on the service's machine. */
   mountPoints(): string[] {
     return [];
   }
@@ -61,7 +60,7 @@ export class RegularLauncher implements SandboxLauncher {
     return this.#gateway.receipts(layout.botId);
   }
 
-  /** Deleting a bot's working state deletes its sandbox and every snapshot of it first. */
+  /** Deletes the bot's sandbox and its snapshots, and drops its gateway token. */
   async removeState(layout: BotLayout): Promise<void> {
     await this.#provider.destroy(sandboxIdFor(layout.botId));
     await this.#gateway.drop(layout.botId);
@@ -72,7 +71,7 @@ export class RegularLauncher implements SandboxLauncher {
     const deadline = Date.now() + this.#options.startTimeoutMs;
     const bridgeToken = randomBytes(32).toString("hex");
     const gatewayToken = randomBytes(32).toString("hex");
-    // Before anything remote exists, so a deletion that finds no directory knows there is no sandbox either.
+    // Created first, so deleteBot finds a directory for any bot that may have a sandbox.
     mkdirSync(layout.dataDir, { recursive: true, mode: 0o700 });
     let connection: BridgeConnection | undefined;
     let touches: Timer | undefined;
@@ -118,7 +117,7 @@ export class RegularLauncher implements SandboxLauncher {
         onFrame: listener => rpc.onFrame(listener),
         exited,
         refreshEgress: () => this.#gateway.register(layout.botId, gatewayToken, layout.ownerId),
-        // The host saves the files when the sandbox sleeps; a pod lost before then comes back from the last sleep.
+        // The host saves the files when the sandbox sleeps.
         snapshot: async () => {},
         stop: destroy,
       };

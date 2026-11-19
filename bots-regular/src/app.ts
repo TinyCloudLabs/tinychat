@@ -1,5 +1,5 @@
-// The internal API of the regular runtime: the private runtime's own, taking calls signed for the regular environment
-// with this service's own secret, and nothing else: never the legacy header, never a call signed for the private one.
+// The internal API of the regular runtime: createApp from bots/, for calls signed for the `regular` environment, with
+// the legacy owner header turned off.
 
 import { type AppOptions, createApp } from "../../bots/src/server";
 

@@ -1,7 +1,7 @@
-// The service's end of a sandbox's stdio bridge: one WebSocket, presented to the existing RPC client as a line writer
-// and a byte stream, exactly as a sandbox's stdin and stdout are in the private runtime.
+// The service's end of a sandbox's bridge: one WebSocket, given to the RPC client from bots/ as a line writer and a
+// byte stream.
 
-/** Bytes a bridge may queue that the RPC client has not read; past it the connection is dropped, not buffered. */
+/** Bytes a bridge may queue that the RPC client has not read; past it the connection is closed. */
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
 const RETRY_MS = 250;
 
@@ -24,7 +24,7 @@ function open(url: string, token: string): Promise<BridgeConnection> {
     { start: c => { controller = c; } },
     new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 }),
   );
-  // Bun's client accepts headers; the bridge refuses the upgrade without this bot's token.
+  // Bun's WebSocket client accepts headers.
   const ws = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } });
   ws.binaryType = "arraybuffer";
   const end = () => {

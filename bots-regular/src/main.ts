@@ -1,5 +1,5 @@
-// The regular runtime service: the same internal API, manifests, bot states and history journal as the private
-// runtime (bots/), with each bot in its own sandbox on a sandbox host instead of a local gVisor sandbox.
+// The regular runtime service: the internal API, manifests, bot states and history journal from bots/, with each bot
+// in a sandbox on a sandbox host.
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

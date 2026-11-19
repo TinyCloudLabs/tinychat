@@ -1,11 +1,10 @@
-// The opt-in check against a real gke-sandboxes cluster. It is never run by the tests or CI. Run it inside the
-// deployed service container, which holds the cluster token, reaches sandbox pods and the gateway's control socket:
+// The cluster check (README, "Cluster check"). Not run by the tests or CI. Run it in the deployed service container:
 //
 //   kubectl exec -n bots-regular deploy/bots-regular -c service -- env BOTS_REGULAR_REAL_CHECK=1 bun scripts/real-cluster-check.ts
 //
-// It starts one throwaway bot (a random owner), sends it one message (a few model tokens), checks the bridge refuses
-// other tokens and the sandbox reaches nothing but the gateway, puts it to sleep, wakes it with its files, and deletes
-// it. Every step prints one line; the last line is "REAL CHECK PASSED" or the step that failed.
+// It starts one bot under a random owner, sends it a message, calls its bridge and two addresses from its sandbox,
+// puts it to sleep, wakes it, and deletes it. Each step prints one line; the last line is "REAL CHECK PASSED" or
+// "REAL CHECK FAILED".
 
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -76,22 +75,22 @@ try {
   const endpoint = await provider.endpoint(id, BRIDGE_PORT);
   const noToken = (await fetch(`${endpoint}/rpc`)).status;
   const wrongToken = (await fetch(`${endpoint}/rpc`, { headers: { authorization: `Bearer ${randomBytes(32).toString("hex")}` } })).status;
-  step("bridge refuses a call without this launch's token", noToken === 401 && wrongToken === 401, `no token ${noToken}, another token ${wrongToken}`);
+  step("bridge without the launch token", noToken === 401 && wrongToken === 401, `no token ${noToken}, another token ${wrongToken}`);
 
   const internet = await inSandbox("fetch('https://example.com',{signal:AbortSignal.timeout(8000)}).then(r=>console.log('reached '+r.status),()=>console.log('blocked'))");
-  step("sandbox cannot reach the internet", internet === "blocked", internet);
+  step("fetch https://example.com from the sandbox", internet === "blocked", internet);
   const otherBot = randomBytes(32).toString("hex");
   const gatewaySeen = await inSandbox(`fetch('${cfg.gatewayOrigin}/bots/${otherBot}/v1/models',{signal:AbortSignal.timeout(8000)}).then(r=>console.log('status '+r.status),()=>console.log('blocked'))`);
-  step("sandbox reaches the gateway, which refuses another bot's path", gatewaySeen === "status 403", gatewaySeen);
+  step("gateway, another bot's path, from the sandbox", gatewaySeen === "status 403", gatewaySeen);
 
-  step("bot goes to sleep", await bot.stop(), "stopped; sandbox saved and its pod removed");
+  step("sleep", await bot.stop(), "stopped");
 
   const second = await send(bot, "Reply with exactly one word: again");
   const listed = await bot.list();
-  step("bot wakes with its files", second.end.startsWith("done") && listed.length === 4, `${second.end}, ${listed.length} messages listed after waking`);
+  step("wake", second.end.startsWith("done") && listed.length === 4, `${second.end}, ${listed.length} messages listed after waking`);
 
   const deleted = await bots.deleteWorkingState(bot.layout.botId, "real_check");
-  step("deleting the bot deletes its sandbox and snapshots", deleted === undefined, deleted ?? "deleted");
+  step("delete", deleted === undefined, deleted ?? "deleted");
   console.log(`REAL CHECK PASSED in ${Math.round((Date.now() - started) / 1000)} s`);
 } catch (error) {
   console.log(`REAL CHECK FAILED: ${error instanceof Error ? error.message : String(error)}`);

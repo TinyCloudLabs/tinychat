@@ -1,6 +1,5 @@
-// The regular runtime's model gateway: a container beside the service, the only holder of the model key. Sandboxes
-// reach it over TCP at /bots/<botId>/v1/... (the network policy lets them reach nothing else); the service reaches
-// its control socket on a volume no sandbox mounts.
+// The regular runtime's model gateway, run as its own container: TCP on BOTS_REGULAR_GATEWAY_PORT at
+// /bots/<botId>/v1/..., and the control API on BOTS_REGULAR_GATEWAY_CONTROL_SOCKET.
 
 import { chmodSync, rmSync } from "node:fs";
 import { BotAci } from "../../bots/src/aci";
@@ -40,7 +39,7 @@ const sandboxes = Bun.serve({
 // Registrations do not survive a restart; the service registers again before every message.
 rmSync(controlSocket, { force: true });
 const control = Bun.serve({ unix: controlSocket, fetch: controlFetch(gateway, botId => aci?.take(botId) ?? []) });
-// The service runs as another user; only the two containers mount the socket's volume.
+// The service container runs as another user.
 chmodSync(controlSocket, 0o666);
 
 console.log(JSON.stringify({ gateway: "listening", runtime: "regular", port: sandboxes.port, models: cfg.models }));

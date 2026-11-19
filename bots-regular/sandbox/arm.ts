@@ -1,5 +1,5 @@
-// Run by the service through the sandbox host's exec channel, with the values in its environment only: hands this
-// launch's bridge token, gateway token, gateway address and model to the bridge on the sandbox's loopback.
+// Run by the service through the sandbox host's exec channel: posts this launch's bridge token, gateway token,
+// gateway address and model (from its environment) to the bridge on the sandbox's loopback.
 
 const port = Number(process.env.ARM_PORT ?? 7071);
 const body = JSON.stringify({

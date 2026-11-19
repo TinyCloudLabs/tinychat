@@ -1,5 +1,4 @@
-// The one seam between the regular runtime and the machines its bots run on. The service only ever names a sandbox by
-// the id built here from a bot's hashed id, so a sandbox, and the snapshot it wakes from, belongs to exactly one bot.
+// The interface between the regular runtime and its sandbox host. Sandbox ids are built here from bot ids.
 
 import { BOT_ID } from "../../bots/src/owner";
 
@@ -18,22 +17,21 @@ export interface ExecResult {
 
 /**
  * What the service needs from a sandbox host. The real one is gke-sandboxes on Google Cloud (gke-provider.ts); tests
- * and the local check use a fake. Every method takes a sandbox id and touches that sandbox only.
+ * and local runs use LocalProvider. Every method takes a sandbox id.
  */
 export interface SandboxProvider {
   /**
-   * Returns the running sandbox, waking it from its own newest snapshot or creating it empty. Its boot process (the
-   * bridge) starts with it, holding no token until it is armed.
+   * Returns once the sandbox is running, woken from its newest snapshot or created empty. Its boot process (the
+   * bridge) starts with it.
    */
   acquire(id: string, signal: AbortSignal): Promise<void>;
   /**
-   * Runs one command in the sandbox. `env` reaches the command only: it is never written to the sandbox's files, its
-   * pod spec or its labels.
+   * Runs one command in the sandbox, with `env` in the command's environment.
    */
   exec(id: string, command: string, env: Record<string, string>, timeoutSeconds: number): Promise<ExecResult>;
-  /** `http://<address>:<port>` of the sandbox's running machine. Addresses are reused, so this is never cached. */
+  /** `http://<address>:<port>` of the sandbox's running pod. Looked up on every call. */
   endpoint(id: string, port: number): Promise<string>;
-  /** Restarts the sandbox's idle period, so the host's sweeper does not put it to sleep while a turn runs. */
+  /** Restarts the sandbox's idle period. */
   touch(id: string): Promise<void>;
   /** Saves its files to its snapshot and stops it. */
   sleep(id: string): Promise<void>;

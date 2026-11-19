@@ -1,7 +1,5 @@
-// A stand-in for OMP in RPC mode, for the tests and the local check only (never in an image). It speaks just enough
-// of the protocol for the service: ready, set_event_filter, open_session, prompt (one streamed reply), the message
-// listings and abort. Its session lives in $HOME/bot/sessions/main, so it is in the sandbox's files and survives a
-// sleep exactly when the files do.
+// A stand-in for OMP in RPC mode, for tests and local runs. It answers ready, set_event_filter, open_session, prompt
+// (one streamed reply), the message listings and abort. Its session is $HOME/bot/sessions/main/messages.json.
 //
 // Replies: "pong <n>: <text>", n counting this session's turns. Two commands show what a bot can reach:
 //   probe <64 hex bot id>   calls that bot's path on the gateway with this bot's own token and replies with the status

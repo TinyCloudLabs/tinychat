@@ -1,5 +1,5 @@
-// The real sandbox host: @getenergy/gke-sandboxes 0.3.0 on Google Cloud. Only the opt-in check
-// (scripts/real-cluster-check.ts) and a deployed service run this; the tests use LocalProvider and a fake.
+// The gke-sandboxes provider: @getenergy/gke-sandboxes 0.3.0 on Google Cloud. Used by a deployed service and by
+// scripts/real-cluster-check.ts; the tests use LocalProvider.
 
 import { readFile } from "node:fs/promises";
 import { GkeSandboxes, KubernetesApi } from "@getenergy/gke-sandboxes";
@@ -26,7 +26,7 @@ export const inClusterToken = async () =>
 
 export class GkeProvider implements SandboxProvider {
   readonly #sandboxes: GkeSandboxes;
-  /** The library keeps a sandbox awake only through the `touch` its `acquire` returned. */
+  /** The `touch` that `acquire` returned, per sandbox; the library offers no other. */
   readonly #touches = new Map<string, () => Promise<void>>();
 
   constructor(options: GkeProviderOptions) {
@@ -34,11 +34,11 @@ export class GkeProvider implements SandboxProvider {
       namespace: options.namespace,
       serviceAccount: options.serviceAccount,
       image: options.image,
-      // The bridge starts with every pod, holding nothing until the service arms it.
+      // Starts the bridge with every pod.
       boot: () => ({ shell: `exec bun ${BRIDGE_SCRIPT}`, args: [] }),
       memoryWatchdog: { protect: [BRIDGE_SCRIPT] },
-      // The service decides when its bot is idle and stops touching it first; the host's sweeper, with its own
-      // five-minute wait, puts to sleep whatever the service leaves awake.
+      // The service's own sleep call succeeds one second after its last touch. The library's sweeper sleeps sandboxes
+      // left awake after its own idle time.
       idleTimeoutMs: 1000,
       onOperation: ({ operation, outcome, labels, durationMs, error }) =>
         console.log(JSON.stringify({
