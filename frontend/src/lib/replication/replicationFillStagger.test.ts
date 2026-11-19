@@ -89,6 +89,7 @@ describe("replication fill: deferred and staggered", () => {
     expect(h.started.map((s) => s.prefix)).toEqual(["a/"]);
     h.finish("a/");
     await advance(REPLICATION_FILL_START_GAP_MS * 4);
+    expect(REPLICATION_FILL_POOL_SIZE).toBeLessThanOrEqual(3); // the node's safe maximum per account
     expect(h.inFlight()).toBe(REPLICATION_FILL_POOL_SIZE);
     await drain(h);
     expect(h.started).toHaveLength(PREFIXES.length);

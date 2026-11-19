@@ -223,7 +223,14 @@ export function startReplicationFill(
     if (firstPrefix) {
       // Same rule as every worker start: never beside the screen's own requests (or in a hidden tab).
       await whenForegroundIdle();
-      await syncPrefix(firstPrefix);
+      // An unsettled first sync must not hold the rest of the fill forever: bound it by the same deadline.
+      let cancelProbeDeadline = (): void => {};
+      const probeDeadline = new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS);
+        cancelProbeDeadline = () => clearTimeout(timer);
+      });
+      await Promise.race([syncPrefix(firstPrefix), probeDeadline]);
+      cancelProbeDeadline();
       if (terminalGrantRefusals.has(tcw)) return;
       if (startGapMs > 0) await sleep(startGapMs);
     }
