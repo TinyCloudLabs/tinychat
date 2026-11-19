@@ -48,6 +48,8 @@ let releaseSignOut: (() => void) | null = null;
 let lastTcw: (TinyCloudWeb & { replication?: { close: () => Promise<void>; purgeLocalCopy: () => Promise<{ ok: boolean }> } }) | null = null;
 let signOutEvents: string[] = [];
 let widgetSawSessionsCleared: boolean | null = null;
+let connectedOpenKey: object | null = null;
+let signedOutOpenKey: unknown = null;
 const deletedVoiceNoteIds: string[] = [];
 let clearAppSession: (() => void) | null = null;
 let cleanedClients = 0;
@@ -70,7 +72,10 @@ function fakeTcw(address: string): TinyCloudWeb {
 
 mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
-  connectWallet: async () => ({ address: loginAddress, openkey: {}, web3Provider: {} }),
+  connectWallet: async () => {
+    connectedOpenKey = {};
+    return { address: loginAddress, openkey: connectedOpenKey, web3Provider: {} };
+  },
   requestNonce: async () => "nonce",
   loadAppManifest: async () => ({ manifest_version: 1, app_id: "chat.tinycloud.tinychat" }),
   createAndSignIn: async (_provider: unknown, config: Record<string, unknown>) => {
@@ -136,7 +141,8 @@ mock.module("@/lib/sessionSignedOut", () => ({
 }));
 mock.module("@/lib/openkeySignOut", () => ({
   ...signOutApi,
-  signOutOpenKeySession: async () => {
+  signOutOpenKeySession: async (current: unknown) => {
+    signedOutOpenKey = current;
     signOutEvents.push("openkey-widget");
     widgetSawSessionsCleared = window.localStorage.getItem(`tinycloud:session:${loginAddress.toLowerCase()}`) === null
       && window.localStorage.getItem(`tinycloud:session:runtime-grants:${loginAddress.toLowerCase()}`) === null
@@ -279,6 +285,8 @@ beforeEach(() => {
   lastTcw = null;
   signOutEvents = [];
   widgetSawSessionsCleared = null;
+  connectedOpenKey = null;
+  signedOutOpenKey = null;
   authStorage.localStorage.removeItem(pendingVoiceNotesKey);
   authStorage.localStorage.removeItem(pendingVoiceNotesCheckFailureKey);
   authStorage.localStorage.removeItem(pendingVoiceNotesDeleteFailureKey);
@@ -310,10 +318,9 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   expect(signInCalls).toBe(1);
   expect(verifyCalls).toBe(1);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
-  // One-click flow: no OpenKey authorize mode, and no app-key grants in the signed manifest.
+  // OpenKey's authorize frame (it offers renewal, TC-2872); still no app-key grants in the signed manifest.
   const config = lastSignInConfig as unknown as { openkey?: { mode?: unknown }; manifest: Record<string, unknown> };
-  expect(config.openkey?.mode).toBeUndefined();
-  expect(JSON.stringify(config)).not.toContain("iframe");
+  expect(config.openkey).toMatchObject({ mode: "iframe", expiryChangeable: true });
   expect("keys" in config.manifest).toBe(false);
   expect("keys_app_id" in config.manifest).toBe(false);
 
@@ -352,6 +359,25 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   expect(verifyCalls).toBe(3);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(host!.textContent).not.toContain("Storage full");
+});
+test("web sign-out signs out the OpenKey session that signed in, so OpenKey stops that sign-in's renewal lease; the receipt leaves the device", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  // The sign-in asked OpenKey for renewal through the client the wallet connection returned.
+  expect((lastSignInConfig as { openkey?: { client?: unknown } }).openkey?.client).toBeTruthy();
+  expect(connectedOpenKey).toBeTruthy();
+  const receiptKey = `tinychat:renewal-receipt:${loginAddress.toLowerCase()}`;
+  window.localStorage.setItem(receiptKey, JSON.stringify({ leaseCid: "the sign-in lease" }));
+
+  const { promise: startedPromise, resolve: started } = Promise.withResolvers<void>();
+  signOutStarted = started;
+  await click("Test sign out");
+  await startedPromise;
+  // The same OpenKey client, so the same OpenKey session, signs itself out: OpenKey stops the lease recorded under it.
+  expect(signedOutOpenKey).toBe(connectedOpenKey);
+  expect(window.localStorage.getItem(receiptKey)).toBeNull();
+  await settle();
 });
 test("web sign-out clears SDK and app sessions before a hung OpenKey confirmation returns, then restores signed out", async () => {
   await mount("web");

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { ErrorCodes } from "@tinycloud/sdk-services";
 import type { QueryOptions, Result, SqlValue } from "@tinycloud/sdk-services";
 import {
-  deliverFeedResponse, feedCardSchema, feedResourceNames, getFeedHandoff,
+  deliverFeedResponse, feedCardSchema, feedResourceNames, getFeedCardState, getFeedHandoff,
   listFeedCards, listFeedResponseDeliveries, listFeedResponses,
   projectFeedResponseNotification, publishFeedCard, readFeedResponseHandling, readFeedResponsePayload, recordFeedHandling,
 } from "@tinycloud/sdk-services/feed";
@@ -258,6 +258,48 @@ export function homeMirrorPublicationSha256(record: BoardRecord, cardUuid: strin
 async function currentCard(ctx: HomeMirrorContext, source: HomeMirrorBinding["source"], identity: FeedCardIdentity): Promise<FeedCard | undefined> {
   const cards = take(await listFeedCards(privateDatabase(ctx.sql.db(source.output.database), ctx)));
   return cards.find((card) => card.cardId === identity.cardId && sameIdentity(card, identity));
+}
+/**
+ * A mirrored card as Home holds it now, for the close-from-board pass: its newest binding's source, Home's newest copy
+ * of the card, and whether the owner has answered that copy in Home (that answer closes the board record itself).
+ */
+export interface HomeMirrorHeld { source: HomeMirrorBinding["source"]; binding: HomeMirrorBinding; card: FeedCard; answered: boolean }
+export async function readHomeMirrorHeld(ctx: HomeMirrorContext, sourceId: string, fullKey: string): Promise<HomeMirrorHeld | undefined> {
+  try {
+    active(ctx);
+    const bindings = (await mirrorRowsFor(ctx, fullKey)).map((row) => stored(ctx, row).binding)
+      .filter((binding) => binding.source.sourceId === sourceId && binding.legacy.fullKey === fullKey && binding.legacy.spaceId === ctx.legacySpaceId);
+    const binding = bindings.sort((a, b) => b.identity.revision - a.identity.revision)[0];
+    if (!binding) return undefined;
+    const source = await registered(ctx, sourceId);
+    if (!isDeepStrictEqual(source, binding.source)) throw failure();
+    const database = source.output.database;
+    let cards = ctx.cache?.cards?.[database];
+    if (!cards) {
+      cards = take(await listFeedCards(privateDatabase(ctx.sql.db(database), ctx)));
+      if (ctx.cache) (ctx.cache.cards ??= {})[database] = cards;
+    }
+    const card = cards.find((candidate) => candidate.cardId === binding.cardUuid);
+    if (!card) return undefined;
+    const state = take(await getFeedCardState(privateDatabase(ctx.sql.db(database), ctx), privateDatabase(ctx.sql.db(source.responses.database), ctx), tuple(card)));
+    return { source, binding, card, answered: state.response !== null };
+  } catch (error) { throw safeFailure(error, "close"); }
+}
+/**
+ * Publishes the closing revision of a mirrored card: the next revision after Home's newest copy, no longer waiting on
+ * the owner, still carrying the board record it was mirrored from. Nothing else is written: the binding and the board's
+ * own copy stay as they are.
+ */
+export async function publishHomeMirrorClosing(ctx: HomeMirrorContext, held: HomeMirrorHeld, card: FeedCard): Promise<void> {
+  try {
+    active(ctx);
+    const typed = parseSitrepCardPayload(card.payload?.sitrep);
+    if (card.cardId !== held.card.cardId || card.revision !== held.card.revision + 1 || card.needsResponse || !typed ||
+      typed.record.kind !== held.binding.legacy.kind || typed.record.id !== held.binding.legacy.id || findRecordSecrets(typed.record.kind, typed.record as unknown as Record<string, unknown>).length) throw failure();
+    take(await publishFeedCard(privateDatabase(ctx.sql.db(held.source.output.database), ctx), card));
+    const database = held.source.output.database;
+    if (ctx.cache?.cards?.[database]) ctx.cache.cards[database] = ctx.cache.cards[database]!.map((candidate) => candidate.cardId === card.cardId ? card : candidate);
+  } catch (error) { throw safeFailure(error, "close"); }
 }
 type LegacyRead = { raw: Record<string, unknown>; record: BoardRecord; etag: string; sha256: string };
 async function readLegacy(ctx: HomeMirrorContext, kind: BoardRecord["kind"], key: string): Promise<LegacyRead | undefined> {
