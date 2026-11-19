@@ -316,7 +316,7 @@ describe("missing-space copy (Monica, CONTRACT.md)", () => {
       "Credentials uses Credentials, which isn't set up in your TinyCloud. Open Credentials once to set it up, then come back to give Credentials access.",
     );
     expect(missingSpacesLine("Explorer", ["secrets", "account"], true)).toBe(
-      "Explorer uses Secrets and Account, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give Explorer access to them.",
+      "Explorer uses Secrets and Account, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give Explorer access.",
     );
   });
 
