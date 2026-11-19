@@ -54,7 +54,6 @@ export const CREATE_BOT_STRINGS = {
     },
   },
   failed: "Couldn't create your bot. Try again.",
-  approvalNeeded: "Approval needed",
   shapes: {
     pebble: "Pebble", sprout: "Sprout", drop: "Drop", clover: "Clover", bloom: "Bloom",
     cloud: "Cloud", ghost: "Ghost", bean: "Bean", comet: "Comet", petal: "Petal",
