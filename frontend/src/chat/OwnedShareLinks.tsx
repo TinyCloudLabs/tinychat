@@ -4,6 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
 import { formatShareExpiry, unexpiredShares } from "@/lib/shareExpiry";
+import { CHAT_SHARING_PAUSED } from "@/lib/chatSharing";
 import { SHARE_LINK_COPY } from "@/lib/shareLinkCopy";
 import { isLocalThreadStorage } from "@/lib/threadStore";
 import { listOwnedTinychatShares, type OwnedTinychatShare } from "@/lib/tinychatShareLinks";
@@ -81,10 +82,10 @@ export const OwnedShareLinksCard: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
   const local = isLocalThreadStorage(tcw);
 
   useEffect(() => {
-    if (!local) void refresh();
+    if (!local && !CHAT_SHARING_PAUSED) void refresh();
   }, [local, refresh]);
 
-  if (local) return null;
+  if (local || CHAT_SHARING_PAUSED) return null;
   return (
     <SectionCard icon={LinkIcon} title={SHARE_LINK_COPY.listTitle}>
       <p className="text-xs text-muted-foreground">{SHARE_LINK_COPY.listDescription}</p>
