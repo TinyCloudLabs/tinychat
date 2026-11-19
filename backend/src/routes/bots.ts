@@ -73,6 +73,42 @@ export function botsServiceHeaders(config: BotsConfig, ownerDid: string, _method
   return body === undefined ? headers : { ...headers, "content-type": "application/json" };
 }
 
+/**
+ * Tells the service a bot's state under the counter of the owner's record. The service ignores anything older than
+ * what it holds, so a late or repeated call is harmless. Answers whether the service took it.
+ */
+export async function announceBot(config: BotsConfig, address: string, key: string, state: "active" | "suspended" | "deleting", seq: number): Promise<boolean> {
+  try {
+    const url = `${config.serviceUrl}/v1/bots/${key}`;
+    const body = JSON.stringify({ state, seq });
+    const response = await (config.fetchImpl ?? fetch)(url, { method: "PUT", headers: botsServiceHeaders(config, botOwnerDid(address), "PUT", url, body), body, signal: AbortSignal.timeout(10_000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Asks the bots service to remove a bot's working state. The service is first told the bot is being deleted, under
+ * the counter of the owner's record, so a removal can never act on an older state. Only an explicit answer counts as
+ * `gone`; anything unclear is `failed`, and the caller tries again later.
+ */
+export async function removeBotFromService(config: BotsConfig, address: string, key: string, seq: number): Promise<"gone" | "waiting" | "failed"> {
+  if (!(await announceBot(config, address, key, "deleting", seq))) return "failed";
+  try {
+    const url = `${config.serviceUrl}/v1/bots/${key}`;
+    const response = await (config.fetchImpl ?? fetch)(url, { method: "DELETE", headers: botsServiceHeaders(config, botOwnerDid(address), "DELETE", url), signal: AbortSignal.timeout(30_000) });
+    // The service was just told about this bot, so "not found" means it has already removed it for good.
+    if (response.status === 404) return "gone";
+    if (!response.ok) return "failed";
+    const answer: unknown = await response.json();
+    const outcome = typeof answer === "object" && answer !== null && "outcome" in answer ? answer.outcome : undefined;
+    return outcome === "gone" || outcome === "waiting" ? outcome : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
 /** The same answer as UNAVAILABLE, for a bot other than Main. */
 const BOT_UNAVAILABLE = { code: "bot_unavailable", message: "This bot can't be reached right now. Try again shortly." };
 
@@ -109,16 +145,7 @@ export function createBotsRouter(opts: {
    * Tells the service a bot's state under the record's counter. The service ignores anything older than what it
    * holds, so a late or repeated call is harmless. Answers whether the service took it.
    */
-  const announce = async (address: string, key: string, state: "active" | "suspended" | "deleting", seq: number): Promise<boolean> => {
-    try {
-      const url = `${config!.serviceUrl}/v1/bots/${key}`;
-      const body = JSON.stringify({ state, seq });
-      const response = await (config!.fetchImpl ?? fetch)(url, { method: "PUT", headers: botsServiceHeaders(config!, botOwnerDid(address), "PUT", url, body), body, signal: AbortSignal.timeout(10_000) });
-      return response.ok;
-    } catch {
-      return false;
-    }
-  };
+  const announce = (address: string, key: string, state: "active" | "suspended" | "deleting", seq: number): Promise<boolean> => announceBot(config!, address, key, state, seq);
 
   router.get("/status", (req, res) => {
     res.json({ enabled: enabledFor(req) });
