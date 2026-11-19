@@ -225,7 +225,10 @@ export interface ConnectorWebhooksClientConfig {
   fetchImpl?: typeof fetch;
 }
 
+export type FirefliesPurgeCheck = (meetingId: string, sourceTimestamp: string | null) => Promise<boolean>;
+
 export interface ConnectorWebhooksClient {
+  checkPurge?: FirefliesPurgeCheck;
   /** Poll. Never carries the delivery secret — read `hasSecret`. */
   getConfig(): Promise<ConnectorWebhooksResult<ConnectorWebhookConfigPoll>>;
   /**
@@ -273,7 +276,7 @@ export function readSurfaceBlocked(
 export function createConnectorWebhooksClient(
   backendUrl: string,
   config: ConnectorWebhooksClientConfig,
-): ConnectorWebhooksClient {
+): ConnectorWebhooksClient & { checkPurge: FirefliesPurgeCheck } {
   const { sessionStore } = config;
   // Bound, so calling it as a property does not rebind `this` (firefliesClient.ts).
   const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
@@ -348,6 +351,16 @@ export function createConnectorWebhooksClient(
   }
 
   return {
+    async checkPurge(meetingId, sourceTimestamp) {
+      const result = await request<{ blocked: boolean }>("/purge-check", {
+        method: "POST",
+        body: { meetingId, sourceTimestamp },
+      });
+      if (result.status !== "ok" || typeof result.value?.blocked !== "boolean") {
+        throw new Error("Fireflies sync failed");
+      }
+      return result.value.blocked;
+    },
     async getConfig() {
       const result = await request<ConnectorWebhookConfig>("/config", {
         method: "GET",
