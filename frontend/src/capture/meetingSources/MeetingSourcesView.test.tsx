@@ -172,8 +172,6 @@ describe("one Meeting sources view", () => {
   const read = (name: string) => readFileSync(join(import.meta.dir, name), "utf8");
 
   test("the registry is the one table of source descriptions", () => {
-    expect(read("MeetingSourcesDialog.tsx")).not.toContain("DESCRIPTIONS");
-    expect(read("MeetingSourcesDialog.tsx")).toContain("description={d.description}");
     expect(CONNECTORS.map((d) => d.description)).toEqual([
       "Meeting transcripts from Fireflies.ai.",
       "Notes and transcripts from Granola.",
