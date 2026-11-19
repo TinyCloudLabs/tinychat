@@ -1,3 +1,5 @@
+import { currentStorageAccountDid } from "@/lib/storageStatus";
+import { captureEngineAvailable } from "./captureEngine";
 import { registerHeldConflictPin, removeHeldConflictPin } from "./heldConflictPins";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PrivateCloudError } from "../privateCloud";
@@ -32,6 +34,8 @@ export type HeldResultInput = Omit<HeldResult, "holdId" | "heldAt" | "bytes" | "
 export type HoldReceipt = { holdId: string; rev: number; durability: "persistent" | "best-effort" };
 export type SaveHeldOutcome = "committed" | "already_committed" | "discarded_superseded" | "conflict" | "lock_busy";
 export interface HeldResultStore {
+  /** Persisted account check for callers that must distinguish hidden rows from absent rows. */
+  assertAccount?(): Promise<void>;
   hold(row: HeldResultInput): Promise<HoldReceipt>;
   readHeld(sourceId: string): Promise<HeldResult | null>;
   listHeld(): Promise<HeldSummary[]>;
@@ -48,8 +52,35 @@ export interface HeldResultStore {
 }
 
 export const HELD_RESULTS_DB = "exo-held-results";
-export const HELD_RESULTS_DB_VERSION = 1;
+export const HELD_RESULTS_DB_VERSION = 2;
 export const HELD_RESULTS_STORE = "held";
+const HELD_META_STORE = "meta";
+const invalidations = new Map<string, number>();
+const epochIn = async (tx: IDBTransaction, did: string): Promise<number> =>
+  (await request(tx.objectStore(HELD_META_STORE).get(did)) as { epoch: number } | undefined)?.epoch ?? 0;
+export async function clearHeldResultsForSignOut(did: string, env: IdbEnv = browserIdbEnv()): Promise<void> {
+  const db = await openHeldDb(env);
+  try {
+    const epoch = await transact(db, [HELD_RESULTS_STORE, HELD_META_STORE], "readwrite", async (tx) => {
+      const epoch = await epochIn(tx, did);
+      const store = tx.objectStore(HELD_RESULTS_STORE);
+      const rows = await request(store.getAll()) as HeldResult[];
+      for (const row of rows) {
+        if (row.did !== did) continue;
+        await request(store.delete([did, row.sourceId]));
+        removeHeldConflictPin(did, row.sourceId);
+      }
+      await request(tx.objectStore(HELD_META_STORE).put({ did, epoch: epoch + 1 }));
+      return epoch + 1;
+    });
+    invalidations.set(did, (invalidations.get(did) ?? 0) + 1);
+    if (typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel(CHANNEL_NAME);
+      channel.postMessage({ did, cleared: true, epoch });
+      channel.close();
+    }
+  } finally { db.close(); }
+}
 export const MAX_HELD_ENTRY_BYTES = 8 * 1024 * 1024;
 export const MAX_HELD_TOTAL_BYTES = 64 * 1024 * 1024;
 export const MAX_HELD_TOTAL_ENTRIES = 200;
@@ -62,7 +93,10 @@ interface HeldDatabaseEnv extends IdbEnv { storage?: StorageManager }
 function openHeldDb(env: IdbEnv): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const open = env.factory.open(HELD_RESULTS_DB, HELD_RESULTS_DB_VERSION);
-    open.onupgradeneeded = () => open.result.createObjectStore(HELD_RESULTS_STORE, { keyPath: ["did", "sourceId"] });
+    open.onupgradeneeded = () => {
+      if (!open.result.objectStoreNames.contains(HELD_RESULTS_STORE)) open.result.createObjectStore(HELD_RESULTS_STORE, { keyPath: ["did", "sourceId"] });
+      open.result.createObjectStore(HELD_META_STORE, { keyPath: "did" });
+    };
     open.onsuccess = () => {
       const db = open.result;
       db.onversionchange = () => db.close();
@@ -156,14 +190,24 @@ export interface HeldResultStoreOptions {
 }
 
 export function createHeldResultStore(did: string, options: HeldResultStoreOptions = {}): HeldResultStore {
+  const invalidation = invalidations.get(did) ?? 0;
+  let cleared = false;
   const env = options.env;
   const storage = env?.storage ?? (typeof navigator === "undefined" ? undefined : navigator.storage);
   const newId = options.newId ?? (() => crypto.randomUUID());
   const now = options.now ?? Date.now;
   const isSignedIn = options.isSignedIn ?? (async (accountDid) => {
-    const state = await VoiceNotes.getCaptureDefaults();
-    return state.status === "signed_in" && state.accountDid === accountDid;
+    if (captureEngineAvailable()) {
+      const state = await VoiceNotes.getCaptureDefaults();
+      return state.status === "signed_in" && state.accountDid === accountDid;
+    }
+    try { return currentStorageAccountDid() === accountDid; }
+    catch { return false; }
   });
+  const assertAccount = async () => {
+    if (!await isSignedIn(did))
+      throw new PrivateCloudError("voice_note_account_mismatch", "The active account cannot commit this held transcript.");
+  };
   const assertStoreIdentity = async (tcw: TinyCloudWeb, row: HeldResult) => {
     assertIdentity(tcw, did, row);
     if (!await isSignedIn(did))
@@ -182,10 +226,37 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
   let channel: BroadcastChannel | null = null;
   const hints = new Set<string>();
   const db = () => dbPromise ??= openHeldDb(env ?? browserIdbEnv()).catch((error: unknown) => { throw mapFailure(error); });
+  let epochPromise: Promise<number> | null = null;
+  const getEpoch = () => {
+    if (!epochPromise) {
+      epochPromise = Promise.resolve().then(db).then((database) =>
+        transact(database, [HELD_META_STORE], "readonly", (tx) => epochIn(tx, did)));
+      void epochPromise.catch(() => undefined);
+    }
+    return epochPromise;
+  };
+  const isCleared = () => cleared || invalidation !== (invalidations.get(did) ?? 0);
+  const sameEpoch = async (tx: IDBTransaction, epoch: number) => {
+    const matches = await epochIn(tx, did) === epoch;
+    if (!matches) { cleared = true; hints.clear(); }
+    return matches;
+  };
+  const stillCurrent = async () => {
+    const epoch = await getEpoch();
+    return transact(await db(), [HELD_META_STORE], "readonly", (tx) => sameEpoch(tx, epoch));
+  };
   if (typeof BroadcastChannel !== "undefined") {
     channel = new BroadcastChannel(CHANNEL_NAME);
     channel.onmessage = (event: MessageEvent<unknown>) => {
-      const value = event.data as { did?: unknown; sourceId?: unknown } | null;
+      const value = event.data as { did?: unknown; sourceId?: unknown; cleared?: unknown; epoch?: unknown } | null;
+      if (value?.did === did && value.cleared === true && typeof value.epoch === "number") {
+        const nextEpoch = value.epoch;
+        if (!epochPromise) { cleared = true; hints.clear(); }
+        else void epochPromise.then((epoch) => {
+          if (epoch < nextEpoch) { cleared = true; hints.clear(); }
+        }, () => { cleared = true; hints.clear(); });
+        return;
+      }
       if (value?.did === did && typeof value.sourceId === "string") hints.add(value.sourceId);
     };
   }
@@ -194,13 +265,16 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
     channel?.postMessage({ did, sourceId });
   };
   const read = async (sourceId: string): Promise<HeldResult | null> => {
+    if (isCleared() || !await isSignedIn(did)) return null;
     try {
-      const row = await transact(await db(), [HELD_RESULTS_STORE], "readonly", (tx) => request(tx.objectStore(HELD_RESULTS_STORE).get([did, sourceId])));
-      if (row === undefined) { hints.delete(sourceId); return null; }
+      const epoch = await getEpoch();
+      const row = await transact(await db(), [HELD_RESULTS_STORE, HELD_META_STORE], "readonly", async (tx) =>
+        await sameEpoch(tx, epoch) ? request(tx.objectStore(HELD_RESULTS_STORE).get([did, sourceId])) : undefined);
+      if (isCleared() || row === undefined) { hints.delete(sourceId); return null; }
       if (!isHeldResult(row)) throw fixedFailure("corrupt");
       if (row.conflict) await registerHeldConflictPin(did, sourceId);
       else removeHeldConflictPin(did, sourceId);
-      return row;
+      return await stillCurrent() && await isSignedIn(did) ? row : null;
     } catch (error) { throw mapFailure(error); }
   };
   const removeIf = async (tcw: TinyCloudWeb, row: HeldResult, maxRev: number,
@@ -221,9 +295,11 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
     return removed;
   };
   const store: HeldResultStore = {
+    assertAccount,
     async hold(input) {
-      if (input.did !== did) throw fixedFailure("unavailable");
+      if (isCleared() || input.did !== did || !await isSignedIn(did)) throw fixedFailure("unavailable");
       if (!input.spaceId) throw fixedFailure("no_space");
+      const epoch = await getEpoch();
       const hash = await transcriptHash(input.transcript.sentences);
       const holdId = newId();
       const base = { ...input, version: 1 as const, holdId, hash, heldAt: now() };
@@ -231,7 +307,8 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
       if (bytes > MAX_HELD_ENTRY_BYTES) throw fixedFailure("too_large");
       const row: HeldResult = { ...base, bytes };
       try {
-        const receipt = await transact(await db(), [HELD_RESULTS_STORE], "readwrite", async (tx) => {
+        const receipt = await transact(await db(), [HELD_RESULTS_STORE, HELD_META_STORE], "readwrite", async (tx) => {
+          if (isCleared() || !await sameEpoch(tx, epoch)) throw fixedFailure("unavailable");
           const objectStore = tx.objectStore(HELD_RESULTS_STORE);
           const entries = (await request(objectStore.getAll())) as HeldResult[];
           let totalBytes = 0, didBytes = 0, replacesExisting = false;
@@ -263,15 +340,18 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
         notify(input.sourceId);
         const durability = await store.durability();
         if (durability === "unavailable") throw fixedFailure("unavailable");
+        if (!await stillCurrent()) throw fixedFailure("unavailable");
         return { ...receipt, durability };
       } catch (error) { throw mapFailure(error); }
     },
     readHeld: read,
     async listHeld() {
+      if (isCleared() || !await isSignedIn(did)) { hints.clear(); return []; }
       try {
         const keyRange = env?.keyRange ?? browserIdbEnv().keyRange;
-        const rows = await transact(await db(), [HELD_RESULTS_STORE], "readonly",
-          (tx) => request(tx.objectStore(HELD_RESULTS_STORE).getAll(keyRange.bound([did, ""], [did, "\uffff"]))));
+        const epoch = await getEpoch();
+        const rows = await transact(await db(), [HELD_RESULTS_STORE, HELD_META_STORE], "readonly", async (tx) =>
+          await sameEpoch(tx, epoch) ? request(tx.objectStore(HELD_RESULTS_STORE).getAll(keyRange.bound([did, ""], [did, "\uffff"]))) : []);
         const summaries: HeldSummary[] = [];
         hints.clear();
         for (const row of rows as unknown[]) {
@@ -283,11 +363,12 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
             hints.add(row.sourceId);
           }
         }
-        return summaries;
+        return await stillCurrent() && await isSignedIn(did) ? summaries : [];
       } catch (error) { throw mapFailure(error); }
     },
     async saveHeldFirst(tcw, sourceId, ops, mode) {
       const run = async (): Promise<SaveHeldOutcome> => {
+        if (!await isSignedIn(did)) throw new PrivateCloudError("voice_note_account_mismatch", "The active account cannot commit this held transcript.");
         const row = await read(sourceId);
         if (!row) return "discarded_superseded";
         assertIdentity(tcw, did, row);
@@ -361,6 +442,9 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
     },
     async discard(tcw, sourceId, holdId, reason) {
       await withHeldLock(did, sourceId, async () => {
+        await assertAccount();
+        if (tcw.did !== did || !isAccountWorkAllowed(tcw))
+          throw new PrivateCloudError("voice_note_account_mismatch", "The active account cannot discard this held transcript.");
         const row = await read(sourceId);
         if (!row || row.holdId !== holdId) return;
         assertIdentity(tcw, did, row);
@@ -392,14 +476,16 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
         await removeIf(tcw, row, reason === "user_discarded" ? row.transcript.rev : Number.MAX_SAFE_INTEGER, assertStoreIdentity);
       }, false);
     },
-    heldHint: (sourceId) => hints.has(sourceId),
+    heldHint: (sourceId) => !isCleared() && hints.has(sourceId),
     async durability() {
       try { return await storage?.persisted?.() ? "persistent" : "best-effort"; }
       catch { return "best-effort"; }
     },
   };
   async function replaceConflict(row: HeldResult, conflict: NonNullable<HeldResult["conflict"]>): Promise<void> {
-    await transact(await db(), [HELD_RESULTS_STORE], "readwrite", async (tx) => {
+    const epoch = await getEpoch();
+    await transact(await db(), [HELD_RESULTS_STORE, HELD_META_STORE], "readwrite", async (tx) => {
+      if (!await sameEpoch(tx, epoch)) return;
       const objectStore = tx.objectStore(HELD_RESULTS_STORE);
       const current = await request(objectStore.get([did, row.sourceId]));
       if (!isHeldResult(current) || current.holdId !== row.holdId) return;

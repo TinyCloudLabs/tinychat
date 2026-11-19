@@ -1,3 +1,4 @@
+import { beginStorageAccountSession, __resetStorageStatusForTests } from "@/lib/storageStatus";
 // The pipeline hooks mounted on the real stores, with only the native plugins faked: what the saved-note sheet, the
 // receipt and the list see as the phone's reads fail, its jobs progress and end, and the user presses the blocker's action.
 // There is no DOM in this workspace: the hook is mounted on a stub container, as OnDeviceNoteStatus.test.tsx does.
@@ -111,6 +112,7 @@ async function installPhone() {
   __setOnDeviceSttForTests(fake.plugin);
   __setVoiceNotesForTests(
     {
+      getCaptureDefaults: async () => ({ accountDid: SPACE.did, status: "signed_in", transitionGen: 1, transcriber: "on-device", identifySpeakers: false }),
       listPending: async () => { phone.reads += 1; if (phone.listError) throw phone.listError; return { recordings: phone.recordings }; },
       getTranscript: async ({ id }: { id: string }) => {
         phone.transcriptReads.push(id);
@@ -148,10 +150,12 @@ beforeEach(async () => {
   __resetOnDeviceSttStoreForTests();
   __resetAutoNoteSyncForTests();
   await installPhone();
+  beginStorageAccountSession(SPACE, SPACE.did, SPACE.spaceId ?? null);
 });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  __resetStorageStatusForTests();
   Reflect.deleteProperty(globalThis, "localStorage");
   Reflect.deleteProperty(globalThis, "document");
   errors.mockRestore(); warnings.mockRestore();
@@ -237,7 +241,7 @@ describe("a read that fails is shown with its cause, never read as done", () => 
 
 describe("notes that were never synced", () => {
   test("the first sync attempt is started by the hook; until it settles the step is Syncing notes, never a blocker", async () => {
-    phone.recordings = [recording(SYNC_ID, "off")];
+    phone.recordings = [{ ...recording(SYNC_ID, "off"), owner: SPACE.did }];
     await saveNote(SYNC_ID, "Book the venue before Friday.");
     const history: NotePipeline[] = [];
     function Probe() { const view = useNotePipeline(SYNC_ID, IN_SPACE); if (view) history.push(view.pipeline); return null; }
@@ -258,7 +262,7 @@ describe("notes that were never synced", () => {
   });
 
   test("Try again after a failed attempt runs the sync again and shows how it ended", async () => {
-    phone.recordings = [recording(SYNC_ID, "off")];
+    phone.recordings = [{ ...recording(SYNC_ID, "off"), owner: SPACE.did }];
     await saveNote(SYNC_ID, "Book the venue before Friday.");
     const { seen } = await mountOne(IN_SPACE, {}, SYNC_ID);
     expect(stepOf(seen.view!.pipeline, "notes").state).toBe("failed");

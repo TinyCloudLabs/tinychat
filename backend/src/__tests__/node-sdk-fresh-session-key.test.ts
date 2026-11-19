@@ -6,14 +6,23 @@ import { TinyCloudNode } from "@tinycloud/node-sdk";
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   // No network: a sign-in stops right after the SIWE is signed, which is all this reads.
-  globalThis.fetch = (async (url: unknown) => { throw new Error(`no network in tests: ${String(url)}`); }) as typeof fetch;
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const location = new URL(String(url));
+    const path = decodeURIComponent(location.pathname).toLowerCase();
+    const address = "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a";
+    if ((init?.method ?? "GET") === "GET" && location.origin === "https://registry.invalid" && (
+      path === "/v2/locations/" + address ||
+      path === "/v1/locations/did:pkh:eip155:1:" + address
+    )) return Response.json({ error: "location record not found" }, { status: 404 });
+    throw new Error(`no network in tests: ${String(url)}`);
+  }) as typeof fetch;
 });
 afterEach(() => { globalThis.fetch = realFetch; });
 
 const SESSION_DID = /did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}/;
 
 async function signedSessionKeys(signIns: number): Promise<string[]> {
-  const node = new TinyCloudNode({ privateKey: "11".repeat(32), host: "https://node.invalid", autoCreateSpace: false, includeAccountRegistryPermissions: false } as ConstructorParameters<typeof TinyCloudNode>[0]);
+  const node = new TinyCloudNode({ privateKey: "11".repeat(32), host: "https://node.invalid", tinycloudRegistryUrl: "https://registry.invalid", newUserHost: "https://node.invalid", autoCreateSpace: false, includeAccountRegistryPermissions: false } as ConstructorParameters<typeof TinyCloudNode>[0]);
   const auth = (node as unknown as { auth: { signer: { signMessage(message: string): Promise<string> } } }).auth;
   const sign = auth.signer.signMessage.bind(auth.signer);
   const messages: string[] = [];

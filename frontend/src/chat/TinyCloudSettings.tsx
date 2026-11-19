@@ -3,7 +3,7 @@ import { CloudIcon } from "lucide-react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
-import { isReplicationAvailable } from "../lib/replication/replicationFlag";
+import { isReplicationAvailable, isReplicationBindPaused } from "../lib/replication/replicationFlag";
 import { setTinyCloudButtonShown, useTinyCloudButtonShown } from "../lib/tinycloudButton";
 
 export const TINYCLOUD_COPY = {
@@ -36,7 +36,7 @@ export function TinyCloudSettings({ tcw }: { tcw: TinyCloudWeb }) {
       <div data-testid="tinycloud-panel-row" className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">{TINYCLOUD_COPY.rowLabel}</p>
-          <p className="text-xs text-muted-foreground">{isReplicationAvailable() ? TINYCLOUD_COPY.rowDescription : TINYCLOUD_COPY.rowDescriptionNoSync}</p>
+          <p className="text-xs text-muted-foreground">{isReplicationAvailable() && !isReplicationBindPaused() ? TINYCLOUD_COPY.rowDescription : TINYCLOUD_COPY.rowDescriptionNoSync}</p>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={() => tcw.ui.open()}>{TINYCLOUD_COPY.openButton}</Button>
       </div>

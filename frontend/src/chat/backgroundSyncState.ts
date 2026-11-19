@@ -68,7 +68,7 @@ export function supportsBackgroundNotifications(
 }
 
 /** The status word for a minted config. Deliberately not "Live" — see the header. */
-export const BACKGROUND_SYNC_ENABLED_LABEL = "Enabled in TinyChat";
+export const BACKGROUND_SYNC_ENABLED_LABEL = "Enabled in TinyCloud One";
 
 export type BackgroundSyncPhase =
   /** The first `GET /config` is in flight; the surface claims nothing yet. */

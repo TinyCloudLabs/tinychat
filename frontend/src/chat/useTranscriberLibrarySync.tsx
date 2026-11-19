@@ -7,6 +7,7 @@ import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connector
 import { secretsAvailable } from "@/lib/openkeyNative";
 import { captureEvents } from "@/capture/captureEvents";
 import { enqueueDrainWork } from "./useBackgroundDrain";
+import { afterFeedFirst } from "@/lib/localFirst/requestLanes";
 import { serverDeliveryActive } from "@/lib/transcriptDeliveryState";
 import { transcriberPendingRows, writePendingReconcileSnapshot } from "@/lib/connectors/pendingReconcileSnapshot";
 
@@ -396,7 +397,9 @@ export function useTranscriberLibrarySync(input: {
         : boundedPass();
       void exclusive.finally(() => { running = false; });
     };
-    const run = () => start(false);
+    // A pass reads the space (connector schema probe, saved meeting ids): on a Feed open the
+    // startup pass waits for the Feed's first load.
+    const run = () => { void afterFeedFirst(async () => { if (!cancelled) start(false); }); };
     // A hidden tab makes no scheduled reads; focus, visibilitychange and online start a pass on return.
     const tick = () => { if (document.visibilityState !== "hidden") start(true); };
     run();

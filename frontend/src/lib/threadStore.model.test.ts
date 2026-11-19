@@ -152,7 +152,7 @@ function blockSchemaProbe(service: SqlService) {
 }
 
 describe("thread reads with partial schemas", () => {
-  test("a rejected unrelated compactions migration does not hide existing thread data", async () => {
+  test("existing thread data is read without attempting an unrelated compactions migration", async () => {
     reportStorageWriteSucceeded();
     const service = new SqlService();
     service.sqlite.exec(`
@@ -167,8 +167,9 @@ describe("thread reads with partial schemas", () => {
       const thread = await getThread(tcw(service), "readable");
       expect(thread?.title).toBe("Existing thread");
       expect(thread?.messages[0]?.message?.id).toBe("m1");
-      expect(service.batchCalls).toBe(1);
-      expect(isStorageReadOnly()).toBe(true);
+      // Reads run before any schema check, so nothing tries to create the missing tables.
+      expect(service.batchCalls).toBe(0);
+      expect(isStorageReadOnly()).toBe(false);
     } finally {
       reportStorageWriteSucceeded();
     }
@@ -243,13 +244,14 @@ describe("thread writes with partial schemas", () => {
 });
 
 describe("concurrent schema migration policy", () => {
-  test("a write joining a read-first migration keeps its own storage policy", async () => {
+  test("a write joining a migration started by a read of a missing table keeps its own storage policy", async () => {
     reportStorageWriteSucceeded();
     const service = new SqlService();
     const migration = blockSchemaProbe(service);
     const cloud = tcw(service);
     try {
-      const read = getSetting(cloud, "theme");
+      // `threads` is missing, so this read starts the probe/create and then reads again.
+      const read = getThreadModel(cloud, "missing-table");
       await migration.entered;
       const write = importThread(cloud, {
         id: "concurrent-read-first",
@@ -261,7 +263,8 @@ describe("concurrent schema migration policy", () => {
       const writeResult = write.then(() => null, (error: unknown) => error);
       migration.release();
 
-      await expect(read).resolves.toBe("dark");
+      // Storage is full, so the table could not be created: the read reports that, not "no such table".
+      await expect(read).rejects.toMatchObject({ code: "STORAGE_QUOTA_EXCEEDED", message: STORAGE_FULL_SAVE_MESSAGE });
       expect(await writeResult).toMatchObject({
         code: "STORAGE_QUOTA_EXCEEDED",
         retryable: false,
@@ -514,6 +517,60 @@ test("client deadline includes a nonsettling body parser and never accepts its l
     expect(selection.getView().model).toBe(OFFERED_CHAT_MODELS[0].id);
   } finally {
     selection.dispose();
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("overlapping automatic lookups share one model-selection request; a settled one is not reused", async () => {
+  const previousFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = (async () => {
+    requests++;
+    return Response.json({ model: OFFERED_CHAT_MODELS[1].id, reason: "healthy" });
+  }) as typeof fetch;
+  // On open a render React discards can leave a second coordinator looking up beside the mounted one.
+  const discarded = coordinator(tcw(new SqlService()));
+  const mounted = coordinator(tcw(new SqlService()));
+  const later = coordinator(tcw(new SqlService()));
+  try {
+    discarded.activate("draft-1", "new");
+    mounted.activate("draft-2", "new");
+    expect((await mounted.beginTurn("draft-2", "send")).model).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect((await discarded.beginTurn("draft-1", "send")).model).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect(requests).toBe(1);
+    later.activate("draft-3", "new");
+    expect((await later.beginTurn("draft-3", "send")).model).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect(requests).toBe(2);
+  } finally {
+    discarded.dispose(); mounted.dispose(); later.dispose();
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("a lookup that joins a shared request keeps its own deadline; the request stays open for it", async () => {
+  const previousFetch = globalThis.fetch;
+  let requests = 0;
+  let signal!: AbortSignal;
+  let answer!: (response: Response) => void;
+  globalThis.fetch = ((_input: unknown, init?: RequestInit) => {
+    requests++;
+    signal = init!.signal!;
+    return new Promise<Response>((resolve) => { answer = resolve; });
+  }) as typeof fetch;
+  const first = coordinator(tcw(new SqlService()));
+  const joiner = coordinator(tcw(new SqlService()));
+  try {
+    first.activate("draft-1", "new");
+    await Bun.sleep(2_000);
+    joiner.activate("draft-2", "new"); // a new chat late in the first lookup's window
+    const fellBack = await first.beginTurn("draft-1", "send");
+    expect(fellBack.model).toBe(OFFERED_CHAT_MODELS[0].id); // the first lookup's 3 s passed
+    expect(signal.aborted).toBe(false); // the joiner still waits on the same request
+    answer(Response.json({ model: OFFERED_CHAT_MODELS[1].id, reason: "healthy" }));
+    expect((await joiner.beginTurn("draft-2", "send")).model).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect(requests).toBe(1);
+  } finally {
+    first.dispose(); joiner.dispose();
     globalThis.fetch = previousFetch;
   }
 });

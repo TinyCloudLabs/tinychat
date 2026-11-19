@@ -215,6 +215,15 @@ describe("signed transcript grant verifier", () => {
     expect(outbound).not.toHaveBeenCalled();
   });
 
+  it("accepts a grant minted under the node's other production name (TC-2923)", async () => {
+    for (const [host, configuredHost] of [["https://tee.node.tinycloud.xyz", "https://node.tinycloud.xyz"], ["https://node.tinycloud.xyz", "https://tee.node.tinycloud.xyz"]]) {
+      const grant = await makeSignedTranscriptGrant({ host });
+      assertSuccess(await verify({ ...grant, configuredHost }));
+    }
+    const foreign = await makeSignedTranscriptGrant({ host: "https://tee.node.tinycloud.xyz" });
+    await expectCode(foreign, "untrusted_host");
+  });
+
   it("persists signed envelope through a fresh store and rejects tampered persisted material", async () => {
     const grant = await makeSignedTranscriptGrant();
     const accepted = assertSuccess(await verify(grant));

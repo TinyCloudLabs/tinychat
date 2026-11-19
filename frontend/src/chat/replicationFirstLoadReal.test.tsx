@@ -16,6 +16,7 @@ import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 import { ReplicationFirstLoadSignal } from "@/lib/replication/ReplicationFirstLoadSignal";
 import { appFirstLoadSettled, resetAppFirstLoad } from "@/lib/replication/replicationFirstLoad";
 import { startReplicationFill } from "@/lib/replication/replicationClient";
+import { FOREGROUND_QUIET_MS, resetLanesForTests } from "@/lib/localFirst/requestLanes";
 
 class SqlService {
   readonly sqlite = new Database(":memory:");
@@ -89,6 +90,7 @@ beforeEach(() => {
   restoreDom = installDom();
   localStorageWindow();
   jest.useFakeTimers();
+  resetLanesForTests();
 });
 afterEach(async () => {
   jest.useRealTimers();
@@ -96,7 +98,7 @@ afterEach(async () => {
   restoreDom();
 });
 
-/** Mounts the workspace, starts the REAL fill with the DEFAULT (real) signal, never advances time. */
+/** Mounts the workspace, starts the REAL fill with the DEFAULT (real) signal; time advances only the foreground quiet gap. */
 async function mountAndFill(tcw: TinyCloudWeb): Promise<{ syncCalls: () => number; unmount: () => Promise<void> }> {
   let calls = 0;
   const replicated = { did: tcw.did, replication: { sync: async () => { calls += 1; } } } as unknown as TinyCloudWeb;
@@ -105,10 +107,22 @@ async function mountAndFill(tcw: TinyCloudWeb): Promise<{ syncCalls: () => numbe
   document.body.append(host);
   const root = createRoot(host);
   await act(async () => { root.render(<Workspace tcw={tcw} />); });
-  for (let turn = 0; turn < 200 && calls === 0; turn += 1) {
-    await act(async () => { await Promise.resolve(); jest.advanceTimersByTime(0); });
-  }
+  await settleFill(() => calls);
   return { syncCalls: () => calls, unmount: () => act(async () => root.unmount()) };
+}
+
+/**
+ * Flushes until the fill has started a sync. A prefix starts only once the app's own (foreground)
+ * reads have been quiet for FOREGROUND_QUIET_MS, so time advances by that gap once, far short of
+ * the 45 s deadline.
+ */
+async function settleFill(calls: () => number): Promise<void> {
+  for (const step of [0, FOREGROUND_QUIET_MS]) {
+    await act(async () => { jest.advanceTimersByTime(step); });
+    for (let turn = 0; turn < 200 && calls() === 0; turn += 1) {
+      await act(async () => { await Promise.resolve(); jest.advanceTimersByTime(0); });
+    }
+  }
 }
 
 function LocalSignal() {
@@ -156,9 +170,7 @@ describe("the real app path fires the first-load signal, not the deadline", () =
     expect(isIndexSyncing()).toBe(true); // the warm path returned the cached list and is revalidating
     expect(mounted.syncCalls()).toBe(0);
     held.resolve();
-    for (let turn = 0; turn < 200 && mounted.syncCalls() === 0; turn += 1) {
-      await act(async () => { await Promise.resolve(); jest.advanceTimersByTime(0); });
-    }
+    await settleFill(mounted.syncCalls);
     expect(mounted.syncCalls()).toBe(1);
     await mounted.unmount();
   });

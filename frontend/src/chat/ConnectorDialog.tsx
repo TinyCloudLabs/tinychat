@@ -122,11 +122,11 @@ import {
   type GmeetSyncStage,
 } from "@/lib/connectors/gmeetSyncLog";
 import { resolveBuildInfo } from "@/lib/buildInfo";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import {
   GOOGLE_MEET_CONSENT_COPY,
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
   GOOGLE_TESTING_MODE_REAUTH_COPY,
-  googleConsentCopyForSystemBrowser,
   transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
@@ -778,7 +778,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   onConnected,
 }) => {
   const [phase, setPhase] = useState<OAuthConnectPhase>("authorize");
-  const [custodyConsent, setCustodyConsent] = useState(false);
+  // From the popup to the end of the first sync, this page holds the PKCE verifier and the popup posts back to
+  // this origin: a held tinycloud.chat page must not move mid-flow.
+  useOriginMoveDeferral(phase !== "authorize" && phase !== "done" && phase !== "error");
   const transcriptConsent = useSyncExternalStore(
     subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
   );
@@ -852,7 +854,6 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setNotesSettled(null);
     setCanRetrySync(false);
     setAutoTranscription({ status: "idle" });
-    setCustodyConsent(false);
     setMeetingCode("");
     stateRef.current = null;
     verifierRef.current = null;
@@ -1292,7 +1293,6 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
    * popup is opened blank, THEN navigated once the PKCE challenge is computed.
    */
   const handleAuthorize = useCallback(() => {
-    if (autojoin && !custodyConsent) return;
     if (appPlatform() === "tauri") {
       setError(null);
       cancelNativeAttempt();
@@ -1307,7 +1307,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           if (nativeGenerationRef.current !== generation) return;
           stateRef.current = state;
           verifierRef.current = verifier;
-          if (autojoin) throw new Error("Enable Calendar autojoin from Exo on the web.");
+          if (autojoin) throw new Error("Enable Calendar autojoin from TinyCloud One on the web.");
           const bearer = sessionStore.getToken();
           if (!bearer || sessionStore.isExpired()) { failWith({ kind: "session", message: "" }); return; }
           const code = await startDesktopGoogleOAuth({ backendUrl, bearer, state, challenge,
@@ -1390,7 +1390,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         setError({ kind: "cancelled", message: "" });
       }
     })();
-  }, [autojoin, custodyConsent, authorizeInSystemBrowser, backendUrl, cancelNativeAttempt, closePopup, failWith, sessionStore]);
+  }, [autojoin, authorizeInSystemBrowser, backendUrl, cancelNativeAttempt, closePopup, failWith, sessionStore]);
 
   /**
    * The callback listener, live only while we are waiting for one.
@@ -1498,28 +1498,15 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-md" hideCloseButton={busy}>
         <DialogHeader>
-          <DialogTitle>{autojoin ? "Enable Calendar autojoin" : `Connect ${descriptor.name}`}</DialogTitle>
-          <DialogDescription>
-            {autojoin ? "Authorize background read access to your Google Calendar events and encrypted server custody of your Google token."
-              : "Sign in with Google to sync your Meet transcripts. Your Google connection is stored in TinyCloud’s encrypted secrets. Connecting a different Google account turns Calendar autojoin off until you explicitly enable it again."}
-          </DialogDescription>
+          <DialogTitle>{consentCopy.heading}</DialogTitle>
         </DialogHeader>
 
         {phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}
         {phase === "authorize" && desktopAutojoinUnavailable && (
-          <p className="text-xs text-muted-foreground">Enable Calendar autojoin from Exo on the web.</p>
+          <p className="text-xs text-muted-foreground">Enable Calendar autojoin from TinyCloud One on the web.</p>
         )}
         {phase === "authorize" && authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable && (
-          <>
-            <AuthorizePanel
-              copy={authorizeSurface === "system-browser" ? googleConsentCopyForSystemBrowser(consentCopy) : consentCopy}
-              error={error}
-            />
-            {autojoin && <label className="flex items-start gap-2 text-xs">
-              <input type="checkbox" checked={custodyConsent} onChange={(event) => setCustodyConsent(event.target.checked)} />
-              <span>{consentCopy.consentCheckbox}</span>
-            </label>}
-          </>
+          <AuthorizePanel copy={consentCopy} error={error} />
         )}
         {phase === "wait-callback" && <WaitCallbackPanel systemBrowser={appPlatform() === "tauri" || usesSystemBrowserOAuth()} />}
         {phase === "exchange" && (
@@ -1560,7 +1547,6 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         <OAuthConnectFooter
           phase={phase}
           canAuthorize={authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable}
-          authorizeDisabled={autojoin && !custodyConsent}
           onAuthorize={handleAuthorize}
           onSameTabAuthorize={error?.kind === "popup-blocked" ? handleSameTabAuthorize : undefined}
           onCancelAuthorize={handleCancelAuthorize}
@@ -1586,22 +1572,10 @@ const AuthorizePanel: FC<{
   error: OAuthErrorState | null;
 }> = ({ copy, error }) => (
   <div className="flex flex-col gap-2">
-    <p className="text-xs text-muted-foreground">{copy.intro}</p>
-    <p className="text-xs font-medium text-foreground">{copy.changesHeading}</p>
-    <ul className="flex max-h-64 list-disc flex-col gap-1.5 overflow-y-auto pl-4">
-      {copy.bullets.map((bullet) => (
-        <li key={bullet.slice(0, 32)} className="text-xs text-muted-foreground">
-          <Emphasized text={bullet} />
-        </li>
-      ))}
-    </ul>
-    {copy.disconnectNote && <p className="text-xs text-muted-foreground"><Emphasized text={copy.disconnectNote} /></p>}
-    {SHOW_GOOGLE_TESTING_MODE_CAVEAT && (
-      <p className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-2 text-xs text-muted-foreground">
-        <InfoIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-        <span>{GOOGLE_TESTING_MODE_REAUTH_COPY}</span>
-      </p>
-    )}
+    <p className="text-xs text-muted-foreground">
+      {copy.intro}
+      {SHOW_GOOGLE_TESTING_MODE_CAVEAT && ` ${GOOGLE_TESTING_MODE_REAUTH_COPY}`}
+    </p>
     {error && (
       <p role="alert" className="text-xs text-destructive">
         {formatOAuthError(error)}
@@ -1629,7 +1603,7 @@ const WaitCallbackPanel: FC<{ systemBrowser: boolean }> = ({ systemBrowser }) =>
     </p>
     <p className="text-xs text-muted-foreground">
       {systemBrowser
-        ? "Finish signing in and approve the requested permissions in the browser. Exo comes back here when you’re done."
+        ? "Finish signing in and approve the requested permissions in the browser. TinyCloud One comes back here when you’re done."
         : "Finish signing in and approve the requested permissions in the Google window. If you don’t see it, check for a blocked or hidden popup."}
     </p>
   </div>
@@ -1954,7 +1928,6 @@ const OAuthFailedPanel: FC<{ error: OAuthErrorState; canRetrySync: boolean }> = 
 const OAuthConnectFooter: FC<{
   /** False inside the Exo app while this build keeps Google sign-in off: Close only. */
   canAuthorize: boolean;
-  authorizeDisabled?: boolean;
   phase: OAuthConnectPhase;
   onAuthorize: () => void;
   onSameTabAuthorize?: () => void;
@@ -1962,7 +1935,7 @@ const OAuthConnectFooter: FC<{
   onClose: () => void;
   onStopSync: () => void;
   onRetrySync?: () => void;
-}> = ({ phase, canAuthorize, authorizeDisabled, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync, onRetrySync }) => (
+}> = ({ phase, canAuthorize, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync, onRetrySync }) => (
   <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
     {phase === "authorize" && !canAuthorize && (
       <Button size="sm" onClick={onClose}>
@@ -1975,7 +1948,7 @@ const OAuthConnectFooter: FC<{
           Cancel
         </Button>
         {/* Not async, and it must stay that way — see `handleAuthorize`. */}
-        <Button size="sm" disabled={authorizeDisabled} onClick={onAuthorize}>
+        <Button size="sm" onClick={onAuthorize}>
           Continue with Google
         </Button>
         {onSameTabAuthorize && <Button size="sm" variant="outline" onClick={onSameTabAuthorize}>Open in this tab</Button>}
@@ -2407,7 +2380,7 @@ export async function revokeGoogleUpstream(input: {
   let serverRevokeFailed = false;
   let serverRevoked = false;
   const auth = sessionStore.getToken();
-  if (!auth || sessionStore.isExpired()) return { status: "server-unavailable", message: "your TinyChat session expired" };
+  if (!auth || sessionStore.isExpired()) return { status: "server-unavailable", message: "your TinyCloud One session expired" };
   {
     try {
       const disconnected = await fetchImpl(`${backendUrl}/api/connectors/google/autojoin/disconnect`, {
@@ -2443,7 +2416,7 @@ export async function revokeGoogleUpstream(input: {
   if (!browserToken) return serverRevokeFailed || serverRevoked ? finished : localFailure ?? finished;
   const bearer = sessionStore.getToken();
   if (!bearer || sessionStore.isExpired()) {
-    return { status: "failed", message: "your TinyChat session expired" };
+    return { status: "failed", message: "your TinyCloud One session expired" };
   }
   try {
     const response = await fetchImpl(`${backendUrl}${GOOGLE_OAUTH_REVOKE_PATH}`, {
@@ -2474,11 +2447,13 @@ export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null
     case "revoked":
       return null;
     case "no-token":
+      // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
       return `We couldn’t read a saved Google connection to revoke — remove TinyChat yourself at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. The rest of the disconnect continues.`;
     case "failed":
+      // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
       return `We couldn’t ask Google to revoke this access (${state.message ?? "unknown reason"}), so it may still be live. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. Everything else below still ran.`;
     case "server-unavailable":
-      return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyChat and retry disconnecting.";
+      return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyCloud One and retry disconnecting.";
     case "locked":
       return `Calendar autojoin was stopped, but your browser token remains locked: ${state.message ?? "unlock was not completed"}. Try again.`;
   }
@@ -2654,15 +2629,15 @@ function formatOAuthError(error: OAuthErrorState): string {
     case "desktop-error":
       return error.message;
     case "native-unavailable":
-      return "Connecting Google isn’t available in the Exo app yet. Connect it from Exo on the web; the connection lives in your TinyCloud space, so it works here too.";
+      return "Connecting Google isn’t available in the TinyCloud One app yet. Connect it from TinyCloud One on the web; the connection lives in your TinyCloud space, so it works here too.";
     case "browser-unavailable":
-      return "Exo couldn’t open the browser for Google sign-in. Nothing was connected — press “Continue with Google” to try again.";
+      return "TinyCloud One couldn’t open the browser for Google sign-in. Nothing was connected — press “Continue with Google” to try again.";
     case "crypto-unavailable":
       return "This browser couldn’t prepare a secure sign-in. Google Meet needs a secure (https) page with Web Crypto available.";
     case "cancelled":
       return "The Google window closed before sign-in finished. Nothing was connected — press “Continue with Google” to try again.";
     case "session":
-      return "Your TinyChat session expired before Google could finish. Sign in again, then reconnect.";
+      return "Your TinyCloud One session expired before Google could finish. Sign in again, then reconnect.";
     case "feature-dark":
       return "Google Meet connecting isn’t switched on for this deployment yet.";
     case "google-credentials":
@@ -2678,6 +2653,7 @@ function formatOAuthError(error: OAuthErrorState): string {
       return `Google is rate-limiting us.${retry}${detail}`;
     }
     case "no-refresh-token":
+      // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
       return `Google didn’t return the long-lived permission we need to keep syncing. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL} and connect again.`;
     case "connection-not-saved":
       return "Google Meet couldn’t save this connection, so it isn’t connected yet. Connect again to finish setting it up.";
