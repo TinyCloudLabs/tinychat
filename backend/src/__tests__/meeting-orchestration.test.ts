@@ -120,16 +120,20 @@ test("range recap reads all eight distinct exact references with concurrency at 
   for (let i = 0; i < 8; i++) expect(output(frames)).toContain(`green design for meeting-${i}`);
 });
 
-test("general route rejects native private calls with zero private dispatch after interpretation", async () => {
-  let models = 0, dispatches = 0;
-  const fetchImpl = (async (input) => {
+test("general route answers a native private call with tool_not_found, never dispatches it, and lets the model answer", async () => {
+  let models = 0, dispatches = 0; const frames: string[] = []; const toolResults: string[] = [];
+  const fetchImpl = (async (input, init) => {
     if (String(input).includes("/tools/")) { dispatches++; return Response.json({}); }
     models++;
     if (models === 1) return modelResponse({ kind: "general" }, true);
-    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Already streamed prose.", tool_calls: [{ index: 0, id: "bad", function: { name: "tinycloud_find_meetings", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    if (models === 2) return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Already streamed prose.", tool_calls: [{ index: 0, id: "bad", function: { name: "tinycloud_find_meetings", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    toolResults.push(...JSON.parse(String(init?.body)).messages.filter((m: { role: string }) => m.role === "tool").map((m: { content: string }) => m.content));
+    return modelResponse(" Here is the answer.");
   }) as typeof fetch;
-  const result = await orchestrateToolCalling({ config: config(fetchImpl), model: "test-model", messages: [{ role: "user", content: "Hello" }], entityId: "entity", write: () => {} });
-  expect(dispatches).toBe(0); expect(result.errorCode).toBe("routing_mismatch"); expect(models).toBe(2);
+  const result = await orchestrateToolCalling({ config: config(fetchImpl), model: "test-model", messages: [{ role: "user", content: "Hello" }], entityId: "entity", write: frame => { frames.push(frame); } });
+  expect(dispatches).toBe(0); expect(result.errorCode).toBeUndefined(); expect(models).toBe(3);
+  expect(toolResults).toEqual(['(tool "tinycloud_find_meetings" is not available in this conversation; answer without it)']);
+  expect(output(frames)).toBe("Already streamed prose. Here is the answer.");
 });
 
 test("metadata selected follow-up performs exactly one finder call without body or availability claims", async () => {
@@ -178,16 +182,18 @@ test("retrieval slice exhaustion retains successes and labels remaining meetings
   expect(run.text).toContain("green design for meeting-0"); expect(run.text).toContain("not read"); expect(run.text).not.toContain("missing"); expect(run.tools.length).toBeLessThan(9); expect(run.models).toBe(3);
 });
 
-test("general inline private call after streamed prose never dispatches or leaks tool markup", async () => {
+test("general inline private call after streamed prose never dispatches or leaks tool markup, and the model answers", async () => {
   let models = 0, dispatches = 0; const frames: string[] = [];
   const fetchImpl = (async (input) => {
     if (String(input).includes("/tools/")) { dispatches++; return Response.json({}); }
     models++; if (models === 1) return modelResponse({ kind: "general" }, true);
+    if (models === 3) return modelResponse("Here is the answer.");
     const chunks = ["Already streamed prose. ", "<too", "l_call>tinycloud_read_meeting<arg_key>focus</arg_key><arg_value>summary</arg_value></tool_call>"];
     return new Response(chunks.map(content => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`).join("") + `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
   }) as typeof fetch;
   const result = await orchestrateToolCalling({ config: config(fetchImpl), model: "test-model", messages: [{ role: "user", content: "Hello" }], entityId: "entity", write: frame => { frames.push(frame); } });
-  expect(result.errorCode).toBe("routing_mismatch"); expect(dispatches).toBe(0); expect(output(frames)).toContain("Already streamed prose."); expect(output(frames)).not.toContain("<tool");
+  expect(result.errorCode).toBeUndefined(); expect(dispatches).toBe(0); expect(models).toBe(3);
+  expect(output(frames)).toBe("Already streamed prose. Here is the answer."); expect(output(frames)).not.toContain("<tool");
 });
 test("ordinary general deltas stream before the answer model finishes", async () => {
   let models = 0; const frames: string[] = []; let release!: () => void;
