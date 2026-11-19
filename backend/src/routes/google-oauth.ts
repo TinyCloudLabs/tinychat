@@ -96,9 +96,9 @@ function firstQueryValue(value: unknown): unknown {
 //   `<anything>.<…>`   — an unknown tag: refused at /start and at /callback. Never defaulted.
 //
 // The SPA tags every flow it starts on HOME_WEB_ORIGIN or TINYCLOUD_ONE_WEB_ORIGIN, so an untagged or `tab.` flow was started
-// elsewhere. Its WEB RETURN ORIGIN is FRONTEND_URL, except when FRONTEND_URL is HOME_WEB_ORIGIN
-// itself: then it is TINYCHAT_WEB_ORIGIN, where visitors with unsynced local work stay, so their
-// flows still finish on tinycloud.chat. Every return origin must be in the FRONTEND_ORIGINS
+// elsewhere. Its WEB RETURN ORIGIN is FRONTEND_URL, except when FRONTEND_URL is HOME_WEB_ORIGIN or
+// TINYCLOUD_ONE_WEB_ORIGIN: then it is TINYCHAT_WEB_ORIGIN, where visitors with unsynced local work stay
+// (tc_hold, `?legacy=1`), so their flows still finish on tinycloud.chat. Every return origin must be in the FRONTEND_ORIGINS
 // allowlist (`frontendOriginsFromEnv`); a tag whose origin is not is refused like an unknown tag.
 //
 // The deep-link TARGET is a constant: nothing in the request chooses where the browser goes, only
@@ -311,7 +311,7 @@ export function createGoogleOAuthRouter(
     options.appOrigin ?? googleAppOriginFromEnv(),
   );
   const frontendOrigins = options.frontendOrigins ?? frontendOriginsFromEnv(appOrigin);
-  const webOrigin = appOrigin === HOME_WEB_ORIGIN ? TINYCHAT_WEB_ORIGIN : appOrigin;
+  const webOrigin = appOrigin === HOME_WEB_ORIGIN || appOrigin === TINYCLOUD_ONE_WEB_ORIGIN ? TINYCHAT_WEB_ORIGIN : appOrigin;
   const webReturn = frontendOrigins.includes(webOrigin) ? webOrigin : null;
   const homeReturn = frontendOrigins.includes(HOME_WEB_ORIGIN) ? HOME_WEB_ORIGIN : null;
   const oneReturn = frontendOrigins.includes(TINYCLOUD_ONE_WEB_ORIGIN) ? TINYCLOUD_ONE_WEB_ORIGIN : null;
