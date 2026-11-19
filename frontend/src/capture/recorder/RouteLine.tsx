@@ -21,7 +21,7 @@ export function voiceNoteRoute(route: "off" | "on-device" | "private-cloud" | "a
   const phone = routeSourceName(platform);
   if (route === "assemblyai") return [
     { label: phone, kind: "source" },
-    { label: "TinyCloud Home's server", kind: "processing" },
+    { label: "TinyCloud One's server", kind: "processing" },
     { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" },
     { label: "Your space", kind: "destination" },
   ];

@@ -1,5 +1,6 @@
-// The ask box on Home, for accounts the backend has turned tiny bots on for. Everyone else, and anyone
-// whose status call fails, gets nothing: Home looks as it does today.
+// The ask box on Home, for accounts the backend has turned tiny bots on for, and only once Main's chat works: the
+// status says the account has bots, and a read of Main's messages comes back (Sam, 11-13: "hide this bar until chat
+// is working"). Until then, and for everyone else, Home shows no box at all. A failed read is tried again each minute.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
@@ -12,17 +13,26 @@ import { botsApi, type BotsApi } from "./botsApi";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 
+const RETRY_MS = 60_000;
+
 export function HomeAskBox({ api = botsApi, tcw, onReconnect }: { api?: BotsApi; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
-  const [enabled, setEnabled] = useState(false);
+  const [working, setWorking] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
-    api.getBotsStatus(controller.signal).then(
-      ({ enabled: on }) => { if (!controller.signal.aborted) setEnabled(on); },
-      () => {},
-    );
-    return () => controller.abort();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = async () => {
+      try {
+        if (!(await api.getBotsStatus(controller.signal)).enabled) return;
+        await api.listMainMessages(controller.signal);
+        if (!controller.signal.aborted) setWorking(true);
+      } catch {
+        if (!controller.signal.aborted) timer = setTimeout(() => void check(), RETRY_MS);
+      }
+    };
+    void check();
+    return () => { controller.abort(); clearTimeout(timer); };
   }, [api]);
-  return enabled ? <MainAsk api={api} tcw={tcw} onReconnect={onReconnect} /> : null;
+  return working ? <MainAsk api={api} tcw={tcw} onReconnect={onReconnect} /> : null;
 }
 
 function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; onReconnect?: () => void }) {

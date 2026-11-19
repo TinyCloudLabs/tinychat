@@ -11,7 +11,7 @@ const prototype = TinyCloudWeb.prototype as unknown as { _init(): Promise<void> 
 const initialize = prototype._init;
 prototype._init = async () => {};
 const client = new TinyCloudWeb({ ui: { button: false }, persistSession: false,
-  manifest: { manifest_version: 1, app_id: "xyz.tinycloud.tinychat", name: "TinyCloud Home", defaults: false, permissions: [] } });
+  manifest: { manifest_version: 1, app_id: "xyz.tinycloud.tinychat", name: "TinyCloud One", defaults: false, permissions: [] } });
 prototype._init = initialize;
 Object.assign(client, { _node: { did: owner }, _testHooks: { hasRuntimePermissions: () => false, grantPermissions: async () => [] } });
 

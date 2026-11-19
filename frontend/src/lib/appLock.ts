@@ -16,7 +16,8 @@
 import { useSyncExternalStore } from "react";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { appPlatform } from "./platform";
-import { nativeSessionWasActive, onNativeSessionChange } from "./openkeyNative";
+import { NATIVE_SESSION_KIND_KEY, nativeSessionWasActive, onNativeSessionChange } from "./openkeyNative";
+import { durableKeyReady, writeDurableKey } from "./durableKeys";
 
 // ── State machine (pure) ─────────────────────────────────────────────
 
@@ -95,7 +96,8 @@ export function readPrefs(storage: PrefsStorage | null): AppLockPrefs {
 
 function writePrefs(storage: PrefsStorage | null, prefs: AppLockPrefs): void {
   try {
-    storage?.setItem(APP_LOCK_PREFS_KEY, JSON.stringify(prefs));
+    // Also kept in native storage, so the setting outlives this WebView origin (durableKeys.ts).
+    writeDurableKey(APP_LOCK_PREFS_KEY, JSON.stringify(prefs), storage);
   } catch (error) {
     console.warn("Could not store the app lock setting; it applies until the app is closed", error);
   }
@@ -139,6 +141,13 @@ export interface AppLockDeps {
   signedIn: boolean;
   /** Runs once the lock decision has painted, to drop the native background cover. */
   afterPaint: (callback: () => void) => void;
+  /**
+   * Resolves once the settings and the signed-in record in `storage` are loaded (durableKeys.ts); the app can
+   * render before that. start() reads them again then, before deciding or settling the default.
+   */
+  settingsLoaded?: () => Promise<void>;
+  /** The signed-in record, read again once the settings are loaded. */
+  signedInRecord?: () => boolean;
 }
 
 export interface AppLockSnapshot {
@@ -158,7 +167,11 @@ export interface AppLock {
   start(): Promise<void>;
   /** Asks for Face ID / the passcode again (the lock screen's button). */
   retry(): Promise<void>;
-  setSignedIn(signedIn: boolean): void;
+  /**
+   * `restored`: a session restored at launch, not a fresh sign-in. It locks as a cold launch does, for when the
+   * app opened without its record of being signed in (its WebView storage was left behind by an origin change).
+   */
+  setSignedIn(signedIn: boolean, restored?: boolean): void;
   setEnabled(enabled: boolean): void;
   setTimeoutMinutes(minutes: LockTimeoutMinutes): void;
 }
@@ -177,6 +190,8 @@ export function createAppLock(deps: AppLockDeps): AppLock {
   let unlockWaiters: Array<() => void> = [];
   let started = false;
   let coverEnabled: boolean | null = null;
+  // A session restored at launch before the device's authentication was known.
+  let lockOnStart = false;
 
   const required = () => !!native && signedIn && prefs.enabled === true && device?.deviceSecure === true;
 
@@ -209,7 +224,7 @@ export function createAppLock(deps: AppLockDeps): AppLock {
     dispatch({ type: "authStart" });
     let result: UnlockResult;
     try {
-      ({ result } = await native.authenticate({ reason: "Unlock TinyCloud Home" }));
+      ({ result } = await native.authenticate({ reason: "Unlock TinyCloud One" }));
     } catch {
       result = "failed";
     }
@@ -237,6 +252,15 @@ export function createAppLock(deps: AppLockDeps): AppLock {
       if (!native || started) return;
       started = true;
       await native.addListener("foreground", ({ backgroundMs }) => onForeground(backgroundMs));
+      if (deps.settingsLoaded) {
+        await deps.settingsLoaded();
+        prefs = readPrefs(storage);
+        // Loaded late: a signed-in record that arrived after the first render locks as the cold launch would have.
+        if (!signedIn && deps.signedInRecord?.()) {
+          signedIn = true;
+          lockOnStart = true;
+        }
+      }
       try {
         device = await native.status();
       } catch {
@@ -247,17 +271,28 @@ export function createAppLock(deps: AppLockDeps): AppLock {
         writePrefs(storage, prefs);
       }
       if (!required()) dispatch({ type: "release" });
+      else if (lockOnStart) dispatch({ type: "launch", required: true });
       else publish(snapshot.state);
+      lockOnStart = false;
       // A cover left from before a WebView reload.
       void native.reveal().catch(() => {});
       if (snapshot.state.locked) await authenticate();
     },
     retry: authenticate,
-    setSignedIn(next: boolean) {
+    setSignedIn(next: boolean, restored = false) {
       if (next === signedIn) return;
       signedIn = next;
-      // Signing out leaves nothing to protect. Signing in is itself an authentication, so it never locks.
-      if (!next) dispatch({ type: "release" });
+      // Signing out leaves nothing to protect. Signing in is itself an authentication, so it never locks;
+      // restoring a session at launch is not one, so the cold-launch lock applies.
+      if (!next) {
+        lockOnStart = false;
+        dispatch({ type: "release" });
+      } else if (restored && device === null) {
+        lockOnStart = true;
+      } else if (restored && required()) {
+        dispatch({ type: "launch", required: true });
+        void authenticate();
+      }
       syncCover();
     },
     setEnabled(enabled: boolean) {
@@ -299,8 +334,12 @@ export function appLock(): AppLock {
       storage: browserStorage(),
       signedIn: nativeSessionWasActive(),
       afterPaint: (callback) => requestAnimationFrame(() => requestAnimationFrame(callback)),
+      settingsLoaded: async () => {
+        await Promise.all([durableKeyReady(APP_LOCK_PREFS_KEY), durableKeyReady(NATIVE_SESSION_KIND_KEY)]);
+      },
+      signedInRecord: nativeSessionWasActive,
     });
-    onNativeSessionChange((active) => instance?.setSignedIn(active));
+    onNativeSessionChange((active, restored) => instance?.setSignedIn(active, restored));
   }
   return instance;
 }

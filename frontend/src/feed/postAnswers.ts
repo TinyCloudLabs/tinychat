@@ -133,6 +133,44 @@ export function clearPostDrafts(space: string): void {
   } catch { /* Nothing to clear. */ }
 }
 
+/**
+ * Removes every post draft on this device, whatever space it belongs to: for a sign-out that cannot name its space
+ * (a restart that finds a sign-out still pending), so the owner's words do not outlive the account.
+ */
+export function clearAllPostDrafts(): void {
+  try {
+    const storage = window.localStorage;
+    const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter((key): key is string => !!key?.startsWith(DRAFT_PREFIX));
+    for (const key of keys) storage.removeItem(key);
+  } catch { /* Nothing to clear. */ }
+}
+
+/**
+ * How many post drafts on this device, whatever space they belong to, hold at least one answer and are still within
+ * HELD_ANSWER_TTL_MS at `now`. Reads only; a malformed, expired or empty draft is not counted. For the move off
+ * tinycloud.chat (originMove.ts), which must not strand them.
+ */
+export function countPostDrafts(storage: Pick<Storage, "length" | "key" | "getItem">, now = Date.now()): number {
+  let drafts = 0;
+  for (let index = 0; index < storage.length; index++) {
+    const key = storage.key(index);
+    if (!key?.startsWith(DRAFT_PREFIX)) continue;
+    try {
+      const value = JSON.parse(storage.getItem(key) ?? "null") as Partial<StoredDraft> | null;
+      if (!value || typeof value.at !== "string" || !value.answers || typeof value.answers !== "object") continue;
+      if (!(now - Date.parse(value.at) <= HELD_ANSWER_TTL_MS)) continue;
+      if (Object.values(value.answers).some((answer) => isAnswered(validAnswer(answer)))) drafts++;
+    } catch { /* Malformed: not a draft. */ }
+  }
+  return drafts;
+}
+
+function validAnswer(value: unknown): PageAnswer | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { choices, note } = value as Partial<PageAnswer>;
+  return Array.isArray(choices) && typeof note === "string" ? { choices, note } : undefined;
+}
+
 /** Two sets of answers say the same. */
 export function sameAnswers(a: PageAnswers, b: PageAnswers): boolean {
   const keys = (answers: PageAnswers) => Object.keys(answers).filter((id) => isAnswered(answers[id])).sort();

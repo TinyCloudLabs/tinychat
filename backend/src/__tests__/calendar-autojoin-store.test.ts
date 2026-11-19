@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { fakeBackendNode } from "./helpers/fake-backend-node.js";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { KvCalendarAutojoinStore, MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarConnection } from "../services/calendar-autojoin-store.js";
@@ -40,12 +41,7 @@ describe("calendar state durability", () => {
   test("KV rehydrates disabled tenants and does not discard a failed write", async () => {
     const values = new Map<string, unknown>();
     let failWrite = false;
-    const node = { kv: {
-      async get(key: string) { return values.has(key) ? { ok: true, data: { data: values.get(key) } } : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }; },
-      async put(key: string, value: unknown) { if (failWrite) return { ok: false, error: { code: "FAILED", message: "write failed" } }; values.set(key, structuredClone(value)); return { ok: true, data: {} }; },
-      async list({ prefix }: { prefix: string }) { return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } }; },
-      async delete(key: string) { values.delete(key); return { ok: true, data: {} }; },
-    } } as unknown as TinyCloudNode;
+    const { node } = fakeBackendNode(values, { before(op) { if (op === "put" && failWrite) return { ok: false, error: { code: "FAILED", message: "write failed" } }; } });
     const lane = new BackendStorageLane();
     const store = new KvCalendarAutojoinStore(node, lane);
     await store.putConnection({ ...connection(), state: "disabled" });

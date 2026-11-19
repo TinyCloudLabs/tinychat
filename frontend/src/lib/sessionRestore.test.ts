@@ -249,7 +249,7 @@ describe("restorePersistedSession", () => {
     const { d, calls } = deps({ loadManifest: offlineFetch, isOffline: () => true });
     expect(await restorePersistedSession(store, d)).toEqual({
       kind: "unavailable",
-      message: "You're offline. TinyCloud Home will reconnect when you're back online.",
+      message: "You're offline. TinyCloud One will reconnect when you're back online.",
     });
     expect(store.cleared).toBe(0);
     expect(store.getToken()).toBe("bearer");

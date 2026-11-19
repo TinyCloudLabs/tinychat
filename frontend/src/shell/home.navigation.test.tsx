@@ -14,7 +14,7 @@ const back = (path: string) => decideBack({ overlay: false, screen: screenFor(pa
 describe("navigation model", () => {
   test("Home (the feed), Chat, Apps, Recording, then Connectors, each to its own root", () => {
     expect(navItems(0).map((item) => [item.label, item.href])).toEqual([
-      ["Home", PATHS.feed],
+      ["Feed", PATHS.feed],
       ["Chat", PATHS.chat],
       ["Apps", PATHS.apps],
       ["Recording", PATHS.capture],
@@ -34,6 +34,7 @@ describe("navigation model", () => {
     expect(tabTarget("feed", false)).toBe("/chat/feed/sub");
     expect(tabTarget("feed", true)).toBe(PATHS.feed);
     expect(tabTarget("apps", false)).toBe(PATHS.apps);
+    resetNavigationMemory(); // the next test file must not inherit this tab's remembered location
   });
   beforeEach(() => resetNavigationMemory());
 });

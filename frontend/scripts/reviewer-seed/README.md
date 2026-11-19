@@ -1,7 +1,7 @@
 # Reviewer seed
 
-Writes fixed demo data into one fresh TinyCloud Home applications space, for the App Store
-reviewer account (TC-2775). It uses TinyCloud Home's own write paths and reads the result back
+Writes fixed demo data into one fresh TinyCloud One applications space, for the App Store
+reviewer account (TC-2775). It uses TinyCloud One's own write paths and reads the result back
 through Home's own readers. It takes no owner key: the space owner grants this run's in-memory
 session key a short delegation.
 
@@ -108,14 +108,14 @@ owner is never asked to grant a run that would be refused.
 
 ## What it writes
 
-Every write goes through TinyCloud Home's code at this commit. The seed has no SQL schema of its own.
+Every write goes through TinyCloud One's code at this commit. The seed has no SQL schema of its own.
 
 | Item | Home code path | Database and ids |
 | --- | --- | --- |
 | Seed marker | `setSetting` (`lib/threadStore.ts`) | `threads.settings`, key `xyz.tinycloud.tinychat:reviewer-seed`, written first as `in-progress` and last as `complete` |
 | Feed registry tables | `createHomeFeedSource().load()` (`feed/feedStore.ts`) | `home_feed` |
 | 4 Feed cards (2 need an answer) | `initializeFeedDatabases`, `publishFeedCard` (`@tinycloud/sdk-services/feed`) | `feed/feed_output_home_tour`, cards `welcome`, `first-step`, `your-space`, `weekly-summary` |
-| Feed source "TinyCloud Home tour" | one `feed_agents` row, the columns Home's reader selects | `home_feed.feed_agents`, `agent_id = home-tour`, `agent_did` = the owner, provenance `{"seed":"tinychat-reviewer-seed","revision":1}` |
+| Feed source "TinyCloud One tour" | one `feed_agents` row, the columns Home's reader selects | `home_feed.feed_agents`, `agent_id = home-tour`, `agent_did` = the owner, provenance `{"seed":"tinychat-reviewer-seed","revision":1}` |
 | 1 chat, 4 messages | `appendMessage` (`lib/threadStore.ts`), as the chat runtime saves a turn | `threads`, thread `tinychat-reviewer-seed-r1-chat` |
 | 1 voice note with transcript | `ensureVoiceNoteIdentity`, `createPastedTranscriptRow`, `commitVoiceNoteTranscript` (`lib/voiceNotes/voiceNoteRows.ts`), with `pastedTranscriptCommit` from the Library's paste path | `connectors.connector_meeting` row `vn-tinychat-reviewer-seed-r1-voice-note`, `voice_note_transcript`, transcript bodies in KV |
 
@@ -128,7 +128,7 @@ with the same row, commit table and KV layout as a recorded note, and no audio. 
 not match its transcript. The Library labels it "Pasted transcript". On the Home build, the Library
 asks the reviewer for the Recording permissions the first time it opens, then lists the note.
 
-All text is fixed, neutral content about trying TinyCloud Home (`content.ts`). Times are offsets from
+All text is fixed, neutral content about trying TinyCloud One (`content.ts`). Times are offsets from
 `seededAt`, the run's start, which the marker records.
 
 ## Output
@@ -150,7 +150,7 @@ interrupted run of this revision was finished) or `already-seeded` (nothing writ
 
 - Seed revision: `SEED_REVISION` in `content.ts`, now `1`. Any change to content, ids or write paths
   is a new revision. The marker records it; a space seeded at another revision is refused.
-- Schema: the seed writes whatever schema TinyCloud Home's code creates at this commit (the threads
+- Schema: the seed writes whatever schema TinyCloud One's code creates at this commit (the threads
   tables, the Feed tables of `@tinycloud/sdk-services` 3.11.0, the connectors tables and
   `voice_note_transcript`). Running the seed from a later commit uses that commit's schema.
 

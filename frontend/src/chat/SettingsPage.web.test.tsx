@@ -47,7 +47,7 @@ test("signed-in web Settings shows the audio upload switch and browser storage w
     <MemoryRouter>
       <PlatformContext.Provider value="web">
         <StaticRecorderProvider value={{ signedIn: true, available: false }}>
-          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud Home" openkeyHost="http://localhost">
+          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud One" openkeyHost="http://localhost">
             <SettingsPage
               address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
               onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}
@@ -84,7 +84,7 @@ test("Mac Settings shows the Voice notes card with Stop recording after and the 
       <MemoryRouter>
         <PlatformContext.Provider value="tauri">
           <StaticRecorderProvider value={{ signedIn: true, available: true }}>
-            <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud Home" openkeyHost="http://localhost">
+            <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud One" openkeyHost="http://localhost">
               <SettingsPage
                 address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
                 onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}
@@ -134,7 +134,7 @@ test("mounted Settings keeps the agent-access block and one detailed storage not
         <MemoryRouter>
           <PlatformContext.Provider value="web">
             <StaticRecorderProvider value={{ signedIn: true, available: false }}>
-              <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud Home" openkeyHost="http://localhost">
+              <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud One" openkeyHost="http://localhost">
                 <SettingsPage
                   address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
                   onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}
@@ -177,7 +177,7 @@ test("Conversation Canvas toggle is off by default under Experimental Features f
     <MemoryRouter>
       <PlatformContext.Provider value="web">
         <StaticRecorderProvider value={{ signedIn: true, available: false }}>
-          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud Home" openkeyHost="http://localhost">
+          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud One" openkeyHost="http://localhost">
             <SettingsPage
               address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
               onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}
@@ -224,7 +224,7 @@ for (const platform of ["web", "tauri", "ios", "android"] as const) {
           <MemoryRouter>
             <PlatformContext.Provider value={platform}>
               <StaticRecorderProvider value={{ signedIn: true, available: false }}>
-                <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud Home" openkeyHost="http://localhost">
+                <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud One" openkeyHost="http://localhost">
                   <SettingsPage
                     address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
                     onSignOut={noop} signingOut={false} paywallEnabled onBack={noop}
