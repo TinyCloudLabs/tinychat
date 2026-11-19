@@ -74,17 +74,27 @@ test("a stored sign-in is torn down once, then OpenKey opens", async () => {
   await page.unmount();
 });
 
-test("not connected, or the route dark: no DELETE, no message, OpenKey opens", async () => {
-  for (const reply of [{ status: 200, body: { connected: false } }, { status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } }]) {
-    calls = [];
-    responses = { [`GET ${CREDS}`]: [reply] };
-    const page = await mount();
-    await page.click("Delete OpenKey account");
-    expect(calls).toEqual([`GET ${CREDS}`]);
-    expect(page.opened()).toBe(1);
-    expect(page.host.querySelector("[role=alert]")).toBeNull();
-    await page.unmount();
-  }
+test("not connected: the full DELETE is sent once, no message, OpenKey opens", async () => {
+  responses = {
+    [`GET ${CREDS}`]: [{ status: 200, body: { connected: false } }],
+    [`DELETE ${CREDS}`]: [{ status: 200, body: { deleted: true, upstreamRevoked: false } }],
+  };
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  expect(calls).toEqual([`GET ${CREDS}`, `DELETE ${CREDS}`]);
+  expect(page.opened()).toBe(1);
+  expect(page.host.querySelector("[role=alert]")).toBeNull();
+  await page.unmount();
+});
+
+test("the route dark: no DELETE, no message, OpenKey opens", async () => {
+  responses = { [`GET ${CREDS}`]: [{ status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } }] };
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  expect(calls).toEqual([`GET ${CREDS}`]);
+  expect(page.opened()).toBe(1);
+  expect(page.host.querySelector("[role=alert]")).toBeNull();
+  await page.unmount();
 });
 
 test("502 upstream_revoke_failed: the notice shows and OpenKey opens only on continue", async () => {
