@@ -11,10 +11,19 @@ export interface BotMessage {
   at: string;
 }
 
+/** What a bot did on its computer, as the service records it: fixed verbs and counts, never words the model wrote. */
+export interface BotActivity {
+  id: string;
+  verb: "ran_commands" | "changed_files";
+  count: number;
+  at: string;
+}
+
 /** One event of Main's reply stream. Error codes are the service's; anything else arrives as `failed`. */
 export type MainEvent =
   | { type: "status"; state: "starting" | "working" }
   | { type: "delta"; text: string }
+  | { type: "activity"; activity: BotActivity }
   | { type: "done"; messageId: string }
   | { type: "error"; code: BotsErrorCode };
 
@@ -45,8 +54,21 @@ function fields(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+/** The record when it has exactly the service's shape; anything else is not an activity line. */
+export function toActivity(value: unknown): BotActivity | null {
+  const record = fields(value);
+  if (record.type !== "activity" || Object.keys(record).length !== 5) return null;
+  const { id, verb, count, at } = record;
+  return typeof id === "string" && /^[a-f0-9]{32}$/.test(id)
+    && (verb === "ran_commands" || verb === "changed_files")
+    && typeof count === "number" && Number.isInteger(count) && count >= 1 && count <= 256
+    && typeof at === "string" && Number.isFinite(Date.parse(at))
+    ? { id, verb, count, at }
+    : null;
+}
+
 function toEvent(name: string, data: string): MainEvent | null {
-  if (name !== "status" && name !== "delta" && name !== "done" && name !== "error") return null;
+  if (name !== "status" && name !== "delta" && name !== "activity" && name !== "done" && name !== "error") return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(data);
@@ -54,6 +76,11 @@ function toEvent(name: string, data: string): MainEvent | null {
     throw new BotsError("failed");
   }
   const value = fields(parsed);
+  // An activity line is a note beside the reply: one that does not check out is left out, and the turn goes on.
+  if (name === "activity") {
+    const activity = toActivity(value);
+    return activity ? { type: "activity", activity } : null;
+  }
   if (name === "status" && (value.state === "starting" || value.state === "working")) return { type: "status", state: value.state };
   if (name === "delta" && typeof value.text === "string") return { type: "delta", text: value.text };
   if (name === "done" && typeof value.messageId === "string") return { type: "done", messageId: value.messageId };

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { MAIN_BOT } from "@/bots/BotAvatar";
-import type { BotMessage, MainEvent } from "@/bots/botsApi";
+import type { BotActivity, BotMessage, MainEvent } from "@/bots/botsApi";
 import { BotView, type ViewBot } from "@/bots/BotView";
 import type { HistoryNotice } from "@/bots/historyNotice";
 import { createBotChats, type BotChats } from "@/bots/useBotChat";
@@ -27,11 +27,21 @@ const EARLIER: BotMessage[] = [
   { id: "4", role: "bot", at: "", text: "Here's a draft:\n\n> Hi Dana, the hall works for us. Can we hold it for the 14th? Thanks!\n\nShall I send it?" },
 ];
 
+/** The same conversation with times, so the activity lines fall between its messages. */
+const TIMED: BotMessage[] = EARLIER.map((message, index) => ({ ...message, at: `2026-11-18T09:0${index * 2}:00.000Z` }));
+const ACTIVITY: BotActivity[] = [
+  { id: "a".repeat(32), verb: "ran_commands", count: 3, at: "2026-11-18T09:01:00.000Z" },
+  { id: "b".repeat(32), verb: "changed_files", count: 1, at: "2026-11-18T09:01:30.000Z" },
+  { id: "c".repeat(32), verb: "ran_commands", count: 1, at: "2026-11-18T09:05:00.000Z" },
+  { id: "d".repeat(32), verb: "changed_files", count: 2, at: "2026-11-18T09:05:30.000Z" },
+];
+
 type Reply = "stream" | "fail" | "none";
 
-function fakeChats(reply: Reply): BotChats {
+function fakeChats(reply: Reply, timed = false): BotChats {
   return createBotChats(() => ({
-    list: async () => EARLIER,
+    list: async () => (timed ? TIMED : EARLIER),
+    listConversation: async () => ({ messages: timed ? TIMED : EARLIER, activity: timed ? ACTIVITY : [] }),
     send: (_text: string, onEvent: (event: MainEvent) => void) => {
       if (reply === "fail") {
         onEvent({ type: "error", code: "model_unavailable" });
@@ -53,13 +63,17 @@ const GRID = {
 
 const MAIN: ViewBot = { key: "main", name: MAIN_BOT.name, private: true, face: MAIN_BOT };
 
-function Screen({ reply, send, notice }: { reply: Reply; send?: string; notice?: HistoryNotice }) {
+function Screen({ reply, send, notice, timed, panel }: { reply: Reply; send?: string; notice?: HistoryNotice; timed?: boolean; panel?: boolean }) {
   const nav = navKindFor(useSizeClass());
   const navProps = { items: navItems(0), current: "chat" as const, replace: false, onReselect: () => {} };
-  const [chats] = useState(() => fakeChats(reply));
+  const [chats] = useState(() => fakeChats(reply, timed));
   useEffect(() => {
     if (send) void chats.ensureHistory("main").then(() => chats.send("main", send));
   }, [chats, send]);
+  // The panel opens from the pill, as an owner opens it.
+  useEffect(() => {
+    if (panel) document.querySelector<HTMLButtonElement>("[data-bot-view] h1 button")?.click();
+  }, [panel]);
   return (
     <div className={cn("grid h-[100dvh] min-h-0 bg-background text-foreground", GRID[nav])}>
       {nav === "sidebar" ? <Sidebar {...navProps} settings /> : null}
@@ -86,4 +100,6 @@ export const botViewScreens: HarnessScreen[] = [
     readyWhen: "[data-history-expiry-notice]",
     render: () => <Screen reply="none" notice={{ id: "fixture", expiresAt: EXPIRED, firstAttemptAt: EXPIRED, deliveredAt: EXPIRED, deleteAt: Date.UTC(2026, 11, 12) }} />,
   },
+  { ...BASE, id: "bot-view-activity", readyWhen: "[data-bot-activity]", render: () => <Screen reply="none" timed /> },
+  { ...BASE, id: "bot-view-panel", readyWhen: "[data-bot-panel]", render: () => <Screen reply="none" timed panel /> },
 ];

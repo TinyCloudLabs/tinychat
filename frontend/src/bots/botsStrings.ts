@@ -51,3 +51,18 @@ export const BOT_VIEW_STRINGS = {
   /** For a bot other than Main: HISTORY_EXPIRY_NOTICE with the bot's name. */
   historyExpiryNotice: (name: string) => HISTORY_EXPIRY_NOTICE.replace("Main's chat history", `${name}'s chat history`),
 } as const;
+
+// The activity lines and the bot's panel (TC-3325). Every word is in the plan's sections "Activity lines" and
+// "Activity panel", except those marked as asked of the copy owner.
+export const BOT_ACTIVITY_STRINGS = {
+  ranCommands: (count: number) => (count === 1 ? "Ran 1 command" : `Ran ${count} commands`),
+  changedFiles: (count: number) => (count === 1 ? "Changed 1 file" : `Changed ${count} files`),
+  activity: "Activity",
+  environment: "Environment",
+  /** "Private · asleep"; "Regular" only for a bot whose environment says so. */
+  environmentRow: (environment: "private" | "regular", awake: boolean) =>
+    `${environment === "regular" ? "Regular" : "Private"} · ${awake ? "awake" : "asleep"}`,
+  // For the copy owner: not in the plan.
+  noActivity: "No activity",
+  closePanel: "Close",
+} as const;

@@ -75,13 +75,17 @@ export function BotsChat<Bot extends ControllerBot>({
       await history.grant(key);
       return true;
     };
+    const listConversation = async (signal?: AbortSignal) => {
+      const local = chatApi.listConversation
+        ? await chatApi.listConversation(key, signal)
+        : { messages: await chatApi.listMessages(key, signal), activity: [] };
+      if (!(await authorize())) return local;
+      const archived = await history!.read(key, signal);
+      return { ...local, messages: [...new Map([...archived, ...local.messages].map((message) => [message.id, message])).values()] };
+    };
     return {
-      async list(signal) {
-        const local = await chatApi.listMessages(key, signal);
-        if (!(await authorize())) return local;
-        const archived = await history!.read(key, signal);
-        return [...new Map([...archived, ...local].map((message) => [message.id, message])).values()];
-      },
+      list: async (signal) => (await listConversation(signal)).messages,
+      listConversation,
       send: (text, onEvent, signal) => chatApi.send(key, text, onEvent, signal),
       prepare: async () => { await authorize(); },
     };

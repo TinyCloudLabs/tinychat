@@ -3,14 +3,22 @@
 // the session's: these calls carry only the session bearer.
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 
-import { BotsError, createMainEventParser, type BotMessage, type MainEvent } from "./botsApi";
+import { BotsError, createMainEventParser, toActivity, type BotActivity, type BotMessage, type MainEvent } from "./botsApi";
 import type { HistoryNotice } from "./historyNotice";
 
 /** `main`, or the 32 lower-case hex characters the backend chose. Checked before any address is built from it. */
 export const BOT_KEY = /^(?:main|[0-9a-f]{32})$/;
 
+/** A bot's earlier messages, with the activity lines the service holds beside them. */
+export interface BotConversation {
+  messages: BotMessage[];
+  activity: BotActivity[];
+}
+
 export interface BotChatApi {
   listMessages(key: string, signal?: AbortSignal): Promise<BotMessage[]>;
+  /** The same read as `listMessages`, with the activity records. Absent: the view shows no activity lines. */
+  listConversation?(key: string, signal?: AbortSignal): Promise<BotConversation>;
   /** Resolves after the stream's `done` or `error` event; throws BotsError when the stream fails or ends without one. */
   send(key: string, text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal): Promise<void>;
   /** The bot's expiry notice, or null when there is none (or the history routes are off). */
@@ -46,6 +54,12 @@ function toMessages(payload: unknown): BotMessage[] {
       ? [{ id: value.id, role: value.role, text: value.text, at: typeof value.at === "string" ? value.at : "" }]
       : [];
   });
+}
+
+/** The activity records of a list response: each one that has the service's exact shape, in the service's order. */
+function toActivities(payload: unknown): BotActivity[] {
+  const list = fields(payload).activity;
+  return Array.isArray(list) ? list.flatMap((item: unknown) => toActivity(item) ?? []) : [];
 }
 
 /** A value the backend may leave out; when present it must be a number. */
@@ -102,12 +116,19 @@ export function createBotChatApi({ baseUrl, getToken, fetch: fetchImpl = (input,
     }
   }
 
+  async function listConversation(key: string, signal?: AbortSignal): Promise<BotConversation> {
+    const response = await request("GET", `${botPath(key)}/messages`, { signal });
+    if (!response.ok) throw new BotsError("failed");
+    const payload = await readJson(response);
+    return { messages: toMessages(payload), activity: toActivities(payload) };
+  }
+
   return {
     async listMessages(key, signal) {
-      const response = await request("GET", `${botPath(key)}/messages`, { signal });
-      if (!response.ok) throw new BotsError("failed");
-      return toMessages(await readJson(response));
+      return (await listConversation(key, signal)).messages;
     },
+
+    listConversation,
 
     async send(key, text, onEvent, signal) {
       const response = await request("POST", `${botPath(key)}/messages`, { signal, body: { text } });
