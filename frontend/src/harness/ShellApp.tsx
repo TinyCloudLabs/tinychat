@@ -35,6 +35,7 @@ import { BootSurface } from "@/shell/BootSurface";
 import { HOME_PATH, legacyRedirectFor, screenFor } from "@/shell/routes";
 import type { createRuntimeShim } from "./runtimeShim";
 import { HARNESS_ADDRESS, HARNESS_DID, harnessSessionStore, harnessTcw } from "./stubs";
+import { ChatSlot } from "@/bots/ChatSlot";
 
 const EMPTY_VIEW: SelectionView = {
   threadId: null,
@@ -105,6 +106,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
       pendingMeetings={0}
       chat={probe(
         "chat",
+        <ChatSlot account={HARNESS_DID} tcw={shim.tcw} active={screen.destination === "chat"} classic={
         <ChatWorkspace
           tcw={shim.tcw}
           sessionStore={shim.sessionStore}
@@ -133,7 +135,8 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
           }
           settings
           billingStatus={null}
-        />,
+        />
+        } />,
       )}
       capture={probe(
         "capture",
