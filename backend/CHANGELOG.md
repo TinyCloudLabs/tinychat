@@ -1,5 +1,94 @@
 # @tinychat/backend
 
+## 0.9.0-beta.4
+
+### Patch Changes
+
+- 59e0b09: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+## 0.9.0-beta.3
+
+### Patch Changes
+
+- 860953b: Record why a chat stream failed (TC-3462). A `tinychat_request` record whose stream ended in `error` now carries `failure_cause`: `model` when the model's own output broke the reply (the charged causes in `docs/credits.md`), otherwise `ours`. It is recorded from the stream terminal, so it is present with paywall gating off, and the log shipper allowlist passes only `model` or `ours`. No ledger change.
+
+## 0.9.0-beta.2
+
+### Patch Changes
+
+- 7973a69: The secret guard reads a one-tap approval link the way a browser opens it.
+
+  Details: TC-3242
+
+- 751b563: Google connections started on tinycloud.chat keep returning to tinycloud.chat after the backend's web app address (`FRONTEND_URL`) moves to https://tinycloud.one. A connection started without a site tag, which is how a visitor still working on tinycloud.chat starts one, now finishes on tinycloud.chat, as it already did when the address was home.tinycloud.xyz. Connections started on tinycloud.one or home.tinycloud.xyz still return to their own site. This release changes no settings. Set `FRONTEND_URL` to https://tinycloud.one only with this backend or after it.
+- 518be65: Stop a chat reply at the credit limit and never charge above it (TC-2601). Backend-orchestrated replies cap every provider call's `max_tokens` from the allowance the account had when the reply started and end with `budget_exhausted` instead of overshooting; all chat paths (agent chat, Eliza tasks, `/api/chat`) now settle through one clamp: a reply is charged at most its starting allowance and at most what is left of the window it started in, a failed reply is charged only when the model's own output broke it (a tool it was not offered, tool calls that never finished or did not parse, output over its cap) and is otherwise free even after content was delivered, and a timed-out reply is charged at most its starting allowance. The ledger record id is now the reply's execution id. Eliza `/tasks` monitor modes are unchanged. Customer-visible effect: replies near the limit can end early with the existing "reached the limit" notice, overshoot is platform cost, not the user's, and provider or server failures cost nothing. See `docs/credits.md`.
+
+## 0.9.0-beta.1
+
+### Patch Changes
+
+- 74889d5: If you disconnect Fireflies and connect it again, Sync now imports your older meetings again.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes. Details: TC-2778
+- 74889d5: The Granola connection answers a slow, oversized or unreadable response from Granola with a clear error, and passes Retry-After along on rate limits and failures.
+
+  Details: TC-3292
+
+- 74889d5: Internal changes for Granola meeting sync; nothing in the app changes. Details: TC-3292
+- 7e1f3ee: Chat over the hosted MCP now shows the speaker names you set on a note. A rename (for example "Them" to "Sam") is stored on the note as `speaker_names`; the reader applies it to the transcript lines it gives the model, so answers, citations and speaker filters use the shown name. Names are cleaned the same way as in the app (one line, at most 80 characters). A name that is blank, not text, or part of an oversized map is ignored and the stored label is kept. If the names cannot be read, the stored labels are shown. Details: TC-2189
+- 74889d5: Internal changes for deploys; nothing in the app changes.
+
+  Details: TC-2196
+
+- 74889d5: Internal changes for build checks; nothing in the app changes.
+
+  Details: TC-2778
+
+- d3f87c9: Google connections started on tinycloud.chat keep returning to tinycloud.chat after the backend's web app address (`FRONTEND_URL`) moves to https://tinycloud.one. A connection started without a site tag, which is how a visitor still working on tinycloud.chat starts one, now finishes on tinycloud.chat, as it already did when the address was home.tinycloud.xyz. Connections started on tinycloud.one or home.tinycloud.xyz still return to their own site. This release changes no settings. Set `FRONTEND_URL` to https://tinycloud.one only with this backend or after it.
+- 74889d5: Internal changes for sign-in; nothing in the app changes.
+
+  Details: TC-3030
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: When TinyCloud is already running as many bots as it can, a message to a bot now says so and that it wasn't sent, with a Try again button, instead of the general "couldn't start" line.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: The backend can now hold more than one bot per account, each with its own permission to save its history. Every account still has one bot, Main, and it works as before.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Deleting a bot now finishes only after its cleanup is done.
+
+  Details: TC-3360
+
 ## 0.9.0-beta.0
 
 ### Minor Changes

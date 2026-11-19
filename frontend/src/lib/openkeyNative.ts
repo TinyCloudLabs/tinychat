@@ -138,7 +138,7 @@ export function setSecretsAvailableForTests(available: boolean | null): void {
 
 /** User-facing message for secrets-dependent features inside the app. */
 export const SECRETS_UNAVAILABLE_IN_APP_MESSAGE =
-  "This uses stored credentials, which aren't available in the TinyCloud One app yet. Set it up from TinyCloud One on the web or desktop — everything you connect there works here.";
+  "This uses stored credentials, which you set up in TinyCloud One on the web or desktop. Everything you connect there works here.";
 
 // ── Capabilities ──────────────────────────────────────────────────────
 
