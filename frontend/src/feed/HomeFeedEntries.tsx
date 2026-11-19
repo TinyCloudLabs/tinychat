@@ -12,27 +12,32 @@ import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { CardConversation, plainConversation } from "./CardConversation";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
-import { AnsweredPanel, AnswerFailedLine, cardClass, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, Reference, usePendingSend } from "./cardKit";
+import { AnsweredPanel, AnswerFailedLine, cardClass, disconnectedCopy, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, quotedWords, Reference, UNDO_SECONDS, usePendingSend } from "./cardKit";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
 import { CompactCard, type Replies } from "./CompactCard";
+import { cardLead } from "./cardLead";
 import { cardStatus } from "./cardStatus";
 import { agentProfile } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
 import { FeedTabs, type FeedTab } from "./FeedTabs";
+import { readFeedViewMode, saveFeedViewMode, type FeedViewMode } from "./feedViewMode";
+import { SEEN_DWELL_MS, SEEN_THRESHOLDS, visibleEnoughToSee } from "./expandedSeen";
 import { FloatingHeader } from "./FloatingHeader";
 import { AgentsPill } from "./AgentMarks";
+import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
 import { useUndoBar } from "./UndoBar";
+import { HeldDrafts } from "./heldDrafts";
 import { BriefButton, LazyBriefSheet } from "./BriefButton";
 import { briefOf } from "./brief";
 import { shortTime } from "./ShortTime";
 import { PostPreview } from "./PostPreview";
 import { lazyTab } from "@/shell/lazyTab";
 import { labPageOf, postStatus } from "./postAnswers";
-import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, parseSitrepCardPayload, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
+import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, findSecrets, groupCards, groupPriorityFlag, isClosed, orderPriority, parseSitrepCardPayload, snoozePresets, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
@@ -42,6 +47,21 @@ const LazyAgentView = lazyTab("your agents", () => import("./AgentView").then((m
 const LazyFilterPanel = lazyTab("Filter", () => import("./FilterPanel").then((module) => module.FilterPanel));
 /** A post's page, in a chunk of its own: boot never needs it (TC-2882). */
 const LazyPostPage = lazyTab("the post", () => import("./PostPage").then((module) => module.PostPage));
+
+/**
+ * The "Not sent" line of an answer the feed did not take. The device keeps that answer until the owner has had the
+ * line on screen for as long as an undo lasts (5 s): a page that goes away first (closed, remounted, a source that
+ * changed) leaves it for the next launch, so the owner's answer is never lost unseen.
+ */
+function SeenAfterUndo({ onSeen, children }: { onSeen: () => void; children: ReactNode }) {
+  const seen = useRef(onSeen);
+  seen.current = onSeen;
+  useEffect(() => {
+    const timer = window.setTimeout(() => seen.current(), UNDO_SECONDS * 1000);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return <>{children}</>;
+}
 
 function keyOf(entry: HomeFeedEntry): string {
   const card = entry.state.card;
@@ -97,21 +117,24 @@ function cardTiming(entry: HomeFeedEntry, context?: TypedCardContext): { deadlin
   const expiresAt = isoField(payload.expiresAt) ?? isoField(record?.expiresAt);
   return { ...(deadline ? { deadline } : {}), ...(expiresAt ? { expiresAt } : {}), ...(priority !== undefined ? { priority } : {}) };
 }
+/** An agent's link, as it was posted: one that looks like a secret or an approval link (an OpenKey one-tap link, a code in its query) is not shown, as the board would not have written it. */
+const clean = (url: string): boolean => findSecrets(url).length === 0;
 function cardView(entry: HomeFeedEntry, context?: TypedCardContext): FeedCard {
   const card = entry.state.card;
   const payload = card.payload ?? {};
   const render = ["post", "image", "thread", "article", "link"].includes(String(payload.render)) ? payload.render as FeedCard["render"] : "post";
   const source = payload.source;
-  const sourceRecord = source && typeof source === "object" ? source as Record<string, unknown> : undefined;
+  // A typed card's source line is in its Details (SitrepCard), not on its face.
+  const sourceRecord = !context && source && typeof source === "object" ? source as Record<string, unknown> : undefined;
   return {
     key: keyOf(entry), at: card.createdAt, author: cardAuthor(entry, context?.record), render,
-    title: card.title, lead: { text: card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
+    title: card.title, lead: { text: context?.record.kind === "ship" ? "" : card.body, ...(typeof payload.image === "string" ? { image: payload.image } : {}) },
     // Replies on a plain card render in its conversation, not in the body.
     ...(typeof payload.body === "string" ? { body: payload.body } : {}),
-    ...(typeof payload.url === "string" ? { url: payload.url } : {}),
+    ...(typeof payload.url === "string" && clean(payload.url) ? { url: payload.url } : {}),
     ...(sourceRecord && typeof sourceRecord.label === "string" ? { source: {
       label: sourceRecord.label,
-      ...(safeUrl(sourceRecord.url) ? { url: sourceRecord.url } : {}),
+      ...(safeUrl(sourceRecord.url) && clean(sourceRecord.url) ? { url: sourceRecord.url } : {}),
       ...(typeof sourceRecord.ref === "string" ? { ref: sourceRecord.ref } : {}),
     } } : {}),
   };
@@ -120,7 +143,7 @@ function ReportLink({ entry }: { entry: HomeFeedEntry }) {
   const report = entry.state.card.payload?.report;
   if (!report || typeof report !== "object") return null;
   const { url, label } = report as Record<string, unknown>;
-  if (!safeUrl(url)) return null;
+  if (!safeUrl(url) || !clean(url)) return null;
   return <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]">{typeof label === "string" ? label : "Full report"}</a>;
 }
 
@@ -323,6 +346,8 @@ type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "
 
 /** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
 export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
+  // The ask box and the Agents pill are hidden features (Sam, 11-17): shown only while Settings → Show hidden features is on.
+  const showHidden = useShowHiddenFeatures();
   useEffect(() => {
     void LazyAgentView.preload().catch(() => {});
     void LazyFilterPanel.preload().catch(() => {});
@@ -353,9 +378,14 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [refused, setRefused] = useState<ReadonlyMap<string, string>>(() => new Map());
   // Answers held when the page closed and settled at this launch, by card.
   const [heldOutcomes, setHeldOutcomes] = useState<ReadonlyMap<string, HeldAnswerOutcome>>(() => new Map());
+  // Answers whose agent is no longer connected: no card is left to carry their "Not sent", so each has a notice of its own.
+  const [lostAnswers, setLostAnswers] = useState<ReadonlyMap<string, HeldAnswerOutcome>>(() => new Map());
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
   const [project, setProject] = useState("");
+  // How the list is drawn (Compact, Expanded, Cards), kept on this device, the same in every tab.
+  const [viewMode, setViewModeState] = useState<FeedViewMode>(readFeedViewMode);
+  const setViewMode = (mode: FeedViewMode) => { setViewModeState(mode); saveFeedViewMode(mode); };
   // Filter opens a popover under the row.
   const [panel, setPanel] = useState<"filter" | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -380,7 +410,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const activeRef = useRef<HomeFeedEntry | null>(null);
   const currentSource = useRef(source);
   const pendingSends = useRef(new Set<() => void>());
-  const ownDrafts = useRef(new Map<string, string>());
+  const ownDrafts = useRef(new HeldDrafts());
+  useEffect(() => () => ownDrafts.current.clear(), []);
   currentSource.current = source;
   const mainRef = useRef<HTMLElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -405,7 +436,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
     activeRef.current = null;
-    setSnapshot(null); setSelector(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map());
+    setSnapshot(null); setSelector(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map()); setLostAnswers(new Map());
     setExpandedGroups(new Set()); setAgentPage(null); setPendingOpen(false); ownDrafts.current.clear();
     const refresh = async () => {
       if (running) { dirty = true; return; }
@@ -443,7 +474,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
             flushed = true;
             void source.flushHeldAnswers().then((outcomes) => {
               if (!alive || !outcomes.length) return;
-              setHeldOutcomes(new Map(outcomes.map((outcome) => [JSON.stringify([outcome.sourceId, outcome.cardId]), outcome])));
+              const outcomeKey = (outcome: HeldAnswerOutcome) => JSON.stringify([outcome.sourceId, outcome.cardId]);
+              setHeldOutcomes(new Map(outcomes.filter((outcome) => outcome.outcome !== "disconnected").map((outcome) => [outcomeKey(outcome), outcome])));
+              setLostAnswers(new Map(outcomes.filter((outcome) => outcome.outcome === "disconnected").map((outcome) => [outcomeKey(outcome), outcome])));
               // A replaced card's answer stays on screen with its refusal, as when a countdown is refused.
               const replaced = outcomes.find((outcome) => outcome.answered)?.answered;
               if (replaced) setActive(replaced);
@@ -669,9 +702,42 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   useEffect(() => { if (firstOpenKey) setOpened((current) => current.has(firstOpenKey) ? current : new Set(current).add(firstOpenKey)); }, [firstOpenKey]);
   const isOpen = (entry: HomeFeedEntry) => opened.has(lineageKey(entry)) || lineageKey(entry) === firstOpenKey;
 
-  // A card counts as seen once it shows open.
+  // In Expanded every card is open, so opening cannot mark it seen: a card counts as seen once enough of it has stayed
+  // on screen for a moment (expandedSeen.ts), not because it is somewhere down the list or was scrolled past. A post
+  // keeps its row and its own rule.
+  const [inView, setInView] = useState<ReadonlySet<string>>(() => new Set());
+  const expandedKeys = viewMode === "expanded" ? shown.filter((entry) => !labPageOf(entry)).map(keyOf).join("|") : "";
+  useEffect(() => {
+    const root = mainRef.current;
+    if (!expandedKeys || !root || typeof IntersectionObserver === "undefined") return;
+    const dwelling = new Map<string, ReturnType<typeof setTimeout>>();
+    const observer = new IntersectionObserver((records) => {
+      for (const record of records) {
+        const key = (record.target as HTMLElement).dataset.cardKey;
+        if (!key) continue;
+        const enough = record.isIntersecting && visibleEnoughToSee({
+          intersectionRatio: record.intersectionRatio,
+          cardHeight: record.boundingClientRect.height,
+          rootHeight: (record.rootBounds ?? root.getBoundingClientRect()).height,
+        });
+        if (!enough) {
+          clearTimeout(dwelling.get(key));
+          dwelling.delete(key);
+        } else if (!dwelling.has(key)) {
+          dwelling.set(key, setTimeout(() => {
+            dwelling.delete(key);
+            setInView((current) => current.has(key) ? current : new Set(current).add(key));
+          }, SEEN_DWELL_MS));
+        }
+      }
+    }, { root, threshold: [...SEEN_THRESHOLDS] });
+    const keys = new Set(expandedKeys.split("|"));
+    for (const node of root.querySelectorAll<HTMLElement>("li[data-card-key]")) if (keys.has(node.dataset.cardKey ?? "")) observer.observe(node);
+    return () => { observer.disconnect(); for (const timer of dwelling.values()) clearTimeout(timer); };
+  }, [expandedKeys]);
+  // A card counts as seen once it shows open (or, in Expanded, once enough of it has stayed on screen for a moment).
   const seenAsked = useRef(new Set<string>());
-  const seenNow = shown.filter((entry) => (isOpen(entry) || lineageKey(entry) === pageKey) && !entry.view.seenAt && !seenAsked.current.has(keyOf(entry)));
+  const seenNow = shown.filter((entry) => (isOpen(entry) || lineageKey(entry) === pageKey || (viewMode === "expanded" && !labPageOf(entry) && inView.has(keyOf(entry)))) && !entry.view.seenAt && !seenAsked.current.has(keyOf(entry)));
   useEffect(() => {
     for (const entry of seenNow) {
       const key = keyOf(entry);
@@ -696,6 +762,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const onSaved = useCallback((entry: HomeFeedEntry, response: FeedResponse) => {
     if (currentSource.current !== source) return;
     if (response.kind === "message") { refreshRef.current(); return; }
+    // The owner answered this card again: an earlier "Not sent" on it is settled.
+    source.dismissUnsentAnswer?.(entry.source.sourceId, entry.state.card.cardId);
+    setHeldOutcomes((current) => {
+      const heldKey = JSON.stringify([entry.source.sourceId, entry.state.card.cardId]);
+      if (!current.has(heldKey)) return current;
+      const next = new Map(current); next.delete(heldKey); return next;
+    });
     committed.current.set(keyOf(entry), response);
     const key = keyOf(entry);
     const update = (candidate: HomeFeedEntry): HomeFeedEntry => ({ ...candidate, state: { ...candidate.state, response, acknowledgement: null, outcome: null } });
@@ -759,6 +832,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const key = lineageKey(entry);
     setRefused((current) => { const next = new Map(current); next.delete(key); return next; });
     setHeldOutcomes((current) => { const next = new Map(current); next.delete(JSON.stringify([entry.source.sourceId, entry.state.card.cardId])); return next; });
+    // The owner has seen it: it is not shown again at the next launch.
+    source.dismissUnsentAnswer?.(entry.source.sourceId, entry.state.card.cardId);
     setSticky((current) => { const next = new Map(current); next.delete(key); return next; });
     if (keyOf(entry) === activeKey) setActive(null);
   }
@@ -847,7 +922,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       if (label) return `You chose ${optionText(label)}`;
       if (response.text) return `You answered “${response.text}”`;
     }
-    return typeof entry.state.card.payload?.summary === "string" ? entry.state.card.payload.summary : entry.state.card.body;
+    if (typeof entry.state.card.payload?.summary === "string") return entry.state.card.payload.summary;
+    const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
+    return (record && cardLead(record)) ?? entry.state.card.body;
   }
   const dueOf = (entry: HomeFeedEntry) => { const deadline = timingOf(entry).deadline; return deadline && attention(entry) ? deadline : undefined; };
   /** A card as a short item (compact view): its agent, title, short description and where it stands. Tap opens it. */
@@ -858,7 +935,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const priority = timingOf(entry).priority;
     const replies = repliesOf(entry);
     const status = statusOf(entry, author);
-    return <CompactCard agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt}
+    return <CompactCard layout={viewMode === "cards" ? "tile" : "row"} agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt}
       title={entry.state.card.title} description={describe(entry)} now={clock} onOpen={() => openCard(entry)}
       {...(priority !== undefined ? { priority } : {})} {...(replies ? { replies } : {})} {...(status ? { status } : {})} {...(due ? { due } : {})} />;
   }
@@ -875,9 +952,14 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   function fullCard(entry: HomeFeedEntry, retained = false) {
     const key = lineageKey(entry);
     const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
-    const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : NOT_SENT_COPY.yourAnswer;
-    const refusedLabel = refused.get(key) ?? (retained && held?.answered && keyOf(held.answered) === keyOf(entry) ? heldLabel : undefined);
+    const unsent = held && (held.outcome === "replaced" || held.outcome === "closed" || held.outcome === "refused") ? held : undefined;
+    // Said in the owner's own words when they wrote them, so they can say it again; an option by its label.
+    const words = !held?.choiceLabel && held?.text ? quotedWords(held.text) : undefined;
+    const heldLabel = held?.choiceLabel ? optionText(held.choiceLabel) : words ? words.label : NOT_SENT_COPY.yourAnswer;
+    const wordsOf = (label: string) => (words && label === heldLabel ? { ...(words.full ? { full: words.full } : {}), ends: words.ends } : {});
+    const refusedLabel = refused.get(key) ?? (retained && unsent && (!unsent.answered || keyOf(unsent.answered) === keyOf(entry)) ? heldLabel : undefined);
     const onRefused = (label: string) => setRefused((current) => new Map(current).set(key, label));
+    const seenUnsent = () => source.dismissUnsentAnswer?.(entry.source.sourceId, entry.state.card.cardId);
     const context = contextFor(entry);
     const unsupported = isTypedPayload(entry) && !context;
     const author = cardAuthor(entry, context?.record);
@@ -885,21 +967,22 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const brief = briefOf(entry.state.card.payload);
     const priority = timingOf(entry).priority;
     const closed = !!closureOf(entry);
-    // Open in place: fold it back to a row from the top right, beside its status.
-    const collapse = <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
+    // Open in place: fold it back to a row from the top right, beside its status. In Expanded every card is open, so there is nothing to fold to.
+    const collapse = viewMode === "expanded" ? undefined : <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
     const wake = snoozedNow(entry, clock) ? <button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button> : undefined;
     const status = statusOf(entry, author.name);
     // Any touch or focus inside an open card engages it, in every view: a card being answered stays bound to its exact
     // issuance (retained in place when a changed revision arrives mid-countdown, so the countdown is refused, never
     // written to the old identity).
-    return <div className="min-w-0" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
+    return <div className="min-w-0 [container-type:inline-size]" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
       {...(unsupported ? {} : { onAuthor: () => { leaveView(); setAgentPage(agentKey(entry, context?.record)); mainRef.current?.scrollTo({ top: 0 }); } })}
-      {...(status ? { status } : {})} collapse={collapse}>
+      {...(status ? { status } : {})} collapse={collapse} inline>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
-        ? <NotSent label={refusedLabel} changed />
+        ? <SeenAfterUndo onSeen={seenUnsent}><NotSent label={refusedLabel} changed={refused.has(key) || unsent?.outcome !== "closed"} {...wordsOf(refusedLabel)} /></SeenAfterUndo>
         : "A newer version of this card arrived. Answer it there; your draft stays here."}</span><button type="button" className={quietClass} onClick={() => release(entry)}>Show the newer version</button></div>}
       {!retained && held?.outcome === "sent" && <p role="status" className="mt-3 text-[13px] text-muted-foreground">{HELD_ANSWER_COPY.sent}</p>}
-      {!retained && (held?.outcome === "closed" || held?.outcome === "refused") && <p role="alert" className="mt-3 text-[13px]"><NotSent label={heldLabel} /></p>}
+      {!retained && unsent && <p role="alert" className="mt-3 text-[13px]"><SeenAfterUndo onSeen={seenUnsent}><NotSent label={heldLabel} changed={unsent.outcome === "replaced"} {...wordsOf(heldLabel)} /></SeenAfterUndo></p>}
+      {held?.outcome === "held" && <div role="status" className="mt-3 text-[13px]"><AnswerFailedLine held />{words && <p className="mt-1 text-foreground"><b className="font-semibold" {...(words.full ? { title: words.full, "aria-label": `“${words.full}”` } : {})}>{words.label}</b></p>}</div>}
       {/* The agent's one-page brief, read in the app beside the decision. */}
       {brief && <BriefButton brief={brief} className="mt-3" />}
       <ReportLink entry={entry} />
@@ -924,20 +1007,23 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const page = labPageOf(entry);
     // Each card morphs between a row and its open shape as one item: its box moves and resizes while its content
     // crossfades (densityMorph.tsx).
-    return <MorphItem key={key} contentKey={page ? "post" : isOpen(entry) || retained ? "full" : "compact"} data-card-key={keyOf(entry)} className="min-w-0 scroll-mt-4">
-      {page ? postCard(entry) : isOpen(entry) || retained ? fullCard(entry, retained) : compactCard(entry)}
+    // Expanded shows every card open (a post keeps its row: it opens a page of its own).
+    const openHere = isOpen(entry) || retained || (viewMode === "expanded" && !page);
+    const boxed = viewMode === "cards" || viewMode === "expanded";
+    return <MorphItem key={key} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} className={`min-w-0 scroll-mt-4${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
+      {page ? postCard(entry) : openHere ? fullCard(entry, retained) : compactCard(entry)}
       {/* The Snoozed list: each card can come back now without opening it. */}
-      {snoozedOnly && !isOpen(entry) && snoozedNow(entry, clock) && <div className="flex justify-end px-2 pb-2"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}
+      {snoozedOnly && !openHere && snoozedNow(entry, clock) && <div className="flex justify-end px-2 pb-2"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}
     </MorphItem>;
   };
-  const asRow = (row: Row) => row.kind === "card" && !row.retained && (!!labPageOf(row.item) || !isOpen(row.item));
-  /** A section's items: open cards and groups on their own, and each run of rows together in one bordered list. */
+  const asRow = (row: Row) => row.kind === "card";
+  /** A section's items: groups on their own, and each run of cards (rows, and a card open in its row) together in one bordered list. */
   function renderList(list: Row[]) {
     const out: ReactNode[] = [];
     let run: ReactNode[] = [];
     const flush = () => {
       if (!run.length) return;
-      out.push(<li key={`rows-${out.length}`} className="min-w-0"><ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">{run}</ul></li>);
+      out.push(<li key={`rows-${out.length}`} className="min-w-0"><ul className={viewMode === "cards" ? "grid grid-cols-1 gap-2 min-[560px]:grid-cols-2" : viewMode === "expanded" ? "space-y-3" : "divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card"}>{run}</ul></li>);
       run = [];
     };
     for (const row of list) {
@@ -983,7 +1069,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // edge and the safe-area inset, so its last cards can scroll clear of them (Clarissa, 75eebec).
   return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
     style={undoBar.height ? { paddingBottom: `calc(${undoBar.height + 32}px + env(safe-area-inset-bottom))` } : undefined}>
-    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:px-8 lg:pt-10" inert={!!pageEntry}>
+    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:max-w-[760px] lg:px-8 lg:pt-10" inert={!!pageEntry}>
     <MorphConfig>
       {/* Sam, 11-13: one header for every state, phone and desktop (briefs/feed-lab/design/toprow). "Home" with the
           Agents pill on its line, the summary, then one row: Needs you · All · History, and the Filter icon. Scrolled,
@@ -992,7 +1078,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
         <header ref={headerRef} className="scroll-mt-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="min-w-0 flex-1 font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
-            {!bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
+            {showHidden && !bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
               onOpen={() => { if (agentPage !== null) { setAgentPage(null); return; } leaveView(); setAgentPage("list"); }} />}
           </div>
           <p className="mt-0.5 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
@@ -1016,14 +1102,24 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           {panel === "filter" && <LazyFilterPanel agents={agents} agent={agent} kinds={kinds} kind={kind} projects={projects} project={project}
             priorityMax={priorityMax} sortBy={sortBy} snoozedOnly={snoozedOnly} filtersOn={filtersOn} setFilter={setFilter}
             setAgent={setAgent} setKind={setKind} setProject={setProject} setPriorityMax={setPriorityMax} setSortBy={setSortBy}
-            setSnoozedOnly={setSnoozedOnly} setHistory={setHistory} clearFilters={clearFilters} />}
+            setSnoozedOnly={setSnoozedOnly} setHistory={setHistory} clearFilters={clearFilters} viewMode={viewMode} setViewMode={setViewMode} />}
         </div>}
       </FloatingHeader>
-      {ask}
+      {showHidden && ask}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>
       </div>}
+      {[...lostAnswers.entries()].map(([lostKey, lost]) => {
+        const words = !lost.choiceLabel && lost.text ? quotedWords(lost.text) : undefined;
+        return <div key={lostKey} role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+          <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
+          <div className="min-w-0">
+            <p><NotSent label={lost.choiceLabel ? optionText(lost.choiceLabel) : words ? words.label : NOT_SENT_COPY.yourAnswer} {...(lost.agent ? { to: lost.agent } : {})} {...(words ? { ...(words.full ? { full: words.full } : {}), ends: words.ends } : {})} /> {disconnectedCopy(lost.agent)}</p>
+            <button type="button" onClick={() => { source.dismissUnsentAnswer?.(lost.sourceId, lost.cardId); setLostAnswers((current) => { const next = new Map(current); next.delete(lostKey); return next; }); }} className="mt-2 min-h-11 underline">Dismiss</button>
+          </div>
+        </div>;
+      })}
       {!snapshot && !error && <ul aria-busy="true" aria-label="Loading your feed" className="grid gap-3">
         {[0, 1, 2].map((index) => <li key={index} aria-hidden className={`${cardClass} space-y-3`}>
           <div className="flex items-center gap-2"><span className="size-7 rounded-full bg-muted" /><span className="h-3 w-2/5 rounded-full bg-muted" /></div>

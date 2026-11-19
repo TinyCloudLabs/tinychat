@@ -3,12 +3,17 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { installReactTestEnv, mount } from "@/capture/recorder/final/shell/hookTestUtil";
-import { isOriginMoveDeferred, NO_LOCAL_WORK, type LocalRecordingWork } from "@/lib/originMove";
+import { CANONICAL_ORIGIN, isOriginMoveDeferred, NO_LOCAL_WORK, type LocalRecordingWork } from "@/lib/originMove";
 import { OriginMoveHold, OriginMoveNotice, originMoveNoticeText, useOriginMoveDeferral } from "./OriginMoveNotice";
 
 const work = (patch: Partial<LocalRecordingWork>): LocalRecordingWork => ({ ...NO_LOCAL_WORK, signedIn: true, ...patch });
-const MOVED = "TinyCloud One has moved to home.tinycloud.xyz.";
+// The notice's opening line (its wording is Monica's); what is pinned is that it names the canonical host.
+const MOVED = originMoveNoticeText(work({}));
+test("the opening line names the canonical host", () => {
+  expect(MOVED).toContain(new URL(CANONICAL_ORIGIN).host);
+});
 const CLOSER = "This tab stays here while these recordings are only in this browser.";
+const CLOSER_ONE = "This tab stays here while this recording is only in this browser.";
 
 function render(w: LocalRecordingWork): string {
   return renderToStaticMarkup(<MemoryRouter><OriginMoveNotice work={w} /></MemoryRouter>);
@@ -65,7 +70,7 @@ test("unclaimed recordings, signed in: the count links to the Recording tab, and
   expect(linksOf(many)).toEqual([{ text: "2 recordings", href: "/chat/capture" }]);
 
   const one = render(work({ unclaimed: 1 }));
-  expect(textOf(one)).toBe(`${MOVED} 1 recording in this browser isn't in any account yet. On the Recording tab, under Recorded while signed out, choose Save to this account. ${CLOSER}`);
+  expect(textOf(one)).toBe(`${MOVED} 1 recording in this browser isn't in any account yet. On the Recording tab, under Recorded while signed out, choose Save to this account. ${CLOSER_ONE}`);
   expect(linksOf(one)).toEqual([{ text: "1 recording", href: "/chat/capture" }]);
 });
 
@@ -73,7 +78,7 @@ test("unclaimed recordings, signed out: sign in first", () => {
   expect(originMoveNoticeText(work({ unclaimed: 2, signedIn: false }))).toBe(
     `${MOVED} 2 recordings in this browser aren't in any account yet. Sign in, then on the Recording tab, under Recorded while signed out, choose Save to this account for each one. ${CLOSER}`);
   expect(originMoveNoticeText(work({ unclaimed: 1, signedIn: false }))).toBe(
-    `${MOVED} 1 recording in this browser isn't in any account yet. Sign in, then on the Recording tab, under Recorded while signed out, choose Save to this account. ${CLOSER}`);
+    `${MOVED} 1 recording in this browser isn't in any account yet. Sign in, then on the Recording tab, under Recorded while signed out, choose Save to this account. ${CLOSER_ONE}`);
   expect(linksOf(render(work({ unclaimed: 1, signedIn: false })))).toEqual([{ text: "1 recording", href: "/chat/capture" }]);
 });
 
@@ -83,7 +88,7 @@ test("another account's recordings: the count links to the Recording tab, and th
   expect(linksOf(many)).toEqual([{ text: "2 recordings", href: "/chat/capture" }]);
   // The singular says "save it"; the plural keeps "save them".
   const one = render(work({ otherAccount: 1, signedIn: false }));
-  expect(textOf(one)).toBe(`${MOVED} 1 recording in this browser belongs to another TinyCloud account. Sign in to that account here to save it. ${CLOSER}`);
+  expect(textOf(one)).toBe(`${MOVED} 1 recording in this browser belongs to another TinyCloud account. Sign in to that account here to save it. ${CLOSER_ONE}`);
   expect(linksOf(one)).toEqual([{ text: "1 recording", href: "/chat/capture" }]);
 });
 
@@ -109,7 +114,7 @@ test("mixed reasons: one moved sentence, then audio, unclaimed and another accou
     MOVED,
     "The audio of 1 recording is only in this browser, so this tab stays here until you upload it: open the recording and choose Upload audio to TinyCloud.",
     "1 recording in this browser belongs to another TinyCloud account. Sign in to that account here to save it.",
-    CLOSER,
+    CLOSER_ONE,
   ].join(" "));
   expect(originMoveNoticeText(work({ unclaimed: 2, otherAccount: 2, signedIn: false }))).toBe([
     MOVED,

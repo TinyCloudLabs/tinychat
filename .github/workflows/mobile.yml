@@ -1,4 +1,4 @@
-name: Mobile (Exo)
+name: Mobile (TinyCloud One)
 
 on:
   workflow_dispatch:
@@ -25,6 +25,12 @@ on:
       - "frontend/src/lib/sizeClass.ts"
       - "frontend/index.html"
       - "frontend/src/index.css"
+      # What the phone bundle is built from besides its source: dependency pins and the workspace packages it imports,
+      # so an SDK repin builds both apps on its own PR.
+      - "package.json"
+      - "bun.lock"
+      - "frontend/package.json"
+      - "packages/**"
       - ".github/workflows/mobile.yml"
       - ".github/workflows/ios-build.yml"
       - ".github/workflows/ios-testflight.yml"
@@ -40,6 +46,11 @@ on:
       - ".github/workflows/ios-build.yml"
       - ".github/workflows/ios-testflight.yml"
       - "scripts/release/ios-*"
+
+# A newer push cancels the older runs of the same PR or feature branch; main, release/* and tag runs are never cancelled and never share a group, so none is dropped while pending either.
+concurrency:
+  group: ${{ github.workflow }}-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/')) && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && !startsWith(github.ref, 'refs/tags/')) }}
 
 permissions:
   contents: read

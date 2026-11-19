@@ -6,6 +6,7 @@ import { ArrowUpIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BotAvatar, MAIN_BOT } from "./BotAvatar";
 import { BOTS_STRINGS } from "./botsStrings";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 
 /** The service takes messages of 1 to 8,000 characters. */
 export const MAX_MESSAGE_LENGTH = 8000;
@@ -36,6 +37,8 @@ export function sendOnEnter(event: KeyboardEvent<HTMLTextAreaElement>, send: () 
 /** A draft and its send: trimmed, never empty, and not while `blocked`. */
 export function useDraft(onSend: (text: string) => void, blocked: boolean) {
   const [draft, setDraft] = useState("");
+  // Typed words live only in this page: a held tinycloud.chat page does not move under them (originMove.ts).
+  useOriginMoveDeferral(draft.trim() !== "");
   const ready = !blocked && draft.trim().length > 0;
   const send = () => {
     if (!ready) return;
