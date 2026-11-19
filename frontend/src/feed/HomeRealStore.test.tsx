@@ -1044,6 +1044,7 @@ test("an answer whose page-close write did land is cleared at the next launch, n
   await answerElsewhere(changed, plainCard(), "go", "held-landed-changed");
   value(await publishFeedCard(changed.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", title: "Book the Friday train?" })));
 
+  window.localStorage.setItem("tinychat:feed-view-mode:v1", "expanded");
   const { view } = await relaunch(owner);
   expect(outboxKeys()).toEqual([]);
   expect((await stored(replied)).map((row) => row.responseId)).toEqual(["held-landed-reply"]);

@@ -32,6 +32,7 @@ import { AgentsPill } from "./AgentMarks";
 import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
+import { FOCUS_DIM_CLASS, OPEN_STAGGER_CLASS, topInScroller } from "./focusRow";
 import { DesktopCard, DesktopCardClose, rowElement } from "./DesktopCard";
 import { useDesktopCard } from "./openMode";
 import { useUndoBar } from "./UndoBar";
@@ -448,7 +449,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   currentSource.current = source;
   const mainRef = useRef<HTMLElement>(null);
   const headerRef = useRef<HTMLElement>(null);
-  const scrollTo = useRef<string | null>(null);
+  // The card to bring into view once the list has laid out: one just opened (to just under the sticky heading), or one just folded from its foot.
+  const scrollTo = useRef<{ key: string; fold: boolean } | null>(null);
   // Drop this card, Acknowledge, Ask me later and Show me later take the card away at once; a bar at the bottom
   // counts the same 5 s as every send, with Undo, and only then is the action written (held in the outbox).
   const undoBar = useUndoBar((message) => setError({ lead: message, text: "Try again." }));
@@ -458,6 +460,17 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   // "Sent to <agent>" lines, each shown for a moment once an answer's held write has landed.
   const [sentTo, setSentTo] = useState<readonly { id: number; agent: string }[]>([]);
   const sentId = useRef(0);
+  // On a phone, in the Compact list, one card is open at a time: opening a card folds the one that was open. A card whose
+  // answer is still counting stays open (out of sight, mounted) so its wait can still be refused or sent. Desktop (a card
+  // over the stream) and the Expanded and Cards views keep every card the owner opened.
+  const desktop = useDesktopCard();
+  const single = !desktop && viewMode === "compact";
+  const openingRef = useRef({ single, waits });
+  openingRef.current = { single, waits };
+  const withOpened = (current: ReadonlySet<string>, key: string): ReadonlySet<string> => {
+    const { single: only, waits: counting } = openingRef.current;
+    return only ? new Set([...current].filter((other) => counting.has(other)).concat(key)) : new Set(current).add(key);
+  };
   const waitControllers = useRef(new Map<string, CardWait & { agent: string }>());
   /** The only place a new wait sends the others now: another card's answer (same flush as its own count ending) and any bar. */
   function sendOtherWaits() {
@@ -764,6 +777,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const listed = sections.flatMap(([, , list]) => list.flatMap((row) => row.kind === "card" ? [row.item] : row.items));
   const shown = [...listed, ...pendingEntries];
   const isOpen = (entry: HomeFeedEntry) => opened.has(lineageKey(entry));
+  // On a phone with a card open, the other rows dim: the open one is the focus (an answer still counting is out of sight, so it is not).
+  const focusing = single && shown.some((entry) => isOpen(entry) && !waits.has(lineageKey(entry)));
   /** An update the owner can acknowledge: nothing to answer, not closed yet, and drawn as a card (a post opens its own page). */
   const canAcknowledge = (entry: HomeFeedEntry, retained = false) => !retained && !entry.state.card.needsResponse && !closureOf(entry) && !labPageOf(entry) && !(isTypedPayload(entry) && !contextFor(entry));
   // What "Acknowledge all" at the Updates heading takes: the cards in that section whose own Acknowledge is allowed.
@@ -816,15 +831,20 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       }).catch(() => { seenAsked.current.delete(key); });
     }
   }, [source, seenNow.map(keyOf).join("|")]);
-  // Only the feed scrolls, never the page around it, and only when the opened card's top is out of view.
+  // Only the feed scrolls, never the page around it. An opened card comes to just under the sticky heading (on a phone,
+  // always; elsewhere only when its top is out of view); a card folded from its foot comes back into view if its row is not.
   useEffect(() => {
-    const key = scrollTo.current, root = mainRef.current;
-    if (!key || !root) return;
+    const target = scrollTo.current, root = mainRef.current;
+    if (!target || !root) return;
     scrollTo.current = null;
-    const node = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((item) => item.dataset.cardKey === key);
+    const node = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((item) => item.dataset.cardKey === target.key);
     if (!node) return;
-    const offset = node.getBoundingClientRect().top - root.getBoundingClientRect().top;
-    if (offset < STREAM_COVER_PX || offset > root.clientHeight - 80) root.scrollTo({ top: root.scrollTop + offset - STREAM_COVER_PX - 8, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    // From layout, not from where the row is drawn: a row still animating is measured where it will rest.
+    const offset = topInScroller(node, root) - root.scrollTop;
+    const rests = STREAM_COVER_PX + 8;
+    const off = offset < STREAM_COVER_PX || offset > root.clientHeight - 80;
+    if (target.fold ? off : single ? Math.abs(offset - rests) > 2 : off) root.scrollTo({ top: root.scrollTop + offset - rests, behavior });
   });
 
   const onSaved = useCallback((entry: HomeFeedEntry, response: FeedResponse) => {
@@ -887,13 +907,13 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   }
   /** Marks a card open. On a wide screen one card is lifted at a time: the others fold, except a card whose answer is counting down (kept, out of sight). */
   function addOpen(key: string) {
-    setOpened((current) => new Set(lift ? [...current].filter((other) => waits.has(other)) : current).add(key));
+    setOpened((current) => lift ? new Set([...current].filter((other) => waits.has(other))).add(key) : withOpened(current, key));
   }
   /** Opens a card (in place, or lifted over the stream on a wide screen) and brings its row into view. */
   function openCard(entry: HomeFeedEntry) {
     engage(entry);
     addOpen(lineageKey(entry));
-    scrollTo.current = keyOf(entry);
+    scrollTo.current = { key: keyOf(entry), fold: false };
   }
   /** Closes the lifted card: the row it came from takes focus back. */
   function closeLifted(entry: HomeFeedEntry) {
@@ -901,9 +921,10 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     // Once the stream is no longer inert.
     window.setTimeout(() => rowElement(keyOf(entry))?.querySelector<HTMLElement>("button")?.focus(), 0);
   }
-  function fold(entry: HomeFeedEntry) {
+  function fold(entry: HomeFeedEntry, fromFoot = false) {
     const key = lineageKey(entry);
     setOpened((current) => { const next = new Set(current); next.delete(key); return next; });
+    if (fromFoot) scrollTo.current = { key: keyOf(entry), fold: true };
   }
   function release(entry: HomeFeedEntry) {
     const key = lineageKey(entry);
@@ -928,7 +949,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     // Shown again later (as a row in History), it is folded; Undo puts it back as it was.
     const wasOpen = isOpen(entry);
     setOpened((current) => { const remaining = new Set(current); remaining.delete(key); return remaining; });
-    undoBar.push({ key, text, announce, commit, undo: () => { if (wasOpen) setOpened((current) => new Set(current).add(key)); undo?.(); } });
+    undoBar.push({ key, text, announce, commit, undo: () => { if (wasOpen) setOpened((current) => withOpened(current, key)); undo?.(); } });
     if (next) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-card-key="${CSS.escape(keyOf(next))}"] button`)?.focus());
   }
   /** The owner's card actions an agent hears about (card guide v2), written once the undo bar's count ends. */
@@ -1124,7 +1145,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       {context
         ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded stale={retained} reference={reference}
           onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={(until) => snoozedTyped(entry, until)}
-          onNavigate={(next) => { engage(next); addOpen(lineageKey(next)); }}
+          onNavigate={(next) => openCard(next)}
           {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : canAcknowledge(entry, retained) ? { close: { kind: "acknowledge" as const, onTap: () => closeCard(entry, "acknowledge") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
           ? <><p role="status" className="mt-3.5 text-sm text-muted-foreground">Open Details to see this card's content, exactly as {author.name} sent it.</p>
@@ -1134,6 +1155,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
           : <AnswerForm key={key} drafts={ownDrafts.current} draftKey={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
             attention={attention(entry)} closed={closed} stale={retained} reference={reference} onSaved={onSaved} {...(priority !== undefined ? { priority } : {})}
             foot={{ onClose: (kind) => closeCard(entry, kind), onLater: (until) => askLater(entry, until), ...(wake ? { wake } : {}) }} />}
+      {/* The foot of a long card: fold it from where reading stopped. */}
+      {collapse && !retained && single && <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry, true)} className={`${footActionClass} mt-3 -ml-1.5`}>Show less</button>}
     </HomeCardView></div></CardWaitContext.Provider>;
   }
   /** A card in the list: a row, or open in place (Needs you's first card is open). A post is a row opening its page. */
@@ -1149,7 +1172,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const boxed = viewMode === "cards" || viewMode === "expanded";
     // "See N options" is a second opener of the same card (the mock's): it opens the card in place, as tapping the post does.
     const options = page || openHere || viewMode === "expanded" ? 0 : optionCountOf(entry);
-    return <MorphItem key={key} hidden={waiting} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} className={`min-w-0 scroll-mt-4${outlined === key ? " shadow-[inset_0_0_0_2px_hsl(var(--ring))]" : ""}${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
+    return <MorphItem key={key} hidden={waiting} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} {...(focusing && !openHere ? { "data-dim": "" } : {})} className={`min-w-0 scroll-mt-4${single ? ` ${FOCUS_DIM_CLASS}` : ""}${single && openHere && !page ? ` ${OPEN_STAGGER_CLASS}` : ""}${outlined === key ? " shadow-[inset_0_0_0_2px_hsl(var(--ring))]" : ""}${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
       {page ? postCard(entry) : openHere
         // Hidden, not removed, while its answer waits: the card keeps its place and its props, so the wait can still be refused or sent.
         ? <div id={openCardId(key)} hidden={waiting} inert={waiting}>{fullCard(entry, retained)}</div>
@@ -1351,7 +1374,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
           const post = postOf(entry);
           return { key: keyOf(entry), agentKey: agentKey(entry, record), author, title: entry.state.card.title, status, detail: describe(entry), at: (answeredIn(entry) ?? entry).state.response?.createdAt ?? entry.state.card.createdAt,
             ...(post ? { post } : {}), ...(waits.has(lineageKey(entry)) ? { waiting: true } : {}),
-            onOpen: () => openCard(entry), ...(opened.has(lineageKey(entry)) && !lift ? { open: fullCard(entry) } : {}),
+            onOpen: () => openCard(entry), ...(opened.has(lineageKey(entry)) && !lift ? { open: fullCard(entry) } : {}), ...(focusing && !opened.has(lineageKey(entry)) ? { dimmed: true } : {}),
             ...(status.startsWith("Waiting") ? {} : { onAcknowledge: () => closeCard(entry, "acknowledge") }) };
         })} />}
         {sections.filter(([id]) => id === "history").map(sectionNode)}
