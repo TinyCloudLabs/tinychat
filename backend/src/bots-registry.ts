@@ -1,0 +1,161 @@
+// TC-3325: which bots an owner has. One record per owner in the backend's own space, at bots/registry/<address>.
+//
+// The backend is the authority: every route takes a bot's key from the signed-in owner's record here, never from a
+// request body. Every write is conditional on the version that was read; a lost race reads again and decides again,
+// so two backend processes cannot both act on the same stale record.
+
+import { randomBytes } from "node:crypto";
+import { assertKvResult } from "@tinyboilerplate/server";
+import { isBotColour, isBotShape } from "./bot-catalog.js";
+import { isKvPreconditionFailed, readVersionedKv, type ExoKvGetOptions, type ExoKvPutOptions } from "./exo/activated-grant.js";
+
+/** The backend's own key-value space. Callers route `put` through the shared backend storage lane. */
+export interface RegistryKv {
+  get(key: string, options: ExoKvGetOptions): Promise<unknown>;
+  put(key: string, value: unknown, options: ExoKvPutOptions): Promise<unknown>;
+}
+
+export type BotEnvironment = "private" | "regular";
+export type BotState = "active" | "suspended" | "deleting";
+
+export interface Bot {
+  key: string;
+  name: string;
+  shape: string;
+  colour: string;
+  environment: BotEnvironment;
+  state: BotState;
+  createdAt: string;
+}
+export interface DeletedBot { key: string; name: string }
+export interface OwnerBots { v: 1; seq: number; bots: Bot[]; deleted: DeletedBot[] }
+
+export type CreateResult = { ok: true; bot: Bot } | { ok: false; error: "invalid_name" | "invalid_shape" | "invalid_colour" | "bot_limit" };
+
+export const MAIN_BOT_KEY = "main";
+export const BOT_NAME_MAX = 24;
+const BOT_KEY = /^[0-9a-f]{32}$/;
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const MAX_RECORD_RESPONSE_BYTES = 256 * 1024;
+/** Compare-and-set attempts before a write is given up as unavailable. */
+const MAX_ATTEMPTS = 8;
+
+/** A record that cannot be read back exactly is refused. It is never treated as "no bots", which would drop an owner's other bots. */
+export class RegistryUnavailable extends Error {
+  constructor(cause: string) { super(`bots_registry_unavailable: ${cause}`); }
+}
+
+/** Where an owner's record is stored. The address is checked before it becomes part of a key. */
+export function registryKey(address: string): string {
+  if (!ADDRESS.test(address)) throw new RegistryUnavailable("address");
+  return `bots/registry/${address.toLowerCase()}`;
+}
+
+/** The trimmed name, or undefined when it is not 1 to 24 characters of text or holds a control character. */
+export function checkedName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const name = value.trim();
+  // eslint-disable-next-line no-control-regex
+  if (name.length < 1 || [...name].length > BOT_NAME_MAX || /[\u0000-\u001f\u007f]/.test(name)) return undefined;
+  return name;
+}
+
+/** One field of a stored object. Stored data is checked field by field; nothing about its shape is assumed. */
+const field = (value: object, name: string): unknown => (name in value ? Reflect.get(value, name) : undefined);
+
+function parseBot(raw: unknown): Bot {
+  if (typeof raw !== "object" || raw === null) throw new RegistryUnavailable("bot");
+  const key = field(raw, "key");
+  const name = field(raw, "name");
+  const shape = field(raw, "shape");
+  const colour = field(raw, "colour");
+  const environment = field(raw, "environment");
+  const state = field(raw, "state");
+  const createdAt = field(raw, "createdAt");
+  if (typeof key !== "string" || (key !== MAIN_BOT_KEY && !BOT_KEY.test(key))
+    || typeof name !== "string" || typeof shape !== "string" || typeof colour !== "string"
+    || (environment !== "private" && environment !== "regular")
+    || (state !== "active" && state !== "suspended" && state !== "deleting")
+    || typeof createdAt !== "string") throw new RegistryUnavailable("bot");
+  return { key, name, shape, colour, environment, state, createdAt };
+}
+
+function parseDeleted(raw: unknown): DeletedBot {
+  if (typeof raw !== "object" || raw === null) throw new RegistryUnavailable("deleted");
+  const key = field(raw, "key");
+  const name = field(raw, "name");
+  if (typeof key !== "string" || !BOT_KEY.test(key) || typeof name !== "string") throw new RegistryUnavailable("deleted");
+  return { key, name };
+}
+
+export function parseOwnerBots(raw: unknown): OwnerBots {
+  if (typeof raw !== "object" || raw === null) throw new RegistryUnavailable("record");
+  const seq = field(raw, "seq");
+  const storedBots = field(raw, "bots");
+  const storedDeleted = field(raw, "deleted");
+  if (field(raw, "v") !== 1 || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1
+    || !Array.isArray(storedBots) || !Array.isArray(storedDeleted)) throw new RegistryUnavailable("record");
+  const bots = storedBots.map(parseBot);
+  const deleted = storedDeleted.map(parseDeleted);
+  const keys = [...bots, ...deleted].map(entry => entry.key);
+  if (new Set(keys).size !== keys.length || !bots.some(bot => bot.key === MAIN_BOT_KEY)) throw new RegistryUnavailable("keys");
+  return { v: 1, seq, bots, deleted };
+}
+
+/** What a step decides from the record it was shown: its answer, and the bots and deleted list to store, if anything changes. */
+interface Decision<T> { result: T; next?: Pick<OwnerBots, "bots" | "deleted"> }
+
+export class BotsRegistry {
+  readonly #kv: RegistryKv;
+  readonly #now: () => Date;
+  readonly #newKey: () => string;
+
+  constructor(kv: RegistryKv, deps: { now?: () => Date; newKey?: () => string } = {}) {
+    this.#kv = kv;
+    this.#now = deps.now ?? (() => new Date());
+    this.#newKey = deps.newKey ?? (() => randomBytes(16).toString("hex"));
+  }
+
+  /**
+   * Read, decide, write, under compare-and-set. `step` always sees the record read in this attempt. An owner with no
+   * record yet is shown one that holds only Main, and that first write goes through the same conditional path as any
+   * other. `seq` goes up by one on every write.
+   */
+  async #mutate<T>(address: string, step: (current: OwnerBots) => Decision<T>): Promise<{ result: T; row: OwnerBots }> {
+    const key = registryKey(address);
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const found = readVersionedKv(await this.#kv.get(key, { source: "network", maxResponseBytes: MAX_RECORD_RESPONSE_BYTES }), key);
+      const main: Bot = { key: MAIN_BOT_KEY, name: "Main", shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: this.#now().toISOString() };
+      const current: OwnerBots = found === undefined ? { v: 1, seq: 0, bots: [main], deleted: [] } : parseOwnerBots(found.value);
+      const { result, next } = step(current);
+      if (next === undefined && found !== undefined) return { result, row: current };
+      const row: OwnerBots = { v: 1, seq: current.seq + 1, bots: next?.bots ?? current.bots, deleted: next?.deleted ?? current.deleted };
+      const write = await this.#kv.put(key, row, found === undefined ? { ifNoneMatch: "*" } : { ifMatch: found.etag });
+      // Another process wrote in between: read again and decide again.
+      if (isKvPreconditionFailed(write)) continue;
+      assertKvResult(write);
+      return { result, row };
+    }
+    throw new RegistryUnavailable("conflict");
+  }
+
+  /** The owner's record, created with Main in it on the first call. */
+  async read(address: string): Promise<OwnerBots> {
+    return (await this.#mutate(address, () => ({ result: undefined }))).row;
+  }
+
+  /** Creates a private bot. `privateLimit` is how many private bots this owner may have, Main included. */
+  async create(address: string, input: { name?: unknown; shape?: unknown; colour?: unknown }, privateLimit: number): Promise<CreateResult> {
+    const name = checkedName(input.name);
+    if (name === undefined) return { ok: false, error: "invalid_name" };
+    const { shape, colour } = input;
+    if (!isBotShape(shape)) return { ok: false, error: "invalid_shape" };
+    if (!isBotColour(colour)) return { ok: false, error: "invalid_colour" };
+    return (await this.#mutate<CreateResult>(address, current => {
+      // Counted on every attempt, against the record just read: a count taken earlier may already be out of date.
+      if (current.bots.filter(bot => bot.environment === "private" && bot.state !== "deleting").length >= privateLimit) return { result: { ok: false, error: "bot_limit" } };
+      const bot: Bot = { key: this.#newKey(), name, shape, colour, environment: "private", state: "active", createdAt: this.#now().toISOString() };
+      return { result: { ok: true, bot }, next: { bots: [...current.bots, bot], deleted: current.deleted } };
+    })).result;
+  }
+}
