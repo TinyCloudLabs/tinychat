@@ -1,4 +1,4 @@
-// A real production build with One Apps on carries no preview or dev origin (CONTRACT.md "Build kinds fail-closed").
+// A real production build with One Apps on carries no preview or dev origin.
 // "localhost" alone is not checked: shipped SDK and loopback-guard code names it; the One Apps dev origins are ports.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";

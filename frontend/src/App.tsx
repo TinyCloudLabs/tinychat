@@ -204,7 +204,7 @@ const CaptureSurface = lazyTab("Recording", () => import("./capture/CaptureSurfa
 const MeetingsSection = lazyTab("Meetings", () => import("./chat/MeetingsSection").then((m) => m.MeetingsSection));
 const ConnectorsPage = lazyTab("Connectors", () => import("./chat/ConnectorsPage").then((m) => m.ConnectorsPage));
 const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.AppsPage));
-// One Apps (CONTRACT.md): on only when VITE_ONE_APPS is exactly "true"; off is exactly the old Apps page.
+// One Apps: on only when VITE_ONE_APPS is exactly "true"; off is exactly the old Apps page.
 const ONE_APPS_ENABLED = import.meta.env.VITE_ONE_APPS === "true";
 const FramedAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then((m) => m.FramedAppScreen));
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));

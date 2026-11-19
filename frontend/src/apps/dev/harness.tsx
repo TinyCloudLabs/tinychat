@@ -1,4 +1,4 @@
-// One Apps dev harness: https://localhost:5190/one-apps-dev.html?node=http://127.0.0.1:<port> under `bun run dev:apps`.
+// One Apps dev harness: open /one-apps-dev.html?node=<local node URL> on the `bun run dev:apps` server.
 // One's sign-in needs an OpenKey passkey, so this page signs a throwaway key into a local node (shared/local-run-kit)
 // and mounts One's real shell (AppShell, nav, launcher, framed routes, as App.tsx wires them) with the real
 // FramedAppScreen: the same frame, EmbedHost, grants, ask card and step-up One uses; only the wallet is a local key

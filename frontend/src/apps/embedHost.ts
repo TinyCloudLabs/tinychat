@@ -1,4 +1,4 @@
-// One's side of the embed protocol (CONTRACT.md "Messages" and "Delegation"), free of React and the SDK so every
+// One's side of the embed protocol, free of React and the SDK so every
 // acceptance rule is testable. The screen supplies the SDK calls and the ask card through `EmbedHostDeps`.
 
 import type { PermissionEntry } from "@tinycloud/web-sdk";

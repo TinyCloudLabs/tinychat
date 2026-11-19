@@ -1,5 +1,5 @@
-// The framed apps holding grants right now, so sign-out can revoke them while One's session still can (CONTRACT.md
-// "Revoke"). Kept tiny and free of the SDK: App imports it into the entry chunk.
+// The framed apps holding grants right now, so sign-out can revoke them while One's session still can.
+// Kept tiny and free of the SDK: App imports it into the entry chunk.
 
 const closers = new Set<() => Promise<void>>();
 

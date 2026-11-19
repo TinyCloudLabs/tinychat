@@ -300,7 +300,7 @@ describe("EmbedHost: spaces that aren't set up", () => {
   });
 });
 
-describe("missing-space copy (Monica, CONTRACT.md)", () => {
+describe("missing-space copy", () => {
   test("one missing next to spaces that exist", () => {
     expect(missingSpacesLine("Explorer", ["secrets"], false)).toBe(
       "Explorer also uses Secrets, which isn't set up in your TinyCloud. Open Secrets once to set it up, then come back to give Explorer access to it.",

@@ -40,7 +40,7 @@ export const APPS_OPEN_IN_SHARE = "Open in Share";
 export const APPS_OPENS_NEW_TAB = "opens in a new tab";
 export const APPS_EMPTY = "No apps to show yet.";
 
-/** The TinyCloud apps launcher (One Apps; Monica's words). */
+/** The TinyCloud apps launcher (One Apps). */
 export const APPS_LAUNCHER_TITLE = "TinyCloud apps";
 export const APPS_PIN_HINT = "Pin an app to keep it one tap away.";
 export const APPS_PIN = "Pin";

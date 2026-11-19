@@ -1,4 +1,4 @@
-// One Apps user text: Monica's words, verbatim (CONTRACT.md "Copy"). Every user-visible One Apps string lives here.
+// Every user-visible One Apps string lives here.
 
 import type { OneAppId } from "./registry";
 
@@ -58,7 +58,7 @@ export const askDeclined = (app: string) => `${app} can't do this without that a
 export const ASK_CLOSE = "Close";
 
 /**
- * What One says when an app asks for a space that isn't set up, keyed by space name (CONTRACT.md "Copy"):
+ * What One says when an app asks for a space that isn't set up, keyed by space name:
  * `open` names the app people open to set it up; `courier` is Courier's own line; `silent` says nothing.
  * `applications` cannot be missing (One's sign-in creates it), so it is silent too.
  */
@@ -90,7 +90,7 @@ function otherSpacesLine(app: string, names: readonly string[], none: boolean): 
 }
 
 /**
- * Monica's line for the missing spaces that have an app to open, or undefined when none do. `none`: nothing the app
+ * The line for the missing spaces that have an app to open, or undefined when none do. `none`: nothing the app
  * asked for exists (the line replaces the ask body); otherwise it goes under the body. The app's own space comes first.
  */
 export function missingSpacesLine(app: string, spaces: readonly string[], none: boolean): string | undefined {

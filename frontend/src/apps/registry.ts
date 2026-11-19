@@ -53,7 +53,7 @@ export interface FramedOneApp extends OneAppBase {
   kind: "framed";
   /**
    * Whether One frames this app (with a delegation). False → its tile always opens `appUrl` in a new tab with no
-   * delegation. Secrets is false until the SDK can decrypt session-only (CONTRACT.md "OPEN → ANSWERED").
+   * delegation. Secrets is false.
    */
   framed: boolean;
   /**

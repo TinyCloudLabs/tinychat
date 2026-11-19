@@ -1,5 +1,5 @@
 // `/chat/apps/<appId>`: one of TinyCloud's apps framed inside One, running on a silent, scoped delegation of One's
-// session (CONTRACT.md). Lazy: loads only when the flag is on and an app route is open.
+// session. Lazy: loads only when the flag is on and an app route is open.
 
 import { serializeDelegation, type PermissionEntry, type TinyCloudWeb } from "@tinycloud/web-sdk";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
