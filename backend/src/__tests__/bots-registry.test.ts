@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BotsRegistry, type RegistryKv } from "../bots-registry.js";
+import { admission, BotsRegistry, parseOwnerBots, type AdmissionRefusal, type BotEnvironment, type RegistryKv } from "../bots-registry.js";
 
 const ADDRESS = `0x${"Ab".repeat(20)}`;
 const KEY = `bots/registry/${ADDRESS.toLowerCase()}`;
@@ -184,5 +184,127 @@ describe("the bots registry", () => {
       expect(await registry.create(ADDRESS, { name: "Research", shape: "sprout", colour }, 3)).toEqual({ ok: false, error: "invalid_colour" });
     }
     expect(kv.rows.size).toBe(0);
+  });
+
+  test("a name another of the owner's bots already has is refused, ignoring case", async () => {
+    const kv = store();
+    let next = 0;
+    const registry = new BotsRegistry(kv, { now: () => T0, newKey: () => String(++next).repeat(32) });
+    const input = (name: string) => ({ name, shape: "sprout", colour: "teal" });
+    expect((await registry.create(ADDRESS, input("Research"), 3)).ok).toBe(true);
+    const before = kv.rows.get(KEY);
+    for (const taken of ["Research", "research", "  RESEARCH ", "Main", "main"]) {
+      expect(await registry.create(ADDRESS, input(taken), 3)).toEqual({ ok: false, error: "name_taken" });
+    }
+    expect(kv.rows.get(KEY)).toEqual(before);
+  });
+
+  test("a key that is in use, was deleted, or is malformed is never given to a new bot", async () => {
+    const kv = store();
+    const main = { key: "main", name: "Main", shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: T0.toISOString() };
+    const used = "a".repeat(32);
+    const gone = "b".repeat(32);
+    const fresh = "c".repeat(32);
+    kv.rows.set(KEY, { value: JSON.stringify({ v: 1, seq: 5, bots: [main, { ...main, key: used, name: "One" }], deleted: [{ key: gone, name: "Old" }] }), version: 1 });
+    const offered = [used, gone, "NOT-A-KEY", `${fresh}/x`, fresh];
+    const registry = new BotsRegistry(kv, { now: () => T0, newKey: () => offered.shift() ?? fresh });
+    const result = await registry.create(ADDRESS, { name: "Two", shape: "sprout", colour: "teal" }, 3);
+    expect(result.ok && result.bot.key).toBe(fresh);
+    expect((await registry.read(ADDRESS)).bots.map(bot => bot.key)).toEqual(["main", used, fresh]);
+  });
+});
+
+describe("may one bot message another", () => {
+  const bot = (key: string, name: string, state = "active", environment = "private") =>
+    ({ key, name, shape: "pebble", colour: "blue", environment, state, createdAt: T0.toISOString() });
+  const A = "a".repeat(32);
+  const SUSPENDED = "5".repeat(32);
+  const DELETING = "d".repeat(32);
+  const REGULAR = "e".repeat(32);
+  const row = parseOwnerBots({
+    v: 1, seq: 9, deleted: [{ key: "f".repeat(32), name: "Gone" }],
+    bots: [bot("main", "Main"), bot(A, "A"), bot(SUSPENDED, "Paused", "suspended"), bot(DELETING, "Leaving", "deleting"), bot(REGULAR, "Regular", "active", "regular")],
+  });
+
+  test("an active bot may message another active bot of the same owner and environment", () => {
+    expect(admission(row, "main", A)).toEqual({ admitted: true });
+    expect(admission(row, A, "main")).toEqual({ admitted: true });
+    expect(admission(row, "main", A, "private")).toEqual({ admitted: true });
+  });
+
+  test("a message is refused with the reason that applies", () => {
+    const UNKNOWN = "9".repeat(32);
+    const GONE = "f".repeat(32);
+    const cases: Array<[source: string, target: string, caller: BotEnvironment | undefined, reason: AdmissionRefusal]> = [
+      [UNKNOWN, A, undefined, "unknown_source"],
+      ["../x", A, undefined, "unknown_source"],
+      [GONE, A, undefined, "unknown_source"],
+      ["main", UNKNOWN, undefined, "unknown_target"],
+      ["main", "Main", undefined, "unknown_target"],
+      ["main", GONE, undefined, "unknown_target"],
+      [A, A, undefined, "same_bot"],
+      [SUSPENDED, A, undefined, "source_not_active"],
+      [DELETING, A, undefined, "source_not_active"],
+      ["main", SUSPENDED, undefined, "target_not_active"],
+      ["main", DELETING, undefined, "target_not_active"],
+      ["main", REGULAR, undefined, "different_environment"],
+      [REGULAR, "main", undefined, "different_environment"],
+      // The service that asks may only ask about bots of its own environment.
+      ["main", A, "regular", "unknown_source"],
+      [REGULAR, "main", "private", "unknown_source"],
+    ];
+    for (const [source, target, caller, reason] of cases) {
+      expect(admission(row, source, target, caller)).toEqual({ admitted: false, reason });
+    }
+  });
+
+  test("a bot's key counts only in its own owner's record", async () => {
+    const kv = store();
+    const other = `0x${"cd".repeat(20)}`;
+    const registry = new BotsRegistry(kv, { now: () => T0, newKey: () => A });
+    await registry.create(ADDRESS, { name: "A", shape: "sprout", colour: "teal" }, 3);
+    expect(await registry.admit(ADDRESS, "main", A)).toEqual({ admitted: true });
+    expect(await registry.admit(other, "main", A)).toEqual({ admitted: false, reason: "unknown_target" });
+    expect(await registry.admit(other, A, "main")).toEqual({ admitted: false, reason: "unknown_source" });
+  });
+
+  test("admission is refused, never thrown, when the record cannot be read", async () => {
+    const down = store();
+    down.get = async () => { throw new Error("store down"); };
+    const damaged = store();
+    damaged.rows.set(KEY, { value: JSON.stringify({ v: 9 }), version: 1 });
+    for (const [kv, address] of [[down, ADDRESS], [damaged, ADDRESS], [store(), "0x22"]] as const) {
+      expect(await new BotsRegistry(kv, { now: () => T0 }).admit(address, "main", A)).toEqual({ admitted: false, reason: "unavailable" });
+    }
+  });
+
+  test("a turn may message the owner's other active bots of its own environment, Main first, then oldest first", async () => {
+    const NEWER = "b".repeat(32);
+    const at = (entry: ReturnType<typeof bot>, createdAt: string) => ({ ...entry, createdAt });
+    const kv = store();
+    kv.rows.set(KEY, {
+      version: 1,
+      value: JSON.stringify({
+        v: 1, seq: 9, deleted: [],
+        bots: [at(bot(NEWER, "Newer"), "2026-11-19T02:00:00.000Z"), bot(SUSPENDED, "Paused", "suspended"), at(bot(A, "Older"), "2026-11-19T01:00:00.000Z"),
+          bot("main", "Main"), bot(DELETING, "Leaving", "deleting"), bot(REGULAR, "Regular", "active", "regular")],
+      }),
+    });
+    const registry = new BotsRegistry(kv, { now: () => T0 });
+    expect(await registry.listForTurn(ADDRESS, "main")).toEqual([A, NEWER]);
+    expect(await registry.listForTurn(ADDRESS, NEWER)).toEqual(["main", A]);
+    for (const source of [SUSPENDED, DELETING, REGULAR, "9".repeat(32), "../x"]) {
+      expect(await registry.listForTurn(ADDRESS, source)).toEqual([]);
+    }
+  });
+
+  test("the list of bots a turn may message is empty when the record cannot be read", async () => {
+    const down = store();
+    down.get = async () => { throw new Error("store down"); };
+    const damaged = store();
+    damaged.rows.set(KEY, { value: JSON.stringify({ v: 9 }), version: 1 });
+    for (const [kv, address] of [[down, ADDRESS], [damaged, ADDRESS], [store(), "0x22"]] as const) {
+      expect(await new BotsRegistry(kv, { now: () => T0 }).listForTurn(address, "main")).toEqual([]);
+    }
   });
 });

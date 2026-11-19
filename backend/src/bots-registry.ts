@@ -30,7 +30,7 @@ export interface Bot {
 export interface DeletedBot { key: string; name: string }
 export interface OwnerBots { v: 1; seq: number; bots: Bot[]; deleted: DeletedBot[] }
 
-export type CreateResult = { ok: true; bot: Bot } | { ok: false; error: "invalid_name" | "invalid_shape" | "invalid_colour" | "bot_limit" };
+export type CreateResult = { ok: true; bot: Bot } | { ok: false; error: "invalid_name" | "invalid_shape" | "invalid_colour" | "name_taken" | "bot_limit" };
 
 export const MAIN_BOT_KEY = "main";
 export const BOT_NAME_MAX = 24;
@@ -152,10 +152,62 @@ export class BotsRegistry {
     if (!isBotShape(shape)) return { ok: false, error: "invalid_shape" };
     if (!isBotColour(colour)) return { ok: false, error: "invalid_colour" };
     return (await this.#mutate<CreateResult>(address, current => {
+      if (current.bots.some(bot => bot.name.toLowerCase() === name.toLowerCase())) return { result: { ok: false, error: "name_taken" } };
       // Counted on every attempt, against the record just read: a count taken earlier may already be out of date.
       if (current.bots.filter(bot => bot.environment === "private" && bot.state !== "deleting").length >= privateLimit) return { result: { ok: false, error: "bot_limit" } };
-      const bot: Bot = { key: this.#newKey(), name, shape, colour, environment: "private", state: "active", createdAt: this.#now().toISOString() };
+      // A key is never used twice, and what the generator returns is checked like any other key.
+      const taken = new Set([...current.bots, ...current.deleted].map(entry => entry.key));
+      let key = this.#newKey();
+      for (let tries = 1; taken.has(key) || !BOT_KEY.test(key); tries += 1) {
+        if (tries >= MAX_ATTEMPTS) throw new RegistryUnavailable("key");
+        key = this.#newKey();
+      }
+      const bot: Bot = { key, name, shape, colour, environment: "private", state: "active", createdAt: this.#now().toISOString() };
       return { result: { ok: true, bot }, next: { bots: [...current.bots, bot], deleted: current.deleted } };
     })).result;
   }
+
+  /** May `sourceKey` message `targetKey`? Fails closed: any error is a refusal, never an exception and never a yes. */
+  async admit(address: string, sourceKey: string, targetKey: string, callerEnvironment?: BotEnvironment): Promise<Admission> {
+    try {
+      return admission(await this.read(address), sourceKey, targetKey, callerEnvironment);
+    } catch {
+      return { admitted: false, reason: "unavailable" };
+    }
+  }
+
+  /** The keys `sourceKey` may message in a turn that starts now: Main first, then oldest first. Empty on any error. */
+  async listForTurn(address: string, sourceKey: string): Promise<string[]> {
+    try {
+      const row = await this.read(address);
+      return orderedBots(row).map(bot => bot.key).filter(key => admission(row, sourceKey, key).admitted);
+    } catch {
+      return [];
+    }
+  }
+}
+
+export type AdmissionRefusal = "unknown_source" | "unknown_target" | "same_bot" | "source_not_active" | "target_not_active" | "different_environment" | "unavailable";
+export type Admission = { admitted: true } | { admitted: false; reason: AdmissionRefusal };
+
+/**
+ * May `sourceKey` message `targetKey`? Both are looked up in this one owner's record. `callerEnvironment` is the
+ * environment of the service that asks, when it is known.
+ */
+export function admission(row: OwnerBots, sourceKey: string, targetKey: string, callerEnvironment?: BotEnvironment): Admission {
+  const source = row.bots.find(bot => bot.key === sourceKey);
+  // A service may ask only about bots of its own environment. Any other bot is as good as unknown to it.
+  if (!source || (callerEnvironment !== undefined && source.environment !== callerEnvironment)) return { admitted: false, reason: "unknown_source" };
+  const target = row.bots.find(bot => bot.key === targetKey);
+  if (!target) return { admitted: false, reason: "unknown_target" };
+  if (source.key === target.key) return { admitted: false, reason: "same_bot" };
+  if (source.state !== "active") return { admitted: false, reason: "source_not_active" };
+  if (target.state !== "active") return { admitted: false, reason: "target_not_active" };
+  if (source.environment !== target.environment) return { admitted: false, reason: "different_environment" };
+  return { admitted: true };
+}
+
+/** An owner's bots in the order they are listed: Main first, then oldest first. */
+export function orderedBots(row: OwnerBots): Bot[] {
+  return [...row.bots].sort((a, b) => (a.key === MAIN_BOT_KEY ? -1 : b.key === MAIN_BOT_KEY ? 1 : a.createdAt.localeCompare(b.createdAt) || a.key.localeCompare(b.key)));
 }
