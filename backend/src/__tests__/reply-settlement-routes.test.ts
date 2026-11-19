@@ -128,14 +128,13 @@ describe("orchestrate path: stop at the limit, charge fairly", () => {
     expect(enqueued).toEqual([]);
   });
 
-  test("a provider failure after content was delivered is charged, clamped to the allowance", async () => {
+  test("a provider failure after content was delivered is free: the failure is ours (TC-2601)", async () => {
     seedRemaining(500);
     const local = browser();
     const config = agentConfig(provider(() => sse(frame({ choices: [{ delta: { content: "Partial answer" } }] }), usageFrame(60_000, 22_000), frame({ error: { message: "synthetic provider failure" } }))));
     await createAgentChatHandler(config)(local.req, local.res, () => {});
-    expect(used()).toBe(LIMIT);
-    expect(enqueued).toHaveLength(1);
-    expect(enqueued[0].credits).toBe(500);
+    expect(used()).toBe(LIMIT - 500);
+    expect(enqueued).toEqual([]);
   });
 
   test("a timed-out reply is charged at most the allowance it started with, even with nothing delivered", async () => {
@@ -152,12 +151,12 @@ describe("orchestrate path: stop at the limit, charge fairly", () => {
     expect(enqueued[0].credits).toBe(500);
   });
 
-  // Round 1 streams content, then asks for a tool; round 2 fails. Output reached the user, so round 1's usage is charged.
-  // `concurrent` credits are taken by another reply while this one runs, so the window's remainder can bind below the allowance.
+  // Round 1 streams content, then asks for a tool; round 2 fails at the provider. That failure is ours, so the reply is free (TC-2601).
+  // `concurrent` credits are taken by another reply while this one runs; settling the free reply must not erase them.
   test.each([
-    ["usage under the allowance is charged in full", 10, 3, 0, 1],
-    ["usage above what the window has left is clamped to it", 0, 40_000, 450, 50],
-  ])("prior-round usage is charged when output was delivered: %s", async (_name, prompt, completion, concurrent, charged) => {
+    ["usage under the allowance", 10, 3, 0],
+    ["usage above what the window has left, with a concurrent charge", 0, 40_000, 450],
+  ])("a provider failure after a delivered round is free: %s", async (_name, prompt, completion, concurrent) => {
     seedRemaining(500);
     let round = 0;
     const fetchImpl = (async (input: unknown) => {
@@ -172,9 +171,8 @@ describe("orchestrate path: stop at the limit, charge fairly", () => {
     const local = browser();
     await createAgentChatHandler(agentConfig(fetchImpl))(local.req, local.res, () => {});
     expect(local.stream()).toContain('"stream_error":{"code":"upstream_failed"}');
-    expect(used()).toBe(LIMIT - 500 + concurrent + charged);
-    expect(enqueued).toHaveLength(1);
-    expect(enqueued[0].credits).toBe(charged);
+    expect(used()).toBe(LIMIT - 500 + concurrent);
+    expect(enqueued).toEqual([]);
   });
 
   test("each reply is recorded under its own id", async () => {
@@ -232,13 +230,13 @@ describe("Eliza /tasks path: settlement clamp only", () => {
     expect(enqueued).toEqual([]);
   });
 
-  test("a failed task after content was delivered is charged, clamped", async () => {
+  test("a failed task after content was delivered is free when the failure is ours (TC-2601)", async () => {
     seedRemaining(500);
     const run = taskFixture({ prompt: 60_000, completion: 22_000 }, { outcome: "failed", code: "upstream_failed" }, "Partial");
     const local = browser();
     await createAgentChatHandler(run.config)(local.req, local.res, () => {});
-    expect(used()).toBe(LIMIT);
-    expect(enqueued[0].credits).toBe(500);
+    expect(used()).toBe(LIMIT - 500);
+    expect(enqueued).toEqual([]);
   });
 
   test("a timed-out task is charged at most the allowance even with nothing delivered", async () => {
@@ -304,11 +302,11 @@ describe("/api/chat: clamp and free on early failure", () => {
     expect(enqueued).toEqual([]);
   });
 
-  test("a stream that fails after content is charged, clamped", async () => {
+  test("a stream that fails after content is free: every /api/chat failure is ours (TC-2601)", async () => {
     seedRemaining(500);
     await post(() => dropped(frame({ choices: [{ delta: { content: "Partial" } }] }), usageFrame(60_000, 22_000)));
-    expect(used()).toBe(LIMIT);
-    expect(enqueued[0].credits).toBe(500);
+    expect(used()).toBe(LIMIT - 500);
+    expect(enqueued).toEqual([]);
   });
 });
 

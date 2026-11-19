@@ -1570,7 +1570,9 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
     ["incomplete-read", "upstream_incomplete", true],
     ["tool-overflow", "result_size_limit", true],
   ] as const) {
-    it(`returns one terminal for ${failure} and charges nothing when no output was delivered`, async () => {
+    // The model's own output broke invalid-plan and incomplete-finish, so they are charged; the other failures are ours and free (TC-2601).
+    const modelCaused = failure === "invalid-plan" || failure === "incomplete-finish";
+    it(`returns one terminal for ${failure} and ${modelCaused ? "charges the model's failure" : "charges nothing"} when no output was delivered`, async () => {
       process.env.PAYWALL_ENABLED = "true";
       process.env.STRIPE_SECRET_KEY = "sk_test";
       _setStripeClient(mockStripe(null));
@@ -1619,8 +1621,9 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         expect(logs[0]).toMatchObject({ outcome: code });
         if (failure !== "tool-overflow") expect(traces).toEqual([expect.objectContaining({ terminal: code })]);
         expect(JSON.stringify({ logs, traces })).not.toMatch(/PRIVATE|invalid JSON|private-completion-id/);
-        expect(entries).toHaveLength(0);
-        expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
+        expect(entries).toHaveLength(modelCaused ? 1 : 0);
+        if (modelCaused) expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
+        else expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
       } finally { restore(); }
     });
   }

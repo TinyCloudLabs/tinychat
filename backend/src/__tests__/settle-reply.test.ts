@@ -80,10 +80,11 @@ describe("rule (b): a reply that fails before any output reached the user is fre
     expect(loggedRaw()).toMatchObject({ rawCredits: 300, charged: 0 });
   });
 
-  test("failure after content was delivered is charged, clamped to the allowance", () => {
-    expect(settle({ allowance: 500, observed: 300, outcome: "failed", delivered: true }).charged).toBe(300);
+  test("failure after content was delivered is free when the cause is ours (TC-2601)", () => {
+    expect(settle({ allowance: 500, observed: 300, outcome: "failed", delivered: true }).charged).toBe(0);
     _resetUsage();
-    expect(settle({ allowance: 500, observed: 1450, outcome: "failed", delivered: true }).charged).toBe(500);
+    expect(settle({ allowance: 500, observed: 1450, outcome: "failed", delivered: true }).charged).toBe(0);
+    expect(enqueued).toEqual([]);
   });
 
   test("a reply stopped before any provider call used nothing and is free", () => {
