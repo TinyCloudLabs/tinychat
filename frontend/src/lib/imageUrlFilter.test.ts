@@ -147,9 +147,39 @@ describe("normalisation", () => {
     const twice = `https://example.com/a.png?d=${encodeURIComponent(encodeURIComponent(`${btoa("the account balance is 48213")}==`))}`;
     expect(weight(twice, "double-encoded")).toBe(100);
     expect(weight(twice, "encoded-text")).toBe(100);
-    expect(weight("https://example.com/Annual%2520report.jpg", "double-encoded")).toBe(100);
+    expect(weight("https://example.com/Annual%252Dreport.jpg", "double-encoded")).toBe(100);
     expect(weight("https://example.com/a.png?d=%258f%25a2%25c1%25ff%2500", "binary")).toBe(100);
     expect(weight("https://example.com/a.png?d=%2541%2542%2543", "escaped-plain")).toBe(100);
+  });
+
+  test("the one exception: a space written %2520 and nothing else under the second layer", () => {
+    const spaces = "https://media.example.com/photos/6af5f3f6/1:1/pass/Armand%2520Hammer%2520-%2520Snakes%2520and%2520Ladders%2520album%2520art.jpg";
+    expect(kind(spaces)).toBe("load");
+    expect(weight(spaces, "double-encoded")).toBe(0);
+    // Any other byte under the second layer asks, alone or beside a space, in any part of the address.
+    for (const other of ["%2541", "%250A", "%252F", "%2509", "%25E4%25B8", "%2525", "%252520"]) {
+      expect(weight(`https://media.example.com/photos/Annual%2520report${other}.jpg`, "double-encoded")).toBe(100);
+      expect(weight(`https://media.example.com/a.jpg?caption=Annual%2520report&v=${other}`, "double-encoded")).toBe(100);
+    }
+    // What the spaces separate is still judged as words, exactly as with single encoding: a long sentence asks either way.
+    const sentence =
+      "the quarterly forecast is down twelve percent and layoffs start monday so please keep this between us until the board meets again next thursday when legal counsel has reviewed every customer contract";
+    const twice = `https://media.example.com/${sentence.replace(/ /g, "%2520")}.jpg`;
+    const once = `https://media.example.com/${sentence.replace(/ /g, "%20")}.jpg`;
+    expect(weight(twice, "text-path")).toBe(weight(once, "text-path"));
+    expect(weight(twice, "text-path")).toBe(100);
+    expect(kind(twice)).toBe("ask");
+  });
+
+  test("bytes that are not UTF-8 have no rule of their own: two are 60 points, and every one is charged as room for data", () => {
+    const bits = (src: string) => {
+      const verdict = imageUrlVerdict(src);
+      return verdict.kind === "block" ? NaN : verdict.bits;
+    };
+    expect(score("https://e.example/a%E4%B8.png")).toBe(60);
+    expect(bits("https://e.example/a%E4%B8.png") - bits("https://e.example/a.png")).toBeGreaterThanOrEqual(16);
+    const many = `https://e.example/${Array.from({ length: 90 }, (_, i) => `%E${i % 10}%B${i % 9}`).join("a")}.png`;
+    expect(weight(many, "capacity")).toBe(100);
   });
 
   test("the fragment is never sent, so it is not judged", () => {

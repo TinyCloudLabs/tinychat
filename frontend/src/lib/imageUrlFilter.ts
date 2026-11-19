@@ -213,6 +213,8 @@ function decodeOnce(part: string, notes?: Escapes): string {
 }
 
 const STILL_ESCAPED = /%[0-9A-Fa-f]{2}/;
+/** Text in which every % begins "%20". */
+const ONLY_SPACES_ESCAPED = /^(?:[^%]|%20)*$/;
 
 /** A value as a URL parser would finally read it: decoded until stable, tabs and newlines dropped, width folded, `\` as `/`. */
 function parserView(value: string): string {
@@ -653,9 +655,11 @@ function gather(url: URL, raw: string, depth: number, pool: Pool, outerCharged =
  * address an encoded run in it decodes to, if one does (GitHub's camo proxy, imgix `mark64=`), for the caller to judge. */
 function judgeSegment(raw: string, where: "path" | "query-key" | "query-value", pool: Pool, waived: boolean): string | undefined {
   // Every layer of encoding is decoded and noted: control and non-text bytes under a second layer count like any others.
+  // A second layer is itself a sign, with one exception: when the only thing under it is spaces ("%2520", a file name
+  // escaped twice by a publisher's CDN). A space is not data, and what it separates is judged as words like any other.
   let text = decodeOnce(raw, pool.escapes);
   for (let round = 0; round < 3 && STILL_ESCAPED.test(text); round++) {
-    if (round === 0) pool.escapes.double++;
+    if (round === 0 && !ONLY_SPACES_ESCAPED.test(text)) pool.escapes.double++;
     text = decodeOnce(text, pool.escapes);
   }
   // An encoded run that is really text, wherever it sits and whoever the host is. One that is exactly a web address or an

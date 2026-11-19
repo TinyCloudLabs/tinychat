@@ -342,6 +342,13 @@ const MUST_LOAD: Record<string, string[]> = {
     "https://www.tinycloud.chat/og.png",
     "https://node.tinycloud.xyz/public/avatar.png",
   ],
+  // A file name escaped twice by the publisher's CDN: the only thing under the second layer is spaces.
+  "spaces written %2520": [
+    "https://media.wired.com/photos/6afce67e8d4d47192101a96f/1:1/w_1024%2Cc_limit/Germ%2520Network.jpg",
+    "https://media.pitchfork.com/photos/6af5f3f605ae8a8ec42748c2/1:1/pass/Armand%2520Hammer%2520-%2520Snakes%2520&%2520Ladders%2520album%2520art.jpg",
+    "https://assets.bonappetit.com/photos/6aba86749853dd3ec8f97c28/1:1/w_1280%2Cc_limit/BA%25202026%2520Thanksgiving_Pear_01.jpg",
+    "https://e.example/photos/Annual%2520report%2520draft%2520do%2520not%2520share.jpg",
+  ],
 };
 
 /** Addresses shaped to carry data out: every one must ask. */
@@ -558,7 +565,14 @@ const MUST_ASK: Record<string, string[]> = {
     `https://e.example/${noise(280, 131).map((byte) => `%25${(0x80 | (byte & 0x3f)).toString(16).toUpperCase()}`).join("")}`,
     `https://e.example/${noise(590, 132).map((byte) => `%25${(0x80 | (byte & 0x3f)).toString(16).toUpperCase()}`).join("")}`,
     `https://e.example/a.png?d=${noise(64, 133).map((byte) => `%25${(0x80 | (byte & 0x3f)).toString(16)}`).join("")}`,
-    "https://e.example/photos/Annual%2520report%2520draft%2520do%2520not%2520share.jpg",
+    // Any doubly-encoded byte but a space: a letter, a hyphen, a slash, a line break, a third layer.
+    "https://e.example/photos/Annual%2520report%2520draft%2541.jpg",
+    "https://e.example/photos/Annual%252Dreport%252Ddraft.jpg",
+    "https://e.example/photos/Annual%2520report%252Fdraft.jpg",
+    "https://e.example/photos/Annual%2520report%250Adraft.jpg",
+    "https://e.example/photos/Annual%252520report.jpg",
+    // Review v6: bytes that are not UTF-8 have no rule of their own; they are charged as room for data.
+    `https://e.example/${noise(120, 134).map((byte) => `%E${(byte & 0xf).toString(16)}%B${((byte >> 4) & 0xf).toString(16)}`).join("-")}.png`,
   ],
   // The four channels no sign counted (random letters shaped like words, short query keys, the fields of a forged
   // signature, digits in host labels). Each character is charged now, so each of these has more room than one address may.
@@ -740,6 +754,11 @@ const REPLIES_THAT_HOLD: Record<string, DataReply> = {
   },
   "a hundred and fifty of the smallest addresses, four characters each": { srcs: times(150, (i) => `https://e.io/${base62(4, 1300 + i)}`), carries: 4 * Math.log2(62) },
   "sixty short query keys": { srcs: times(60, (i) => `https://evil.example/a.png?${madeUpWords(4, 6, 1500 + i).map((word, n) => `${word}=${n}`).join("&")}`), carries: 24 * Math.log2(26) },
+  // Review v6: `%E4%B8`, a truncated UTF-8 sequence, is 60 points and loads. Each such pair carries 10 bits.
+  "two hundred file names with one truncated UTF-8 sequence each": {
+    srcs: times(200, (i) => `https://evil.example/a%E${(noise(1, 1700 + i)[0]! & 0xf).toString(16)}%${(0x80 | (noise(2, 1700 + i)[1]! & 0x3f)).toString(16)}.png`),
+    carries: 10,
+  },
 };
 
 describe("image address corpus: whole replies", () => {
