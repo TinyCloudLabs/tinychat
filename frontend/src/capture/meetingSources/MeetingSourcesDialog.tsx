@@ -19,7 +19,9 @@ import {
   supportsBackgroundNotifications,
 } from "@/chat/backgroundSyncState";
 import { ConnectorConnectDialog } from "@/chat/ConnectorDialog";
+import { GranolaAllowBack } from "@/chat/GranolaAllowBack";
 import { GranolaReconnect, GranolaSummariesNotice } from "@/chat/GranolaConnectionNotices";
+import { GRANOLA_CSV_STRINGS } from "@/lib/connectors/granolaCsvStrings";
 import { describeGmeetLive, gmeetPressLabel } from "@/chat/GmeetCardStatus";
 import { useBackgroundSync } from "@/chat/useBackgroundSync";
 import { useGmeetRowStatus } from "@/chat/useGmeetRowStatus";
@@ -112,6 +114,7 @@ export function MeetingSourcesDialog({
   const [connectDialog, setConnectDialog] = useState<{
     descriptor: ConnectorDescriptor;
     purpose: "browser" | "autojoin";
+    startWithKey?: boolean;
   } | null>(null);
   const [granolaConnecting, setGranolaConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<ConnectorId | null>(null);
@@ -283,8 +286,16 @@ export function MeetingSourcesDialog({
                       <div className="ms-opt">
                         <div className="ms-opt-copy">
                           <GranolaReconnect tcw={tcw} className="ms-link" disabled={dialogOpenForSource}
-                            onReconnect={() => setConnectDialog({ descriptor: d, purpose: "browser" })} />
+                            onReconnect={() => setConnectDialog({ descriptor: d, purpose: "browser", startWithKey: true })} />
                           <p className="ms-opt-text">Paste a new key and sync again.</p>
+                        </div>
+                      </div>
+                    )}
+                    {d.id === "granola" && (
+                      <div className="ms-opt">
+                        <div className="ms-opt-copy">
+                          <p className="ms-opt-text">{GRANOLA_CSV_STRINGS.allowBackNote}</p>
+                          <GranolaAllowBack backendUrl={backendUrl} sessionStore={sessionStore} />
                         </div>
                       </div>
                     )}
@@ -358,6 +369,11 @@ export function MeetingSourcesDialog({
           sessionStore={sessionStore}
           open
           onGranolaConnectingChange={setGranolaConnecting}
+          startWithKey={connectDialog.startWithKey}
+          onImported={() => {
+            setRevision((n) => n + 1);
+            void refresh(connectDialog.descriptor.id);
+          }}
           onOpenChange={(next) => {
             if (!next) {
               setGranolaConnecting(false);

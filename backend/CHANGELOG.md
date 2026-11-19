@@ -1,5 +1,19 @@
 # @tinychat/backend
 
+## 0.9.0-beta.4
+
+### Patch Changes
+
+- 59e0b09: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+## 0.9.0-beta.3
+
+### Patch Changes
+
+- 860953b: Record why a chat stream failed (TC-3462). A `tinychat_request` record whose stream ended in `error` now carries `failure_cause`: `model` when the model's own output broke the reply (the charged causes in `docs/credits.md`), otherwise `ours`. It is recorded from the stream terminal, so it is present with paywall gating off, and the log shipper allowlist passes only `model` or `ours`. No ledger change.
+
 ## 0.9.0-beta.2
 
 ### Patch Changes
