@@ -1397,7 +1397,7 @@ describe("POST /purged", () => {
     enable(h);
     await withServer(h.app, async (base) => {
       const res = await call(base, "/purged", "POST", {
-        source: "granola",
+        source: "not-registered",
         ids: [],
       });
       expect(res.status).toBe(400);
