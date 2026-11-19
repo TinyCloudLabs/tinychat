@@ -46,6 +46,9 @@ for a sibling may create anything. `main` exists without being announced; a sibl
 - `PUT /v1/bots/<key>` `{ "state": "active" | "suspended" | "deleting", "seq": <integer> }` announces a bot's state
   and answers `{ "state": <the state now held> }`. `seq` is the registry's counter: an update with a `seq` at or below
   the one held is ignored, and so is anything after `deleting`. `main` cannot be set to `deleting`.
+  A bot this service has not seen before is refused with `409 { "error": "owner_bot_limit" }` when its owner already
+  has `BOTS_MAX_PER_OWNER` bots here, `main` included. Bots that are `deleting` or gone are not counted, a bot first
+  announced as `deleting` is not refused, and an update to a bot already held is never refused.
 - `DELETE /v1/bots/<key>` deletes the working state of a bot that is `deleting` and answers
   `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" }` (it will go once its
   history is saved) or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good, and a
@@ -221,6 +224,7 @@ Supervisor (`bots-supervisor`):
 | `BOTS_STATE_MB` | `256` | state tmpfs size (inside the memory limit, 64 files and directories per MiB) and the cap on its saved copy |
 | `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes and their restored state together |
 | `BOTS_MAX_RUNNING` | `BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)` (3) | sandboxes running at once; at most that quotient |
+| `BOTS_MAX_PER_OWNER` | `10` | one owner's bots, `main` included, that this service holds; a new one past it is refused when announced |
 | `BOTS_STATE_COPY_TIMEOUT_MS` | `60000` | a state restore or save still running by then is killed and fails |
 | `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
 | `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |

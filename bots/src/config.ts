@@ -77,6 +77,8 @@ export interface SupervisorConfig {
   totalPids: number;
   /** Sandboxes running at once; a start past it is refused. */
   maxRunning: number;
+  /** One owner's bots, Main included, that this service will hold. A new one past it is refused when announced. */
+  maxBotsPerOwner: number;
   /** A state copy (restore or save) still running by then is killed and counts as failed. */
   stateCopyTimeoutMs: number;
   /** A turn with no prompt_result by then is ended and its sandbox killed. */
@@ -137,6 +139,7 @@ export function supervisorConfig(env: Env): SupervisorConfig {
     totalMemoryMb,
     totalPids: int(env, "BOTS_TOTAL_PIDS", 2048, 16),
     maxRunning,
+    maxBotsPerOwner: int(env, "BOTS_MAX_PER_OWNER", 10),
     stateCopyTimeoutMs: int(env, "BOTS_STATE_COPY_TIMEOUT_MS", 60_000, 1000),
     turnTimeoutMs: int(env, "BOTS_TURN_TIMEOUT_MS", 5 * 60_000, 1000),
     maxTurnBytes: int(env, "BOTS_MAX_TURN_BYTES", 256 * 1024, 1024),

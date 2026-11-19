@@ -38,7 +38,7 @@ Bun.serve({
   maxRequestBodySize: 1024 * 1024,
   fetch: createApp({
     secret: cfg.serviceSecret, accounts: cfg.accounts, environment: "private", acceptLegacyOwnerHeader: cfg.acceptLegacyOwnerHeader,
-    bots, manifest: new OwnerManifests(manifestRoot),
+    bots, manifest: new OwnerManifests(manifestRoot, cfg.maxBotsPerOwner),
     admit: cfg.admissionControlKey ? createAdmissionClient(cfg.egressRoot, cfg.admissionControlKey) : undefined,
   }),
 });
