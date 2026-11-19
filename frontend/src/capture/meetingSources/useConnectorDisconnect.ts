@@ -159,7 +159,7 @@ export function useConnectorDisconnect(input: {
     done: progress?.done === true,
     retryLabel: retry?.label ?? null,
     planLocked: progress !== null,
-    error: failureMessage ?? revokeWarning,
+    error: failureMessage ?? revokeWarning ?? progress?.notice ?? null,
     run,
     reset,
   };
