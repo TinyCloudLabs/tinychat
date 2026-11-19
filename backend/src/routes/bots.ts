@@ -1,17 +1,21 @@
 // /api/bots — tiny bots slice 1 (TC-2808): the owner's Main bot, proxied to the bots service.
 //
 // The owner is always the authenticated session address; the body and request headers never choose it.
-// The service secret stays server-side. Message content is neither logged nor stored here.
+// Each call to the service is signed (bots-signed-call.ts). Message content is neither logged nor stored here.
 
 import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
+import { type Environment, signedCallHeader } from "../bots-signed-call";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { botCaps, CAP_MODE, type CapMode, type PlanName } from "../bot-caps";
+import { isBotActivityRecord } from "../bot-history.js";
 import { BOT_KEY, MAIN_BOT_KEY, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
 
 export interface BotsConfig {
   serviceUrl: string;
   serviceSecret: string;
+  /** The environment of the service at serviceUrl, signed into every call. Default `private`. */
+  environment?: Environment;
   accountAllowed: (address: string) => boolean;
   /** Overall bound on one POST turn (BOTS_POST_TIMEOUT_MS, default 120000). */
   postTimeoutMs: number;
@@ -27,6 +31,18 @@ const UNAVAILABLE = { code: "bot_unavailable", message: "Main isn't available. T
 /** Same canonical owner DID as MCP chat: did:pkh on chain 1 with the lowercased address. */
 export function botOwnerDid(address: string): string {
   return `did:pkh:eip155:1:${address.toLowerCase()}`;
+}
+
+/**
+ * Headers for one signed call to the bots service at `url`, with exactly `body`. Each call needs its own headers.
+ */
+export function botsServiceHeaders(config: BotsConfig, ownerDid: string, method: string, url: string, body?: string): Record<string, string> {
+  const { pathname, search } = new URL(url);
+  const bot = /^\/v1\/bots\/([^/]+)/.exec(pathname)?.[1] ?? "";
+  const authorization = signedCallHeader(config.serviceSecret, {
+    direction: "to-service", environment: config.environment ?? "private", owner: ownerDid, bot, method, path: pathname + search, body,
+  });
+  return body === undefined ? { authorization } : { authorization, "content-type": "application/json" };
 }
 
 /**
@@ -62,15 +78,6 @@ export async function botTurnBody(config: BotsConfig, address: string, sourceKey
     if (messageableBotKeys?.length) return { text, messageableBotKeys };
   } catch { /* A registry read failure leaves the turn without messaging. */ }
   return { text };
-}
-
-/**
- * Headers for one call to the bots service at `url`. Every call this router makes to the service goes through here,
- * so how a call is authenticated is decided in one place.
- */
-export function botsServiceHeaders(config: BotsConfig, ownerDid: string, _method: string, _url: string, body?: string): Record<string, string> {
-  const headers = { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": ownerDid };
-  return body === undefined ? headers : { ...headers, "content-type": "application/json" };
 }
 
 /**
@@ -225,7 +232,14 @@ export function createBotsRouter(opts: {
         signal: AbortSignal.timeout(10_000),
       }));
       if (!upstream.ok) { res.status(502).json({ error: unavailable.code, message: unavailable.message }); return; }
-      res.json(await upstream.json());
+      const listed = await upstream.json() as { messages: unknown; activity?: unknown };
+      if (listed && Object.hasOwn(listed, "activity")) {
+        const { activity, ...rest } = listed;
+        const records = Array.isArray(activity) ? activity.filter(isBotActivityRecord) : [];
+        res.json({ ...rest, ...(records.length ? { activity: records } : {}) });
+      } else {
+        res.json(listed);
+      }
     } catch {
       res.status(502).json({ error: unavailable.code, message: unavailable.message });
     }

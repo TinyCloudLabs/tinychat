@@ -1,11 +1,13 @@
 // Internal HTTP API, called only by the TinyChat backend (docs/plans/tiny-bots-slice1.md, piece 1).
 // Every SSE event is encoded here from checked fields; nothing from a sandbox is passed through raw.
 
-import type { StagedHistory } from "./history";
+import type { ActivityRecord, StagedHistory } from "./history";
 import { type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
-import { authorizedOwner, isBotKey, MAIN_KEY } from "./owner";
+import { legacyOwnerHeaderAccepted } from "./config";
+import { authorizedOwner, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
+import { type Environment, NonceGuard, SIGNED_SCHEME, verifyCall } from "./signed-call";
 import type { DeleteSkip } from "./retention";
 
 /** `/v1/bots/<key>` and what follows it. The key is checked before anything is built from it. */
@@ -30,6 +32,7 @@ function operationOf(rest: string, method: string): Operation | undefined {
 export interface BotApi {
   send(text: string, sink: TurnSink, owner?: string): Promise<void>;
   list(): Promise<ListedMessage[]>;
+  listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
   historyStage?(staged: StagedHistory): Promise<void>;
   historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
@@ -39,8 +42,13 @@ export interface BotApi {
 }
 
 export interface AppOptions {
+  /** This service's secret. */
   secret: string;
   accounts: Set<string> | "*";
+  /** The environment this service runs. Default `private`. */
+  environment?: Environment;
+  /** Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
+  acceptLegacyOwnerHeader?: boolean;
   bots: {
     forOwner(ownerDid: string): BotApi;
     /** A sibling by key. Without it the service has only Main. */
@@ -64,7 +72,7 @@ function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
   const stream = new ReadableStream<Uint8Array>(
     {
       start(controller) {
-        const send = (event: string, data: Record<string, string>) => {
+        const send = (event: string, data: Record<string, string | number>) => {
           if (!open) return;
           try {
             controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
@@ -80,6 +88,7 @@ function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
         const sink: TurnSink = {
           status: state => send("status", { state }),
           delta: text => send("delta", { text }),
+          activity: ({ type, id, verb, count, at }) => send("activity", { type, id, verb, count, at }),
           done: messageId => send("done", { messageId }),
           error: (code: ErrorCode) => send("error", { code, message: ERROR_MESSAGES[code] }),
         };
@@ -134,12 +143,29 @@ async function remove(options: AppOptions, owner: string, key: string): Promise<
 }
 
 export function createApp(options: AppOptions): (req: Request) => Promise<Response> {
-  return async req => {
-    const path = new URL(req.url).pathname;
-    if (req.method === "GET" && path === "/healthz") return new Response("ok");
-    const owner = authorizedOwner(req, options.secret, options.accounts);
-    if (!owner) return new Response(null, { status: 401 });
+  const environment = options.environment ?? "private";
+  const acceptLegacy = options.acceptLegacyOwnerHeader ?? legacyOwnerHeaderAccepted(process.env);
+  const nonces = new NonceGuard();
+  return async incoming => {
+    const url = new URL(incoming.url);
+    const path = url.pathname;
+    if (incoming.method === "GET" && path === "/healthz") return new Response("ok");
     const match = BOT_PATH.exec(path);
+    const authorization = incoming.headers.get("authorization");
+    let owner: string | null = null;
+    let req = incoming;
+    if (authorization?.startsWith(SIGNED_SCHEME)) {
+      // The body is read once to check its hash, then passed on.
+      const body = new Uint8Array(await incoming.arrayBuffer().catch(() => new ArrayBuffer(0)));
+      const claims = verifyCall(authorization, { method: incoming.method, path: path + url.search, body }, { secret: options.secret, direction: "to-service", environment, nonces });
+      if (claims && claims.bot === match?.[1] && ownerAllowed(claims.owner, options.accounts)) {
+        owner = claims.owner;
+        req = new Request(incoming.url, { method: incoming.method, headers: incoming.headers, body: body.byteLength > 0 ? body : undefined });
+      }
+    } else if (acceptLegacy) {
+      owner = authorizedOwner(incoming, options.secret, options.accounts);
+    }
+    if (!owner) return new Response(null, { status: 401 });
     if (!match || !isBotKey(match[1]!)) return new Response(null, { status: 404 });
     const key = match[1]!;
     const rest = match[2] ?? "";
@@ -202,7 +228,9 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     }
     if (req.method === "GET") {
       try {
-        return Response.json({ messages: await bot.list() });
+        const messages = await bot.list();
+        const activity = await bot.listActivities?.();
+        return Response.json({ messages, ...(activity?.length ? { activity } : {}) });
       } catch {
         return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
       }

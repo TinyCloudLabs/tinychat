@@ -41,10 +41,30 @@ export interface HistoryBatch {
   /** A sibling's key, as the service put it inside the batch. Main's batches have none. */
   bot?: string;
 }
+/** The activity record emitted by the supervisor and stored in the owner's history. */
+export interface BotActivityRecord {
+  type: "activity";
+  id: string;
+  verb: "ran_commands" | "changed_files";
+  count: number;
+  at: string;
+}
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+export function isBotActivityRecord(value: unknown): value is BotActivityRecord {
+  return isObject(value) && Object.keys(value).length === 5 && value.type === "activity"
+    && typeof value.id === "string" && value.id.length === 32 && /^[a-f0-9]{32}$/.test(value.id)
+    && (value.verb === "ran_commands" || value.verb === "changed_files")
+    && typeof value.count === "number" && Number.isInteger(value.count) && value.count >= 1 && value.count <= 256
+    && typeof value.at === "string" && value.at.length === 24
+    && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.at) && Number.isFinite(Date.parse(value.at));
+}
 export function checkedBatch(value: unknown): HistoryBatch {
   const batch = value as HistoryBatch;
   if (!batch || batch.v !== 1 || !/^[a-f0-9]{32}$/.test(batch.generation) || !Number.isSafeInteger(batch.seq) || batch.seq < 1
     || !/^[a-f0-9]{64}$/.test(batch.challenge) || !batch.record || (batch.bot !== undefined && !HISTORY_BOT_KEY.test(batch.bot))
+    || (isObject(batch.record) && batch.record.type === "activity" && !isBotActivityRecord(batch.record))
     || Buffer.byteLength(JSON.stringify(batch)) > 512 * 1024) throw new Error("invalid_history_batch");
   // The same fields in the same order as the service's journal, so both sides hash the same bytes.
   return { v: 1, generation: batch.generation, seq: batch.seq, challenge: batch.challenge, record: batch.record, ...(batch.bot ? { bot: batch.bot } : {}) };

@@ -6,6 +6,7 @@ import type { RequestHandler } from "express";
 import type { CapMode, PlanName } from "../bot-caps.js";
 import { BotsRegistry } from "../bots-registry.js";
 import { botsFromEnv, createBotsRouter, type BotsConfig } from "../routes/bots.js";
+import { NonceGuard, verifyCall } from "../bots-signed-call.js";
 import { fakeRegistryStore, type FakeRegistryStore } from "./helpers/fake-registry-store.js";
 
 const sessionKey = `0x${"03".repeat(32)}`;
@@ -16,6 +17,17 @@ const T0 = new Date("2026-11-19T00:00:00.000Z");
 
 interface UpstreamCall { method: string; url: string; headers: Headers; body: string | undefined }
 type Upstream = (call: UpstreamCall) => Response | Promise<Response>;
+
+/**
+ * Who a recorded call to the service was signed for. Undefined unless it verifies with the service's secret for
+ * exactly the method, path and body that were sent.
+ */
+const signedFor = (call: UpstreamCall): { owner: string; bot: string } | undefined => {
+  const { pathname, search } = new URL(call.url);
+  const claims = verifyCall(call.headers.get("authorization"), { method: call.method, path: pathname + search, body: call.body }, { secret, direction: "to-service", environment: "private", nonces: new NonceGuard() });
+  return claims ? { owner: claims.owner, bot: claims.bot } : undefined;
+};
+const ownerDid = `did:pkh:eip155:1:${owner.toLowerCase()}`;
 
 /** The real router on a local port, with real session tokens, a registry over a fake store, and a recording stand-in for the bots service. */
 async function setup(upstream: Upstream = () => Response.json({}), extra: Partial<BotsConfig> = {}, paidLimiter?: RequestHandler, rule: { capMode?: CapMode; planOf?: (address: string) => Promise<PlanName | undefined>; onDeleting?: (address: string, key: string) => void } = {}) {
@@ -85,8 +97,9 @@ describe("creating a bot", () => {
       // The service is told the bot's state under the counter of the record that now holds it.
       const { seq } = await run.registry.read(owner);
       expect(run.seen[0]).toMatchObject({ method: "PUT", url: `http://bots.test/v1/bots/${key}`, body: JSON.stringify({ state: "active", seq }) });
-      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${owner.toLowerCase()}`);
-      expect(run.seen[0]!.headers.get("authorization")).toBe(`Bearer ${secret}`);
+      // The call is signed for the signed-in owner and this bot, and no header names an owner.
+      expect(signedFor(run.seen[0]!)).toEqual({ owner: ownerDid, bot: key });
+      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBeNull();
       expect((await (await fetch(run.base, { headers })).json()).bots).toEqual([main, bot]);
     } finally { await run.close(); }
   });
@@ -141,7 +154,9 @@ describe("refusing to create a bot", () => {
       const response = await fetch(run.base, { method: "POST", headers: { ...(await run.headersFor(owner)), "x-tinycloud-owner": `did:pkh:eip155:1:${stranger}` }, body: JSON.stringify(forged) });
       expect(response.status).toBe(201);
       expect((await response.json()).bot).toEqual({ key: "1".repeat(32), ...wanted, environment: "private", state: "active", createdAt: T0.toISOString() });
-      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${owner.toLowerCase()}`);
+      // The owner header the browser forged is not passed on, and the call is signed for the signed-in owner.
+      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBeNull();
+      expect(signedFor(run.seen[0]!)).toEqual({ owner: ownerDid, bot: "1".repeat(32) });
       expect(run.kv.rows.has(`bots/registry/${stranger}`)).toBe(false);
     } finally { await run.close(); }
   });
@@ -162,8 +177,7 @@ describe("messages of a bot other than Main", () => {
       expect(await response.json()).toEqual(messages);
       const call = run.seen.at(-1)!;
       expect(call).toMatchObject({ method: "GET", url: `http://bots.test/v1/bots/${KEY}/messages` });
-      expect(call.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${owner.toLowerCase()}`);
-      expect(call.headers.get("authorization")).toBe(`Bearer ${secret}`);
+      expect(signedFor(call)).toEqual({ owner: ownerDid, bot: KEY });
     } finally { await run.close(); }
   });
 
@@ -214,8 +228,7 @@ describe("sending a message to a bot other than Main", () => {
       expect(await response.text()).toBe(stream);
       const call = run.seen.at(-1)!;
       expect(call).toMatchObject({ method: "POST", url: `http://bots.test/v1/bots/${KEY}/messages`, body: JSON.stringify({ text: "ping" }) });
-      expect(call.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${owner.toLowerCase()}`);
-      expect(call.headers.get("authorization")).toBe(`Bearer ${secret}`);
+      expect(signedFor(call)).toEqual({ owner: ownerDid, bot: KEY });
     } finally { await run.close(); }
   });
 
