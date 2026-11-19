@@ -12,14 +12,15 @@
 // the address, or in an earlier image of the same reply) costs only an index into what has been seen: a gallery from one
 // site does not pay for its host and folders again.
 
-// The two limits. An ordinary image address is 60 to 100 characters at 5 to 6 bits each: on 7,639 real <img src>
+// The two limits. An ordinary image address is 60 to 100 characters at 5 to 6 bits each: on about 7,700 real <img src>
 // addresses the estimate has a median of about 540 bits, a 99th percentile of about 1,240 and a maximum of 1,486. So
-// neither limit can be small without asking about ordinary images. The reply's budget is the bound on what a reply can
-// send without a prompt; the limit on one address is the lowest round number none of those real addresses reaches.
+// neither limit can be small without asking about ordinary images. The limit on one address is the lowest round number
+// none of those real addresses reaches. The reply's budget is the bound on what a reply can send without a prompt: at
+// 4,096 about half of real ten-image replies would show the prompt, at 8,192 none did.
 /** An address with more room than this asks. */
 export const ADDRESS_BIT_LIMIT = 1536;
 /** The images of one reply or note that load without asking have, together, no more room than this (imageBudget.ts). */
-export const REPLY_BIT_BUDGET = 4096;
+export const REPLY_BIT_BUDGET = 8192;
 /** No image is free: each is charged at least this, whatever its host. */
 export const IMAGE_BIT_FLOOR = 32;
 

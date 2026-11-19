@@ -5,7 +5,7 @@ import { AssistantRuntimeProvider, ThreadPrimitive, useExternalStoreRuntime, typ
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { installDom } from "@/test/dom";
-import { heavyImageAddress } from "@/lib/imageBudget.fixture";
+import { HEAVY_HOSTS, HEAVY_THAT_FIT as FIT, heavyImageAddress } from "@/lib/imageBudget.fixture";
 import { IMAGE_PROMPT_COPY } from "@/lib/imageUrlFilter";
 import { AssistantMessage } from "./Thread";
 
@@ -18,10 +18,9 @@ afterEach(() => {
   restore = undefined;
 });
 
-// Addresses with a lot of room for data: three fit in a reply's budget, a fourth does not.
-const names = ["a", "b", "c", "d", "e"];
-const address = (name: string, tag: string) => heavyImageAddress(`${name}.example`, tag);
-const five = (tag: string) => names.map((n) => `![${n}](${address(n, tag)})`).join("\n\n");
+// Heavy addresses (lib/imageBudget.fixture.ts): the first FIT fit in a reply's budget, the last two do not.
+const address = (host: string, tag: string) => heavyImageAddress(host, tag);
+const heavyReply = (tag: string) => HEAVY_HOSTS.map((host) => `![${host[0]}](${address(host, tag)})`).join("\n\n");
 
 const message = (id: string, text: string): ThreadMessageLike => ({
   id,
@@ -63,14 +62,14 @@ test("a thread that reuses a message's component for another message gives it a 
   document.body.append(host);
   mounted = createRoot(host);
 
-  const silent = names.slice(0, 3).map((n) => address(n, "x"));
-  await show(host, [message("m1", five("x"))]);
+  const silent = HEAVY_HOSTS.slice(0, FIT).map((host) => address(host, "x"));
+  await show(host, [message("m1", heavyReply("x"))]);
   expect(srcs(host)).toEqual(silent);
   await act(async () => { load(host).click(); });
-  expect(srcs(host)).toHaveLength(5);
+  expect(srcs(host)).toHaveLength(FIT + 2);
 
   // The same position now shows another message with the same addresses: the earlier approval is not its approval.
-  await show(host, [message("m2", five("x"))]);
+  await show(host, [message("m2", heavyReply("x"))]);
   expect(srcs(host)).toEqual(silent);
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["d.example", "e.example"]));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, HEAVY_HOSTS.slice(FIT)));
 });

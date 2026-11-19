@@ -11,11 +11,21 @@ function madeUpWord(seed: string): string {
   }).join("");
 }
 
+// The two numbers below go with the limits in imageAddressBits.ts. When a limit changes, change them here and nowhere
+// else: the tests that use this file count from HEAVY_THAT_FIT. The fixture test in imageBudget.test.ts says when they
+// no longer fit together.
+const HEAVY_WORDS = 22;
+/** How many heavy addresses load in one reply before its budget is used up. */
+export const HEAVY_THAT_FIT = 5;
+
 /**
- * An address that loads on its own and has room for about 1,150 bits: seventeen made-up words that no other host or name
- * shares, so nothing in it is cheaper for having been sent before. Three of them fit in one reply's budget of 4,096 bits;
- * a fourth does not.
+ * An address that loads on its own and has a lot of room for data (about 1,450 bits): made-up words that no other host or
+ * name shares, so nothing in it is cheaper for having been sent before. Keep `name` short: a long one takes the address
+ * past what one address may have.
  */
 export function heavyImageAddress(host: string, name = "p"): string {
-  return `https://${host}/${name}/${Array.from({ length: 17 }, (_, i) => madeUpWord(`${host}/${name}/${i}`)).join("-")}.png`;
+  return `https://${host}/${name}/${Array.from({ length: HEAVY_WORDS }, (_, i) => madeUpWord(`${host}/${name}/${i}`)).join("-")}.png`;
 }
+
+/** Hosts for a reply of heavy images in which the last two must wait: a.example, b.example, and so on. */
+export const HEAVY_HOSTS: readonly string[] = Array.from({ length: HEAVY_THAT_FIT + 2 }, (_, i) => `${"abcdefghijklmnopqrstuvwxyz"[i]}.example`);

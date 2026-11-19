@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { IMAGE_BIT_FLOOR, REPLY_BIT_BUDGET } from "./imageAddressBits";
-import { heavyImageAddress as heavy } from "./imageBudget.fixture";
+import { ADDRESS_BIT_LIMIT, IMAGE_BIT_FLOOR, REPLY_BIT_BUDGET } from "./imageAddressBits";
+import { HEAVY_HOSTS, HEAVY_THAT_FIT as FIT, heavyImageAddress as heavy } from "./imageBudget.fixture";
 import { isAllowlistedImageHost } from "./imageHosts";
 import { heldImages, ReplyImageBudget } from "./imageBudget";
 import { imageUrlVerdict } from "./imageUrlFilter";
@@ -26,17 +26,22 @@ describe("allowlisted hosts", () => {
 });
 
 describe("the images of a reply that must wait", () => {
-  test("the fixture: an address that loads on its own, three of which fit in the budget and four of which do not", () => {
+  /** A reply of heavy images, each on its own host: the first FIT fit in the budget, the last two do not. */
+  const heavies = HEAVY_HOSTS.map((host) => heavy(host));
+
+  test("the fixture goes with the limits: a heavy address loads on its own, FIT of them fit in the budget and one more does not", () => {
+    const size = bits(heavy("a.example"));
     expect(imageUrlVerdict(heavy("a.example")).kind).toBe("load");
-    expect(bits(heavy("a.example"))).toBeGreaterThan(REPLY_BIT_BUDGET / 4);
-    expect(bits(heavy("a.example"))).toBeLessThan(REPLY_BIT_BUDGET / 3);
+    expect(size).toBeLessThan(ADDRESS_BIT_LIMIT);
+    expect(size * FIT).toBeLessThanOrEqual(REPLY_BIT_BUDGET);
+    // With room to spare: a piece that an earlier image already sent makes a later one a little cheaper.
+    expect(size * 0.95 * (FIT + 1)).toBeGreaterThan(REPLY_BIT_BUDGET);
   });
 
   test("images load while the room for data in their addresses, added up, stays within the budget; the rest wait, in document order", () => {
-    const srcs = ["a", "b", "c", "d", "e"].map((name) => heavy(`${name}.example`));
-    expect(heldSrcs(srcs)).toEqual(srcs.slice(3));
-    expect(heldImages(srcs)[0]).toEqual({ src: srcs[3]!, host: "d.example" });
-    expect(heldSrcs(srcs.slice(0, 3))).toEqual([]);
+    expect(heldSrcs(heavies)).toEqual(heavies.slice(FIT));
+    expect(heldImages(heavies)[0]).toEqual({ src: heavies[FIT]!, host: HEAVY_HOSTS[FIT]! });
+    expect(heldSrcs(heavies.slice(0, FIT))).toEqual([]);
   });
 
   test("ordinary images do not wait: five from one site, or five from five sites", () => {
@@ -48,75 +53,76 @@ describe("the images of a reply that must wait", () => {
   });
 
   test("the budget is one number for the reply: hosts, domains and free hosting tenants all draw on it", () => {
-    const oneHost = ["1", "2", "3", "4", "5"].map((name) => heavy("cdn.example", name));
-    const manyDomains = ["one.example", "two.example.org", "three.pages.dev", "four.vercel.app", "five.example.co.uk"].map((host) => heavy(host));
-    expect(heldSrcs(oneHost)).toEqual(oneHost.slice(3));
-    expect(heldSrcs(manyDomains)).toEqual(manyDomains.slice(3));
+    const oneHost = HEAVY_HOSTS.map((_, i) => heavy("cdn.example", `${i + 1}`));
+    const domains = ["one.example", "two.example.org", "three.pages.dev", "four.vercel.app", "five.web.app", "six.example.net", "seven.github.io", "eight.netlify.app", "nine.r2.dev", "ten.example.io"];
+    const manyDomains = domains.slice(0, FIT + 2).map((host) => heavy(host));
+    expect(manyDomains.map((src) => imageUrlVerdict(src).kind)).toEqual(manyDomains.map(() => "load"));
+    expect(heldSrcs(oneHost)).toEqual(oneHost.slice(FIT));
+    expect(heldSrcs(manyDomains)).toEqual(manyDomains.slice(FIT));
   });
 
   test("no image is free: even the smallest addresses use the budget up", () => {
-    const tiny = Array.from({ length: 200 }, (_, i) => `https://a.io/${i}`);
+    const tiny = Array.from({ length: REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR + 50 }, (_, i) => `https://a.io/${i}`);
     expect(tiny.map(bits).every((n) => n >= IMAGE_BIT_FLOOR)).toBe(true);
     expect(tiny.length - heldSrcs(tiny).length).toBeLessThanOrEqual(REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR);
     expect(heldSrcs(tiny).length).toBeGreaterThan(0);
   });
 
   test("what an earlier image of the reply already sent is charged as an index, so a gallery from one site costs little", () => {
-    const gallery = Array.from({ length: 8 }, (_, i) => `https://photos.example.com/albums/summer-trip/day-${i + 1}/sunset.jpg`);
+    const gallery = Array.from({ length: 24 }, (_, i) => `https://photos.example.com/albums/summer-trip/day-${i + 1}/sunset.jpg`);
     expect(gallery.map(bits).reduce((sum, n) => sum + n, 0)).toBeGreaterThan(REPLY_BIT_BUDGET / 2); // each counted alone
     expect(heldSrcs(gallery)).toEqual([]);
   });
 
   test("an image that waits is not charged: a small one after it still loads", () => {
-    const srcs = [heavy("a.example"), heavy("b.example"), heavy("c.example"), heavy("d.example"), img("e.example")];
-    expect(heldSrcs(srcs)).toEqual([srcs[3]!]);
+    const srcs = [...heavies.slice(0, FIT + 1), img("z.example")];
+    expect(heldSrcs(srcs)).toEqual([heavies[FIT]!]);
   });
 
   test("an address on the allowlist is charged the floor and nothing more, but not nothing", () => {
-    const own = Array.from({ length: 100 }, (_, i) => heavy("node.tinycloud.xyz", `n${i}`));
+    const own = Array.from({ length: REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR }, (_, i) => img("node.tinycloud.xyz", `n${i}`));
     expect(heldSrcs(own)).toEqual([]);
-    // Forty floors (1,280 bits) leave room for two heavy addresses, not three.
-    expect(heldSrcs([...own.slice(0, 40), heavy("a.example"), heavy("b.example"), heavy("c.example")])).toEqual([heavy("c.example")]);
-    const many = Array.from({ length: REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR + 5 }, (_, i) => img("i.imgur.com", `Zk3x${i}`));
-    expect(heldSrcs(many)).toEqual(many.slice(REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR));
+    expect(heldSrcs([...own, img("i.imgur.com", "Zk3x1")])).toEqual([img("i.imgur.com", "Zk3x1")]);
+    // Enough floors to leave room for all but half of the last heavy address: it waits, the ones before it load.
+    const floors = Math.ceil((REPLY_BIT_BUDGET - (FIT - 0.5) * bits(heavy("a.example"))) / IMAGE_BIT_FLOOR);
+    expect(heldSrcs([...own.slice(0, floors), ...heavies.slice(0, FIT)])).toEqual([heavies[FIT - 1]!]);
   });
 
   test("an address that asks or is blocked is judged alone and is not charged", () => {
     const asks = `https://x.example/p.png?d=${"z".repeat(70)}`;
-    const srcs = [asks, "data:image/png;base64,AAAA", heavy("a.example"), heavy("b.example"), heavy("c.example")];
-    expect(heldSrcs(srcs)).toEqual([]);
+    expect(heldSrcs([asks, "data:image/png;base64,AAAA", ...heavies.slice(0, FIT)])).toEqual([]);
   });
 
   test("the same address twice is charged once", () => {
-    expect(heldSrcs([heavy("a.example"), heavy("a.example"), heavy("b.example"), heavy("b.example"), heavy("c.example")])).toEqual([]);
+    expect(heldSrcs(heavies.slice(0, FIT).flatMap((src) => [src, src]))).toEqual([]);
   });
 });
 
 describe("a reply's choices", () => {
-  const five = ["a", "b", "c", "d", "e"].map((name) => heavy(`${name}.example`));
+  const heavies = HEAVY_HOSTS.map((host) => heavy(host));
 
   test("the held images are reported once, and again only when they change", () => {
     const budget = new ReplyImageBudget();
     let changes = 0;
     budget.subscribe(() => changes++);
-    five.forEach((src, i) => budget.claim(`i${i}`, src));
+    heavies.forEach((src, i) => budget.claim(`i${i}`, src));
     budget.publish();
     budget.publish();
-    expect(budget.waiting().map((held) => held.src)).toEqual(five.slice(3));
+    expect(budget.waiting().map((held) => held.src)).toEqual(heavies.slice(FIT));
     expect(changes).toBe(1);
-    expect(budget.isHeld(five[3]!)).toBe(true);
-    expect(budget.isHeld(five[0]!)).toBe(false);
+    expect(budget.isHeld(heavies[FIT]!)).toBe(true);
+    expect(budget.isHeld(heavies[0]!)).toBe(false);
   });
 
   test("a choice is for the exact address: a changed address is held again", () => {
     const budget = new ReplyImageBudget();
-    five.forEach((src, i) => budget.claim(`i${i}`, src));
+    heavies.forEach((src, i) => budget.claim(`i${i}`, src));
     budget.publish();
-    budget.decide([five[3]!, five[4]!], "load");
+    budget.decide(heavies.slice(FIT), "load");
     expect(budget.waiting()).toEqual([]);
-    expect(budget.choice(five[3]!)).toBe("load");
-    const changed = heavy("d.example", "streamed-longer");
-    budget.claim("i3", changed);
+    expect(budget.choice(heavies[FIT]!)).toBe("load");
+    const changed = heavy(HEAVY_HOSTS[FIT]!, "v2");
+    budget.claim(`i${FIT}`, changed);
     budget.publish();
     expect(budget.choice(changed)).toBeUndefined();
     expect(budget.waiting().map((held) => held.src)).toEqual([changed]);
@@ -125,7 +131,7 @@ describe("a reply's choices", () => {
   test("an image that goes away gives up what it was charged, so a stale address never keeps it", () => {
     const budget = new ReplyImageBudget();
     const real = heavy("s.example", "real");
-    [heavy("s.example", "r"), heavy("s.example", "re"), heavy("s.example", "rea"), real].forEach((src, i) => budget.claim(`i${i}`, src));
+    [...Array.from({ length: FIT }, (_, i) => heavy("s.example", `r${i}`)), real].forEach((src, i) => budget.claim(`i${i}`, src));
     expect(budget.isHeld(real)).toBe(true);
     budget.release("i0");
     budget.release("i1");
