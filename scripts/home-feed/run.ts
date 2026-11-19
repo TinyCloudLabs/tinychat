@@ -6,8 +6,8 @@ import { z } from "zod";
 import type { Result, SqlValue } from "@tinycloud/sdk-services";
 import { initializeFeedHandoff, projectFeedResponseNotification } from "@tinycloud/sdk-services/feed";
 import type { FeedDatabase, FeedResponse } from "@tinycloud/sdk-services/feed";
-import { closeHomeMirror, homeMirrorDiagnostic, homeMirrorRefusal, publishHomeMirror, watchHomeMirrors } from "./bridge";
-import { inventoryPlan, parseInventoryKinds, postMany, readBoardIndex } from "./inventory";
+import { closeHomeMirror, homeMirrorBindings, homeMirrorDiagnostic, homeMirrorRefusal, publishHomeMirror, watchHomeMirrors } from "./bridge";
+import { closeFromBoard, inventoryPlan, parseInventoryKinds, postMany, readBoardIndex, readClosedBoardRows } from "./inventory";
 import { fullSpace, normalizeHomeMirrorHost, openOwnerSession, withStopSignal } from "./owner-session";
 
 export { normalizeHomeMirrorHost };
@@ -19,7 +19,9 @@ const usage = [
   "bun scripts/home-feed/run.ts post-many --from-index BOARD_INDEX_SQLITE --source SOURCE_ID --owner-space FULL_URI --legacy-space FULL_URI [--kinds ask,task,incident,progress,work] [--dry-run | --tc-home DIR --profile NAME] [--host URL]",
   "Watch JSON: {sourceId,recipient,runner:[executable,...argv],renewalSeconds?}. Runner exit zero must mean durable acceptance of the full response ID; execution must recheck dispatchBefore.",
   "The answer runner (answer-runner.ts) takes the same recipient as --recipient and rechecks the owner's delivery policy itself. One handoff file serves one owner's source.",
-  "post-many --dry-run reads only the local index and prints the plan; it makes no node call.", "",
+  "bun scripts/home-feed/run.ts close-many --from-index BOARD_INDEX_SQLITE --source SOURCE_ID --owner-space FULL_URI --legacy-space FULL_URI --tc-home DIR --profile NAME [--dry-run] [--host URL]",
+  "post-many --dry-run reads only the local index and prints the plan; it makes no node call.",
+  "close-many closes in Home the mirrored cards whose board record is closed. --dry-run reads the owner's mirror table and cards, publishes nothing, and counts what would close by kind; a live pass cannot be undone.", "",
 ].join("\n");
 
 // Existing owner session only: no sign-in, delegation activation, key generation,
@@ -34,6 +36,7 @@ export async function runHomeMirror(argv: string[]): Promise<void> {
   if (values.help) { process.stdout.write(usage); return; }
   const mode = positionals[0];
   if (mode === "post-many") return runPostMany(values);
+  if (mode === "close-many") return runCloseMany(values);
   if (positionals.length !== 1 || (mode !== "post" && mode !== "close" && mode !== "watch") || !values["tc-home"] || !values.profile || !values.file || (mode === "watch" && !values.handoff)) throw homeMirrorRefusal("Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file");
   const tcHome = values["tc-home"], profile = values.profile, file = values.file;
   const ownerSpace = fullSpace.parse(values["owner-space"]), legacySpace = fullSpace.parse(values["legacy-space"]);
@@ -85,6 +88,31 @@ async function runPostMany(values: Values): Promise<void> {
   });
   const count = (outcome: string) => items.filter((item) => item.outcome === outcome).length;
   process.stdout.write(`${JSON.stringify({ operation: "post-many", dryRun: false, kinds, posted: count("posted"), already: count("already"), changed: count("changed"), refused: count("refused"), items, skipped })}\n`);
+  if (count("refused")) process.exitCode = 1;
+}
+
+/**
+ * Closes in Home the mirrored cards whose board record has closed (the index's closed rows among the keys the mirror has
+ * bound). Both modes open the owner session to read the mirror table and Home's cards; `--dry-run` publishes nothing and
+ * reports what would close, by kind and outcome. A live pass cannot be undone: a closing revision stays in the owner's feed.
+ */
+async function runCloseMany(values: Values): Promise<void> {
+  const index = values["from-index"], source = values.source, ownerSpace = values["owner-space"], legacySpace = values["legacy-space"];
+  if (typeof index !== "string" || typeof source !== "string" || typeof ownerSpace !== "string" || typeof legacySpace !== "string" || typeof values["tc-home"] !== "string" || typeof values.profile !== "string" ||
+    !fullSpace.safeParse(ownerSpace).success || !fullSpace.safeParse(legacySpace).success) throw homeMirrorRefusal("Home mirror inventory requires a board index, a source and full spaces");
+  const tcHome = values["tc-home"], profile = values.profile, host = typeof values.host === "string" ? values.host : undefined, dryRun = values["dry-run"] === true;
+  const now = Date.now();
+  const { items, skipped } = await withStopSignal(async (signal) => {
+    const { ctx } = await openOwnerSession({ tcHome, profile, ownerSpace, legacySpace, host, signal });
+    const run = { ...ctx, cache: ctx.cache ?? {} };
+    const keys = [...new Set((await homeMirrorBindings(run)).filter((binding) => binding.source.sourceId === source).map((binding) => binding.legacy.fullKey))];
+    const closed = readClosedBoardRows(index, keys);
+    return { items: await closeFromBoard(run, { sourceId: source, rows: closed.rows, now, dryRun }), skipped: closed.skipped };
+  });
+  const byKind: Record<string, Record<string, number>> = {};
+  for (const item of items) { const kind = (byKind[item.kind] ??= {}); kind[item.outcome] = (kind[item.outcome] ?? 0) + 1; }
+  const count = (outcome: string) => items.filter((item) => item.outcome === outcome).length;
+  process.stdout.write(`${JSON.stringify({ operation: "close-many", dryRun, closed: count("closed"), already: count("already"), answeredInHome: count("answered-in-home"), notMirrored: count("not-mirrored"), refused: count("refused"), byKind, items, skipped })}\n`);
   if (count("refused")) process.exitCode = 1;
 }
 

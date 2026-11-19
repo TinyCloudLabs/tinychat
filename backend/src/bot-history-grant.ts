@@ -10,11 +10,18 @@ export interface HistoryGrant {
   backendDid: string; expiresAt: Date; resources: [{ service: "kv"; space: string; path: string; actions: string[] }];
 }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+/**
+ * Accepts a grant only if it is exactly one bot's: one resource, that bot's own directory with its closing slash,
+ * get and put and nothing else. `botKey` names a bot other than Main; Main's check is what it always was.
+ */
 export async function projectBotHistoryGrant(
   node: TinyCloudNode, host: string, address: string,
   envelope: { serialized: string; siwe: string; signature: string },
+  botKey?: string,
 ): Promise<HistoryGrant> {
   const fail = () => { throw new Error("history_grant_rejected"); };
+  // The address and the key are checked here, before anything in the envelope is read.
+  const path = `${HISTORY_PREFIX}${historyBotId(address, botKey)}/`;
   const bundle: unknown = JSON.parse(envelope.serialized);
   if (!object(bundle) || typeof bundle.host !== "string" || !sameTinyCloudNode(bundle.host, host) || !object(bundle.delegationHeader) || typeof bundle.delegationHeader.Authorization !== "string") return fail();
   const authorization = bundle.delegationHeader.Authorization;
@@ -32,7 +39,6 @@ export async function projectBotHistoryGrant(
     || payload.aud?.split("#")[0]?.toLowerCase() !== node.did.toLowerCase() || !Array.isArray(payload.prf) || !payload.prf.length
     || payload.prf.some((proof: unknown) => typeof proof !== "string" || !proof)) return fail();
   const spaceId = makePkhSpaceId(session.address, 1, "applications");
-  const path = `${HISTORY_PREFIX}${historyBotId(address)}/`;
   const uri = `${spaceId}/kv/${path}`;
   if (!object(payload.att) || Object.keys(payload.att).length !== 1 || !object(payload.att[uri])) return fail();
   const actions = ["tinycloud.kv/get", "tinycloud.kv/put"];

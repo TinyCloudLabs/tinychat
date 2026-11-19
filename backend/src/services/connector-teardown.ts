@@ -1,11 +1,12 @@
 import {
-  PURGE_RECENT_ID_CAP,
+  mergePurgeLedgerIds,
   type PurgeLedger,
   type PurgeLedgerRead,
 } from "../routes/connector-webhooks.js";
 import type { ClearResult } from "./connector-queue.js";
 import type { ContentMeta } from "./content-store.js";
 import type { CredentialRevokeResult } from "./credential-store.js";
+import { withConnectorConnectionChange } from "./connector-connection-lane.js";
 import {
   isValidSource,
   keyedLogHash,
@@ -37,8 +38,8 @@ import {
  *     us holding a live key). A FAILED upstream revoke is carried out in the result and surfaced
  *     by the route — never swallowed, because the provider-side grant may still be live.
  *  3. **The content.** Every row, the index and the blobs for that ONE tenant.
- *  4. **The queue.** Last, so a crash between 3 and 4 leaves work queued for a tenant whose
- *     content is already tombstoned — which the worker then drops — rather than the reverse.
+ *  4. **The queue.** Clear any work that was queued for the connection.
+ *  5. **The purge ledger.** Remove it after cleanup while the old callback remains revoked.
  *
  * The ledger this writes is the SHIPPED one, read by `connector-drain`'s `isTombstoned` for the
  * browser path and (W7) by `ContentStore` for the server path: one watermark covers content and
@@ -79,6 +80,7 @@ export interface TeardownControl {
     address: string,
     raw: unknown,
   ): Promise<void>;
+  clearLedger(source: string, address: string): Promise<void>;
 }
 
 export interface ConnectorTeardownDeps {
@@ -104,7 +106,7 @@ export interface ConnectorTeardownResult {
   reason?: CredentialRevokeResult["reason"];
   contentRemoved: number;
   queueDropped: number;
-  /** The §6.2 watermark in force after this teardown. */
+  /** The §6.2 watermark applied during this teardown. */
   tombstonedThrough: string;
 }
 
@@ -145,7 +147,10 @@ export class ConnectorTeardownService implements ConnectorTeardown {
   ): Promise<ConnectorTeardownResult> {
     if (!isValidSource(source)) throw new Error("Invalid connector source");
     const addr = normalizeWebhookAddress(address);
+    return withConnectorConnectionChange(addr, () => this.runLocked(source, addr));
+  }
 
+  private async runLocked(source: string, addr: string): Promise<ConnectorTeardownResult> {
     // Close ingress before any credential/content deletion, including cached callback tokens.
     await this.deps.notifications.disable(source, addr);
 
@@ -165,6 +170,7 @@ export class ConnectorTeardownService implements ConnectorTeardown {
 
     // (5) Exo state. Last, so an earlier failure leaves the ledger rows in place for the retry.
     await this.deps.exo?.clearSource(source, addr);
+    await this.deps.control.clearLedger(source, addr);
 
     logTeardown(
       `op=teardown result=ok source=${source} aid=${hashed(addr)} ` +
@@ -185,7 +191,7 @@ export class ConnectorTeardownService implements ConnectorTeardown {
 
   /**
    * §6.2's ledger, merged the way `POST …/purged` merges it: MONOTONIC watermark (a teardown
-   * never moves it backwards) and `recentIds` capped at {@link PURGE_RECENT_ID_CAP}, newest
+   * never moves it backwards) and recent IDs capped, newest
    * kept. The ids are attribution only — the watermark is what protects, which is why a content
    * index we cannot read is survivable here: the purge still lands, with fewer ids named.
    */
@@ -227,18 +233,10 @@ export class ConnectorTeardownService implements ConnectorTeardown {
       this.now(),
     );
     const purgedThrough = new Date(throughMs).toISOString();
-    const recentIds = [...new Set([...(existing?.recentIds ?? []), ...ids])].slice(
-      -PURGE_RECENT_ID_CAP,
-    );
-
     const stamp = new Date(this.now()).toISOString();
-    const recentIdsAddedAt = Object.fromEntries(recentIds.map(id => [
-      id, existing?.recentIdsAddedAt?.[id] ?? stamp,
-    ]));
     await this.deps.control.writeLedger(source, address, {
       purgedThrough,
-      recentIds,
-      recentIdsAddedAt,
+      ...mergePurgeLedgerIds(existing, ids, stamp),
       updatedAt: stamp,
     });
     return purgedThrough;
