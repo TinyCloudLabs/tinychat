@@ -96,13 +96,19 @@ async function run(config: AgentChatConfig) {
 
 describe("model-caused failures are charged, clamped, even with nothing delivered", () => {
   // 60K prompt + 22K completion tokens is 820 credits; the allowance is 500.
-  test("the model calls a tool it was not offered", async () => {
+  test("the model keeps calling a tool it was not offered until the rounds run out", async () => {
     seed500();
-    const stream = await run(agentConfig(async () => sse(toolCall("tinycloud_find_meetings", "{}"), usageFrame(60_000, 22_000), "data: [DONE]\n\n"), { access: noPrivateAccess }));
+    const dispatched: string[] = [];
+    // Each round asks for the same unoffered tool: 10K + 5K tokens is 150 credits a round, three rounds.
+    const stream = await run(agentConfig(async input => {
+      if (String(input).includes("/tools/")) dispatched.push(String(input));
+      return sse(toolCall("tinycloud_find_meetings", "{}"), usageFrame(10_000, 5_000), "data: [DONE]\n\n");
+    }, { access: noPrivateAccess }));
     expect(stream).toContain('"stream_error":{"code":"routing_mismatch"}');
-    expect(used()).toBe(LIMIT);
+    expect(dispatched).toEqual([]);
+    expect(used()).toBe(LIMIT - 500 + 450);
     expect(enqueued).toHaveLength(1);
-    expect(enqueued[0].credits).toBe(500);
+    expect(enqueued[0].credits).toBe(450);
   });
 
   test("the model's tool-call arguments do not parse", async () => {
@@ -205,6 +211,27 @@ describe("Eliza /tasks: only its unambiguous model codes are charged", () => {
     await run(taskConfig({ outcome: "failed", code }, "Partial"));
     expect(used()).toBe(LIMIT - 500);
     expect(enqueued).toEqual([]);
+  });
+});
+
+describe("a tool the model was not offered (TC-3463)", () => {
+  test("gets a tool_not_found result; the model answers and the reply is a normal success", async () => {
+    seed500();
+    const dispatched: string[] = [];
+    let rounds = 0;
+    // 10K + 2K tokens is 120 credits a round.
+    const stream = await run(agentConfig(async input => {
+      if (String(input).includes("/tools/")) { dispatched.push(String(input)); return Response.json({}); }
+      rounds++;
+      return rounds === 1
+        ? sse(toolCall("tinycloud_find_meetings", "{}"), usageFrame(10_000, 2_000), "data: [DONE]\n\n")
+        : sse(frame({ id: "c", choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }), usageFrame(10_000, 2_000), "data: [DONE]\n\n");
+    }, { access: noPrivateAccess }));
+    expect(stream).not.toContain("stream_error");
+    expect(stream).toContain('"content":"Hi"');
+    expect(dispatched).toEqual([]);
+    expect(rounds).toBe(2);
+    expect(enqueued.map(record => record.credits)).toEqual([240]);
   });
 });
 

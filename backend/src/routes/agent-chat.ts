@@ -435,6 +435,11 @@ function expandUnambiguousMeetingCitations(content: string, supplied: string[]):
 /** Stable eliza-service codes meaning "this user's grant is missing or unusable". */
 const DELEGATION_ERROR_CODES = new Set(["delegation_required", "delegation_expired", "delegation_revoked"]);
 
+/** The result for a call this turn cannot serve (TC-3463): nothing is dispatched; the model gets it back as a tool result and answers without it. */
+function toolNotFound(name: string): ToolDispatchOutcome {
+  return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(name.slice(0, 64))} is not available in this conversation; answer without it)` };
+}
+
 export interface ToolDispatchOutcome {
   /** The role:"tool" content handed back to the model. */
   text: string;
@@ -459,8 +464,8 @@ async function dispatchTool(
   signal?: AbortSignal,
   allowedTools?: readonly string[],
 ): Promise<ToolDispatchOutcome> {
-  if (config.privateAccessActive === false && call.name !== "web_search") throw new StreamFailure("routing_mismatch", "model");
-  if (allowedTools && !allowedTools.includes(call.name)) throw new StreamFailure("routing_mismatch", "model");
+  if (config.privateAccessActive === false && call.name !== "web_search") return toolNotFound(call.name);
+  if (allowedTools && !allowedTools.includes(call.name)) return toolNotFound(call.name);
   let args: Record<string, unknown>;
   try {
     args = call.args ? (JSON.parse(call.args) as Record<string, unknown>) : {};
@@ -469,9 +474,7 @@ async function dispatchTool(
   }
   throwIfAborted(signal);
   // An MCP turn never falls back to eliza-service: a name the wrapper does not serve (invented or injected) is refused here.
-  if (config.mcpOwner && !config.mcpMeetings?.handles(call.name)) {
-    return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(call.name.slice(0, 64))} is not available)` };
-  }
+  if (config.mcpOwner && !config.mcpMeetings?.handles(call.name)) return toolNotFound(call.name);
   const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.handles(call.name)
     ? await config.mcpMeetings.run({ name: call.name, args, owner: config.mcpOwner, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext as unknown as RetrievalContext } : {}), ...(signal ? { signal } : {}) })
     : undefined;
@@ -728,6 +731,8 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   let finalCompletionId = "";
   let errorCode: StreamErrorCode | undefined;
   let errorCause: FailureCause | undefined;
+  /** Every call of the last dispatched round was a tool the turn did not offer (TC-3463). */
+  let notFoundOnly = false;
   let repairing = false;
   // A provider can emit a private-tool preamble in standalone content deltas
   // before the later tool_calls delta identifies it as private progress. Those
@@ -740,6 +745,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
 
   for (let round = 0; round < roundLimit; round++) {
     if (params.isAborted?.() || params.signal?.aborted) break;
+    notFoundOnly = false;
 
     // Deterministic context guard (§C.11, NO LLM): before this round's upstream
     // fetch, first cap oversize role:"tool" results, then drop the oldest
@@ -956,7 +962,6 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     // Output cut at the budget's cap is the limit; text already streamed stays with the user. A model's own length stop is a normal end.
     if (params.budget && limit && finish === "length" && lengthStoppedByBudget(limit, roundCompletionTokens, params.budget)) { errorCode = "budget_exhausted"; break; }
 
-    if (generalOnly && [...toolCalls.values()].some(call => call.name !== "web_search")) { errorCode = "routing_mismatch"; errorCause = "model"; break; }
     if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete", "model");
     if (finish === "tool_calls") {
       // A round that used up the allowance must not run its tools: nothing after them could be afforded.
@@ -992,6 +997,11 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       });
       for (const call of calls) {
         throwIfAborted(params.signal);
+        // A public-only turn offers only web_search: any other call is answered here, never dispatched or shown as activity (TC-3463).
+        if (generalOnly && call.name !== "web_search") {
+          convo.push({ role: "tool", tool_call_id: call.id, content: toolNotFound(call.name).text });
+          continue;
+        }
         params.onPhase?.("tool");
         await write(toolActivityFrame(call.name, "running"));
         let outcome: ToolDispatchOutcome;
@@ -1015,6 +1025,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
         }
         convo.push({ role: "tool", tool_call_id: call.id, content: outcome.text });
       }
+      notFoundOnly = generalOnly && calls.every(call => call.name !== "web_search");
       continue; // loop for the model's answer using the tool results
     }
 
@@ -1042,7 +1053,8 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     break; // finish_reason "stop" (or no tools) — content already streamed
   }
 
-
+  // The rounds ran out on a model that only kept calling tools it was not offered: still the model's failure.
+  if (notFoundOnly && !errorCode && !params.isAborted?.() && !params.signal?.aborted) { errorCode = "routing_mismatch"; errorCause = "model"; }
   return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}), ...(errorCause ? { errorCause } : {}) };
 }
 
