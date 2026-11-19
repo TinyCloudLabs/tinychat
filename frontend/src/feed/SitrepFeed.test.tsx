@@ -459,12 +459,12 @@ test("Accept recommendation and Drop this card wait under Undo before anything i
   await act(async () => button(article, "Undo").click());
   await timer.advance(10_000);
   expect(fixture.saved).toEqual([]);
-  await act(async () => button(article, "Accept recommendation").click());
+  await act(async () => option(article, "Careful option").click());
   await timer.advance(4000);
   expect(fixture.saved).toEqual([]);
   await timer.advance(1000);
   expect(fixture.saved).toHaveLength(1);
-  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: "ask-synthetic", action: "accept-default", choice: "careful" } });
+  expect(fixture.saved[0]?.payload).toMatchObject({ type: "sitrep.answer", data: { askId: "ask-synthetic", action: "answer", choice: "careful" } });
 });
 
 test("typed Ask me later offers three presets and appends owner history without creating an answer", async () => {
@@ -752,7 +752,7 @@ test("an ask Sam answered that its agent then closes in a new revision is one ca
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
   const timer = installFakeClock(); clock = timer;
-  await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Accept recommendation").click());
+  await act(async () => option(card(view.host, String(fixture.entry.state.card.title)), "Careful option").click());
   await timer.advance(5000);
   expect(fixture.saved).toHaveLength(1);
   expect(await closeInNewRevision(fixture, view.host, "answered")).toEqual(["Answered"]);

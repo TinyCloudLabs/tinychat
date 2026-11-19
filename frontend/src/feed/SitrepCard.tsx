@@ -1,5 +1,5 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { CheckIcon, ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowUpRightIcon, CheckIcon, ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
 import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, UNDO_SECONDS, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
@@ -30,6 +30,15 @@ function stamp(at: string) {
   const year = date.getFullYear() === new Date().getFullYear() ? "" : ` ${date.getFullYear()}`;
   return `${date.getDate()} ${MEDIUM_MONTH.format(date)}${year}, ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
+const UTC_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short", timeZone: "UTC" });
+/** A deadline or expiry in UTC, so the line reads the same on every device: "20 Nov, 02:33 UTC", with the year when it isn't this one. */
+function utcStamp(at: string) {
+  const time = Date.parse(at);
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  const year = date.getUTCFullYear() === new Date().getUTCFullYear() ? "" : ` ${date.getUTCFullYear()}`;
+  return `${date.getUTCDate()} ${UTC_MONTH.format(date)}${year}, ${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")} UTC`;
+}
 // An approval's kind in an owner's words (Monica, 11-13); a value with no plain word is left out, never shown raw.
 const GO_WORDS: Record<string, string> = { release: "Go-ahead to release", deploy: "Go-ahead to deploy", spend: "Go-ahead to spend", publish: "Go-ahead to publish" };
 const APPROVAL_WORDS: Record<string, string> = { go: "Go-ahead", openkey: "Approval in OpenKey", delegation: "Delegated access", claude: "Access for Claude", secret: "Access to a secret" };
@@ -53,18 +62,15 @@ function names(list: readonly string[]): string {
   return list.length <= 2 ? list.join(" and ") : `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`;
 }
 
-/** The card's width from which its brief and answers sit in two columns and "Known so far" is open (design mock, 11-17). */
-const WIDE_CARD_PX = 520;
 /**
- * "Known so far": the facts behind the question, folded on a phone and open once the card is wide enough to show them
- * without pushing the answers away. It decides once, when it first shows; after that it is the owner's to open or fold.
+ * A card's folded section (design mock): a title, a count, a chevron, and the section's content under it. The
+ * same style holds "Known so far" (folded at every width: the answers stay on the first screen) and an approval's
+ * "Steps" (`open`). After it first shows, it is the owner's to open or fold.
  */
-function KnownFold({ facts, children }: { facts: number; children: ReactNode }) {
-  const fold = useRef<HTMLDetailsElement>(null);
-  useLayoutEffect(() => { const node = fold.current; if (node && node.getBoundingClientRect().width >= WIDE_CARD_PX) node.open = true; }, []);
-  return <details ref={fold} className="group mt-1.5">
+function Fold({ title, count, open = false, children }: { title: string; count: string; open?: boolean; children: ReactNode }) {
+  return <details open={open} className="group mt-1.5">
     <summary className="-mx-1.5 flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-[10px] px-1.5 text-[13px] font-semibold hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9 [&::-webkit-details-marker]:hidden">
-      Known so far<span className="font-normal text-muted-foreground">{facts} {facts === 1 ? "fact" : "facts"}</span>
+      {title}<span className="font-normal text-muted-foreground">{count}</span>
       <ChevronDownIcon aria-hidden className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
     </summary>
     {children}
@@ -82,7 +88,7 @@ function LinkChips({ links, tight = false }: { links: readonly { url: string; la
     return <a key={link.url} href={link.url} title={link.url} target="_blank" rel="noopener noreferrer" className={`relative inline-flex h-[26px] min-w-0 max-w-full items-center gap-[5px] whitespace-nowrap rounded border border-blue-700/35 px-[7px] font-mono text-xs leading-none text-blue-700 transition-colors after:absolute after:-inset-x-0.5 after:-inset-y-[5px] after:content-[''] hover:border-blue-700 hover:bg-blue-700/[0.06] dark:border-blue-400/40 dark:text-blue-400 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 ${focusRing}`}>
       <span className="min-w-0 shrink overflow-hidden text-ellipsis font-semibold">{linkCaption(link as Parameters<typeof linkCaption>[0]).split(" · ")[0]}</span>
       {host && <><span aria-hidden className="shrink-0 opacity-50">·</span><span className="min-w-0 shrink-[2] overflow-hidden text-ellipsis">{host}</span></>}
-      <ExternalLinkIcon aria-hidden className="size-3 shrink-0" />
+      <ArrowUpRightIcon aria-hidden className="size-3 shrink-0" />
     </a>;
   })}</nav>;
 }
@@ -333,10 +339,10 @@ export function SitrepCard(props: Props) {
   const asking = record.kind === "ask" && responds && (!projection.answer || followup || !!text.trim());
   const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > now;
   const hint = expiryHint(record, now, state);
-  // An ask's or task's timing under its body, in the feed's words (Monica, TC-2982): "Due 13 Nov, 6:00 PM · Expires
-  // 14 Nov, 2:48 PM · in 2 h". A card that never expires says nothing about it.
+  // An ask's or task's timing, in the feed's words (TC-2982), in UTC: "Due 13 Nov, 18:00 UTC · Expires
+  // 14 Nov, 14:48 UTC · in 2 h". It stands on its own line under the answers. A card that never expires says nothing about it.
   const timing = record.kind === "ask" || record.kind === "task"
-    ? [record.deadline && `Due ${shortTime(record.deadline, now)}`, projection.expiryAt && `Expires ${shortTime(new Date(projection.expiryAt).toISOString(), now)}`, hint?.replace(/^expires in (\d+)h$/, "in $1 h")].filter(Boolean).join(" · ")
+    ? [record.deadline && `Due ${utcStamp(record.deadline)}`, projection.expiryAt && `Expires ${utcStamp(new Date(projection.expiryAt).toISOString())}`, hint?.replace(/^expires in (\d+)h$/, "in $1 h")].filter(Boolean).join(" · ")
     : "";
   const receipt = projection.answer && answerReceipt(entry, owner, projection.answer);
   // The card's source line left its face for Details (design mock, 11-17): "Rocinante board · <where it is stored>".
@@ -363,9 +369,10 @@ export function SitrepCard(props: Props) {
     entry.viewEvents?.some((event) => event.kind === "snoozed") ? [] : history.filter((item) => item.key.startsWith("snooze:")),
   ) : [];
 
-  // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the agent.
+  // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the
+  // officer who posted the card (the connection's name only when the card names none).
   // The conversation keeps its own closed box ("Leave a comment for …") above the foot, as on the lab's cards.
-  const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : agent;
+  const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : record.from || agent;
   const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo} {...(update ? { composer: { open: commenting, onOpenChange: setCommenting } } : {})}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />;
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own
@@ -389,7 +396,7 @@ export function SitrepCard(props: Props) {
         {record.context.whyNow && <div className="bg-muted px-3.5 pb-3 pt-[11px] text-sm leading-[1.45]"><span className="mb-[3px] block text-xs font-semibold leading-4 text-muted-foreground">Why now</span>{prose(record.context.whyNow, record.repo)}</div>}
         {record.context.ifNoAnswer && <div className="bg-muted px-3.5 pb-3 pt-[11px] text-sm leading-[1.45]"><span className="mb-[3px] block text-xs font-semibold leading-4 text-muted-foreground">If you don’t answer</span>{prose(record.context.ifNoAnswer, record.repo)}</div>}
       </div>}
-      {!!record.context.known.length && <KnownFold facts={record.context.known.length}><ul className="mb-1.5 mt-0.5 grid list-disc gap-1.5 pl-5 text-sm leading-[1.45] marker:text-muted-foreground">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul></KnownFold>}
+      {!!record.context.known.length && <Fold title="Known so far" count={`${record.context.known.length} ${record.context.known.length === 1 ? "fact" : "facts"}`}><ul className="mb-1.5 mt-0.5 grid list-disc gap-1.5 pl-5 text-sm leading-[1.45] marker:text-muted-foreground">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul></Fold>}
       {!!record.context.related.length && <p className="mt-2 text-sm">Earlier questions: {record.context.related.join(", ")}</p>}
     </div>}
     {/* An update's face: its outcome and what moved, the ship record, the links, then its history as one rail. */}
@@ -410,9 +417,8 @@ export function SitrepCard(props: Props) {
         onChoose={choose} onUndo={() => { countdown.undo(); setChosen(undefined); }}
         own={{ open: ownOpen || !options.length, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={waiting || busy} onText={setText} onSend={() => { if (text.trim()) choose(OWN_OPTION.id, OWN_OPTION.label); }} onCancel={() => { setText(""); setOwnOpen(false); }}
           state={chosen === OWN_OPTION.id ? (busy ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED_COPY, true)} /> }} /></div>}
-      {!waiting && asking && ((steer === "open" && record.default) || record.recommend) && <div className="mt-3 flex flex-wrap gap-2">
-        {steer === "open" && record.default && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>}
-        {record.recommend && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.recommend) ?? "the recommendation", () => askAnswer("accept-default", record.recommend, true), true)}>Accept recommendation</button>}
+      {!waiting && asking && steer === "open" && record.default && <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>
       </div>}
       {!waiting && asking && steer === "open" && record.default && <p className={`mt-2 ${fineClass}`}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</p>}
       {!waiting && responds && (!asking || followup) && <div className="mt-1 flex flex-wrap gap-x-[26px]">
@@ -659,7 +665,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     <p>{[approvalWords(approval.approvalType, approval.approvalKind), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`, approval.redeemedAt && `Used ${stamp(approval.redeemedAt)}`, approval.grantLifetime && `Access lasts ${lifetimeWords(approval.grantLifetime)}`].filter(Boolean).join(" · ")}</p>
     {approval.permissions && <p><strong className="font-semibold">Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
     {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
-    {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
+    {approval.steps && <Fold title="Steps" count={`${approval.steps.length} ${approval.steps.length === 1 ? "step" : "steps"}`} open><ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol></Fold>}
     {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center gap-1.5 underline underline-offset-2">{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
     {visibleForm && approval.codeExpected && !codeShown && <button type="button" className={quietClass} disabled={disabled} onClick={() => { engagedOnce.current = true; setCodeOpen(true); }}>Got a code? Paste it</button>}
     {codeShown && <label className="block font-medium">Approval code<input aria-label="Approval code" type="password" autoComplete="off" autoFocus={codeOpen && !code} value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>}

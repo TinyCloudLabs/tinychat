@@ -366,8 +366,8 @@ test("a comment on a typed card without an owner route is a sitrep thread messag
   const owner = await ownerFixture(); const agent = await owner.agent("comment-typed");
   value(await publishFeedCard(agent.output, typedCard(syntheticRecord("ask"))));
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Leave a comment for Test agent").click());
-  await enter(view.host, "Leave a comment for Test agent", "Which one is cheaper?");
+  await act(async () => button(view.host, "Leave a comment for SyntheticOfficer").click());
+  await enter(view.host, "Leave a comment for SyntheticOfficer", "Which one is cheaper?");
   await click(transport, button(view.host, "Send"));
   await countdown(transport);
   const rows = await stored(agent);
