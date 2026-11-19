@@ -86,21 +86,26 @@ if (!live) {
   throw new Error(`${values.url} does not serve deployment ${pages.deploymentUrl} after ${values['live-minutes']} minutes: ${detail}.${liveError ? ` Last fetch: ${liveError}.` : ''}`);
 }
 // Every other host that must serve this build (the other web domains of the same product). One Pages project serves
-// several domains, and a domain that sits on another project keeps an old build: each must name the deployed commit.
+// several domains, and a domain that sits on another project keeps an old build: each must name the deployed commit,
+// or send visitors to the production host with a redirect (tinycloud.chat does that for everyone but held visitors).
+// The redirect is not followed, so a redirecting host is reported as redirecting, never as serving the commit.
+const productionHost = new URL(values.url).host;
 const stale = [];
+const seen = [];
 for (const host of values['also-host']) {
   let last;
   const result = await poll(values['live-minutes'], async () => {
-    last = await hostServesCommit(host, values.commit);
-    console.log(`${host} ${last.ok ? 'serves' : `does not serve yet (${last.served})`} ${values.commit}`);
+    last = await hostServesCommit(host, values.commit, undefined, { productionHost });
+    console.log(`${host} ${last.redirectedTo ? `redirects to ${last.redirectedTo} (${last.served}); not checked for the commit itself` : last.ok ? `serves ${values.commit}` : `does not serve yet (${last.served})`}`);
     return last.ok ? last : undefined;
   });
   if (!result) stale.push(explainUnservedHost(host, last?.served ?? 'no answer ()', values.commit));
+  else seen.push(result.redirectedTo ? `${host} redirects to ${result.redirectedTo}` : `${host} serves the same commit`);
 }
 if (stale.length > 0) throw new Error(`These hosts do not serve ${values.commit} after ${values['live-minutes']} minutes:\n- ${stale.join('\n- ')}\nSee docs/deployment.md.`);
 requireTip('After verifying the web hosts');
 
-const alsoServed = values['also-host'].length ? `; ${values['also-host'].join(', ')} serve the same commit` : '';
+const alsoServed = seen.length ? `; ${seen.join('; ')}` : '';
 const summary = `- Web: ${values.url} serves Cloudflare Pages deployment ${pages.deploymentUrl} ([logs](${pages.detailsUrl})) from \`${values.commit}\`${alsoServed}\n`;
 console.log(summary.trim());
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);

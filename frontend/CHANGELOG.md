@@ -16,6 +16,103 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.0-beta.8
+
+### Minor Changes
+
+- 74889d5: A Feed card has an address: `tinycloud.one/chat/feed/<card id>`, and the shorter `tinycloud.one/feed/<card id>`. Opening it (signed out, you sign in first and land on the same card) shows the Feed with that card open and outlined for a moment, under History or Snoozed if that is where it lives. If the card isn't in your feed (it was removed or expired, or it's in someone else's feed), the Feed opens as usual with a short note you can dismiss. Details: TC-3279.
+- 74889d5: Feed: answering a card takes it out of the list at once, with one pill at the top of the list that names what you answered, with Undo and a five-second countdown. A second answer sends the first at once, and the pill then says where it went ("Sent to" and the agent's name). Acknowledge, Drop this card and Ask me later (Show me later on an update) use the same pill and never say "Sent to". Counts drop when you answer and come back if you Undo. An answered card waits in Pending at the end of the list ("You chose …", with the post and "Waiting on" the agent's name); Pending is always open and a tap on a row opens the card again, where Change answer lives. A card that asks now has "See N options" under its row, which opens the same card as tapping the post and turns into "Hide options" while it is open.
+- 74889d5: Feed: a collapsed card now shows just its post, up to four lines (or its title if the agent wrote no post), in a flat list that runs edge to edge. The agent's name, the time and the title no longer appear on the collapsed row. Nothing opens by itself: Needs you starts with every card collapsed. An open card shows the post first, then the title, then the rest. Updates in All are listed newest first. The Cards and Expanded views show the post too.
+- 74889d5: An open Feed card is easier to scan. "Known so far" and an approval's steps are collapsed sections you can open, the expiry shows in UTC, and tapping the suggested option accepts it, so there's no separate Accept recommendation button.
+
+  Details: TC-3300
+
+- 74889d5: The Feed is one list: Needs you, Updates, Pending and History, one under the other, each with a heading that stays in view while you scroll its section. The island at the top shows Needs you, Updates and History with their counts. Tap one to jump to it, and the highlight follows as you scroll. An empty section is dimmed on the island and can't be tapped. When nothing needs you, Needs you still comes first and says so. The old Needs you, All and History views are gone.
+
+  Details: TC-3300
+
+- 74889d5: You can share a meeting or voice note recording with a link. People who open it sign in, find it under Shared with me in their Library, and can read the transcript and play the audio until 30 days after you create the link, or until you stop sharing. You choose how long the link can be opened: 1, 7 or 30 days. On iOS and Android, tinycloud.one/s/ links open in the app.
+
+  Details: TC-3195
+
+### Patch Changes
+
+- 74889d5: Links in the Feed open in a sheet inside the app. On the web the page rises from the bottom over the Feed, with Open in browser and Close at the top; a site that doesn't allow being shown inside another page says so, with the same Open in browser button. In the iPhone and Android apps the page opens in the phone's in-app browser over the app. Cmd-click, Ctrl-click and middle click still open a new tab, and email links work as before.
+
+  Details: TC-3404
+
+- 74889d5: On a computer with a mouse, a Feed card opens over the dimmed Feed instead of inside the list. The X, Escape or a tap outside closes it.
+
+  Details: TC-3300
+
+- 74889d5: On a phone, the Feed opens one row at a time. Opening a row folds the one that was open, dims the others and brings the open row up under its section heading. "Show less" at the foot of an open card folds it and brings its row back into view. With reduced motion nothing animates, and the open row still comes into view. An answer that's still counting down is still sent when you open another row.
+
+  Details: TC-3300
+
+- 74889d5: Updates has an Acknowledge all button, and you have 5 seconds to undo it.
+
+  Details: TC-3300
+
+- 74889d5: Opening or folding a card in the Feed keeps the keyboard with it: focus moves to the open card's Show less and back to its row, and Escape folds an open card.
+
+  Details: TC-3300
+
+- 74889d5: Feed section buttons are easier to tap on phones.
+
+  Details: TC-3300
+
+- 74889d5: The Fireflies row now says that connecting imports your meetings from Fireflies. Details: TC-2778
+- 74889d5: If you disconnect Fireflies and connect it again, Sync now imports your older meetings again.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes. Details: TC-2778
+- 74889d5: Internal changes for Granola meeting sync; nothing in the app changes. Details: TC-3292
+- 74889d5: Connectors no longer lists Granola, which couldn't be connected.
+
+  Details: TC-3292
+
+- 74889d5: Feed: when a collapsed card has no summary, its second line shows the card's title instead of the start of its body or its "why now" line.
+- 4712b3f: Returning visitors on the Home address see the page during an update.
+
+  Details: TC-3450
+
+- 74889d5: Internal changes for build checks; nothing in the app changes.
+
+  Details: TC-2778
+
+- 9b37cea: When a One App asks for more access and OpenKey doesn't add it, One says why, using lines it already shows: "Couldn't ask for permission. Nothing changed. Try again." when another try can help, the different-account line when another OpenKey account was picked, and otherwise "{App} can't do this without that access."
+
+  Sending to Main after the session has ended says "Your session expired. Sign in again to talk to Main."
+
+  The Conversation Canvas permission error shows only its own sentence.
+
+  Details: TC-3445
+
+- 74889d5: Internal changes for sign-in; nothing in the app changes.
+
+  Details: TC-3030
+
+- 74889d5: When TinyCloud is already running as many bots as it can, a message to a bot now says so and that it wasn't sent, with a Try again button, instead of the general "couldn't start" line.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: In the bot view, a small line between the messages says what the bot did on its computer, such as "Ran 3 commands" or "Changed 1 file", and it is still there after a reload. The bot's name at the top opens a panel with the bot's avatar, its activity with times (newest first), and where it runs, such as "Private · asleep". The panel is a column beside the chat on wide screens and a sheet on smaller ones. From the panel you can change a bot's name, shape and colour, or delete the bot after a confirmation (Main can't be deleted).
+
+  Details: TC-3325
+
+- 74889d5: Settings has a Chat view card where you can choose Classic or Bots. Classic stays the default. With Bots, your bots are listed under Chat in the sidebar, on the rail and above the chat on a phone, and Chat opens the bot you had open last. New bot is turned off, with the reason, once you have as many bots as your account allows.
+
+  Details: TC-3325
+
+- 74889d5: The Chat tab can show a bot's own chat in place of the classic chat, behind a "Chat view" choice kept per account on each device. Classic stays the default, so nothing changes unless an account picks Bots and is let into bots. The bot view has the same composer as Main's chat, keeps a reply going when you switch bots, saves history into your space the same way, and offers Try again when a reply fails.
+
+  Details: TC-3325
+
 ## 0.15.0-beta.7
 
 ### Minor Changes
