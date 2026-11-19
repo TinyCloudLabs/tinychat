@@ -307,9 +307,18 @@ It builds `bots/` (`linux/amd64`) as `ghcr.io/tinycloudlabs/tinychat-bots:<sha>`
 (`infra/phala-ingress`) as `ghcr.io/tinycloudlabs/tinychat-backend:ingress-bots-<sha>`, writes both pushed digests
 over `BOTS_IMAGE_DIGEST` and `INGRESS_IMAGE_DIGEST` in a copy of `docker-compose.phala.yml`, and deploys that copy
 with the complete encrypted env set below. It checks the CVM runs the backend's pinned dstack OS image before and
-after, syncs `allowed_envs`, and probes `https://<BOTS_INGRESS_DOMAIN>/healthz` for `ok`. The job summary lists the
+after, syncs `allowed_envs`, and probes `/healthz` for `ok` through the CVM's TLS-passthrough host. The job summary lists the
 commit, both digests, the rendered compose's sha256 and the env names. To roll back, run it with an earlier SHA;
 the `bot-data` and `bot-budget` volumes are kept.
+
+The bots service is live when this check passes. Run it the same way outside the workflow:
+
+```bash
+node .github/scripts/bots-healthz.mjs <APP_ID>-443s.<gateway> bots.tinycloud.xyz
+```
+
+`<APP_ID>-443s.<gateway>` is the CVM's TLS-passthrough host (the backend's `BOTS_SERVICE_CONNECT_HOST`), and the
+certificate is checked against `bots.tinycloud.xyz`. The public name bots.tinycloud.xyz does not route; never probe it.
 
 Its configuration lives in the `production-bots` GitHub environment:
 
