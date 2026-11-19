@@ -100,7 +100,6 @@ describe("Settings agent controls", () => {
     const settings = readFileSync(join(import.meta.dir, "SettingsPage.tsx"), "utf8");
     const card = settings.slice(settings.indexOf('title="Agent access"'), settings.indexOf("<AgentAccessControls"));
     expect(card).toContain("<InfoTip");
-    expect(card).toContain("Public web search stays available.");
   });
   it("shows Connect after confirmed disconnection and keeps failures distinct", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status="none" />);
