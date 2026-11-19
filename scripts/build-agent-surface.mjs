@@ -15,7 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bump this one SHA to import a reviewed prompts build.
-export const PROMPTS_COMMIT = "8837bcea54afeda15c22cc0ddfaf71d9ecb48a0d";
+export const PROMPTS_COMMIT = "2d6a6fd8ae1b9e969d9fc7321054b64a6b35c87b";
 const SITE_URL = "https://tinycloud.one/agents/abilities";
 const PREFIX = "/agents/abilities";
 const ROOT_DISCOVERY = ["llms-full.txt", "robots.txt", "sitemap.xml", ".well-known"];
@@ -77,18 +77,25 @@ export function installAgentSurface(siteDir, outDir) {
   }
 
   const skillsIndexPath = join(outDir, ".well-known", "agent-skills", "index.json");
-  const skillsIndex = JSON.parse(readFileSync(skillsIndexPath, "utf8"));
-  for (const skill of skillsIndex.skills) skill.url = prefixed(skill.url);
-  writeFileSync(skillsIndexPath, `${JSON.stringify(skillsIndex, null, 2)}\n`);
+  if (existsSync(skillsIndexPath)) {
+    const skillsIndex = JSON.parse(readFileSync(skillsIndexPath, "utf8"));
+    for (const skill of skillsIndex.skills ?? []) skill.url = prefixed(skill.url);
+    writeFileSync(skillsIndexPath, `${JSON.stringify(skillsIndex, null, 2)}\n`);
+  }
 
   const apiCatalogPath = join(outDir, ".well-known", "api-catalog");
-  const apiCatalog = JSON.parse(readFileSync(apiCatalogPath, "utf8"));
-  apiCatalog.linkset[0]["service-desc"] = [{
-    href: "https://tinycloud.one/mcp/server-card",
-    type: "application/mcp-server-card+json",
-    title: "TinyCloud MCP server card",
-  }];
-  writeFileSync(apiCatalogPath, `${JSON.stringify(apiCatalog, null, 2)}\n`);
+  if (existsSync(apiCatalogPath)) {
+    const apiCatalog = JSON.parse(readFileSync(apiCatalogPath, "utf8"));
+    const links = apiCatalog.linkset?.[0];
+    if (links) {
+      links["service-desc"] = [{
+        href: "https://tinycloud.one/mcp/server-card",
+        type: "application/mcp-server-card+json",
+        title: "TinyCloud MCP server card",
+      }];
+      writeFileSync(apiCatalogPath, `${JSON.stringify(apiCatalog, null, 2)}\n`);
+    }
+  }
 
   const rootIndexPath = join(outDir, "llms.txt");
   writeFileSync(

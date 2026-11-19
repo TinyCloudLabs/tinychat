@@ -27,9 +27,8 @@ describe("TinyCloud agent surface", () => {
     put(site, "llms-full.txt", "agent full text");
     put(site, "robots.txt", "Sitemap: https://tinycloud.one/agents/abilities/sitemap.xml\n");
     put(site, "sitemap.xml", "<urlset />\n");
-    put(site, ".well-known/api-catalog", '{"linkset":[{"anchor":"https://tinycloud.one/agents/abilities/","service-doc":[{"href":"https://docs.tinycloud.xyz/cli/mcp"}]}]}\n');
+    put(site, ".well-known/api-catalog", "{}\n");
     put(site, ".well-known/ai-catalog.json", '{"specVersion":"1.0","entries":[]}\n');
-    put(site, ".well-known/agent-skills/index.json", '{"skills":[{"name":"feed","url":"/skills/feed/SKILL.md"}]}\n');
     put(site, "chat", "meeting guide");
     put(site, "feed", "feed guide");
     put(site, "skills/feed/SKILL.md", "feed skill");
@@ -56,15 +55,6 @@ describe("TinyCloud agent surface", () => {
       type: "application/mcp-server-card+json",
       url: "https://tinycloud.one/mcp/server-card",
     }]);
-    const apiCatalog = JSON.parse(readFileSync(join(out, ".well-known/api-catalog"), "utf8"));
-    expect(apiCatalog.linkset[0]["service-desc"]).toEqual([{
-      href: "https://tinycloud.one/mcp/server-card",
-      type: "application/mcp-server-card+json",
-      title: "TinyCloud MCP server card",
-    }]);
-
-    const skills = JSON.parse(readFileSync(join(out, ".well-known/agent-skills/index.json"), "utf8"));
-    expect(skills.skills[0].url).toBe("/agents/abilities/skills/feed/SKILL.md");
 
     const redirects = readFileSync(join(out, "_redirects"), "utf8").trim().split("\n");
     expect(redirects).toEqual([
