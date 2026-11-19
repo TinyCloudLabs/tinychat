@@ -126,57 +126,25 @@ OMP also probes `GET /models` and `GET /props` without a token at startup; the g
 
 ### Web access
 
-Main can use the web only when its owner turns it on (Main's chat, Web access; off by default). The setting is one of `off`,
-`listed` (only the owner's sites, subdomains included) or `any` public site. It is saved by the supervisor in
-`/data/bots/<bot id>/web.json`, outside everything the sandbox mounts, and the supervisor gives it to the gateway
-before each message; the gateway decides every call, so the sandbox cannot widen it. A missing or unreadable file
-reads as `off`.
+Main can use the web only when its owner turns it on: in Main's chat, tap Web access and choose `off` (the default),
+`listed` (only the owner's sites, subdomains included) or `any` public site. Turning it on shows this warning first:
 
-- The sandbox's OMP has one MCP server, `web`, which is the gateway's `POST /v1/mcp` on the same egress socket
-  (bot token required). Its two tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`.
-  OMP's own `web_search` and `fetch` tools are switched off in the sandbox's `config.yml`.
-- Two things make outside calls. The gateway dials only the provider's API host and `bots-fetch`, never an address a
-  page or the model named. A **search**
-  goes to the search provider (Tavily, Search only), pinned like the model's (`BOTS_TEST_WEB_URL` is a loopback mock
-  for tests); it gets the query and fixed flags, nothing else: not the owner's list, not an address, not who is asking.
-  A **page** is read by our own `bots-fetch` container (`src/fetch-main.ts`), which holds no key and shares only the
-  private `fetch-link` network with the gateway; its own way out is the separate `fetch-out` network
-  (`BOTS_TEST_FETCH_URL` is a loopback mock for tests). Without `TAVILY_API_KEY` a search answers "isn't available";
-  a page read needs no key.
-- Per call, in this order: setting not `off` (and a key, for a search), then for `search` a query of 1 to 200
-  characters, and for `fetch` a readable address (http or https, no user info, the scheme's own port (80, 443), a real multi-label host
-  name, no IP address, `localhost` or local-only suffix, at most 2,048 characters), on the owner's list when the
-  setting is `listed`, and one the bot may read: typed by its owner in a message, or returned by an earlier search or
-  page. A listed search is filtered to the owner's sites here, after the provider answers (it asks for 20 results so
-  enough survive). Then the day's budgets (per bot 100 searches and 300 pages, all bots 2,000 and 6,000; counted when a
-  call is made, saved on the budget volume) and one web call at a time per bot.
-- `bots-fetch` takes `POST /fetch {"url", "hosts"}` (`hosts`: the owner's list, or null for any public site) and
-  applies `src/fetch-guard.ts` whoever asks. It resolves the name itself, refuses the name if **any** answer is not a
-  public address (private, loopback, link-local and cloud-metadata ranges, CGNAT, multicast, reserved, and the IPv6
-  forms that embed IPv4: mapped, NAT64, 6to4, Teredo), connects to a checked address (never the name again, so a
-  resolver that changes its answer gains nothing) and verifies TLS against the name. Each redirect (3 at most) is
-  checked the same way and against the owner's list. Limits: 1 MiB of body (cut, not held), 16 KiB of headers, 20 s for
-  the whole read, text types only (HTML, XHTML, plain text), no compression, no cookie, referer or credential, one fixed
-  `User-Agent`, 8 reads at once. The page's own site sees the bots server's IP address and that User-Agent, not the
-  owner. It does not honour `robots.txt` (a read the owner asked for) and it cannot read PDFs or pages that need
-  JavaScript; the model is told so in one sentence when that happens.
-- Page HTML becomes plain text in the reader (`src/page-text.ts`): scripts, styles and embedded content go, an image
-  becomes its alt text (nothing is fetched or referenced), a link becomes `text (address)` so an address the page really
-  offered can be read next. The gateway then checks that the address the reader says it ended on is readable and on the
-  owner's list, strips what could draw (Markdown and HTML images, other tags), cuts at 40,000 characters and wraps it in
-  a fixed untrusted-content label. Fetched text reaches the owner only as Main's words; the chat and notes renderers'
-  image rules (ask before loading) still apply to those.
-- Refusals and failures answer the model with a fixed sentence, never provider or page text. The log and the saved
-  counts hold counts by tool and outcome only: no query, address or page text.
-- The owner's list refuses shared places (`github.io`, `pages.dev`, `blogspot.com`, `co.uk` and the like), since listing
-  one covers everyone who publishes there; one tenant's own name (`me.github.io`) is fine. The built-in list names the
-  platforms we know of; it is not the full public suffix list, so a listed site that lets others publish is still open
-  to anyone who can post on it.
-- What this does not stop, and the owner is told: a page or search result the bot reads can carry instructions, and
-  Main may put what it knows into a search query (at most 200 characters), choose among the addresses a page offered
-  (a few hundred characters a day at the caps), or ask the owner to paste or open a link that carries data. What Main
-  has put into its own state also persists. Anyone who can post on a listed site can still try this. The warning shown
-  when the owner turns the setting on says so, and the list setting is the safer one.
+> A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links Main gives you unless you trust them.
+>
+> This setting lets Main open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
+
+The setting is saved by the supervisor in `/data/bots/<bot id>/web.json` and given to the gateway before each message;
+the gateway applies it on every call. A missing or unreadable file reads as `off`.
+
+- Main's OMP has one MCP server, `web`: the gateway's `POST /v1/mcp` on the egress socket (bot token required). Its
+  tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
+- A search goes to the search provider (Tavily Search; `BOTS_TEST_WEB_URL` is a loopback mock for tests). Without
+  `TAVILY_API_KEY` a search answers "isn't available".
+- A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
+  without a key (`BOTS_TEST_FETCH_URL` is a loopback mock for tests). It cannot read PDFs or pages that need JavaScript.
+- Page HTML becomes plain text (`src/page-text.ts`) and is wrapped in a fixed untrusted-content label before Main sees it.
+- Daily budgets per bot and for all bots, and the call timeout, are set with the `BOTS_WEB_*` variables below.
+- The log and the saved counts hold counts by tool and outcome only.
 
 ### Saved state
 

@@ -267,8 +267,7 @@ const PAGE_FAILURES: Record<string, WebError> = {
  * read must be a readable address, and on the owner's list when there is one), cut at MAX_PAGE_CHARS and wrapped.
  */
 export async function readPage(service: PageService, url: URL, policy: WebPolicy): Promise<PageOutcome> {
-  // The fetch process gets exactly the address the gateway checked, without a fragment: a fragment is free text the
-  // known-address check ignores, so sending it would let the bot attach words to any address it may read.
+  // The fetch process gets exactly the address the gateway checked, without a fragment.
   const key = addressKey(url.href);
   if (key === undefined) return { ok: false, error: "address" };
   const result = await postJson(service.fetch, `${service.url}/fetch`, {}, { url: key, hosts: policy.mode === "listed" ? policy.hosts : null }, service.timeoutMs);

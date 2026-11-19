@@ -26,7 +26,7 @@ export function parseHosts(text: string): string[] | null {
   return hosts.length > 0 && hosts.length <= MAX_HOSTS && hosts.every(isHostname) ? hosts : null;
 }
 
-/** Turning web access on, or widening it to any site, is what the injection warning stands in front of. */
+/** The warning shown before web access is turned on or widened to any site. */
 function needsWarning(from: MainWebMode, to: MainWebMode): boolean {
   return (from === "off" && to !== "off") || (from === "listed" && to === "any");
 }

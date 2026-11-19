@@ -57,7 +57,7 @@ describe("page text", () => {
     expect(await text("<div>a   b\t\tc</div><div>d</div><ul><li>x</li><li>y</li></ul><br><br><br><br>z")).toBe("a b c\nd\n\nx\ny\n\nz");
   });
 
-  test("broken and hostile HTML does not throw and keeps what is readable", async () => {
+  test("broken HTML does not throw and keeps what is readable", async () => {
     const out = await text("<p>ok</p><div <<<>><a href='x'>y</a><scr<script>ipt>z</p></div></p>>>&&&;;<!-- <p>c</p> --><![CDATA[q]]>");
     expect(out).toContain("ok");
     expect(out).not.toContain("<p>c</p>");

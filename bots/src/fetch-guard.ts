@@ -4,8 +4,8 @@
 // What it guarantees, in the order a request meets it:
 //  - the address passes `readableAddress` (http or https, no user info, port 80 or 443, a real multi-label name);
 //  - the name is resolved here, once per hop, and EVERY answer must be a public address (see blockedAddress);
-//  - the connection is made to one of those checked addresses, never to the name again, so a second answer from a
-//    rebinding resolver cannot be used; TLS verifies the certificate against the original name;
+//  - the connection is made to one of those checked addresses, never to the name again; TLS verifies the certificate
+//    against the original name;
 //  - each redirect (at most MAX_REDIRECTS) is run through all of the above again, and through the owner's site list;
 //  - at most MAX_BODY_BYTES of body are read, only text-like types are accepted, one deadline covers the whole read.
 // Nothing is sent but a GET with a fixed User-Agent: no cookie, no referer, no body, no credential.

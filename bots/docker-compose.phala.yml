@@ -7,8 +7,6 @@
 #
 # TLS ends inside this CVM (the TC-1012 / dstack-ingress pattern): only dstack-ingress publishes a port; the
 # supervisor has no published port and no outbound network. Only the gateway holds REDPILL_API_KEY and TAVILY_API_KEY.
-# Main's web access: the gateway reaches the model and the search provider; pages are read by bots-fetch, a separate
-# key-less container whose only inbound path is the private fetch-link network it shares with the gateway.
 services:
   bots-supervisor:
     image: ghcr.io/tinycloudlabs/tinychat-bots@sha256:BOTS_IMAGE_DIGEST
@@ -96,9 +94,7 @@ services:
       - bot-budget:/var/lib/bots-gateway
     restart: unless-stopped
 
-  # Reads web pages for Main (bots/src/fetch-main.ts). Holds no key and no volume. It dials only public addresses
-  # (every answer of every name is checked, on every redirect) and has no network but the one it reaches the internet on
-  # and the private link to the gateway; it shares nothing with the supervisor, the sandboxes or the ingress.
+  # Reads web pages for Main.
   bots-fetch:
     image: ghcr.io/tinycloudlabs/tinychat-bots@sha256:BOTS_IMAGE_DIGEST
     platform: linux/amd64
@@ -158,9 +154,8 @@ networks:
     internal: true
   egress:
     driver: bridge
-  # The gateway and the page reader, nothing else: no route out, so the reader's answers can only go back to the gateway.
+  # Network for the page reader.
   fetch-link:
     internal: true
-  # The page reader's way to the public internet. Nothing else is on it.
   fetch-out:
     driver: bridge

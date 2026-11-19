@@ -172,7 +172,7 @@ describe("names that resolve to somewhere internal", () => {
       lookup: async () => {
         lookups++;
         const now = answers;
-        answers = ["169.254.169.254"]; // what a rebinding resolver says the next time it is asked
+        answers = ["169.254.169.254"]; // what the resolver answers the next time it is asked
         return now;
       },
       connect: async ip => {
