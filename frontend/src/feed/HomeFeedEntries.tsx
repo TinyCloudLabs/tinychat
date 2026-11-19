@@ -1111,7 +1111,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
             attention={attention(entry)} closed={closed} stale={retained} reference={reference} onSaved={onSaved} {...(priority !== undefined ? { priority } : {})}
             foot={{ onClose: (kind) => closeCard(entry, kind), onLater: (until) => askLater(entry, until), ...(wake ? { wake } : {}) }} />}
       {/* The foot of a long card: fold it from where reading stopped. */}
-      {collapse && !retained && single && <button type="button" aria-expanded onClick={() => fold(entry, true)} className={`${footActionClass} mt-3 -ml-1.5`}>Show less</button>}
+      {collapse && !retained && single && <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry, true)} className={`${footActionClass} mt-3 -ml-1.5`}>Show less</button>}
     </HomeCardView></div></CardWaitContext.Provider>;
   }
   /** A card in the list: a row, or open in place (Needs you's first card is open). A post is a row opening its page. */
