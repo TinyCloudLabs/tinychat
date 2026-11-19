@@ -5,7 +5,7 @@
 // channel.
 
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import type { Sandbox, SandboxLauncher } from "./bot";
@@ -23,6 +23,8 @@ const READY_TIMEOUT_MS = 60_000;
 const STOP_GRACE_MS = 15_000;
 /** How long teardown lets `runsc run` finish on its own (OMP closed its output) before killing the sandbox. */
 const EXIT_GRACE_MS = 5_000;
+const GATEWAY_DELETE_TIMEOUT_MS = 1_000;
+const GATEWAY_DELETE_DELAYS_MS = [0, 100, 300];
 const STDERR_TAIL_CHARS = 2000;
 const STATE_COPY = join(import.meta.dir, "state-copy-main.ts");
 /** Restores run in this cgroup below /bots, so the memory a restored state takes counts toward the bots' total. */
@@ -335,6 +337,28 @@ export class RunscHost implements SandboxLauncher {
     return response.json();
   }
 
+  async cleanupEgress(layout: BotLayout): Promise<boolean> {
+    try {
+      // The gateway creates this directory before registering the bot and removes it after dropping the registration.
+      if (!lstatSync(layout.egressDir, { throwIfNoEntry: false })) return true;
+      for (const delay of GATEWAY_DELETE_DELAYS_MS) {
+        if (delay > 0) await Bun.sleep(delay);
+        try {
+          const response = await fetch(`http://gateway/bots/${layout.botId}`, {
+            unix: join(this.#cfg.egressRoot, "control.sock"),
+            method: "DELETE",
+            redirect: "error",
+            signal: AbortSignal.timeout(GATEWAY_DELETE_TIMEOUT_MS),
+          });
+          if (response.status === 204 && !lstatSync(layout.egressDir, { throwIfNoEntry: false })) return true;
+          void response.body?.cancel().catch(() => {});
+        } catch { /* Retry an incomplete cleanup. */ }
+      }
+    } catch { /* A failed directory check also leaves cleanup pending. */ }
+    log("gateway_cleanup_pending", layout.botId);
+    return false;
+  }
+
   async launch(layout: BotLayout): Promise<Sandbox> {
     if (!this.#baseSpec) throw new Error("sandbox host not initialised");
     // A sandbox whose end was not confirmed still holds its tmpfs; end it first, or refuse to start over it.
@@ -343,7 +367,13 @@ export class RunscHost implements SandboxLauncher {
     if (leftover !== undefined && !(await this.#end(layout, leftover))) throw new Error("earlier sandbox not confirmed stopped");
     const token = randomBytes(32).toString("hex");
     let proc: Subprocess<"pipe", "pipe", "pipe"> | undefined;
-    let teardown: Promise<void> | undefined;
+    let teardown: Promise<void | "gateway_cleanup_pending"> | undefined;
+    let stopping: ReturnType<Sandbox["stop"]> | undefined;
+    let registering: Promise<void> | undefined;
+    const register = () => {
+      if (stopping || teardown) return Promise.reject(new Error("sandbox stopping"));
+      return registering ??= this.#registerEgress(layout.botId, token, layout.ownerId).finally(() => { registering = undefined; });
+    };
     // Set once the tmpfs holds the restored state; only then is it saved. A failed restore leaves the snapshot as
     // it was.
     let restored = false;
@@ -369,13 +399,14 @@ export class RunscHost implements SandboxLauncher {
       (teardown ??= (async () => {
         await Promise.race([proc?.exited, Bun.sleep(EXIT_GRACE_MS)]);
         await this.#end(layout, restored, proc);
-        await this.#control("DELETE", layout.botId).catch(() => {});
+        await registering?.catch(() => {});
+        if (!(await this.cleanupEgress(layout))) return "gateway_cleanup_pending" as const;
       })());
     try {
       await this.#mountState(layout);
       restored = true;
       await this.#pushWeb(layout);
-      await this.#control("PUT", layout.botId, token);
+      await register();
       const spec = sandboxSpec(this.#baseSpec, {
         rootfs: this.#cfg.rootfs,
         token,
@@ -403,10 +434,14 @@ export class RunscHost implements SandboxLauncher {
       // A broken protocol (or closed output) ends the sandbox. Both settle even if the teardown fails; stop()
       // reports that.
       void rpc.closed.then(() => destroy()).catch(() => {});
-      const exited = child.exited.then(() => destroy()).catch(() => {});
+      const exited = child.exited.then(() => destroy()).then(() => {}, () => {});
       try {
         await rpc.ready(READY_TIMEOUT_MS);
-        await rpc.request({ type: "set_event_filter", events: ["message_update", "message_end"], messageUpdates: "delta" });
+        await rpc.request({
+          type: "set_event_filter",
+          events: ["message_update", "message_end", "tool_execution_start", "tool_execution_end"],
+          messageUpdates: "delta",
+        });
         await rpc.request(
           { type: "open_session", sessionDir: SANDBOX_SESSION_DIR, provider: "tinycloud", modelId: this.#cfg.model },
           READY_TIMEOUT_MS,
@@ -415,15 +450,15 @@ export class RunscHost implements SandboxLauncher {
         log("sandbox_stderr", layout.botId, { stderr });
         throw error;
       }
-      let stopping: Promise<void> | undefined;
       return {
         nextId: () => rpc.nextId(),
         request: (command, timeoutMs) => rpc.request(command, timeoutMs),
         onFrame: listener => rpc.onFrame(listener),
+        onHostToolCall: handle => rpc.onHostToolCall(handle),
         exited,
         refreshEgress: async () => {
           await this.#pushWeb(layout);
-          await this.#control("PUT", layout.botId, token);
+          await register();
         },
         snapshot,
         stop: () =>
@@ -435,7 +470,7 @@ export class RunscHost implements SandboxLauncher {
               // Already closed.
             }
             await Promise.race([child.exited, Bun.sleep(STOP_GRACE_MS)]);
-            await destroy();
+            return destroy();
           })()),
       };
     } catch (error) {
@@ -559,15 +594,14 @@ export class RunscHost implements SandboxLauncher {
     await this.#gateway("POST", `/bots/${layout.botId}/web/addresses`, { urls });
   }
 
-  /** The gateway's control socket: register (PUT) or drop (DELETE) one bot's egress socket and token. */
-  async #control(method: "PUT" | "DELETE", botId: string, token?: string): Promise<void> {
+  async #registerEgress(botId: string, token: string, owner: string): Promise<void> {
     const response = await fetch(`http://gateway/bots/${botId}`, {
       unix: join(this.#cfg.egressRoot, "control.sock"),
-      method,
+      method: "PUT",
       headers: { "content-type": "application/json" },
-      body: token ? JSON.stringify({ token }) : undefined,
+      body: JSON.stringify({ token, owner }),
       signal: AbortSignal.timeout(5000),
     });
-    if (!response.ok) throw new Error(`gateway ${method} failed: ${response.status}`);
+    if (!response.ok) throw new Error(`gateway PUT failed: ${response.status}`);
   }
 }

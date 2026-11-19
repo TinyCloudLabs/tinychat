@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Bot, RunningLimit, type Sandbox, type SandboxLauncher } from "../bot";
 import { botLayout } from "../layout";
 import { type BotApi, createApp } from "../server";
+import { signedCallHeader } from "../signed-call";
 import { INVALID_HOSTS, readWebPolicy } from "../web-policy";
 
 const OPTIONS = { idleMs: 60_000, turnTimeoutMs: 300_000, maxTurnBytes: 1024 };
@@ -87,10 +88,13 @@ describe("the owner's web setting", () => {
 describe("the web service routes", () => {
   const SECRET = "s".repeat(64);
   const OWNER = "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa";
-  const put = (app: ReturnType<typeof createApp>, body: unknown, secret = SECRET) =>
-    app(new Request("http://bots.internal/v1/bots/main/web", {
-      method: "PUT", headers: { authorization: `Bearer ${secret}`, "x-tinycloud-owner": OWNER }, body: typeof body === "string" ? body : JSON.stringify(body),
+  const put = (app: ReturnType<typeof createApp>, input: unknown, secret = SECRET) => {
+    const body = typeof input === "string" ? input : JSON.stringify(input);
+    const path = "/v1/bots/main/web";
+    return app(new Request(`http://bots.internal${path}`, {
+      method: "PUT", headers: { authorization: signedCallHeader(secret, { direction: "to-service", environment: "private", owner: OWNER, bot: "main", method: "PUT", path, body }) }, body,
     }));
+  };
 
   function app(overrides: Partial<BotApi> = {}) {
     const saved: unknown[] = [];

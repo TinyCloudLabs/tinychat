@@ -2,6 +2,14 @@ import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import * as serverPackage from "@tinyboilerplate/server";
 import { BackendStorageLane } from "./backend-storage-lane.js";
 import {
+  assertConnectorPlaintextTestMode,
+  isSealedQueueEntry,
+  openQueueEntry,
+  sealQueueEntry,
+  slotFor,
+  type ConnectorRetentionKeys,
+} from "./connector-retention-keys.js";
+import {
   isValidMeetingId,
   isValidSource,
   keyedLogHash,
@@ -366,6 +374,7 @@ export interface ConnectorQueueOptions {
    * Absent = a private per-instance lane (the shipped default for tests and standalone use).
    */
   storageLane?: BackendStorageLane;
+  retentionKeys?: ConnectorRetentionKeys;
 }
 
 interface QueueState {
@@ -431,12 +440,14 @@ export class ConnectorQueue {
    */
   private readonly storageLane: BackendStorageLane;
   private readonly isDisabled: ConnectorQueueOptions["isDisabled"];
+  private readonly retentionKeys?: ConnectorRetentionKeys;
 
   constructor(
     private readonly node: TinyCloudNode,
     options: ConnectorQueueOptions = {},
   ) {
     this.isDisabled = options.isDisabled;
+    this.retentionKeys = options.retentionKeys;
     this.maxItems = options.maxItems ?? PENDING_CAP;
     this.maxDeadItems = options.maxDeadItems ?? DEAD_CAP;
     this.ttlMs = options.ttlMs ?? QUEUE_TTL_MS;
@@ -514,7 +525,7 @@ export class ConnectorQueue {
         swept.dropped,
       );
       this.logDeadChanges(source, address, swept.promoted);
-      return sortByReceivedAt(swept.items);
+      return sortByReceivedAt(state.items);
     });
   }
 
@@ -547,7 +558,7 @@ export class ConnectorQueue {
         swept.dropped,
       );
       this.logDeadChanges(source, address, swept.promoted);
-      return swept.dead;
+      return state.dead;
     });
   }
 
@@ -584,7 +595,7 @@ export class ConnectorQueue {
       );
       await this.runStorage(() => this.deleteKey(corruptQueueKey(source, address)));
       this.logDeadChanges(source, address, swept.promoted);
-      return { pending: swept.items.length, dead: swept.dead.length };
+      return { pending: state.items.length, dead: state.dead.length };
     });
   }
 
@@ -867,7 +878,8 @@ export class ConnectorQueue {
   private async countStored(key: string): Promise<number> {
     const raw = await this.runStorage(() => this.readRaw(key));
     if (!Array.isArray(raw.value)) return 0;
-    return raw.value.filter((entry) => parsePendingItem(entry) !== null).length;
+    const keys = this.liveKeys();
+    return raw.value.filter((entry) => this.parseEntry(entry, key, keys, parsePendingItem) !== null).length;
   }
 
   /**
@@ -994,9 +1006,9 @@ export class ConnectorQueue {
     );
     this.logDeadChanges(source, address, swept.promoted);
 
-    const depth = items.length;
+    const depth = state.items.length;
     return entries.map((entry, i) => {
-      const survived = items.some((item) => itemKey(item) === itemKey(entry));
+      const survived = state.items.some((item) => itemKey(item) === itemKey(entry));
       const status: EnqueueStatus = survived ? statuses[i]! : "dropped";
       if (status !== "dropped") {
         logQueue(
@@ -1071,6 +1083,43 @@ export class ConnectorQueue {
     };
   }
 
+  private liveKeys(): Map<number, Buffer> {
+    return new Map(this.retentionKeys?.getLiveDayKeys().map(({ day, key }) => [day, key]));
+  }
+
+  private parseEntry<T extends PendingItem>(
+    raw: unknown,
+    storageKey: string,
+    keys: ReadonlyMap<number, Buffer>,
+    parse: (value: unknown) => T | null,
+  ): T | null {
+    if (!isSealedQueueEntry(raw)) return parse(raw);
+    const key = keys.get(raw.slot);
+    if (key === undefined) return null;
+    const item = parse(openQueueEntry(key, storageKey, raw));
+    return item !== null && slotFor(Date.parse(item.receivedAt) + this.ttlMs) === raw.slot
+      ? item : null;
+  }
+
+  private async writeQueue<T extends PendingItem>(storageKey: string, items: T[]): Promise<T[]> {
+    if (this.retentionKeys === undefined) {
+      assertConnectorPlaintextTestMode();
+      await this.writeJson(storageKey, items);
+      return items;
+    }
+    const keys = this.liveKeys();
+    const retained: T[] = [];
+    const sealed = items.flatMap(item => {
+      const slot = slotFor(Date.parse(item.receivedAt) + this.ttlMs);
+      const key = keys.get(slot);
+      if (key === undefined) return [];
+      retained.push(item);
+      return [sealQueueEntry(key, storageKey, slot, item)];
+    });
+    await this.writeJson(storageKey, sealed);
+    return retained;
+  }
+
   /** Emit promotion success only after both dead-first writes have acknowledged. */
   private logDeadChanges(
     source: string,
@@ -1111,14 +1160,14 @@ export class ConnectorQueue {
     address: string,
   ): Promise<QueueState> {
     const pendingKey = pendingQueueKey(source, address);
+    const deadKey = deadLetterKey(source, address);
     const raw = await this.runStorage(() => this.readRaw(pendingKey));
-    const deadRaw = await this.runStorage(() =>
-      this.readRaw(deadLetterKey(source, address)),
-    );
+    const deadRaw = await this.runStorage(() => this.readRaw(deadKey));
+    const keys = this.liveKeys();
 
-    const dead = Array.isArray(deadRaw.value)
+    let dead = Array.isArray(deadRaw.value)
       ? deadRaw.value
-          .map(parseDeadItem)
+          .map(entry => this.parseEntry(entry, deadKey, keys, parseDeadItem))
           .filter((item): item is DeadItem => item !== null)
       : [];
 
@@ -1127,9 +1176,7 @@ export class ConnectorQueue {
       (deadRaw.present && !Array.isArray(deadRaw.value)) ||
       (Array.isArray(deadRaw.value) && dead.length !== deadRaw.value.length);
     if (deadQueueNeedsRepair) {
-      await this.runStorage(() =>
-        this.writeJson(deadLetterKey(source, address), dead),
-      );
+      dead = await this.runStorage(() => this.writeQueue(deadKey, dead));
     }
 
     if (!raw.present || raw.value === null || raw.value === undefined) {
@@ -1154,7 +1201,7 @@ export class ConnectorQueue {
     const items: PendingItem[] = [];
     const invalid: string[] = [];
     for (const entry of raw.value) {
-      const parsed = parsePendingItem(entry);
+      const parsed = this.parseEntry(entry, pendingKey, keys, parsePendingItem);
       if (parsed === null) {
         const candidate = (entry as Record<string, unknown> | null)?.meetingId;
         invalid.push(
@@ -1193,17 +1240,15 @@ export class ConnectorQueue {
     // Promotion is at-least-once: acknowledge the dead copy before removing pending. If the
     // second write fails, the item is duplicated durably and a retry converges idempotently.
     if (deadChanged) {
-      await this.runStorage(() =>
-        this.writeJson(deadLetterKey(source, address), dead),
+      state.dead = await this.runStorage(() =>
+        this.writeQueue(deadLetterKey(source, address), dead),
       );
-      state.dead = dead;
       this.logDeadDrops(source, address, dropped);
     }
     if (itemsChanged) {
-      await this.runStorage(() =>
-        this.writeJson(pendingQueueKey(source, address), items),
+      state.items = await this.runStorage(() =>
+        this.writeQueue(pendingQueueKey(source, address), items),
       );
-      state.items = items;
     }
   }
 

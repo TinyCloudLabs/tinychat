@@ -31,7 +31,9 @@
  */
 
 import {
+  CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE,
   readSurfaceBlocked,
+  type ConnectorCredentialTeardown,
   type ConnectorSurfaceBlockedReason,
   type ConnectorWebhookConfigPoll,
   type ConnectorWebhookDisabled,
@@ -174,6 +176,10 @@ export interface BackgroundSyncWebhooks {
     rotate?: boolean;
   }): Promise<ConnectorWebhooksResult<ConnectorWebhookEnabled>>;
   disable(): Promise<ConnectorWebhooksResult<ConnectorWebhookDisabled>>;
+  /** Fireflies only; see `ConnectorWebhooksClient.teardownCredential`. */
+  teardownCredential?(
+    source: string,
+  ): Promise<ConnectorWebhooksResult<ConnectorCredentialTeardown | null>>;
   getPending(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
   drain(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
   /**
@@ -611,6 +617,26 @@ export async function disableBackgroundSync(
   emit: BackgroundSyncEmit,
 ): Promise<void> {
   emit((s) => ({ ...s, busy: "disabling", notice: null }));
+  // Fireflies: the stored server sign-in goes with the sync, BEFORE the config
+  // is disabled (the route closes ingress and writes the purge ledger first).
+  // A failed provider revoke still counts as deleted; it is reported below.
+  let revokeUnconfirmed = false;
+  if (deps.source === "fireflies" && deps.webhooks.teardownCredential !== undefined) {
+    const torn = await deps.webhooks.teardownCredential(deps.source);
+    if (torn.status === "ok") {
+      revokeUnconfirmed = torn.value !== null && !torn.value.upstreamRevoked;
+    } else if (torn.status !== "feature-dark") {
+      emit((s) => ({
+        ...s,
+        busy: null,
+        phase: configFailurePhase(torn.status),
+        queue: null,
+        queueUnavailable: false,
+        notice: failureNotice(torn),
+      }));
+      return;
+    }
+  }
   const result = await deps.webhooks.disable();
   if (result.status !== "ok") {
     emit((s) => ({
@@ -637,12 +663,14 @@ export async function disableBackgroundSync(
     lastIngest: null,
     ingestBlocked: null,
     resyncConfirming: false,
-    notice: {
-      tone: "info",
-      message:
-        "Background notifications are off. Delete the webhook in Fireflies too — the old address stops working immediately.",
-      retryable: false,
-    },
+    notice: revokeUnconfirmed
+      ? { tone: "error", message: CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE, retryable: false }
+      : {
+          tone: "info",
+          message:
+            "Background notifications are off. Delete the webhook in Fireflies too — the old address stops working immediately.",
+          retryable: false,
+        },
   }));
 }
 

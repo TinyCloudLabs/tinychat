@@ -3,6 +3,7 @@
 import { SparklesIcon, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { BOT_COLOURS, BotShape, type ColourId, type ShapeId } from "./botShapes";
 import { BOTS_STRINGS } from "./botsStrings";
 
 export interface BotFace {
@@ -14,8 +15,14 @@ export interface BotFace {
 
 export const MAIN_BOT: BotFace = { name: BOTS_STRINGS.mainName, hue: 250, icon: SparklesIcon };
 
+export interface ShapedBotFace {
+  name: string;
+  shape: ShapeId;
+  colour: ColourId;
+}
+
 interface BotAvatarProps {
-  bot: BotFace;
+  bot: BotFace | (ShapedBotFace & { key?: string });
   working?: boolean;
   size?: number;
   /** Hidden from screen readers where the bot's name is already said beside it. */
@@ -24,7 +31,9 @@ interface BotAvatarProps {
 }
 
 export function BotAvatar({ bot, working = false, size = 40, decorative = false, className }: BotAvatarProps) {
-  const Icon = bot.icon;
+  const face = !("icon" in bot) && bot.key === "main" && bot.name === MAIN_BOT.name && bot.shape === "pebble" && bot.colour === "blue"
+    ? MAIN_BOT : bot;
+  const hue = "icon" in face ? face.hue : BOT_COLOURS[face.colour];
   return (
     <span
       className={cn("relative inline-flex shrink-0", className)}
@@ -37,11 +46,13 @@ export function BotAvatar({ bot, working = false, size = 40, decorative = false,
         aria-hidden
         className="flex size-full items-center justify-center rounded-[30%] text-foreground/80 [background:var(--tint-light)] dark:[background:var(--tint-dark)]"
         style={{
-          ["--tint-light" as string]: `oklch(0.94 0.035 ${bot.hue})`,
-          ["--tint-dark" as string]: `oklch(0.32 0.04 ${bot.hue})`,
+          ["--tint-light" as string]: `oklch(0.94 0.035 ${hue})`,
+          ["--tint-dark" as string]: `oklch(0.32 0.04 ${hue})`,
         }}
       >
-        <Icon style={{ width: size * 0.48, height: size * 0.48 }} strokeWidth={1.75} />
+        {"icon" in face
+          ? <face.icon style={{ width: size * 0.48, height: size * 0.48 }} strokeWidth={1.75} />
+          : <BotShape shape={face.shape} size={size * 0.75} />}
       </span>
       {working ? (
         <span

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import express from "express";
+import { NonceGuard, verifyCall } from "../bots-signed-call.js";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { botsFromEnv, createBotsRouter } from "../routes/bots.js";
@@ -8,6 +9,11 @@ const key = `0x${"03".repeat(32)}`;
 const enabled = "0xAAAAaaaaAAAAaaaaAAAAaaaaAAAAaaaaAAAAaaaa";
 const other = "0x2222222222222222222222222222222222222222";
 const secret = "bots-test-secret-not-real";
+
+const signedFor = (call: { url: string; method?: string; headers: Headers; body?: BodyInit | null }) => {
+  const claims = verifyCall(call.headers.get("authorization"), { method: call.method!, path: new URL(call.url).pathname, body: call.body == null ? undefined : String(call.body) }, { secret, direction: "to-service", environment: "private", nonces: new NonceGuard() });
+  return claims ? { owner: claims.owner, bot: claims.bot } : undefined;
+};
 
 const SETTINGS = { mode: "listed", hosts: ["docs.example.com"], available: true, today: { searches: 4, pages: 9, blocked: 1 } };
 
@@ -53,8 +59,8 @@ describe("bots web access routes", () => {
       expect(await response.json()).toEqual(SETTINGS);
       expect(run.seen[0]!.url).toBe("http://bots.test/v1/bots/main/web");
       expect(run.seen[0]!.method).toBe("GET");
-      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${enabled.toLowerCase()}`);
-      expect(run.seen[0]!.headers.get("authorization")).toBe(`Bearer ${secret}`);
+      expect(signedFor(run.seen[0]!)).toEqual({ owner: `did:pkh:eip155:1:${enabled.toLowerCase()}`, bot: "main" });
+      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBeNull();
       expect(run.seen[0]!.signal).toBeTruthy();
     } finally { await run.close(); }
   });
@@ -68,7 +74,7 @@ describe("bots web access routes", () => {
       expect(run.seen[0]!.url).toBe("http://bots.test/v1/bots/main/web");
       expect(run.seen[0]!.method).toBe("PUT");
       expect(run.seen[0]!.headers.get("content-type")).toBe("application/json");
-      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${enabled.toLowerCase()}`);
+      expect(signedFor(run.seen[0]!)).toEqual({ owner: `did:pkh:eip155:1:${enabled.toLowerCase()}`, bot: "main" });
       expect(JSON.parse(String(run.seen[0]!.body))).toEqual({ mode: "any", hosts: ["a.example.com"] });
     } finally { await run.close(); }
   });
