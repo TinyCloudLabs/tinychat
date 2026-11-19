@@ -166,10 +166,11 @@ describe("our failures are free, even after content was delivered", () => {
     expect(enqueued).toEqual([]);
   });
 
-  test("a web search result over the size cap", async () => {
+  test("a web search result over its read bound", async () => {
     seed500();
     const fetchImpl = (async (input: unknown) => {
-      if (String(input).includes("/tools/")) return new Response(JSON.stringify({ result: { text: "x".repeat(70_000) } }));
+      // TC-3464: web_search is trimmed up to a 4 x 64K read bound; past it the result still overflows.
+      if (String(input).includes("/tools/")) return new Response(JSON.stringify({ result: { text: "x".repeat(270_000) } }));
       return sse(toolCall("web_search", "{}"), usageFrame(10_000, 2_000), "data: [DONE]\n\n");
     }) as typeof fetch;
     const stream = await run(agentConfig(fetchImpl));
