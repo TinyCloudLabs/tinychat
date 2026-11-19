@@ -27,36 +27,16 @@ export function instantUpdatesLabel(state: BackgroundSyncState): string {
   return backgroundSyncStatus(state).label;
 }
 
-/** Resolves the `**strong**` / `*em*` runs the pinned consent copy carries. Nothing else is interpreted. */
-function Marked({ text }: { text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g).filter((part) => part.length > 0);
-  return (
-    <>
-      {parts.map((part, index) => {
-        if (part.startsWith("**") && part.endsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
-        if (part.startsWith("*") && part.endsWith("*")) return <em key={index}>{part.slice(1, -1)}</em>;
-        return <span key={index}>{part}</span>;
-      })}
-    </>
-  );
-}
 
 function ConsentBlock({ copy }: { copy: BackgroundSyncConsentCopy }) {
   return (
     <div className="ms-consent">
       <b>{copy.heading}</b>
       <p>{copy.intro}</p>
-      <b>{copy.changesHeading}</b>
-      <ul>
-        {copy.bullets.map((bullet) => (
-          <li key={bullet.slice(0, 32)}>
-            <Marked text={bullet} />
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }
+
 
 export interface FirefliesManageProps {
   connectorName: string;
@@ -64,10 +44,8 @@ export interface FirefliesManageProps {
   consentVariant: OffStateConsentVariant;
   /** TC-641: unknown shows the transcript-writer disclosure, not an untrue denial. */
   transcriptConsent?: TranscriptConsentState;
-  ingestConsentChecked: boolean;
   /** The user pressed the switch while it was off: the consent is showing, nothing is enabled yet. */
   consentOpen: boolean;
-  onIngestConsentChange: (checked: boolean) => void;
   onToggleInstant: () => void;
   onConfirmEnable: () => void;
   onCancelEnable: () => void;
@@ -144,32 +122,14 @@ export function FirefliesManage(props: FirefliesManageProps) {
       {state.phase === "off" && props.consentOpen && (
         <div className="ms-subpanel">
           <ConsentBlock copy={consentCopy} />
-          {props.consentVariant === "B-ingest" && (
-            <>
-              {consentCopy.disconnectNote && (
-                <p className="ms-consent-note">
-                  <Marked text={consentCopy.disconnectNote} />
-                </p>
-              )}
-              <label className="ms-check">
-                <input
-                  type="checkbox"
-                  checked={props.ingestConsentChecked}
-                  onChange={(event) => props.onIngestConsentChange(event.target.checked)}
-                />
-                <span>{consentCopy.consentCheckbox}</span>
-              </label>
-            </>
-          )}
+
           <div className="ms-subpanel-actions">
             <button
               type="button"
               className="ms-btn1"
-              aria-disabled={busy || (props.consentVariant === "B-ingest" && !props.ingestConsentChecked)}
+              aria-disabled={busy}
               onClick={() => {
-                if (!busy && (props.consentVariant !== "B-ingest" || props.ingestConsentChecked)) {
-                  props.onConfirmEnable();
-                }
+                if (!busy) props.onConfirmEnable();
               }}
             >
               {state.busy === "enabling" ? "Turning on…" : "Turn on instant updates"}

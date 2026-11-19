@@ -58,10 +58,10 @@ import {
 } from "@/lib/connectors/firefliesSync";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import {
+  getConnectorKey,
   isSecretsUnlocked,
   onSecretsUnlocked,
 } from "@/lib/connectors/connectorSecrets";
-import { getConnectorKey, isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
 import {
   ingestQueuedMeetings,
   type TargetedIngestBlockedReason,
@@ -586,7 +586,7 @@ async function drainConnectedConnectors(
         (trigger === "mount" || trigger === "unlock")
         && descriptor.source === "fireflies"
         && connection?.status === "connected"
-        && (isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw))
+        && isSecretsUnlocked(tcw)
         && isFirefliesStale(connection.lastSyncedAt, readClock(options))
         && generation === storeGeneration
       ) {
@@ -614,7 +614,7 @@ async function drainConnectedConnectors(
             const isCurrent = () =>
               generation === storeGeneration
               && !controller.signal.aborted
-              && (isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw));
+              && isSecretsUnlocked(tcw);
             activeCatchUps.add(entry);
             try {
               entry.promise = catchUp(tcw, descriptor, FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS, {
@@ -634,7 +634,7 @@ async function drainConnectedConnectors(
         deriveDrainConnectorRecord(
           descriptor.source,
           state,
-          !(isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw)),
+          !isSecretsUnlocked(tcw),
         ),
       );
     } catch {
@@ -670,7 +670,7 @@ export function buildHeadlessDrainDeps(
     webhooks,
     secrets: {
       // A property read, never a prompt.
-      isUnlocked: () => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
+      isUnlocked: () => isSecretsUnlocked(tcw),
       unlock: async () => ({
         ok: false,
         error: { message: "The headless drain never unlocks. Open Connectors to unlock and sync." },
@@ -693,7 +693,7 @@ async function runFirefliesCatchUp(
   },
 ): Promise<void> {
   const isCurrent = () =>
-    options.isCurrent() && !options.signal.aborted && (isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw));
+    options.isCurrent() && !options.signal.aborted && isSecretsUnlocked(tcw);
   try {
     if (!isCurrent()) return;
     const key = await getConnectorKey<unknown>(tcw, descriptor);

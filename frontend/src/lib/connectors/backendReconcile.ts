@@ -41,7 +41,6 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { isSecretsUnlocked } from "./connectorSecrets";
-import { isConnectorKeysReady } from "./namedConnectorSecrets";
 import { meetingKvKey, transcriptKvKey } from "./connectorStore";
 import type {
   ConnectorMeetingContent,
@@ -155,7 +154,7 @@ export interface ReconcileBackendMeetingsOptions {
   onPendingSnapshot?: (rows: readonly ConnectorMeetingMeta[], observedAt: string) => Promise<void>;
 }
 
-const defaultSecrets: BackendReconcileSecrets = { isUnlocked: (tcw) => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw) };
+const defaultSecrets: BackendReconcileSecrets = { isUnlocked: isSecretsUnlocked };
 
 /** The user-space record's schema version — a later reader must be able to tell. */
 export const USER_SPACE_MEETING_VERSION = 1;

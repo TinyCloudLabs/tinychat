@@ -92,7 +92,7 @@ export type RecorderEvent =
   /** A recording was already running (a WebView reload, or one started offline). */
   | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; elapsedMs: number; elapsedAt: number; mic: RecorderMic; autoStop?: boolean }
   /** "Keep going": the running recording's limit was raised by the engine. */
-  | { type: "LIMIT_EXTENDED"; maxDurationMs: number }
+  | { type: "LIMIT_EXTENDED"; maxDurationMs: number; /** The limit is gone for this recording: no stop time is shown. */ noLimit?: true }
   | ({ type: "MIC_STATE"; mic: RecorderMic; audioMs?: number; captureSourceUnconfirmed?: boolean } & (
     { elapsedMs: number; elapsedAt: number } | { elapsedMs?: never; elapsedAt?: never }))
   | { type: "CAPTURE_ISSUE"; id: string | null; issue: RecorderCaptureIssue }
@@ -272,7 +272,9 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
         localUpload: null,
       };
     case "LIMIT_EXTENDED":
-      if (state.phase !== "recording" || event.maxDurationMs <= state.maxDurationMs) return state;
+      if (state.phase !== "recording") return state;
+      if (event.noLimit) return { ...state, maxDurationMs: Math.max(event.maxDurationMs, state.maxDurationMs), autoStop: false };
+      if (event.maxDurationMs <= state.maxDurationMs) return state;
       return { ...state, maxDurationMs: event.maxDurationMs };
     case "MIC_STATE": {
       const captureSourceUnconfirmed = event.captureSourceUnconfirmed ?? state.captureSourceUnconfirmed;

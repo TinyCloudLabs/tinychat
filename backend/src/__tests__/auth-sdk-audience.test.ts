@@ -11,6 +11,7 @@ import type { TinyCloudWeb as TinyCloudWebClass } from "@tinycloud/web-sdk";
 import APP_MANIFEST from "../../../manifest.json";
 import { nativePermissions } from "../../../frontend/src/lib/openkeyNative.js";
 import { createAuthRouter } from "../routes/auth.js";
+import { frontendOriginsFromEnv } from "../cors-origins.js";
 
 const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
 const SESSION_URI = /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/;
@@ -59,7 +60,9 @@ async function startAuthServer() {
   const app = express();
   app.use(express.json());
   app.use("/api/auth", createAuthRouter({
-    nonceStore, privateKey: "isolated-sdk-audience-test-key", frontendUrl: "https://tinycloud.chat",
+    nonceStore, privateKey: "isolated-sdk-audience-test-key",
+    // Production's FRONTEND_URL with the built-in FRONTEND_ORIGINS default (both web sites).
+    frontendOrigins: frontendOriginsFromEnv("https://tinycloud.chat", {}),
   }));
   const server = await new Promise<Server>((resolve) => {
     const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
@@ -193,6 +196,7 @@ describe("real SDK SIWE audience", () => {
 
   for (const [name, origin, domain, claimedDomain] of [
     ["production web", "https://tinycloud.chat/chat", "tinycloud.chat"],
+    ["Home site", "https://home.tinycloud.xyz/", "home.tinycloud.xyz"],
     ["Pages preview", "https://feature-12.tinychat-4jq.pages.dev/chat", "feature-12.tinychat-4jq.pages.dev"],
     ["Tauri development", "http://localhost:5186/chat", "localhost", "localhost"],
     ["macOS Tauri", "tauri://localhost/chat", "localhost"],
@@ -230,6 +234,34 @@ describe("real SDK SIWE audience", () => {
       });
       expect(await server.verify(wrongUri, await account.signMessage({ message: wrongUri }))).toEqual({
         status: 400, error: "invalid_origin",
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("native hooks neither broaden the app scope nor establish an audience alone", async () => {
+    const server = await startAuthServer();
+    try {
+      const invalidHooks: Record<string, string[]>[] = [
+        { "sql/xyz.other.application/home_feed": ["tinycloud.hooks/subscribe"] },
+        { "sql/xyz.tinycloud.tinychat/": ["tinycloud.hooks/subscribe"] },
+        { "sql/xyz.tinycloud.tinychat/home_feed": ["tinycloud.sql/read"] },
+      ];
+      for (const hooks of invalidHooks) {
+        const message = signNativeWithAbilities(await server.nonce(false), {
+          kv: { "xyz.tinycloud.tinychat/threads/": ["tinycloud.kv/get"] },
+          hooks,
+        });
+        expect(await server.verify(message, await account.signMessage({ message }))).toEqual({
+          status: 400, error: "invalid_native_audience",
+        });
+      }
+      const message = signNativeWithAbilities(await server.nonce(false), {
+        hooks: { "sql/xyz.tinycloud.tinychat/home_feed": ["tinycloud.hooks/subscribe"] },
+      });
+      expect(await server.verify(message, await account.signMessage({ message }))).toEqual({
+        status: 400, error: "invalid_native_audience",
       });
     } finally {
       await server.close();

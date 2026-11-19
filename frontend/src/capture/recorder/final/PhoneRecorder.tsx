@@ -1,3 +1,4 @@
+import { AutoStopControls } from "./AutoStopControls";
 import { readableError } from "@/lib/readableError";
 import {
   useCallback,
@@ -719,7 +720,10 @@ export function PhoneRecorder({
             </button>
           </div>
           {view.timer.countdown ? (
-            <div className="pr-countdown">{view.timer.countdown.text}</div>
+            <>
+              <div className="pr-countdown">{view.timer.countdown.text}</div>
+              <AutoStopControls />
+            </>
           ) : idleDenied ? (
             // Mic denied keeps the recording layout's positions, so it holds the stop time's line.
             <div className="pr-countdown" data-placeholder="true" aria-hidden="true">{FINAL_COPY.stopAt("0:00")}</div>

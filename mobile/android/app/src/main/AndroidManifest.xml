@@ -64,6 +64,18 @@
             android:name=".capture.CaptureService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- Quick Settings "Record" tile: opens MainActivity with RECORD; never starts the mic itself. -->
+        <service
+            android:name=".capture.RecordTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_capture_shortcut"
+            android:label="@string/capture_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 
     <!-- Permissions -->

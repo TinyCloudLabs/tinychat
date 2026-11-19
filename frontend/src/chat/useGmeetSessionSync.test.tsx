@@ -19,13 +19,12 @@
 // exercised inside a bun test process — the idiom
 // `useBackgroundDrain.test.tsx` / `ConnectorsCard.test.ts` established.
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { TINYCHAT_KEY_PREFIX } from "@tinyboilerplate/core";
 
 import {
   GMEET_CONNECTOR_ID,
@@ -46,7 +45,6 @@ import type {
   GmeetSyncSummary,
 } from "@/lib/connectors/gmeetSync";
 import type { ConnectorConnection, ConnectorDescriptor } from "@/lib/connectors/types";
-import { connectorKeyPath } from "@/lib/connectors/namedConnectorSecrets";
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -121,27 +119,16 @@ function syncOk(patch: Partial<GmeetSyncSummary> = {}) {
  */
 function vault(options: { unlocked: boolean; token?: string | null }) {
   let getCalls = 0;
-  const owner = "0x00000000000000000000000000000000000000aa";
-  const resource = `urn:tinycloud:encryption:did:pkh:eip155:1:0x00000000000000000000000000000000000000AA:default/${TINYCHAT_KEY_PREFIX}`;
-  const siwe = options.unlocked
-    ? `Resources:\n- urn:recap:${Buffer.from(JSON.stringify({ att: { [resource]: { "tinycloud.encryption/decrypt": [{}] } } })).toString("base64url")}`
-    : "Signed session without connector decrypt";
   const tcw = {
-    session: () => ({ address: owner, walletAddress: owner, chainId: 1, siwe }),
     secrets: {
       isUnlocked: options.unlocked,
-    },
-    kv: {
       get: async () => {
         getCalls++;
         const token = options.token === undefined ? REFRESH_TOKEN : options.token;
         return token === null
-          ? { ok: false, error: { code: "KV_NOT_FOUND", message: "no secret" } }
-          : { ok: true, data: { data: JSON.stringify({ v: 2, keyPath: connectorKeyPath(availableGmeetRow), ciphertext: token }) } };
+          ? { ok: false, error: { code: "NOT_FOUND", message: "no secret" } }
+          : { ok: true, data: token };
       },
-    },
-    keys: {
-      decrypt: async (envelope: { ciphertext: string }) => new TextEncoder().encode(envelope.ciphertext),
     },
   } as unknown as TinyCloudWeb;
   return { tcw, getCalls: () => getCalls };
@@ -210,15 +197,6 @@ function harness(
     syncs: () => syncs,
   };
 }
-
-const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-beforeAll(() => {
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: "https://tinycloud.chat" } } });
-});
-afterAll(() => {
-  if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
-  else Reflect.deleteProperty(globalThis, "window");
-});
 
 beforeEach(() => {
   resetGmeetSessionSyncForTests();

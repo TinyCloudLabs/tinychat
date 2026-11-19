@@ -20,6 +20,7 @@ import {
 import type { Request, Response } from "express";
 import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projection.js";
 import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
+import { RedPillAttestationError } from "../redpill-aci.js";
 
 const AGENT_ID = "92361e74-91ed-43a2-9656-5cc37ff3a07a";
 const ADDR = "0xabc";
@@ -74,6 +75,7 @@ function baseConfig(fetchImpl: typeof fetch): AgentChatConfig {
     redpillBaseUrl: "https://redpill.test/v1",
     defaultModel: () => "phala/gpt-oss-120b",
     isModelOffered: (m) => m.startsWith("phala/"),
+    redpillFetch: fetchImpl,
     fetchImpl,
     maxRounds: 3,
   };
@@ -247,9 +249,75 @@ describe("parseSseJson", () => {
     }
     expect(out).toEqual([{ a: 1 }]);
   });
+  it("skips empty data keepalives before yielding the next payload", async () => {
+    const out: unknown[] = [];
+    for await (const value of parseSseJson(sseStream([
+      "data:\n\n",
+      dataFrame({ a: 1 }),
+      "data: [DONE]\n\n",
+    ]))) {
+      out.push(value);
+    }
+    expect(out).toEqual([{ a: 1 }]);
+  });
 });
 
 describe("orchestrateToolCalling", () => {
+  it("never uses the generic fetch implementation for model requests", async () => {
+    let genericCalls = 0;
+    const genericFetch = (async () => {
+      genericCalls++;
+      return { ok: true, body: sseStream([dataFrame({ choices: [{ delta: { content: "unverified" }, finish_reason: "stop" }] })]) };
+    }) as typeof fetch;
+
+    await expect(orchestrateToolCalling({
+      config: {
+        ...baseConfig(genericFetch),
+        redpillFetch: undefined,
+        redpillBaseUrl: "https://api.redpill.ai/v1",
+      },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "Hello" }],
+      entityId: "e",
+      write: () => {},
+    })).rejects.toThrow();
+
+    expect(genericCalls).toBe(0);
+  });
+  it("meeting interpretation never uses the generic fetch implementation for model requests", async () => {
+    let genericCalls = 0;
+    const genericFetch = (async () => {
+      genericCalls++;
+      return { ok: true, body: sseStream([dataFrame({ choices: [{ delta: { content: "unverified" }, finish_reason: "stop" }] })]) };
+    }) as typeof fetch;
+
+    const frames: string[] = [], traces: unknown[] = [];
+    const result = await orchestrateToolCalling({
+      config: {
+        ...baseConfig(genericFetch),
+        redpillFetch: undefined,
+        redpillBaseUrl: "https://api.redpill.ai/v1",
+        meetingContentRetrievalEnabled: true,
+        meetingContentModelAllowed: () => true,
+        mcpOwner: "synthetic-owner",
+        meetingTrace: trace => traces.push(trace),
+      },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "What happened in my last meeting?" }],
+      entityId: "e",
+      write: frame => frames.push(frame),
+    });
+
+    const message = "This request could not be completed. Please try again.";
+    expect(result.errorCode).toBeUndefined();
+    expect(traces[0]).toMatchObject({ terminal: "agent_failed" });
+    expect(forwardedContent(frames).split(message)).toHaveLength(2);
+    expect(frames.join("")).not.toContain('"stream_error"');
+    expect(genericCalls).toBe(0);
+    expect(forwardedContent(frames)).not.toContain("unverified");
+  });
+
+
   describe("legacy result size limits", () => {
     for (const adapter of ["stream", "bodyless"] as const) {
       for (const length of [65536, 65537]) {
@@ -1464,6 +1532,38 @@ describe("orchestrateToolCalling", () => {
 });
 
 describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
+  it("keeps failed meeting usage server-side without sending usage metadata", async () => {
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    _setStripeClient(mockStripe(null));
+    const restore = stubCatalogFetch();
+    const entries: unknown[] = [], traces: unknown[] = [];
+    const fetchImpl = (async () => new Response(
+      dataFrame({ id: "private-completion-id", choices: [{ delta: { tool_calls: [{ index: 0, id: "call", function: { name: "prepare_meeting_turn", arguments: "{}" } }] }, finish_reason: "length" }] })
+        + dataFrame({ usage: { prompt_tokens: 17, completion_tokens: 5 } }) + "data: [DONE]\\n\\n",
+    )) as typeof fetch;
+    try {
+      const { req, res } = makeReqRes();
+      await createAgentChatHandler({
+        ...baseConfig(fetchImpl),
+        meetingContentRetrievalEnabled: true,
+        meetingTrace: trace => traces.push(trace),
+        streamRuntime: { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), log: () => {} },
+        flusher: { enqueue: entry => entries.push(entry) } as AgentChatConfig["flusher"],
+      })(req, res);
+
+      const text = res.chunks.join("");
+      const message = "The model service returned an incomplete reply. Please try again.";
+      expect(text.split(message)).toHaveLength(2);
+      expect(text).not.toContain('"stream_error"');
+      expect(text).not.toMatch(/"usage"|"id"|private-completion-id/);
+      expect(traces).toEqual([expect.objectContaining({ terminal: "upstream_incomplete" })]);
+      expect(getUsage(ADDR, TIERS.free, null).used).toBe(1);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ prompt_tokens: 17, completion_tokens: 5, credits: 1 });
+    } finally { restore(); }
+  });
+
   for (const [failure, code, completed] of [
     ["invalid-plan", "interpretation_failed", true],
     ["incomplete-finish", "upstream_incomplete", true],
@@ -1503,9 +1603,17 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         const rounds = failure === "invalid-plan" ? 2 : 1;
         expect(models).toBe(rounds);
         expect(dispatches).toBe(failure === "tool-overflow" ? 1 : 0);
-        expect(text.match(/"stream_error":/g)).toHaveLength(1);
-        expect(text).toContain(`"stream_error":{"code":"${code}"}`);
-        expect(text.match(/data: \[DONE\]/g)).toHaveLength(1);
+        if (failure === "tool-overflow") {
+          expect(text.match(/"stream_error":/g)).toHaveLength(1);
+          expect(text).toContain(`"stream_error":{"code":"${code}"}`);
+        } else {
+          const message = failure === "invalid-plan" ? "The model could not prepare a valid meeting request. Please try again."
+            : failure === "provider-error" ? "The model service could not complete this request. Please try again later."
+            : "The model service returned an incomplete reply. Please try again.";
+          expect(text.split(message)).toHaveLength(2);
+          expect(text.match(/"stream_error":/g)).toBeNull();
+          expect(text).not.toContain('"errorCode"');
+        }
         expect(endCount).toBe(1);
         expect(text).not.toMatch(/"usage"|"id"|private-completion-id|PRIVATE PROVIDER|OVERSIZED PRIVATE/);
         expect(logs).toHaveLength(1);
@@ -1543,7 +1651,9 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       const handler = createAgentChatHandler({
         ...baseConfig((async (...args: Parameters<typeof fetch>) => {
           called = true;
-          expect(JSON.parse(args[1]!.body as string).model).toBe(id);
+          const body = JSON.parse(args[1]!.body as string);
+          expect(body.model).toBe(id);
+          expect(body.provider).toEqual({ aci_verified: true });
           return makeCompletionFetch()(...args);
         }) as typeof fetch),
         isModelOffered: isOfferedModel,
@@ -1660,17 +1770,68 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
             dataFrame({ usage: { prompt_tokens: 10, completion_tokens: 3 } }),
           ]),
         };
-        if (secondRound === "exception") throw new Error("synthetic failure after observed usage");
-        return new Response("failed", { status: 503 });
+        if (secondRound === "exception") throw new Error("provider-private-error-detail");
+        return new Response("provider-private-error-detail", { status: 503 });
       }) as typeof fetch;
       try {
         const { req, res } = makeReqRes();
         await createAgentChatHandler(baseConfig(fetchImpl))(req, res);
         expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
         expect(res.chunks.join("")).toContain('"stream_error":{"code":"upstream_failed"}');
+        expect(res.chunks.join("")).not.toContain("provider-private-error-detail");
       } finally { restore(); }
     });
   }
+  it("does not dispatch tools from a reply whose receipt fails after streaming starts", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    const restore = stubCatalogFetch();
+    let toolDispatches = 0;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("/tools/")) toolDispatches++;
+      return Response.json({ result: { text: "tool result" } });
+    }) as typeof fetch;
+    const encoder = new TextEncoder();
+    let sentFrame = false;
+    const redpillFetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sentFrame) {
+          sentFrame = true;
+          controller.enqueue(encoder.encode(dataFrame({ choices: [{
+            delta: {
+              content: "unverified partial",
+              tool_calls: [{ index: 0, id: "unverified-call", function: { name: "web_search", arguments: '{"query":"private"}' } }],
+            },
+            finish_reason: "tool_calls",
+          }] })));
+        } else {
+          controller.error(new RedPillAttestationError());
+        }
+      },
+    }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    try {
+      const { req, res } = makeReqRes();
+      await createAgentChatHandler({ ...baseConfig(fetchImpl), redpillFetch })(req, res);
+      const body = res.chunks.join("");
+      const warning = "Couldn't confirm this reply came through the verified enclave. Don't rely on it.";
+      expect(toolDispatches).toBe(0);
+      expect(body).toContain("unverified partial");
+      expect(body.split(warning).length - 1).toBe(1);
+      expect(body).not.toContain("receipt_verification");
+      expect(body).not.toContain('"stream_error"');
+    } finally { restore(); }
+  });
+  it("fails closed when an agent model response receipt is unverified", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    const restore = stubCatalogFetch();
+    try {
+      const { req, res } = makeReqRes();
+      const redpillFetch = (async () => { throw new RedPillAttestationError(); }) as typeof fetch;
+      await createAgentChatHandler({ ...baseConfig(makeCompletionFetch()), redpillFetch })(req, res);
+      const body = res.chunks.join("");
+      expect(body).toContain('"stream_error":{"code":"private_response_unverified"}');
+      expect(body).not.toContain("unverified content sentinel");
+    } finally { restore(); }
+  });
 
   it("A5c: recordUsage is called with summed credits when paywall is on", async () => {
     process.env.PAYWALL_ENABLED = "true";

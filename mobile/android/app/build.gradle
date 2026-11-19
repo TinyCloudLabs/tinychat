@@ -44,11 +44,15 @@ def unsignedRelease = unsignedReleaseInput == 'true'
 def signGradleRelease = !unsignedRelease && missingReleaseSigning.isEmpty()
 
 android {
+    // The Kotlin/Java package (and so R, BuildConfig and the manifest's class names) stays xyz.tinycloud.exo; only the
+    // installed package, applicationId, is xyz.tinycloud.home, matching the iOS bundle id. Anything that names the
+    // installed package (shortcuts.xml targetPackage, `adb ... xyz.tinycloud.home`) uses applicationId, and anything that
+    // names a class uses the namespace: xyz.tinycloud.home/xyz.tinycloud.exo.MainActivity.
     namespace = "xyz.tinycloud.exo"
     compileSdk = rootProject.ext.compileSdkVersion
     buildFeatures { buildConfig true }
     defaultConfig {
-        applicationId "xyz.tinycloud.exo"
+        applicationId "xyz.tinycloud.home"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode exoVersionCode
@@ -179,6 +183,7 @@ dependencies {
     implementation(name: sherpaAarName, ext: 'aar')
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.biometric:biometric:$androidxBiometricVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
@@ -187,8 +192,13 @@ dependencies {
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlinxCoroutinesVersion"
     // On-device STT (TC-836): extracts the small model pack's .tar.bz2 release asset.
     implementation 'org.apache.commons:commons-compress:1.26.1'
+    // TC-2862 native replica store: whole-file encryption (D-S5).
+    implementation 'net.zetetic:sqlcipher-android:4.20.0@aar'
+    implementation 'androidx.sqlite:sqlite:2.7.0'
     testImplementation "junit:junit:$junitVersion"
     testImplementation 'org.jetbrains.kotlin:kotlin-test-junit'
+    // TC-2862: real SQLite for the replica store's JVM tests (ReplicaStoreCoreTest's JdbcReplicaDb).
+    testImplementation 'org.xerial:sqlite-jdbc:3.46.1.3'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     androidTestImplementation "androidx.test.uiautomator:uiautomator:2.3.0"

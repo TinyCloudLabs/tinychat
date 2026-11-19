@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRetrieval, PACK_VERSION } from '../lib/retrieval.mjs';
 
-const HELP = `TinyChat retrieval ${PACK_VERSION} (Node >=20, TinyCloud CLI >=0.9.0)
+const HELP = `TinyChat retrieval ${PACK_VERSION} (Node >=22.20, TinyCloud CLI >=0.9.0)
 
 node scripts/retrieve.mjs COMMAND --profile NAME --host URL --space NAME_OR_URI --owner OWNER_DID [OPTIONS]
 
@@ -13,7 +13,7 @@ Commands:
   search        Search literal transcript passages within a bounded catalog scope.
 
 Required context: --profile, --host, --space, --owner (did:pkh:eip155:CHAIN:ADDRESS).
-Optional executable: --tc PATH (otherwise resolves tc on PATH; never uses a shell).
+Optional executable: --tc PATH (otherwise TC_BIN, then ~/.local/share/tinycloud/cli's tinycloud, then tinycloud on PATH; never tc, never a shell).
 find/search filters: --source, --from ISO_TIMESTAMP, --to ISO_TIMESTAMP, --limit 1..50.
 latest filters: --source, --from ISO_TIMESTAMP, --to ISO_TIMESTAMP (no cursor).
 search: --term TEXT required; --scan-limit 1..20 (default5 bodies per invocation).

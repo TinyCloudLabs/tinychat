@@ -114,8 +114,8 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
   const retryAfterSeconds = parseRateLimitWaitSeconds(response.headers);
   const retryAfterMs = retryAfterSeconds === null ? null : retryAfterSeconds * 1000;
   if (response.status === 401) return new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
-  if (response.status === 404) return new AssemblyAiError("not-found", "AssemblyAI no longer has this transcript.");
-  if (code === "assemblyai_needs_reconciliation") return new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+  if (response.status === 404) return new AssemblyAiError("not-found", "The transcription service no longer has this transcript.");
+  if (code === "assemblyai_needs_reconciliation") return new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. TinyCloud One is checking with the transcription service.");
   if (code === "assemblyai_quota_exceeded") {
     const hours = retryAfterSeconds === null ? null : Math.max(1, Math.ceil(retryAfterSeconds / 3600));
     return new AssemblyAiError(
@@ -132,14 +132,14 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
     return new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
   }
   if (response.status === 415 || code === "unsupported_audio") {
-    return new AssemblyAiError("rejected", "TinyCloud's AssemblyAI account takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio.");
+    return new AssemblyAiError("rejected", "Powerful takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio.");
   }
   if (response.status === 410) return new AssemblyAiError("failed", "The upload expired before it finished. Retry uploads the file again.");
   if (code === "assemblyai_hosted_unavailable") {
     return new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
   }
-  if (response.status >= 500) return new AssemblyAiError("network", "AssemblyAI couldn't finish this transcript. Try again.");
-  return new AssemblyAiError("rejected", `Exo's server refused the request (HTTP ${response.status}).`);
+  if (response.status >= 500) return new AssemblyAiError("network", "Powerful transcription couldn't finish this transcript. Try again.");
+  return new AssemblyAiError("rejected", `TinyCloud One's server refused the request (HTTP ${response.status}).`);
 }
 
 interface HostedSubmission {
@@ -153,7 +153,7 @@ interface HostedSubmission {
 
 async function submission(response: Response): Promise<HostedSubmission> {
   const body = (await response.json().catch(() => null)) as HostedSubmission | null;
-  if (!body || typeof body.status !== "string") throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload state.");
+  if (!body || typeof body.status !== "string") throw new AssemblyAiError("failed", "TinyCloud One's server returned an unexpected upload state.");
   return body;
 }
 
@@ -214,7 +214,7 @@ export function createHostedAssemblyAiClient(config: {
       });
     } catch {
       if (init.signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
-      throw new AssemblyAiError("network", "Could not reach Exo's server.");
+      throw new AssemblyAiError("network", "Couldn't reach TinyCloud One's server.");
     }
     if (!response.ok && !(init.allowConflict && response.status === 409)) {
       const error = await hostedError(response);
@@ -229,7 +229,7 @@ export function createHostedAssemblyAiClient(config: {
   async function transcript(response: Response): Promise<AssemblyAiTranscript> {
     const body = (await response.json().catch(() => null)) as AssemblyAiTranscript | null;
     if (!body || typeof body.id !== "string" || typeof body.status !== "string") {
-      throw new AssemblyAiError("failed", "Exo's server returned an unexpected transcript.");
+      throw new AssemblyAiError("failed", "TinyCloud One's server returned an unexpected transcript.");
     }
     return body;
   }
@@ -242,9 +242,9 @@ export function createHostedAssemblyAiClient(config: {
     async createUpload(size, contentType, sourceId) {
       const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType, ...(sourceId ? { source_id: sourceId } : {}) } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown; status?: HostedSubmission["status"]; id?: string };
       if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0)
-        throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
+        throw new AssemblyAiError("failed", "TinyCloud One's server returned an unexpected upload.");
       if (created.status === "needs_reconciliation")
-        throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+        throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. TinyCloud One is checking with the transcription service.");
       return { uploadId: created.upload_id, partSize: created.part_size, status: created.status, id: created.id };
     },
 
@@ -273,7 +273,7 @@ export function createHostedAssemblyAiClient(config: {
         signal: options.signal,
       }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown };
       if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0) {
-        throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
+        throw new AssemblyAiError("failed", "TinyCloud One's server returned an unexpected upload.");
       }
       const uploadId = created.upload_id;
       const partSize = Math.min(created.part_size, 1024 * 1024);
@@ -332,18 +332,18 @@ export function createHostedAssemblyAiClient(config: {
       };
       track(state);
       while (state.status === "submitting" || state.status === "receiving" || state.status === "delayed") {
-        if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file to AssemblyAI. Retry keeps waiting.");
+        if (Date.now() > deadline) throw new AssemblyAiError("network", "TinyCloud One's server is still sending the file to the transcription service. Retry keeps waiting.");
         await sleep(delayed ? DELAYED_POLL_MS : SUBMIT_POLL_MS);
         if (signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
         state = await submission(await request(path, { signal, uploadState: true }));
         track(state);
       }
       if (state.status === "submitted" && typeof state.id === "string") return { id: state.id, status: "queued" };
-      if (state.status !== "failed") throw new AssemblyAiError("network", "Exo's server returned an unexpected upload state. Retry keeps waiting.");
+      if (state.status !== "failed") throw new AssemblyAiError("network", "TinyCloud One's server returned an unexpected upload state. Retry keeps waiting.");
       const code = state.error?.code;
       throw code === "assemblyai_rate_limited"
-        ? new AssemblyAiError("rate-limited", "AssemblyAI is busy for TinyCloud's account. Retry uploads the file again in a few minutes.", true)
-        : new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
+        ? new AssemblyAiError("rate-limited", "The transcription service is busy for TinyCloud's account. Retry uploads the file again in a few minutes.", true)
+        : new AssemblyAiError("failed", "TinyCloud One's server couldn't send the file to the transcription service. Retry uploads it again.", true);
     },
 
     async deleteUpload(uploadId, { signal, uploadSubmitting = false, onSubmitting, onSubmitted } = {}) {
@@ -374,7 +374,7 @@ export function createHostedAssemblyAiClient(config: {
           return;
         }
         if (state.status !== "receiving" && state.status !== "submitting" && state.status !== "delayed") {
-          throw new AssemblyAiError("network", "Exo's server returned an unexpected upload state. Retry deleting keeps waiting.");
+          throw new AssemblyAiError("network", "TinyCloud One's server returned an unexpected upload state. Retry deleting keeps waiting.");
         }
         if (state.status === "submitting" || state.status === "delayed") onSubmitting?.();
         // A claim may win between GET and DELETE. A 409 keeps the reference until its handle arrives.
@@ -382,7 +382,7 @@ export function createHostedAssemblyAiClient(config: {
         if (deleted.status !== 409) return;
         uploadSubmitting = true;
         onSubmitting?.();
-        if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file. Retry deleting keeps waiting.");
+        if (Date.now() > deadline) throw new AssemblyAiError("network", "TinyCloud One's server is still sending the file. Retry deleting keeps waiting.");
         await sleep(SUBMIT_POLL_MS);
       }
     },
@@ -395,7 +395,7 @@ export function createHostedAssemblyAiClient(config: {
       const body = (await request(`/hosted/transcripts/${encodeURIComponent(id)}/sentences`).then((r) => r.json().catch(() => null))) as {
         sentences?: unknown;
       } | null;
-      if (!body || !Array.isArray(body.sentences)) throw new AssemblyAiError("failed", "Exo's server returned unexpected sentences.");
+      if (!body || !Array.isArray(body.sentences)) throw new AssemblyAiError("failed", "TinyCloud One's server returned unexpected sentences.");
       return body.sentences as AssemblyAiSentence[];
     },
 
@@ -432,7 +432,7 @@ export async function pollAssemblyAiTranscript(
   let failingSince: number | null = null;
   let throttledMs = 0;
   let throttledAtFailure = 0;
-  const cancelled = () => new AssemblyAiError("failed", "Stopped waiting for AssemblyAI.");
+  const cancelled = () => new AssemblyAiError("failed", "Stopped waiting for the transcription service.");
   const sleepWithSignal = async (ms: number): Promise<void> => {
     const signal = options.signal;
     if (signal === undefined) {
@@ -478,7 +478,7 @@ export async function pollAssemblyAiTranscript(
       }
       if (t.status === "completed") return t;
       if (t.status === "error") {
-        throw new AssemblyAiError("failed", t.error ? `AssemblyAI could not transcribe this file: ${t.error}` : "AssemblyAI could not transcribe this file.");
+        throw new AssemblyAiError("failed", t.error ? `The transcription service could not transcribe this file: ${t.error}` : "The transcription service could not transcribe this file.");
       }
       options.onStatus?.(t.status);
     } catch (err) {
@@ -499,7 +499,7 @@ export async function pollAssemblyAiTranscript(
       }
       const failingFor = Math.max(0, now - failingSince - (throttledMs - throttledAtFailure));
       if (failingFor >= polling.giveUpAfterMs) {
-        throw new AssemblyAiError("network", "Lost contact with AssemblyAI. The transcript may still be running; Retry keeps waiting.");
+        throw new AssemblyAiError("network", "Lost contact with the transcription service. The transcript may still be running; Retry keeps waiting.");
       }
       const retryInterval = failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs;
       await sleepWithSignal(Math.round(retryInterval * (0.8 + 0.4 * clock.random())));

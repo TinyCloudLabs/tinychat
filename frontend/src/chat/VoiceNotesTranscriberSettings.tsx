@@ -8,7 +8,7 @@ import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "@/
 import { SIGNED_OUT } from "@/capture/recorder/final/useTranscriptionChoice";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { useRecorderLayout } from "@/capture/recorder/useRecorderLayout";
-import { AUTO_STOP_LABEL, AUTO_STOP_OFF_HINT_PHONE, autoStopOnHint } from "@/capture/recorder/recorderCopy";
+import { AUTO_STOP_LABEL, AUTO_STOP_OFF_HINT_PHONE, STOP_AFTER_HINT, STOP_AFTER_LABEL, STOP_AFTER_OPTIONS, autoStopOnHint } from "@/capture/recorder/recorderCopy";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
@@ -24,15 +24,6 @@ import { autoStopEnabled, readAutoStopChoice, readDefaultTranscriber, readStopAf
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
 
 const UPLOAD_PAUSED = "Paused: storage full";
-
-/** "Off" keeps only the 3-hour limit every recorder enforces, so it says so. */
-const STOP_AFTER_OPTIONS: readonly { value: StopAfter; label: string }[] = [
-  { value: "15", label: "15 min" },
-  { value: "30", label: "30 min" },
-  { value: "60", label: "1 h" },
-  { value: "120", label: "2 h" },
-  { value: "off", label: "Off (3-hour limit)" },
-];
 
 /** The same three routes the recorder names; Private is offered only when the recorder would offer it. */
 export function transcriberOptions(signedIn: boolean, transcription: Transcription) {
@@ -121,7 +112,7 @@ export function VoiceNotesTranscriberSettings() {
   const stopAfterSelect = (
     <div className="flex flex-col gap-1" data-testid="voice-notes-stop-after">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-        <label htmlFor="stop-recording-after" className="text-sm">Stop recording after</label>
+        <label htmlFor="stop-recording-after" className="text-sm">{STOP_AFTER_LABEL}</label>
         <select
           id="stop-recording-after"
           value={stopAfter}
@@ -131,7 +122,7 @@ export function VoiceNotesTranscriberSettings() {
           {STOP_AFTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
       </div>
-      <p className="text-xs text-muted-foreground">New recordings stop by themselves after this long. Recordings never run longer than 3 hours.</p>
+      <p className="text-xs text-muted-foreground">{STOP_AFTER_HINT}</p>
     </div>
   );
   // A device that never chose gets the layout's default: on at the desktop layouts, off at the phone layout.

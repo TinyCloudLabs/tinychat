@@ -18,8 +18,8 @@ const meeting: LibraryItem = {
   id: "row-2", source: "fireflies", sourceId: "mtg-2", title: "Weekly sync", startedAt: new Date(2026, 9, 10, 14, 0).toISOString(), durationSecs: 1880,
 };
 
-function render(item: LibraryItem, options: { grouped?: boolean; soft?: boolean; pipeline?: NotePipeline } = {}) {
-  const row = <LibraryRow item={item} now={NOW} grouped={options.grouped ?? false} pipeline={options.pipeline} />;
+function render(item: LibraryItem, options: { grouped?: boolean; soft?: boolean; pipeline?: NotePipeline; onRecentOpen?: (id: string) => void } = {}) {
+  const row = <LibraryRow item={item} now={NOW} grouped={options.grouped ?? false} pipeline={options.pipeline} onRecentOpen={options.onRecentOpen} />;
   return renderToStaticMarkup(
     <MemoryRouter>
       {options.soft === false ? <ul>{row}</ul> : <SoftHomeProvider enabled issues={{}} onDismissIssue={() => true}>{row}</SoftHomeProvider>}
@@ -125,5 +125,24 @@ describe("a note not yet settled in the space", () => {
       expect(render(voice(), { pipeline: pipeline(state), soft: false })).toContain(`Transcript ${label}`);
     }
     expect(render(voice(), { pipeline: pipeline("failed") })).toContain("Your recording is saved, but it&#x27;s too large for private transcription. The audio is kept, so nothing is lost.");
+  });
+});
+
+describe("a pasted transcript's row", () => {
+  const pasted = () => voice({ id: "row-pasted", sourceId: "paste-1", title: "Pasted", durationSecs: null,
+    metadata: { source: "pasted", capture: "pasted" } });
+
+  // It is a Library page, never the saved recording's sheet: the detail view never renders
+  // SavedNote for it, so Recent must link to the note route like every other kind does.
+  test("opens as a note page from Recent, not the saved-note sheet", () => {
+    const html = render(pasted(), { onRecentOpen: () => undefined });
+    expect(html).toContain('href="/chat/capture/library/row-pasted"');
+    const recorded = render(voice(), { onRecentOpen: () => undefined });
+    expect(recorded).not.toContain('href="/chat/capture/library/row-1"');
+  });
+
+  test("titled by its own title with the pasted source in its line", () => {
+    expect(libraryRowTitle(pasted())).toBe("Pasted");
+    expect(libraryRowMeta(pasted(), NOW, false)).toContain("Pasted transcript");
   });
 });

@@ -13,7 +13,6 @@ import {
   unlockSecrets,
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
-import { isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
 import { ingestQueuedMeetings } from "@/lib/connectors/targetedSync";
 import {
   subscribeTranscriptConsent, transcriptConsentState, type TranscriptConsentState,
@@ -36,7 +35,7 @@ import {
   readBackgroundDrainGeneration,
 } from "./useBackgroundDrain";
 
-/** The only two texts an off state may render — A and B never ship (consentCopy.ts). */
+/** Background-sync consent variants selected by the cohort probe. */
 export type OffStateConsentVariant = "C" | "B-ingest";
 
 /**
@@ -82,8 +81,6 @@ export interface BackgroundSyncController {
   consentVariant: OffStateConsentVariant;
   /** TC-641: whether the off-state consent must also disclose the transcript-writer grant. */
   transcriptConsent: TranscriptConsentState;
-  ingestConsentChecked: boolean;
-  setIngestConsentChecked: (checked: boolean) => void;
   /** Processes the queue on the shared drain lane, then reports the ingest. */
   runSync: () => Promise<void>;
   /** Re-reads the queue (enabled) or the config (anything else). */
@@ -99,6 +96,7 @@ export function useBackgroundSync({
   onFeatureDark,
 }: UseBackgroundSyncOptions): BackgroundSyncController {
   const [state, setState] = useState<BackgroundSyncState>(initialBackgroundSyncState);
+  const [consentVariant, setConsentVariant] = useState<OffStateConsentVariant>("C");
   // React may keep this mounted state around after Connectors closes; an emit
   // into an unmounted tree is dropped rather than warned about.
   const alive = useRef(true);
@@ -130,7 +128,7 @@ export function useBackgroundSync({
       publishBackgroundDrainConnectorState(
         descriptor.source,
         next,
-        !(isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw)),
+        !isSecretsUnlocked(tcw),
         publishGeneration,
       );
       if (!alive.current) return;
@@ -144,7 +142,7 @@ export function useBackgroundSync({
       source: descriptor.source,
       webhooks,
       secrets: {
-        isUnlocked: () => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
+        isUnlocked: () => isSecretsUnlocked(tcw),
         // Reachable ONLY from the user-initiated sync action — never on mount.
         unlock: () => unlockSecrets<SecretsErr>(tcw),
       },
@@ -162,11 +160,6 @@ export function useBackgroundSync({
     void enqueueDrainWork(() => loadOnMount(deps, emit));
   }, [deps, emit]);
 
-  // F011 — which consent text an off state shows, plus the B-ingest
-  // attestation's checked state. Both start C-safe: the variant is Option C
-  // until proven otherwise, and the attestation starts unchecked.
-  const [consentVariant, setConsentVariant] = useState<OffStateConsentVariant>("C");
-  const [ingestConsentChecked, setIngestConsentChecked] = useState(false);
   const transcriptConsent = useSyncExternalStore(
     subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
   );
@@ -227,8 +220,6 @@ export function useBackgroundSync({
     emit,
     consentVariant,
     transcriptConsent,
-    ingestConsentChecked,
-    setIngestConsentChecked,
     runSync,
     retry,
   };

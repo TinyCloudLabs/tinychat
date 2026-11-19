@@ -201,13 +201,15 @@ describe.serial(`shell invariants (${name})`, () => {
     // The phone app's Capture home (tablet widths included) has no settings picker: nothing is added by the home.
     expect((await stats()).adds).toBe(addsAtReady);
 
-    // Record from the chat header: the recorder opens and records.
-    await page.getByTestId("header-voice-note").click();
+    // Start through Recording navigation; the chat header no longer starts recordings.
+    await page.getByRole("link", { name: "Recording", exact: true }).click();
+    await page.getByTestId("voice-note-record").click();
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
     await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
     await sample();
     // Minimise keeps it recording: the Ribbon follows to Connectors.
     await page.getByRole("button", { name: "Minimise recorder" }).click();
+    await page.getByRole("link", { name: "Chat", exact: true }).click();
     await page.getByTestId("ribbon").waitFor();
     expect((await stats()).recording).toBe(true);
     await go(page, "/chat/connectors");
@@ -435,14 +437,14 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.evaluate(() => window.shellHarness!.back());
     await page.waitForFunction(() => document.querySelectorAll('[role="dialog"][data-state="open"]').length === 0);
 
-    // No overlay left: Chat is not the Android app's home, so Back goes to Capture…
+    // No overlay left: Chat is not the app's home, so Back goes to Feed…
     await page.evaluate(() => window.shellHarness!.back());
-    await page.waitForFunction(() => window.location.pathname === "/chat/capture");
+    await page.waitForFunction(() => window.location.pathname === "/chat/feed");
     // …and at home it minimises, never exits.
     await settle(page);
     await page.evaluate(() => window.shellHarness!.back());
     expect(await page.evaluate(() => window.shellHarness!.minimized())).toBe(1);
-    expect(await page.evaluate(() => window.location.pathname)).toBe("/chat/capture");
+    expect(await page.evaluate(() => window.location.pathname)).toBe("/chat/feed");
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);

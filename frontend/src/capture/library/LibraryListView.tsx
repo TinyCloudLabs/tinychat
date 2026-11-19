@@ -1,9 +1,9 @@
-// The Library's list (TC-761), a pure function of its props: the kind filter,
-// then the rows under their day, newest first. Loading shows skeleton rows; a
-// list that did not load says so and offers Try again (never "nothing here");
-// an empty filter says what it holds.
+// The Library's list (TC-761), a pure function of its props: the kind filter
+// (or a named filter in its place), then the rows under their day, newest
+// first. Loading shows skeleton rows; a list that did not load says so and
+// offers Try again (never "nothing here"); an empty filter says what it holds.
 import * as ToggleGroup from "@radix-ui/react-toggle-group";
-import { CheckIcon, RefreshCwIcon } from "lucide-react";
+import { CheckIcon, RefreshCwIcon, XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
@@ -34,6 +34,11 @@ export interface LibraryListViewProps {
   pipelines?: ReadonlyMap<string, NotePipeline>;
   activityViews?: ReadonlyMap<string, NotePipelineView>;
   platform?: AppPlatform;
+  /**
+   * A named filter shown in place of the kind filter: only the voice notes whose recording id is in `ids` (null while
+   * those are being read). Clearing it brings the kind filter back.
+   */
+  only?: { label: string; empty: string; ids: ReadonlySet<string> | null; onClear: () => void };
 }
 
 /**
@@ -77,12 +82,34 @@ export function LibraryFilterControl(props: { value: LibraryFilter; onValueChang
   );
 }
 
+/** A named filter that is on, with its name and a way to clear it. */
+function OnlyFilterChip(props: { label: string; onClear: () => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5" data-testid="library-only-filter">
+      <span className="flex min-h-11 items-center gap-1.5 rounded-full border border-primary bg-selected pl-3 text-callout font-semibold text-foreground fine:min-h-8">
+        <CheckIcon aria-hidden="true" className="size-3.5 shrink-0 text-primary" />
+        {props.label}
+        <button
+          type="button"
+          onClick={props.onClear}
+          aria-label={`Clear filter: ${props.label}`}
+          className="tap-transparent flex size-11 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:size-8"
+        >
+          <XIcon aria-hidden="true" className="size-4" />
+        </button>
+      </span>
+    </div>
+  );
+}
+
 export function LibraryListView(props: LibraryListViewProps) {
-  const { status, items, filter, now } = props;
-  const shown = items.filter((item) => matchesFilter(item.source, filter));
+  const { status, items, filter, now, only } = props;
+  const shown = only
+    ? items.filter((item) => item.source === VOICE_NOTE_SOURCE && only.ids?.has(item.sourceId) === true)
+    : items.filter((item) => matchesFilter(item.source, filter));
   // Soft skin only: recordings with a capture issue and no row yet, under the voice-note filters.
   const soft = useSoftHome();
-  const orphans = soft && matchesFilter(VOICE_NOTE_SOURCE, filter) ? orphanIssues(items, soft.issues) : [];
+  const orphans = soft && !only && matchesFilter(VOICE_NOTE_SOURCE, filter) ? orphanIssues(items, soft.issues) : [];
   return (
     <div
       className={cn("flex flex-col gap-3", soft && "focus:outline-none")}
@@ -90,8 +117,8 @@ export function LibraryListView(props: LibraryListViewProps) {
       data-state={status}
       {...(soft ? { role: "region", "aria-label": "Library", tabIndex: -1, "data-return-focus": "" } : {})}
     >
-      <LibraryFilterControl value={filter} onValueChange={props.onFilterChange} />
-      {status === "loading" && items.length === 0 && orphans.length === 0 ? (
+      {only ? <OnlyFilterChip label={only.label} onClear={only.onClear} /> : <LibraryFilterControl value={filter} onValueChange={props.onFilterChange} />}
+      {(status === "loading" && items.length === 0 && orphans.length === 0) || only?.ids === null ? (
         <div role="status">
           <span className="sr-only">Loading your Library…</span>
           {Array.from({ length: 5 }, (_, i) => (
@@ -112,8 +139,8 @@ export function LibraryListView(props: LibraryListViewProps) {
       ) : shown.length === 0 && orphans.length === 0 ? (
         <Empty
           data-testid="library-empty"
-          title={items.length === 0 ? "Nothing here yet." : emptyFilterText(filter)}
-          description={items.length === 0 ? "Voice notes, uploads and meetings land here once they’re in your space." : undefined}
+          title={only ? only.empty : items.length === 0 ? "Nothing here yet." : emptyFilterText(filter)}
+          description={!only && items.length === 0 ? "Voice notes, uploads and meetings land here once they’re in your space." : undefined}
         />
       ) : (
         <>

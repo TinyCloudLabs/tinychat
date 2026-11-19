@@ -2,8 +2,6 @@ import type { NonEmptyServerInfoPermissions } from "./index.js";
 
 /** The manifest app prefix is part of both the SQL handle and every connector KV key. */
 export const APP_ID = "xyz.tinycloud.tinychat";
-/** Host-bound namespace for TinyChat's connector encryption keys. */
-export const TINYCHAT_KEY_PREFIX = "apps/chat.tinycloud.tinychat/";
 export const CONNECTORS_SQL_DB_NAME = `${APP_ID}/connectors`;
 export const CONNECTORS_KV_PREFIX = `${APP_ID}/connectors`;
 export const TRANSCRIBER_MEETING_SOURCE = "tinycloud-transcriber";

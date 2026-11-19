@@ -446,7 +446,7 @@ export async function readTranscript(
  * sentence. Deliberately unlike `meetingsView.transcriptText`, which drops
  * speakers — a pasted transcript without "who said it" is far less useful.
  */
-export function transcriptCopyText(sentences: FirefliesSentence[]): string {
+export function transcriptCopyText(sentences: readonly FirefliesSentence[]): string {
   return sentences
     .map((s) => (s.speaker_name ? `${s.speaker_name}: ${s.text}` : s.text))
     .join("\n");

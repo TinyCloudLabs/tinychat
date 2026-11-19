@@ -153,7 +153,7 @@ function screen(
     layout: "pane",
     displayTitle: false,
     minViewportWidth: RAIL_MIN_WIDTH,
-    readyWhen: ".cs-row[data-testid=settings-mic]",
+    readyWhen: "[data-testid=settings-mic]",
     ...options,
     render,
   };

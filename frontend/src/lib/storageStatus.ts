@@ -20,13 +20,15 @@ export const STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE = `${TRANSCRIPT_NOT_SAVED_SE
 export const STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE =
   `${TRANSCRIPT_NOT_SAVED_SENTENCE} Your recording is safe on this device. ${TRANSCRIBE_AGAIN_SENTENCE}`;
 const STORAGE_DELETION_NOTE =
-  "Some deletions may lower your storage usage, but Exo can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
+  "Some deletions may lower your storage usage, but TinyCloud One can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
 const STORAGE_NO_LARGER_PLAN = "There's no larger plan to buy.";
 /** Detail under the main line on the detailed surfaces. Free sees only the first sentence; paid and unknown get both. */
 export const STORAGE_FULL_DETAIL: Record<"free" | "paid", string> = {
   free: STORAGE_DELETION_NOTE,
   paid: `${STORAGE_DELETION_NOTE} ${STORAGE_NO_LARGER_PLAN}`,
 };
+/** What the iOS and Android apps say where web and desktop offer Manage storage or Upgrade. Plain text: never a link or a button. */
+export const NATIVE_PLAN_NOTE = "Manage your plan on the web at tinycloud.xyz.";
 export const STORAGE_READ_ONLY_NOTICE =
   "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. New changes can't be saved while your storage is full.";
 
@@ -106,6 +108,22 @@ let accountSessionManaged = false;
 let activeStorageScope: StorageAccountScope = {
   did: null, spaceId: null, epoch: storageEpoch, state: newStorageState(),
 };
+/** The active app account, including when the recorder feature is not enabled. */
+const RECORDING_ACCOUNT_KEY = "exo.recordingNotes.account";
+export function currentStorageAccountDid(): string | null {
+  if (!activeStorageScope.did) return null;
+  let shared: string | null | undefined;
+  try {
+    const stored = globalThis.localStorage?.getItem(RECORDING_ACCOUNT_KEY);
+    shared = stored === undefined || stored === null ? undefined : JSON.parse(stored) as string | null;
+  } catch { return activeStorageScope.did; }
+  if (shared !== undefined && shared !== activeStorageScope.did) throw new Error("Recording note account changed");
+  return activeStorageScope.did;
+}
+function rememberRecordingAccount(did: string | null): void {
+  try { globalThis.localStorage?.setItem(RECORDING_ACCOUNT_KEY, JSON.stringify(did)); } catch { /* Scope checks still apply in this tab. */ }
+}
+
 const clientStorageScopes = new WeakMap<object, StorageAccountScope>();
 
 function isActiveScope(scope: StorageAccountScope | null): scope is StorageAccountScope {
@@ -141,6 +159,7 @@ export function beginStorageAccountSession(
   client: object, did: string | null, spaceId: string | null,
 ): StorageAccountScope {
   accountSessionManaged = true;
+  rememberRecordingAccount(did);
   retireStorageScope(activeStorageScope);
   const scope: StorageAccountScope = { did, spaceId, epoch: ++storageEpoch, state: newStorageState() };
   activeStorageScope = scope;
@@ -153,6 +172,7 @@ export function beginStorageAccountSession(
 /** Retire the current account only after sign-out/handoff has committed. */
 export function endStorageAccountSession(): void {
   accountSessionManaged = true;
+  rememberRecordingAccount(null);
   retireStorageScope(activeStorageScope);
   activeStorageScope = { did: null, spaceId: null, epoch: ++storageEpoch, state: newStorageState() };
   for (const listener of [...listeners]) listener();

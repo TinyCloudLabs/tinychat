@@ -11,8 +11,31 @@ export interface PersistedTinyCloudSession {
   expiresAt: string;
 }
 
-/** localStorage key prefix used by BrowserSessionStorage. */
+/** localStorage keys used by BrowserSessionStorage. */
 const TC_SESSION_KEY_PREFIX = "tinycloud:session:";
+const TC_ACTIVE_ADDRESS_KEY = "tinycloud:session:active-address";
+const TC_RUNTIME_GRANTS_KEY_PREFIX = "tinycloud:session:runtime-grants:";
+/** The OpenKey renewal receipt for the session record (TC-2872). Outside the SDK's own prefix, which it scans. */
+const RENEWAL_RECEIPT_KEY_PREFIX = "tinychat:renewal-receipt:";
+
+/** Keep the renewal receipt OpenKey returned at sign-in. Unverified here: check it before every use. */
+export function saveRenewalReceipt(address: string, receipt: unknown): void {
+  try {
+    localStorage.setItem(RENEWAL_RECEIPT_KEY_PREFIX + address.toLowerCase(), JSON.stringify(receipt));
+  } catch {
+    // localStorage unavailable or full: the session then lasts until its signed end.
+  }
+}
+
+/** The stored renewal receipt, parsed but unverified; null when there is none or it is unreadable. */
+export function loadRenewalReceipt(address: string): unknown {
+  try {
+    const raw = localStorage.getItem(RENEWAL_RECEIPT_KEY_PREFIX + address.toLowerCase());
+    return raw === null ? null : JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Check if a TinyCloud session is persisted in BrowserSessionStorage.
@@ -51,12 +74,17 @@ export function loadPersistedSession(address: string): PersistedTinyCloudSession
 }
 
 /**
- * Clear the persisted TinyCloud session from BrowserSessionStorage.
- * Used during sign-out when TinyCloudWeb instance isn't available (restored sessions).
+ * Synchronously clear the per-address SDK session before any remote sign-out.
  */
 export function clearPersistedSession(address: string): void {
+  const normalizedAddress = address.toLowerCase();
   try {
-    localStorage.removeItem(TC_SESSION_KEY_PREFIX + address.toLowerCase());
+    localStorage.removeItem(TC_SESSION_KEY_PREFIX + normalizedAddress);
+    localStorage.removeItem(TC_RUNTIME_GRANTS_KEY_PREFIX + normalizedAddress);
+    localStorage.removeItem(RENEWAL_RECEIPT_KEY_PREFIX + normalizedAddress);
+    if (localStorage.getItem(TC_ACTIVE_ADDRESS_KEY)?.toLowerCase() === normalizedAddress) {
+      localStorage.removeItem(TC_ACTIVE_ADDRESS_KEY);
+    }
   } catch {
     // localStorage unavailable
   }

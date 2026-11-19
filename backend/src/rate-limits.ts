@@ -11,7 +11,7 @@
  * Extracted from index.ts so the wiring is unit-testable without booting the
  * full server.
  */
-import rateLimit from "express-rate-limit";
+import rateLimit, { MemoryStore, type Options } from "express-rate-limit";
 import type { Express, Request, RequestHandler, Response } from "express";
 import { verifySessionToken } from "@tinyboilerplate/server";
 
@@ -146,7 +146,7 @@ export const PRIVATE_CLOUD_TRANSCRIPTION_PATHS = ["/api/transcriber/private-clou
  * call). A request budget, not a dollar guarantee.
  */
 export const PAID_CHAT_LIMIT = 600;
-export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
+export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat", "/api/bots/main/messages"] as const;
 
 /**
  * Session minting (`/api/auth`: `GET /nonce`, `POST /verify`; the only routes that issue a
@@ -158,6 +158,24 @@ export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
  */
 export const AUTH_LIMIT = 1200;
 export const AUTH_PATHS = ["/api/auth"] as const;
+
+/**
+ * `POST /api/auth/verify-renewal` asks the TinyCloud node on every accepted request. Its own budget is per
+ * claimed address, one minute, and is charged only once the grant's session key has signed the request
+ * (after the holder proof), so only that key's holder can spend an account's budget. Nothing is keyed on
+ * the IP: behind the Phala gateway every client shares one address (see above), and otherwise the key is
+ * the client's own `X-Forwarded-For`. Before the holder proof the route does only local checks, each on a
+ * single-use nonce minted under the shared `auth` bucket, which bounds that work service-wide.
+ */
+export const VERIFY_RENEWAL_WINDOW_MS = 60 * 1000;
+export const VERIFY_RENEWAL_ADDRESS_LIMIT = 5;
+
+/** A fresh per-address budget (see `VERIFY_RENEWAL_ADDRESS_LIMIT`): false once this window's is spent. */
+export function createVerifyRenewalBudget(): (address: string) => Promise<boolean> {
+  const store = new MemoryStore();
+  store.init({ windowMs: VERIFY_RENEWAL_WINDOW_MS } as Options);
+  return async (address) => (await store.increment(`address:${address.toLowerCase()}`)).totalHits <= VERIFY_RENEWAL_ADDRESS_LIMIT;
+}
 
 /**
  * The optional authenticated credential count (routes/credential-count.ts) is a one-time, read-only
@@ -263,6 +281,7 @@ const MUTATION_BUCKETS: Partial<Record<Bucket, Bucket>> = {
  */
 export function bucketFor(method: string, rawPath: string): Bucket {
   if (isUnlimitedPath(rawPath.toLowerCase())) return "none";
+  if (rawPath === "/api/ops/content-continuity") return "credentialCount";
   const path = collapseSlashes(rawPath.toLowerCase());
   if (method === "POST" && PAID_CHAT_PATHS.some((p) => withoutTrailingSlash(path) === p)) return "paidChat";
   for (const [mounts, bucket] of PREFIX_BUCKETS) {

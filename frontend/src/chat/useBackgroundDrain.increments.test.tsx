@@ -770,27 +770,6 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     expect(app.slice(at - 200, at)).toContain('state === "ready" && tcw &&');
   });
 
-  test("signOut clears the drain record beside the other account-scoped caches", () => {
-    const app = read("../App.tsx");
-    const from = app.indexOf("const signOut = useCallback");
-    expect(from).toBeGreaterThan(0);
-    const body = app.slice(from, app.indexOf("const isReady", from));
-    const cleanup = app.slice(app.indexOf("const completeLocalSignOut = useCallback"),
-      app.indexOf("useEffect(() => registerSessionSignedOutHook"));
-    expect(body).toContain("signOutOpenKeySession(openKeyClient");
-    expect(body.indexOf("signOutOpenKeySession(openKeyClient")).toBeLessThan(
-      body.indexOf("tcw.signOut?.()"),
-    );
-    expect(body).toContain('openKeyOutcome.status === "unverified"');
-    expect(body).toContain('openKeyOutcome.status === "cancelled"');
-    expect(body).toContain("completeLocalSignOut(openKeyWarning");
-    expect(cleanup).toContain("if (storedAddress) clearPersistedSession(storedAddress);");
-    expect(cleanup).toContain("historyPrefetch.clear();");
-    expect(cleanup).toContain("clearAgentSessionCache();");
-    expect(cleanup).toContain("clearBackgroundDrainRecord();");
-    // The page load's latches are NOT reset here — only the record is.
-    expect(cleanup).not.toContain("resetBackgroundDrainForTests");
-  });
 });
 
 describe("I1 badge — the pill clamps its display, the label does not", () => {

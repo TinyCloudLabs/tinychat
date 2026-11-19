@@ -57,7 +57,7 @@ describe("App wires the private-surface guard to the settled state", () => {
     const guardCondition = 'if (authSettledSignedOut && (screen.destination === "connectors" || (!deviceCapture && redirectsWhenSignedOut(screen))))';
     expect(app).toContain(guardCondition);
     const guard = app.slice(app.indexOf(guardCondition));
-    expect(guard.slice(0, guard.indexOf("}, ["))).toContain("navigate(homePath(platform), { replace: true });");
+    expect(guard.slice(0, guard.indexOf("}, ["))).toContain("navigate(HOME_PATH, { replace: true });");
     expect(app).toContain("isAuthSettledSignedOut(state)");
   });
 
@@ -67,7 +67,7 @@ describe("App wires the private-surface guard to the settled state", () => {
     // Nonterminal → hold the address so restoration can finish and Library
     // can be reached; settled → the existing ready/signed-out split.
     expect(body).toContain("if (!isReady && !authSettledSignedOut) return;");
-    expect(body).toContain("navigate(isReady ? legacy.to : homePath(platform)");
+    expect(body).toContain("navigate(isReady ? legacy.to : HOME_PATH");
     expect(body).toContain("replace: true");
   });
 });

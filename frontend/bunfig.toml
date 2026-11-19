@@ -1,0 +1,3 @@
+# `bun test` stands in for vite.config.ts's build-time defines. Tests run as a production build.
+[define]
+"__ONE_APPS_BUILD_KIND__" = "\"production\""

@@ -21,39 +21,27 @@ async function fixture(t, opencode) {
   };
 }
 
-test('OpenCode shell cannot start portable setup or expose an unbound authorization path', async t => {
-  const { run, noTc } = await fixture(t, '1');
-  for (const args of [['prepare'], ['context'], ['authorize'], ['authorize', '--delivery', 'file'], ['login', '--code-file', '/nonexistent/response.json']]) {
-    const result = run(args);
-    assert.equal(result.status, 1);
-    const output = JSON.parse(result.stdout);
-    assert.equal(output.error.code, 'OPENCODE_TOOLS_REQUIRED', args.join(' '));
-    assert.match(output.error.message, /tinychat_setup/);
-    assert.match(output.error.message, /tinychat_authorize/);
-    assert.match(output.error.message, /install-opencode\.mjs --activate/);
-    assert.match(output.error.message, /separate native bash call/);
-    assert.match(output.error.message, /automatically/);
-    assert.match(output.error.message, /Stop on a classified activation error/);
-    assert.doesNotMatch(output.error.message, /then restart OpenCode/);
-    assert.equal(output.loginCommand, undefined);
-    assert.equal(output.loginArgs, undefined);
-    assert.equal(output.delivery, undefined);
-  }
-  await noTc();
-});
-
-test('portable setup remains available outside OpenCode and help remains readable inside it', async t => {
-  for (const marker of [undefined, '0']) {
+test('without the TinyCloud CLI, every command says to run onboarding and never runs tc, in or outside OpenCode', async t => {
+  for (const marker of [undefined, '0', '1']) {
     const { run, noTc } = await fixture(t, marker);
-    const result = run(['prepare']);
-    assert.equal(result.status, 1);
-    assert.equal(JSON.parse(result.stdout).error.code, 'SETUP_CONFIG_REQUIRED');
+    for (const args of [['prepare'], ['context'], ['authorize'], ['login', '--code', 'ABCD-EFGH']]) {
+      const result = run(args);
+      assert.equal(result.status, 1);
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.error.code, 'CLI_UNAVAILABLE', args.join(' '));
+      assert.match(output.error.message, /agents\.tinycloud\.xyz\/onboarding/);
+    }
     await noTc();
   }
+});
+
+test('help describes the onboarding profile and the pasted code', async t => {
   const { run, noTc } = await fixture(t, '1');
   const help = run(['--help']);
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /tinychat_authorize/);
-  assert.match(help.stdout, /install-opencode\.mjs --activate/);
+  assert.match(help.stdout, /onboarding profile/);
+  assert.match(help.stdout, /login --code CODE/);
+  assert.match(help.stdout, /exactly as sent/);
+  assert.doesNotMatch(help.stdout, /code-file|never transcribe|private file/i);
   await noTc();
 });

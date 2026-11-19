@@ -4,10 +4,10 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTranscriberClient, type TranscriberClient, type TranscriberListRow, type TranscriberMeeting, type TranscriberTranscript } from "@/lib/transcriberApi";
 import { listSavedTranscriberMeetingIds, listSavedTranscriberVersions, refreshTranscriberMeeting, saveTranscriberMeeting, TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
-import { isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
 import { secretsAvailable } from "@/lib/openkeyNative";
 import { captureEvents } from "@/capture/captureEvents";
 import { enqueueDrainWork } from "./useBackgroundDrain";
+import { afterFeedFirst } from "@/lib/localFirst/requestLanes";
 import { serverDeliveryActive } from "@/lib/transcriptDeliveryState";
 import { transcriberPendingRows, writePendingReconcileSnapshot } from "@/lib/connectors/pendingReconcileSnapshot";
 
@@ -284,7 +284,7 @@ export function useTranscriberLibrarySync(input: {
     setSaved({});
     // This sync writes the user's space but never touches the vault; native
     // OpenKey sessions have no secrets space and can still sync meetings.
-    const unlocked = () => !secretsAvailable() || isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw);
+    const unlocked = () => !secretsAvailable() || isSecretsUnlocked(tcw);
     const accountDid = tcw.did;
     const accountAddress = sessionStore.getAddress();
     const accountCurrent = () => enabled && !cancelled && tcw.did === accountDid
@@ -397,7 +397,9 @@ export function useTranscriberLibrarySync(input: {
         : boundedPass();
       void exclusive.finally(() => { running = false; });
     };
-    const run = () => start(false);
+    // A pass reads the space (connector schema probe, saved meeting ids): on a Feed open the
+    // startup pass waits for the Feed's first load.
+    const run = () => { void afterFeedFirst(async () => { if (!cancelled) start(false); }); };
     // A hidden tab makes no scheduled reads; focus, visibilitychange and online start a pass on return.
     const tick = () => { if (document.visibilityState !== "hidden") start(true); };
     run();

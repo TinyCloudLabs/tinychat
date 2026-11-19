@@ -1,7 +1,6 @@
 // ── Delegation ───────────────────────────────────────────────────────
 export {
   APP_ID,
-  TINYCHAT_KEY_PREFIX,
   CONNECTORS_SQL_DB_NAME,
   CONNECTORS_KV_PREFIX,
   CONNECTOR_SCHEMA,
@@ -253,3 +252,6 @@ export {
 
 // ── Notetaker meeting links ──────────────────────────────────────────
 export { meetingLinkFromInput } from "./meeting-link.js";
+
+// ── TinyCloud node hosts ─────────────────────────────────────────────
+export { sameTinyCloudNode } from "./tinycloud-node.js";

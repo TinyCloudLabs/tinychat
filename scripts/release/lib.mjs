@@ -1,6 +1,6 @@
 /** Shared release definitions. Every workspace package other than the release units is private and ignored by Changesets. */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,23 @@ export const DESKTOP = {
   crate: 'exo-desktop',
 };
 
+// tauri.conf.json's productName names the app bundle ("<name>.app"), the DMG volume and, with spaces as hyphens,
+// the release assets ("<Name-With-Hyphens>_<version>_aarch64.dmg"). Words of letters and digits only, so it is safe
+// in paths and asset names.
+export const DESKTOP_PRODUCT_NAME = /^[A-Za-z0-9]+(?: [A-Za-z0-9]+)*$/;
+
+/** productName and identifier from a tauri.conf.json text; assetName is productName with spaces as hyphens. */
+export function desktopProduct(confText) {
+  const { productName, identifier } = JSON.parse(confText);
+  if (typeof productName !== 'string' || !DESKTOP_PRODUCT_NAME.test(productName)) {
+    throw new Error(`${DESKTOP.tauriConf} productName must be words of letters and digits, got ${JSON.stringify(productName)}`);
+  }
+  if (typeof identifier !== 'string' || !/^[a-z0-9]+(?:\.[a-z0-9-]+)+$/.test(identifier)) {
+    throw new Error(`${DESKTOP.tauriConf} identifier must be a reverse-DNS bundle id, got ${JSON.stringify(identifier)}`);
+  }
+  return { productName, identifier, assetName: productName.replaceAll(' ', '-') };
+}
+
 // Stable X.Y.Z, or X.Y.Z-beta.N while main is in Changesets pre mode (tag "beta").
 export const VERSION = /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
 export const STABLE_VERSION = /^\d+\.\d+\.\d+$/;
@@ -34,6 +51,7 @@ export const BRANCH_STABLE = 'release/stable';
 export const BRANCH_PRODUCTION = 'production';
 export const PRODUCTION_WORKFLOW = 'deploy-production.yml';
 export const DESKTOP_RELEASE_WORKFLOW = 'desktop-release.yml';
+export const STABLE_SCOPE_FRONTEND_DESKTOP = 'frontend-desktop';
 
 /** Split a `<name>@<version>` tag; names may be scoped (`@tinychat/backend@0.1.1`). */
 export function parseTag(tag) {
@@ -107,6 +125,42 @@ export function classifyPagesCheckRuns(checkRuns) {
   return { state: 'production', deploymentUrl, detailsUrl: latest.details_url };
 }
 
+/**
+ * Whether `https://<host>/version.json` names `commit`: the build every web host must serve after a deploy
+ * (frontend/vite.config.ts writes it). Never throws: a host that is down, answers HTML (a different Pages project) or
+ * names another commit is reported as not serving it, with what it served.
+ */
+export async function hostServesCommit(host, commit, fetchImpl = globalThis.fetch) {
+  try {
+    const url = new URL(`https://${host}/version.json`);
+    url.searchParams.set('deploy', commit);
+    const response = await fetchImpl(url, { headers: { 'cache-control': 'no-cache' } });
+    if (!response.ok) return { ok: false, served: `HTTP ${response.status}` };
+    const type = response.headers.get('content-type') ?? '';
+    if (!/json/i.test(type)) return { ok: false, served: `a ${type.split(';')[0] || 'non-JSON'} response, not version.json` };
+    const served = (await response.json())?.commit ?? null;
+    return { ok: served === commit, served: served ?? 'no commit' };
+  } catch (error) {
+    return { ok: false, served: `no answer (${error instanceof Error ? error.message : 'error'})` };
+  }
+}
+
+/**
+ * One sentence for the deploy log when `hostServesCommit` says a host is not serving the commit: what the host did, and
+ * what that usually means. `served` is the `served` field it returned. Only wording; it decides nothing.
+ */
+export function explainUnservedHost(host, served, commit) {
+  if (/^no answer/.test(served)) {
+    return `${host} did not answer (${served.slice('no answer ('.length, -1)}): the domain does not resolve or refuses the connection, so it is probably not attached to the Cloudflare Pages project`;
+  }
+  if (/^HTTP 404\b|response, not version\.json$/.test(served)) {
+    return `${host} answers but has no version.json from this build (${served}): the domain is not bound to the Cloudflare Pages project that built ${commit}, or it is bound to a different project`;
+  }
+  if (/^HTTP \d+$/.test(served)) return `${host} answered ${served} for version.json: it is up but not serving this build (a Pages or edge error)`;
+  if (served === 'no commit') return `${host} serves a version.json without a commit: it is an older build or another project`;
+  return `${host} serves ${served}, not ${commit}: an older build, so the domain is on another Cloudflare Pages project or its deploy has not propagated`;
+}
+
 export const readJson = (root, rel) => JSON.parse(readFileSync(join(root, rel), 'utf8'));
 
 export function readPreState(root) {
@@ -148,20 +202,83 @@ export function readChangesets(root) {
 // The Release stable PR records the plan it was reviewed with here; the stable release deletes it.
 export const STABLE_PLAN = '.changeset/release-stable.json';
 
+/** Temporarily add packages to Changesets' ignore list for one synchronous CLI operation. */
+export function withIgnoredPackages(root, packages, operation) {
+  const configPath = join(root, '.changeset/config.json');
+  const original = readFileSync(configPath, 'utf8');
+  const config = JSON.parse(original);
+  const ignore = config.ignore ?? [];
+  const additions = packages.filter(name => !ignore.includes(name));
+  if (additions.length === 0) return operation();
+
+  writeFileSync(configPath, `${JSON.stringify({ ...config, ignore: [...ignore, ...additions] }, null, 2)}\n`);
+  try {
+    return operation();
+  } finally {
+    writeFileSync(configPath, original);
+  }
+}
+
 /**
  * What a stable release ships right now: every unit on a beta graduates to its X.Y.Z, carrying the changesets that
  * betas already released (.changeset/pre/). Fresh changesets never go straight to stable (check.mjs refuses them).
  */
-export function stablePlan(root) {
-  const versions = {};
+export function stablePlan(root, scope) {
+  const betaVersions = {};
+  const prereleaseVersions = {};
   for (const unit of UNITS) {
-    const beta = /^(\d+\.\d+\.\d+)-beta\.\d+$/.exec(readJson(root, `${unit.dir}/package.json`).version ?? '');
-    if (beta) versions[unit.name] = beta[1];
+    const version = readJson(root, `${unit.dir}/package.json`).version ?? '';
+    const beta = /^(\d+\.\d+\.\d+)-beta\.\d+$/.exec(version);
+    if (beta) {
+      betaVersions[unit.name] = beta[1];
+      prereleaseVersions[unit.name] = version;
+    }
   }
-  return { versions, changesets: readChangesets(root).filter(changeset => changeset.admitted).map(changeset => changeset.file) };
+
+  if (scope === undefined) {
+    return { versions: betaVersions, changesets: readChangesets(root).filter(changeset => changeset.admitted).map(changeset => changeset.file) };
+  }
+  if (scope !== STABLE_SCOPE_FRONTEND_DESKTOP) throw new Error(`Unknown stable release scope ${JSON.stringify(scope)}`);
+
+  const selectedUnits = new Set(FIXED);
+  const versions = Object.fromEntries(Object.entries(betaVersions).filter(([name]) => selectedUnits.has(name)));
+  if (FIXED.some(name => !Object.hasOwn(versions, name))) {
+    throw new Error(`Stable scope ${scope} requires beta versions for ${FIXED.join(' and ')}`);
+  }
+  const pendingVersions = Object.fromEntries(Object.entries(prereleaseVersions).filter(([name]) => !selectedUnits.has(name)));
+  const changesets = readChangesets(root).filter(changeset => changeset.admitted);
+  const selectedChangesets = [];
+  const pendingChangesets = [];
+  for (const changeset of changesets) {
+    const releasedUnits = (changeset.releases ?? []).filter(({ type }) => type !== 'none').map(({ name }) => name);
+    const selected = releasedUnits.some(name => selectedUnits.has(name));
+    const pending = releasedUnits.some(name => !selectedUnits.has(name));
+    if (selected && pending) throw new Error(`Stable scope ${scope} cannot split admitted changeset ${changeset.file}`);
+    if (selected) selectedChangesets.push(changeset.file);
+    else if (pending) pendingChangesets.push(changeset.file);
+  }
+  return {
+    scope,
+    versions,
+    changesets: selectedChangesets,
+    pending: { versions: pendingVersions, changesets: pendingChangesets },
+  };
 }
 
-const canonicalPlan = plan => JSON.stringify({ versions: Object.entries(plan.versions).sort(), changesets: [...plan.changesets].sort() });
+const canonicalPlan = plan => {
+  const result = {
+    versions: Object.entries(plan.versions).sort(),
+    changesets: [...plan.changesets].sort(),
+  };
+  if (plan.scope !== undefined) {
+    result.scope = plan.scope;
+    result.pending = {
+      versions: Object.entries(plan.pending.versions).sort(),
+      changesets: [...plan.pending.changesets].sort(),
+    };
+  }
+  return JSON.stringify(result);
+};
 export const samePlan = (a, b) => canonicalPlan(a) === canonicalPlan(b);
 
 // `version = "..."` inside the [package] table of Cargo.toml.

@@ -25,6 +25,8 @@ import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import { NoteDetailView, transcriptBlocks, transcriptStepLine, type NoteDetailViewProps } from "./NoteDetailView";
 import { TRANSCRIPT_FALLBACK_NOTE } from "./transcriptProvenanceCopy";
+import { PlatformContext } from "@/lib/platform";
+import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
 
 const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
@@ -86,8 +88,8 @@ describe("NoteDetailView", () => {
   test("another device names the holding device and offers no broken player or Transcribe button", () => {
     const html = render({ audio: null, transcript: { status: "absent" }, transcription: transcription(),
       metadata: { status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: false, reason: "local_only", device: { platform: "ios" } } } } });
-    expect(html).toContain("Audio is on your iPhone");
-    expect(html).toContain("Transcribe on your iPhone");
+    expect(html).not.toContain("Audio is on your");
+    expect(html).not.toContain("Transcribe on your");
     expect(html).not.toContain('data-testid="transcribe-button"');
     expect(html).not.toContain("meeting-audio-player");
   });
@@ -354,6 +356,26 @@ describe("a voice note's transcription", () => {
     expect(live).toContain("Manage storage");
     expect(live).toContain("Transcribe again");
   });
+  for (const platform of ["ios", "android"] as const) {
+    test(`a Private transcript storage refused on ${platform}: no Manage storage; the plan is managed on the web, said as text, then Transcribe again`, () => {
+      const html = renderToStaticMarkup(
+        <PlatformContext.Provider value={platform}>
+          <MemoryRouter>
+            <NoteDetailView
+              item={VOICE} listStatus="ready"
+              metadata={{ status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "storage_full" } }}
+              transcript={{ status: "absent" }} transcription={transcription()}
+              audio={audio} copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop}
+            />
+          </MemoryRouter>
+        </PlatformContext.Provider>,
+      );
+      expect(html).not.toContain("Manage storage");
+      expect(html).toContain(NATIVE_PLAN_NOTE);
+      expect(html).toContain("Transcribe again");
+      expect(html).not.toContain("account.tinycloud.xyz");
+    });
+  }
   test("TC-1206: a persisted storage-full transcript takes precedence over a local Private-choice failure", () => {
     const html = render({
       metadata: { status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "storage_full" } },
@@ -565,7 +587,7 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");
     // The counter sees the enabled path, so its silence outside the desktop app means something.
     expect(__desktopWhisperQueueReadsForTests()).toBeGreaterThan(before);
-    expect(withJob({ state: "transcribing", progress: 33 })).toContain("Transcribing on this Mac · 33%");
+    expect(withJob({ state: "transcribing", progress: 33 })).toContain("0 of 1 min");
     const failed = withJob({ state: "failed", error: "raw detail" });
     expect(failed).toContain('data-testid="whisper-job-retry"');
     expect(failed).not.toContain("raw detail");
@@ -715,4 +737,24 @@ test("legacy meeting transcript has no gap or provenance additions", () => {
   expect(html).not.toContain('data-testid="transcript-gap"');
   expect(html).not.toContain(TRANSCRIPT_FALLBACK_NOTE);
   expect(html).not.toContain('data-testid="transcript-provenance-note"');
+});
+
+test("a failed Mac Whisper job shows its Retry in the Transcript slot, from the real pipeline job", () => {
+  const pipeline = pipelineOf({
+    route: "on-device",
+    space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+    transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "failed", error: "decoder" }, queue: null, model: null, download: "idle", sync: null } },
+  });
+  const view = { pipeline, route: "on-device" as const, onAction: noop, actionError: null };
+  const html = renderToStaticMarkup(
+    <NotePipelineContext.Provider value={view}>
+      <MemoryRouter><NoteDetailView item={VOICE} listStatus="ready"
+        metadata={{ status: "ok", metadata: { audio: { stored: true }, capture: { platform: "tauri" } } }}
+        transcript={{ status: "absent" }} audio={audio} activityView={view} platform="tauri"
+        copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} /></MemoryRouter>
+    </NotePipelineContext.Provider>,
+  );
+  expect(html).toContain('data-testid="transcription-status"');
+  expect(html).toContain("Couldn&#x27;t transcribe on ");
+  expect(html).toMatch(/data-testid="transcription-status-action"[^>]*>Try again</);
 });

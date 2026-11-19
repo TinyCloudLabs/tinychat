@@ -1,6 +1,6 @@
-// Mounted-App proof of what the session restore hands to restoreTinyCloudWebSession: with the local copy
-// ON the replication option AND a read-only account provider (so the SDK's restore has a signer to ask,
-// and is not left refused as `gate_unavailable`), with it OFF neither. Run by
+// Mounted-App proof of what the session restore hands to restoreTinyCloudWebSession: always a read-only account
+// provider (so the restored client has a session, TC-3019, and the SDK's restore has a signer to ask), and with
+// the local copy ON also the replication option. Run by
 // src/App.restoreProvider.test.ts in its own process (mock.module is process-wide).
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { act } from "react";
@@ -31,7 +31,7 @@ interface RestoreConfig { provider?: { request(args: { method: string }): Promis
 const restoreConfigs: RestoreConfig[] = [];
 let replicationOn = true;
 
-function makeTcw(): TinyCloudWeb {
+function fakeTcw(): TinyCloudWeb {
   return { did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {} } as unknown as TinyCloudWeb;
 }
 
@@ -40,16 +40,12 @@ mock.module("@tinyboilerplate/client", () => ({
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
   loadAppManifest: async () => ({}),
-  createTinyCloudWeb: () => Object.assign(makeTcw(), {
-    clearPersistedSession: async () => {},
-    prepareSignIn: async () => {},
-    signIn: async () => ({ siwe: "message", signature: "signature" }),
-  }),
+  createAndSignIn: async () => ({ tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }),
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   // Records what the app's restore call passes; the real SDK is not under test here.
   restoreTinyCloudWebSession: async (_address: string, config: RestoreConfig) => {
     restoreConfigs.push(config);
-    return { status: "restored", tcw: makeTcw() };
+    return { status: "restored", tcw: fakeTcw() };
   },
 }));
 // The real plugin and storage are not what is under test: only whether the replication option is built.
@@ -110,7 +106,7 @@ async function settle() {
   await act(async () => { await tick(); await tick(); await tick(); });
 }
 async function mount(platform: AppPlatform = "web") {
-  restoreDom = installDom();
+  restoreDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -121,12 +117,6 @@ async function click(label: string) {
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
   expect(button, `missing ${label}; DOM=${host!.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
-  if (label === "Sign in") {
-    await settle();
-    const approval = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Continue to OpenKey");
-    if (!approval) throw new Error("Expected OpenKey approval action");
-    await act(async () => { approval.click(); await tick(); });
-  }
 }
 async function unmount() {
   if (root) await act(async () => root!.unmount());
@@ -183,10 +173,13 @@ test("restore with the local copy ON passes the replication option and a provide
   await expect(config.provider!.request({ method: "eth_requestAccounts" })).rejects.toMatchObject({ code: 4200 });
 });
 
-test("restore with the local copy OFF passes neither: no replication option, no provider key at all", async () => {
+test("restore with the local copy OFF passes no replication option, and the read-only account provider", async () => {
   replicationOn = false;
   await signInThenReload();
   expect(restoreConfigs).toHaveLength(1);
-  expect("provider" in restoreConfigs[0]!).toBe(false);
-  expect("replication" in restoreConfigs[0]!).toBe(false);
+  const config = restoreConfigs[0]!;
+  expect(await config.provider!.request({ method: "eth_accounts" })).toEqual([ADDRESS]);
+  await expect(config.provider!.request({ method: "personal_sign" })).rejects.toMatchObject({ code: 4200 });
+  await expect(config.provider!.request({ method: "eth_requestAccounts" })).rejects.toMatchObject({ code: 4200 });
+  expect("replication" in config).toBe(false);
 });

@@ -11,7 +11,6 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CaptureSurface, type CaptureSurfaceProps } from "@/capture/CaptureSurface";
 import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
-import { RecordButton } from "@/capture/recorder/RecordButton";
 import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { RecorderShell } from "@/capture/recorder/RecorderShell";
 import { useOpenSavedNote } from "@/capture/library/useOpenSavedNote";
@@ -33,7 +32,7 @@ import { useSizeClass } from "@/lib/sizeClass";
 import { useVisualViewportFit } from "@/lib/useVisualViewport";
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { BootSurface } from "@/shell/BootSurface";
-import { homePath, legacyRedirectFor, screenFor } from "@/shell/routes";
+import { HOME_PATH, legacyRedirectFor, screenFor } from "@/shell/routes";
 import type { createRuntimeShim } from "./runtimeShim";
 import { HARNESS_ADDRESS, HARNESS_DID, harnessSessionStore, harnessTcw } from "./stubs";
 
@@ -95,8 +94,8 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
   const settled = state === "ready" || state === "unauthenticated" || state === "recoverableError";
   useEffect(() => {
     if (!legacy || !settled) return;
-    navigate(state === "ready" ? legacy.to : homePath(platform), { replace: true });
-  }, [legacy, settled, state, platform, navigate]);
+    navigate(state === "ready" ? legacy.to : HOME_PATH, { replace: true });
+  }, [legacy, settled, state, navigate]);
 
   const recorderShell = (
     <RecorderShell
@@ -104,6 +103,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
       screen={screen}
       platform={platform}
       pendingMeetings={0}
+      accountDid={HARNESS_DID}
       chat={probe(
         "chat",
         <ChatWorkspace
@@ -130,7 +130,6 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
           headerRecorder={
             <>
               <HeaderLiveChip />
-              <RecordButton variant="icon" />
             </>
           }
           settings
@@ -154,7 +153,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
         <ConnectorsPage tcw={harnessTcw} backendUrl={backendUrl} sessionStore={harnessSessionStore} />,
       )}
       feed={probe("feed", <div className="grid h-full place-items-center text-body text-muted-foreground">Feed (harness placeholder)</div>)}
-      apps={probe("apps", <AppsPage />)}
+      apps={probe("apps", <AppsPage accountDid={HARNESS_DID} />)}
       settings={probe(
         "settings",
         <SettingsPage

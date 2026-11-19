@@ -1,6 +1,8 @@
 import type { Abi } from 'viem'
 import type { NetworkConfig, NetworkKey } from './types.js'
 
+// Public model/attestation metadata GETs only; chat inference and signature
+// retrieval use the backend's attested gateway and never send chat content here.
 export const API_BASE = 'https://api.redpill.ai'
 export const SIGSTORE_SEARCH_BASE = 'https://search.sigstore.dev/?hash='
 export const DEFAULT_MODEL = 'phala/gpt-oss-120b'
