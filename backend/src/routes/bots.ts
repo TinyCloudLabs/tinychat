@@ -6,6 +6,8 @@
 import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
+import { botCaps, CAP_MODE, type CapMode } from "../bot-caps";
+import { orderedBots, type BotsRegistry } from "../bots-registry";
 
 export interface BotsConfig {
   serviceUrl: string;
@@ -48,7 +50,18 @@ export function botsFromEnv(env: Record<string, string | undefined>): BotsConfig
     accountAllowed: address => accounts.has("*") || accounts.has(address.toLowerCase()) };
 }
 
-export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler }): Router {
+/**
+ * Headers for one call to the bots service at `url`. Every call this router makes to the service goes through here,
+ * so how a call is authenticated is decided in one place.
+ */
+export function botsServiceHeaders(config: BotsConfig, ownerDid: string, _method: string, _url: string, body?: string): Record<string, string> {
+  const headers = { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": ownerDid };
+  return body === undefined ? headers : { ...headers, "content-type": "application/json" };
+}
+
+export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler; registry?: BotsRegistry; capMode?: CapMode }): Router {
+  const { registry } = opts;
+  const capMode = opts.capMode ?? CAP_MODE;
   const router = Router();
   const { config } = opts;
   router.use(opts.authMiddleware);
@@ -64,8 +77,58 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     return req.user.address;
   };
 
+  /**
+   * Tells the service a bot's state under the record's counter. The service ignores anything older than what it
+   * holds, so a late or repeated call is harmless. Answers whether the service took it.
+   */
+  const announce = async (address: string, key: string, state: "active" | "suspended" | "deleting", seq: number): Promise<boolean> => {
+    try {
+      const url = `${config!.serviceUrl}/v1/bots/${key}`;
+      const body = JSON.stringify({ state, seq });
+      const response = await (config!.fetchImpl ?? fetch)(url, { method: "PUT", headers: botsServiceHeaders(config!, botOwnerDid(address), "PUT", url, body), body, signal: AbortSignal.timeout(10_000) });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  };
+
   router.get("/status", (req, res) => {
     res.json({ enabled: enabledFor(req) });
+  });
+
+  // The owner's bots, and how many more may be created. The owner is the session address; nothing in the request names one.
+  router.get("/", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    if (!registry) { res.status(404).json({ error: "not_found" }); return; }
+    try {
+      const row = await registry.read(address);
+      res.json({ bots: orderedBots(row), deleted: row.deleted, ...botCaps(capMode, undefined, row) });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
+    }
+  });
+
+  // Creates a bot for the signed-in owner. Its key is chosen here; the request names neither an owner nor a key.
+  router.post("/", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    if (!registry) { res.status(404).json({ error: "not_found" }); return; }
+    try {
+      const { limits } = botCaps(capMode, undefined, await registry.read(address));
+      if (!limits) { res.status(503).json({ error: "bots_unavailable" }); return; }
+      const created = await registry.create(address, { name: req.body?.name, shape: req.body?.shape, colour: req.body?.colour }, limits.private.max);
+      if (!created.ok) {
+        const status = created.error === "name_taken" || created.error === "bot_limit" ? 409 : 400;
+        res.status(status).json(created.error === "bot_limit" ? { error: "bot_limit", environment: "private" } : { error: created.error });
+        return;
+      }
+      // If this fails the bot still exists; a message to it announces it again.
+      await announce(address, created.bot.key, "active", created.seq);
+      res.status(201).json({ bot: created.bot });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
+    }
   });
 
   router.get("/main/messages", async (req, res) => {

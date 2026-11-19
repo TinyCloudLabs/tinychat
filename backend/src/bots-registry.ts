@@ -30,7 +30,8 @@ export interface Bot {
 export interface DeletedBot { key: string; name: string }
 export interface OwnerBots { v: 1; seq: number; bots: Bot[]; deleted: DeletedBot[] }
 
-export type CreateResult = { ok: true; bot: Bot } | { ok: false; error: "invalid_name" | "invalid_shape" | "invalid_colour" | "name_taken" | "bot_limit" };
+/** `seq` is the counter of the write that stored the bot: the service is told the bot's state under it. */
+export type CreateResult = { ok: true; bot: Bot; seq: number } | { ok: false; error: "invalid_name" | "invalid_shape" | "invalid_colour" | "name_taken" | "bot_limit" };
 
 export const MAIN_BOT_KEY = "main";
 export const BOT_NAME_MAX = 24;
@@ -151,7 +152,7 @@ export class BotsRegistry {
     const { shape, colour } = input;
     if (!isBotShape(shape)) return { ok: false, error: "invalid_shape" };
     if (!isBotColour(colour)) return { ok: false, error: "invalid_colour" };
-    return (await this.#mutate<CreateResult>(address, current => {
+    const { result, row } = await this.#mutate<{ ok: true; bot: Bot } | Extract<CreateResult, { ok: false }>>(address, current => {
       if (current.bots.some(bot => bot.name.toLowerCase() === name.toLowerCase())) return { result: { ok: false, error: "name_taken" } };
       // Counted on every attempt, against the record just read: a count taken earlier may already be out of date.
       if (current.bots.filter(bot => bot.environment === "private" && bot.state !== "deleting").length >= privateLimit) return { result: { ok: false, error: "bot_limit" } };
@@ -164,7 +165,8 @@ export class BotsRegistry {
       }
       const bot: Bot = { key, name, shape, colour, environment: "private", state: "active", createdAt: this.#now().toISOString() };
       return { result: { ok: true, bot }, next: { bots: [...current.bots, bot], deleted: current.deleted } };
-    })).result;
+    });
+    return result.ok ? { ok: true, bot: result.bot, seq: row.seq } : result;
   }
 
   /** May `sourceKey` message `targetKey`? Fails closed: any error is a refusal, never an exception and never a yes. */

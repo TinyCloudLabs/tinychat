@@ -120,7 +120,8 @@ describe("the bots registry", () => {
     const main = (await registry.read(ADDRESS)).bots[0];
     const result = await registry.create(ADDRESS, { name: "Research", shape: "sprout", colour: "teal" }, 3);
     const bot = { key, name: "Research", shape: "sprout", colour: "teal", environment: "private", state: "active", createdAt: T0.toISOString() };
-    expect(result).toEqual({ ok: true, bot });
+    // The counter of the write that stored the bot goes with it: the service is told the bot's state under it.
+    expect(result).toEqual({ ok: true, bot, seq: 2 });
     expect(stored(kv)).toEqual({ v: 1, seq: 2, bots: [main, bot], deleted: [] });
   });
 
