@@ -521,7 +521,7 @@ describe.serial(`shell invariants (${name})`, () => {
           () => {
             const button = document.querySelector('button[aria-label="About agent access"]');
             const id = button?.getAttribute("aria-describedby");
-            return !!id && document.getElementById(id)?.textContent?.includes("Public web search stays available.");
+            return !!id && document.getElementById(id)?.getAttribute("role") === "tooltip";
           },
           undefined,
           { timeout: 5_000 },
@@ -540,7 +540,7 @@ describe.serial(`shell invariants (${name})`, () => {
     expect(await describedBy()).toBeNull();
     await trigger.tap();
     await isOpen("a tap opens it");
-    expect(await page.getByRole("tooltip").textContent()).toContain("Public web search stays available.");
+    expect(await page.getByRole("tooltip").count()).toBe(1);
 
     // A second tap closes it, and stays closed.
     await trigger.tap();

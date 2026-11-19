@@ -59,6 +59,7 @@ import { TinyCloudSettings } from "./TinyCloudSettings";
 import { AppLockSettings } from "./AppLockSettings";
 import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
 import { LegacyDataLinks } from "./LegacyDataLinks";
+import { CardMdSettings } from "@/feed/CardMdSettings";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -219,6 +220,7 @@ export function SettingsPage({
           <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
+          <CardMdSettings tcw={tcw} />
           <ChatViewSetting account={did} />
           <SectionCard
             id="agent-access"
@@ -226,7 +228,7 @@ export function SettingsPage({
             title="Agent access"
             aside={
               <InfoTip label="About agent access" className={TITLE_TIP}>
-                Private agent memory and meeting access. Public web search stays available.
+                Lets the agent read your meeting transcripts and remember things between chats. Public web search works without it.
               </InfoTip>
             }
           >

@@ -141,7 +141,9 @@ TC-2537 adds four optional fields. The streaming chat routes (`POST /api/chat`,
 error or a server-side transport failure, a fixed `code` (for example
 `upstream_failed`, `turn_timeout`, `transport_failed`). A stream that ended in
 `error` also carries `failure_cause` (TC-3462): `model` when the model's own
-output broke the reply (charged, `docs/credits.md`), else `ours` (free). `credits` is the credits
+output broke the reply (charged, `docs/credits.md`), else `ours`. It names who
+caused the failure, not whether it was charged: a `turn_timeout` is `ours` and
+still charged what it used, so read `credits` for the charge. `credits` is the credits
 recorded for the request, when any were charged; those handlers are wrapped in
 `recordAfterHandler`, so the record waits until the post-stream charge is
 recorded (at most 30 seconds after the response ended). `account_hash` is

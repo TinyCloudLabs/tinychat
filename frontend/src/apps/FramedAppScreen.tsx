@@ -97,7 +97,7 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
   const src = useMemo(() => frameUrl(app), [app]);
   const hostRef = useRef<EmbedHost | null>(null);
 
-  // One host per mount: its close revokes for good, so a remount (StrictMode included) starts a fresh one.
+  // One host per mount: its close ends the frame's grant for good, so a remount (StrictMode included) starts a fresh one.
   useEffect(() => {
     const host = new EmbedHost({
       app,
@@ -121,10 +121,6 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
           expiresAt: new Date(delegation.expiry).getTime(),
           prompted,
         };
-      },
-      revoke: async (cid) => {
-        const result = await tcw.revokeDelegation(cid);
-        if (!result.ok) throw new Error(`one_apps_revoke_failed:${cid}`);
       },
       stepUp: (scopes, entries, missingSpaces) => askThenStepUp(scopes, entries, missingSpaces),
       missing: (spaces, none) => {
