@@ -14,6 +14,7 @@ test("only space-write pipelines import the shared lane", () => {
     .map((file) => relative(root, file)).sort();
   expect(imports).toEqual([
     "chat/useBackgroundDrain.ts", "lib/connectors/firefliesSync.ts",
+    "lib/connectors/granolaSync.ts",
     "lib/voiceNotes/voiceNoteRows.ts", "lib/voiceNotes/voiceNoteStore.ts",
   ]);
 });

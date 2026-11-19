@@ -817,7 +817,10 @@ export async function watchHomeMirrors(context: HomeMirrorContext, options: Home
       await draining;
     }
     if (failed) throw safeFailure(failureValue);
-    if (!connection.signal.aborted) return;
+    // Nothing ended this connection (not the renewal timer, not a stop) yet the subscription finished. The hooks service
+    // reconnects a closed stream itself, so this is it giving up on the session. Returning would end the run with exit 0,
+    // which a supervisor reads as the watcher's own choice to stop; fail so it restarts the watcher on a fresh session.
+    if (!connection.signal.aborted) throw failure(ErrorCodes.NETWORK_ERROR);
   }
   if (failed) throw safeFailure(failureValue);
 }

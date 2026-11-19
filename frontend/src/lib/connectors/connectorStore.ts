@@ -560,6 +560,33 @@ export async function listKnownSourceIds(
   return { ok: true, data: ids };
 }
 
+/**
+ * `source_id → metadata[key]` for every meeting of a source. The Granola sync
+ * uses it to skip a note whose upstream `updated_at` matches what we already
+ * stored — an `updated_after` overlap must not re-fetch every transcript.
+ */
+export async function listMeetingMetadataValues(
+  tcw: TinyCloudWeb,
+  source: string,
+  metadataKey: string,
+): Promise<StoreResult<Record<string, string | null>>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const res = await store(tcw).query(
+    "SELECT source_id, metadata FROM connector_meeting WHERE source = ?",
+    [source],
+  );
+  if (!res.ok) return fail(res.error, "listMeetingMetadataValues", storageScopeFor(tcw));
+  const values: Record<string, string | null> = {};
+  for (const row of res.data.rows) {
+    const sourceId = cellStr(row, 0, null);
+    if (sourceId === null) continue;
+    const value = parseJsonObject(row[1])?.[metadataKey];
+    values[sourceId] = typeof value === "string" ? value : null;
+  }
+  return { ok: true, data: values };
+}
+
 export async function countMeetings(
   tcw: TinyCloudWeb,
   source: string,

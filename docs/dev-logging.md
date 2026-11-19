@@ -197,7 +197,10 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `backend_alert` (`alert=true` lines), `backend_log_error` (other stderr lines and closed calendar failure diagnostics),
   `backend_storage_lane_wait` (typed queue-wait diagnostics), `backend_diagnostic_summary` (bounded interval counts), the four hosted-AssemblyAI
   JSON events (`assemblyai_provider_blocked`, `_provider_recovered`, `_jobs_failed_in_a_row`, `_worker_heartbeat`),
-  and the per-request `tinychat_request` record (TC-2537).
+  the two retention-sweep events (`retention_sweep_stalled`, `alert:true`, with `indexes_unreadable`, `errors`, `overdue_rows` and
+  `consecutive_passes` counts only: the content sweep has failed for about 30 minutes or a row is over an hour past its 14-day
+  deadline, repeated at most every 30 minutes; `retention_sweep_recovered` once it clears; event names stay under 32 characters
+  or the redaction transform rewrites them), and the per-request `tinychat_request` record (TC-2537).
   Everything else is dropped, not redacted: free text, stack frames, lines over 2048 characters.
   A redaction transform (DIDs, `0x` addresses, JWTs, bearer tokens, URLs, emails, long base64) runs first as a second
   barrier, except on `tinychat_request` lines, whose 64-hex `account_hash` it would erase; the allowlist checks each

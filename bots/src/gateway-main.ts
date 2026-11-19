@@ -1,25 +1,32 @@
 // Gateway process. Owns the shared egress volume: one directory per bot holding only that bot's socket, plus a
 // control socket at the volume root that only the supervisor can reach (bots see their own directory alone).
-//   PUT    /bots/<botId>  {"token": "<64 hex>"}  listen on the bot's socket and accept that token
+//   PUT    /bots/<botId>  {"token": "<64 hex>", "owner": "<64 hex>"}  listen on the bot's socket and accept that
+//                         token; `owner` is the id of its owner's Main (left out, the bot is its own owner)
 //   DELETE /bots/<botId>                         stop listening and remove the directory
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { BotAci } from "./aci";
+import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } from "./bot-admission";
 import { gatewayConfig } from "./config";
-import { fileBudgetStore, Gateway } from "./gateway";
+import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
 
-const cfg = gatewayConfig(process.env);
+const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
+const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
 const aci = process.env.BOTS_HISTORY_ENABLED === "true" ? new BotAci(cfg.upstream) : undefined;
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
 function startGateway(): Gateway {
   try {
-    return new Gateway(cfg, { store: fileBudgetStore(cfg.budgetFile), verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined });
+    return new Gateway(cfg, {
+      store: fileBudgetStore(cfg.budgetFile),
+      ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
+      verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
+    });
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -70,10 +77,13 @@ function unlisten(botId: string): void {
 
 const control = Bun.serve({
   unix: join(cfg.egressRoot, "control.sock"),
+  maxRequestBodySize: MAX_ADMISSION_BYTES,
   async fetch(req) {
-    const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(new URL(req.url).pathname);
+    const { pathname } = new URL(req.url);
+    if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
+    const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
-    const match = /^\/bots\/([0-9a-f]{64})$/.exec(new URL(req.url).pathname);
+    const match = /^\/bots\/([0-9a-f]{64})$/.exec(pathname);
     if (!match) return new Response(null, { status: 404 });
     const botId = match[1]!;
     if (req.method === "DELETE") {
@@ -82,11 +92,12 @@ const control = Bun.serve({
     }
     if (req.method !== "PUT") return new Response(null, { status: 405 });
     const body: unknown = await req.json().catch(() => null);
-    if (!isRecord(body) || typeof body.token !== "string" || !/^[0-9a-f]{64}$/.test(body.token)) {
+    if (!isRecord(body) || typeof body.token !== "string" || !/^[0-9a-f]{64}$/.test(body.token)
+      || (body.owner !== undefined && (typeof body.owner !== "string" || !BOT_ID.test(body.owner)))) {
       return new Response(null, { status: 400 });
     }
     listen(botId);
-    gateway.setToken(botId, body.token);
+    gateway.setToken(botId, body.token, body.owner as string | undefined);
     return new Response(null, { status: 204 });
   },
 });

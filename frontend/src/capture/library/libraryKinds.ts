@@ -11,15 +11,19 @@ import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 
 export type LibraryKind = "note" | "meeting" | "upload";
-export type LibraryFilter = "all" | LibraryKind;
+/** `shared`: recordings other people shared with this account (TC-3195); none of the account's own rows. */
+export type LibraryFilter = "all" | LibraryKind | "shared";
 
-/** The filter's segments, in order. */
+/** The kind filter's segments, in order. */
 export const LIBRARY_FILTERS: readonly { value: LibraryFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "note", label: "Notes" },
   { value: "meeting", label: "Meetings" },
   { value: "upload", label: "Uploads" },
 ];
+
+/** After the kinds, in the signed-in Library only: what other people shared with this account. */
+export const SHARED_FILTER: { value: LibraryFilter; label: string } = { value: "shared", label: "Shared with me" };
 
 const KIND_BY_SOURCE: Readonly<Record<string, LibraryKind>> = {
   [VOICE_NOTE_SOURCE]: "note",
@@ -36,6 +40,7 @@ export function libraryKind(source: string): LibraryKind {
   return KIND_BY_SOURCE[source] ?? "meeting";
 }
 
+/** An own row's place under the filter: never under "Shared with me", which lists shared recordings instead. */
 export function matchesFilter(source: string, filter: LibraryFilter): boolean {
   return filter === "all" || libraryKind(source) === filter;
 }
@@ -59,5 +64,6 @@ export function emptyFilterText(filter: LibraryFilter): string {
   if (filter === "note") return "No voice notes yet.";
   if (filter === "meeting") return "No meetings yet.";
   if (filter === "upload") return "No uploads yet.";
+  if (filter === "shared") return "Nothing shared with you yet.";
   return "Nothing here yet.";
 }

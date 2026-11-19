@@ -133,7 +133,24 @@ describe("createTinyCloudWeb", () => {
       capabilityRequest,
     });
 
-    expect(lastTinyCloudConfig.manifest).toBe(explicitManifest);
+    const signed = lastTinyCloudConfig.manifest;
+    expect(signed.app_id).toBe("com.example.explicit");
+    // Everything the explicit manifest says, unchanged; nothing from the composed request.
+    const { permissions: explicitPermissions, ...explicitFields } = explicitManifest;
+    expect(signed).toMatchObject(explicitFields);
+    expect(JSON.stringify(signed)).not.toContain("com.example.composed");
+    // Its own entries first and unchanged; the only addition is the space capabilities read (TC-3030).
+    expect(signed.permissions).toEqual([
+      ...explicitPermissions,
+      {
+        service: "tinycloud.capabilities",
+        space: "applications",
+        path: "",
+        actions: ["tinycloud.capabilities/read"],
+        skipPrefix: true,
+        description: "Read what this session may do in the space.",
+      },
+    ]);
   });
 
   test("adds the replication option only when supplied (flag OFF keeps the config key-for-key)", () => {

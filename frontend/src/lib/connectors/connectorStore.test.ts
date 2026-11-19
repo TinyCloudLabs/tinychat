@@ -26,6 +26,7 @@ import {
   insertMeeting,
   meetingKvKey,
   listKnownSourceIds,
+  listMeetingMetadataValues,
   normalizeFirefliesTranscript,
   putDriveCursor,
   purgeConnector,
@@ -192,6 +193,14 @@ class FakeSqlDb {
       const rows: unknown[][] = [];
       for (const row of this.meetings.values()) {
         if (row.source === source) rows.push([row.source_id, row.started_at, this.metadataCell(row.metadata)]);
+      }
+      return { ok: true, data: { rows } };
+    }
+    if (/^SELECT\s+source_id,\s*metadata\s+FROM\s+connector_meeting/i.test(s)) {
+      const source = String(params[0]);
+      const rows: unknown[][] = [];
+      for (const row of this.meetings.values()) {
+        if (row.source === source) rows.push([row.source_id, this.metadataCell(row.metadata)]);
       }
       return { ok: true, data: { rows } };
     }
@@ -645,6 +654,38 @@ describe("connectorStore.insertMeeting — app-level dedup on (source, source_id
     const count = await countMeetings(f.tcw, "fireflies");
     expect(count.ok).toBe(true);
     if (count.ok) expect(count.data).toBe(1);
+  });
+});
+
+describe("connectorStore.listMeetingMetadataValues", () => {
+  test("returns source_id -> metadata[key] for a source, non-string values as null", async () => {
+    const f = makeFake();
+    const meeting = {
+      id: "row-1",
+      source: "granola",
+      sourceId: "n1",
+      title: null,
+      startedAt: null,
+      durationSecs: null,
+      organizerEmail: null,
+      participants: [],
+      summaryOverview: null,
+      summaryActionItems: null,
+      keywords: null,
+      meetingType: null,
+      metadata: { granola_updated_at: "2026-11-10T15:00:00Z", attachment_count: 3 },
+    };
+    await insertMeeting(f.tcw, meeting);
+    await insertMeeting(f.tcw, { ...meeting, id: "row-2", sourceId: "n2", metadata: {} });
+    await insertMeeting(f.tcw, { ...meeting, id: "row-3", sourceId: "n3", source: "fireflies" });
+
+    const res = await listMeetingMetadataValues(f.tcw, "granola", "granola_updated_at");
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.data).toEqual({ n1: "2026-11-10T15:00:00Z", n2: null });
+    }
+    const counts = await listMeetingMetadataValues(f.tcw, "granola", "attachment_count");
+    expect(counts.ok && counts.data.n1).toBe(null); // a number is not a string value
   });
 });
 
