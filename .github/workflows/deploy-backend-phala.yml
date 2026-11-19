@@ -168,7 +168,7 @@ jobs:
             REDPILL_API_KEY
           )
 
-          # Only an explicit all-account MCP rollout can omit the legacy Eliza courier.
+          # Only a deployment with MCP chat on for every account can leave out the Eliza settings.
           mcp_has_accounts=false
           mcp_all_accounts=false
           if [ "${MCP_CHAT_ENABLED:-}" = "true" ]; then
