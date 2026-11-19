@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.9.1-beta.3
+
+### Patch Changes
+
+- 2e88e1e: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
 ## 0.9.1-beta.2
 
 ### Patch Changes
