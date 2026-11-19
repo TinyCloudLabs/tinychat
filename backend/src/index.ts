@@ -60,7 +60,7 @@ import {
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
-import { createTranscriberRouter } from "./routes/transcriber.js";
+import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
 import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
 import { WakeQueue } from "./exo/wake-intake.js";
@@ -90,6 +90,7 @@ import {
   transcriptDeliveryConfigFromEnv,
 } from "./services/transcription-api.js";
 import { KvJsonKv, KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { PurgeSweeper } from "./services/transcriber-purge.js";
 import { TranscriptDeliveryWorker, WriteGovernor } from "./services/transcript-delivery.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -97,6 +98,7 @@ import {
   privateCloudTranscriptionConfigFromEnv,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
+import { createPrivateCloudPurger } from "./services/private-cloud-purge.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { runInWriteLane } from "./services/write-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
@@ -152,6 +154,7 @@ import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
 import { configureRequestLogAccountHash, createRequestContextMiddleware, installRequestLogBoundary, parseRequestIdFirstPartyOrigins, recordMountTemplates } from "./request-context.js";
+import { renewalVerifyConfigFromEnv } from "./renewal-verify.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
@@ -622,6 +625,8 @@ async function main() {
   const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
   const transcriberApi = transcriptionConfig ? createTranscriptionApiClient({ ...transcriptionConfig, requestIdFirstPartyOrigins }) : null;
   const transcriberIndex = new KvTranscriberIndexStore(node, transcriberStorageLane);
+  // TC-3136: retries recording removals whose provider-side purge is not yet confirmed.
+  const transcriberPurgeSweeper = transcriberApi ? new PurgeSweeper(transcriberApi, transcriberIndex) : null;
   const transcriptCoordinator = new TenantCoordinator();
   const transcriptEligibility = (address: string) =>
     transcriptDeliveryConfig.enabled &&
@@ -787,6 +792,7 @@ async function main() {
       privateKey: backendPrivateKey,
       frontendOrigins,
       nativeSiweDomain: process.env.OPENKEY_SIWE_DOMAIN,
+      renewal: renewalVerifyConfigFromEnv(process.env, TINYCLOUD_HOST),
     }),
   );
   app.use(
@@ -1206,6 +1212,11 @@ async function main() {
   );
   app.use("/api/billing", createBillingRouter({ authMiddleware, rehydrator: ledgerRehydrator }));
 
+  // One PTX client serves the private cloud relay below and the account-deletion purge (TC-3166).
+  const privateCloudPtxClient = privateCloudTranscription.enabled
+    ? createPtxClient({ ...privateCloudTranscription, requestIdFirstPartyOrigins })
+    : null;
+
   // The TRANSCRIBER surface (routes/transcriber.ts): send a bot to a meeting URL through the
   // TinyCloud Private Transcription API and read the speaker-attributed transcript back. Mounted
   // only when TRANSCRIPTION_API_URL + TRANSCRIPTION_API_KEY are set — the project key stays in
@@ -1219,6 +1230,10 @@ async function main() {
       createTranscriberRouter({
         api: transcriberApi!,
         index: transcriberIndex,
+        purger: transcriberPurgeSweeper ?? undefined,
+        ...(privateCloudPtxClient && privateCloudTranscription.enabled
+          ? { privateCloud: createPrivateCloudPurger(privateCloudPtxClient, privateCloudTranscription.tenantKey) }
+          : {}),
         webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
         onObservedCompletion: transcriptWorker
           ? async (address, meetingId) => { await transcriptWorker.wake(address, meetingId, "observed"); }
@@ -1232,6 +1247,15 @@ async function main() {
     console.warn(
       "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.",
     );
+    // Private cloud transcription can be on without the meeting transcriber: account deletion still has to
+    // clear its jobs, so the bulk DELETE alone is mounted (TC-3166). Otherwise it would 404 as "dark".
+    if (privateCloudPtxClient && privateCloudTranscription.enabled) {
+      app.use(
+        "/api/transcriber/meetings",
+        authMiddleware,
+        createPrivateCloudOnlyBulkDeleteRouter(createPrivateCloudPurger(privateCloudPtxClient, privateCloudTranscription.tenantKey)),
+      );
+    }
   }
 
   // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can
@@ -1259,7 +1283,7 @@ async function main() {
     PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
     authMiddleware,
     createPrivateCloudTranscriptionRouter({
-      client: privateCloudTranscription.enabled ? createPtxClient({ ...privateCloudTranscription, requestIdFirstPartyOrigins }) : null,
+      client: privateCloudPtxClient,
       tenantKey: privateCloudTranscription.enabled ? privateCloudTranscription.tenantKey : null,
     }),
   );
@@ -1322,6 +1346,7 @@ async function main() {
 
   calendarAutojoinWorker?.start();
   transcriptWorker?.start();
+  transcriberPurgeSweeper?.start();
   // TC-1964: optional one-time, log-only count of stored credential rows. Unset = nothing runs.
   // Fired after boot, never awaited, and it cannot throw; it lists through the shared KV lane.
   if (process.env[CREDENTIAL_ROW_COUNT_ENV]?.trim()) {
