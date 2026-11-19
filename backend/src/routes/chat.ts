@@ -518,7 +518,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
     res.flushHeaders();
 
     if (!upstreamRes.body) {
-      noteRequestRecord(res, { stream: "error", code: "upstream_incomplete" });
+      noteRequestRecord(res, { stream: "error", code: "upstream_incomplete", failureCause: "ours" });
       res.end();
       return;
     }
@@ -543,10 +543,11 @@ export function createChatRouter(options?: ChatRouterOptions) {
         console.error("[chat] stream error:", receiptFailed ? "receipt verification failed" : error);
       }
     } finally {
+      // Every /api/chat failure is ours (TC-2601): the model's output never fails this stream.
       noteRequestRecord(res, controller.signal.aborted
         ? { stream: "aborted" }
-        : receiptFailed ? { stream: "error", code: "private_response_unverified" }
-        : streamFailed ? { stream: "error", code: "upstream_failed" } : { stream: "done" });
+        : receiptFailed ? { stream: "error", code: "private_response_unverified", failureCause: "ours" }
+        : streamFailed ? { stream: "error", code: "upstream_failed", failureCause: "ours" } : { stream: "done" });
       if (!controller.signal.aborted) {
         if (receiptFailed) {
           res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `\n\n${STREAMED_RESPONSE_UNVERIFIED_MESSAGE}` } }] })}\n\n`);

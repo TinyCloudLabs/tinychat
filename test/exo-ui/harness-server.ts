@@ -65,7 +65,8 @@ export async function buildHarness(): Promise<HarnessAssets> {
     target: "browser",
     minify: false,
     define: {
-      "import.meta.env": "{}",
+      // Opt-in features the app reads from import.meta.env (unset in a normal run, so the object stays empty).
+      "import.meta.env": JSON.stringify({ VITE_GRANOLA_CONNECTOR_ENABLED: process.env.VITE_GRANOLA_CONNECTOR_ENABLED }),
       __EXO_BUILD_INFO__: JSON.stringify(exoBuildInfo),
     },
     // index.css's @font-face URLs point into frontend/public (served below).

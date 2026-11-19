@@ -1078,11 +1078,11 @@ export interface AgentStreamRuntime {
 }
 
 /** The request record's coarse view of a turn's end: client-side ends are aborted, server-side ones error. */
-function recordedOutcome(outcome: AgentStreamSummary["outcome"]): { stream: StreamOutcome; code?: string } {
+function recordedOutcome(outcome: AgentStreamSummary["outcome"], failureCause: FailureCause): { stream: StreamOutcome; code?: string; failureCause?: FailureCause } {
   if (outcome === "success") return { stream: "done" };
   if (outcome === "cancelled") return { stream: "aborted" };
   if (outcome === "transport_failed") return { stream: "aborted", code: "transport_failed" };
-  return { stream: "error", code: outcome };
+  return { stream: "error", code: outcome, failureCause };
 }
 
 const streamRuntime: AgentStreamRuntime = {
@@ -1138,6 +1138,8 @@ class AgentStreamOwner {
   readonly signal = this.controller.signal;
   private state: "opening" | "open" | "terminating" | "closed" = "opening";
   private outcome: AgentStreamSummary["outcome"] | undefined;
+  /** Who caused a failed terminal; set with the claim, so a timeout or transport close keeps "ours". */
+  private failureCause: FailureCause = "ours";
   private phase: StreamPhase = "model";
   private heartbeat: unknown;
   private deadline: unknown;
@@ -1246,15 +1248,19 @@ class AgentStreamOwner {
     }
   }
 
-  complete(result: OrchestrateResult, terminalErrorCode?: StreamErrorCode, receiptVerified = false): Promise<void> {
-    if (result.errorCode) return this.fail(new StreamFailure(result.errorCode));
-    if (this.claim(terminalErrorCode ?? "success")) void this.deliver(result, undefined, !terminalErrorCode, receiptVerified);
+  complete(result: OrchestrateResult, terminalErrorCode?: StreamErrorCode, receiptVerified = false, terminalErrorCause: FailureCause = "ours"): Promise<void> {
+    if (result.errorCode) return this.fail(new StreamFailure(result.errorCode, result.errorCause));
+    if (this.claim(terminalErrorCode ?? "success")) {
+      if (terminalErrorCode) this.failureCause = terminalErrorCause;
+      void this.deliver(result, undefined, !terminalErrorCode, receiptVerified);
+    }
     return this.closed;
   }
 
   fail(error: unknown): Promise<void> {
     const code = error instanceof StreamFailure ? error.code : "agent_failed";
     if (this.claim(code)) {
+      if (error instanceof StreamFailure) this.failureCause = error.failureCause;
       // The terminal claim closes write admission BEFORE synchronous abort callbacks.
       this.controller.abort(new StreamFailure(code));
       void this.deliver(undefined, code);
@@ -1302,7 +1308,7 @@ class AgentStreamOwner {
   private close(outcome: AgentStreamSummary["outcome"], destroy: boolean): void {
     if (this.state === "closed") return;
     this.outcome ??= outcome;
-    noteRequestRecord(this.res, recordedOutcome(this.outcome));
+    noteRequestRecord(this.res, recordedOutcome(this.outcome, this.failureCause));
     this.state = "closed";
     this.runtime.clearTimeout(this.heartbeat);
     this.runtime.clearTimeout(this.deadline);
@@ -1619,6 +1625,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       const final = result.final;
       const code = result.errorCode ?? final?.code;
       const completed = !result.cancelled && !result.errorCode && final && ["success", "partial", "clarification"].includes(final.outcome);
+      // Only eliza's own final code can name a model-caused failure; the client's codes are transport and our limits.
+      const failureCause: FailureCause = !result.errorCode && final?.code && MODEL_CAUSED_TASK_CODES[final.code] === true ? "model" : "ours";
       // Accounting has settled even if the browser failed or cancelled. Never
       // erase it because a subsequent content/write/end/enqueue operation fails.
       if (paywallEnabled() && address && allowance !== null) {
@@ -1626,8 +1634,6 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           : code === "budget_exhausted" ? "limit_stop"
             : code === "turn_timeout" || final?.outcome === "timed_out" ? "timed_out"
               : result.cancelled ? "cancelled" : "failed";
-        // Only eliza's own final code can name a model-caused failure; the client's codes are transport and our limits.
-        const failureCause: FailureCause = !result.errorCode && final?.code && MODEL_CAUSED_TASK_CODES[final.code] === true ? "model" : "ours";
         const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, failureCause, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
         noteRequestRecord(res, { credits: settled.charged });
       }
@@ -1647,7 +1653,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       } else {
         const code = result.errorCode ?? final?.code;
         const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "private_response_unverified", "private_response_unverified_streamed", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
-        await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed"));
+        await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed", failureCause));
       }
       return;
     }
@@ -1700,7 +1706,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       noteRequestRecord(res, { credits: settled.charged });
     }
     // Also await an already claimed timeout/cancellation terminal's drain.
-    await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode, true);
+    await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode, true, meetingTerminalErrorCause);
     } finally { releaseAccess?.(); }
   });
 }

@@ -679,6 +679,14 @@ nothing below may be reported as done on its behalf.
 - **Port:** the container listens on `3001` in production (`PORT=3001` is set in
   the compose/env), matching Listen and the ingress `TARGET_ENDPOINT`. Local dev
   still defaults to `3014`.
+- **Ingress body cap:** the `infra/phala-ingress` image (dstack-ingress plus a
+  cert-bootstrap wrapper) accepts an optional `CLIENT_MAX_BODY_SIZE` (positive
+  integer of at most 6 digits with an optional `k`/`m` suffix, e.g. `2m`). When
+  it is set, the wrapper writes `client_max_body_size` at nginx http level; when
+  it is unset, nginx keeps its 1m default. An invalid value stops the container
+  from starting.
+  TinyChat's own compose leaves it unset. The eliza-service CVM, which uses this
+  image, needs `2m` so it can accept tasks up to the 1,064,960-byte task contract.
 - **No published port (TC-1012):** `docker-compose.phala.yml` does not publish
   `3001`; only `dstack-ingress` reaches it over the compose network. The deploy
   workflow refuses (before `phala deploy`) any ref whose compose publishes
