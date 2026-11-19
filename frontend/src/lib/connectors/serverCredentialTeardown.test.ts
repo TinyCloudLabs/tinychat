@@ -104,10 +104,13 @@ describe("teardownCredential (client)", () => {
     expect(Object.keys(del.headers).sort()).toEqual(["Authorization", "X-Requested-With"]);
   });
 
-  test("not connected: the DELETE is never sent and nothing is torn down", async () => {
+  test("not connected: the full DELETE is still sent once, with no body, and resolves ok with null", async () => {
     answer("GET", CREDS, notConnected);
+    answer("DELETE", CREDS, { status: 200, body: { deleted: true, upstreamRevoked: false, contentRemoved: 0, queueDropped: 0 } });
     expect(await webhooks().teardownCredential!("fireflies")).toEqual({ status: "ok", value: null });
-    expect(deleteCreds()).toHaveLength(0);
+    expect(credCalls().map((c) => c.method)).toEqual(["GET", "DELETE"]);
+    expect(deleteCreds()).toHaveLength(1);
+    expect(deleteCreds()[0]!.body).toBeUndefined();
   });
 
   test("a 404 on the read (route dark) is feature-dark with no DELETE", async () => {
@@ -244,18 +247,20 @@ describe("disconnect runs the server teardown", () => {
     expect(deleteCreds()).toHaveLength(0);
   });
 
-  test("not in the cohort: not connected, or the route dark, is quiet — done, no message, no DELETE", async () => {
-    for (const quiet of [notConnected, dark]) {
+  test("never connected: the DELETE is sent once and the run is quiet; the route dark sends no DELETE — done, no message", async () => {
+    const absent = { status: 200, body: { deleted: true, upstreamRevoked: false, contentRemoved: 0, queueDropped: 0 } };
+    for (const [stored, deletes] of [[notConnected, 1], [dark, 0]] as const) {
       calls = [];
       happyWire();
-      answer("GET", CREDS, quiet);
+      answer("GET", CREDS, stored);
+      answer("DELETE", CREDS, absent);
       const { deps, emit } = disconnectDeps("keep-data");
       const final = await runDisconnect(deps, emit);
       expect(final.done).toBe(true);
       expect(final.failure).toBeNull();
       expect(final.notice).toBeUndefined();
       expect(disconnectStatusMessage(final)).not.toContain("Fireflies didn't confirm");
-      expect(deleteCreds()).toHaveLength(0);
+      expect(deleteCreds()).toHaveLength(deletes);
     }
   });
 
@@ -342,16 +347,19 @@ describe("turning sync off runs the server teardown", () => {
     expect(deleteCreds()).toHaveLength(2);
   });
 
-  test("not in the cohort: quiet — no DELETE, the ordinary off notice, no error", async () => {
-    for (const quiet of [notConnected, dark]) {
+  test("never connected: the DELETE is sent once with the ordinary off notice and no error; the route dark sends no DELETE", async () => {
+    const absent = { status: 200, body: { deleted: true, upstreamRevoked: false, contentRemoved: 0, queueDropped: 0 } };
+    for (const [stored, deletes] of [[notConnected, 1], [dark, 0]] as const) {
       calls = [];
-      answer("GET", CREDS, quiet);
+      answer("GET", CREDS, stored);
+      answer("DELETE", CREDS, absent);
       answer("DELETE", CONFIG, configOff);
       const { deps, state, emit } = syncDeps();
       await disableBackgroundSync(deps, emit);
       expect(state().phase).toBe("off");
       expect(state().notice?.tone).toBe("info");
-      expect(deleteCreds()).toHaveLength(0);
+      expect(state().notice?.message ?? "").not.toContain("Fireflies didn't confirm");
+      expect(deleteCreds()).toHaveLength(deletes);
     }
   });
 
