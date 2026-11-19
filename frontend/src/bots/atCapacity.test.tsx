@@ -7,12 +7,12 @@ import { createBotsApi, type BotsApi, type MainEvent } from "./botsApi";
 import { botsErrorText } from "./botsStrings";
 import { useMainChat } from "./useMainChat";
 
-// Radix portals do not attach in happy-dom: the sheet chrome is an inline stand-in; everything inside it is real.
+// Radix portals do not attach in happy-dom: only the dialog shell is an inline stand-in; the real body and footer stay, since bun's mock.module is process-wide.
+const actualSheet = await import("../components/ui/responsive-sheet");
 mock.module("../components/ui/responsive-sheet", () => ({
+  ...actualSheet,
   ResponsiveSheet: (props: { open: boolean; title: ReactNode; children?: ReactNode; footer?: ReactNode }) =>
     props.open ? <div role="dialog"><h2>{props.title}</h2>{props.children}<div>{props.footer}</div></div> : null,
-  ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
-  ResponsiveSheetFooter: (props: { children?: ReactNode }) => <div>{props.children}</div>,
 }));
 const { MainChat } = await import("./MainChat");
 
