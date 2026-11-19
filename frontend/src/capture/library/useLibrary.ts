@@ -13,7 +13,7 @@
 // (`library-changed`, which a voice note's saved transcript also sends), from
 // Refresh or Try again, and when Capture comes back on screen after more than
 // two minutes away. One read at a time: asks that arrive while one is out
-// become a single read after it; a read already out is never thrown away.
+// become a single read after it; only a confirmed delete discards an older read.
 //
 // A note's settled reads are cached. Failed revalidation keeps a prior
 // successful read visible but marks only that field stale for Try again or
@@ -29,6 +29,7 @@
 // space changes, and for a note that was discarded rather than uploaded.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
 import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { getAudio, getAudioManifest, manifestReceipt, type StoredAudioManifest } from "@/lib/audio/audioStore";
@@ -50,7 +51,7 @@ import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "
 import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isMissingLocalAudio, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
-import { accountCacheKey, readLocal, writeLocal } from "@/lib/localFirst/localCache";
+import { accountCacheKey, deleteLocal, readLocal, writeLocal } from "@/lib/localFirst/localCache";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
@@ -214,6 +215,8 @@ export function useLibrary(
   const mounted = useRef(true);
   const listRun = useRef({ out: false, again: false });
   const readsStarted = useRef(0);
+  // A confirmed delete invalidates list responses that began before its eviction.
+  const discardListsThrough = useRef(0);
   const onPhoneNotes = options.onPhone ?? null;
   const [handoff, setHandoff] = useState<Handoff>({ space, notes: onPhoneNotes, lingering: new Map(), departures: 0 });
   // Derived while rendering, so no render shows the note gone before its stand-in is kept.
@@ -263,17 +266,19 @@ export function useLibrary(
         }
       }
       if (!mounted.current) return;
-      if (read.status === "ok") loadedFromNetwork.current = true;
-      setList((current) =>
-        read.status === "ok"
-          ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
-          : { status: "failed", items: current.items, previews: current.previews },
-      );
-      if (read.status === "ok") {
-        setHandoff((current) => {
-          const lingering = new Map([...current.lingering].filter(([, entry]) => entry.since >= started));
-          return lingering.size === current.lingering.size ? current : { ...current, lingering };
-        });
+      if (started > discardListsThrough.current) {
+        if (read.status === "ok") loadedFromNetwork.current = true;
+        setList((current) =>
+          read.status === "ok"
+            ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
+            : { status: "failed", items: current.items, previews: current.previews },
+        );
+        if (read.status === "ok") {
+          setHandoff((current) => {
+            const lingering = new Map([...current.lingering].filter(([, entry]) => entry.since >= started));
+            return lingering.size === current.lingering.size ? current : { ...current, lingering };
+          });
+        }
       }
       if (listRun.current.again) {
         listRun.current.again = false;
@@ -290,8 +295,9 @@ export function useLibrary(
   useEffect(() => {
     if (!localKey) return;
     let alive = true;
+    const deletedBeforeRead = discardListsThrough.current;
     void readLocal<LocalLibrary>(localKey).then((local) => {
-      if (!alive || !local || loadedFromNetwork.current) return;
+      if (!alive || !local || loadedFromNetwork.current || discardListsThrough.current !== deletedBeforeRead) return;
       setList((current) => (current.status === "loading" ? { status: "ready", items: local.value.items, previews: local.value.previews } : current));
     });
     return () => { alive = false; };
@@ -335,6 +341,29 @@ export function useLibrary(
     }
     refresh();
   }), [refresh]);
+
+  useEffect(() => captureEvents.on("note-deleted", (detail) => {
+    if (!detail || detail.source !== "granola") return;
+    if (detail.ownerDid !== undefined && detail.ownerDid !== (tcw.did ?? null)) return;
+    if (detail.spaceId !== undefined && detail.spaceId !== (tcw.spaceId ?? null)) return;
+    discardListsThrough.current = ++readsStarted.current;
+    const keep = (entry: LibraryItem) => !(
+      (entry.source === detail.source && entry.sourceId === detail.sourceId)
+      || (entry.source === EXO_MERGED_SOURCE && entry.mergeMembers?.some(member => member.source === detail.source && member.sourceId === detail.sourceId))
+    );
+    for (const entry of itemsRef.current) {
+      if (keep(entry)) continue;
+      reads.current.delete(entry.id);
+      invalidated.current.delete(entry.id);
+      staleReads.current.delete(entry.id);
+      readVersions.current.set(entry.id, (readVersions.current.get(entry.id) ?? 0) + 1);
+    }
+    itemsRef.current = itemsRef.current.filter(keep);
+    // Drop the old persisted list even if writing its replacement is unavailable.
+    if (localKey) void deleteLocal(localKey);
+    setList(current => ({ ...current, items: current.items.filter(keep) }));
+    refresh();
+  }), [localKey, refresh, tcw.did, tcw.spaceId]);
 
   // Each note that leaves the phone asks for one list read to catch up.
   useEffect(() => {

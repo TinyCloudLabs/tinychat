@@ -3,6 +3,7 @@
 
 import { useState, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -11,10 +12,14 @@ import {
   GRANOLA_RESYNC_CONFIRM,
 } from "@/lib/connectors/granolaCsvStrings";
 import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
+import { clearGranolaDeletedMeetings } from "@/lib/connectors/connectorStore";
+import { runGranolaSpaceWrite } from "@/lib/connectors/granolaSync";
+import { scheduledSpace } from "@/lib/spaceQueue";
 
 type Step = "idle" | "confirming" | "working" | "done" | "failed";
 
 interface GranolaAllowBackProps {
+  tcw: TinyCloudWeb;
   backendUrl: string;
   sessionStore: SessionStore;
   disabled?: boolean;
@@ -22,14 +27,18 @@ interface GranolaAllowBackProps {
   className?: string;
 }
 
-export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ backendUrl, sessionStore, disabled = false, className }) => {
+export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, sessionStore, disabled = false, className }) => {
   const [step, setStep] = useState<Step>("idle");
 
   const confirm = async () => {
     setStep("working");
-    const webhooks = createConnectorWebhooksClient(backendUrl, { sessionStore });
-    const result = await webhooks.clearPurgeLedger(GRANOLA_LEDGER_SOURCE).catch(() => null);
-    setStep(result?.status === "ok" ? "done" : "failed");
+    const cleared = await runGranolaSpaceWrite(async () => {
+      const webhooks = createConnectorWebhooksClient(backendUrl, { sessionStore });
+      const result = await webhooks.clearPurgeLedger(GRANOLA_LEDGER_SOURCE);
+      if (result.status !== "ok") return false;
+      return (await clearGranolaDeletedMeetings(scheduledSpace(tcw))).ok;
+    }).catch(() => false);
+    setStep(cleared ? "done" : "failed");
   };
 
   return (

@@ -5,7 +5,13 @@
 
 export type CaptureEvent = "library-changed" | "note-deleted";
 /** Identity in connector_meeting; omitted for a list-only refresh. */
-export interface LibraryChangedDetail { source: string; sourceId: string }
+export interface LibraryChangedDetail {
+  source: string;
+  sourceId: string;
+  /** A completed deletion can outlive its screen; only its original owner/space may evict it. */
+  ownerDid?: string | null;
+  spaceId?: string | null;
+}
 
 const listeners = new Map<CaptureEvent, Set<(detail?: LibraryChangedDetail) => void>>();
 

@@ -668,12 +668,14 @@ async function insertMeetingRow(
 // ── Targeted upsert (webhook queued-id ingest) ─────────────────────────
 
 export interface UpsertMeetingOutcome {
-  /** The row id actually in the store — the PRE-EXISTING id when updated. */
+  /** The stored row id, or its retained original id when deletion blocks the write. */
   id: string;
-  /** true when a brand-new row was inserted, false when an existing row was updated. */
+  /** true only when a brand-new row was inserted. */
   inserted: boolean;
-  /** Original creation timestamp — preserved verbatim across updates. */
+  /** Original creation timestamp — preserved verbatim across updates and deletion markers. */
   createdAt: string;
+  /** An exact-ID owner-space tombstone prevented every meeting and transcript write. */
+  skippedDeleted?: true;
 }
 
 export interface MeetingDatetimeStats {
@@ -748,6 +750,114 @@ function parseJsonObject(raw: unknown): Record<string, unknown> {
   return {};
 }
 
+async function getGranolaDeletedMeeting(
+  tcw: TinyCloudWeb,
+  sourceId: string,
+): Promise<StoreResult<{ id: string; createdAt: string } | null>> {
+  try {
+    const found = await store(tcw).query(
+      "SELECT id, created_at FROM granola_deleted_meeting WHERE source_id = ? LIMIT 1",
+      [sourceId],
+    );
+    if (!found.ok) return fail({ code: found.error.code, message: "storage read failed" }, "getGranolaDeletedMeeting", storageScopeFor(tcw));
+    if (!Array.isArray(found.data.rows)) {
+      return { ok: false, error: { code: "STORE_CORRUPT_ROW", message: "Granola deletion marker is unreadable" } };
+    }
+    const row = found.data.rows[0];
+    if (row === undefined) return { ok: true, data: null };
+    if (!Array.isArray(row)) {
+      return { ok: false, error: { code: "STORE_CORRUPT_ROW", message: "Granola deletion marker is unreadable" } };
+    }
+    const id = cellStr(row, 0, null);
+    const createdAt = cellStr(row, 1, null);
+    if (!id || !createdAt || !Number.isFinite(Date.parse(createdAt))) {
+      return { ok: false, error: { code: "STORE_CORRUPT_ROW", message: "Granola deletion marker is unreadable" } };
+    }
+    return { ok: true, data: { id, createdAt } };
+  } catch {
+    return { ok: false, error: { code: "STORE_ERROR", message: "Granola deletion marker could not be read" } };
+  }
+}
+
+/** Caller owns the Granola write lane; do not nest it here. A marker precedes all content removal. */
+export async function deleteGranolaCsvMeeting(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<void>> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(sourceId)) {
+    return { ok: false, error: { code: "INVALID_MEETING_ID", message: "Invalid Granola meeting identifier" } };
+  }
+  try {
+    const schema = await ensureSchema(tcw);
+    if (!schema.ok) return schema;
+    const found = await store(tcw).query(
+      "SELECT id, created_at, metadata FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1",
+      ["granola", sourceId],
+    );
+    if (!found.ok) return fail({ code: found.error.code, message: "storage read failed" }, "deleteGranolaCsvMeeting(lookup)", storageScopeFor(tcw));
+    if (!Array.isArray(found.data.rows)) {
+      return { ok: false, error: { code: "STORE_CORRUPT_ROW", message: "Granola meeting identity is unreadable" } };
+    }
+    const row = found.data.rows[0];
+    if (row !== undefined) {
+      if (!Array.isArray(row)) {
+        return { ok: false, error: { code: "STORE_CORRUPT_ROW", message: "Granola meeting identity is unreadable" } };
+      }
+      if (parseJsonObject(row[2]).imported_from !== "granola_csv") {
+        return { ok: false, error: { code: "NOT_GRANOLA_CSV", message: "Meeting is not a Granola CSV import" } };
+      }
+      const id = cellStr(row, 0, null);
+      const createdAt = cellStr(row, 1, null);
+      if (!id || !createdAt || !Number.isFinite(Date.parse(createdAt))) {
+        return { ok: false, error: { code: "STORE_CORRUPT_ROW", message: "Granola meeting identity is unreadable" } };
+      }
+      const marker = await store(tcw).execute(
+        "INSERT OR IGNORE INTO granola_deleted_meeting (source_id, id, created_at) VALUES (?, ?, ?)",
+        [sourceId, id, createdAt],
+      );
+      if (!marker.ok) return fail({ code: marker.error.code, message: "storage write failed" }, "deleteGranolaCsvMeeting(marker)", storageScopeFor(tcw));
+    }
+    // A previous attempt may have removed the row but failed its final cascade.
+    const marker = await getGranolaDeletedMeeting(tcw, sourceId);
+    if (!marker.ok) return marker;
+    if (!marker.data) return { ok: true, data: undefined };
+
+    const cascade = await deleteCombinedReferencing(tcw, "granola", sourceId);
+    if (!cascade.ok) return fail({ code: cascade.error.code, message: "combined meeting deletion failed" }, "deleteGranolaCsvMeeting(combined)", storageScopeFor(tcw));
+    if (cascade.data.unverifiedIds.length > 0) {
+      return { ok: false, error: { code: "COMBINED_MEMBERS_UNKNOWN", message: "Combined meeting members could not be determined" } };
+    }
+    const body = await tcw.kv.delete(transcriptKvKey("granola", sourceId));
+    if (!body.ok && body.error.code !== "KV_NOT_FOUND") {
+      return fail({ code: body.error.code, message: "storage delete failed" }, "deleteGranolaCsvMeeting(transcript)", storageScopeFor(tcw));
+    }
+    const removed = await store(tcw).execute(
+      "DELETE FROM connector_meeting WHERE source = ? AND source_id = ?",
+      ["granola", sourceId],
+    );
+    if (!removed.ok) return fail({ code: removed.error.code, message: "storage delete failed" }, "deleteGranolaCsvMeeting(row)", storageScopeFor(tcw));
+    // Match purgeConnector: a combine may have read the member before the first cascade.
+    const late = await deleteCombinedReferencing(tcw, "granola", sourceId);
+    if (!late.ok) return fail({ code: late.error.code, message: "combined meeting deletion failed" }, "deleteGranolaCsvMeeting(combined-late)", storageScopeFor(tcw));
+    if (late.data.unverifiedIds.length > 0) {
+      return { ok: false, error: { code: "COMBINED_MEMBERS_UNKNOWN", message: "Combined meeting members could not be determined" } };
+    }
+    return { ok: true, data: undefined };
+  } catch {
+    return { ok: false, error: { code: "STORE_ERROR", message: "Granola meeting deletion failed" } };
+  }
+}
+
+/** Explicit Allow deleted meetings back only; the caller owns the Granola write lane. */
+export async function clearGranolaDeletedMeetings(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+  try {
+    const schema = await ensureSchema(tcw);
+    if (!schema.ok) return schema;
+    const removed = await store(tcw).execute("DELETE FROM granola_deleted_meeting");
+    if (!removed.ok) return fail({ code: removed.error.code, message: "storage delete failed" }, "clearGranolaDeletedMeetings", storageScopeFor(tcw));
+    return { ok: true, data: undefined };
+  } catch {
+    return { ok: false, error: { code: "STORE_ERROR", message: "Granola deletion markers could not be cleared" } };
+  }
+}
+
 function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boolean): number {
   switch (metadata.datetime_source) {
     case "meet_conference_start": return 3;
@@ -793,6 +903,11 @@ export async function upsertMeeting(
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
+  if (meeting.source === "granola") {
+    const deleted = await getGranolaDeletedMeeting(tcw, meeting.sourceId);
+    if (!deleted.ok) return deleted;
+    if (deleted.data) return { ok: true, data: { ...deleted.data, inserted: false, skippedDeleted: true } };
+  }
 
   const existing = await store(tcw).query(
     `SELECT ${UPSERT_LOOKUP_COLUMNS} FROM connector_meeting

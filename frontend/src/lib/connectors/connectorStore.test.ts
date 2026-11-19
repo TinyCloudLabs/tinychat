@@ -598,6 +598,7 @@ describe("connectorStore.ensureSchema", () => {
     const f = makeFake();
     f.sql.createdTables.add("connector_state");
     f.sql.createdTables.add("connector_meeting");
+    f.sql.createdTables.add("granola_deleted_meeting");
     f.sql.nextCreateError = { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" };
     const res = await ensureSchema(f.tcw);
     expect(res.ok).toBe(true);

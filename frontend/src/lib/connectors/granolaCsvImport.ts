@@ -113,7 +113,8 @@ export async function importGranolaCsv(opts: GranolaCsvImportOptions): Promise<G
       if (isStorageFullError(write.error)) return { ok: false, error: storageFailure(write.error), partial: counts };
       continue;
     }
-    if (write.data.inserted) counts.added++;
+    if (write.data.skippedDeleted) counts.skippedDeleted++;
+    else if (write.data.inserted) counts.added++;
     else counts.alreadyImported++;
   }
   opts.onProgress?.({ done, total: rows.length });
