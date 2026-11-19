@@ -15,6 +15,7 @@ export const BOTS_STRINGS = {
     bot_unavailable: "Main couldn't start.",
     model_unavailable: "Main's model isn't answering. Try again later.",
     busy: "Main is still working on your last message. Send this one when it replies.",
+    at_capacity: "{name} can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
     invalid: "That message is too long for Main. Shorten it to 8,000 characters or fewer.",
     signed_out: "Your session expired. Sign in again to talk to Main.",
     failed: "Main's reply didn't come through.",
@@ -22,6 +23,11 @@ export const BOTS_STRINGS = {
 } as const;
 
 export type BotsErrorCode = keyof typeof BOTS_STRINGS.errors;
+
+/** The owner-visible line for an error; `name` is the bot's name, Main until the bot view passes the real one. */
+export function botsErrorText(code: BotsErrorCode, name: string = BOTS_STRINGS.mainName): string {
+  return BOTS_STRINGS.errors[code].replace("{name}", name);
+}
 
 // Monica, TC-2808, 2026-11-12. Keep the disclosure in one constant for copy review.
 export const HISTORY_EXPIRY_NOTICE = "Your TinyCloud permission expired on {expiryDate}. Main's chat history on our server will be deleted on {deletionDate}. Reconnect TinyCloud before then to save it to your space.";

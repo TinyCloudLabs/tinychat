@@ -36,6 +36,7 @@ const STREAM_ERROR_CODES: Record<string, BotsErrorCode> = {
   bot_unavailable: "bot_unavailable",
   model_unavailable: "model_unavailable",
   busy: "busy",
+  at_capacity: "at_capacity",
   invalid: "invalid",
 };
 
