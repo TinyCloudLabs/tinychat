@@ -221,6 +221,8 @@ export function startReplicationFill(
     // workers so a rejected grant cannot fan out into several concurrent retries.
     const firstPrefix = queue.shift();
     if (firstPrefix) {
+      // Same rule as every worker start: never beside the screen's own requests (or in a hidden tab).
+      await whenForegroundIdle();
       await syncPrefix(firstPrefix);
       if (terminalGrantRefusals.has(tcw)) return;
       if (startGapMs > 0) await sleep(startGapMs);

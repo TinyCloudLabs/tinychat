@@ -41,9 +41,11 @@ export interface TinyCloudWebConfig {
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
   /**
-   * Requested local KV replication. Browser sign-in and persisted browser
-   * restore omit this option: their SIWE/CACAO grant cannot back a replica.
-   * Enabling it requires a separate compact device-grant integration.
+   * Optional local KV replication. Omit it (the default) and the SDK config is
+   * exactly what it was before replication existed: the key is not present.
+   * Only the web flag in frontend/src/lib/replication sets it. When supplied for
+   * a browser SIWE/CACAO grant (which cannot back a replica), the replica
+   * controller stops itself on the first grant refusal instead of retrying.
    */
   replication?: TinyCloudWebSdkConfig["replication"];
 }
@@ -79,9 +81,10 @@ export function createTinyCloudWeb(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
-    // Replication stays configured when requested; the controller handles grant refusals.
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    autoBootstrapAccount: false,
   };
 
   return new TinyCloudWeb(tcwConfig);
@@ -226,7 +229,7 @@ export async function restoreTinyCloudWebSession(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
-    // Replication stays configured when requested; the controller handles grant refusals.
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
     // A restore never sets up an account, whatever page it runs on (as createTinyCloudWeb). Details: TC-3019
