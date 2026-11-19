@@ -103,14 +103,9 @@ export function installAgentSurface(siteDir, outDir) {
     cpSync(cardPath, target);
   }
 
+  const ardPath = join(outDir, ".well-known", "ard.json");
   const catalogPath = join(outDir, ".well-known", "ai-catalog.json");
-  const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
-  catalog.entries.push({
-    identifier: "urn:air:tinycloud.one:mcp:tinycloud",
-    type: "application/mcp-server-card+json",
-    url: "https://tinycloud.one/mcp/server-card",
-  });
-  writeFileSync(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+  cpSync(ardPath, catalogPath);
 
   const redirectsPath = join(outDir, "_redirects");
   writeFileSync(

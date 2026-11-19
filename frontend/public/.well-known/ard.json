@@ -1,0 +1,49 @@
+{
+  "specVersion": "1.0",
+  "host": {
+    "displayName": "TinyCloud",
+    "identifier": "https://tinycloud.one/"
+  },
+  "entries": [
+    {
+      "identifier": "urn:air:tinycloud.one:mcp:hosted",
+      "displayName": "TinyCloud hosted MCP",
+      "type": "application/mcp-server-card+json",
+      "url": "https://tinycloud.one/mcp/server-card",
+      "representativeQueries": [
+        "What tools are available from the hosted TinyCloud MCP?",
+        "How can a client connect to the hosted TinyCloud MCP?"
+      ]
+    },
+    {
+      "identifier": "urn:air:tinycloud.one:a2a:discovery",
+      "displayName": "TinyCloud Discovery Agent",
+      "type": "application/a2a-agent-card+json",
+      "url": "https://tinycloud.one/.well-known/agent-card.json",
+      "representativeQueries": [
+        "Where are TinyCloud's public documentation and protocol links?",
+        "Which public TinyCloud discovery resources are available?"
+      ]
+    },
+    {
+      "identifier": "urn:air:tinycloud.one:api:catalog",
+      "displayName": "TinyCloud API catalog",
+      "type": "application/linkset+json",
+      "url": "https://tinycloud.one/.well-known/api-catalog",
+      "representativeQueries": [
+        "Which public TinyCloud service descriptions are available?",
+        "Where is the TinyCloud MCP server card?"
+      ]
+    },
+    {
+      "identifier": "urn:air:tinycloud.one:skills:index",
+      "displayName": "TinyCloud Agent Skills Index",
+      "type": "application/agent-skills+json",
+      "url": "https://tinycloud.one/.well-known/agent-skills/index.json",
+      "representativeQueries": [
+        "Which public TinyCloud agent skills are available?",
+        "Where are the TinyCloud agent skill definitions?"
+      ]
+    }
+  ]
+}

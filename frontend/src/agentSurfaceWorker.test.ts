@@ -44,6 +44,30 @@ describe("TinyCloud agent routes", () => {
     expect(auth).toContain("https://api.openkey.so/.well-known/oauth-authorization-server/api/auth");
   });
 
+  test("publishes a minimal canonical ARD manifest", () => {
+    const manifestPath = join(publicDir, ".well-known/ard.json");
+    expect(existsSync(manifestPath)).toBe(true);
+    if (!existsSync(manifestPath)) return;
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    expect(manifest.specVersion).toBe("1.0");
+    expect(manifest.host).toEqual({
+      displayName: "TinyCloud",
+      identifier: "https://tinycloud.one/",
+    });
+    expect(manifest.entries.map((entry: { identifier: string }) => entry.identifier)).toEqual([
+      "urn:air:tinycloud.one:mcp:hosted",
+      "urn:air:tinycloud.one:a2a:discovery",
+      "urn:air:tinycloud.one:api:catalog",
+      "urn:air:tinycloud.one:skills:index",
+    ]);
+    for (const entry of manifest.entries) {
+      expect(entry.displayName).toBeTruthy();
+      expect(entry.representativeQueries).toHaveLength(2);
+      expect(("url" in entry) !== ("data" in entry)).toBe(true);
+    }
+  });
+
   test("negotiates Markdown and advertises discovery links", async () => {
     const assets = {
       fetch(request: Request) {
@@ -66,6 +90,8 @@ describe("TinyCloud agent routes", () => {
     expect(html.headers.get("Link")).toContain('rel="llms-txt"');
     expect(html.headers.get("Link")).toContain('rel="api-catalog"');
     expect(html.headers.get("Link")).toContain('rel="service-desc"');
+    expect(html.headers.get("Link")).toContain('rel="ard"');
+    expect(html.headers.get("Link")).toContain('rel="ai-catalog"');
   });
 
   test("serves discovery assets but never turns missing discovery paths into the SPA", async () => {

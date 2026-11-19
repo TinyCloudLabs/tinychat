@@ -15,6 +15,56 @@ function put(root: string, path: string, content: string) {
   writeFileSync(target, content);
 }
 
+
+const ARD_MANIFEST = {
+  specVersion: "1.0",
+  host: {
+    displayName: "TinyCloud",
+    identifier: "https://tinycloud.one/",
+  },
+  entries: [
+    {
+      identifier: "urn:air:tinycloud.one:mcp:hosted",
+      displayName: "TinyCloud hosted MCP",
+      type: "application/mcp-server-card+json",
+      url: "https://tinycloud.one/mcp/server-card",
+      representativeQueries: [
+        "What tools are available from the hosted TinyCloud MCP?",
+        "How can a client connect to the hosted TinyCloud MCP?",
+      ],
+    },
+    {
+      identifier: "urn:air:tinycloud.one:a2a:discovery",
+      displayName: "TinyCloud Discovery Agent",
+      type: "application/a2a-agent-card+json",
+      url: "https://tinycloud.one/.well-known/agent-card.json",
+      representativeQueries: [
+        "Where are TinyCloud's public documentation and protocol links?",
+        "Which public TinyCloud discovery resources are available?",
+      ],
+    },
+    {
+      identifier: "urn:air:tinycloud.one:api:catalog",
+      displayName: "TinyCloud API catalog",
+      type: "application/linkset+json",
+      url: "https://tinycloud.one/.well-known/api-catalog",
+      representativeQueries: [
+        "Which public TinyCloud service descriptions are available?",
+        "Where is the TinyCloud MCP server card?",
+      ],
+    },
+    {
+      identifier: "urn:air:tinycloud.one:skills:index",
+      displayName: "TinyCloud Agent Skills Index",
+      type: "application/agent-skills+json",
+      url: "https://tinycloud.one/.well-known/agent-skills/index.json",
+      representativeQueries: [
+        "Which public TinyCloud agent skills are available?",
+        "Where are the TinyCloud agent skill definitions?",
+      ],
+    },
+  ],
+};
 describe("TinyCloud agent surface", () => {
   test("installs canonical content without shadowing TinyCloud One routes", () => {
     const root = mkdtempSync(join(tmpdir(), "tinychat-agent-surface-"));
@@ -41,6 +91,7 @@ describe("TinyCloud agent surface", () => {
     put(out, "mcp/server-card", '{"name":"xyz.tinycloud/mcp"}\n');
     put(out, "_headers", "/version.json\n  Cache-Control: no-store\n");
     put(out, "_redirects", "/agents /agents/ 301\n/agents/* /agents/:splat 200\n/* /index.html 200\n");
+    put(out, ".well-known/ard.json", `${JSON.stringify(ARD_MANIFEST, null, 2)}\n`);
 
     installAgentSurface(site, out);
 
@@ -50,12 +101,10 @@ describe("TinyCloud agent surface", () => {
     expect(readFileSync(join(out, "agents/abilities/feed"), "utf8")).toBe("feed guide");
     expect(readFileSync(join(out, ".well-known/mcp.json"), "utf8")).toBe('{"name":"xyz.tinycloud/mcp"}\n');
 
-    const catalog = JSON.parse(readFileSync(join(out, ".well-known/ai-catalog.json"), "utf8"));
-    expect(catalog.entries).toEqual([{
-      identifier: "urn:air:tinycloud.one:mcp:tinycloud",
-      type: "application/mcp-server-card+json",
-      url: "https://tinycloud.one/mcp/server-card",
-    }]);
+    const catalog = JSON.parse(readFileSync(join(out, ".well-known", "ai-catalog.json"), "utf8"));
+    expect(catalog).toEqual(ARD_MANIFEST);
+    const ard = JSON.parse(readFileSync(join(out, ".well-known", "ard.json"), "utf8"));
+    expect(ard).toEqual(ARD_MANIFEST);
     const apiCatalog = JSON.parse(readFileSync(join(out, ".well-known/api-catalog"), "utf8"));
     expect(apiCatalog.linkset[0]["service-desc"]).toEqual([{
       href: "https://tinycloud.one/mcp/server-card",

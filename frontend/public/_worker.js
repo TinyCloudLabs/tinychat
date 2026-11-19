@@ -4,6 +4,8 @@ const HOME_LINK = [
   '</llms.txt>; rel="llms-txt"; type="text/plain"',
   '</.well-known/agent-skills/index.json>; rel="describedby"; type="application/json"',
   '</.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"; profile="https://www.rfc-editor.org/info/rfc9727"',
+  '</.well-known/ard.json>; rel="ard"; type="application/json"',
+  '</.well-known/ai-catalog.json>; rel="ai-catalog"; type="application/json"',
   '</mcp/server-card>; rel="service-desc"; type="application/mcp-server-card+json"',
   '</sitemap.xml>; rel="sitemap"; type="application/xml"',
 ].join(", ");
@@ -16,6 +18,8 @@ const CONTENT_TYPES = new Map([
   ["/auth.md", "text/markdown; charset=utf-8"],
   ["/mcp/server-card", "application/mcp-server-card+json; charset=utf-8"],
   ["/.well-known/api-catalog", 'application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"'],
+  ["/.well-known/ard.json", "application/json; charset=utf-8"],
+  ["/.well-known/ai-catalog.json", "application/json; charset=utf-8"],
   ["/.well-known/mcp.json", "application/mcp-server-card+json; charset=utf-8"],
   ["/.well-known/mcp/server-card.json", "application/mcp-server-card+json; charset=utf-8"],
 ]);
