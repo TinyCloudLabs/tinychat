@@ -353,6 +353,7 @@ function Switch({
   testId,
   notice,
   action,
+  children,
   onToggle,
 }: {
   label: string;
@@ -364,6 +365,8 @@ function Switch({
   notice?: string | null;
   /** A control under the label, for what the setting still needs. */
   action?: ReactNode;
+  /** A setting that works only while this one is on: its row sits inside this one, under its text. */
+  children?: ReactNode;
   onToggle: (on: boolean) => void;
 }) {
   const id = useId();
@@ -393,6 +396,7 @@ function Switch({
             {error}
           </p>
         )}
+        {children}
       </div>
     </div>
   );
@@ -512,22 +516,24 @@ export function SettingsPanel({
             error={switches.systemAudio.error}
             testId="switch-system-audio"
             onToggle={(on) => onToggle("systemAudio", on)}
-          />
-          {callNames && (
-            <Switch
-              label={CALL_NAMES_LABEL}
-              checked={callNames.enabled}
-              pending={callNames.pending}
-              error={callNames.error}
-              testId="switch-call-names"
-              action={callNames.enabled && callNames.permission === "missing" && (
-                <button type="button" className="cs-get" data-testid="call-names-open-settings" onClick={callNames.onOpenSettings}>
-                  {CALL_NAMES_OPEN_SETTINGS}
-                </button>
-              )}
-              onToggle={callNames.onToggle}
-            />
-          )}
+          >
+            {/* Names are read only while this Mac's audio is recorded too: the row sits inside this one. */}
+            {callNames && (
+              <Switch
+                label={CALL_NAMES_LABEL}
+                checked={callNames.enabled}
+                pending={callNames.pending}
+                error={callNames.error}
+                testId="switch-call-names"
+                action={callNames.enabled && callNames.permission === "missing" && (
+                  <button type="button" className="cs-get" data-testid="call-names-open-settings" onClick={callNames.onOpenSettings}>
+                    {CALL_NAMES_OPEN_SETTINGS}
+                  </button>
+                )}
+                onToggle={callNames.onToggle}
+              />
+            )}
+          </Switch>
           <Switch
             label="Upload audio to TinyCloud"
             description="Audio stays on this Mac. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it."
@@ -591,8 +597,40 @@ export function CaptureSettings({
   const storageFull = useStorageReadOnly();
   useEffect(() => { if (open) audio.refresh(); }, [open, audio.refresh]);
 
+  // "Also record this Mac's audio", changed as its own switch changes it (pending, error, value). Resolves to
+  // whether the change landed.
+  const setSystemAudio = (on: boolean): Promise<boolean> => {
+    if (!extras) return Promise.resolve(false);
+    setSwitches((s) => ({ ...s, systemAudio: { pending: true, error: null } }));
+    return extras.systemAudio.set(on).then(
+      () => {
+        setSwitches((s) => ({ ...s, systemAudio: NO_SWITCH }));
+        setLoad((current) =>
+          current.status === "ready"
+            ? { status: "ready", data: { ...current.data, systemAudio: on } }
+            : current,
+        );
+        return true;
+      },
+      (caught: unknown) => {
+        console.error("[CaptureSettings] Could not change the setting", caught);
+        setSwitches((s) => ({
+          ...s,
+          systemAudio: {
+            pending: false,
+            error: `Could not change this setting: ${messageOf(caught)}`,
+          },
+        }));
+        return false;
+      },
+    );
+  };
+  const systemAudioOn = load.status === "ready" && load.data.systemAudio;
+
   // Names in the call: read when the popover opens; hidden off macOS, where the app has no such setting, and where
   // its answer is not the agreed one. While it is on and macOS has not allowed it yet, checked every second.
+  // The names are read only while this Mac's audio is recorded too (only then is there a Them to name), so the
+  // two settings move together: names on turns the Mac's audio on first, and the Mac's audio off turns names off.
   const callNamesApi = extras?.callNames ?? null;
   const [callNames, setCallNames] = useState<CallNamesState | null>(null);
   const [callNamesSwitch, setCallNamesSwitch] = useState<{ pending: boolean; error: string | null }>(NO_SWITCH);
@@ -619,25 +657,42 @@ export function CaptureSettings({
     readCallNames(callNamesApi, true);
     return () => { callNamesTurn.current++; };
   }, [open, callNamesApi, readCallNames]);
-  const awaitingPermission = callNames?.enabled === true && callNames.permission === "missing";
+  // What the names switch shows: on only with the Mac's audio on.
+  const callNamesOn = callNames?.enabled === true && systemAudioOn;
+  const awaitingPermission = callNamesOn && callNames?.permission === "missing";
   useEffect(() => {
     if (!open || !callNamesApi || !awaitingPermission) return;
     const timer = setInterval(() => readCallNames(callNamesApi, false), 1000);
     return () => clearInterval(timer);
   }, [open, callNamesApi, awaitingPermission, readCallNames]);
+  // The app says names are on while the Mac's audio is off: its switch just went off, or the state is an old or
+  // an outside one. The names switch already shows off; the app is told once, and a failure changes nothing here.
+  const namesWithoutAudio = load.status === "ready" && !load.data.systemAudio && callNames?.enabled === true
+    && !switches.systemAudio.pending && !callNamesSwitch.pending;
+  useEffect(() => {
+    if (!open || !callNamesApi || !namesWithoutAudio) return;
+    callNamesTurn.current++; // Answers to reads made before this change are out of date.
+    callNamesApi.set(false).then(() => setCallNames((current) => current && { ...current, enabled: false }), () => {});
+  }, [open, callNamesApi, namesWithoutAudio]);
   const onToggleCallNames = (on: boolean) => {
     if (!callNamesApi) return;
     callNamesTurn.current++; // Answers to reads made before this change are out of date.
     setCallNamesSwitch({ pending: true, error: null });
-    callNamesApi.set(on).then(() => {
-      setCallNamesSwitch(NO_SWITCH);
-      setCallNames((current) => current && { ...current, enabled: on });
-      // Turning it on can have macOS ask for the permission: read what it is now. This read takes a new turn, so
-      // one made while the change was on its way (the every-second check) cannot put the old value back.
-      readCallNames(callNamesApi, false);
-    }, (caught: unknown) => {
-      console.error("[CaptureSettings] Could not change the call names setting", caught);
-      setCallNamesSwitch({ pending: false, error: `Could not change this setting: ${messageOf(caught)}` });
+    // Turning names on turns the Mac's audio on first, as its own switch would. If that fails, its row says so
+    // and names stay off.
+    const audioReady = on && !systemAudioOn ? setSystemAudio(true) : Promise.resolve(true);
+    void audioReady.then((ready) => {
+      if (!ready) { setCallNamesSwitch(NO_SWITCH); return; }
+      callNamesApi.set(on).then(() => {
+        setCallNamesSwitch(NO_SWITCH);
+        setCallNames((current) => current && { ...current, enabled: on });
+        // Turning it on can have macOS ask for the permission: read what it is now. This read takes a new turn, so
+        // one made while the change was on its way (the every-second check) cannot put the old value back.
+        readCallNames(callNamesApi, false);
+      }, (caught: unknown) => {
+        console.error("[CaptureSettings] Could not change the call names setting", caught);
+        setCallNamesSwitch({ pending: false, error: `Could not change this setting: ${messageOf(caught)}` });
+      });
     });
   };
   const onOpenCallNamesSettings = () => {
@@ -857,29 +912,8 @@ export function CaptureSettings({
       });
       return;
     }
-    if (!extras) return;
-    const target = extras.systemAudio;
-    setSwitches((s) => ({ ...s, [switchKey]: { pending: true, error: null } }));
-    target.set(on).then(
-      () => {
-        setSwitches((s) => ({ ...s, [switchKey]: NO_SWITCH }));
-        setLoad((current) =>
-          current.status === "ready"
-            ? { status: "ready", data: { ...current.data, [switchKey]: on } }
-            : current,
-        );
-      },
-      (caught: unknown) => {
-        console.error("[CaptureSettings] Could not change the setting", caught);
-        setSwitches((s) => ({
-          ...s,
-          [switchKey]: {
-            pending: false,
-            error: `Could not change this setting: ${messageOf(caught)}`,
-          },
-        }));
-      },
-    );
+    // Turning it off also turns names in the call off: see `namesWithoutAudio` above.
+    void setSystemAudio(on);
   };
 
   return (
@@ -930,7 +964,8 @@ export function CaptureSettings({
             modelError={modelError}
             switches={switches}
             callNames={callNamesApi === null || callNames === null || callNames.permission === "unsupported" ? null : {
-              enabled: callNames.enabled, permission: callNames.permission, ...callNamesSwitch,
+              enabled: callNamesOn, permission: callNames.permission, error: callNamesSwitch.error,
+              pending: callNamesSwitch.pending || switches.systemAudio.pending,
               onToggle: onToggleCallNames, onOpenSettings: onOpenCallNamesSettings }}
             onRetryLoad={() => void reload(true)}
             onSelectModel={onSelectModel}

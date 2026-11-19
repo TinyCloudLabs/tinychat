@@ -257,3 +257,12 @@ describe("CaptureSettings", () => {
     expect(open).toContain("Capture settings aren’t available in this build.");
   });
 });
+
+test("names in the call: the row sits inside the Mac audio row, right under its text", () => {
+  const out = html({ callNames: { enabled: true, permission: "granted", pending: false, error: null, onToggle: () => {}, onOpenSettings: () => {} } });
+  // The Mac audio switch, its label and description, then the names row before the Mac audio row closes.
+  expect(out).toMatch(/data-testid="switch-system-audio"[^]*?macOS asks for permission once\.<\/span><div class="cs-tgl"><button[^>]*data-testid="switch-call-names"/);
+  // The upload switch is a row of its own, after both.
+  expect(out.indexOf('data-testid="switch-call-names"')).toBeLessThan(out.indexOf('data-testid="switch-upload-audio"'));
+  expect(out).toMatch(/Read names from the call window<\/b><\/div><\/div><\/div><\/div><div class="cs-tgl"><button[^>]*data-testid="switch-upload-audio"/);
+});

@@ -242,6 +242,10 @@
 .cs-tgl .cs-get {
   margin: 4px 0 0 -8px;
 }
+/* A switch that works only while another is on sits inside that one's row, under its text: the indent shows it. */
+.cs-tgl .cs-tgl {
+  padding: 10px 0 0;
+}
 .cs-switch {
   flex: none;
   margin-top: 1px;
