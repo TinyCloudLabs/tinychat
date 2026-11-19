@@ -27,6 +27,9 @@ import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter } from "./routes/bots.js";
+import { capModeFromEnv, planFor } from "./bot-caps.js";
+import { BotsRegistry, turnListHook } from "./bots-registry.js";
+import { resolveTier } from "./billing/stripe.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
@@ -1130,7 +1133,14 @@ async function main() {
     process.once("SIGTERM", historyDrain.stop);
     process.once("SIGINT", historyDrain.stop);
   }
-  app.use("/api/bots", createBotsRouter({ config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter }));
+  // The record of each owner's bots is kept in the backend's own space and written through the one storage lane.
+  const botsRegistry = botsConfig ? new BotsRegistry(exoBackendKv) : undefined;
+  if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
+  app.use("/api/bots", createBotsRouter({
+    config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,
+    capMode: capModeFromEnv(process.env),
+    planOf: async address => planFor((await resolveTier(address)).tier),
+  }));
 
   // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
   const mcpChat = mcpChatFromEnv(process.env);
