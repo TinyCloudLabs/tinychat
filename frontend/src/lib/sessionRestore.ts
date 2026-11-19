@@ -50,6 +50,12 @@ export interface RestoreDeps<M, T> {
     read: (tcw: T) => Promise<void>;
     signOut: (tcw: T) => Promise<void>;
     cleanup: (tcw: T) => void;
+    /**
+     * D2: the bearer has lapsed (or is gone), but a verified renewal receipt can carry `address`'s session. After the
+     * live read, `bearer` exchanges the lease-restored session for a new bearer and stores it; it throws an error
+     * carrying `status` like `read`. Without it, a lapsed bearer signs out as before.
+     */
+    reissue?: { address: string; bearer: (tcw: T) => Promise<void> };
   };
   /** True when the browser reports no connectivity (`navigator.onLine`). */
   isOffline: () => boolean;
@@ -151,13 +157,14 @@ export async function restorePersistedSession<M, T>(
   sessionStore: RestoreSessionStore,
   deps: RestoreDeps<M, T>,
 ): Promise<RestoreOutcome<T>> {
-  if (!sessionStore.hasSession() || sessionStore.isExpired()) {
+  const renewal = deps.renewalVerification;
+  const lapsed = !sessionStore.hasSession() || sessionStore.isExpired();
+  if (lapsed && !renewal?.reissue) {
     await deps.beforeClear?.();
     return { kind: "signedOut" };
   }
-  const address = sessionStore.getAddress();
-  const token = sessionStore.getToken();
-  if (!address || !token) {
+  const address = lapsed ? renewal!.reissue!.address : sessionStore.getAddress();
+  if (!address || (!lapsed && !sessionStore.getToken())) {
     await deps.beforeClear?.();
     sessionStore.clear();
     return { kind: "signedOut" };
@@ -189,10 +196,10 @@ export async function restorePersistedSession<M, T>(
   }
 
   if (restored.status === "restored" && restored.tcw) {
-    const renewal = deps.renewalVerification;
     if (renewal) {
       try {
         await renewal.read(restored.tcw);
+        if (lapsed) await renewal.reissue!.bearer(restored.tcw);
       } catch (error) {
         const refusal = error as { status?: number; meta?: { status?: number } } | null;
         const status = refusal?.meta?.status ?? refusal?.status;
