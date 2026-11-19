@@ -15,7 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bump this one SHA to import a reviewed prompts build.
-export const PROMPTS_COMMIT = "8837bcea54afeda15c22cc0ddfaf71d9ecb48a0d";
+export const PROMPTS_COMMIT = "9b33f49b0918cae26a71fb14ec63fd332fd44c2d";
 const SITE_URL = "https://tinycloud.one/agents/abilities";
 const PREFIX = "/agents/abilities";
 const ROOT_DISCOVERY = ["llms-full.txt", "robots.txt", "sitemap.xml", ".well-known"];
@@ -52,9 +52,9 @@ function prefixRedirects(text) {
 
 function mergeRedirects(current, generated) {
   const lines = current.trim().split("\n");
+  // Generated rules go before an explicit SPA fallback; without one (Pages' implicit SPA mode), they go last.
   const fallback = lines.findIndex((line) => /^\/\*\s+\/index\.html\s+200\s*$/.test(line));
-  if (fallback === -1) throw new Error("frontend redirect file is missing its final SPA fallback");
-  lines.splice(fallback, 0, ...generated.split("\n"));
+  lines.splice(fallback === -1 ? lines.length : fallback, 0, ...generated.split("\n"));
   return `${lines.join("\n")}\n`;
 }
 

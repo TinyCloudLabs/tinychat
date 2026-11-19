@@ -212,6 +212,11 @@ function inSpace<T>(_operation: string, run: () => Promise<T>): Promise<T> {
   return runOnSpaceLane(run);
 }
 
+/** One Granola write on the shared space lane; the CSV import queues its writes here too. */
+export function runGranolaSpaceWrite<T>(run: () => Promise<T>): Promise<T> {
+  return runOnSpaceLane(run);
+}
+
 async function defaultSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
   if (signal?.aborted) return Promise.resolve(false);
   if (ms <= 0) return Promise.resolve(true);

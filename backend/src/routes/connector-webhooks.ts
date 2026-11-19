@@ -74,6 +74,14 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
  */
 export const CONNECTOR_REGISTRY: ReadonlySet<string> = new Set(["fireflies"]);
 
+/**
+ * Sources that keep a purge ledger but have no webhook delivery. A direct import consults the
+ * ledger (`POST /purge-check` with `source`) and the owner records and clears it with
+ * `POST`/`DELETE /purged`. Deliberately NOT in `CONNECTOR_REGISTRY`: that set also opens
+ * `/config`, the pending queue and the credential routes, which these sources do not have.
+ */
+export const LEDGER_ONLY_SOURCES: ReadonlySet<string> = new Set(["granola"]);
+
 /** §4.5. `meeting.summarized` enqueues as a distinct item kind. */
 export const HANDLED_EVENTS: ReadonlyMap<string, PendingKind> = new Map<
   string,
@@ -1845,13 +1853,22 @@ export async function respondToConnectorPurgeCheck(
 ): Promise<void> {
   const user = requireUser(req, res);
   if (!user) return;
-  const { meetingId, sourceTimestamp } = bodyOf(req);
+  const { meetingId, sourceTimestamp, source: namedSource } = bodyOf(req);
   if (!isValidMeetingId(meetingId)) {
     res.status(400).json({ error: "invalid_meeting_id" });
     return;
   }
+  // Optional: absent means Fireflies, so an existing caller is unchanged.
+  const source = namedSource === undefined ? DEFAULT_CONNECTOR_SOURCE : namedSource;
+  if (
+    !isValidSource(source) ||
+    (source !== DEFAULT_CONNECTOR_SOURCE && !LEDGER_ONLY_SOURCES.has(source))
+  ) {
+    res.status(400).json({ error: "unknown_source" });
+    return;
+  }
   try {
-    const read = await control.readLedger(DEFAULT_CONNECTOR_SOURCE, user.address);
+    const read = await control.readLedger(source, user.address);
     if (read.status === "unparseable") {
       res.status(503).json({ error: "unavailable" });
       return;
@@ -2729,11 +2746,14 @@ export function createConnectorWebhookCompanionRouter(
   router.post("/purged", connectionMutation(async (req, res, user) => {
 
     const body = bodyOf(req);
-    if (!isValidSource(body.source) || !registry.has(body.source)) {
+    if (!isValidSource(body.source) || !(registry.has(body.source) || LEDGER_ONLY_SOURCES.has(body.source))) {
       res.status(400).json({ error: "unknown_source" });
       return;
     }
     const source = body.source;
+    // No webhook state belongs to a ledger-only source, so the two "no webhook" guards below
+    // (which describe Fireflies delivery) must not swallow its tombstone.
+    const ledgerOnly = !registry.has(source);
 
     const ids = body.ids;
     if (!Array.isArray(ids)) {
@@ -2778,13 +2798,13 @@ export function createConnectorWebhookCompanionRouter(
     }
 
     try {
-      const config = await tokens.config(user.address);
-      const marker = await control.readDisabled(user.address);
+      const config = ledgerOnly ? null : await tokens.config(user.address);
+      const marker = ledgerOnly ? null : await control.readDisabled(user.address);
       if (marker?.connectionRemoved === true) {
         res.status(204).end();
         return;
       }
-      if (config === null && marker === null) {
+      if (!ledgerOnly && config === null && marker === null) {
         // Background sync was never enabled for this address — an idempotent no-op, not a
         // reason to grow backend KV from an authenticated client.
         //
@@ -2849,7 +2869,7 @@ export function createConnectorWebhookCompanionRouter(
       });
 
       // §6.2: purge drops the pending queue for that source, exactly as the teardown does.
-      await queue.clear(source, user.address);
+      if (!ledgerOnly) await queue.clear(source, user.address);
 
       logWebhook(
         `op=purge source=${source} aid=${hashedField(user.address)} ids=${ids.length} ` +
@@ -2884,7 +2904,7 @@ export function createConnectorWebhookCompanionRouter(
   router.delete("/purged", connectionMutation(async (req, res, user) => {
 
     const body = bodyOf(req);
-    if (!isValidSource(body.source) || !registry.has(body.source)) {
+    if (!isValidSource(body.source) || !(registry.has(body.source) || LEDGER_ONLY_SOURCES.has(body.source))) {
       res.status(400).json({ error: "unknown_source" });
       return;
     }
