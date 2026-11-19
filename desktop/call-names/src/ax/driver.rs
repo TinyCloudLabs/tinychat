@@ -923,7 +923,7 @@ mod tests {
     }
 
     /// A browser window: a tab strip with three tabs, a toolbar, and a page at `url` that looks
-    /// like a Meet call with one tile, "Sam Rivera".
+    /// like a Meet call with one tile, "Robin Sample".
     fn window(fake: &mut Fake, pid: i32, title: &str, url: &str) -> Window {
         let leave = fake.add(FakeNode {
             title: Some("Leave call".into()),
@@ -935,7 +935,7 @@ mod tests {
             ..node(pid, "AXGroup", &[leave])
         });
         let name = fake.add(FakeNode {
-            value: Some("Sam Rivera".into()),
+            value: Some("Robin Sample".into()),
             ..node(pid, "AXStaticText", &[])
         });
         let main = fake.add(FakeNode {
@@ -1069,7 +1069,7 @@ mod tests {
 
         // Tick 1 searches, finds the page and reads it in the same tick.
         let first = tick(&mut driver, &apps);
-        assert_eq!(names(&first.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&first.outcome, "meet-tiles"), ["Robin Sample"]);
         assert_eq!(first.stats.apps_searched, 1);
         assert_eq!(first.stats.candidate_windows, 1);
         assert_eq!((first.stats.found, first.stats.from_cache), (1, 0));
@@ -1081,7 +1081,7 @@ mod tests {
 
         // Tick 2 does not search: one read checks the page, then the page is read.
         let second = tick(&mut driver, &apps);
-        assert_eq!(names(&second.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&second.outcome, "meet-tiles"), ["Robin Sample"]);
         assert!(
             !second.ops.iter().any(|op| op.is_search()),
             "{:?}",
@@ -1161,7 +1161,7 @@ mod tests {
         // A new page element takes its place and is found by the next search.
         driver.platform.nodes[call.web_area].url = Some(MEET.into());
         let found = tick(&mut driver, &apps);
-        assert_eq!(names(&found.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&found.outcome, "meet-tiles"), ["Robin Sample"]);
         assert_eq!(found.stats.found, 1);
     }
 
@@ -1195,7 +1195,7 @@ mod tests {
         }
         assert_eq!(
             names(&tick(&mut driver, &apps).outcome, "meet-tiles"),
-            ["Sam Rivera"]
+            ["Robin Sample"]
         );
     }
 
@@ -1222,7 +1222,7 @@ mod tests {
         let mut driver = Driver::new(fake);
 
         let first = tick(&mut driver, &apps);
-        assert_eq!(names(&first.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&first.outcome, "meet-tiles"), ["Robin Sample"]);
         assert_eq!(
             first.stats.windows.calls, 33,
             "the window list, 31 titles, and one look at the flag"
@@ -1268,7 +1268,7 @@ mod tests {
         fake.nodes[call.window].children.insert(0, side_page);
         let mut driver = Driver::new(fake);
         let first = tick(&mut driver, &[app(10, CHROME)]);
-        assert_eq!(names(&first.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&first.outcome, "meet-tiles"), ["Robin Sample"]);
         let searched = |node: usize| first.ops.contains(&Op::Search(node));
         assert!(
             searched(call.toolbar) && searched(call.tab_strip),
@@ -1290,7 +1290,7 @@ mod tests {
         fake.nodes[call.content].role = Some("AXTabGroup".into());
         let mut driver = Driver::new(fake);
         let first = tick(&mut driver, &[app(10, CHROME)]);
-        assert_eq!(names(&first.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&first.outcome, "meet-tiles"), ["Robin Sample"]);
     }
 
     #[test]
@@ -1399,7 +1399,7 @@ mod tests {
         );
         assert!(first.search <= SEARCH_BUDGET.max_time, "{:?}", first.search);
         // The reading starts its own clock after the search, so the same tick still has names.
-        assert_eq!(names(&first.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&first.outcome, "meet-tiles"), ["Robin Sample"]);
         assert!(
             first.reading < Budget::DEFAULT.max_time,
             "{:?}",
@@ -1408,7 +1408,7 @@ mod tests {
         // Later ticks cost only the page.
         let second = tick(&mut driver, &apps);
         assert_eq!(second.search, Duration::ZERO);
-        assert_eq!(names(&second.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&second.outcome, "meet-tiles"), ["Robin Sample"]);
     }
 
     #[test]
@@ -1426,7 +1426,7 @@ mod tests {
         // The next tick does not search again: it reads the page that was found.
         driver.platform.cost_inside.clear();
         let second = tick(&mut driver, &apps);
-        assert_eq!(names(&second.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&second.outcome, "meet-tiles"), ["Robin Sample"]);
         assert!(!second.ops.iter().any(|op| op.is_search()));
         assert_eq!(second.ops[0], Op::Url(call.web_area));
     }
@@ -1455,10 +1455,10 @@ mod tests {
         assert_eq!(first.stats.search_stopped, Some(Discard::Time));
         assert!(first.search >= SEARCH_BUDGET.max_time);
         assert!(first.search < SEARCH_BUDGET.max_time + Duration::from_millis(60));
-        assert_eq!(names(&first.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&first.outcome, "meet-tiles"), ["Robin Sample"]);
         // The slow browser is searched again in the next tick; the call is read from the cache.
         let second = tick(&mut driver, &apps);
-        assert_eq!(names(&second.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&second.outcome, "meet-tiles"), ["Robin Sample"]);
         assert_eq!(second.stats.from_cache, 1);
         assert!(!driver.platform.ops_of(11).is_empty());
         let chrome_searches = second.ops.iter().filter(|op| op.is_search());
@@ -1534,7 +1534,7 @@ mod tests {
             let ticked = tick(&mut driver, &apps);
             assert_eq!(
                 names(&ticked.outcome, "meet-tiles"),
-                ["Sam Rivera"],
+                ["Robin Sample"],
                 "tick {round}"
             );
             // The reading never waits for them: it costs the page and nothing else.
@@ -1681,7 +1681,7 @@ mod tests {
             assert!(tick(&mut driver, &apps).ops.is_empty());
         }
         let later = tick(&mut driver, &apps);
-        assert_eq!(names(&later.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&later.outcome, "meet-tiles"), ["Robin Sample"]);
         driver.stop();
         assert_eq!(
             driver.platform.writes(),
@@ -1698,7 +1698,7 @@ mod tests {
         fake.nodes[call.window].children.push(call.content);
         let mut driver = Driver::new(fake);
         let first = tick(&mut driver, &[app(10, CHROME)]);
-        assert_eq!(names(&first.outcome, "meet-tiles"), ["Sam Rivera"]);
+        assert_eq!(names(&first.outcome, "meet-tiles"), ["Robin Sample"]);
         let searched = |node| {
             first
                 .ops

@@ -206,12 +206,12 @@ mod tests {
             ("Alex Example", true)
         );
         assert_eq!(
-            split_suffix_tags("Sam (Co-host)", &tags, &me),
-            ("Sam", false)
+            split_suffix_tags("Robin (Co-host)", &tags, &me),
+            ("Robin", false)
         );
         assert_eq!(
-            split_suffix_tags("Sam (Guest,me)", &tags, &me),
-            ("Sam", true)
+            split_suffix_tags("Robin (Guest,me)", &tags, &me),
+            ("Robin", true)
         );
         assert_eq!(
             split_suffix_tags("Ana (she/her)", &tags, &me),

@@ -282,25 +282,25 @@ mod tests {
     #[test]
     fn ids_follow_first_seen_order_across_ticks() {
         let mut roster = Roster::new();
-        assert!(roster.observe(1_000, &tiles(vec![entry("Sam Rivera", false)])));
+        assert!(roster.observe(1_000, &tiles(vec![entry("Robin Sample", false)])));
         assert!(roster.observe(
             6_000,
             &panel(vec![
                 entry("Alex Example", true),
-                entry("Sam Rivera", false)
+                entry("Robin Sample", false)
             ])
         ));
         assert!(!roster.observe(
             11_000,
             &panel(vec![
                 entry("Alex Example", true),
-                entry("Sam Rivera", false)
+                entry("Robin Sample", false)
             ])
         ));
         assert_eq!(
             summary(&roster),
             [
-                ("p1".into(), "Sam Rivera".into(), false),
+                ("p1".into(), "Robin Sample".into(), false),
                 ("p2".into(), "Alex Example".into(), true)
             ]
         );
@@ -338,17 +338,17 @@ mod tests {
             0,
             &panel(vec![
                 entry("Alex Example", true),
-                entry("Sam Rivera", false),
+                entry("Robin Sample", false),
             ]),
         );
         assert_eq!(selves(&roster), ["Alex Example"]);
         // A later tick marks a different person: that is a dispute, and nobody is self any more.
-        assert!(roster.observe(5_000, &panel(vec![entry("Sam Rivera", true)])));
+        assert!(roster.observe(5_000, &panel(vec![entry("Robin Sample", true)])));
         assert!(selves(&roster).is_empty());
         // The dispute lasts for the recording, whatever later ticks show.
         let clean = panel(vec![
             entry("Alex Example", true),
-            entry("Sam Rivera", false),
+            entry("Robin Sample", false),
         ]);
         assert!(!roster.observe(10_000, &clean));
         assert!(selves(&roster).is_empty());
@@ -462,12 +462,12 @@ mod tests {
                 (
                     "panel",
                     true,
-                    vec![entry("Alex Example", true), entry("Sam Rivera", false)],
+                    vec![entry("Alex Example", true), entry("Robin Sample", false)],
                 ),
                 (
                     "tiles",
                     false,
-                    vec![entry("Sam Rivera", false), entry("Alex Example", false)],
+                    vec![entry("Robin Sample", false), entry("Alex Example", false)],
                 ),
             ],
         );
@@ -476,7 +476,7 @@ mod tests {
             summary(&roster),
             [
                 ("p1".into(), "Alex Example".into(), true),
-                ("p2".into(), "Sam Rivera".into(), false)
+                ("p2".into(), "Robin Sample".into(), false)
             ]
         );
     }
@@ -510,7 +510,7 @@ mod tests {
         roster.observe(0, &panel(vec![entry("Alex Example", true)]));
         let zoom = tick(
             App::Zoom,
-            vec![("zoom", true, vec![entry("Sam Rivera", false)])],
+            vec![("zoom", true, vec![entry("Robin Sample", false)])],
         );
         assert!(!roster.observe(5_000, &zoom));
         assert_eq!(roster.people().len(), 1);
@@ -531,14 +531,14 @@ mod tests {
         roster.observe(
             0,
             &panel(vec![
-                entry("Sam Rivera", true),
+                entry("Robin Sample", true),
                 entry("Alex Example", false),
             ]),
         );
         let json = roster.participants().unwrap().to_json();
         assert_eq!(
             json,
-            r#"{"v":1,"source":"call_window","app":"google-meet","people":[{"id":"p1","name":"Sam Rivera","self":true},{"id":"p2","name":"Alex Example"}],"truncated":false}"#
+            r#"{"v":1,"source":"call_window","app":"google-meet","people":[{"id":"p1","name":"Robin Sample","self":true},{"id":"p2","name":"Alex Example"}],"truncated":false}"#
         );
         assert_eq!(
             CallParticipants::from_json(&json).unwrap(),

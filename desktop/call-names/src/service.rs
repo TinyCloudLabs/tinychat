@@ -877,7 +877,7 @@ mod tests {
 
     const RECORDING: &str = "0b9f6a52-7c1d-4e8a-9f3b-2d5c8e1a4b70";
     const NEXT_RECORDING: &str = "7e2d9c14-55aa-4b0f-8c66-91f0a3b2c4d5";
-    const ALEX_AND_SAM: &str = r#"{"v":1,"source":"call_window","app":"google-meet","people":[{"id":"p1","name":"Alex Example","self":true},{"id":"p2","name":"Sam Rivera"}],"truncated":false}"#;
+    const ALEX_AND_SAM: &str = r#"{"v":1,"source":"call_window","app":"google-meet","people":[{"id":"p1","name":"Alex Example","self":true},{"id":"p2","name":"Robin Sample"}],"truncated":false}"#;
     const FAST: Pace = Pace {
         reading: Duration::from_millis(5),
         idle: Duration::from_millis(2),
@@ -1015,7 +1015,10 @@ mod tests {
             Arc::new(Mutex::new(WindowState {
                 permission: Permission::Granted,
                 permission_checks: 0,
-                script: VecDeque::from([people(&[("Alex Example", true), ("Sam Rivera", false)])]),
+                script: VecDeque::from([people(&[
+                    ("Alex Example", true),
+                    ("Robin Sample", false),
+                ])]),
                 reads: Vec::new(),
                 stops: 0,
                 during: None,
@@ -1254,7 +1257,7 @@ mod tests {
         // Paused: a third person is in the call now, but the very next tick reads nothing.
         let three = people(&[
             ("Alex Example", true),
-            ("Sam Rivera", false),
+            ("Robin Sample", false),
             ("Test Guest A", false),
         ]);
         rig.next(vec![three]);
@@ -1296,7 +1299,7 @@ mod tests {
 
         rig.next(vec![people(&[
             ("Alex Example", true),
-            ("Sam Rivera", false),
+            ("Robin Sample", false),
         ])]);
         let host = rig.host.clone();
         rig.window.lock().unwrap().during = Some(Box::new(move || host.pause()));
@@ -1320,14 +1323,14 @@ mod tests {
         let mut rig = Rig::new();
         rig.host.record(RECORDING, STEREO, 1_000);
         rig.tick();
-        rig.next(vec![people(&[("Sam Rivera", false)])]);
+        rig.next(vec![people(&[("Robin Sample", false)])]);
         rig.host.record(NEXT_RECORDING, STEREO, 500);
         rig.tick();
         assert_eq!(rig.file(RECORDING).as_deref(), Some(ALEX_AND_SAM));
         assert_eq!(
             rig.file(NEXT_RECORDING).as_deref(),
             Some(
-                r#"{"v":1,"source":"call_window","app":"google-meet","people":[{"id":"p1","name":"Sam Rivera"}],"truncated":false}"#
+                r#"{"v":1,"source":"call_window","app":"google-meet","people":[{"id":"p1","name":"Robin Sample"}],"truncated":false}"#
             )
         );
     }
@@ -1423,7 +1426,7 @@ mod tests {
             Err(NoNames::Skip(Skip::Discarded(Discard::Time))),
             Err(NoNames::Skip(Skip::NoTarget)),
             Err(NoNames::PermissionMissing),
-            people(&[("Alex Example", true), ("Sam Rivera", false)]),
+            people(&[("Alex Example", true), ("Robin Sample", false)]),
         ]);
         for _ in 0..7 {
             rig.tick();
@@ -1458,7 +1461,7 @@ mod tests {
             }
         );
         let log = format!("{:?}", rig.host.reports());
-        for name in ["Alex", "Example", "Sam", "Rivera"] {
+        for name in ["Alex", "Example", "Robin", "Sample"] {
             assert!(!log.contains(name), "{log}");
         }
     }
@@ -1632,7 +1635,7 @@ mod tests {
         Name::clean(text).unwrap()
     }
 
-    const UNMARKED: [(&str, bool); 2] = [("Alex Example", false), ("Sam Rivera", false)];
+    const UNMARKED: [(&str, bool); 2] = [("Alex Example", false), ("Robin Sample", false)];
 
     #[test]
     fn the_account_name_alone_marks_the_one_person_who_has_it() {
@@ -1673,7 +1676,7 @@ mod tests {
         rig.next(vec![people(&[
             ("Alex Example", false),
             ("Alex Example", false),
-            ("Sam Rivera", false),
+            ("Robin Sample", false),
         ])]);
         rig.host.record(RECORDING, STEREO, 1_000);
         rig.tick();
@@ -1685,7 +1688,7 @@ mod tests {
         assert!(!rig.host.reports().pop().unwrap().guessed);
 
         // The same when two known names are in the call: the account's and a remembered one.
-        rig.store.set_self_names(&[name("Sam Rivera")]).unwrap();
+        rig.store.set_self_names(&[name("Robin Sample")]).unwrap();
         rig.restart();
         rig.service = Service::with_account(
             rig.store.clone(),
@@ -1714,16 +1717,16 @@ mod tests {
         // The People panel opens: the app says the user is the other person.
         rig.next(vec![people(&[
             ("Alex Example", false),
-            ("Sam Rivera", true),
+            ("Robin Sample", true),
         ])]);
         rig.tick();
-        let marked = r#"{"v":1,"source":"call_window","app":"google-meet","people":[{"id":"p1","name":"Alex Example"},{"id":"p2","name":"Sam Rivera","self":true}],"truncated":false}"#;
+        let marked = r#"{"v":1,"source":"call_window","app":"google-meet","people":[{"id":"p1","name":"Alex Example"},{"id":"p2","name":"Robin Sample","self":true}],"truncated":false}"#;
         assert_eq!(rig.file(RECORDING).as_deref(), Some(marked));
         let report = rig.host.reports().pop().unwrap();
         assert!(report.saved && !report.guessed);
         assert_eq!(
             remembered(&rig.store).as_deref(),
-            Some(r#"{"names":["Sam Rivera"]}"#)
+            Some(r#"{"names":["Robin Sample"]}"#)
         );
 
         // The panel closes again: the mark stays, and the guess does not come back.
@@ -1737,14 +1740,14 @@ mod tests {
         let mut rig = Rig::with_account(|| Some("Alex Example".to_owned()));
         rig.next(vec![people(&[
             ("Alex Example", false),
-            ("Sam Rivera", true),
+            ("Robin Sample", true),
         ])]);
         rig.host.record(RECORDING, STEREO, 1_000);
         rig.tick();
         // A second, different person carries the mark: the roster trusts neither from now on.
         rig.next(vec![people(&[
             ("Alex Example", true),
-            ("Sam Rivera", false),
+            ("Robin Sample", false),
         ])]);
         rig.tick();
         let file = rig.file(RECORDING).unwrap();
@@ -1754,13 +1757,13 @@ mod tests {
 
     #[test]
     fn a_withdrawn_mark_is_not_remembered() {
-        let first = people(&[("Alex Example", false), ("Sam Rivera", true)]);
-        let second = people(&[("Alex Example", true), ("Sam Rivera", false)]);
+        let first = people(&[("Alex Example", false), ("Robin Sample", true)]);
+        let second = people(&[("Alex Example", true), ("Robin Sample", false)]);
         let mut rig = Rig::new();
         rig.next(vec![first.clone()]);
         rig.host.record(RECORDING, STEREO, 1_000);
         rig.tick();
-        assert_eq!(names(&rig.store), ["Sam Rivera"]);
+        assert_eq!(names(&rig.store), ["Robin Sample"]);
         // A second person carries the mark: the name this recording taught is forgotten, and
         // the second name is not learned.
         rig.next(vec![second.clone()]);
@@ -1770,7 +1773,7 @@ mod tests {
         assert!(names(&rig.store).is_empty());
 
         // A name that was known before this recording stays known.
-        rig.store.set_self_names(&[name("Sam Rivera")]).unwrap();
+        rig.store.set_self_names(&[name("Robin Sample")]).unwrap();
         rig.restart();
         rig.next(vec![first.clone(), second.clone()]);
         rig.host.record(NEXT_RECORDING, STEREO, 1_000);
@@ -1778,7 +1781,7 @@ mod tests {
         rig.tick();
         let file = rig.file(NEXT_RECORDING).unwrap();
         assert!(!file.contains("\"self\""), "{file}");
-        assert_eq!(names(&rig.store), ["Sam Rivera"]);
+        assert_eq!(names(&rig.store), ["Robin Sample"]);
 
         // With as many names as are kept, the mark pushes the oldest one out. When the mark is
         // withdrawn that name comes back, in its place.
@@ -1792,7 +1795,7 @@ mod tests {
         rig.tick();
         let taught = names(&rig.store);
         assert_eq!(taught.len(), MAX_SELF_NAMES);
-        assert_eq!(taught[0], "Sam Rivera");
+        assert_eq!(taught[0], "Robin Sample");
         assert!(!taught.contains(&"Name 7".to_owned()));
         rig.tick();
         assert_eq!(rig.store.self_names(), full);
@@ -1837,7 +1840,7 @@ mod tests {
             let marked = format!("Person {number}");
             rig.next(vec![people(&[
                 (marked.as_str(), true),
-                ("Sam Rivera", false),
+                ("Robin Sample", false),
             ])]);
             rig.host
                 .record(&format!("recording-{number}"), STEREO, 1_000);
@@ -1914,7 +1917,7 @@ mod tests {
         );
         rig.next(vec![people(&[
             ("Alex Example", true),
-            ("Sam Rivera", false),
+            ("Robin Sample", false),
         ])]);
         rig.tick();
         assert_eq!(rig.file(RECORDING).as_deref(), Some(ALEX_AND_SAM));

@@ -204,7 +204,7 @@ fn every_text_in_every_fixture_is_an_interface_label_or_a_made_up_name() {
 #[test]
 fn the_allow_list_test_refuses_a_text_that_is_not_listed() {
     let line: Value =
-        serde_json::from_str(r#"{"kind":"full","nodes":[{"p":"r","v":"Sam Rivera"}]}"#).unwrap();
+        serde_json::from_str(r#"{"kind":"full","nodes":[{"p":"r","v":"Robin Sample"}]}"#).unwrap();
     let refused = std::panic::catch_unwind(|| check_nodes(&line, Path::new("made-up.jsonl")));
     assert!(refused.is_err());
     assert_eq!(normalized("Alex Example (Host, me)"), "{name} (Host, me)");
