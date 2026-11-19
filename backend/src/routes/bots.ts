@@ -7,7 +7,7 @@ import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { botCaps, CAP_MODE, type CapMode, type PlanName } from "../bot-caps";
-import { BOT_KEY, MAIN_BOT_KEY, orderedBots, type Bot, type BotsRegistry } from "../bots-registry";
+import { BOT_KEY, MAIN_BOT_KEY, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
 
 export interface BotsConfig {
   serviceUrl: string;
@@ -80,6 +80,8 @@ export function createBotsRouter(opts: {
   config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler; registry?: BotsRegistry; capMode?: CapMode;
   /** The plan of an account, for the per-plan limit rule. */
   planOf?: (address: string) => Promise<PlanName | undefined>;
+  /** Called once a bot is recorded as being deleted, to have the deletion carried out. It does not wait for it. */
+  onDeleting?: (address: string, key: string) => void;
 }): Router {
   const { registry } = opts;
   const capMode = opts.capMode ?? CAP_MODE;
@@ -129,7 +131,7 @@ export function createBotsRouter(opts: {
     if (!registry) { res.status(404).json({ error: "not_found" }); return; }
     try {
       const row = await registry.read(address);
-      res.json({ bots: orderedBots(row), deleted: row.deleted, ...botCaps(capMode, await accountPlan(address), row) });
+      res.json({ bots: orderedBots(row).map(publicBot), deleted: row.deleted.map(publicDeleted), ...botCaps(capMode, await accountPlan(address), row) });
     } catch {
       res.status(503).json({ error: "bots_unavailable" });
     }
@@ -306,6 +308,23 @@ export function createBotsRouter(opts: {
       if (updated.ok) { res.json({ bot: updated.bot }); return; }
       const status = updated.error === "not_found" ? 404 : updated.error === "name_taken" || updated.error === "bot_deleting" ? 409 : 400;
       res.status(status).json({ error: updated.error });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
+    }
+  });
+
+  // Starts deleting a bot. The record says so before the service is told, and everything after that happens later.
+  router.delete("/:key", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    if (!registry) { res.status(404).json({ error: "not_found" }); return; }
+    try {
+      const begun = await registry.beginDelete(address, req.params.key);
+      if (!begun.ok) { res.status(begun.error === "not_found" ? 404 : 409).json({ error: begun.error }); return; }
+      // If this fails the deletion still stands: the service is told again when the deletion is carried out.
+      await announce(address, begun.bot.key, "deleting", begun.seq);
+      opts.onDeleting?.(address, begun.bot.key);
+      res.status(202).json({ bot: publicBot(begun.bot) });
     } catch {
       res.status(503).json({ error: "bots_unavailable" });
     }

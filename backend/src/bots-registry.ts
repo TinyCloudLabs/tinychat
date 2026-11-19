@@ -342,3 +342,14 @@ export function turnListHook(registry: BotsRegistry): (ownerDid: string, sourceK
     return address === undefined ? [] : registry.listForTurn(address, sourceKey);
   };
 }
+
+/** A bot as its owner is shown it: with the time its deletion began, and none of the deletion's bookkeeping. */
+export function publicBot(bot: Bot): Omit<Bot, "grantClosed" | "revoke"> {
+  return {
+    key: bot.key, name: bot.name, shape: bot.shape, colour: bot.colour, environment: bot.environment, state: bot.state, createdAt: bot.createdAt,
+    ...(bot.deletingSince !== undefined ? { deletingSince: bot.deletingSince } : {}),
+  };
+}
+
+/** A deleted bot as its owner is shown it: its key and its name. */
+export const publicDeleted = (entry: DeletedBot): { key: string; name: string } => ({ key: entry.key, name: entry.name });

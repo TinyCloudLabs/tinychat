@@ -18,7 +18,7 @@ interface UpstreamCall { method: string; url: string; headers: Headers; body: st
 type Upstream = (call: UpstreamCall) => Response | Promise<Response>;
 
 /** The real router on a local port, with real session tokens, a registry over a fake store, and a recording stand-in for the bots service. */
-async function setup(upstream: Upstream = () => Response.json({}), extra: Partial<BotsConfig> = {}, paidLimiter?: RequestHandler, rule: { capMode?: CapMode; planOf?: (address: string) => Promise<PlanName | undefined> } = {}) {
+async function setup(upstream: Upstream = () => Response.json({}), extra: Partial<BotsConfig> = {}, paidLimiter?: RequestHandler, rule: { capMode?: CapMode; planOf?: (address: string) => Promise<PlanName | undefined>; onDeleting?: (address: string, key: string) => void } = {}) {
   const seen: UpstreamCall[] = [];
   const fetchImpl = (async (input, init) => {
     const call = { method: init?.method ?? "GET", url: String(input), headers: new Headers(init?.headers), body: typeof init?.body === "string" ? init.body : undefined };
@@ -504,6 +504,99 @@ describe("renaming and restyling a bot through the routes", () => {
       const forged = { name: "Reading", key: "f".repeat(32), state: "deleting", environment: "regular", createdAt: "1999-01-01T00:00:00.000Z", owner: stranger };
       const response = await fetch(`${run.base}/${KEY}`, { method: "PATCH", headers, body: JSON.stringify(forged) });
       expect([response.status, await response.json()]).toEqual([200, { bot: { ...created, name: "Reading" } }]);
+    } finally { await run.close(); }
+  });
+});
+
+describe("deleting a bot through the routes", () => {
+  const wanted = { name: "Research", shape: "sprout", colour: "teal" };
+  const KEY = "1".repeat(32);
+  const announced: Upstream = () => Response.json({ state: "active" });
+  const leaving = { key: KEY, ...wanted, environment: "private", state: "deleting", createdAt: T0.toISOString(), deletingSince: T0.toISOString() };
+  const puts = (seen: UpstreamCall[]) => seen.filter(call => call.method === "PUT").map(call => [call.url.replace("http://bots.test", ""), JSON.parse(call.body ?? "null")]);
+
+  test("the bot is marked as being deleted, the service is told under the record's counter, and the work is handed on", async () => {
+    const handed: Array<[string, string]> = [];
+    const run = await setup(announced, {}, undefined, { onDeleting: (address, key) => { handed.push([address, key]); } });
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const response = await fetch(`${run.base}/${KEY}`, { method: "DELETE", headers });
+      expect([response.status, await response.json()]).toEqual([202, { bot: leaving }]);
+      const row = await run.registry.read(owner);
+      expect(row.bots[1]).toEqual(leaving);
+      expect(puts(run.seen).at(-1)).toEqual([`/v1/bots/${KEY}`, { state: "deleting", seq: row.seq }]);
+      // The address handed on is the session's own, which is lower-case whatever case the account signed in with.
+      expect(handed).toEqual([[owner.toLowerCase(), KEY]]);
+      // Asked again, the answer is the same and nothing is written.
+      const again = await fetch(`${run.base}/${KEY}`, { method: "DELETE", headers });
+      expect([again.status, await again.json()]).toEqual([202, { bot: leaving }]);
+      expect((await run.registry.read(owner)).seq).toBe(row.seq);
+    } finally { await run.close(); }
+  });
+
+  test("the owner's list shows when the deletion began and none of its bookkeeping, and a deleted bot by key and name only", async () => {
+    const run = await setup(announced);
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      expect((await fetch(`${run.base}/${KEY}`, { method: "DELETE", headers })).status).toBe(202);
+      await run.registry.closeGrant(owner, KEY, "cid-1");
+      const during = await (await fetch(run.base, { headers })).json();
+      expect(during.bots).toEqual([main, leaving]);
+      // Asked again while its permission is closed, the answer still carries none of it.
+      expect(await (await fetch(`${run.base}/${KEY}`, { method: "DELETE", headers })).json()).toEqual({ bot: leaving });
+      expect(await run.registry.finishDelete(owner, KEY)).toBe(true);
+      const after = await (await fetch(run.base, { headers })).json();
+      expect([after.bots, after.deleted]).toEqual([[main], [{ key: KEY, name: "Research" }]]);
+      expect(JSON.stringify([during, after])).not.toContain("cid-1");
+    } finally { await run.close(); }
+  });
+
+  test("a refusal answers with its code and changes nothing", async () => {
+    const run = await setup(announced);
+    try {
+      const headers = await run.headersFor(owner);
+      const theirs = await run.headersFor(stranger);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const before = (await run.registry.read(owner)).seq;
+      const cases: Array<[who: Record<string, string>, key: string, status: number, error: string]> = [
+        [headers, "main", 409, "main_fixed"],
+        [headers, "9".repeat(32), 404, "not_found"],
+        [headers, "Research", 404, "not_found"],
+        [theirs, KEY, 404, "not_found"],
+      ];
+      for (const [who, key, status, error] of cases) {
+        const response = await fetch(`${run.base}/${key}`, { method: "DELETE", headers: who });
+        expect([key, response.status, await response.json()]).toEqual([key, status, { error }]);
+      }
+      expect((await run.registry.read(owner)).seq).toBe(before);
+      expect(puts(run.seen)).toHaveLength(1);
+    } finally { await run.close(); }
+  });
+
+  test("with three deletions under way a fourth is refused", async () => {
+    const run = await setup(announced);
+    try {
+      const headers = await run.headersFor(owner);
+      const bot = (digit: string, state: string) => ({ ...main, key: digit.repeat(32), name: `Bot ${digit}`, state, ...(state === "deleting" ? { deletingSince: T0.toISOString() } : {}) });
+      run.kv.rows.set(`bots/registry/${owner.toLowerCase()}`, { version: 1, value: JSON.stringify({ v: 1, seq: 9, deleted: [], bots: [main, bot("1", "deleting"), bot("2", "deleting"), bot("3", "deleting"), bot("4", "active")] }) });
+      const response = await fetch(`${run.base}/${"4".repeat(32)}`, { method: "DELETE", headers });
+      expect([response.status, await response.json()]).toEqual([409, { error: "delete_limit" }]);
+      expect(run.seen).toEqual([]);
+    } finally { await run.close(); }
+  });
+
+  test("a deletion stands when the service cannot be told", async () => {
+    const handed: string[] = [];
+    const run = await setup(call => (call.method === "PUT" && call.body?.includes("deleting") ? Promise.reject(new Error("down")) : Response.json({ state: "active" })), {}, undefined, { onDeleting: (_address, key) => { handed.push(key); } });
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const response = await fetch(`${run.base}/${KEY}`, { method: "DELETE", headers });
+      expect([response.status, await response.json()]).toEqual([202, { bot: leaving }]);
+      expect((await run.registry.read(owner)).bots[1]).toEqual(leaving);
+      expect(handed).toEqual([KEY]);
     } finally { await run.close(); }
   });
 });
