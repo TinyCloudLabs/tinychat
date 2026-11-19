@@ -15,7 +15,9 @@
 //!      identifier `zm.meeting.window.main` is the call window.
 //!    - Allow-listed Chromium browsers: the window list and each window's title. A title is
 //!      compared with [`MEET_WINDOW_TITLE_HINT`] and dropped; it is never kept or logged. Only a
-//!      window whose title has the hint is walked: role and children only, not into toolbars or
+//!      window whose title has the hint is walked, except Arc: its titles do not identify the
+//!      selected tab, so every window is searched breadth-first to avoid its large sidebar.
+//!      The search reads role and children only, not into toolbars or
 //!      tab strips, down to the web areas and never into one. A web area's address is read, and
 //!      the first one whose host is exactly `meet.google.com` is the call window. The address
 //!      decides; the title only says where to look. Addresses stay in memory and are never logged.
@@ -72,13 +74,15 @@ pub const ZOOM_BUNDLE_ID: &str = "us.zoom.xos";
 pub const ZOOM_MEETING_WINDOW: &str = "zm.meeting.window.main";
 /// The only page host read in a browser.
 pub const MEET_HOST: &str = "meet.google.com";
+/// Arc window titles do not identify the selected page. Search their structure instead.
+pub const ARC_BUNDLE_ID: &str = "company.thebrowser.Browser";
 /// Chromium browsers whose Meet tab may be read.
 pub const CHROMIUM_BROWSERS: [&str; 7] = [
     "com.google.Chrome",
     "com.google.Chrome.beta",
     "com.microsoft.edgemac",
     "com.brave.Browser",
-    "company.thebrowser.Browser",
+    ARC_BUNDLE_ID,
     "com.vivaldi.Vivaldi",
     "org.chromium.Chromium",
 ];
@@ -110,6 +114,10 @@ pub const MEET_WINDOW_TITLE_HINT: &str = "Meet";
 pub const PAGE_SEARCH_SKIPPED_CONTAINERS: [&str; 2] = ["AXToolbar", "AXTabGroup"];
 /// How deep the search for a page goes inside a browser window.
 pub const PAGE_SEARCH_DEPTH: usize = 30;
+/// Arc's web area is three levels below its window. Keep its native sidebar search shallow.
+pub const ARC_PAGE_SEARCH_DEPTH: usize = 6;
+/// Maximum structural nodes inspected in one Arc window before moving to the next.
+pub const ARC_PAGE_SEARCH_NODES: usize = 64;
 /// Roles whose children are never searched for a page (controls and text).
 pub const PAGE_SEARCH_LEAF_ROLES: [&str; 15] = [
     "AXButton",

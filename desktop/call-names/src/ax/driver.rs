@@ -5,7 +5,8 @@
 //! 1. Search ([`Driver::search`], budget `SEARCH_BUDGET`). Only for an app with no known call
 //!    window, and then only every `SEARCH_WAIT_TICKS` ticks. One read for the app's window list
 //!    and one per window (a browser window's title, a Zoom window's identifier) pick the candidate
-//!    windows. Inside a candidate browser window a pruned depth-first walk goes down to the web
+//!    windows. Arc searches all windows breadth-first with small per-window limits; other
+//!    browsers use the title hint and a pruned depth-first walk down to the web
 //!    areas, never into one, and keeps the first one whose address is on the Meet host. What it
 //!    finds is remembered, so a search that runs out of time loses nothing.
 //! 2. Reading ([`Driver::read`], the tick's own budget). Each known call window is checked with
@@ -26,7 +27,7 @@ use super::*;
 use crate::rules::{App, Rules};
 use crate::session::{read_tick_traced, Meter, Target, TickTrace};
 use crate::tree::{Node, Source};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// What a tick needs from the platform beyond [`Source`]. Each method except `application` and
 /// `calls` is one round trip to the app.
@@ -185,10 +186,11 @@ impl<P: Platform> Driver<P> {
                 break;
             }
             self.stats.apps_searched += 1;
-            let stopped = match self.search_app(app.pid, kind, meter) {
-                Ok(()) => continue,
-                Err(stopped) => stopped,
-            };
+            let stopped =
+                match self.search_app(app.pid, kind, app.bundle_id == ARC_BUNDLE_ID, meter) {
+                    Ok(()) => continue,
+                    Err(stopped) => stopped,
+                };
             self.stats.search_stopped = Some(stopped);
             match stopped {
                 Discard::Read(ReadError::NotTrusted) => {
@@ -370,12 +372,18 @@ impl<P: Platform> Driver<P> {
     }
 
     /// Look for a call window in one app that has none.
-    fn search_app(&mut self, pid: i32, kind: AppKind, meter: &mut Meter) -> Result<(), Discard> {
+    fn search_app(
+        &mut self,
+        pid: i32,
+        kind: AppKind,
+        arc: bool,
+        meter: &mut Meter,
+    ) -> Result<(), Discard> {
         let application = self.platform.application(pid);
         self.touch(pid);
 
         let began = self.mark(meter);
-        let candidates = self.candidate_windows(&application, kind, meter);
+        let candidates = self.candidate_windows(&application, kind, arc, meter);
         let cost = self.spent(began, meter);
         self.stats.windows.add(cost);
         let candidates = candidates?;
@@ -407,7 +415,7 @@ impl<P: Platform> Driver<P> {
                 let nodes = meter.nodes();
                 let mut result = Ok(());
                 for window in candidates {
-                    match find_page(&mut self.platform, window, meter) {
+                    match find_page(&mut self.platform, window, meter, arc) {
                         Ok(Some(web_area)) => self.keep(pid, App::GoogleMeet, web_area),
                         Ok(None) => {}
                         Err(discard) => {
@@ -431,11 +439,13 @@ impl<P: Platform> Driver<P> {
         }
     }
 
-    /// The windows worth a closer look: one read for the list, one read per window.
+    /// The windows worth a closer look. Arc titles do not identify the selected tab, so all
+    /// its windows are candidates; the page URL remains the acceptance check.
     fn candidate_windows(
         &mut self,
         application: &P::Node,
         kind: AppKind,
+        arc: bool,
         meter: &mut Meter,
     ) -> Result<Vec<P::Node>, Discard> {
         meter.check_time()?;
@@ -452,6 +462,7 @@ impl<P: Platform> Driver<P> {
                     let identifier = self.platform.identifier(&window).map_err(Discard::Read)?;
                     identifier.as_deref() == Some(ZOOM_MEETING_WINDOW)
                 }
+                AppKind::ChromiumBrowser if arc => true,
                 AppKind::ChromiumBrowser => {
                     // Read, compared and dropped. Only a hint: the address decides what is read.
                     let title = self.platform.title(&window).map_err(Discard::Read)?;
@@ -583,33 +594,63 @@ impl<P: Platform> Driver<P> {
 ///
 /// The first pass does not enter the containers that never hold a page (toolbar, tab strip). If
 /// it meets no page of any kind, the browser is laid out differently, and a second pass skips only
-/// controls.
+/// controls. Arc instead uses one shallow, capped breadth-first pass that skips only controls.
 fn find_page<P: Platform>(
     platform: &mut P,
     window: P::Node,
     meter: &mut Meter,
+    breadth_first: bool,
 ) -> Result<Option<P::Node>, Discard> {
     let mut saw_a_page = false;
-    let found = walk_to_page(platform, window.clone(), meter, true, &mut saw_a_page)?;
+    // Arc's native containers differ from Chrome's. A single shallow pass includes toolbar
+    // and tab-group containers without the repeated fallback walk of non-page windows.
+    if breadth_first {
+        return walk_to_page(platform, window, meter, false, &mut saw_a_page, true);
+    }
+    let found = walk_to_page(
+        platform,
+        window.clone(),
+        meter,
+        true,
+        &mut saw_a_page,
+        breadth_first,
+    )?;
     if found.is_some() || saw_a_page {
         return Ok(found);
     }
-    walk_to_page(platform, window, meter, false, &mut saw_a_page)
+    walk_to_page(
+        platform,
+        window,
+        meter,
+        false,
+        &mut saw_a_page,
+        breadth_first,
+    )
 }
 
-/// Depth-first through one window, reading only role and children, down to the web areas and never
+/// Through one window, reading only role and children, down to the web areas and never
 /// into one. Stops at the first web area on the Meet host. An element met twice is skipped:
-/// counted, but not read again.
+/// counted, but not read again. Arc uses breadth-first order to reach its shallow content area
+/// before its large sidebar; other browsers retain the depth-first traversal.
 fn walk_to_page<P: Platform>(
     platform: &mut P,
     window: P::Node,
     meter: &mut Meter,
     skip_containers: bool,
     saw_a_page: &mut bool,
+    breadth_first: bool,
 ) -> Result<Option<P::Node>, Discard> {
+    let started_nodes = meter.nodes();
     let mut seen: HashMap<u64, Vec<P::Node>> = HashMap::new();
-    let mut stack: Vec<(P::Node, usize)> = vec![(window, 0)];
-    while let Some((node, depth)) = stack.pop() {
+    let mut stack: VecDeque<(P::Node, usize)> = VecDeque::from([(window, 0)]);
+    while let Some((node, depth)) = if breadth_first {
+        stack.pop_front()
+    } else {
+        stack.pop_back()
+    } {
+        if breadth_first && meter.nodes() - started_nodes >= ARC_PAGE_SEARCH_NODES {
+            return Ok(None);
+        }
         meter.visit(0)?;
         let earlier = seen.entry(platform.identity_hash(&node)).or_default();
         if earlier.iter().any(|other| platform.same(other, &node)) {
@@ -635,10 +676,19 @@ fn walk_to_page<P: Platform>(
             PAGE_SEARCH_LEAF_ROLES.contains(&role)
                 || (skip_containers && PAGE_SEARCH_SKIPPED_CONTAINERS.contains(&role))
         });
-        if depth >= PAGE_SEARCH_DEPTH || skipped {
+        let max_depth = if breadth_first {
+            ARC_PAGE_SEARCH_DEPTH
+        } else {
+            PAGE_SEARCH_DEPTH
+        };
+        if depth >= max_depth || skipped {
             continue;
         }
-        stack.extend(children.into_iter().rev().map(|child| (child, depth + 1)));
+        if breadth_first {
+            stack.extend(children.into_iter().map(|child| (child, depth + 1)));
+        } else {
+            stack.extend(children.into_iter().rev().map(|child| (child, depth + 1)));
+        }
     }
     Ok(None)
 }
@@ -1059,6 +1109,77 @@ mod tests {
 
     const NO_TARGET: Result<Extraction, NoNames> = Err(NoNames::Skip(Skip::NoTarget));
     const NOT_IN_CALL: Result<Extraction, NoNames> = Err(NoNames::Skip(Skip::NotInCall));
+
+    #[test]
+    fn arc_finds_an_untitled_call_before_walking_a_large_sidebar() {
+        let mut fake = Fake::default();
+        let call = window(&mut fake, 10, "", MEET);
+        let leaves: Vec<_> = (0..450)
+            .map(|_| fake.add(node(10, "AXGroup", &[])))
+            .collect();
+        let mut sidebar = fake.add(node(10, "AXGroup", &leaves));
+        for _ in 0..5 {
+            sidebar = fake.add(node(10, "AXGroup", &[sidebar]));
+        }
+        fake.nodes[call.window].children = vec![sidebar, call.content];
+        let application = browser(&mut fake, 10, &[call.window]);
+        fake.flags_on.insert(application);
+        let apps = [app(10, ARC_BUNDLE_ID)];
+        let mut driver = Driver::new(fake);
+        let first = tick(&mut driver, &apps);
+        assert_eq!(names(&first.outcome, "meet-tiles"), ["Robin Sample"]);
+        assert!(first.search < Duration::from_millis(30));
+        assert!(!first.ops.iter().any(|op| matches!(op, Op::Title(_))));
+        assert!(!first
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::Search(n) if leaves.contains(n))));
+        let second = tick(&mut driver, &apps);
+        assert_eq!(names(&second.outcome, "meet-tiles"), ["Robin Sample"]);
+        assert_eq!(second.stats.from_cache, 1);
+        assert_eq!(second.search, Duration::ZERO);
+    }
+
+    #[test]
+    fn arc_caps_each_non_call_window_and_continues_to_the_call() {
+        let mut fake = Fake::default();
+        let sidebar: Vec<_> = (0..500)
+            .map(|_| fake.add(node(10, "AXGroup", &[])))
+            .collect();
+        let other = fake.add(node(10, "AXWindow", &sidebar));
+        let call = window(&mut fake, 10, "", MEET);
+        let application = browser(&mut fake, 10, &[other, call.window]);
+        fake.flags_on.insert(application);
+        let mut driver = Driver::new(fake);
+        let result = tick(&mut driver, &[app(10, ARC_BUNDLE_ID)]);
+        assert_eq!(names(&result.outcome, "meet-tiles"), ["Robin Sample"]);
+        let non_call_visits = result
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Search(n) if *n == other || sidebar.contains(n)))
+            .count();
+        assert_eq!(non_call_visits, ARC_PAGE_SEARCH_NODES);
+        assert!(result.search < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn arc_never_enters_a_page_on_another_host_even_without_the_title_filter() {
+        let mut fake = Fake::default();
+        let other = window(&mut fake, 10, "", "https://meet.google.com.example.org/");
+        let call = window(&mut fake, 10, "", MEET);
+        let application = browser(&mut fake, 10, &[other.window, call.window]);
+        fake.flags_on.insert(application);
+        let mut driver = Driver::new(fake);
+        let result = tick(&mut driver, &[app(10, ARC_BUNDLE_ID)]);
+        assert_eq!(names(&result.outcome, "meet-tiles"), ["Robin Sample"]);
+        assert!(result.ops.contains(&Op::Url(other.web_area)));
+        assert!(!result.ops.contains(&Op::Structure(other.web_area)));
+        assert!(!result
+            .ops
+            .iter()
+            .filter_map(|op| op.node())
+            .any(|n| other.page.contains(&n)));
+    }
 
     #[test]
     fn a_meet_page_is_found_once_and_then_read_from_the_cache() {
