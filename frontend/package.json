@@ -1,10 +1,11 @@
 {
   "name": "@tinychat/frontend",
-  "version": "0.14.0",
+  "version": "0.15.0-beta.5",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:apps": "(test -f localhost.pem || mkcert -cert-file localhost.pem -key-file localhost-key.pem localhost 127.0.0.1) && VITE_ONE_APPS=true vite --port 5190 --strictPort",
     "build": "tsc && vite build && if [ \"${CF_PAGES:-}\" = 1 ]; then node ../scripts/build-agent-surface.mjs; fi",
     "preview": "vite preview",
     "test": "bun test",
