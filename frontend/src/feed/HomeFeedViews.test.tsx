@@ -92,6 +92,7 @@ async function mount(feed: HomeFeedSource) {
   clock ??= installFakeClock();
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   globalThis.matchMedia = window.matchMedia.bind(window);
+  window.innerWidth = 800; // these tests open a card in its row (phone width)
   (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = FakeObserver;
   MotionGlobalConfig.skipAnimations = true;
   const host = document.createElement("div");

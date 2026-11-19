@@ -40,7 +40,7 @@ async function openDetails(feed: HomeFeedSource) {
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={feed} />));
-  const opener = [...host.querySelectorAll<HTMLElement>("button[aria-expanded=false]")].find((node) => node.textContent?.includes("Which train"));
+  const opener = [...host.querySelectorAll<HTMLElement>("button[aria-expanded=false]")].find((node) => node.textContent?.includes("Hold a seat?"));
   if (opener) await act(async () => opener.click());
   const toggle = [...host.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")].find((node) => node.textContent?.trim().startsWith("Details"));
   expect(toggle !== undefined).toBe(true);

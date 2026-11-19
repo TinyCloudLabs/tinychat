@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { holdAnswer, releaseAnswer, type HeldAnswer } from "@/feed/answerOutbox";
+import { SendPills } from "@/feed/SendPills";
 import { useUndoBar } from "@/feed/UndoBar";
 import { CANONICAL_ORIGIN, countLocalOnlyRecordingWork, isOriginMoveDeferred, moveWhenClear } from "@/lib/originMove";
 import { installDom } from "@/test/dom";
@@ -31,7 +32,7 @@ function Dropping() {
   const bar = useUndoBar(() => {});
   return <>
     <button type="button" data-drop onClick={() => bar.push({ key: "card-one", text: "Dropped", commit: async () => { holdAnswer("space-one", dropped()); } })}>Drop</button>
-    {bar.bar}
+    <SendPills items={bar.pills} />
   </>;
 }
 

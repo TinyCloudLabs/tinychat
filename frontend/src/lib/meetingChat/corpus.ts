@@ -29,6 +29,7 @@ import type { MeetingCandidate, MeetingCorpus, MeetingLaneHealth, MeetingRef } f
  */
 export const SUPPORTED_MEETING_SOURCES = [
   "fireflies",
+  "granola",
   "google-meet",
   "tinycloud-transcriber",
   "exo-local",
