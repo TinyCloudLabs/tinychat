@@ -179,11 +179,11 @@ test("a card with a recommendation has no second Accept button; tapping the sugg
 
 test("a comment is for the officer the card names, not for the connection it came through", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
-  fixture.entry.source.label = "Rocinante";
+  fixture.entry.source.label = "Ops board";
   const host = await mount(fixture.source);
   const card = article(host);
   expect(button(card, "Leave a comment for SyntheticOfficer")).toBeDefined();
-  expect([...card.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Leave a comment for Rocinante")).toBe(false);
+  expect([...card.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Leave a comment for Ops board")).toBe(false);
 });
 
 test("the link chip's icon is a bare arrow up and right", async () => {

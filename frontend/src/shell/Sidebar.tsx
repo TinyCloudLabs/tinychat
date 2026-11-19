@@ -11,7 +11,7 @@ import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { ActivityPanel } from "@/capture/activity/ActivityPanel";
 import { sidebarActivityStore } from "@/capture/activity/sidebarActivityStore";
-import { SidebarBotRows } from "@/bots/BotNav";
+import { SidebarBotRows } from "@/bots/lazyBotNav";
 import { NavBadge } from "./NavBadge";
 import { tabTarget } from "./navigation";
 import { PATHS } from "./routes";

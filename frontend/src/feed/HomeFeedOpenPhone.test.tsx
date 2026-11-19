@@ -21,7 +21,7 @@ const C = "c05e41b8-92f7-5d3a-a6e1-4b8d20f93e71";
 function entry(cardId: string, title: string, summary: string): HomeFeedEntry {
   return {
     source: {
-      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: "Holden",
+      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: "Avery",
       output: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_output_testone" },
       responses: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_responses_testone" },
     },

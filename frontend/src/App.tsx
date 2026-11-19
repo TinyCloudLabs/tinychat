@@ -145,7 +145,6 @@ import {
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
 import { WordFixesSync } from "./lib/wordFixes/WordFixesSync";
-import { DeviceCaptureSurface, DeviceCaptureSettings } from "./capture/DeviceCaptureSurface";
 import { useAudioCacheBoot } from "./lib/voiceNotes/audioReceiptUpgrade";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
@@ -210,6 +209,9 @@ const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.A
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
 const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
 const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
+// The signed-out recorder's screens: only the phone and desktop apps show them, so the web never fetches them.
+const DeviceCaptureSurface = lazyTab("Recording", () => import("./capture/DeviceCaptureSurface").then((m) => m.DeviceCaptureSurface));
+const DeviceCaptureSettings = lazyTab("Settings", () => import("./capture/DeviceCaptureSurface").then((m) => m.DeviceCaptureSettings));
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
@@ -1421,6 +1423,9 @@ export function App() {
   const capabilities = captureCapabilities();
   const deviceCapture = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION &&
     (state === "offline" || state === "unauthenticated" || state === "recoverableError");
+  useEffect(() => {
+    if (deviceCapture) for (const screen of [DeviceCaptureSurface, DeviceCaptureSettings]) screen.preload().catch(() => {});
+  }, [deviceCapture]);
   const settleSignedOut = useCallback(() => {
     setError(null);
     setState("unauthenticated");

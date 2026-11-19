@@ -104,8 +104,9 @@ export const DISCONNECT_PLANS: Record<DisconnectMode, readonly DisconnectStep[]>
  * the route closes ingress and writes the purge ledger first, so by the time
  * delivery is switched off there is nothing a late delivery could re-add, and a
  * failure leaves the API key in place with the retry still possible. For
- * delete-data it sits after `record-purge`, whose ids and watermark are the
- * precise ones; the route's own ledger merge is monotonic and keeps them.
+ * delete-data it sits after `record-purge`. An owner with no stored sign-in
+ * still gets the full server `DELETE`, and the teardown clears the purge
+ * ledger at its end.
  * A lane without `teardownCredential` (Google, which has no server sign-in to
  * remove here, and any caller that does not wire it) has no such step.
  */
