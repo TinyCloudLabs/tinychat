@@ -316,7 +316,7 @@ jobs:
           # Same list as the backend's BOTS_TEST_ACCOUNTS. Empty admits nobody.
           BOTS_TEST_ACCOUNTS: ${{ vars.BOTS_TEST_ACCOUNTS }}
           # See bots/README.md, "Deploy order".
-          BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${{ vars.BOTS_ACCEPT_LEGACY_OWNER_HEADER || '1' }}
+          BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${{ vars.BOTS_ACCEPT_LEGACY_OWNER_HEADER || '0' }}
           BOTS_MODEL: ${{ vars.BOTS_MODEL }}
           BOTS_IDLE_MS: ${{ vars.BOTS_IDLE_MS }}
           BOTS_SANDBOX_MEMORY_MB: ${{ vars.BOTS_SANDBOX_MEMORY_MB }}
