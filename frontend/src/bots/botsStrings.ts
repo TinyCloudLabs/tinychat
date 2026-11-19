@@ -65,6 +65,21 @@ export const BOT_VIEW_STRINGS = {
   },
 } as const;
 
+// The activity lines and the bot's panel (TC-3325). Every word is in the plan's sections "Activity lines" and
+// "Activity panel", except those marked as asked of the copy owner.
+export const BOT_ACTIVITY_STRINGS = {
+  ranCommands: (count: number) => (count === 1 ? "Ran 1 command" : `Ran ${count} commands`),
+  changedFiles: (count: number) => (count === 1 ? "Changed 1 file" : `Changed ${count} files`),
+  activity: "Activity",
+  environment: "Environment",
+  /** "Private · asleep"; "Regular" only for a bot whose environment says so. */
+  environmentRow: (environment: "private" | "regular", awake: boolean) =>
+    `${environment === "regular" ? "Regular" : "Private"} · ${awake ? "awake" : "asleep"}`,
+  // For the copy owner: not in the plan.
+  noActivity: "No activity",
+  closePanel: "Close",
+} as const;
+
 export const CREATE_BOT_STRINGS = {
   title: "New bot",
   name: "Name your bot",
@@ -101,4 +116,17 @@ export const CREATE_BOT_STRINGS = {
     blue: "Blue", teal: "Teal", green: "Green", lime: "Lime", yellow: "Yellow",
     orange: "Orange", red: "Red", pink: "Pink", purple: "Purple", indigo: "Indigo", slate: "Slate",
   },
+} as const;
+
+// The bot panel's Edit and Delete bot (TC-3325). "Edit" and "Delete bot" are the plan's; the rest is for the copy owner.
+export const BOT_MANAGE_STRINGS = {
+  edit: "Edit",
+  deleteBot: "Delete bot",
+  save: "Save",
+  saving: "Saving…",
+  saveFailed: "Couldn't save your changes. Try again.",
+  deleteTitle: (name: string) => `Delete ${name}?`,
+  deleteBody: "Its history stays in your space.",
+  deleting: "Deleting…",
+  deleteFailed: "Couldn't delete your bot. Try again.",
 } as const;

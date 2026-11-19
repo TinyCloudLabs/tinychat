@@ -12,7 +12,7 @@ import { PhoneBotStrip } from "./BotNav";
 import { historyAccessFor } from "./botHistoryAccess";
 import { botChatApi as defaultChatApi, botRosterApi as defaultRosterApi, type BotChatApi } from "./botChatApi";
 import { botForPath, botPath, saveLastBot } from "./botPath";
-import type { BotRosterApi, RosterBot } from "./botRosterApi";
+import type { BotRosterApi, CreateBotInput, RosterBot } from "./botRosterApi";
 import { botsApi as defaultBotsApi, type BotsApi } from "./botsApi";
 import { BotsChat, viewableBots, type BotHistoryAccess, type ControllerBot } from "./BotsChat";
 import { botsNavStore, type BotsNavState } from "./botsNav";
@@ -56,7 +56,7 @@ export function ChatSlot({ classic, account, tcw, active, onReconnect, api = def
   );
 }
 
-const faceOf = (bot: RosterBot | ControllerBot) => ("shape" in bot ? bot : MAIN_BOT);
+const faceOf = ({ key, name, shape, colour }: RosterBot | ControllerBot) => (shape && colour ? { key, name, shape, colour } : MAIN_BOT);
 
 function BotsSurface({ account, active, onReconnect, chatApi, rosterApi, history }: {
   account: string;
@@ -66,8 +66,19 @@ function BotsSurface({ account, active, onReconnect, chatApi, rosterApi, history
   rosterApi: BotRosterApi;
   history: BotHistoryAccess | null;
 }) {
-  const { status, roster, create } = useBots(rosterApi);
-  const controller = useMemo(() => ({ status, roster }), [status, roster]);
+  const { status, roster, reload, create } = useBots(rosterApi);
+  // Edit and Delete bot (the bot panel) change the list, which does not update live, so it is read again after each.
+  const manage = useMemo(() => ({
+    update: async (key: string, input: Partial<CreateBotInput>) => {
+      await rosterApi.update(key, input);
+      await reload();
+    },
+    remove: async (key: string) => {
+      await rosterApi.remove(key);
+      await reload();
+    },
+  }), [rosterApi, reload]);
+  const controller = useMemo(() => ({ status, roster, manage }), [status, roster, manage]);
   const viewable = useMemo(() => viewableBots(controller), [controller]);
   const { pathname } = useLocation();
   const navigate = useNavigate();

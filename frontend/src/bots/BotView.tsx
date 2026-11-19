@@ -2,16 +2,20 @@
 // top, the messages (yours on the right, the bot's on the left, as Markdown that never becomes HTML), and Main's
 // composer at the foot (8,000 characters, Enter sends, the draft kept per bot). Kept from Main's chat: the line for
 // private bots, the history expiry notice with Reconnect, and the retry rows.
-import { useEffect, useId, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type ComponentProps, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ResponsiveSheet } from "@/components/ui/responsive-sheet";
+import { useSizeClass } from "@/lib/sizeClass";
 import { BriefMarkdown } from "@/feed/BriefMarkdown";
 import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter } from "./AskBox";
 import { BotAvatar } from "./BotAvatar";
 import { BOT_VIEW_STRINGS, BOTS_STRINGS, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL } from "./botsStrings";
 import { historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
-import { useBotChat, type BotChats } from "./useBotChat";
+import { activityText, BotPanel } from "./BotPanel";
+import { DeleteBotConfirm, EditBotDialog, type BotManagement } from "./BotManage";
+import { useBotActivity, useBotChat, type ActivityItem, type BotChats } from "./useBotChat";
 import { isWorking, type ChatLine } from "./useMainChat";
 
 /** The bot on screen, as the view needs it. */
@@ -21,6 +25,11 @@ export interface ViewBot {
   /** Runs where Main runs today: the view says so under the pill. */
   private: boolean;
   face: ComponentProps<typeof BotAvatar>["bot"];
+}
+
+/** What the bot did on its computer: a small centred line between the messages. */
+function ActivityLine({ item }: { item: ActivityItem }) {
+  return <p data-bot-activity={item.id} className="text-center text-meta text-muted-foreground">{activityText(item)}</p>;
 }
 
 function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
@@ -114,10 +123,13 @@ export interface BotViewProps {
   onReconnect?: () => void;
   /** Above the conversation: the other bots, on a phone. */
   strip?: ReactNode;
+  /** Edit and Delete bot in the panel. Absent: the panel offers neither (the roster is not loaded). */
+  manage?: BotManagement;
 }
 
-export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, strip }: BotViewProps) {
+export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, strip, manage }: BotViewProps) {
   const { lines, history, turn } = useBotChat(chats, bot.key);
+  const activity = useBotActivity(chats, bot.key);
   const working = isWorking(turn);
   const errors = BOT_VIEW_STRINGS.errors;
   const titleId = useId();
@@ -131,52 +143,99 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
-  }, [bot.key, lines.length, turn?.text, turn?.reply, turn?.state]);
+  }, [bot.key, lines.length, activity.length, turn?.text, turn?.reply, turn?.state]);
 
+  // From 1024 px the panel is a column beside the conversation; below that, a sheet.
+  const column = useSizeClass().size === "expanded";
+  const [panelOpen, setPanelOpen] = useState(false);
+  const panelId = useId();
+
+  // The panel's sheet closes before a dialog opens, so the two never stack.
+  const [dialog, setDialog] = useState<"edit" | "delete" | null>(null);
+  const ask = (next: "edit" | "delete") => {
+    if (!column) setPanelOpen(false);
+    setDialog(next);
+  };
+  const panel = panelOpen ? (
+    <BotPanel
+      bot={bot}
+      activity={activity}
+      awake={working}
+      onClose={column ? () => setPanelOpen(false) : undefined}
+      onEdit={manage ? () => ask("edit") : undefined}
+      onDelete={manage?.remove ? () => ask("delete") : undefined}
+    />
+  ) : null;
   return (
-    <section data-bot-view={bot.key} aria-labelledby={titleId} className="flex h-full min-h-0 flex-col bg-background">
-      {strip}
-      <div className="relative min-h-0 flex-1">
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center px-4 pt-3">
-          <h1
-            id={titleId}
-            className="pointer-events-auto flex max-w-full items-center gap-2 rounded-full border border-border bg-card/90 py-1 pl-1 pr-4 text-callout font-medium shadow-sm backdrop-blur"
-          >
-            <BotAvatar bot={bot.face} working={working} size={28} decorative />
-            <span className="truncate">{bot.name}</span>
-          </h1>
-        </div>
-        <div className="h-full overflow-y-auto overscroll-contain px-4">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 pb-4 pt-16">
-          {bot.private ? <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p> : null}
-          {notice && onReconnect ? (
-            <ExpiryNotice
-              key={`${bot.key}:${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`}
-              bot={bot}
-              notice={notice}
-              acknowledge={acknowledgeNotice}
-              onReconnect={onReconnect}
-            />
-          ) : null}
-          {history === "failed" && !working ? <Failure text={BOT_VIEW_STRINGS.historyFailed(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} /> : null}
-          {lines.map((line) => (
-            <Line key={line.id} role={line.role} text={line.text} />
-          ))}
-          {turn ? (
-            <>
-              <Line role="user" text={turn.text} />
-              {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
-              {working && !turn.reply ? <BotAvatar bot={bot.face} working size={28} /> : null}
-              {turn.state === "error" ? <Failure text={errors[turn.error ?? "failed"](bot.name)} onRetry={() => chats.retry(bot.key)} /> : null}
-            </>
-          ) : null}
-          <div ref={end} data-bots-chat-end="" />
-        </div>
-        </div>
+    <>
+      <div className="flex h-full min-h-0">
+        <section data-bot-view={bot.key} aria-labelledby={titleId} className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background">
+          {strip}
+          <div className="relative min-h-0 flex-1">
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center px-4 pt-3">
+              <h1 id={titleId} className="pointer-events-auto max-w-full">
+                <button
+                  type="button"
+                  aria-expanded={panelOpen}
+                  aria-controls={panelId}
+                  onClick={() => setPanelOpen((open) => !open)}
+                  className="flex max-w-full items-center gap-2 rounded-full border border-border bg-card/90 py-1 pl-1 pr-4 text-callout font-medium shadow-sm backdrop-blur hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <BotAvatar bot={bot.face} working={working} size={28} decorative />
+                  <span className="truncate">{bot.name}</span>
+                </button>
+              </h1>
+            </div>
+            <div className="h-full overflow-y-auto overscroll-contain px-4">
+              <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 pb-4 pt-16">
+                {bot.private ? <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p> : null}
+                {notice && onReconnect ? (
+                  <ExpiryNotice
+                    key={`${bot.key}:${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`}
+                    bot={bot}
+                    notice={notice}
+                    acknowledge={acknowledgeNotice}
+                    onReconnect={onReconnect}
+                  />
+                ) : null}
+                {history === "failed" && !working ? <Failure text={BOT_VIEW_STRINGS.historyFailed(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} /> : null}
+                {activity.filter((item) => !item.inTurn && item.after === null).map((item) => <ActivityLine key={item.id} item={item} />)}
+                {lines.map((line) => (
+                  <Fragment key={line.id}>
+                    <Line role={line.role} text={line.text} />
+                    {activity.filter((item) => !item.inTurn && item.after === line.id).map((item) => <ActivityLine key={item.id} item={item} />)}
+                  </Fragment>
+                ))}
+                {turn ? (
+                  <>
+                    <Line role="user" text={turn.text} />
+                    {activity.filter((item) => item.inTurn).map((item) => <ActivityLine key={item.id} item={item} />)}
+                    {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
+                    {working && !turn.reply ? <BotAvatar bot={bot.face} working size={28} /> : null}
+                    {turn.state === "error" ? <Failure text={errors[turn.error ?? "failed"](bot.name)} onRetry={() => chats.retry(bot.key)} /> : null}
+                  </>
+                ) : null}
+                <div ref={end} data-bots-chat-end="" />
+              </div>
+            </div>
+          </div>
+          <div className="shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
+            <Composer key={bot.key} bot={bot} chats={chats} blocked={working} onSend={(text) => void chats.send(bot.key, text)} />
+          </div>
+        </section>
+        {column && panel ? (
+          <aside id={panelId} aria-label={bot.name} className="w-80 shrink-0 overflow-y-auto overscroll-contain border-l border-border bg-background">
+            {panel}
+          </aside>
+        ) : null}
       </div>
-      <div className="shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
-        <Composer key={bot.key} bot={bot} chats={chats} blocked={working} onSend={(text) => void chats.send(bot.key, text)} />
-      </div>
-    </section>
+      {!column ? (
+        <ResponsiveSheet open={panelOpen} onOpenChange={setPanelOpen} title={bot.name} contentProps={{ "data-bot-panel-sheet": "" }}>
+          <div id={panelId}>{panel}</div>
+        </ResponsiveSheet>
+      ) : null}
+      {dialog === "edit" && manage ? <EditBotDialog botKey={bot.key} name={bot.name} manage={manage} onClose={() => setDialog(null)} /> : null}
+      {dialog === "delete" && manage?.remove ? <DeleteBotConfirm name={bot.name} remove={manage.remove} onClose={() => setDialog(null)} /> : null}
+    </>
   );
 }
