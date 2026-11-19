@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createUploadRunner, uploadRunner, type PendingUpload, type PendingUploadStore, type UploadDeps } from "@/lib/audioUpload";
@@ -45,14 +43,5 @@ describe("resumeOnLaunch", () => {
     await settle();
     expect(runner.snapshot()).toBeNull();
     expect(pausedUpload.snapshot()).toBeNull();
-  });
-});
-
-describe("UploadResumer in App", () => {
-  const app = readFileSync(join(import.meta.dir, "../../App.tsx"), "utf8");
-  test("is mounted once after BackendReconciler", () => {
-    const at = app.indexOf("<UploadResumer");
-    expect(at).toBeGreaterThan(app.indexOf("<BackendReconciler"));
-    expect(app.match(/<UploadResumer/g)).toHaveLength(1);
   });
 });

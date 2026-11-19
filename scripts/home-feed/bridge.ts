@@ -362,6 +362,20 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     // A card Home holds but the board was never cut over to (no binding) may have been edited since: its revision in
     // Home is immutable, so its content goes out as the next revision rather than as that one again.
     if (all.length === 0) { card = await revisionToPublish(ctx, source, card); identity = identitySchema.parse(tuple(card)); }
+    // The board's live head is checked before anything is written to Home: a head this card may not replace is refused
+    // here, so a stale card never reaches the feed. (The head is read again after publication and still decides.)
+    const refusesHead = (head: LegacyRead | undefined): boolean => {
+      // A Home close rewrote the board copy after publication: its receipt, not the binding, names that head.
+      const predecessor = head && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey &&
+        ((row.binding.legacy.publishedETag === head.etag && row.binding.legacy.publicationSha256 === head.sha256) ||
+          (row.receipt !== null && row.receipt.closedETag === head.etag && head.raw.cardUuid === identity.cardId && head.record.status === row.receipt.status)));
+      const unboundSameBusiness = head && !Object.hasOwn(head.raw, "cardUuid") && isDeepStrictEqual(head.record, record);
+      return Boolean(head && !predecessor && !unboundSameBusiness);
+    };
+    if (!previous) {
+      const live = await readLegacy(ctx, record.kind, input.legacy.fullKey);
+      if ((!live || live.sha256 !== publicationSha256 || live.raw.cardUuid !== identity.cardId) && refusesHead(live)) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
+    }
     // Home is canonical and durable before its mirror is published. No schema is created here.
     take(await publishFeedCard(privateDatabase(ctx.sql.db(source.output.database), ctx), card));
     if (!await currentCard(ctx, source, identity)) throw failure();
@@ -372,13 +386,7 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
       return previous.binding;
     }
     if (!head || head.sha256 !== publicationSha256 || head.raw.cardUuid !== identity.cardId) {
-      const priorHead = head;
-      // A Home close rewrote the board copy after publication: its receipt, not the binding, names that head.
-      const predecessor = priorHead && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey &&
-        ((row.binding.legacy.publishedETag === priorHead.etag && row.binding.legacy.publicationSha256 === priorHead.sha256) ||
-          (row.receipt !== null && row.receipt.closedETag === priorHead.etag && priorHead.raw.cardUuid === identity.cardId && priorHead.record.status === row.receipt.status)));
-      const unboundSameBusiness = head && !Object.hasOwn(head.raw, "cardUuid") && isDeepStrictEqual(head.record, record);
-      if (head && !predecessor && !unboundSameBusiness) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
+      if (refusesHead(head)) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
       if (!await currentCard(ctx, source, identity)) throw failure();
       active(ctx);
       take(await ctx.legacy.put(input.legacy.fullKey, body, { ...(head ? { ifMatch: head.etag } : { ifNoneMatch: "*" as const }), prefix: "", contentType: "application/json", signal: ctx.signal }));
@@ -817,7 +825,10 @@ export async function watchHomeMirrors(context: HomeMirrorContext, options: Home
       await draining;
     }
     if (failed) throw safeFailure(failureValue);
-    if (!connection.signal.aborted) return;
+    // Nothing ended this connection (not the renewal timer, not a stop) yet the subscription finished. The hooks service
+    // reconnects a closed stream itself, so this is it giving up on the session. Returning would end the run with exit 0,
+    // which a supervisor reads as the watcher's own choice to stop; fail so it restarts the watcher on a fresh session.
+    if (!connection.signal.aborted) throw failure(ErrorCodes.NETWORK_ERROR);
   }
   if (failed) throw safeFailure(failureValue);
 }

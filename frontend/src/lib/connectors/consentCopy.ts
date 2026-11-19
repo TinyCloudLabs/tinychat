@@ -35,7 +35,7 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "B-ingest",
   heading: "Background sync (server-side)",
   intro:
-    "Our server keeps your Fireflies sign-in and a copy of each finished meeting for up to 90 days, so your meetings are waiting on any device you sign in on. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes both and asks Fireflies to revoke it.",
+    "Our server keeps your Fireflies sign-in, and a copy of each finished meeting for up to 14 days, so your meetings are waiting on any device you sign in on. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes both and asks Fireflies to revoke it.",
   disconnectNote:
     "**Disconnecting undoes all of it, in one click.** We revoke the Fireflies token upstream and " +
     "delete it, delete every meeting we are holding for you, and stop accepting notifications. " +
