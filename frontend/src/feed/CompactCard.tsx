@@ -72,7 +72,7 @@ export function DueMark({ due, now, className = "" }: { due: string; now?: numbe
   return <span title={Number.isNaN(at.getTime()) ? undefined : `Due ${at.toLocaleString()}`} className={`font-medium ${overdue ? "text-destructive" : "text-foreground"} ${className}`}>{text}</span>;
 }
 
-export function CompactCard({ agentKey, author, platform, createdAt, priority, due, now, status, replies, title, description, thumb, onOpen, opensPage = false }: {
+export function CompactCard({ agentKey, author, platform, createdAt, priority, due, now, status, replies, title, description, thumb, onOpen, opensPage = false, layout = "row" }: {
   agentKey: string; author: string; platform?: Platform; createdAt: string;
   /** The agent's priority, 0 (highest) to 5 (Sam, 23:30Z). Only P0 and P1 show, at the row's end (PriorityMark). */
   priority?: number;
@@ -88,10 +88,31 @@ export function CompactCard({ agentKey, author, platform, createdAt, priority, d
   onOpen: () => void;
   /** A post opens its page; every other card opens in place. */
   opensPage?: boolean;
+  /** "row": the feed's row. "tile": a tile in the Cards view. */
+  layout?: "row" | "tile";
 }) {
   const needsYou = status === "Needs you";
   const done = status === "Dropped" || status === "Acknowledged" || status === "Done" || status === "Closed";
-  return <button type="button" onClick={onOpen} {...(opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false })}
+  const opens = opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false };
+  const ring = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none";
+  const titleClass = `break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`;
+  const doneMark = done && <CheckIcon aria-hidden className="mr-1 inline size-3.5 align-[-2px] text-muted-foreground" />;
+  const marks = <span className="flex items-center gap-2 empty:hidden"><PriorityMark priority={priority} /><ReplyCount replies={replies} />{!needsYou && <StatusMark status={status} />}</span>;
+  const when = due ? <DueMark due={due} now={now} className="whitespace-nowrap" /> : <ShortTime relative at={createdAt} className="whitespace-nowrap tabular-nums" />;
+  if (layout === "tile") {
+    return <button type="button" onClick={onOpen} {...opens}
+      className={`flex h-full min-h-[132px] w-full min-w-0 flex-col gap-1.5 p-3.5 text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 ${ring}`}>
+      <span className="flex min-w-0 items-center gap-2 text-[13px] leading-[18px] text-muted-foreground">
+        <AgentMark agentKey={agentKey} name={author} small />
+        <span className="min-w-0 truncate font-medium text-foreground/80">{author}</span>
+        {platform && <span className="flex min-w-0 shrink-0 items-center"><PlatformName platform={platform} logoOnly /></span>}
+      </span>
+      <span className={`line-clamp-3 ${titleClass}`}>{doneMark}{title}</span>
+      {description && <span className="line-clamp-2 break-words text-[13px] leading-[18px] text-muted-foreground">{description}</span>}
+      <span className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1 text-meta text-muted-foreground">{marks}{when}</span>
+    </button>;
+  }
+  return <button type="button" onClick={onOpen} {...opens}
     className="grid min-h-[60px] w-full min-w-0 grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-x-3 px-3.5 py-[9px] text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none">
     <span className="row-span-2 self-center"><AgentMark agentKey={agentKey} name={author} small /></span>
     <span className={`line-clamp-2 break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`}>{done && <CheckIcon aria-hidden className="mr-1 inline size-3.5 align-[-2px] text-muted-foreground" />}{title}</span>

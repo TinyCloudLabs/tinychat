@@ -2,7 +2,7 @@
 // new test account sees it) under the real navigation, with the ask box on top; then Main's chat over
 // it, mid-reply. Synthetic content; nothing is sent anywhere. `bots-home-feed`: the same Home with cards from three
 // agents, two of them answered (Sam's top bar, 11-13: the slider beside Filter and View, and Pending at the end).
-import { useLayoutEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 
 import { AskBox } from "@/bots/AskBox";
 import type { BotsApi } from "@/bots/botsApi";
@@ -11,6 +11,7 @@ import { MainChat } from "@/bots/MainChat";
 import type { MainChatState } from "@/bots/useMainChat";
 import { HomeFeedEntries } from "@/feed/HomeFeedEntries";
 import type { HomeFeedEntry, HomeFeedSource } from "@/feed/feedStoreTypes";
+import { DEFAULT_FEED_VIEW_MODE, saveFeedViewMode, type FeedViewMode } from "@/feed/feedViewMode";
 import { setShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
@@ -30,7 +31,7 @@ const EMPTY_FEED: HomeFeedSource = {
   subscribe: () => () => {},
 };
 
-function card(sourceId: string, label: string, cardId: string, title: string, body: string, minutesAgo: number, answered?: "waiting" | "done"): HomeFeedEntry {
+function card(sourceId: string, label: string, cardId: string, title: string, body: string, minutesAgo: number, answered?: "waiting" | "done", payload?: Record<string, unknown>, urgency = 1): HomeFeedEntry {
   const createdAt = new Date(FROZEN_NOW - minutesAgo * 60_000).toISOString();
   const database = (kind: string) => `xyz.tinycloud.tinychat/feed_${kind}_${sourceId}`;
   const response = answered ? { cardId, revision: 1, issuanceId: `${cardId}-1`, responseId: `${cardId}-answer`, sequence: 1, kind: "answer" as const, choiceId: "yes", createdAt } : null;
@@ -38,7 +39,7 @@ function card(sourceId: string, label: string, cardId: string, title: string, bo
   return {
     source: { sourceId, agentDid: `did:key:${sourceId}`, label, output: { spaceId: "harness", database: database("output") }, responses: { spaceId: "harness", database: database("responses") } },
     state: {
-      card: { cardId, revision: 1, issuanceId: `${cardId}-1`, kind: "ask", needsResponse: true, title, body, urgency: 1, createdAt, choices: [{ id: "yes", label: "Yes" }, { id: "no", label: "Not now" }] },
+      card: { cardId, revision: 1, issuanceId: `${cardId}-1`, kind: "ask", needsResponse: true, title, body, urgency, createdAt, choices: [{ id: "yes", label: "Yes" }, { id: "no", label: "Not now" }], ...(payload ? { payload } : {}) },
       response, acknowledgement: answered === "done" ? handling("acknowledged") : null, outcome: answered === "done" ? handling("succeeded") : null,
     },
     view: { sourceId, cardId, revision: 1, issuanceId: `${cardId}-1`, seenAt: createdAt },
@@ -54,6 +55,28 @@ const FEED: HomeFeedSource = {
       card("studio", "Studio agent", "room", "Which room for the pottery workshop?", "The loft seats 12, the hall 30.", 180),
       card("trip", "Trip agent", "plan", "Write tomorrow's plan at 09:00?", "A short plan for the day.", 240, "waiting"),
       card("home", "House agent", "backup", "Run the weekly backup now?", "It takes about ten minutes.", 300, "done"),
+    ],
+    settings: { defaultSelector: "needs-action" },
+  }),
+};
+
+const inHours = (hours: number) => new Date(FROZEN_NOW + hours * 3_600_000).toISOString();
+// Enough cards to tell the three views apart: P0, a deadline, long titles, answered ones. (No P1: a row's P1 badge is a
+// 10px label, which the screens' text-size check refuses, so it stays out of the fixtures.)
+const MANY: HomeFeedSource = {
+  ...EMPTY_FEED,
+  load: async () => ({
+    entries: [
+      card("trip", "Trip agent", "train", "Which train should I hold for Friday?", "08:15 direct or 09:40 with a change.", 12, undefined, { priority: 0, deadline: inHours(3) }, 3),
+      card("home", "House agent", "filter", "The water filter renews tomorrow. Keep it?", "The last filter is still unopened.", 60, undefined, undefined, 2),
+      card("studio", "Studio agent", "room", "Which room for the pottery workshop on the twenty-first, given that the loft seats twelve and the hall seats thirty?", "The loft seats 12, the hall 30. Eleven people have said yes so far.", 180),
+      card("trip", "Trip agent", "hotel", "Book the hotel near the station?", "It is 140 a night with free cancellation until Thursday.", 200, undefined, { deadline: inHours(30) }, 2),
+      card("home", "House agent", "boiler", "The boiler service slot moved to Monday morning. Is that fine?", "Someone needs to be home between 8 and 12.", 240),
+      card("studio", "Studio agent", "kiln", "Order more clay before the next firing?", "Stock covers about two more sessions.", 300),
+      card("trip", "Trip agent", "plan", "Write tomorrow's plan at 09:00?", "A short plan for the day.", 360, "waiting"),
+      card("home", "House agent", "backup", "Run the weekly backup now?", "It takes about ten minutes.", 400, "done"),
+      card("studio", "Studio agent", "flyer", "Print the flyers in colour or black and white?", "Colour costs about three times as much.", 500, "done"),
+      card("home", "House agent", "bins", "Move bin day to Thursday for the holiday week?", "The council posted a change for this week only.", 600),
     ],
     settings: { defaultSelector: "needs-action" },
   }),
@@ -111,6 +134,16 @@ function HiddenFeaturesOff() {
   return <Home source={FEED} ask={<HomeAskBox api={ENABLED} />} />;
 }
 
+/**
+ * The feed with a view chosen before it first renders (the feed reads the saved choice when it mounts). The saved
+ * choice goes back to the default once the feed has mounted, so the screens that run after this one are unaffected.
+ */
+function FeedIn({ mode, children }: { mode: FeedViewMode; children: ReactNode }) {
+  useState(() => { saveFeedViewMode(mode); });
+  useEffect(() => { saveFeedViewMode(DEFAULT_FEED_VIEW_MODE); }, []);
+  return <>{children}</>;
+}
+
 function PendingHistoryNotice() {
   const [open, setOpen] = useState(false);
   const expiry = Date.UTC(2026, 10, 12);
@@ -140,6 +173,13 @@ export const botsScreens: HarnessScreen[] = [
   { ...BASE, id: "bots-home-feed", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "phone-402", "phone-land", "tablet", "tablet-land", "desktop-min", "desktop", "zoom200"],
     render: () => <Home source={FEED} ask={<HomeAskBox api={ENABLED} />} /> },
   { ...BASE, id: "home-hidden-features-off", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "desktop-min"], render: () => <HiddenFeaturesOff /> },
+  // The feed's three views, each with its choice saved before the feed renders (FeedIn).
+  { ...BASE, id: "bots-home-feed-compact", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "desktop"],
+    render: () => <FeedIn mode="compact"><Home source={MANY} ask={<HomeAskBox api={ENABLED} />} /></FeedIn> },
+  { ...BASE, id: "bots-home-feed-expanded", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "desktop"],
+    render: () => <FeedIn mode="expanded"><Home source={MANY} ask={<HomeAskBox api={ENABLED} />} /></FeedIn> },
+  { ...BASE, id: "bots-home-feed-cards", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "desktop"],
+    render: () => <FeedIn mode="cards"><Home source={MANY} ask={<HomeAskBox api={ENABLED} />} /></FeedIn> },
   {
     ...BASE,
     id: "bots-main-reply",

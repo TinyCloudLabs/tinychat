@@ -34,10 +34,10 @@
 # Self-hosted fonts. The version is in each file name, so a new version is a new URL.
 /fonts/*
   Cache-Control: public, max-age=31536000, immutable
-# The build's commit (vite.config.ts `tinychat-version-json`). tinycloud.chat reads it here on
-# home.tinycloud.xyz before moving a visitor (src/lib/originMove.ts), so it is never cached and that
-# one origin may read it.
+# The build's commit (vite.config.ts `tinychat-version-json`). tinycloud.chat and home.tinycloud.xyz read it here on
+# tinycloud.one before moving a visitor (src/lib/originMove.ts), so it is never cached and any origin may read it:
+# the file holds only a commit hash, and a response header names one origin at most.
 /version.json
   Cache-Control: no-store
   Content-Type: application/json; charset=utf-8
-  Access-Control-Allow-Origin: https://tinycloud.chat
+  Access-Control-Allow-Origin: *

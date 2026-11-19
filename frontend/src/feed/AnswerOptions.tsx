@@ -7,6 +7,8 @@ import { PencilIcon } from "lucide-react";
 import { ComposerField } from "./ComposerField";
 import { StatefulSendButton, type SendState } from "./StatefulSendButton";
 import { displayOptions, UNDO_SECONDS } from "./cardKit";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
+import { holdsTypedWords } from "@/shell/unsavedWork";
 
 /** What a send control reads while its answer waits (`seconds` left) or is being sent (null), naming who gets it (`to`). */
 export const sendingLabel = (seconds: number | null, verb = "Sending", to?: string) => seconds === null ? "Sending…" : `${verb}${to ? ` to ${to}` : ""} in ${seconds}s`;
@@ -121,6 +123,8 @@ export function OwnAnswerBox({ text, disabled, onText, onSend, onCancel, state =
   // While the answer waits out its countdown, the option row above is the only status, so Send steps aside; it
   // comes back to show the save itself (sending, or "Couldn't send · Retry").
   const holding = disabled && state === "idle";
+  // Words written and not yet sent exist only in this page: a held tinycloud.chat page does not move under them.
+  useOriginMoveDeferral(holdsTypedWords(text));
   return <ComposerField autoFocus label={OWN_OPTION.label} placeholder={OWN_OPTION.label} value={text} onValue={onText} disabled={disabled} onCancel={disabled ? undefined : onCancel}
     send={!holding && <StatefulSendButton compact state={state} disabled={disabled || !text.trim()} onSend={state === "error" ? (onRetry ?? onSend) : onSend} />} />;
 }

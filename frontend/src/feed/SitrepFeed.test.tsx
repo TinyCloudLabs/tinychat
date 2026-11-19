@@ -806,7 +806,7 @@ test("an ask Sam dropped that its agent then closes in a new revision is one car
   expect(await closeInNewRevision(fixture, view.host, "dropped")).toEqual(["Dropped"]);
 });
 
-const LONG_HOST_URL = `https://reports-for-the-quarterly-release-review.${"deeply-nested-subdomain.".repeat(5)}synthetic-example.ts.net/final-review.md?token=${"x".repeat(60)}`;
+const LONG_HOST_URL = `https://reports-for-the-quarterly-release-review.${"deeply-nested-subdomain.".repeat(5)}synthetic-example.ts.net/final-review.md?ref=${"x".repeat(60)}`;
 
 test("an open card's links are separate chips, each reading its label then its host, keeping the full address", async () => {
   const links = [{ label: "Private report", url: "https://reports.synthetic-example.ts.net/rehearsal.md" }, { label: "Release review", url: LONG_HOST_URL }, { label: "TC-1149", url: "https://linear.app/tinycloud-labs/issue/TC-1149" }];

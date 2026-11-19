@@ -136,6 +136,37 @@ export function findRecordSecrets(kind: string, value: Record<string, unknown>):
   return findSecrets(value);
 }
 
+export const REDACTED = "[link removed]";
+
+/**
+ * `text` with whatever findSecrets would refuse taken out, for words shown to the owner from a card nobody checked
+ * (a connected agent's): a whole word that holds a secret or an approval link (a one-tap link carries its key after the
+ * path, so the word goes, not only the matched part), then any match that spans words. Text with nothing in it comes
+ * back as it was. If something still matches, nothing of the text is kept.
+ */
+export function redactSecrets(text: string): string {
+  if (!findSecrets(text).length) return text;
+  let out = text.split(/(\s+)/).map((part) => (part.trim() && findSecrets(part).length ? REDACTED : part)).join("");
+  for (const [, pattern] of PATTERNS) out = out.replace(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`), REDACTED);
+  out = out.replace(URL_IN_TEXT, (url) => (consentUrlIn(url) ? REDACTED : url));
+  return findSecrets(out).length ? REDACTED : out;
+}
+
+/** `value` with every string in it passed through redactSecrets; the same object when nothing changed. */
+export function redactSecretsDeep<T>(value: T): T {
+  if (typeof value === "string") return redactSecrets(value) as T;
+  if (Array.isArray(value)) {
+    const items = value.map(redactSecretsDeep);
+    return items.some((item, index) => item !== value[index]) ? items as T : value;
+  }
+  if (value && typeof value === "object") {
+    let changed = false;
+    const entries = Object.entries(value).map(([key, item]) => { const next = redactSecretsDeep(item); if (next !== item) changed = true; return [key, next] as const; });
+    return changed ? Object.fromEntries(entries) as T : value;
+  }
+  return value;
+}
+
 /**
  * The claude URL is exempt as a whole (its ?code=true and OAuth path would trip the URL patterns), so its
  * parameters are scanned one by one instead. redirect_uri is pinned by isClaudeSignIn and skipped for that reason.
