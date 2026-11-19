@@ -8,6 +8,7 @@ export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
   "xyz.tinycloud.opencredentials": "Credentials",
   "xyz.tinycloud.explorer": "Explorer",
   "xyz.tinycloud.account": "Account",
+  "xyz.tinycloud.courier": "Courier",
 };
 
 export const APP_DESCRIPTIONS: Readonly<Record<OneAppId, string>> = {
@@ -17,6 +18,7 @@ export const APP_DESCRIPTIONS: Readonly<Record<OneAppId, string>> = {
   "xyz.tinycloud.explorer": "Browse what's in your TinyCloud: spaces, tables and stored items.",
   // Web. iOS leaves Account out of ONE_APPS (registry.ts), so its iOS wording is unused.
   "xyz.tinycloud.account": "See your account, billing, spaces, installed apps and the access you've given.",
+  "xyz.tinycloud.courier": "See what your agents send each other, and answer what needs you.",
 };
 
 /** The `<scope>` phrase for each group of ceiling entries (registry.ts tags every entry with one). */
@@ -33,6 +35,7 @@ export const SCOPE_PHRASES = {
   spaces: "the list of your spaces",
   accountSummary: "your account summary",
   delegations: "the access you've given to apps and agents",
+  courier: "your Courier threads and messages, the agents you've paired and requests waiting for you",
 } as const;
 
 export type ScopeId = keyof typeof SCOPE_PHRASES;
