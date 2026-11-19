@@ -2,7 +2,7 @@
 // scripts/real-cluster-check.ts; the tests use LocalProvider.
 
 import { readFile } from "node:fs/promises";
-import { GkeSandboxes, KubernetesApi } from "@getenergy/gke-sandboxes";
+import { GkeSandboxes, KubernetesApi, type SandboxResources } from "@getenergy/gke-sandboxes";
 import type { ExecResult, SandboxProvider } from "./provider";
 
 /** Where the bridge lives in the sandbox image (Dockerfile target `sandbox`). */
@@ -18,6 +18,8 @@ export interface GkeProviderOptions {
   serviceAccount: string;
   /** The sandbox image, pinned by digest. */
   image: string;
+  /** What each sandbox reserves on its machine and may use at most (config.ts). */
+  resources: SandboxResources;
 }
 
 /** Inside the cluster: the service account token the kubelet keeps current, read for every call as it rotates. */
@@ -34,6 +36,7 @@ export class GkeProvider implements SandboxProvider {
       namespace: options.namespace,
       serviceAccount: options.serviceAccount,
       image: options.image,
+      resources: options.resources,
       // Starts the bridge with every pod.
       boot: () => ({ shell: `exec bun ${BRIDGE_SCRIPT}`, args: [] }),
       memoryWatchdog: { protect: [BRIDGE_SCRIPT] },

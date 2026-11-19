@@ -7,6 +7,7 @@ import { type Runtime, send, startRuntime, until } from "./harness";
 
 const OWNER_A = "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa";
 const OWNER_B = "did:pkh:eip155:1:0x00000000000000000000000000000000000000bb";
+const SIBLING_KEY = "0123456789abcdef0123456789abcdef";
 
 let runtime: Runtime | undefined;
 afterEach(async () => {
@@ -47,7 +48,7 @@ describe("regular runtime", () => {
   test("sandboxes, bridges, gateway tokens and snapshots belong to one bot, across owners and within one owner", async () => {
     runtime = startRuntime(400);
     const mainA = runtime.bots.forOwner(OWNER_A);
-    const siblingA = runtime.bots.forBot(OWNER_A, "notes");
+    const siblingA = runtime.bots.forBot(OWNER_A, SIBLING_KEY);
     const mainB = runtime.bots.forOwner(OWNER_B);
     const bots = [mainA, siblingA, mainB];
     const ids = bots.map(bot => sandboxIdFor(bot.layout.botId));
@@ -115,7 +116,7 @@ describe("regular runtime", () => {
 
   test("deleting a bot's working state deletes its sandbox and its snapshots, and keeps everything when that fails", async () => {
     runtime = startRuntime(400);
-    const bot = runtime.bots.forBot(OWNER_A, "drafts");
+    const bot = runtime.bots.forBot(OWNER_A, SIBLING_KEY);
     const id = sandboxIdFor(bot.layout.botId);
     await send(bot, "keep me");
     await until(() => !runtime!.provider.local.isAwake(id));

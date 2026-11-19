@@ -49,10 +49,12 @@ export interface Runtime {
 
 export function startRuntime(idleMs = 60_000): Runtime {
   const root = mkdtempSync(join(tmpdir(), "bots-regular-"));
+  // A stand-in model provider: lists the one model.
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ data: [{ id: "test-model" }] }) });
   const gateway = new Gateway({
     egressRoot: join(root, "egress"),
     modelKey: "test-key",
-    upstream: "http://127.0.0.1:9",
+    upstream: `http://127.0.0.1:${upstream.port}`,
     models: ["test-model"],
     maxTokens: 1024,
     botDailyTokens: 1000,
@@ -96,6 +98,7 @@ export function startRuntime(idleMs = 60_000): Runtime {
       await bots.stopAll();
       await provider.local.close();
       void server.stop(true);
+      void upstream.stop(true);
       rmSync(root, { recursive: true, force: true });
     },
   };

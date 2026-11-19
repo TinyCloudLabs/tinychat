@@ -25,6 +25,8 @@ export class LocalProvider implements SandboxProvider {
   readonly #root: string;
   readonly #agent: string[];
   readonly #running = new Map<string, Running>();
+  /** Sandboxes being saved: awake until their snapshot is written. */
+  readonly #sleeping = new Map<string, Promise<void>>();
   /** Every call, in order, for tests and the local check's log. */
   readonly events: ProviderEvent[] = [];
   readonly #onEvent: (event: ProviderEvent) => void;
@@ -53,10 +55,11 @@ export class LocalProvider implements SandboxProvider {
   }
 
   isAwake(id: string): boolean {
-    return this.#running.has(id);
+    return this.#running.has(id) || this.#sleeping.has(id);
   }
 
   async acquire(id: string): Promise<void> {
+    await this.#sleeping.get(id);
     if (this.#running.has(id)) {
       this.#record("running", id);
       this.#running.get(id)!.touchedAt = Date.now();
@@ -123,16 +126,20 @@ export class LocalProvider implements SandboxProvider {
 
   async sleep(id: string): Promise<void> {
     const running = this.#running.get(id);
-    if (!running) return;
+    if (!running) return this.#sleeping.get(id);
     this.#record("sleep", id);
     this.#running.delete(id);
-    running.process.kill("SIGKILL");
-    await running.process.exited;
-    const snapshot = this.snapshotOf(id);
-    rmSync(snapshot, { recursive: true, force: true });
-    mkdirSync(join(this.#root, "snapshots"), { recursive: true });
-    cpSync(this.filesOf(id), snapshot, { recursive: true });
-    rmSync(this.filesOf(id), { recursive: true, force: true });
+    const saved = (async () => {
+      running.process.kill("SIGKILL");
+      await running.process.exited;
+      const snapshot = this.snapshotOf(id);
+      rmSync(snapshot, { recursive: true, force: true });
+      mkdirSync(join(this.#root, "snapshots"), { recursive: true });
+      cpSync(this.filesOf(id), snapshot, { recursive: true });
+      rmSync(this.filesOf(id), { recursive: true, force: true });
+    })().finally(() => this.#sleeping.delete(id));
+    this.#sleeping.set(id, saved);
+    return saved;
   }
 
   /** What the host's sweeper does once a minute: sleep every sandbox nothing has touched for `idleMs`. */
@@ -142,6 +149,7 @@ export class LocalProvider implements SandboxProvider {
 
   async destroy(id: string): Promise<void> {
     this.#record("destroy", id);
+    await this.#sleeping.get(id)?.catch(() => {});
     const running = this.#running.get(id);
     this.#running.delete(id);
     running?.process.kill("SIGKILL");

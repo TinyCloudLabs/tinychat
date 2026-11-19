@@ -31,7 +31,14 @@ Service container (`bun src/main.ts`):
 | `BOTS_REGULAR_TOUCH_MS` | Default 60000. How often a running sandbox is marked in use. |
 | `BOTS_REGULAR_LOCAL_ROOT`, `BOTS_REGULAR_LOCAL_AGENT` | Required with `local`. |
 | `NODE_EXTRA_CA_CERTS` | The cluster's certificate authority. |
-| `PORT`, `BOTS_MODEL`, `BOTS_IDLE_MS`, `BOTS_DATA_ROOT`, `BOTS_RUN_ROOT`, `BOTS_MAX_RUNNING`, `BOTS_TURN_TIMEOUT_MS`, `BOTS_MAX_TURN_BYTES`, `BOTS_RETENTION_DAYS`, `BOTS_HISTORY_ENABLED`, `BOTS_HISTORY_SIGNER_DID`, `BOTS_HISTORY_NODE_ORIGIN`, `BOTS_UNARCHIVED_HISTORY_POLICY` | As in `bots/`. `BOTS_IDLE_MS` defaults to 300000 here. |
+| `BOTS_MAX_RUNNING` | Default 4. Bots awake at once across all machines; a start past it is refused (`bot_unavailable`), not queued. |
+| `BOTS_REGULAR_SANDBOX_CPU_REQUEST`, `BOTS_REGULAR_SANDBOX_MEMORY_REQUEST`, `BOTS_REGULAR_SANDBOX_DISK_REQUEST` | Defaults `250m`, `1Gi`, `2Gi`. What each sandbox reserves on its machine. |
+| `BOTS_REGULAR_SANDBOX_CPU_LIMIT`, `BOTS_REGULAR_SANDBOX_MEMORY_LIMIT`, `BOTS_REGULAR_SANDBOX_DISK_LIMIT` | Defaults `1`, `2Gi`, `8Gi`. The most each sandbox may use. |
+| `PORT`, `BOTS_MODEL`, `BOTS_IDLE_MS`, `BOTS_DATA_ROOT`, `BOTS_RUN_ROOT`, `BOTS_TURN_TIMEOUT_MS`, `BOTS_MAX_TURN_BYTES`, `BOTS_RETENTION_DAYS`, `BOTS_HISTORY_ENABLED`, `BOTS_HISTORY_SIGNER_DID`, `BOTS_HISTORY_NODE_ORIGIN`, `BOTS_UNARCHIVED_HISTORY_POLICY` | As in `bots/`. `BOTS_IDLE_MS` (when an unused bot sleeps) defaults to 300000 here. |
+
+The defaults suit one small sandbox machine (2 vCPU, 8 GB). Kubernetes places sandboxes by their requests, so one
+machine holds about its allocatable memory divided by `BOTS_REGULAR_SANDBOX_MEMORY_REQUEST`. Keep `BOTS_MAX_RUNNING`
+at or below that number times the machines in the sandbox node pool; the cluster check below measures it.
 
 Gateway container (`bun src/gateway-main.ts`):
 
@@ -107,27 +114,43 @@ backend is not part of these manifests.
 
 ### Cluster check
 
-Run by hand against the deployed service. It starts one bot under a random owner, sends it two short messages
-(a few model tokens), and deletes it at the end.
+Run by hand against the deployed service. It starts one bot under a random owner, sends it three short messages
+(a few model tokens), and deletes it at the end. With `BOTS_REGULAR_MEASURE_FIT_MAX=<n>` it then starts up to n more
+bots, one message each, until one does not start, and deletes them.
 
 ```sh
 kubectl exec -n bots-regular deploy/bots-regular -c service -- \
-  env BOTS_REGULAR_REAL_CHECK=1 bun scripts/real-cluster-check.ts
+  env BOTS_REGULAR_REAL_CHECK=1 BOTS_REGULAR_MEASURE_FIT_MAX=8 bun scripts/real-cluster-check.ts > check.json
 ```
 
-*See:* one line per step, then `REAL CHECK PASSED`:
+*See:* one line per step on stderr, then `REAL CHECK PASSED`:
 
 ```
 sandbox bot-<52 hex>, started <time>
 ok   start a bot and get a reply: done b-<number>, reply "ok"
+ok   warm turn: done b-<number>, <ms> ms
 ok   bridge without the launch token: no token 401, another token 401
 ok   fetch https://example.com from the sandbox: blocked
 ok   gateway, another bot's path, from the sandbox: status 403
-ok   sleep: stopped
-ok   wake: done b-<number>, 4 messages listed after waking
+ok   sleep: stopped in <ms> ms
+ok   wake: done b-<number>, 6 messages listed after waking
 ok   delete: deleted
+fit: <k> bots awake at once (tried <n>)
 REAL CHECK PASSED in <seconds> s
 ```
+
+stdout (`check.json`) is one JSON object:
+
+| Field | What it holds |
+| --- | --- |
+| `passed`, `error`, `steps` | The result of each step. |
+| `resources`, `max_running` | The sizes the service ran with. |
+| `cold_start` | A new bot: `acquire_ms` (sandbox created and running; includes adding a machine when the sandbox node pool is at zero) and `turn` (`first_reply_ms`, `total_ms`). |
+| `warm_turn` | A second message to the awake bot. |
+| `memory` | The sandbox's memory in bytes from its cgroup: `idle` after the first reply, `turn_peak` during the warm turn. `working_set_bytes` leaves out inactive file cache. |
+| `sleep_ms` | Putting the bot to sleep (snapshot taken, pod removed). |
+| `wake` | The next message: `acquire_ms` (woken from its snapshot) and `turn`. |
+| `fit` | With `BOTS_REGULAR_MEASURE_FIT_MAX`: `awake_at_once` bots that started, `acquire_ms` for each, and `first_refusal`. Each one waits up to `BOTS_REGULAR_START_TIMEOUT_MS` for room before it counts as not started. The number counts what the sandbox node pool holds at its maximum size. |
 
 A failed step prints `FAIL <step>: <what it saw>`, then `REAL CHECK FAILED`, and exits 1. The check deletes its
 bot's sandbox and snapshots either way; afterwards `kubectl get pods,podsnapshots -n sandboxes` lists nothing with

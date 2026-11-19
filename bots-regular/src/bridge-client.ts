@@ -14,6 +14,8 @@ export interface BridgeConnection {
 }
 
 const encoder = new TextEncoder();
+// Bun's WebSocket constructor takes headers; the DOM lib's declaration of the same global hides that overload.
+const BunWebSocket = WebSocket as unknown as new (url: string, options: Bun.WebSocketOptions) => WebSocket;
 
 function open(url: string, token: string): Promise<BridgeConnection> {
   const { promise, resolve, reject } = Promise.withResolvers<BridgeConnection>();
@@ -24,8 +26,7 @@ function open(url: string, token: string): Promise<BridgeConnection> {
     { start: c => { controller = c; } },
     new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 }),
   );
-  // Bun's WebSocket client accepts headers.
-  const ws = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } });
+  const ws = new BunWebSocket(url, { headers: { authorization: `Bearer ${token}` } });
   ws.binaryType = "arraybuffer";
   const end = () => {
     if (ended) return;

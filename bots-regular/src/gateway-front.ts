@@ -17,7 +17,7 @@ export function sandboxFetch(gateway: Pick<Gateway, "handle">) {
     const url = new URL(req.url);
     const match = BOT_PATH.exec(url.pathname);
     if (!match) return new Response(null, { status: 404 });
-    return gateway.handle(match[1]!, new Request(new URL(`${match[2]}${url.search}`, url.origin), req), streaming);
+    return gateway.handle(match[1]!, new Request(new URL(`${match[2]}${url.search}`, url.origin).href, req), streaming);
   };
 }
 
