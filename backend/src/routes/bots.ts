@@ -7,7 +7,7 @@ import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { botCaps, CAP_MODE, type CapMode } from "../bot-caps";
-import { orderedBots, type BotsRegistry } from "../bots-registry";
+import { BOT_KEY, MAIN_BOT_KEY, orderedBots, type Bot, type BotsRegistry } from "../bots-registry";
 
 export interface BotsConfig {
   serviceUrl: string;
@@ -58,6 +58,9 @@ export function botsServiceHeaders(config: BotsConfig, ownerDid: string, _method
   const headers = { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": ownerDid };
   return body === undefined ? headers : { ...headers, "content-type": "application/json" };
 }
+
+/** The same answer as UNAVAILABLE, for a bot other than Main. */
+const BOT_UNAVAILABLE = { code: "bot_unavailable", message: "This bot isn't available. Try again later." };
 
 export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler; registry?: BotsRegistry; capMode?: CapMode }): Router {
   const { registry } = opts;
@@ -131,19 +134,51 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     }
   });
 
+  /**
+   * The bot a keyed route acts on, taken from the signed-in owner's own record. A malformed key is refused before
+   * anything is looked up, and a key that is not in that record before the service is called. Answers 404 or 503
+   * itself and returns undefined.
+   */
+  const ownBot = async (res: Response, address: string, key: string): Promise<{ bot: Bot; seq: number } | undefined> => {
+    if (!registry || !BOT_KEY.test(key)) { res.status(404).json({ error: "not_found" }); return undefined; }
+    try {
+      const row = await registry.read(address);
+      const bot = row.bots.find(candidate => candidate.key === key);
+      if (bot) return { bot, seq: row.seq };
+      res.status(404).json({ error: "not_found" });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
+    }
+    return undefined;
+  };
+
+  const readMessages = async (res: Response, address: string, key: string): Promise<void> => {
+    const unavailable = key === MAIN_BOT_KEY ? UNAVAILABLE : BOT_UNAVAILABLE;
+    try {
+      const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
+      const upstream = await (config!.fetchImpl ?? fetch)(url, {
+        headers: botsServiceHeaders(config!, botOwnerDid(address), "GET", url),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!upstream.ok) { res.status(502).json({ error: unavailable.code, message: unavailable.message }); return; }
+      res.json(await upstream.json());
+    } catch {
+      res.status(502).json({ error: unavailable.code, message: unavailable.message });
+    }
+  };
+
   router.get("/main/messages", async (req, res) => {
     const address = gate(req, res);
     if (!address) return;
-    try {
-      const upstream = await (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}/v1/bots/main/messages`, {
-        headers: upstreamHeaders(address),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!upstream.ok) { res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message }); return; }
-      res.json(await upstream.json());
-    } catch {
-      res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message });
-    }
+    await readMessages(res, address, MAIN_BOT_KEY);
+  });
+
+  router.get("/:key/messages", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    const own = await ownBot(res, address, req.params.key);
+    if (!own) return;
+    await readMessages(res, address, own.bot.key);
   });
 
   // Each send starts a model call in the bot, so it is charged to the paid-chat limiter like /api/agent/chat.

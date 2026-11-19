@@ -144,3 +144,51 @@ describe("refusing to create a bot", () => {
     } finally { await run.close(); }
   });
 });
+
+describe("messages of a bot other than Main", () => {
+  const wanted = { name: "Research", shape: "sprout", colour: "teal" };
+  const KEY = "1".repeat(32);
+  const messages = { messages: [{ id: "m1", role: "assistant", text: "hello" }] };
+
+  test("reading them asks the service for that bot, as the signed-in owner", async () => {
+    const run = await setup(call => (call.method === "PUT" ? Response.json({ state: "active" }) : Response.json(messages)));
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const response = await fetch(`${run.base}/${KEY}/messages`, { headers });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(messages);
+      const call = run.seen.at(-1)!;
+      expect(call).toMatchObject({ method: "GET", url: `http://bots.test/v1/bots/${KEY}/messages` });
+      expect(call.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${owner.toLowerCase()}`);
+      expect(call.headers.get("authorization")).toBe(`Bearer ${secret}`);
+    } finally { await run.close(); }
+  });
+
+  test("a key that is malformed, unknown, or another owner's is refused before the service is called", async () => {
+    const run = await setup(call => (call.method === "PUT" ? Response.json({ state: "active" }) : Response.json(messages)));
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const before = run.seen.length;
+      const theirs = await run.headersFor(stranger);
+      for (const [who, key] of [[headers, "9".repeat(32)], [headers, "Research"], [headers, "A".repeat(32)], [headers, `${KEY}0`], [headers, "..%2Fmain"], [theirs, KEY]] as const) {
+        const response = await fetch(`${run.base}/${key}/messages`, { headers: who });
+        // The key is part of what is compared, so a failure says which case it was.
+        expect([key, response.status, await response.json()]).toEqual([key, 404, { error: "not_found" }]);
+      }
+      expect(run.seen).toHaveLength(before);
+    } finally { await run.close(); }
+  });
+
+  test("reading answers 503 when the owner's record cannot be read, without calling the service", async () => {
+    const run = await setup(() => Response.json(messages));
+    try {
+      run.kv.down = true;
+      const response = await fetch(`${run.base}/${KEY}/messages`, { headers: await run.headersFor(owner) });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "bots_unavailable" });
+      expect(run.seen).toHaveLength(0);
+    } finally { await run.close(); }
+  });
+});

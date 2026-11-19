@@ -35,7 +35,8 @@ export type CreateResult = { ok: true; bot: Bot; seq: number } | { ok: false; er
 
 export const MAIN_BOT_KEY = "main";
 export const BOT_NAME_MAX = 24;
-const BOT_KEY = /^[0-9a-f]{32}$/;
+/** How a bot other than Main is named. Checked before a key is looked up or becomes part of an address. */
+export const BOT_KEY = /^[0-9a-f]{32}$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const MAX_RECORD_RESPONSE_BYTES = 256 * 1024;
 /** Compare-and-set attempts before a write is given up as unavailable. */
