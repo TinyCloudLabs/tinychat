@@ -30,11 +30,11 @@ test("a covering old web session with a connected source remembers Connectors in
   store.setItem(`xyz.tinycloud.tinychat:home-features:${ADDRESS}`, JSON.stringify(["recording"]));
   await rememberExistingWebConnectors(store, tcw, ADDRESS);
   expect(readHomeFeatures(store, ADDRESS)).toEqual(["connectors"]);
-  expect(reads).toHaveLength(1);
-  expect(reads[0][0]).toStartWith("SELECT connector_id");
-  expect(reads[0][1]).toEqual(["fireflies"]);
+  expect(reads).toHaveLength(2); // schema probe, then the connector row
+  expect(reads[1][0]).toStartWith("SELECT connector_id");
+  expect(reads[1][1]).toEqual(["fireflies"]);
   await rememberExistingWebConnectors(store, tcw, ADDRESS);
-  expect(reads).toHaveLength(1);
+  expect(reads).toHaveLength(2);
 });
 
 for (const state of ["empty", "disconnected", "error", "throw"] as const) {
@@ -42,7 +42,8 @@ for (const state of ["empty", "disconnected", "error", "throw"] as const) {
     const { store, tcw, reads } = fixture(true, state);
     await rememberExistingWebConnectors(store, tcw, ADDRESS);
     expect(readHomeFeatures(store, ADDRESS)).toEqual([]);
-    expect(reads).toHaveLength(state === "empty" || state === "disconnected" ? 3 : 1);
+    // empty: the probe finds no table for each of 3 connectors; disconnected: probe + row for each; error/throw: stop at the first probe.
+    expect(reads).toHaveLength(state === "empty" ? 3 : state === "disconnected" ? 6 : 1);
   });
 }
 
