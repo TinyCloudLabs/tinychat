@@ -4,8 +4,9 @@
 // Needs a local TinyCloud node: BOTS_REGISTRY_TEST_NODE=http://127.0.0.1:<port>.
 //
 // A client library may contact hosts of its own choosing. Left to its default, this one looks every session owner up
-// in the public location registry, which is not on this machine. So the registry is switched off here, and every
-// request this process makes is checked: one to anything but 127.0.0.1 is refused, and the test fails.
+// in the public location registry, which is not on this machine, and with no registry at all it refuses to sign in.
+// So this test gives it a stand-in registry on this machine that knows no owner, and every request this process
+// makes is checked: one to anything but 127.0.0.1 is refused, and the test fails.
 import { afterAll, expect, test } from "bun:test";
 import express from "express";
 import { TinyCloudNode } from "@tinycloud/node-sdk";
@@ -16,17 +17,26 @@ import { createAuthMiddleware } from "../middleware/auth.js";
 import { botsFromEnv, createBotsRouter } from "../routes/bots.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { loopbackOnly } from "./helpers/loopback-only.js";
+import { emptyLocationRegistry } from "./helpers/empty-location-registry.js";
 
 const host = process.env.BOTS_REGISTRY_TEST_NODE;
 const wanted = (name: string) => ({ name, shape: "sprout", colour: "teal" });
 const realFetch = globalThis.fetch;
 const guard = loopbackOnly(realFetch);
-afterAll(() => { globalThis.fetch = realFetch; });
+const cleanups: Array<() => Promise<void>> = [];
+afterAll(async () => {
+  globalThis.fetch = realFetch;
+  for (const cleanup of cleanups) await cleanup();
+  // Said here too, so that a run which failed early still shows whether anything tried to leave this machine.
+  if (guard.refused.length > 0) console.error(`requests refused because they were not to this machine: ${guard.refused.join(", ")}`);
+});
 
 test.skipIf(!host)("real TinyCloud: an owner's record is created once, creates at the same moment stay within the limit, and the routes work on it", async () => {
   if (new URL(host!).hostname !== "127.0.0.1") throw new Error("loopback node required");
   globalThis.fetch = guard.fetch;
-  const backend = new TinyCloudNode({ privateKey: generatePrivateKey(), host, prefix: "bots-registry-test", includeAccountRegistryPermissions: false, tinycloudRegistryUrl: null });
+  const registry = await emptyLocationRegistry();
+  cleanups.push(registry.close);
+  const backend = new TinyCloudNode({ privateKey: generatePrivateKey(), host, prefix: "bots-registry-test", includeAccountRegistryPermissions: false, tinycloudRegistryUrl: registry.url });
   await backend.signIn();
   await backend.hostOwnedSpace("bots-registry-test");
   // As in the backend's startup: reads go straight to the node, writes through the one storage lane.
@@ -111,6 +121,8 @@ test.skipIf(!host)("real TinyCloud: an owner's record is created once, creates a
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
-  // Nothing this test did tried to reach a host other than this machine.
+  // Nothing this test did tried to reach a host other than this machine, and the registry it consulted was the stand-in.
   expect(guard.refused).toEqual([]);
+  expect(registry.asked.length).toBeGreaterThan(0);
+  console.info(`location registry stand-in was asked ${registry.asked.length} time(s): ${[...new Set(registry.asked.map(line => line.replace(/did[^/?]*/g, "<owner>")))].join(", ")}`);
 }, 120_000);
