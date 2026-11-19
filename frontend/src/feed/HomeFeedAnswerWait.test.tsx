@@ -11,7 +11,7 @@ import type { FeedResponse, HomeFeedEntry, HomeFeedSource } from "./feedStoreTyp
 import { SITREP_NOW, syntheticRecord } from "./sitrep.fixtures";
 
 /**
- * Answering a card (Sam, mock 21-23): one tap on an option takes the card out of sight at once, a black pill at the top
+ * Answering a card: one tap on an option takes the card out of sight at once, a black pill at the top
  * counts down with Undo, the answer is sent when the count ends, and the answered card then sits in Pending. One wait
  * at a time: starting another sends the first at once.
  */

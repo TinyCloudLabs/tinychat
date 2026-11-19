@@ -43,7 +43,7 @@ function Pill({ item, onUndo }: { item: PillItem; onUndo: (item: PillItem) => vo
 }
 
 /**
- * The one place a wait shows (Sam, mock 21–23): a black pill sticking at the top of the stream, under the pinned tabs, that
+ * The one place a wait shows: a black pill sticking at the top of the stream, under the pinned tabs, that
  * says what is going and counts down with Undo, then, once it is written, that it went. It takes no room of its own. The
  * live region stays mounted so a status is announced when it appears.
  */
