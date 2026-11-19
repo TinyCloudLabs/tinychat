@@ -61,7 +61,7 @@ export const BOT_VIEW_STRINGS = {
     classic: "Classic",
     bots: "Bots",
     helper: "Classic is the chat you've used so far. Bots gives each bot its own chat.",
-    notAdmitted: "Bots aren't on this account. Classic chat works as before.",
+    notAdmitted: "Bots aren't available on this account. Classic chat works as before.",
   },
 } as const;
 

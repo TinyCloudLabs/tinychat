@@ -18,7 +18,7 @@ afterEach(async () => {
 
 const ACCOUNT = "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1";
 const HELPER = "Classic is the chat you've used so far. Bots gives each bot its own chat.";
-const NOT_ADMITTED = "Bots aren't on this account. Classic chat works as before.";
+const NOT_ADMITTED = "Bots aren't available on this account. Classic chat works as before.";
 
 const api = (enabled: boolean): BotsApi => ({
   getBotsStatus: async () => ({ enabled }),
