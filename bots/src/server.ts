@@ -193,7 +193,8 @@ async function remove(options: AppOptions, owner: string, key: string): Promise<
     options.manifest!.markRemoved(owner, key);
     return Response.json({ outcome: "gone" });
   }
-  return Response.json({ outcome: cause === "archive_pending" || cause === "closing" ? "waiting" : "failed", cause });
+  const waiting = cause === "archive_pending" || cause === "closing" || cause === "gateway_cleanup_pending";
+  return Response.json({ outcome: waiting ? "waiting" : "failed", cause });
 }
 
 export function createApp(options: AppOptions): (req: Request) => Promise<Response> {
