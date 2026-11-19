@@ -166,6 +166,8 @@ export interface ContentMeta {
   title?: string;
   /** The provider's meeting timestamp when it gave one. */
   ts?: string;
+  /** Signed delivery time used by downstream purge checks. */
+  sourceTimestamp?: string;
   participantNames?: string[];
   participantEmails?: string[];
   organizerEmail?: string;
@@ -953,6 +955,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
               ? { title: priorMeta.title }
               : {}),
           ...(normalizedTs !== undefined ? { ts: normalizedTs } : {}),
+          ...(usesDayKeys && input.sourceTimestamp !== undefined ? { sourceTimestamp: input.sourceTimestamp } : {}),
           ...(input.participantNames !== undefined
             ? { participantNames: input.participantNames }
             : priorMeta?.participantNames !== undefined
@@ -1135,6 +1138,10 @@ export class ContentStore implements ContentSink, RetentionGuard {
     tombstones: number;
     storedAtBackfilled: number;
     unreadableIndex: boolean;
+    /** Rows whose expiry deadline has passed and that this pass did not delete. A count, never an id. */
+    overdue: number;
+    /** How long past its deadline the oldest such row is; 0 when none. */
+    oldestOverdueAgeMs: number;
   }> {
     const target = normalizeTarget(input.source, input.address);
     return this.lane(target.source, target.address, async () => {
@@ -1170,6 +1177,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         sourceId: string;
         meta: ContentMeta;
         missing: boolean;
+        deadline: number;
       }> = [];
       for (const sourceId of ids) {
         const indexMeta = indexed.get(sourceId);
@@ -1208,7 +1216,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
             continue;
           }
           // The row is already absent; prune its readable index entry on this pass.
-          expired.push({ sourceId, meta: indexMeta, missing: true });
+          expired.push({ sourceId, meta: indexMeta, missing: true, deadline: expiryDeadline(indexMeta.expiresAt) ?? now });
           continue;
         }
         let meta = stored.meta;
@@ -1247,7 +1255,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
           continue;
         }
         if (now >= deadline) {
-          expired.push({ sourceId, meta, missing: false });
+          expired.push({ sourceId, meta, missing: false, deadline });
         }
       }
 
@@ -1297,6 +1305,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
 
       let swept = 0;
       let bytesFreed = 0;
+      const sweptIds = new Set<string>();
       for (const candidate of confirmed) {
         try {
           if (!candidate.missing) {
@@ -1309,6 +1318,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
             bytesFreed += candidate.meta.sizeBytes;
           }
           swept += 1;
+          sweptIds.add(candidate.sourceId);
         } catch {
           warnContent(
             `op=retention-sweep result=blob_delete_failed source=${target.source} ` +
@@ -1330,6 +1340,12 @@ export class ContentStore implements ContentSink, RetentionGuard {
         tombstones,
         storedAtBackfilled: 0,
         unreadableIndex: index === null,
+        overdue: expired.length - sweptIds.size,
+        oldestOverdueAgeMs: expired.reduce(
+          (age, candidate) =>
+            sweptIds.has(candidate.sourceId) ? age : Math.max(age, now - candidate.deadline),
+          0,
+        ),
       };
     });
   }
@@ -1947,6 +1963,7 @@ function parseMeta(raw: unknown): ContentMeta | null {
     sourceId: value.sourceId,
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.ts === "string" ? { ts: value.ts } : {}),
+    ...(typeof value.sourceTimestamp === "string" ? { sourceTimestamp: value.sourceTimestamp } : {}),
     ...(participantNames === undefined ? {} : { participantNames }),
     ...(participantEmails === undefined ? {} : { participantEmails }),
     ...(organizerEmail === undefined ? {} : { organizerEmail }),

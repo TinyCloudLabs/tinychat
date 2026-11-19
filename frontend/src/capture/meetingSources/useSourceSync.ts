@@ -73,7 +73,7 @@ export interface SourceSyncDeps {
       driveMode: DriveMode;
     },
   ) => Promise<SyncOutcome>;
-  runFirefliesSyncNow: (input: SyncEngineInput & { apiKey: string }) => Promise<SyncOutcome>;
+  runFirefliesSyncNow: (input: SyncEngineInput & { apiKey: string; backendUrl: string; sessionStore: SessionStore }) => Promise<SyncOutcome>;
   runGranolaSyncNow: (input: SyncEngineInput & { backendUrl: string; sessionStore: SessionStore; apiKey: string }) => Promise<SyncOutcome>;
 }
 
@@ -167,6 +167,8 @@ export async function runSourceSync(
             })
           : await deps.runFirefliesSyncNow({
               tcw,
+              backendUrl,
+              sessionStore,
               apiKey: key.data,
               signal,
               onProgress,

@@ -55,6 +55,7 @@ async function mount(cards: HomeFeedEntry[]): Promise<HTMLElement> {
   clock ??= installFakeClock();
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   globalThis.matchMedia = window.matchMedia.bind(window);
+  window.innerWidth = 800; // a card opens in its row here (phone width); lifted over the stream it has its own focus
   (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = QuietObserver;
   MotionGlobalConfig.skipAnimations = true;
   const feed: HomeFeedSource = {

@@ -22,13 +22,19 @@ const LOCKED = "Connector key store writer lock unavailable";
 const INVALID_FILE = "Connector key store file invalid";
 const INVALID_CLOCK = "Connector key store clock invalid";
 const CREDENTIAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CREDENTIAL_SCOPE = /^[0-9a-f]{64}$/;
+
+interface ScopedCredentialKey {
+  scope: string;
+  key: string;
+}
 
 interface KeyFile {
   version: 1;
   erasedThrough: number;
   // Ordered by UTC day, starting at erasedThrough + 1.
   days: string[];
-  credentials: Record<string, string>;
+  credentials: Record<string, string | ScopedCredentialKey>;
 }
 
 /** UTC epoch day. A slot is live through the end of its UTC day. */
@@ -46,6 +52,14 @@ function isKeyString(value: unknown): value is string {
   return key.length === KEY_BYTES && key.toString("base64") === value;
 }
 
+function isCredentialKey(value: unknown): boolean {
+  return isKeyString(value) || (
+    typeof value === "object" && value !== null &&
+    "scope" in value && typeof value.scope === "string" && CREDENTIAL_SCOPE.test(value.scope) &&
+    "key" in value && isKeyString(value.key)
+  );
+}
+
 function decodeFile(raw: string): KeyFile {
   try {
     const file = JSON.parse(raw);
@@ -53,7 +67,7 @@ function decodeFile(raw: string): KeyFile {
       file?.version === 1 && Number.isSafeInteger(file.erasedThrough) &&
       Array.isArray(file.days) && file.days.length === LIVE_DAYS && file.days.every(isKeyString) &&
       file.credentials && typeof file.credentials === "object" && !Array.isArray(file.credentials) &&
-      Object.entries(file.credentials).every(([id, key]) => CREDENTIAL_ID.test(id) && isKeyString(key))
+      Object.entries(file.credentials).every(([id, key]) => CREDENTIAL_ID.test(id) && isCredentialKey(key))
     ) return file;
   } catch {
     // A parser error can quote bytes from the file.
@@ -191,25 +205,48 @@ export class ConnectorKeyStore {
   }
 
   createCredentialKey(): { id: string; key: Buffer } {
+    return this.#allocateCredentialKey(this.#currentFile());
+  }
+
+  getOrCreateScopedCredentialKey(scope: string): { id: string; key: Buffer } {
+    if (!CREDENTIAL_SCOPE.test(scope)) throw new Error(UNAVAILABLE);
     const file = this.#currentFile();
+    for (const [id, entry] of Object.entries(file.credentials)) {
+      if (typeof entry !== "string" && entry.scope === scope) return { id, key: Buffer.from(entry.key, "base64") };
+    }
+    return this.#allocateCredentialKey(file, scope);
+  }
+
+  #allocateCredentialKey(file: KeyFile, scope?: string): { id: string; key: Buffer } {
     const id = randomUUID();
     if (Object.hasOwn(file.credentials, id)) throw new Error(UNAVAILABLE);
     const key = keyString();
-    file.credentials[id] = key;
+    file.credentials[id] = scope === undefined ? key : { scope, key };
     this.#writeFile(file);
     return { id, key: Buffer.from(key, "base64") };
   }
 
-  getCredentialKey(id: string): Buffer | null {
+  getCredentialKey(id: string, scope?: string): Buffer | null {
     const { credentials } = this.#currentFile();
     if (!CREDENTIAL_ID.test(id) || !Object.hasOwn(credentials, id)) return null;
-    return Buffer.from(credentials[id]!, "base64");
+    const entry = credentials[id]!;
+    if (scope !== undefined && (typeof entry === "string" || entry.scope !== scope)) return null;
+    return Buffer.from(typeof entry === "string" ? entry : entry.key, "base64");
   }
 
   destroyCredentialKey(id: string): void {
     const file = this.#currentFile();
     if (!CREDENTIAL_ID.test(id) || !Object.hasOwn(file.credentials, id)) return;
     delete file.credentials[id];
+    this.#writeFile(file);
+  }
+
+  destroyScopedCredentialKey(scope: string): void {
+    const file = this.#currentFile();
+    const matching = Object.entries(file.credentials)
+      .filter(([, entry]) => typeof entry !== "string" && entry.scope === scope);
+    if (matching.length === 0) return;
+    for (const [id] of matching) delete file.credentials[id];
     this.#writeFile(file);
   }
 

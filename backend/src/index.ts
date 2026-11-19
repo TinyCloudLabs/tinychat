@@ -50,6 +50,7 @@ import {
   ConnectorControlStore,
   ConnectorWebhookLimiters,
   createConnectorWebhookCompanionRouter,
+  respondToConnectorPurgeCheck,
   createConnectorWebhookHandler,
   createConnectorWebhookHostGuard,
   createConnectorWebhookParserErrorHandler,
@@ -58,6 +59,7 @@ import {
   DEFAULT_CONNECTOR_SOURCE,
 } from "./routes/connector-webhooks.js";
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
+import { credentialRouteUnavailable } from "./routes/route-unavailable.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
@@ -382,6 +384,7 @@ async function main() {
     console.warn(`[startup] hosted AssemblyAI is off (${assemblyAiHosted.reason}); clients can still use their own key.`);
   }
 
+  let credentialRouteMounted = false;
   if (connectorWebhooksEnabled()) {
     const webhookSecrets = validateConnectorWebhookSecrets(process.env);
     if (!webhookSecrets.ok) {
@@ -601,10 +604,14 @@ async function main() {
         // companions' "may this browser drain?" must never disagree. Dark by default
         // (CONNECTOR_BACKEND_INGEST_ENABLED); with the flag off it makes no node call at all.
         const credentialRows = new KvCredentialRowStore(node, backendStorageLane);
+        const credentials = new CredentialStore(credentialRows, {
+          credentialKeys: connectorKeyStore,
+          upstreamRevoker: secret => firefliesOAuth().revoke(secret),
+        });
         const modes = new IngestModeService(node, {
           enabled: backendIngestEnabled,
           hasOAuthCredential: async (source, address) => {
-            const row = await credentialRows.read(source, address);
+            const row = await credentials.status(source, address);
             return row?.kind === "oauth" && !row.revokedAt;
           },
         });
@@ -613,6 +620,7 @@ async function main() {
           tokens,
           queue,
           control,
+          credentials,
           modes,
           backendStorageLane,
           // §5.4/§4.7 — the drain worker. Under OPTION C it surfaces the pending id list to the
@@ -751,6 +759,7 @@ async function main() {
       createConnectorWebhookHandler({
         tokens: connectorWebhooks.tokens,
         queue: connectorWebhooks.queue,
+        control: connectorWebhooks.control,
         limiters: connectorWebhookLimiters,
         onDelivery: createIngestOnDelivery({ modes: connectorWebhooks.modes }),
       }),
@@ -838,6 +847,9 @@ async function main() {
   // A prefix mount is correct HERE and forbidden in the raw window above — every path inside
   // the router is ONE segment deep, so none of them can be matched by the public
   // `/:source/:token` mount.
+  // Direct imports consult the ledger even when notification delivery is disabled.
+  app.post("/api/connectors/webhooks/purge-check", authMiddleware, (req, res) =>
+    respondToConnectorPurgeCheck(connectorControl, req, res));
   if (connectorWebhooks) {
     app.use(
       "/api/connectors/webhooks",
@@ -906,11 +918,9 @@ async function main() {
       mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
         contentStore.probeIndex(await contentBlobs.findIndex()),
       );
-      const credentialStore = new CredentialStore(
-        new KvCredentialRowStore(node, connectorWebhooks.backendStorageLane),
-        { upstreamRevoker: (secret) => firefliesOAuth().revoke(secret) },
-      );
+      const credentialStore = connectorWebhooks.credentials;
 
+      credentialRouteMounted = true;
       app.use(
         "/api/connectors/credentials",
         authMiddleware,
@@ -923,7 +933,7 @@ async function main() {
             notifications: {
               disable: async (source, address) => {
                 connectorDrainAbort.abort(address);
-                await connectorWebhooks.control.markDisabled(address, source);
+                await connectorWebhooks.control.markDisabled(address, source, true);
                 await connectorWebhooks.tokens.revoke(address);
               },
             },
@@ -1019,6 +1029,11 @@ async function main() {
         { enabled: () => supervisor.guard.isHolder() },
       ).start();
     }
+  }
+  // An unmounted credential route answers 404 with the backend's own marker, so a client can tell
+  // "this deployment does not have it" from a 404 that came from somewhere else.
+  if (!credentialRouteMounted) {
+    app.use("/api/connectors/credentials", (_req, res) => credentialRouteUnavailable(res));
   }
   // Retention runs independently of ingest flags and cohort membership. The sweeper owns index
   // enumeration inside each guarded pass so a KV list failure is logged and retried next interval,

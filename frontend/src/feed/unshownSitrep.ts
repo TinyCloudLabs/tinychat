@@ -28,7 +28,7 @@ const brief = { ...context, repo: true, priority: { reason: true }, unblockedBy:
 
 const SHAPES: Readonly<Record<BoardRecord["kind"], Fields>> = {
   // Not drawn: askedAt, lastAskedAt, expiredAt, expiryBaseAt, resubmitOf, resubmitCount, supersededBy, mode, group.
-  // recommend as the Suggested tag and "Accept recommendation"; default and decideBy in the "goes ahead" lines.
+  // recommend as the Suggested mark under an option; default and decideBy in the "goes ahead" lines.
   ask: { ...drawn, ...brief, deadline: true, expiresAt: true, options: { "[]": { id: true, label: true, detail: true, cost: true } }, recommend: true, default: true, decideBy: true, proceededAt: true },
   // Not drawn: expiredAt, expiryBaseAt, resubmitOf, resubmitCount, group. expiresAt as "Legacy expiry".
   task: { ...drawn, ...brief, deadline: true, expiresAt: true, steps: { "[]": { id: true, text: true } }, chatLink: true },

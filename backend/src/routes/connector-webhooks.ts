@@ -17,6 +17,7 @@ import {
 // the cycle is erased at compile time. Shared on purpose: a second copy of the tombstone rule is
 // a second thing to forget to update.
 import { isTombstoned } from "../services/connector-drain.js";
+import { withConnectorConnectionChange } from "../services/connector-connection-lane.js";
 import {
   assertConnectorPlaintextTestMode,
   isLedgerIdCode,
@@ -561,6 +562,7 @@ export interface ConnectorWebhookHandlerOptions {
   tokens: WebhookTokenLookup;
   queue: WebhookEnqueuer;
   limiters: ConnectorWebhookLimiters;
+  control?: Pick<ConnectorControl, "readDisabled">;
   registry?: ReadonlySet<string>;
   now?: () => number;
   /**
@@ -972,6 +974,11 @@ export function createConnectorWebhookHandler(
         return;
       }
 
+      if (options.control && await options.control.readDisabled(record.address) !== null) {
+        generic401();
+        return;
+      }
+
       recordSignatureKeyUse(record.address, verified.sigKey ?? "current");
 
       // 6. Per-token success bucket — incremented ONLY now, after the signature verified.
@@ -1225,6 +1232,7 @@ export function corruptPurgeLedgerKey(source: string, address: string): string {
 export interface DisabledMarker {
   revokedAt: string;
   source: string | null;
+  connectionRemoved?: true;
 }
 
 /** §6.2 ledger. The watermark is non-ID state; recent meeting IDs expire after 14 days. */
@@ -1270,7 +1278,7 @@ export type PurgeLedgerRead =
 /** The slice of the control store the companions (and, later, the drain) use. */
 export interface ConnectorControl {
   readDisabled(address: string): Promise<DisabledMarker | null>;
-  markDisabled(address: string, source: string | null): Promise<void>;
+  markDisabled(address: string, source: string | null, connectionRemoved?: true): Promise<void>;
   clearDisabled(address: string): Promise<void>;
   readLedger(
     source: string,
@@ -1303,6 +1311,7 @@ function parseDisabledMarker(raw: unknown): DisabledMarker | null {
   return {
     revokedAt,
     source: isValidSource(value.source) ? value.source : null,
+    ...(value.connectionRemoved === true ? { connectionRemoved: true } : {}),
   };
 }
 
@@ -1381,12 +1390,17 @@ export class ConnectorControlStore implements ConnectorControl {
     );
   }
 
-  async markDisabled(address: string, source: string | null): Promise<void> {
-    const marker: DisabledMarker = {
-      revokedAt: new Date().toISOString(),
-      source,
-    };
-    await this.run(() => this.writeJson(disabledMarkerKey(address), marker));
+  async markDisabled(address: string, source: string | null, connectionRemoved?: true): Promise<void> {
+    const key = disabledMarkerKey(address);
+    await this.run(async () => {
+      const removed = connectionRemoved ?? parseDisabledMarker(await this.readJson(key))?.connectionRemoved;
+      const marker: DisabledMarker = {
+        revokedAt: new Date().toISOString(),
+        source,
+        ...(removed ? { connectionRemoved: true } : {}),
+      };
+      await this.writeJson(key, marker);
+    });
   }
 
   async clearDisabled(address: string): Promise<void> {
@@ -1815,6 +1829,45 @@ function requireUser(req: Request, res: Response): SessionUser | null {
   return { address };
 }
 
+function connectionMutation(
+  handler: (req: Request, res: Response, user: SessionUser) => Promise<void>,
+): RequestHandler {
+  return (req, res, next) => {
+    const user = requireUser(req, res);
+    if (!user) return;
+    void withConnectorConnectionChange(user.address, () => handler(req, res, user)).catch(next);
+  };
+}
+
+/** Imports that fetch directly from Fireflies use the same ledger verdict as the drain. */
+export async function respondToConnectorPurgeCheck(
+  control: Pick<ConnectorControl, "readLedger">, req: Request, res: Response,
+): Promise<void> {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const { meetingId, sourceTimestamp } = bodyOf(req);
+  if (!isValidMeetingId(meetingId)) {
+    res.status(400).json({ error: "invalid_meeting_id" });
+    return;
+  }
+  try {
+    const read = await control.readLedger(DEFAULT_CONNECTOR_SOURCE, user.address);
+    if (read.status === "unparseable") {
+      res.status(503).json({ error: "unavailable" });
+      return;
+    }
+    const ledger = read.status === "ok" ? read.ledger : null;
+    const blocked = isTombstoned({
+      meetingId,
+      receivedAt: "",
+      ...(typeof sourceTimestamp === "string" ? { sourceTimestamp } : {}),
+    }, ledger);
+    res.json({ blocked });
+  } catch {
+    res.status(503).json({ error: "unavailable" });
+  }
+}
+
 function bodyOf(req: Request): Record<string, unknown> {
   const body = req.body;
   if (
@@ -2157,9 +2210,7 @@ export function createConnectorWebhookCompanionRouter(
    * crash-classification) and the user's Fireflies dashboard still holds the URL while the
    * teardown is in flight. It does NOT clear the purge ledger; only §4.8's DELETE does.
    */
-  router.post("/config", async (req: Request, res: Response) => {
-    const user = requireUser(req, res);
-    if (!user) return;
+  router.post("/config", connectionMutation(async (req, res, user) => {
 
     const body = bodyOf(req);
     if (namedSourceIsInvalid(body.source)) {
@@ -2186,9 +2237,7 @@ export function createConnectorWebhookCompanionRouter(
       const switchingSource = existing !== null && existing.source !== source;
 
       if (enabling) {
-        abort.clear(user.address);
         await queue.clear(source, user.address);
-        await control.clearDisabled(user.address);
       } else if (switchingSource && existing !== null) {
         // F006: the switch rotates onto the NEW source, and every companion read follows
         // `config.source` — so without this the old source's pending items become invisible
@@ -2213,6 +2262,11 @@ export function createConnectorWebhookCompanionRouter(
         existing !== null
           ? await tokens.rotate(user.address, source)
           : await tokens.mint(user.address, source);
+      if (enabling) {
+        // A partially revoked connection stays disabled until its replacement token is durable.
+        await control.clearDisabled(user.address);
+        abort.clear(user.address);
+      }
       const config: WebhookConfigRecord = {
         token: minted.token,
         source,
@@ -2239,7 +2293,7 @@ export function createConnectorWebhookCompanionRouter(
       );
       res.status(503).json({ error: "unavailable" });
     }
-  });
+  }));
 
   /**
    * The SINGLE idempotent teardown (§3.6 rule 1), in the NORMATIVE ORDER:
@@ -2259,9 +2313,7 @@ export function createConnectorWebhookCompanionRouter(
    * there is nothing here to revoke. Turning Fireflies webhooks off must not log a user out of
    * their own space — see `connector-delegation-independence.test.ts`.
    */
-  router.delete("/config", async (req: Request, res: Response) => {
-    const user = requireUser(req, res);
-    if (!user) return;
+  router.delete("/config", connectionMutation(async (req, res, user) => {
 
     // In-process and free, so it goes first: it stops the drain that is running right now,
     // between items, rather than after it has written the rest of the queue.
@@ -2328,7 +2380,7 @@ export function createConnectorWebhookCompanionRouter(
       );
       res.status(503).json({ error: "teardown_incomplete" });
     }
-  });
+  }));
 
   router.get("/pending", async (req: Request, res: Response) => {
     const user = requireUser(req, res);
@@ -2674,9 +2726,7 @@ export function createConnectorWebhookCompanionRouter(
    * `source_id` tombstones a meeting before it ever arrives. The address comes from the
    * session, never the body; every id goes through the shared `isValidMeetingId()`.
    */
-  router.post("/purged", async (req: Request, res: Response) => {
-    const user = requireUser(req, res);
-    if (!user) return;
+  router.post("/purged", connectionMutation(async (req, res, user) => {
 
     const body = bodyOf(req);
     if (!isValidSource(body.source) || !registry.has(body.source)) {
@@ -2730,6 +2780,10 @@ export function createConnectorWebhookCompanionRouter(
     try {
       const config = await tokens.config(user.address);
       const marker = await control.readDisabled(user.address);
+      if (marker?.connectionRemoved === true) {
+        res.status(204).end();
+        return;
+      }
       if (config === null && marker === null) {
         // Background sync was never enabled for this address — an idempotent no-op, not a
         // reason to grow backend KV from an authenticated client.
@@ -2820,16 +2874,14 @@ export function createConnectorWebhookCompanionRouter(
       );
       res.status(503).json({ error: "unavailable" });
     }
-  });
+  }));
 
   /**
    * §4.8's CLEAR verb — the "explicit user-initiated re-sync" §6.1 step -1 and §6.2 both
    * reference. It resets `purgedThrough` AND `recentIds`, is fired by the reconnect / re-sync
    * flow (F3) and by nothing else: never automatically on drain, never on enable.
    */
-  router.delete("/purged", async (req: Request, res: Response) => {
-    const user = requireUser(req, res);
-    if (!user) return;
+  router.delete("/purged", connectionMutation(async (req, res, user) => {
 
     const body = bodyOf(req);
     if (!isValidSource(body.source) || !registry.has(body.source)) {
@@ -2855,7 +2907,7 @@ export function createConnectorWebhookCompanionRouter(
       );
       res.status(503).json({ error: "unavailable" });
     }
-  });
+  }));
 
   return router;
 }
