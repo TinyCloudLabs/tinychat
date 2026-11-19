@@ -1,0 +1,14 @@
+{
+  "resource": "https://mcp.tinycloud.xyz/mcp",
+  "authorization_servers": [
+    "https://api.openkey.so/api/auth"
+  ],
+  "scopes_supported": [
+    "tinycloud:mcp"
+  ],
+  "resource_name": "TinyCloud hosted MCP",
+  "resource_documentation": "https://docs.tinycloud.xyz/cli/mcp",
+  "bearer_methods_supported": [
+    "header"
+  ]
+}
