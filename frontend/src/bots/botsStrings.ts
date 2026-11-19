@@ -51,3 +51,42 @@ export const BOT_VIEW_STRINGS = {
   /** For a bot other than Main: HISTORY_EXPIRY_NOTICE with the bot's name. */
   historyExpiryNotice: (name: string) => HISTORY_EXPIRY_NOTICE.replace("Main's chat history", `${name}'s chat history`),
 } as const;
+
+export const CREATE_BOT_STRINGS = {
+  title: "Create New Bot",
+  name: "Name your Bot",
+  shape: "Shape",
+  colour: "Colour",
+  cancel: "Cancel",
+  create: "Create",
+  creating: "Creating…",
+  duplicate: "You already have a bot with that name.",
+  invalidName: "Use 1 to 24 characters for your bot's name.",
+  cap: {
+    flat3: {
+      count: (used: number, max: number) => `${used} of ${max} bots`,
+      atLimit: (max: number) => `You have ${max} bots, the most an account can have. Delete a bot other than Main to make a new one.`,
+      refused: (max: number) => `You already have ${max} bots. Delete a bot other than Main to make a new one.`,
+    },
+    table: {
+      count: (used: number, max: number) => `${used} of ${max} private ${max === 1 ? "bot" : "bots"}`,
+      atLimit: (max: number, hasOtherBot: boolean) => hasOtherBot
+        ? `You have ${max} private ${max === 1 ? "bot" : "bots"}, the most your plan includes. Delete one other than Main to make a new one.`
+        : max === 1 ? `Your plan includes ${max} private bot, and Main is it.` : "",
+      refused: (max: number, hasOtherBot: boolean) => hasOtherBot
+        ? `You already have ${max} private ${max === 1 ? "bot" : "bots"}, the most your plan includes. Delete one other than Main to make a new one.`
+        : max === 1 ? "Main is the only private bot your plan includes." : "",
+    },
+  },
+  failed: "Couldn't create your bot. Try again.",
+  approvalNeeded: "Approval needed",
+  shapes: {
+    pebble: "Pebble", sprout: "Sprout", drop: "Drop", clover: "Clover", bloom: "Bloom",
+    cloud: "Cloud", ghost: "Ghost", bean: "Bean", comet: "Comet", petal: "Petal",
+    squish: "Squish", moon: "Moon", star: "Star",
+  },
+  colours: {
+    blue: "Blue", teal: "Teal", green: "Green", lime: "Lime", yellow: "Yellow",
+    orange: "Orange", red: "Red", pink: "Pink", purple: "Purple", indigo: "Indigo", slate: "Slate",
+  },
+} as const;
