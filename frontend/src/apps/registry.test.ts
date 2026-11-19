@@ -16,13 +16,14 @@ describe("registry", () => {
       "https://credentials.org",
       "https://explorer.tinycloud.xyz",
       "https://account.tinycloud.xyz",
+      "https://share.tinycloud.xyz",
     ]);
     expect(ONE_HOST_ORIGINS).toEqual(["https://tinycloud.one"]);
   });
 
   test("frames only on One's exact production origin", () => {
     expect(framesAppsHere("https://tinycloud.one")).toBe(true);
-    for (const origin of ["https://home.tinycloud.xyz", "https://tinycloud.chat", "https://tinycloud.one.evil.example", "http://tinycloud.one", "https://localhost:5186", "https://feat-one-apps.tinychat.pages.dev"]) {
+    for (const origin of ["https://home.tinycloud.xyz", "https://tinycloud.chat", "https://tinycloud.one.evil.example", "http://tinycloud.one", "https://localhost:5186", "https://localhost:5190", "https://feat-one-apps.tinychat.pages.dev"]) {
       expect(framesAppsHere(origin)).toBe(false);
     }
   });
@@ -53,9 +54,20 @@ describe("registry", () => {
 
   test("iOS leaves Account out; web and Android keep it", () => {
     expect(oneAppsFor("ios").some((app) => app.id === "xyz.tinycloud.account")).toBe(false);
-    expect(oneAppsFor("ios").map((app) => app.id)).toEqual(["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer"]);
+    expect(oneAppsFor("ios").map((app) => app.id)).toEqual(["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.courier"]);
     expect(oneAppsFor("web").some((app) => app.id === "xyz.tinycloud.account")).toBe(true);
     expect(oneAppsFor("android").some((app) => app.id === "xyz.tinycloud.account")).toBe(true);
+  });
+
+  test("Courier is framed from exactly https://share.tinycloud.xyz/courier, read-only, and no other share page is framed", () => {
+    const courier = framedApp("xyz.tinycloud.courier")!;
+    expect(courier.origin).toBe("https://share.tinycloud.xyz");
+    expect(new URL(frameUrl(courier)).pathname).toBe("/courier");
+    expect(framed(ONE_APPS).filter((app) => new URL(app.origin).hostname === "share.tinycloud.xyz").map((app) => app.id))
+      .toEqual(["xyz.tinycloud.courier"]);
+    expect(courier.ceiling({ address: "0x1111111111111111111111111111111111111111", chainId: 1 }).map(({ permission }) => permission)).toEqual([
+      { service: "tinycloud.kv", space: "agents", path: "xyz.tinycloud.courier/", actions: ["get", "list"], skipPrefix: true },
+    ]);
   });
 });
 

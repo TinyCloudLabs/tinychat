@@ -9,14 +9,15 @@
 import { Capacitor } from "@capacitor/core";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import type { LucideIcon } from "lucide-react";
-import { BadgeCheck, CircleUserRound, Compass, KeyRound, Mic } from "lucide-react";
+import { BadgeCheck, CircleUserRound, Compass, KeyRound, MessagesSquare, Mic } from "lucide-react";
 import { APP_DESCRIPTIONS, APP_NAMES, type ScopeId } from "./strings";
 
 export type FramedAppId =
   | "xyz.tinycloud.secrets"
   | "xyz.tinycloud.opencredentials"
   | "xyz.tinycloud.explorer"
-  | "xyz.tinycloud.account";
+  | "xyz.tinycloud.account"
+  | "xyz.tinycloud.courier";
 
 export type OneAppId = FramedAppId | "capture";
 
@@ -67,16 +68,19 @@ export interface FramedOneApp extends OneAppBase {
 
 export type OneApp = NativeOneApp | FramedOneApp;
 
-// `__ONE_APPS_BUILD_KIND__` is replaced at build time (vite.config.ts; bunfig.toml for tests). Each origin below is a
-// ternary on it written in place, so a production build folds every preview/dev origin away. Fail-closed: anything
-// but an explicit "preview" or "dev" signal is production.
-export const ONE_APPS_BUILD_KIND: "production" | "preview" | "dev" =
-  __ONE_APPS_BUILD_KIND__ === "dev" ? "dev" : __ONE_APPS_BUILD_KIND__ === "preview" ? "preview" : "production";
+// `__ONE_APPS_BUILD_KIND__` is replaced at build time (vite.config.ts; bunfig.toml for tests). Bundlers that don't
+// define it (a test's Bun.build) read it as undefined, which is production. Each origin below is a ternary on
+// `ONE_APPS_BUILD_KIND` written in place, so a production build folds every preview/dev origin away (the production
+// build test checks). Fail-closed: anything but an explicit "preview" or "dev" signal is production.
+export const ONE_APPS_BUILD_KIND: "production" | "preview" | "dev" = typeof __ONE_APPS_BUILD_KIND__ === "undefined"
+  ? "production"
+  : __ONE_APPS_BUILD_KIND__ === "dev" ? "dev" : __ONE_APPS_BUILD_KIND__ === "preview" ? "preview" : "production";
+const KIND = ONE_APPS_BUILD_KIND;
 
 /** One's own origins on which apps are framed (and that the apps accept as parent). Elsewhere a tile opens a new tab. */
-export const ONE_HOST_ORIGINS: readonly string[] = __ONE_APPS_BUILD_KIND__ === "dev"
-  ? ["https://tinycloud.one", "https://localhost:5186"]
-  : __ONE_APPS_BUILD_KIND__ === "preview"
+export const ONE_HOST_ORIGINS: readonly string[] = KIND === "dev"
+  ? ["https://tinycloud.one", "https://localhost:5190"]
+  : KIND === "preview"
     ? ["https://tinycloud.one", "https://feat-one-apps.tinychat.pages.dev"]
     : ["https://tinycloud.one"];
 
@@ -107,8 +111,8 @@ const ALL_APPS: readonly OneApp[] = [
     framed: false,
     ...text("xyz.tinycloud.secrets"),
     icon: KeyRound,
-    origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5191"
-      : __ONE_APPS_BUILD_KIND__ === "preview" ? "https://feat-one-apps-embed.tinycloud-secrets.pages.dev"
+    origin: KIND === "dev" ? "https://localhost:5191"
+      : KIND === "preview" ? "https://feat-one-apps-embed.tinycloud-secrets.pages.dev"
         : "https://secrets.tinycloud.xyz",
     path: "/app",
     ceiling: (owner) => [
@@ -131,8 +135,8 @@ const ALL_APPS: readonly OneApp[] = [
     framed: true,
     ...text("xyz.tinycloud.opencredentials"),
     icon: BadgeCheck,
-    origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5192"
-      : __ONE_APPS_BUILD_KIND__ === "preview" ? "https://feat-one-apps-embed.open-credentials.pages.dev"
+    origin: KIND === "dev" ? "https://localhost:5192"
+      : KIND === "preview" ? "https://feat-one-apps-embed.open-credentials.pages.dev"
         : "https://credentials.org",
     path: "/",
     ceiling: (owner) => [
@@ -149,8 +153,8 @@ const ALL_APPS: readonly OneApp[] = [
     framed: true,
     ...text("xyz.tinycloud.explorer"),
     icon: Compass,
-    origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5193"
-      : __ONE_APPS_BUILD_KIND__ === "preview" ? "https://feat-one-apps-embed.tinycloud-explorer.pages.dev"
+    origin: KIND === "dev" ? "https://localhost:5193"
+      : KIND === "preview" ? "https://feat-one-apps-embed.tinycloud-explorer.pages.dev"
         : "https://explorer.tinycloud.xyz",
     path: "/",
     ceiling: () => [
@@ -169,8 +173,8 @@ const ALL_APPS: readonly OneApp[] = [
     framed: true,
     ...text("xyz.tinycloud.account"),
     icon: CircleUserRound,
-    origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5194"
-      : __ONE_APPS_BUILD_KIND__ === "preview" ? "https://feat-one-apps-embed.tinycloud-account.pages.dev"
+    origin: KIND === "dev" ? "https://localhost:5194"
+      : KIND === "preview" ? "https://feat-one-apps-embed.tinycloud-account.pages.dev"
         : "https://account.tinycloud.xyz",
     path: "/",
     ceiling: () => [
@@ -180,6 +184,18 @@ const ALL_APPS: readonly OneApp[] = [
       sql("accountSummary", "account", "account", ["read"]),
       entry("delegations", { service: "tinycloud.delegation", space: "account", path: "", actions: ["list", "status"], skipPrefix: true }),
     ],
+  },
+  {
+    // Courier's data view lives on the share site; only its `/courier` pages may be framed (share repo headers).
+    // No preview deployment: a preview One opens it in a new tab, since production refuses other parents.
+    id: "xyz.tinycloud.courier",
+    kind: "framed",
+    framed: KIND !== "preview",
+    ...text("xyz.tinycloud.courier"),
+    icon: MessagesSquare,
+    origin: KIND === "dev" ? "https://localhost:5195" : "https://share.tinycloud.xyz",
+    path: "/courier",
+    ceiling: () => [kv("courier", "agents", "xyz.tinycloud.courier/", ["get", "list"])],
   },
 ];
 
