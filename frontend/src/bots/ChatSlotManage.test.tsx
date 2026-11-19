@@ -82,6 +82,7 @@ function fakeRoster() {
 }
 
 async function render() {
+  await import("./BotsSurface");
   restore = installDom();
   window.innerWidth = 1280;
   window.innerHeight = 900;

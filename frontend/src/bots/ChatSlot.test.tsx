@@ -53,6 +53,7 @@ function fakes(roster: BotRoster, admitted = true) {
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
 async function render(path: string, node: ReactNode) {
+  await import("./BotsSurface");
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
