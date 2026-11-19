@@ -21,7 +21,7 @@ function entry(cardId: string, title: string, over: { needs?: boolean; at?: stri
     : null;
   return {
     source: {
-      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: "Holden",
+      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: "Avery",
       output: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_output_testone" },
       responses: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_responses_testone" },
     },

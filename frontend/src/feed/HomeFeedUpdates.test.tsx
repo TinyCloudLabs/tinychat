@@ -22,7 +22,7 @@ function update(cardId: string, title: string, over: { typed?: boolean; seenAt?:
   const payload = typed ? { sitrep: { version: 1, record: { ...syntheticRecord("ship"), id: cardId, title, at: WENT_LIVE_AT } } } : undefined;
   return {
     source: {
-      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: "Holden",
+      sourceId: "agent-one", agentDid: "did:key:isolated-test-agent", label: "Avery",
       output: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_output_testone" },
       responses: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_responses_testone" },
     },
