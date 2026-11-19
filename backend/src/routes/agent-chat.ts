@@ -28,7 +28,7 @@ import {
   isOverBudget,
 } from "../billing/usage.js";
 import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
-import { truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
+import { TRUNCATION_MARKER, truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
 import { FALLBACK_MODEL_RATES, ratesForModel, type ModelRates } from "../billing/credits.js";
 import { createReplyBudget, lengthStoppedByBudget, type ReplyBudget } from "../billing/reply-budget.js";
 import { settleReply, type FailureCause, type ReplyOutcome } from "../billing/settle.js";
@@ -435,6 +435,15 @@ function expandUnambiguousMeetingCitations(content: string, supplied: string[]):
 /** Stable eliza-service codes meaning "this user's grant is missing or unusable". */
 const DELEGATION_ERROR_CODES = new Set(["delegation_required", "delegation_expired", "delegation_revoked"]);
 
+/** Largest tool result, in characters, handed back to the loop. */
+const TOOL_RESULT_CAP_CHARS = 65536;
+/** Hard bound on reading a web_search response that is trimmed to the cap (TC-3464). */
+const WEB_SEARCH_READ_LIMIT_CHARS = 4 * TOOL_RESULT_CAP_CHARS;
+
+function capToolText(text: string): string {
+  return text.length > TOOL_RESULT_CAP_CHARS ? text.slice(0, TOOL_RESULT_CAP_CHARS) + TRUNCATION_MARKER : text;
+}
+
 /** The result for a call this turn cannot serve (TC-3463): nothing is dispatched; the model gets it back as a tool result and answers without it. */
 function toolNotFound(name: string): ToolDispatchOutcome {
   return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(name.slice(0, 64))} is not available in this conversation; answer without it)` };
@@ -489,7 +498,10 @@ async function dispatchTool(
   // Own the JSON reader so cancellation can release a pending body read, even
   // when a supplied fetch implementation does not wire its response to signal.
   const reader = res.body?.getReader();
-  const maxChars = turnContext && "retrievalMode" in turnContext ? 16000 : 65536;
+  const maxChars = turnContext && "retrievalMode" in turnContext ? 16000 : TOOL_RESULT_CAP_CHARS;
+  // A web_search result over the cap is trimmed, not failed (TC-3464); reading still stops at a hard bound. Meeting reads
+  // feed the structured evidence packer, where cut JSON would not validate, so they still fail at the cap.
+  const readLimit = call.name === "web_search" ? WEB_SEARCH_READ_LIMIT_CHARS : maxChars;
   let cancelled = false;
   const cancel = () => {
     if (cancelled) return;
@@ -508,14 +520,14 @@ async function dispatchTool(
         throwIfAborted(signal);
         if (chunk.done) break;
         json += decoder.decode(chunk.value, { stream: true });
-        if (json.length > maxChars) { cancel(); throw new StreamFailure("result_size_limit"); }
+        if (json.length > readLimit) { cancel(); throw new StreamFailure("result_size_limit"); }
       }
       json += decoder.decode();
-      if (json.length > maxChars) throw new StreamFailure("result_size_limit");
+      if (json.length > readLimit) throw new StreamFailure("result_size_limit");
       parsed = JSON.parse(json);
     } else {
       parsed = await withAbort(res.json(), signal);
-      if (JSON.stringify(parsed).length > maxChars) throw new StreamFailure("result_size_limit");
+      if (JSON.stringify(parsed).length > readLimit) throw new StreamFailure("result_size_limit");
     }
     throwIfAborted(signal);
   } catch (error) {
@@ -565,7 +577,7 @@ async function dispatchTool(
     return { status: "done", text: compact ?? (summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data), ...(typed ? { data: typed } : {}) };
   }
   const results = (body.result?.data?.results as Array<{ title?: string; url?: string; snippet?: string }> | undefined) ?? [];
-  if (results.length === 0) return { status: "done", text: summary };
+  if (results.length === 0) return { status: "done", text: capToolText(summary) };
   const sources = results
     .map((r, i) => {
       const parts = [`[${i + 1}] ${r.title ?? "(untitled)"}`];
@@ -574,7 +586,7 @@ async function dispatchTool(
       return parts.join("\n");
     })
     .join("\n");
-  return { status: "done", text: summary ? `${summary}\n\nSources:\n${sources}` : `Sources:\n${sources}` };
+  return { status: "done", text: capToolText(summary ? `${summary}\n\nSources:\n${sources}` : `Sources:\n${sources}`) };
 }
 
 export interface OrchestrateParams {

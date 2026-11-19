@@ -20,7 +20,7 @@ export const AGENT_MIN_TAIL = 6;
 export const AGENT_TRIM_RATIO = 0.7;
 
 /** Marker appended to a truncated tool result. */
-const TRUNCATION_MARKER = "\n[...truncated...]";
+export const TRUNCATION_MARKER = "\n[...truncated...]";
 
 /** Minimal message shape the guard operates on (mirrors agent-chat ChatMsg). */
 export interface GuardMsg {
