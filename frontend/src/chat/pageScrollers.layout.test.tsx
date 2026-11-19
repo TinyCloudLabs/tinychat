@@ -7,7 +7,6 @@
 // test/connectors-scroll.e2e.test.ts checks the rendered geometry.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -69,13 +68,4 @@ describe("page scroller layout", () => {
       expect(shown[0]).toEqual(expect.arrayContaining(["relative", "h-full", "overflow-y-auto"]));
     });
   }
-
-  // SettingsPage imports App (DOM-only SDKs at module load), so it cannot be
-  // server-rendered here; assert its root scroller in source, like
-  // ConnectorsCard.test.ts does for the IA. The e2e test renders it for real.
-  test("Settings: the scroller is the containing block for absolutely positioned content", () => {
-    const source = readFileSync(new URL("./SettingsPage.tsx", import.meta.url), "utf8");
-    expect(source).toContain('<div className="relative h-full overflow-y-auto" data-scroll-root>');
-    expect(source).not.toContain('<div className="h-full overflow-y-auto"');
-  });
 });

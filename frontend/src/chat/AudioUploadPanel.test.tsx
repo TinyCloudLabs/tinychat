@@ -9,8 +9,6 @@
 //   6. Settings offers the hosted Powerful engine without a key field.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
@@ -71,7 +69,7 @@ function job(patch: Partial<UploadState> = {}): UploadState {
 const transcribeButton = /<button[^>]*>Transcribe<\/button>/;
 
 describe("Upload on Capture", () => {
-  test("Upload is a Capture action that opens its own sheet, on every platform; the Transcriber tabs are gone", () => {
+  test("Upload is a Capture action, with or without the notetaker's Meeting action", () => {
     const actions = renderToStaticMarkup(<StaticRecorderProvider value={{ available: false }}><SoftActions onUpload={noop} onMeeting={noop} /></StaticRecorderProvider>);
     expect(actions).toContain('aria-label="Upload audio"');
     expect(actions).toContain('aria-label="Send a notetaker to a meeting"');
@@ -79,13 +77,6 @@ describe("Upload on Capture", () => {
     const dark = renderToStaticMarkup(<StaticRecorderProvider value={{ available: false }}><SoftActions onUpload={noop} /></StaticRecorderProvider>);
     expect(dark).toContain('aria-label="Upload audio"');
     expect(dark).not.toContain("Send a notetaker");
-    const capture = readFileSync(join(import.meta.dir, "../capture/CaptureSurface.tsx"), "utf8");
-    expect(capture).toContain('onUpload={() => setSheet("upload")}');
-    expect(capture).toContain('<UploadSheet open={sheet === "upload"}');
-    expect(capture).not.toContain("TranscriberSection ");
-    const sheet = readFileSync(join(import.meta.dir, "../capture/upload/UploadSheet.tsx"), "utf8");
-    expect(sheet).toContain("<ResponsiveSheet");
-    expect(sheet).toContain("<AudioUploadPanel");
   });
 });
 

@@ -16,6 +16,32 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.0-beta.10
+
+### Patch Changes
+
+- e26e84c: Stopping a recording from outside the app closes the recorder and shows the saved note, like its own Done. This covers the Live Activity's Stop on the Lock Screen or Dynamic Island, "Stop recording" from Siri or Shortcuts and the Android notification's Stop or Discard. When the app comes back to the foreground, it checks with the phone whether the recording on screen is still running.
+
+  Details: TC-3118
+
+- 5e64d15: Notetaker: when Google Meet doesn't let the notetaker into a meeting, the recording says so and points to the host's Meeting access setting.
+
+  Details: TC-2443
+
+## 0.15.0-beta.9
+
+### Patch Changes
+
+- 51274a8: Fireflies consent text says our server keeps meeting copies for up to 14 days.
+
+  Details: TC-2778
+
+- 7973a69: The secret guard reads a one-tap approval link the way a browser opens it.
+
+  Details: TC-3242
+
+- a26bd95: Missing build files return a real 404, so a Home page left open across a deploy doesn't get the app's page back for a missing script. A failed lazy load (the TinyCloud panel's "This didn't load.", a screen that couldn't open) offers "New version available — Reload" when a newer build is live.
+
 ## 0.15.0-beta.8
 
 ### Minor Changes
