@@ -119,6 +119,7 @@ async function mount(source: HomeFeedSource) {
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   // The DOM installs window.matchMedia only; an opened card's scroll-into-view reads the global.
   globalThis.matchMedia = window.matchMedia.bind(window);
+  window.innerWidth = 800; // these tests open a card in its row (phone width)
   // The DOM's Web Animations reject a cancelled morph; these tests read the cards, not the motion.
   MotionGlobalConfig.skipAnimations = true;
   const host = document.createElement("div");
@@ -1119,6 +1120,7 @@ async function mountWithAsk(source: HomeFeedSource) {
   clock ??= installFakeClock();
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   globalThis.matchMedia = window.matchMedia.bind(window);
+  window.innerWidth = 800; // these tests open a card in its row (phone width)
   MotionGlobalConfig.skipAnimations = true;
   const host = document.createElement("div");
   document.body.append(host);

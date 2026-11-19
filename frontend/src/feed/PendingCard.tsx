@@ -1,5 +1,5 @@
 // Sam, 11-13: answered cards that are Waiting (the agent hasn't picked the answer up) or Done but not yet
-// acknowledged leave the main flow, which keeps only what needs him. They gather in a "Pending" section after Updates
+// acknowledged leave the main flow, which keeps only what needs them. They gather in a "Pending" section after Updates
 // and before History, in the stream's own row style (mock 24): the agent's mark, what he chose in bold with the post under
 // it, and at the row's end whom it waits on. The section is not there while it is empty. A Done row offers Acknowledge,
 // which goes through the page's undo pill like every other closing action. Tapping a row opens its card in place,
