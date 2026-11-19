@@ -441,3 +441,69 @@ describe("the flat limit", () => {
     } finally { await run.close(); }
   });
 });
+
+describe("renaming and restyling a bot through the routes", () => {
+  const wanted = { name: "Research", shape: "sprout", colour: "teal" };
+  const KEY = "1".repeat(32);
+  const announced: Upstream = () => Response.json({ state: "active" });
+  const created = { key: KEY, ...wanted, environment: "private", state: "active", createdAt: T0.toISOString() };
+
+  test("a bot's new name and look are answered, and then listed", async () => {
+    const run = await setup(announced);
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const changed = { ...created, name: "Reading", shape: "moon", colour: "indigo" };
+      const response = await fetch(`${run.base}/${KEY}`, { method: "PATCH", headers, body: JSON.stringify({ name: "Reading", shape: "moon", colour: "indigo" }) });
+      expect([response.status, await response.json()]).toEqual([200, { bot: changed }]);
+      expect((await (await fetch(run.base, { headers })).json()).bots).toEqual([main, changed]);
+      // The service knows a bot by its key, not by its name or look: it is told nothing.
+      expect(run.seen.filter(call => call.method !== "PUT" || !call.url.endsWith(KEY))).toEqual([]);
+      expect(run.seen).toHaveLength(1);
+    } finally { await run.close(); }
+  });
+
+  test("Main can be renamed and restyled, and keeps its key", async () => {
+    const run = await setup(announced);
+    try {
+      const headers = await run.headersFor(owner);
+      const response = await fetch(`${run.base}/main`, { method: "PATCH", headers, body: JSON.stringify({ name: "Home base", colour: "red" }) });
+      expect([response.status, await response.json()]).toEqual([200, { bot: { ...main, name: "Home base", colour: "red" } }]);
+    } finally { await run.close(); }
+  });
+
+  test("a refusal answers with its code and changes nothing", async () => {
+    const run = await setup(announced);
+    try {
+      const headers = await run.headersFor(owner);
+      const theirs = await run.headersFor(stranger);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const cases: Array<[who: Record<string, string>, key: string, body: unknown, status: number, error: string]> = [
+        [headers, KEY, {}, 400, "invalid"],
+        [headers, KEY, { name: "" }, 400, "invalid_name"],
+        [headers, KEY, { shape: "square" }, 400, "invalid_shape"],
+        [headers, KEY, { colour: "#ffffff" }, 400, "invalid_colour"],
+        [headers, KEY, { name: "main" }, 409, "name_taken"],
+        [headers, "9".repeat(32), { name: "New" }, 404, "not_found"],
+        [headers, "Research", { name: "New" }, 404, "not_found"],
+        [theirs, KEY, { name: "New" }, 404, "not_found"],
+      ];
+      for (const [who, key, body, status, error] of cases) {
+        const response = await fetch(`${run.base}/${key}`, { method: "PATCH", headers: who, body: JSON.stringify(body) });
+        expect([key, body, response.status, await response.json()]).toEqual([key, body, status, { error }]);
+      }
+      expect((await run.registry.read(owner)).bots).toEqual([main, created]);
+    } finally { await run.close(); }
+  });
+
+  test("only the name, shape and colour are taken from the request", async () => {
+    const run = await setup(announced);
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const forged = { name: "Reading", key: "f".repeat(32), state: "deleting", environment: "regular", createdAt: "1999-01-01T00:00:00.000Z", owner: stranger };
+      const response = await fetch(`${run.base}/${KEY}`, { method: "PATCH", headers, body: JSON.stringify(forged) });
+      expect([response.status, await response.json()]).toEqual([200, { bot: { ...created, name: "Reading" } }]);
+    } finally { await run.close(); }
+  });
+});

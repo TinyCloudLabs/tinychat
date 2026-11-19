@@ -296,5 +296,20 @@ export function createBotsRouter(opts: {
     await sendMessage(req, res, address, own.bot.key, own.seq);
   });
 
+  // Renames or restyles a bot, Main included. Only the name, the shape and the colour are taken from the request.
+  router.patch("/:key", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    if (!registry) { res.status(404).json({ error: "not_found" }); return; }
+    try {
+      const updated = await registry.update(address, req.params.key, { name: req.body?.name, shape: req.body?.shape, colour: req.body?.colour });
+      if (updated.ok) { res.json({ bot: updated.bot }); return; }
+      const status = updated.error === "not_found" ? 404 : updated.error === "name_taken" || updated.error === "bot_deleting" ? 409 : 400;
+      res.status(status).json({ error: updated.error });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
+    }
+  });
+
   return router;
 }
