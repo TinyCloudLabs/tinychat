@@ -8,9 +8,10 @@ import { join } from "node:path";
 import { type ActivityRecord, HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
+import { MESSAGING_STRINGS } from "./messaging-strings";
 import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
-import { type Frame, RpcError } from "./rpc";
+import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "invalid";
 
@@ -39,11 +40,17 @@ export interface ListedMessage {
   at: string;
 }
 
+export interface BotMessenger {
+  keys: readonly string[];
+  dispatch(targetKey: string, text: string, signal: AbortSignal): Promise<HostToolReply>;
+}
+
 /** A running sandbox with OMP's RPC channel on its stdio, already bound to the bot's session. */
 export interface Sandbox {
   nextId(): string;
   request(command: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
   onFrame(listener: (frame: Frame) => void): () => void;
+  onHostToolCall?(handle: HostToolHandler): () => void;
   /** Settles once the sandbox has exited and been cleaned up. */
   readonly exited: Promise<void>;
   /** Registers the bot's egress socket and token with the gateway again (idempotent; the gateway may have restarted). */
@@ -102,11 +109,31 @@ const LIST_LIMIT = 50;
 const PAGE_LIMIT = 256;
 const MAX_PAGES = 64;
 const MAX_ACTIVITY_COUNT = 256;
+const HOST_TOOLS_TIMEOUT_MS = 5_000;
+const MESSAGE_BOT = "message_bot";
+
+function messageBotTool(keys: readonly string[]) {
+  return {
+    name: MESSAGE_BOT,
+    description: MESSAGING_STRINGS.description,
+    loadMode: "essential",
+    parameters: {
+      type: "object",
+      properties: {
+        targetKey: { type: "string", enum: keys, description: MESSAGING_STRINGS.target },
+        text: { type: "string", minLength: 1, maxLength: MAX_TEXT, description: MESSAGING_STRINGS.text },
+      },
+      required: ["targetKey", "text"],
+      additionalProperties: false,
+    },
+  };
+}
 
 /** Only fixed verbs and counters leave the supervisor. Paths are used in memory to count distinct files. */
 class TurnActivity {
   readonly #calls = new Map<string, { tool: string; completed: boolean }>();
   readonly #files = new Set<string>();
+  readonly #messages = new Map<string, number>();
   #commands = 0;
 
   frame(frame: Frame): void {
@@ -146,12 +173,22 @@ class TurnActivity {
     }
   }
 
+  messaged(key: string): void {
+    this.#messages.set(key, Math.min((this.#messages.get(key) ?? 0) + 1, MAX_ACTIVITY_COUNT));
+  }
+
   records(): ActivityRecord[] {
     const counts = { ran_commands: this.#commands, changed_files: this.#files.size } as const;
-    return (["ran_commands", "changed_files"] as const).flatMap(verb => {
+    const records: ActivityRecord[] = [];
+    const base = () => ({ type: "activity" as const, id: randomBytes(16).toString("hex") });
+    for (const verb of ["ran_commands", "changed_files"] as const) {
       const count = counts[verb];
-      return count === 0 ? [] : [{ type: "activity", id: randomBytes(16).toString("hex"), verb, count, at: new Date().toISOString() }];
-    });
+      if (count > 0) records.push({ ...base(), verb, count, at: new Date().toISOString() });
+    }
+    for (const [targetKey, count] of this.#messages) {
+      records.push({ ...base(), verb: "messaged_bot", count, at: new Date().toISOString(), targetKey });
+    }
+    return records;
   }
 }
 
@@ -251,8 +288,8 @@ export class Bot {
     this.#running = running;
   }
 
-  /** Runs one message through Main. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string): Promise<void> {
+  /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
@@ -296,7 +333,23 @@ export class Bot {
         state = "working";
         sink.status(state);
       }
-      await this.#turn(sandbox, text, sink);
+      if (!messenger || !sandbox.onHostToolCall) {
+        await this.#turn(sandbox, text, sink);
+        return;
+      }
+      try {
+        await sandbox.request({ type: "set_host_tools", tools: [messageBotTool(messenger.keys)] }, HOST_TOOLS_TIMEOUT_MS);
+      } catch {
+        sink.error("bot_unavailable");
+        await this.#stop(sandbox);
+        return;
+      }
+      try {
+        await this.#turn(sandbox, text, sink, messenger);
+      } finally {
+        try { await sandbox.request({ type: "set_host_tools", tools: [] }, HOST_TOOLS_TIMEOUT_MS); }
+        catch { if (this.#sandbox === sandbox) await this.#stop(sandbox); }
+      }
     } finally {
       clearInterval(heartbeat);
       if (this.#history) {
@@ -439,10 +492,29 @@ export class Bot {
     }
   }
 
-  #turn(sandbox: Sandbox, text: string, sink: TurnSink): Promise<void> {
+  #turn(sandbox: Sandbox, text: string, sink: TurnSink, messenger?: BotMessenger): Promise<void> {
     const id = sandbox.nextId();
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const activity = new TurnActivity();
+    const reaching = new Set<string>();
+    const offHost = messenger && sandbox.onHostToolCall?.(async (name, args, signal) => {
+      if (name !== MESSAGE_BOT) return { text: MESSAGING_STRINGS.unavailable, isError: true };
+      if (!isRecord(args) || Object.keys(args).length !== 2
+        || typeof args.targetKey !== "string" || !messenger.keys.includes(args.targetKey)
+        || typeof args.text !== "string" || args.text.length < 1 || args.text.length > MAX_TEXT) {
+        return { text: MESSAGING_STRINGS.invalid, isError: true };
+      }
+      const { targetKey } = args;
+      if (reaching.has(targetKey)) return { text: MESSAGING_STRINGS.busy, isError: true };
+      reaching.add(targetKey);
+      try {
+        const reply = await messenger.dispatch(targetKey, args.text, signal);
+        if (!signal.aborted && !reply.isError) activity.messaged(targetKey);
+        return reply;
+      } finally {
+        reaching.delete(targetKey);
+      }
+    });
     let firstReplyAt: number | undefined;
     let wroteText = false;
     let separate = false;
@@ -453,6 +525,7 @@ export class Bot {
       finished = true;
       clearTimeout(deadline);
       off();
+      offHost?.();
       try {
         for (const record of activity.records()) sink.activity?.(record);
         if ("messageId" in outcome) sink.done(outcome.messageId);

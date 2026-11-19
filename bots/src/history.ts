@@ -18,13 +18,12 @@ const PRODUCTION_NODE_ORIGINS = ["https://node.tinycloud.xyz", "https://tee.node
 const sameNode = (host: unknown, expected: string) => host === expected
   || (typeof host === "string" && PRODUCTION_NODE_ORIGINS.includes(host) && PRODUCTION_NODE_ORIGINS.includes(expected));
 export interface HistoryOptions { signerDid: string; host: string; policy: "notice-then-expiry-30-days" }
-export interface ActivityRecord {
+export type ActivityRecord = {
   type: "activity";
   id: string;
-  verb: "ran_commands" | "changed_files";
   count: number;
   at: string;
-}
+} & ({ verb: "ran_commands" | "changed_files" } | { verb: "messaged_bot"; targetKey: string });
 /** `bot` is a sibling's key. It is inside the batch, so it is inside the hash the backend signs. Main's batches have none. */
 export interface JournalBatch { v: 1; generation: string; seq: number; challenge: string; record: unknown; bot?: string }
 export interface ExpiryNotice { id: string; expiresAt: number; firstAttemptAt: number; deliveredAt?: number; deleteAt?: number }

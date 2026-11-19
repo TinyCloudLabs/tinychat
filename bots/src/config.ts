@@ -1,6 +1,6 @@
 // Environment for the two bots processes: the supervisor (not privileged, but holds what runsc needs; runs the
 // sandboxes, answers the backend) and the egress gateway (unprivileged, the only holder of the model key).
-// Neither reads the other's secrets.
+// The gateway also holds the service secret for authenticated backend admission.
 
 import { dirname, join } from "node:path";
 
@@ -8,6 +8,7 @@ type Env = Record<string, string | undefined>;
 
 export const DEFAULT_MODEL = "z-ai/glm-5.2";
 export const PINNED_UPSTREAM = "https://tee.redpill.ai";
+export const DEFAULT_BACKEND_ORIGIN = "https://api.tinycloud.chat";
 /** 256 bits, hex or base64url encoded. */
 const MIN_SERVICE_SECRET_CHARS = 43;
 
@@ -162,7 +163,16 @@ function upstream(env: Env): string {
   return url.origin;
 }
 
-export function gatewayConfig(env: Env): GatewayConfig {
+function backendOrigin(env: Env): string {
+  const raw = env.BACKEND_ORIGIN?.trim() || DEFAULT_BACKEND_ORIGIN;
+  const url = URL.parse(raw);
+  if (!url || url.protocol !== "https:" || (raw !== url.origin && raw !== `${url.origin}/`)) {
+    throw new Error("BACKEND_ORIGIN must be an HTTPS origin");
+  }
+  return url.origin;
+}
+
+export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string; serviceSecret?: string } {
   const model = env.BOTS_MODEL?.trim() || DEFAULT_MODEL;
   const models = (env.BOTS_MODELS ?? "").split(",").map(value => value.trim()).filter(Boolean);
   const botDailyTokens = int(env, "BOTS_BOT_DAILY_TOKENS", 2_000_000);
@@ -171,6 +181,8 @@ export function gatewayConfig(env: Env): GatewayConfig {
     egressRoot: env.BOTS_EGRESS_ROOT ?? "/egress",
     modelKey: required(env, "REDPILL_API_KEY"),
     upstream: upstream(env),
+    backendOrigin: backendOrigin(env),
+    serviceSecret: env.BOTS_SERVICE_SECRET || undefined,
     models: models.length > 0 ? models : [model],
     maxTokens: int(env, "BOTS_MAX_TOKENS", 8192),
     botDailyTokens,

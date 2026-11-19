@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { rootProblem } from "./retention";
 import { BotManager } from "./bot";
+import { createAdmissionClient } from "./bot-admission";
 import { supervisorConfig } from "./config";
 import { OwnerManifests } from "./manifest";
 import { RunscHost } from "./sandbox";
@@ -35,7 +36,10 @@ Bun.serve({
   // Cold starts can take a while before the first byte of a list response.
   idleTimeout: 120,
   maxRequestBodySize: 1024 * 1024,
-  fetch: createApp({ secret: cfg.serviceSecret, accounts: cfg.accounts, bots, manifest: new OwnerManifests(manifestRoot) }),
+  fetch: createApp({
+    secret: cfg.serviceSecret, accounts: cfg.accounts, bots, manifest: new OwnerManifests(manifestRoot),
+    admit: createAdmissionClient(cfg.egressRoot, cfg.serviceSecret),
+  }),
 });
 console.log(
   JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, retentionDays: cfg.retentionDays, limits: cfg.limits }),
