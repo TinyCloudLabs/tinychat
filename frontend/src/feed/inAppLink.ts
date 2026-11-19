@@ -1,4 +1,4 @@
-// Links in the Feed open inside the app (TC-3404; Sam: "i keep getting sent to external sites"). A plain tap or click
+// Links in the Feed open inside the app (TC-3404). A plain tap or click
 // on an http(s) link to another site opens it over the Feed: on the phone app in the system's in-app browser
 // (Capacitor Browser: a Safari view on iOS, a Custom Tab on Android), on the web in a sheet that rises from the bottom
 // (LinkSheet.tsx). Everything else keeps the plain link: cmd/ctrl/shift/alt or middle clicks, mailto: and other

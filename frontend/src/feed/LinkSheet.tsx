@@ -2,8 +2,7 @@
 // page's site, "Open in browser" and Close always in its header. Drag down, the scrim, Escape or Close shuts it
 // (BottomSheet: focus trap, focus return, reduced motion). From 640px it is capped in width and centred.
 //
-// The page shows in a frame that keeps the page on its own origin, apart from the app: scripts and forms run for
-// the page itself, it cannot navigate the app or reach its storage, and it is sent no referrer. A page that refuses
+// The page shows in a sandboxed frame on its own origin and is sent no referrer. A page that refuses
 // to be framed shows the browser's own error in the frame and gives no signal the app can read, so sites known to
 // refuse get a note instead, and every frame has a hint under it.
 import { useRef, useState } from "react";
@@ -44,7 +43,7 @@ export function LinkSheet({ url, open, opener, onOpenChange }: { url: string; op
     </div>
     {refusesFraming(url)
       ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-        <p className="text-callout font-medium">{host} doesn’t let other apps show its pages.</p>
+        <p className="text-callout font-medium">{host} only opens in a browser.</p>
         <OpenInBrowser url={url} />
       </div>
       : <>

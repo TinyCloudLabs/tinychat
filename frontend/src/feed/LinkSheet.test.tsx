@@ -72,7 +72,7 @@ test("a site that refuses to be shown in a frame gets a note and Open in browser
   const link = await mount("https://github.com/acme/site/pull/42");
   await click(link);
   expect(sheet()!.querySelector("iframe")).toBeNull();
-  expect(sheet()!.textContent).toContain("github.com doesn’t let other apps show its pages.");
+  expect(sheet()!.textContent).toContain("github.com only opens in a browser.");
   expect([...sheet()!.querySelectorAll("a")].some((a) => a.getAttribute("href") === "https://github.com/acme/site/pull/42" && a.textContent === "Open in browser")).toBe(true);
 });
 
