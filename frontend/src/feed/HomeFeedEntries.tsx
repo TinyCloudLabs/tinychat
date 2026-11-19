@@ -41,6 +41,7 @@ import { OptionsToggle } from "./OptionsToggle";
 import { SendPills, type PillItem } from "./SendPills";
 import { HeldDrafts } from "./heldDrafts";
 import { BriefButton, LazyBriefSheet } from "./BriefButton";
+import { FeedLink } from "./FeedLink";
 import { briefOf } from "./brief";
 import { shortTime } from "./ShortTime";
 import { ACKNOWLEDGE_ALL, acknowledgeAllLabel, acknowledgedPill, acknowledgingAnnounce } from "./updatesStrings";
@@ -163,7 +164,7 @@ function ReportLink({ entry }: { entry: HomeFeedEntry }) {
   if (!report || typeof report !== "object") return null;
   const { url, label } = report as Record<string, unknown>;
   if (!safeUrl(url) || !clean(url)) return null;
-  return <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]">{typeof label === "string" ? label : "Full report"}</a>;
+  return <FeedLink href={url} className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]">{typeof label === "string" ? label : "Full report"}</FeedLink>;
 }
 
 /** The saved answer in words: the option label, never its id; "got it" only once the agent acknowledged. */
@@ -1384,7 +1385,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
           <p className="mt-2 max-w-[60ch] text-base leading-[1.5]">{HOME_EMPTY_BODY}</p>
           <Link to={PATHS.chat} className={primaryPillClass}>{HOME_EMPTY_CHAT}</Link>
           <AgentPrompt copyButton={({ onClick, children }) => <button type="button" className={primaryPillClass} onClick={onClick}>{children}</button>}
-            aside={<a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className={quietClass}>{HOME_EMPTY_HOW}</a>} />
+            aside={<FeedLink href={FEED_SKILL_URL} className={quietClass}>{HOME_EMPTY_HOW}</FeedLink>} />
         </section>
         : <div className="mb-4 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
           <p>{snoozedOnly ? "No snoozed cards." : filtersOn ? "No cards match this filter." : "Nothing needs you."}</p>

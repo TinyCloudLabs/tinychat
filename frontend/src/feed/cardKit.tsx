@@ -9,6 +9,7 @@ import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
 import { CardWaitContext } from "./cardWait";
+import { FeedLink } from "./FeedLink";
 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 import { APP_NAME } from "@/lib/homeSite";
@@ -118,7 +119,7 @@ function inline(text: string): ReactNode[] {
     const href = match[2] ?? match[3]!;
     if (match.index > last) parts.push(text.slice(last, match.index));
     parts.push(safeUrl(href)
-      ? <a key={match.index} href={href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{match[1] ?? href}</a>
+      ? <FeedLink key={match.index} href={href} className="break-words underline underline-offset-[3px]">{match[1] ?? href}</FeedLink>
       : match[1] ?? href);
     last = match.index + match[0].length;
   }

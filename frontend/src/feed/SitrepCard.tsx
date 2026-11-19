@@ -14,11 +14,12 @@ import { HistoryTimeline, historyFromEntry, joinHistory, type HistoryItem } from
 import { isOwnerAction } from "./ownerActions";
 import { HISTORY, POSTED_TO_BOARD, SHIP_RECORD, SHOW_ME_AGAIN, SHOW_ME_LATER, WENT_LIVE } from "./updatesStrings";
 import { shortTime } from "./ShortTime";
+import { FeedLink } from "./FeedLink";
 
 /** Text with its links: URLs and GitHub refs underlined; a Linear ticket (TC-1234) in the link colour with a dotted underline, as the design mock's inline references. */
 function prose(text: string, repo?: string) {
   return linkify(text, repo).map((part, index) => "href" in part
-    ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className={part.kind === "linear" ? "whitespace-nowrap font-mono text-[0.9em] text-blue-700 underline decoration-dotted decoration-1 underline-offset-[3px] hover:decoration-solid dark:text-blue-400" : "break-words underline underline-offset-[3px]"}>{part.label}</a>
+    ? <FeedLink key={index} href={part.href} className={part.kind === "linear" ? "whitespace-nowrap font-mono text-[0.9em] text-blue-700 underline decoration-dotted decoration-1 underline-offset-[3px] hover:decoration-solid dark:text-blue-400" : "break-words underline underline-offset-[3px]"}>{part.label}</FeedLink>
     : part.text);
 }
 const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
@@ -85,11 +86,11 @@ function hostOf(url: string): string { try { return new URL(url).hostname.replac
 function LinkChips({ links, tight = false }: { links: readonly { url: string; label?: string }[]; tight?: boolean }) {
   return <nav aria-label="Card reports and sources" className={`${tight ? "mt-1.5" : "mt-3"} flex min-w-0 flex-wrap gap-x-1.5 gap-y-2.5`}>{links.map((link) => {
     const host = hostOf(link.url);
-    return <a key={link.url} href={link.url} title={link.url} target="_blank" rel="noopener noreferrer" className={`relative inline-flex h-[26px] min-w-0 max-w-full items-center gap-[5px] whitespace-nowrap rounded border border-blue-700/35 px-[7px] font-mono text-xs leading-none text-blue-700 transition-colors after:absolute after:-inset-x-0.5 after:-inset-y-[5px] after:content-[''] hover:border-blue-700 hover:bg-blue-700/[0.06] dark:border-blue-400/40 dark:text-blue-400 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 ${focusRing}`}>
+    return <FeedLink key={link.url} href={link.url} title={link.url} className={`relative inline-flex h-[26px] min-w-0 max-w-full items-center gap-[5px] whitespace-nowrap rounded border border-blue-700/35 px-[7px] font-mono text-xs leading-none text-blue-700 transition-colors after:absolute after:-inset-x-0.5 after:-inset-y-[5px] after:content-[''] hover:border-blue-700 hover:bg-blue-700/[0.06] dark:border-blue-400/40 dark:text-blue-400 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 ${focusRing}`}>
       <span className="min-w-0 shrink overflow-hidden text-ellipsis font-semibold">{linkCaption(link as Parameters<typeof linkCaption>[0]).split(" · ")[0]}</span>
       {host && <><span aria-hidden className="shrink-0 opacity-50">·</span><span className="min-w-0 shrink-[2] overflow-hidden text-ellipsis">{host}</span></>}
       <ArrowUpRightIcon aria-hidden className="size-3 shrink-0" />
-    </a>;
+    </FeedLink>;
   })}</nav>;
 }
 
@@ -439,7 +440,7 @@ export function SitrepCard(props: Props) {
       <fieldset disabled={busy || closed || !entry.state.card.needsResponse}><legend className="sr-only">{entry.state.card.needsResponse ? "Your steps (private)" : "Steps"}</legend>
         {record.steps.map((step) => <label key={step.id} className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5 accent-foreground" checked={!!state?.steps[step.id]} onChange={(event) => { const checked = event.currentTarget.checked; void perform(() => savePrivate({ steps: { [step.id]: checked ? new Date().toISOString() : null } }, `tick:${step.id}:${checked}`)); }} /><span className={state?.steps[step.id] ? "text-muted-foreground line-through" : ""}>{step.text}</span></label>)}
       </fieldset>
-      {record.chatLink && safeUrl(record.chatLink) && <a href={record.chatLink} target="_blank" rel="noopener noreferrer" className={`inline-flex min-h-11 items-center text-sm underline underline-offset-[3px] ${focusRing}`}>Open task context</a>}
+      {record.chatLink && safeUrl(record.chatLink) && <FeedLink href={record.chatLink} className={`inline-flex min-h-11 items-center text-sm underline underline-offset-[3px] ${focusRing}`}>Open task context</FeedLink>}
       {entry.state.card.needsResponse && !waiting && <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><button type="button" className={buttonClass} disabled={busy || closed || stale} onClick={() => afterUndo(state?.doneAt ? "Send “done” again" : "Mark done", () => { const at = new Date().toISOString(); return command({ doneAt: at, dismissedAt: at }, "task-done"); })}>{state?.doneAt ? "Send “done” again" : "Mark done"}</button><span className={fineClass}>Goes to {agent}.</span></div>}
       {pendingLine}
     </div>}
@@ -480,9 +481,9 @@ export function SitrepCard(props: Props) {
       {/* An update's record (the ship's component and versions) is on its face and in Details. */}
       {record.kind === "order" && <div className="space-y-2 text-sm"><blockquote className="whitespace-pre-wrap border-l border-border pl-4">{record.verbatim}</blockquote><p>{record.source} · {stamp(record.at)}</p>{record.appliesTo && <p>Applies to: {record.appliesTo}</p>}</div>}
       {record.kind === "claim" && <div className="space-y-2 text-sm">
-        <p><a href={record.url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{record.site}</a> · {record.location} · {record.severity}</p>
+        <p><FeedLink href={record.url} className="underline underline-offset-[3px]">{record.site}</FeedLink> · {record.location} · {record.severity}</p>
         <blockquote className="border-l border-border pl-4">{record.quote}</blockquote><p><strong className="font-semibold">True today: </strong>{record.trueToday}</p>
-        <ul>{record.evidence.map((evidence) => <li key={evidence.ref}>{safeUrl(evidence.ref) ? <a href={evidence.ref} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{evidence.label}</a> : <span>{evidence.label}: {evidence.ref}</span>}</li>)}</ul>
+        <ul>{record.evidence.map((evidence) => <li key={evidence.ref}>{safeUrl(evidence.ref) ? <FeedLink href={evidence.ref} className="underline underline-offset-[3px]">{evidence.label}</FeedLink> : <span>{evidence.label}: {evidence.ref}</span>}</li>)}</ul>
         {!!record.makeTrue.tc?.length && <p>To make it true: {record.makeTrue.tc.join(", ")}{record.makeTrue.effort && ` · ${record.makeTrue.effort}`}</p>}
         {!!claims.length && <ol aria-label="Your decisions" className="space-y-1">{claims.map((decision) => <li key={decision.sourceKey}>{decision.value.choice === "keep" ? "Keep" : decision.value.choice === "remove" ? "Remove" : "Ignore"} · {stamp(decision.value.at)}{decision.value.note && ` · ${decision.value.note}`}</li>)}</ol>}
       </div>}
@@ -666,7 +667,8 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     {approval.permissions && <p><strong className="font-semibold">Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
     {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
     {approval.steps && <Fold title="Steps" count={`${approval.steps.length} ${approval.steps.length === 1 ? "step" : "steps"}`} open><ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol></Fold>}
-    {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center gap-1.5 underline underline-offset-2">{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
+    {/* An approval signs with a passkey on its own page: the phone app's browser can, a frame on the web cannot. */}
+    {link && <FeedLink href={approval.url!} sheet={false} onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center gap-1.5 underline underline-offset-2">{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></FeedLink>}
     {visibleForm && approval.codeExpected && !codeShown && <button type="button" className={quietClass} disabled={disabled} onClick={() => { engagedOnce.current = true; setCodeOpen(true); }}>Got a code? Paste it</button>}
     {codeShown && <label className="block font-medium">Approval code<input aria-label="Approval code" type="password" autoComplete="off" autoFocus={codeOpen && !code} value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>}
     {!waiting && (action || codeShown) && <div className="flex flex-wrap items-center gap-2">
