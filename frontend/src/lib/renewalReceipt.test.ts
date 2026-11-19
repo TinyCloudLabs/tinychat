@@ -25,6 +25,12 @@ describe("a stored renewal receipt", () => {
     expect(await verifiedRenewalLease(receipt, record)).toBeNull();
   });
 
+  test("for a grant whose owner is not the saved session's account is not used", async () => {
+    const { record, receipt } = await fixture();
+    const someoneElse = privateKeyToAccount(generatePrivateKey()).address;
+    expect(await verifiedRenewalLease(receipt, { ...record, address: someoneElse })).toBeNull();
+  });
+
   test("whose lease grants more than renewing that grant is not used", async () => {
     const { record, receipt } = await fixture({ extraAbility: true });
     expect(await verifiedRenewalLease(receipt, record)).toBeNull();

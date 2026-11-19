@@ -116,6 +116,8 @@ async function signLease(grant: Grant, options: {
   audience?: string;
   rawAbilities?: Record<string, string[]>;
   expiresAt?: number;
+  /** ReCap proofs (`prf`) to sign into the lease; OpenKey's leases carry none. */
+  proofs?: string[];
 } = {}): Promise<Lease> {
   const signer = options.signer ?? grant.account;
   const now = nowSeconds();
@@ -131,9 +133,18 @@ async function signLease(grant: Grant, options: {
     issuedAt: iso(now - 3 * HOUR),
     expirationTime: iso(expiresAt),
   });
-  const signature = await signer.signMessage({ message: prepared.siwe });
-  const session = wasm.completeSessionSetup({ ...prepared, signature });
+  const siwe = options.proofs ? withReCapProofs(prepared.siwe, options.proofs) : prepared.siwe;
+  const signature = await signer.signMessage({ message: siwe });
+  const session = wasm.completeSessionSetup({ ...prepared, siwe, signature });
   return { authorization: session.delegationHeader.Authorization, cid: session.delegationCid, expiresAt };
+}
+
+/** `siwe` with its ReCap resource's `prf` set to `proofs`. */
+function withReCapProofs(siwe: string, proofs: string[]): string {
+  return siwe.replace(/urn:recap:([A-Za-z0-9_-]+)/, (_, encoded: string) => {
+    const recap = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    return `urn:recap:${Buffer.from(JSON.stringify({ ...recap, prf: proofs })).toString("base64url")}`;
+  });
 }
 
 // ── Loopback stand-in node ──────────────────────────────────────────
@@ -391,6 +402,12 @@ describe("POST /api/auth/verify-renewal", () => {
     const api = backend();
     const elsewhere = await signLease(grant, { rawAbilities: { [`urn:cid:${rawCid("another-grant")}`]: ["tinycloud.delegation/renew"] } });
     await refusedBeforeNode(await requestBody(grant, elsewhere, api.nonceStore), "lease_wrong_scope", api);
+  });
+
+  test("a lease that carries a proof is refused", async () => {
+    const api = backend();
+    const proved = await signLease(grant, { proofs: [rawCid("a-parent-grant")] });
+    await refusedBeforeNode(await requestBody(grant, proved, api.nonceStore), "lease_wrong_scope", api);
   });
 
   test("a lapsed lease is refused", async () => {
