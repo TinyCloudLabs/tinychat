@@ -1,4 +1,4 @@
-name: iOS build (Exo)
+name: iOS build (TinyCloud One)
 
 # The one Exo iOS release build, called by mobile.yml (CI: an unsigned dry run on every iOS change) and
 # ios-testflight.yml (signed, checked and uploaded to TestFlight), so CI exercises the release path even before any

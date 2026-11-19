@@ -33,6 +33,9 @@ export interface CalendarConnection {
   verifiedEmail?: string;
   /** Survives backend replacement and server-credential deletion between SPA revoke calls. */
   googleBrowserBinding?: CalendarGoogleBrowserBinding;
+  /** TC-2917: this record's revision, one more on every write, so each write changes its bytes (the
+   *  node's ETag is a content hash) and a row built from a read names the version it was built on. */
+  rev?: number;
 }
 
 // Classify every field so adding a connection field requires an explicit cache-policy decision.
@@ -55,6 +58,7 @@ const CONNECTION_CACHE_FIELDS = {
   setupExpiresAt: "bookkeeping",
   verifiedEmail: "bookkeeping",
   googleBrowserBinding: "bookkeeping",
+  rev: "bookkeeping",
 } satisfies Record<keyof CalendarConnection, "scope" | "policy" | "bookkeeping">;
 
 function connectionPolicyChanged(previous: CalendarConnection | null, next: CalendarConnection): boolean {
@@ -108,6 +112,8 @@ export interface CalendarOccurrence {
   /** TC-988: first observation, preserved on rescans. Legacy rows may omit this. */
   firstSeenAt?: number;
   updatedAt: number;
+  /** See CalendarConnection.rev. */
+  rev?: number;
 }
 
 /** Intentionally never expires, including after a user deletes the recording. */
@@ -116,6 +122,7 @@ export interface CalendarSentMarker {
   id: string;
   meetingId?: string;
   disposition: string;
+  rev?: number;
 }
 type Update<T> = (current: T | null) => T | null;
 /** Attempted status reads/listings, including a read that fails or cannot enter the lane. */
@@ -124,8 +131,15 @@ export interface CalendarAutojoinReadMetrics { reads: number }
 export interface CalendarAutojoinStore {
   readonly statusCache: CalendarAutojoinStatusCache;
   getConnection(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarConnection | null>;
-  putConnection(row: CalendarConnection): Promise<void>;
+  /** A compare-and-set (If-Match on the stored row's ETag, If-None-Match for a new one). `rebuild`
+   *  decides on the stored row and builds the row written; null refuses. Without it, `row` is written
+   *  only on the version it was built from: see builtOn.
+   *  Rejects with CalendarRowChanged when refused. */
+  putConnection(row: CalendarConnection, rebuild?: (stored: CalendarConnection | null) => CalendarConnection | null): Promise<void>;
   updateConnection(tenant: string, update: Update<CalendarConnection>): Promise<CalendarConnection | null>;
+  /** The connection as the node stores it, even through the worker's cached store. Consent checks
+   *  that gate a Google read or a running recording use this. */
+  getConnectionFresh(tenant: string): Promise<CalendarConnection | null>;
   listConnections(): Promise<CalendarConnection[]>;
   /** The next read of each connection row goes to the node; scan times staged in memory survive it. */
   rereadConnections(): void;
@@ -134,10 +148,13 @@ export interface CalendarAutojoinStore {
   putStatusSummary(tenant: string, summary: CalendarAutojoinStatusSummary): Promise<void>;
   forgetStatusSummaryDigest(tenant: string): void;
   getOccurrence(tenant: string, id: string): Promise<CalendarOccurrence | null>;
+  /** Written only on the version `row` was built from (see putConnection); CalendarRowChanged otherwise. */
   putOccurrence(row: CalendarOccurrence): Promise<void>;
   updateOccurrence(tenant: string, id: string, update: Update<CalendarOccurrence>): Promise<CalendarOccurrence | null>;
   listOccurrences(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarOccurrence[]>;
-  deleteOccurrence(tenant: string, id: string): Promise<void>;
+  /** Deletes the stored row when `when` accepts it, with If-Match on its ETag. False when `when`
+   *  refused the stored row (it stays); true once no row is stored. */
+  deleteOccurrence(tenant: string, id: string, when?: (stored: CalendarOccurrence) => boolean): Promise<boolean>;
   getMarker(tenant: string, id: string): Promise<CalendarSentMarker | null>;
   putMarker(row: CalendarSentMarker): Promise<void>;
   getCaptureClaims(meetingUrl: string): Promise<CaptureClaim[]>;
@@ -159,13 +176,39 @@ export class TenantCoordinator {
   }
 }
 
+/** A row as the node stores it, with the node's ETag when it sends one. */
+interface StoredRow<T> { value: T; etag?: string }
+/** A write's precondition: the node still holds the version `ifMatch` names, or holds no row. */
+type WriteCondition = { ifMatch: string } | { ifNoneMatch: "*" };
+/** A conditional write found the row changed on the node since it was read. */
+export class CalendarRowChanged extends Error {
+  constructor() { super("calendar_row_changed"); }
+}
+/** The node sent no ETag for a stored row, so no write to it can be conditional: it is refused. */
+export class CalendarRowUnversioned extends Error {
+  constructor() { super("calendar_row_unversioned"); }
+}
 interface JsonStore {
   get<T>(key: string): Promise<T | null>;
-  put(key: string, value: unknown): Promise<void>;
-  remove(key: string): Promise<void>;
+  /** As `get`, with the ETag of the node's copy (memory's, on the worker's cached store). */
+  getStored<T>(key: string): Promise<StoredRow<T> | null>;
+  /** Always from the node, with its ETag. On the worker's cached store a staged value survives only
+   *  when the node still holds the copy it was staged on. */
+  read<T>(key: string): Promise<StoredRow<T> | null>;
+  /** Resolves to the written row's ETag when the node sends one; rejects with CalendarRowChanged
+   *  when `condition` no longer holds. Only the status projection is written without one. */
+  put(key: string, value: unknown, condition?: WriteCondition): Promise<string | undefined>;
+  /** Rejects with CalendarRowChanged when the node holds another version; a row already gone is not an error. */
+  remove(key: string, condition: { ifMatch: string }): Promise<void>;
   keys(prefix: string): Promise<string[]>;
-  /** Cached stores only: the row's live value changes in memory; the node keeps its stored copy. */
-  stage?(key: string, value: unknown): void;
+  /** True when `get` may answer from memory (the worker's cached store). */
+  readonly servesMemory?: boolean;
+  /** Cached stores only: the row as this process last read or wrote it, with that ETag, if memory
+   *  holds it. A write may decide on it: its If-Match refuses it if the node has moved on. */
+  lastKnown?<T>(key: string): StoredRow<T> | undefined;
+  /** Cached stores only: the row's live value changes in memory; the node keeps its stored copy.
+   *  False when the row is not in memory (evicted): the caller writes it instead. */
+  stage?(key: string, value: unknown): boolean;
   /** Cached stores only: the next read of each row under `prefix` goes to the node. A staged value
    *  survives when the node still holds its stored copy. Listings stay: writes keep them complete. */
   rereadRows?(prefix: string): void;
@@ -175,6 +218,30 @@ export function stableJson(value: unknown): string {
   return JSON.stringify(value, (_key, field: unknown) => field && typeof field === "object" && !Array.isArray(field)
     ? Object.fromEntries(Object.entries(field).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : field);
 }
+/** A conditional write that keeps finding the row changed gives up after this many reads. */
+const CONNECTION_WRITE_ATTEMPTS = 3;
+/** Equal but for the record's revision: writing it would change nothing but `rev`. */
+function sameContent(stored: unknown, next: unknown): boolean {
+  return stableJson({ ...(stored as object), rev: undefined }) === stableJson({ ...(next as object), rev: undefined });
+}
+/** The `rev` a stored row written before revisions existed is decided on (see builtOn). */
+const UNREVISED = -1;
+/** The `rev` to put a row decided on `read` at: its stored `rev` (UNREVISED for a row written before
+ *  revisions), or 0 for a new row (`read` null). */
+export function decidedRev(read: { rev?: number } | null | undefined): number {
+  return read ? read.rev ?? UNREVISED : 0;
+}
+/**
+ * A row put without a `rebuild` is written only on the version it was decided on, named by its `rev`
+ * (decidedRev): refused once the stored row has moved on or gone, and `rev: 0` (a new row) only where
+ * none is stored. A row with no `rev` was not built from a read (a seed or an administrative write)
+ * and replaces whatever is stored, still conditionally on the version read. Writes that decide on
+ * what is stored pass `rebuild` instead.
+ */
+function builtOn(stored: { rev?: number } | null, row: { rev?: number }): boolean {
+  if (row.rev === undefined) return true;
+  return stored === null ? row.rev === 0 : (stored.rev ?? UNREVISED) === row.rev;
+}
 /** Fields every scan rewrites. Alone, they reach the node once per hour (see updateConnection). */
 const SCAN_BOOKKEEPING_PERSIST_MS = 3_600_000;
 function scanBookkeepingOnly(previous: CalendarConnection, next: CalendarConnection): boolean {
@@ -183,98 +250,133 @@ function scanBookkeepingOnly(previous: CalendarConnection, next: CalendarConnect
   return hour(previous) === hour(next) && rest(previous) === rest(next);
 }
 
-interface CachedRow { value: unknown; persisted: string }
+interface CachedRow { value: unknown; persisted: string; etag?: string; stale?: boolean }
+/** Default bounds of the row cache: about 1 KiB per row. */
+const ROW_CACHE_MAX_ROWS = 20_000;
+const ROW_CACHE_MAX_LISTINGS = 5_000;
 /**
  * In-process copy of the calendar rows, shared by the request, worker and dispatch stores. The
  * status projection is not cached: only status requests read it.
  *
- * The backend is the only writer of these keys (docker-compose.phala.yml: one backend, stop-and-drain
- * replacement), so once read, a row changes only through this process. Reads are served from memory,
- * and writing the value the node already stores is skipped. Durable writes come first: memory changes
- * after the node acknowledges a write, and a failed write (its outcome unknown) forgets the row and
- * any listing that holds it, so the next read goes back to the node. Every call runs inside a storage
- * lane job, so read-compare-write stays serialized. A restart starts empty and re-reads on first use.
+ * Only the worker store reads from memory, and only where a stale answer cannot act on consent:
+ * every durable connection write re-reads the node first (updateConnection), and the worker reads
+ * the connection from the node before each Google scan, each recording and sharing check, and each
+ * dispatch. Every write and delete is conditional on a version: If-Match on the ETag memory or the
+ * node read last, or If-None-Match. Durable writes come first: memory changes after the node
+ * acknowledges a write, and a failed write (its outcome unknown, or refused) forgets the row (a stale
+ * placeholder) and lists the key as possibly present, so the next read goes to the node. Every call
+ * runs inside a storage lane job, so read-compare-write stays serialized. A restart starts empty.
  *
- * The cost is memory: every row read or written since the start, including markers, which never expire.
+ * Absence is known only from a listing (no tombstones): a worker read of a key no listing covers
+ * lists its directory once. Rows and listings are bounded, least recently used first out; an evicted
+ * row is read from the node again (an evicted staged scan time only makes the next scan early).
  */
 export class CalendarAutojoinRowCache {
-  /** `null`: known absent. */
-  private readonly rows = new Map<string, CachedRow | null>();
-  /** Complete key sets of listed prefixes. */
+  /** Insertion order is recency: every hit re-inserts. */
+  private readonly rows = new Map<string, CachedRow>();
+  /** Complete key sets of listed prefixes, same recency order. */
   private readonly listings = new Map<string, Set<string>>();
-  /** Rows whose next read must come from the node (see rereadRows). */
-  private readonly stale = new Set<string>();
+  private readonly maxRows: number;
+  private readonly maxListings: number;
+
+  constructor(bounds: { maxRows?: number; maxListings?: number } = {}) {
+    this.maxRows = bounds.maxRows ?? ROW_CACHE_MAX_ROWS;
+    this.maxListings = bounds.maxListings ?? ROW_CACHE_MAX_LISTINGS;
+  }
 
   /** `json` read through this cache. `freshReads` stores (request and dispatch) read every row and
    *  listing from the node, and keep the cache current with what they read. */
   view(json: JsonStore, freshReads = false): JsonStore {
     const cached = (key: string) => !key.startsWith(`${PREFIX}status/`);
+    const fresh = async <T>(key: string) => this.observe(key, await json.read<T>(key));
+    const keys = async (prefix: string) => {
+      const listing = freshReads ? undefined : this.touch(this.listings, prefix);
+      if (listing) return [...listing];
+      const listed = await json.keys(prefix);
+      if (!cached(prefix)) return listed;
+      const present = new Set(listed);
+      for (const key of this.rows.keys()) if (key.startsWith(prefix) && !present.has(key)) this.rows.delete(key);
+      this.remember(this.listings, prefix, present, this.maxListings);
+      return listed;
+    };
+    const getStored = async <T>(key: string): Promise<StoredRow<T> | null> => {
+      if (!cached(key)) return json.getStored<T>(key);
+      if (freshReads) return fresh<T>(key);
+      const known = this.touch(this.rows, key);
+      if (known && !known.stale) return { value: structuredClone(known.value) as T, etag: known.etag };
+      if (!known) {
+        let covered = this.covering(key);
+        if (!covered) { await keys(key.slice(0, key.lastIndexOf("/") + 1)); covered = this.covering(key); }
+        if (covered && !covered.has(key)) return null;
+      }
+      return fresh<T>(key);
+    };
     return {
-      get: async <T>(key: string) => {
-        if (!cached(key)) return json.get<T>(key);
-        const known = this.rows.get(key);
-        if (!freshReads && !this.stale.has(key)) {
-          if (known !== undefined) return known === null ? null : structuredClone(known.value) as T;
-          if (this.unlisted(key)) return null;
-        }
-        return this.observe(key, await json.get<T>(key));
-      },
-      put: async (key, value) => {
-        if (!cached(key)) return json.put(key, value);
-        const persisted = stableJson(value);
-        if (this.stale.has(key) || this.rows.get(key)?.persisted !== persisted) {
-          try { await json.put(key, value); }
-          catch (error) { this.forget(key); throw error; }
-        }
-        this.rows.set(key, { value: structuredClone(value), persisted });
-        this.stale.delete(key);
-        this.listed(key, true);
-      },
-      remove: async key => {
-        if (!cached(key)) return json.remove(key);
-        if (!this.stale.has(key) && (this.rows.get(key) === null || (!this.rows.has(key) && this.unlisted(key)))) return;
-        try { await json.remove(key); }
+      servesMemory: !freshReads,
+      get: async <T>(key: string) => (await getStored<T>(key))?.value ?? null,
+      getStored,
+      read: async <T>(key: string) => cached(key) ? fresh<T>(key) : json.read<T>(key),
+      put: async (key, value, condition) => {
+        if (!cached(key)) return json.put(key, value, condition);
+        if (!condition) throw new CalendarRowUnversioned();
+        let etag: string | undefined;
+        try { etag = await json.put(key, value, condition); }
         catch (error) { this.forget(key); throw error; }
-        this.rows.set(key, null);
-        this.stale.delete(key);
+        this.remember(this.rows, key, { value: structuredClone(value), persisted: stableJson(value), etag }, this.maxRows);
+        this.listed(key, true);
+        return etag;
+      },
+      remove: async (key, condition) => {
+        if (!cached(key)) return json.remove(key, condition);
+        try { await json.remove(key, condition); }
+        catch (error) { this.forget(key); throw error; }
+        this.rows.delete(key);
         this.listed(key, false);
       },
-      keys: async prefix => {
-        const listing = freshReads ? undefined : this.listings.get(prefix);
-        if (listing) return [...listing];
-        const keys = await json.keys(prefix);
-        if (!cached(prefix)) return keys;
-        const present = new Set(keys);
-        for (const key of this.rows.keys()) {
-          if (key.startsWith(prefix) && !present.has(key)) { this.rows.set(key, null); this.stale.delete(key); }
-        }
-        this.listings.set(prefix, present);
-        return keys;
+      keys,
+      lastKnown: <T>(key: string) => {
+        const known = cached(key) ? this.rows.get(key) : undefined;
+        return known && !known.stale ? { value: structuredClone(known.value) as T, etag: known.etag } : undefined;
       },
       stage: (key, value) => {
         const known = this.rows.get(key);
-        if (!known) throw new Error("calendar_row_not_cached");
-        this.rows.set(key, { value: structuredClone(value), persisted: known.persisted });
+        if (!known || known.stale) return false;
+        this.rows.set(key, { value: structuredClone(value), persisted: known.persisted, etag: known.etag });
+        return true;
       },
       rereadRows: prefix => {
-        for (const key of this.rows.keys()) if (key.startsWith(prefix)) this.stale.add(key);
+        for (const [key, row] of this.rows) if (key.startsWith(prefix)) row.stale = true;
       },
     };
   }
   /** A node read. When it matches the stored copy, memory keeps any newer staged value. */
-  private observe<T>(key: string, value: T | null): T | null {
+  private observe<T>(key: string, stored: StoredRow<T> | null): StoredRow<T> | null {
     const known = this.rows.get(key);
-    this.stale.delete(key);
-    if (value === null) { this.rows.set(key, null); this.listed(key, false); return null; }
-    const persisted = stableJson(value);
-    if (known?.persisted === persisted) return structuredClone(known.value) as T;
-    this.rows.set(key, { value: structuredClone(value), persisted });
+    if (stored === null) { this.rows.delete(key); this.listed(key, false); return null; }
+    const persisted = stableJson(stored.value);
+    const { etag } = stored;
+    if (known?.persisted === persisted) {
+      this.remember(this.rows, key, { value: known.value, persisted, etag }, this.maxRows);
+      return { value: structuredClone(known.value) as T, etag };
+    }
+    this.remember(this.rows, key, { value: structuredClone(stored.value), persisted, etag }, this.maxRows);
     this.listed(key, true);
+    return stored;
+  }
+  private touch<V>(map: Map<string, V>, key: string): V | undefined {
+    const value = map.get(key);
+    if (value !== undefined) { map.delete(key); map.set(key, value); }
     return value;
   }
-  private unlisted(key: string): boolean {
-    for (const [prefix, keys] of this.listings) if (key.startsWith(prefix) && !keys.has(key)) return true;
-    return false;
+  private remember<V>(map: Map<string, V>, key: string, value: V, max: number): void {
+    map.delete(key);
+    map.set(key, value);
+    while (map.size > max) map.delete(map.keys().next().value!);
+  }
+  /** The listing that says whether `key` exists, if any. */
+  private covering(key: string): Set<string> | undefined {
+    for (const [prefix, keys] of this.listings) if (key.startsWith(prefix)) return keys;
+    return undefined;
   }
   private listed(key: string, present: boolean): void {
     for (const [prefix, keys] of this.listings) {
@@ -282,10 +384,11 @@ export class CalendarAutojoinRowCache {
       if (present) keys.add(key); else keys.delete(key);
     }
   }
+  /** A failed write: the row's value, and whether it exists, are unknown. A stale placeholder sends
+   *  the next read and write to the node; listing it keeps the listings complete. */
   private forget(key: string): void {
-    this.rows.delete(key);
-    this.stale.delete(key);
-    for (const prefix of this.listings.keys()) if (key.startsWith(prefix)) this.listings.delete(prefix);
+    this.remember(this.rows, key, { value: null, persisted: "", stale: true }, this.maxRows);
+    this.listed(key, true);
   }
 }
 const PREFIX = "calendar-autojoin/v1/";
@@ -317,21 +420,26 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     summaryWriteDigests.set(statusCache, this.summaryDigests);
   }
   getConnection(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) { return this.read(() => this.json.get<CalendarConnection>(connectionKey(tenant)), deadline, metrics); }
-  putConnection(row: CalendarConnection) { return this.updateConnection(row.tenant, () => row).then(() => undefined); }
+  async putConnection(row: CalendarConnection, rebuild?: (stored: CalendarConnection | null) => CalendarConnection | null) {
+    const written = await this.updateConnection(row.tenant, rebuild ?? (stored => builtOn(stored, row) ? row : null));
+    if (written === null) throw new CalendarRowChanged();
+  }
   updateConnection(tenant: string, fn: Update<CalendarConnection>) {
-    // Compare and persist in the same serialized lane job, against the actual previous row.
     return this.run(async () => {
       const key = connectionKey(tenant);
-      const previous = await this.json.get<CalendarConnection>(key);
-      const next = fn(previous === null ? null : structuredClone(previous));
-      if (next !== null && previous !== null && this.json.stage && scanBookkeepingOnly(previous, next)) {
+      if (this.json.servesMemory) {
         // The live lastScanAt/nextScanAt stay in memory; the node's copy lags by at most an hour. A
         // restart reads an overdue nextScanAt, which only scans at once.
-        this.json.stage(key, next);
-      } else if (next !== null) {
+        const cached = await this.json.get<CalendarConnection>(key);
+        const staged = fn(cached === null ? null : structuredClone(cached));
+        if (staged !== null && cached !== null && scanBookkeepingOnly(cached, staged) && this.json.stage?.(key, staged)) return staged;
+      }
+      // Every durable write reads the stored row from the node: memory's policy fields never reach
+      // the node, and a disable, a new generation or a deletion stored in between is decided on.
+      return this.writeIf(key, fn, () => this.json.read<CalendarConnection>(key), async (next, condition, previous) => {
         const write = async () => {
-          await this.json.put(key, next);
-          // Connection rows are never deleted; a new tenant cannot have occurrence history.
+          await this.json.put(key, next, condition);
+          // A new tenant cannot have occurrence history.
           if (previous === null) {
             try { await this.writeSummary(tenant, { version: 1, outcomes: [] }); }
             catch { this.forgetStatusSummaryDigest(tenant); }
@@ -339,9 +447,39 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
         };
         if (connectionPolicyChanged(previous, next)) await this.statusCache.mutate(tenant, write);
         else await write();
-      }
-      return next;
+      });
     });
+  }
+  /**
+   * Only called inside a lane job. A compare-and-set: `decide` runs on the stored row (null: none)
+   * and returns the row to write, or null to write nothing. The row is written with its `rev` one
+   * more than the stored row's, and only while the node holds the version read: If-Match on its ETag,
+   * If-None-Match for a new row. A stored row without an ETag is refused (CalendarRowUnversioned),
+   * never written blind. When the node holds another version (412) the row is read again and decided
+   * again: a decision is never reused on a row it was not made on. A row equal to the stored one but
+   * for `rev` is not written.
+   */
+  private async writeIf<T extends { rev?: number }>(key: string, decide: Update<T>, read: () => Promise<StoredRow<T> | null>,
+    commit: (next: T, condition: WriteCondition, previous: T | null) => Promise<unknown> = (next, condition) => this.json.put(key, next, condition)): Promise<T | null> {
+    for (let attempt = 1; ; attempt++) {
+      const stored = await read();
+      const previous = stored?.value ?? null;
+      const decided = decide(previous === null ? null : structuredClone(previous));
+      if (decided === null) return null;
+      if (previous !== null && sameContent(previous, decided)) return previous;
+      if (stored && stored.etag === undefined) throw new CalendarRowUnversioned();
+      const next = { ...decided, rev: (previous?.rev ?? 0) + 1 };
+      try {
+        await commit(next, stored ? { ifMatch: stored.etag! } : { ifNoneMatch: "*" }, previous);
+        return next;
+      } catch (error) {
+        if (!(error instanceof CalendarRowChanged) || attempt >= CONNECTION_WRITE_ATTEMPTS) throw error;
+      }
+    }
+  }
+  getConnectionFresh(tenant: string) {
+    const key = connectionKey(tenant);
+    return this.read(async () => (await this.json.read<CalendarConnection>(key))?.value ?? null);
   }
   listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
   rereadConnections(): void { this.json.rereadRows?.(`${PREFIX}connections/`); }
@@ -406,17 +544,37 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     if (this.summaryDigests.size > STATUS_CACHE_MAX_TENANTS) this.summaryDigests.delete(this.summaryDigests.keys().next().value!);
   }
   getOccurrence(tenant: string, id: string) { return this.run(() => this.json.get<CalendarOccurrence>(occurrencePrefix(tenant) + id)); }
-  putOccurrence(row: CalendarOccurrence) { return this.run(() => this.json.put(occurrencePrefix(row.tenant) + row.id, row)); }
+  async putOccurrence(row: CalendarOccurrence) {
+    const written = await this.update<CalendarOccurrence>(occurrencePrefix(row.tenant) + row.id, stored => builtOn(stored, row) ? row : null, "memory");
+    if (written === null) throw new CalendarRowChanged();
+  }
   updateOccurrence(tenant: string, id: string, fn: Update<CalendarOccurrence>) { return this.update(occurrencePrefix(tenant) + id, fn); }
   listOccurrences(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) { return this.list<CalendarOccurrence>(occurrencePrefix(tenant), deadline, metrics); }
-  deleteOccurrence(tenant: string, id: string) { return this.run(() => this.json.remove(occurrencePrefix(tenant) + id)); }
+  /** A conditional delete: `when` decides on the stored row, deleted with If-Match on its ETag; a row
+   *  changed since (412) is read and decided again. */
+  deleteOccurrence(tenant: string, id: string, when: (stored: CalendarOccurrence) => boolean = () => true) {
+    const key = occurrencePrefix(tenant) + id;
+    return this.run(async () => {
+      for (let attempt = 1; ; attempt++) {
+        const stored = await this.json.getStored<CalendarOccurrence>(key);
+        if (stored === null) return true;
+        if (!when(structuredClone(stored.value))) return false;
+        if (stored.etag === undefined) throw new CalendarRowUnversioned();
+        try { await this.json.remove(key, { ifMatch: stored.etag }); return true; }
+        catch (error) { if (!(error instanceof CalendarRowChanged) || attempt >= CONNECTION_WRITE_ATTEMPTS) throw error; }
+      }
+    });
+  }
   getMarker(tenant: string, id: string) { return this.run(() => this.json.get<CalendarSentMarker>(markerKey(tenant, id))); }
-  putMarker(row: CalendarSentMarker) { return this.run(() => this.json.put(markerKey(row.tenant, row.id), row)); }
+  /** A marker only records that a join was sent, so the newest record stands: written on whatever
+   *  version is stored, conditionally on it. Usually there is none, so the first attempt creates it
+   *  (If-None-Match) without a read; a marker already stored refuses that and is read. */
+  async putMarker(row: CalendarSentMarker) { await this.update<CalendarSentMarker>(markerKey(row.tenant, row.id), () => row, "absent"); }
   async getCaptureClaims(meetingUrl: string) {
     return (await this.run(() => this.json.get<{ claims?: CaptureClaim[] }>(captureKey(meetingUrl))))?.claims ?? [];
   }
   async updateCaptureClaims(meetingUrl: string, fn: (claims: CaptureClaim[]) => CaptureClaim[], now = Date.now()) {
-    const doc = await this.update<{ claims: CaptureClaim[] }>(captureKey(meetingUrl), current => ({
+    const doc = await this.update<{ claims: CaptureClaim[]; rev?: number }>(captureKey(meetingUrl), current => ({
       claims: fn(current?.claims ?? []).filter(claim => claim.end >= now - CLAIM_RETENTION_MS),
     }));
     return doc!.claims;
@@ -436,12 +594,17 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     const budget = this.laneOptions.waitTimeoutMs;
     return budget === undefined ? undefined : Date.now() + budget;
   }
-  private update<T>(key: string, fn: Update<T>): Promise<T | null> {
-    return this.run(async () => {
-      const next = fn(await this.json.get<T>(key));
-      if (next !== null) await this.json.put(key, next);
-      return next;
-    });
+  /** Read (memory on the worker's store, the node on the others), decide and write conditionally:
+   *  see writeIf. `first` changes the first attempt's read: "memory" decides on the row as this
+   *  process last read or wrote it, when memory holds it (a put of a row the caller just read);
+   *  "absent" also assumes no row when memory holds none (a create). Its If-Match/If-None-Match
+   *  refuses a wrong guess; the refused write forgets memory, and the retry reads the node. */
+  private update<T extends { rev?: number }>(key: string, fn: Update<T>, first: "read" | "memory" | "absent" = "read"): Promise<T | null> {
+    let attempt = 0;
+    return this.run(() => this.writeIf(key, fn, async () => {
+      if (attempt++ === 0 && first !== "read") return this.json.lastKnown?.<T>(key) ?? (first === "absent" ? null : this.json.getStored<T>(key));
+      return this.json.getStored<T>(key);
+    }));
   }
   /** One lane slot per key, so other lane users interleave with a long listing. A key removed
    * between the listing and its read is skipped. An explicit deadline covers the whole listing
@@ -462,38 +625,72 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
   }
 }
 
+/** Test double: holds rows as the node does, with a content-hash ETag (identical bytes, same ETag). */
 export class MemoryCalendarAutojoinStore extends JsonCalendarAutojoinStore {
   constructor(statusCache = new CalendarAutojoinStatusCache()) {
     const rows = new Map<string, unknown>();
+    const etag = (key: string) => rows.has(key) ? `"sha256-${createHash("sha256").update(JSON.stringify(rows.get(key))).digest("hex")}"` : undefined;
+    const read = async <T>(key: string): Promise<StoredRow<T> | null> =>
+      rows.has(key) ? { value: structuredClone(rows.get(key)) as T, etag: etag(key) } : null;
+    const holds = (key: string, condition?: WriteCondition) =>
+      !condition || ("ifNoneMatch" in condition ? !rows.has(key) : etag(key) === condition.ifMatch);
     super({
-      async get<T>(key: string) { return structuredClone(rows.get(key) ?? null) as T | null; },
-      async put(key, row) { rows.set(key, structuredClone(row)); },
-      async remove(key) { rows.delete(key); },
+      async get<T>(key: string) { return (await read<T>(key))?.value ?? null; },
+      getStored: read,
+      read,
+      async put(key, value, condition) {
+        if (!holds(key, condition)) throw new CalendarRowChanged();
+        rows.set(key, structuredClone(value));
+        return etag(key);
+      },
+      async remove(key, condition) {
+        if (rows.has(key) && !holds(key, condition)) throw new CalendarRowChanged();
+        rows.delete(key);
+      },
       async keys(prefix) { return [...rows.keys()].filter(key => key.startsWith(prefix)); },
     }, new BackendStorageLane(), {}, statusCache);
   }
+}
+
+/** The node's answer to a write whose If-Match/If-None-Match no longer holds (HTTP 412). */
+function isKvPreconditionFailure(response: unknown): boolean {
+  if (response === null || typeof response !== "object" || !("ok" in response) || response.ok !== false) return false;
+  const error = "error" in response ? response.error : undefined;
+  return error !== null && typeof error === "object" && "code" in error && error.code === "KV_PRECONDITION_FAILED";
 }
 
 /** `rows`: read through a row cache shared with the process's other calendar stores. */
 export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
   constructor(node: TinyCloudNode, lane: BackendStorageLane, laneOptions: BackendStorageLaneRunOptions = {}, statusCache = new CalendarAutojoinStatusCache(),
     rows?: { cache: CalendarAutojoinRowCache; freshReads?: boolean }) {
+    const read = async <T>(key: string): Promise<StoredRow<T> | null> => {
+      const result = await withSessionRefresh(node, async () => {
+        const response = await node.kv.get(key);
+        return isKvMissingKeyResult(response, key) ? null : assertKvResult(response);
+      });
+      if (result === null) return null;
+      const outer = (result as { data?: unknown }).data;
+      const raw = (outer as { data?: unknown } | null)?.data ?? outer;
+      if (raw === null || raw === undefined) throw new Error("calendar_state_invalid");
+      const etag = (outer as { headers?: { etag?: unknown } } | null)?.headers?.etag;
+      return { value: (typeof raw === "string" ? JSON.parse(raw) : raw) as T, etag: typeof etag === "string" ? etag : undefined };
+    };
     const json: JsonStore = {
-      async get<T>(key: string) {
-        const result = await withSessionRefresh(node, async () => {
-          const response = await node.kv.get(key);
-          return isKvMissingKeyResult(response, key) ? null : assertKvResult(response);
+      async get<T>(key: string) { return (await read<T>(key))?.value ?? null; },
+      getStored: read,
+      read,
+      async put(key, row, condition) {
+        return withSessionRefresh(node, async () => {
+          const response = await node.kv.put(key, row, condition);
+          if (isKvPreconditionFailure(response)) throw new CalendarRowChanged();
+          const etag = (assertKvResult(response) as { data?: { headers?: { etag?: unknown } } }).data?.headers?.etag;
+          return typeof etag === "string" ? etag : undefined;
         });
-        if (result === null) return null;
-        const outer = (result as { data?: unknown }).data;
-        const raw = (outer as { data?: unknown } | null)?.data ?? outer;
-        if (raw === null || raw === undefined) throw new Error("calendar_state_invalid");
-        return (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
       },
-      async put(key, row) { await withSessionRefresh(node, async () => assertKvResult(await node.kv.put(key, row))); },
-      async remove(key) {
+      async remove(key, condition) {
         await withSessionRefresh(node, async () => {
-          const response = await node.kv.delete(key);
+          const response = await node.kv.delete(key, condition);
+          if (isKvPreconditionFailure(response)) throw new CalendarRowChanged();
           if (!isKvMissingKeyResult(response, key)) assertKvResult(response);
         });
       },

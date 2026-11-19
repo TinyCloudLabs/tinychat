@@ -448,10 +448,9 @@ test("a typed question's foot is one row (Ask me later, Drop this card, Details)
   expect(comment.compareDocumentPosition(foot!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // The context sits in its panel above the options, then the card's timing line (this fixture expires).
   const options = article.querySelector("fieldset");
-  const why = [...article.querySelectorAll("strong")].find((node) => node.textContent === "Why now: ");
+  const why = [...article.querySelectorAll("span")].find((node) => node.textContent === "Why now");
   expect(why && options && why.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const expiry = [...article.querySelectorAll("p")].find((node) => node.textContent?.startsWith("Expires "));
-  expect(expiry && options && expiry.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(options?.textContent).toContain("Expires ");
 });
 
 test("Accept recommendation and Drop this card wait under Undo before anything is written", async () => {
@@ -603,7 +602,7 @@ test("a tapped typed option counts down in its own row, Undo there writes nothin
   const article = card(view.host, String(fixture.entry.state.card.title));
   const timer = installFakeClock(); clock = timer;
   await act(async () => option(article, "Quick option").click());
-  expect(answers(article)?.textContent).toContain("Sending · 5s");
+  expect(answers(article)?.textContent).toContain("Sends in 5s");
   expect(undoPill(article)).toBeNull();
   await act(async () => button(answers(article)!, "Undo").click());
   await timer.advance(10_000);
@@ -805,4 +804,50 @@ test("an ask Sam dropped that its agent then closes in a new revision is one car
   await timer.advance(5000);
   expect(fixture.saved).toHaveLength(1);
   expect(await closeInNewRevision(fixture, view.host, "dropped")).toEqual(["Dropped"]);
+});
+
+const LONG_HOST_URL = `https://reports-for-the-quarterly-release-review.${"deeply-nested-subdomain.".repeat(5)}synthetic-example.ts.net/final-review.md?ref=${"x".repeat(60)}`;
+
+test("an open card's links are separate chips, each reading its label then its host, keeping the full address", async () => {
+  const links = [{ label: "Private report", url: "https://reports.synthetic-example.ts.net/rehearsal.md" }, { label: "Release review", url: LONG_HOST_URL }, { label: "TC-1149", url: "https://linear.app/tinycloud-labs/issue/TC-1149" }];
+  const fixture = typedFixture({ ...syntheticRecord("ask"), links });
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  const chips = [...article.querySelectorAll<HTMLAnchorElement>('nav[aria-label="Card reports and sources"] a')];
+  expect(chips.map((chip) => chip.getAttribute("href"))).toEqual(links.map((link) => link.url));
+  // One line each: the label, a separator, the host (no path, no scheme), in that order.
+  expect([...chips[0]!.querySelectorAll("span")].map((node) => node.textContent)).toEqual(["Private report", "·", "reports.synthetic-example.ts.net"]);
+  expect([...chips[1]!.querySelectorAll("span")].map((node) => node.textContent)[0]).toBe("Release review");
+  expect([...chips[1]!.querySelectorAll("span")].map((node) => node.textContent)[2]).toBe(new URL(LONG_HOST_URL).hostname);
+  // A host cut off to fit is still readable in full as the chip's tooltip, and the link opens a new tab safely.
+  expect(chips[1]!.getAttribute("title")).toBe(LONG_HOST_URL);
+  expect(chips[1]!.getAttribute("target")).toBe("_blank");
+  expect(chips[1]!.getAttribute("rel")).toContain("noopener");
+});
+
+test("a Linear ticket in card text is a link to its issue; text that only looks like one, and a ticket inside a link, are not", async () => {
+  const base = syntheticRecord("ask") as { context: Record<string, unknown> };
+  const record = { ...base, context: { ...base.context, whyNow: "Waits on TC-1149, hash SHA-256, and https://linear.app/tinycloud-labs/issue/TC-77 for the rest.", known: ["Also gates TC-1162."] } };
+  const fixture = typedFixture(record);
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  const anchors = [...article.querySelectorAll<HTMLAnchorElement>("a")];
+  const ticket = anchors.find((node) => node.textContent === "TC-1149");
+  expect(ticket?.getAttribute("href")).toBe("https://linear.app/tinycloud-labs/issue/TC-1149");
+  expect(ticket?.getAttribute("target")).toBe("_blank");
+  expect(anchors.some((node) => node.textContent === "SHA-256")).toBe(false);
+  // The URL that already contains TC-77 stays one link, and nothing is a link inside a link.
+  expect(anchors.filter((node) => node.getAttribute("href")?.endsWith("/TC-77"))).toHaveLength(1);
+  expect(article.querySelectorAll("a a")).toHaveLength(0);
+  // The fact behind the fold links too.
+  expect(anchors.find((node) => node.textContent === "TC-1162")?.getAttribute("href")).toBe("https://linear.app/tinycloud-labs/issue/TC-1162");
+});
+
+test("a card open in its row is one article inside the list's own item, not a card inside another card", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const article = card(view.host, String(fixture.entry.state.card.title));
+  expect(article.parentElement!.closest("article")).toBeNull();
+  expect(article.querySelector("article")).toBeNull();
+  expect(article.closest("li")!.parentElement!.tagName).toBe("UL");
 });
