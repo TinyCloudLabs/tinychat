@@ -20,7 +20,7 @@ function authStub(req: Request, _res: Response, next: NextFunction) {
 function createApp() {
   const app = express();
   app.use(createApiBodyParser());
-  app.use("/api/chat", authStub, createChatRouter());
+  app.use("/api/chat", authStub, createChatRouter({ redpillFetch: (input, init) => globalThis.fetch(input, init) }));
   return app;
 }
 
