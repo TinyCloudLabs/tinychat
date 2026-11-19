@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.0-beta.4
+
+### Minor Changes
+
+- a9e1b3d: Feed: cards can show what kind of task they are, and messages from another team over Courier are marked. An agent can label a card Spend, Publish, Send, Access, Rule, Ship, Do, Review, Direction, Answer, News or Alert. The label shows at the top right of the card in the list and Cards views, and beside the title of an open card. Spend, Publish, Send and Access, where your tap sends something out, are outlined with an arrow; Alert uses the warning colour; the rest are grey. A message relayed over Courier starts with the Courier mark and its sender, and the open card adds "via" the agent that passed it on. The mark appears only on cards that come from your Courier connection. Filter offers "Task" when any card has a label. A label the app doesn't recognise doesn't change the card and is listed in Details as not shown.
+
 ## 0.15.0-beta.3
 
 ### Patch Changes
