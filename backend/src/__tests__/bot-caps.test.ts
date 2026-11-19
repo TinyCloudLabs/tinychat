@@ -7,8 +7,9 @@ const key = (n: number) => n.toString(16).repeat(32);
 
 /** A record with Main and `privateBots - 1` more private bots, plus extras given in full. */
 function record(privateBots: number, extras: Array<{ state?: string; environment?: string }> = []): OwnerBots {
+  // A bot that is being deleted always carries the time its deletion began; the record is refused without it.
   const bot = (index: number, state = "active", environment = "private") =>
-    ({ key: index === 0 ? "main" : key(index), name: index === 0 ? "Main" : `Bot ${index}`, shape: "pebble", colour: "blue", environment, state, createdAt: T0 });
+    ({ key: index === 0 ? "main" : key(index), name: index === 0 ? "Main" : `Bot ${index}`, shape: "pebble", colour: "blue", environment, state, createdAt: T0, ...(state === "deleting" ? { deletingSince: T0 } : {}) });
   const bots = Array.from({ length: privateBots }, (_unused, index) => bot(index));
   extras.forEach((extra, offset) => bots.push(bot(privateBots + offset, extra.state, extra.environment)));
   return parseOwnerBots({ v: 1, seq: 1, bots, deleted: [] });

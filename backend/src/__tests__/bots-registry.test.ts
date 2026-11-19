@@ -216,8 +216,9 @@ describe("the bots registry", () => {
 });
 
 describe("may one bot message another", () => {
+  // A bot that is being deleted always carries the time its deletion began; the record is refused without it.
   const bot = (key: string, name: string, state = "active", environment = "private", createdAt = T0.toISOString()) =>
-    ({ key, name, shape: "pebble", colour: "blue", environment, state, createdAt });
+    ({ key, name, shape: "pebble", colour: "blue", environment, state, createdAt, ...(state === "deleting" ? { deletingSince: createdAt } : {}) });
   const A = "a".repeat(32);
   const SUSPENDED = "5".repeat(32);
   const DELETING = "d".repeat(32);
@@ -331,7 +332,8 @@ describe("renaming and restyling a bot", () => {
   const KEY_B = "b".repeat(32);
   const LEAVING = "d".repeat(32);
   const GONE = "f".repeat(32);
-  const bot = (key: string, name: string, state = "active") => ({ key, name, shape: "pebble", colour: "blue", environment: "private", state, createdAt: T0.toISOString() });
+  const bot = (key: string, name: string, state = "active") =>
+    ({ key, name, shape: "pebble", colour: "blue", environment: "private", state, createdAt: T0.toISOString(), ...(state === "deleting" ? { deletingSince: T0.toISOString() } : {}) });
   /** A store whose record holds Main, Research, Notes and one bot that is being deleted, and remembers one deleted key. */
   const seeded = () => {
     const kv = store();
@@ -404,5 +406,136 @@ describe("renaming and restyling a bot", () => {
     const registry = new BotsRegistry(kv);
     expect(await registry.update(ADDRESS, KEY_A, { name: "Research", shape: "pebble", colour: "blue" })).toEqual({ ok: true, bot: bot(KEY_A, "Research") });
     expect(kv.rows.get(KEY)!.version).toBe(1);
+  });
+});
+
+describe("deleting a bot", () => {
+  const KEY_A = "a".repeat(32);
+  const KEY_B = "b".repeat(32);
+  const GONE = "f".repeat(32);
+  const LATER = new Date("2026-12-01T00:00:00.000Z");
+  const bot = (key: string, name: string, extra: Record<string, unknown> = {}) =>
+    ({ key, name, shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: T0.toISOString(), ...extra });
+  const deleting = (key: string, name: string, extra: Record<string, unknown> = {}) => bot(key, name, { state: "deleting", deletingSince: LATER.toISOString(), ...extra });
+  const seed = (bots: unknown[], deleted: unknown[] = [{ key: GONE, name: "Gone" }]) => {
+    const kv = store();
+    kv.rows.set(KEY, { version: 1, value: JSON.stringify({ v: 1, seq: 4, deleted, bots }) });
+    return kv;
+  };
+  /** Main, Research (active) and Notes (suspended). */
+  const usual = () => seed([bot("main", "Main"), bot(KEY_A, "Research"), bot(KEY_B, "Notes", { state: "suspended" })]);
+  const wanted = { name: "More", shape: "sprout", colour: "teal" };
+
+  test("marks the bot as being deleted, with the time, under a new counter", async () => {
+    const registry = new BotsRegistry(usual(), { now: () => LATER });
+    expect(await registry.beginDelete(ADDRESS, KEY_A)).toEqual({ ok: true, bot: deleting(KEY_A, "Research"), seq: 5 });
+    expect((await registry.read(ADDRESS)).bots[1]).toEqual(deleting(KEY_A, "Research"));
+    // A suspended bot can be deleted too.
+    expect(await registry.beginDelete(ADDRESS, KEY_B)).toEqual({ ok: true, bot: deleting(KEY_B, "Notes"), seq: 6 });
+  });
+
+  test("asked again, answers the same bot and writes nothing", async () => {
+    const kv = usual();
+    const first = await new BotsRegistry(kv, { now: () => LATER }).beginDelete(ADDRESS, KEY_A);
+    expect(first.ok).toBe(true);
+    const version = kv.rows.get(KEY)!.version;
+    expect(await new BotsRegistry(kv, { now: () => new Date("2027-01-01T00:00:00.000Z") }).beginDelete(ADDRESS, KEY_A)).toEqual(first);
+    expect(kv.rows.get(KEY)!.version).toBe(version);
+  });
+
+  test("a bot that is being deleted no longer counts toward the limit", async () => {
+    const registry = new BotsRegistry(usual(), { now: () => LATER, newKey: () => "c".repeat(32) });
+    expect(await registry.create(ADDRESS, wanted, 3)).toEqual({ ok: false, error: "bot_limit" });
+    await registry.beginDelete(ADDRESS, KEY_A);
+    expect((await registry.create(ADDRESS, wanted, 3)).ok).toBe(true);
+  });
+
+  test("Main cannot be deleted, and a key that is unknown, malformed or already deleted is not found", async () => {
+    const kv = usual();
+    const before = kv.rows.get(KEY);
+    const registry = new BotsRegistry(kv, { now: () => LATER });
+    expect(await registry.beginDelete(ADDRESS, "main")).toEqual({ ok: false, error: "main_fixed" });
+    for (const key of ["9".repeat(32), "../x", "Research", GONE]) {
+      expect([key, await registry.beginDelete(ADDRESS, key)]).toEqual([key, { ok: false, error: "not_found" }]);
+    }
+    expect(kv.rows.get(KEY)).toEqual(before);
+  });
+
+  test("with three bots already being deleted, a fourth deletion is refused", async () => {
+    const kv = seed([bot("main", "Main"), deleting("1".repeat(32), "One"), deleting("2".repeat(32), "Two"), deleting("3".repeat(32), "Three"), bot(KEY_A, "Research")]);
+    const before = kv.rows.get(KEY);
+    expect(await new BotsRegistry(kv, { now: () => LATER }).beginDelete(ADDRESS, KEY_A)).toEqual({ ok: false, error: "delete_limit" });
+    expect(kv.rows.get(KEY)).toEqual(before);
+  });
+
+  test("closing a bot's permission is recorded with the delegation to revoke, and only for a bot that is being deleted", async () => {
+    const kv = seed([bot("main", "Main"), deleting(KEY_A, "Research"), bot(KEY_B, "Notes")]);
+    const registry = new BotsRegistry(kv);
+    const closed = deleting(KEY_A, "Research", { grantClosed: true, revoke: { cid: "cid-1" } });
+    expect(await registry.closeGrant(ADDRESS, KEY_A, "cid-1")).toEqual(closed);
+    expect((await registry.read(ADDRESS)).bots[1]).toEqual(closed);
+    // Asked again, even with another delegation, the first one stays: it is the one still to revoke.
+    const version = kv.rows.get(KEY)!.version;
+    expect(await registry.closeGrant(ADDRESS, KEY_A, "cid-2")).toEqual(closed);
+    // A bot that is not being deleted keeps accepting permissions, and so does Main.
+    expect(await registry.closeGrant(ADDRESS, KEY_B, "cid-3")).toBeUndefined();
+    expect(await registry.closeGrant(ADDRESS, "main", "cid-4")).toBeUndefined();
+    expect(kv.rows.get(KEY)!.version).toBe(version);
+  });
+
+  test("a bot with no stored permission is closed with nothing to revoke", async () => {
+    const registry = new BotsRegistry(seed([bot("main", "Main"), deleting(KEY_A, "Research")]));
+    expect(await registry.closeGrant(ADDRESS, KEY_A, undefined)).toEqual(deleting(KEY_A, "Research", { grantClosed: true }));
+  });
+
+  test("a bot leaves the record only after its permission was closed, and its key and name are remembered", async () => {
+    const kv = seed([bot("main", "Main"), deleting(KEY_A, "Research"), bot(KEY_B, "Notes")]);
+    const registry = new BotsRegistry(kv);
+    expect(await registry.finishDelete(ADDRESS, KEY_A)).toBe(false);
+    expect((await registry.read(ADDRESS)).bots).toHaveLength(3);
+    await registry.closeGrant(ADDRESS, KEY_A, "cid-1");
+    expect(await registry.finishDelete(ADDRESS, KEY_A)).toBe(true);
+    const row = await registry.read(ADDRESS);
+    expect(row.bots.map(entry => entry.key)).toEqual(["main", KEY_B]);
+    expect(row.deleted).toEqual([{ key: GONE, name: "Gone" }, { key: KEY_A, name: "Research", revoke: { cid: "cid-1" } }]);
+    // Asked again it is still gone, and nothing is written. A bot that is not being deleted cannot be finished.
+    const version = kv.rows.get(KEY)!.version;
+    expect(await registry.finishDelete(ADDRESS, KEY_A)).toBe(true);
+    expect(await registry.finishDelete(ADDRESS, KEY_B)).toBe(false);
+    expect(await registry.finishDelete(ADDRESS, "main")).toBe(false);
+    expect(kv.rows.get(KEY)!.version).toBe(version);
+  });
+
+  test("once the delegation is revoked nothing is left to retry, for a bot being deleted and for a deleted one", async () => {
+    const kv = seed([bot("main", "Main"), deleting(KEY_A, "Research", { grantClosed: true, revoke: { cid: "cid-1" } })], [{ key: GONE, name: "Gone", revoke: { cid: "cid-0" } }]);
+    const registry = new BotsRegistry(kv);
+    await registry.clearRevoke(ADDRESS, KEY_A);
+    await registry.clearRevoke(ADDRESS, GONE);
+    const row = await registry.read(ADDRESS);
+    expect(row.bots[1]).toEqual(deleting(KEY_A, "Research", { grantClosed: true }));
+    expect(row.deleted).toEqual([{ key: GONE, name: "Gone" }]);
+  });
+
+  test("a record whose deletion bookkeeping does not fit a bot's state is refused and left as it is", async () => {
+    const main = bot("main", "Main");
+    const damaged: Array<[bots: unknown[], deleted?: unknown[]]> = [
+      [[main, bot(KEY_A, "Research", { deletingSince: LATER.toISOString() })]],
+      [[main, bot(KEY_A, "Research", { grantClosed: true })]],
+      [[main, bot(KEY_A, "Research", { revoke: { cid: "cid-1" } })]],
+      [[main, bot(KEY_A, "Research", { state: "deleting" })]],
+      [[bot("main", "Main", { state: "deleting", deletingSince: LATER.toISOString() })]],
+      [[main, deleting(KEY_A, "Research", { grantClosed: false })]],
+      [[main, deleting(KEY_A, "Research", { grantClosed: "yes" })]],
+      [[main, deleting(KEY_A, "Research", { revoke: {} })]],
+      [[main, deleting(KEY_A, "Research", { revoke: { cid: "" } })]],
+      [[main, deleting(KEY_A, "Research", { revoke: "cid-1" })]],
+      [[main], [{ key: GONE, name: "Gone", revoke: { cid: 5 } }]],
+    ];
+    for (const [bots, deleted] of damaged) {
+      const kv = seed(bots, deleted);
+      const before = kv.rows.get(KEY);
+      await expect(new BotsRegistry(kv).read(ADDRESS)).rejects.toThrow("bots_registry_unavailable");
+      expect(kv.rows.get(KEY)).toEqual(before);
+    }
   });
 });

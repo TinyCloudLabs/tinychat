@@ -224,7 +224,7 @@ describe("sending a message to a bot other than Main", () => {
   /** Puts a record straight into the store: Main, one suspended bot and one that is being deleted. */
   const seedStates = (kv: FakeRegistryStore) => kv.rows.set(`bots/registry/${owner.toLowerCase()}`, {
     version: 1,
-    value: JSON.stringify({ v: 1, seq: 4, deleted: [], bots: [main, { ...main, key: SUSPENDED, name: "Paused", state: "suspended" }, { ...main, key: DELETING, name: "Leaving", state: "deleting" }] }),
+    value: JSON.stringify({ v: 1, seq: 4, deleted: [], bots: [main, { ...main, key: SUSPENDED, name: "Paused", state: "suspended" }, { ...main, key: DELETING, name: "Leaving", state: "deleting", deletingSince: T0.toISOString() }] }),
   });
 
   test("a bot that is suspended or being deleted takes no message, and the service is not called", async () => {

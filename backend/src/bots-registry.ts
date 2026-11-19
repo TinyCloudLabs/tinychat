@@ -26,15 +26,25 @@ export interface Bot {
   environment: BotEnvironment;
   state: BotState;
   createdAt: string;
+  /** Deleting only: when the owner asked for the deletion. */
+  deletingSince?: string;
+  /** Deleting only: no permission to save history is accepted for this bot any more. Set before its stored one is removed. */
+  grantClosed?: true;
+  /** Deleting only: the delegation still to revoke, kept here so that removing the stored permission does not lose it. */
+  revoke?: { cid: string };
 }
-export interface DeletedBot { key: string; name: string }
+export interface DeletedBot { key: string; name: string; revoke?: { cid: string } }
 export interface OwnerBots { v: 1; seq: number; bots: Bot[]; deleted: DeletedBot[] }
 
 /** `seq` is the counter of the write that stored the bot: the service is told the bot's state under it. */
 export type CreateResult = { ok: true; bot: Bot; seq: number } | { ok: false; error: "invalid_name" | "invalid_shape" | "invalid_colour" | "name_taken" | "bot_limit" };
 export type UpdateResult = { ok: true; bot: Bot } | { ok: false; error: "invalid" | "invalid_name" | "invalid_shape" | "invalid_colour" | "name_taken" | "bot_deleting" | "not_found" };
+/** `seq` is the counter of the record that holds the bot as being deleted. */
+export type DeleteResult = { ok: true; bot: Bot; seq: number } | { ok: false; error: "main_fixed" | "delete_limit" | "not_found" };
 
 export const MAIN_BOT_KEY = "main";
+/** Deletions in progress per owner, so deleting cannot be used to pile up working state. */
+export const BOT_DELETING_MAX = 3;
 export const BOT_NAME_MAX = 24;
 /** How a bot other than Main is named. Checked before a key is looked up or becomes part of an address. */
 export const BOT_KEY = /^[0-9a-f]{32}$/;
@@ -66,6 +76,15 @@ export function checkedName(value: unknown): string | undefined {
 /** One field of a stored object. Stored data is checked field by field; nothing about its shape is assumed. */
 const field = (value: object, name: string): unknown => (name in value ? Reflect.get(value, name) : undefined);
 
+/** The delegation still to revoke, if there is one. Anything but absent or a non-empty `cid` is refused. */
+function parseRevoke(raw: unknown): { cid: string } | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "object" || raw === null) throw new RegistryUnavailable("revoke");
+  const cid = field(raw, "cid");
+  if (typeof cid !== "string" || cid === "") throw new RegistryUnavailable("revoke");
+  return { cid };
+}
+
 function parseBot(raw: unknown): Bot {
   if (typeof raw !== "object" || raw === null) throw new RegistryUnavailable("bot");
   const key = field(raw, "key");
@@ -75,20 +94,30 @@ function parseBot(raw: unknown): Bot {
   const environment = field(raw, "environment");
   const state = field(raw, "state");
   const createdAt = field(raw, "createdAt");
+  const deletingSince = field(raw, "deletingSince");
+  const grantClosed = field(raw, "grantClosed");
+  const revoke = parseRevoke(field(raw, "revoke"));
   if (typeof key !== "string" || (key !== MAIN_BOT_KEY && !BOT_KEY.test(key))
     || typeof name !== "string" || typeof shape !== "string" || typeof colour !== "string"
     || (environment !== "private" && environment !== "regular")
     || (state !== "active" && state !== "suspended" && state !== "deleting")
     || typeof createdAt !== "string") throw new RegistryUnavailable("bot");
-  return { key, name, shape, colour, environment, state, createdAt };
+  // A bot's deletion bookkeeping must fit its state: all of it only while it is being deleted, and never on Main.
+  if (state !== "deleting") {
+    if (deletingSince !== undefined || grantClosed !== undefined || revoke !== undefined) throw new RegistryUnavailable("bot");
+    return { key, name, shape, colour, environment, state, createdAt };
+  }
+  if (key === MAIN_BOT_KEY || typeof deletingSince !== "string" || (grantClosed !== undefined && grantClosed !== true)) throw new RegistryUnavailable("bot");
+  return { key, name, shape, colour, environment, state, createdAt, deletingSince, ...(grantClosed ? { grantClosed: true as const } : {}), ...(revoke ? { revoke } : {}) };
 }
 
 function parseDeleted(raw: unknown): DeletedBot {
   if (typeof raw !== "object" || raw === null) throw new RegistryUnavailable("deleted");
   const key = field(raw, "key");
   const name = field(raw, "name");
+  const revoke = parseRevoke(field(raw, "revoke"));
   if (typeof key !== "string" || !BOT_KEY.test(key) || typeof name !== "string") throw new RegistryUnavailable("deleted");
-  return { key, name };
+  return { key, name, ...(revoke ? { revoke } : {}) };
 }
 
 export function parseOwnerBots(raw: unknown): OwnerBots {
@@ -208,6 +237,65 @@ export class BotsRegistry {
       const changed: Bot = { ...bot, ...(name !== undefined ? { name } : {}), ...(shape !== undefined ? { shape } : {}), ...(colour !== undefined ? { colour } : {}) };
       if (changed.name === bot.name && changed.shape === bot.shape && changed.colour === bot.colour) return { result: { ok: true, bot } };
       return { result: { ok: true, bot: changed }, next: { bots: current.bots.map(other => (other.key === key ? changed : other)), deleted: current.deleted } };
+    })).result;
+  }
+
+  /** Marks a bot as being deleted. Durable before the service is told anything. Asking again changes nothing. */
+  async beginDelete(address: string, key: string): Promise<DeleteResult> {
+    if (key === MAIN_BOT_KEY) return { ok: false, error: "main_fixed" };
+    if (!BOT_KEY.test(key)) return { ok: false, error: "not_found" };
+    const { result, row } = await this.#mutate<{ ok: true; bot: Bot } | Extract<DeleteResult, { ok: false }>>(address, current => {
+      const bot = current.bots.find(candidate => candidate.key === key);
+      if (!bot) return { result: { ok: false, error: "not_found" } };
+      if (bot.state === "deleting") return { result: { ok: true, bot } };
+      if (current.bots.filter(other => other.state === "deleting").length >= BOT_DELETING_MAX) return { result: { ok: false, error: "delete_limit" } };
+      const changed: Bot = { ...bot, state: "deleting", deletingSince: this.#now().toISOString() };
+      return { result: { ok: true, bot: changed }, next: { bots: current.bots.map(other => (other.key === key ? changed : other)), deleted: current.deleted } };
+    });
+    return result.ok ? { ok: true, bot: result.bot, seq: row.seq } : result;
+  }
+
+  /**
+   * Deletion, once the bot's working state is gone: from here no permission is accepted for this bot. This is
+   * written BEFORE its stored permission is removed, and records the delegation to revoke. Undefined when the bot
+   * is not being deleted.
+   */
+  async closeGrant(address: string, key: string, cid: string | undefined): Promise<Bot | undefined> {
+    if (!BOT_KEY.test(key)) return undefined;
+    return (await this.#mutate<Bot | undefined>(address, current => {
+      const bot = current.bots.find(candidate => candidate.key === key);
+      if (!bot || bot.state !== "deleting") return { result: undefined };
+      // Once closed, what was recorded stays: the first delegation is the one still to revoke.
+      if (bot.grantClosed) return { result: bot };
+      const changed: Bot = { ...bot, grantClosed: true, ...(cid ? { revoke: { cid } } : {}) };
+      return { result: changed, next: { bots: current.bots.map(other => (other.key === key ? changed : other)), deleted: current.deleted } };
+    })).result;
+  }
+
+  /** The delegation has been revoked, or never can be: nothing is left to retry. */
+  async clearRevoke(address: string, key: string): Promise<void> {
+    if (!BOT_KEY.test(key)) return;
+    await this.#mutate<undefined>(address, current => {
+      if (!current.bots.some(bot => bot.key === key && bot.revoke) && !current.deleted.some(entry => entry.key === key && entry.revoke)) return { result: undefined };
+      const bots = current.bots.map((bot): Bot => (bot.key !== key ? bot : {
+        key: bot.key, name: bot.name, shape: bot.shape, colour: bot.colour, environment: bot.environment, state: bot.state, createdAt: bot.createdAt,
+        ...(bot.deletingSince !== undefined ? { deletingSince: bot.deletingSince } : {}),
+        ...(bot.grantClosed ? { grantClosed: true as const } : {}),
+      }));
+      const deleted = current.deleted.map((entry): DeletedBot => (entry.key === key ? { key: entry.key, name: entry.name } : entry));
+      return { result: undefined, next: { bots, deleted } };
+    });
+  }
+
+  /** The last step: the bot leaves `bots`, and its key and name are remembered in `deleted`. Only after `closeGrant`. */
+  async finishDelete(address: string, key: string): Promise<boolean> {
+    if (!BOT_KEY.test(key)) return false;
+    return (await this.#mutate<boolean>(address, current => {
+      if (current.deleted.some(entry => entry.key === key)) return { result: true };
+      const bot = current.bots.find(candidate => candidate.key === key);
+      if (!bot || bot.state !== "deleting" || !bot.grantClosed) return { result: false };
+      const entry: DeletedBot = { key, name: bot.name, ...(bot.revoke ? { revoke: bot.revoke } : {}) };
+      return { result: true, next: { bots: current.bots.filter(other => other.key !== key), deleted: [...current.deleted, entry] } };
     })).result;
   }
 }
