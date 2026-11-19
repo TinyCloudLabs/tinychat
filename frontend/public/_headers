@@ -41,3 +41,15 @@
   Cache-Control: no-store
   Content-Type: application/json; charset=utf-8
   Access-Control-Allow-Origin: *
+
+/s/*
+  Referrer-Policy: no-referrer
+# Share links open in the app (TC-3195): iOS universal links (Release entitlement applinks:tinycloud.one) and Android
+# App Links for https://tinycloud.one/s/ (autoVerify stays off until assetlinks.json also lists the Play signing key).
+# Both verifiers want JSON, served without a redirect.
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+  Cache-Control: public, max-age=3600
+/.well-known/assetlinks.json
+  Content-Type: application/json
+  Cache-Control: public, max-age=3600

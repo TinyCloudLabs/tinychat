@@ -66,6 +66,11 @@ const DISCONNECT_MESSAGE: Record<DisconnectMode, string> = {
 
 export const SOURCE_IDS: readonly ConnectorId[] = ["fireflies", "google-meet", "granola"];
 
+const visibleSources = SOURCE_IDS.map((id) => CONNECTORS.find((d) => d.id === id)).filter(
+  (d): d is ConnectorDescriptor => d !== undefined && (d.id !== "granola" || d.status === "available"),
+);
+const sourceSubtitle = new Intl.ListFormat("en-GB").format(visibleSources.map((d) => d.name));
+
 /** A source with no entry yet has not been read. Failed is not "not connected". */
 type ConnectionRead =
   | { status: "loading" }
@@ -149,9 +154,8 @@ export function MeetingSourcesDialog({
     if (!open) return;
     let active = true;
     void (async () => {
-      for (const id of SOURCE_IDS) {
-        const d = CONNECTORS.find((item) => item.id === id);
-        if (!d || d.status !== "available") continue;
+      for (const { id, status } of visibleSources) {
+        if (status !== "available") continue;
         const next = await readConnection(id);
         if (!active) return;
         setConnections((old) => ({ ...old, [id]: next }));
@@ -169,9 +173,6 @@ export function MeetingSourcesDialog({
     connected: connectionOf(connections["google-meet"])?.status === "connected",
     revision,
   });
-  const descriptors = SOURCE_IDS.map((id) => CONNECTORS.find((d) => d.id === id)).filter(
-    (d): d is ConnectorDescriptor => d !== undefined,
-  );
   const autojoin = useCalendarAutojoin({
     backendUrl,
     sessionStore,
@@ -180,7 +181,7 @@ export function MeetingSourcesDialog({
   });
 
   const autojoinInfo = autojoinDetail(autojoin.status, autojoin.error);
-  const disconnectDescriptor = descriptors.find((d) => d.id === disconnecting) ?? null;
+  const disconnectDescriptor = visibleSources.find((d) => d.id === disconnecting) ?? null;
   const requestDisconnect = (id: ConnectorId) => {
     if (sourceSync.syncingId === id) return;
     setDisconnecting(id);
@@ -193,7 +194,7 @@ export function MeetingSourcesDialog({
         onOpenChange={onOpenChange}
         returnFocus={returnFocus ?? (() => null)}
       >
-        {descriptors.map((d) => {
+        {visibleSources.map((d) => {
           const read = connections[d.id] ?? { status: "loading" };
           const lookup = read.status;
           const connection = read.status === "ready" ? read.connection : null;
@@ -586,9 +587,8 @@ export function MeetingSourcesFeature(
     let active = true;
     void (async () => {
       const found: { id: ConnectorId; name: string; connected: boolean; count: number }[] = [];
-      for (const id of SOURCE_IDS) {
-        const d = CONNECTORS.find((item) => item.id === id);
-        if (!d || d.status !== "available") continue;
+      for (const { id, name, status } of visibleSources) {
+        if (status !== "available") continue;
         const result = await connectorStore.getConnection(tcw, id);
         if (!result.ok) {
           console.error("Meeting sources connection status failed", result.error);
@@ -597,7 +597,7 @@ export function MeetingSourcesFeature(
         }
         const connected = result.data?.status === "connected";
         if (id === "google-meet" && connected) await refreshGmeetMeetingCount(tcw, connectorStore.countMeetings);
-        found.push({ id, name: d.name, connected, count: result.data?.itemCount ?? 0 });
+        found.push({ id, name, connected, count: result.data?.itemCount ?? 0 });
       }
       if (active) setSources(found);
     })();
@@ -624,6 +624,7 @@ export function MeetingSourcesFeature(
     <>
       <MeetingSourcesEntry
         buttonRef={entryRef}
+        subtitle={sourceSubtitle}
         summary={summary.text}
         connected={summary.connected}
         onClick={() => setOpen(true)}
