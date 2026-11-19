@@ -1532,7 +1532,7 @@ describe("orchestrateToolCalling", () => {
 });
 
 describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
-  it("keeps failed meeting usage server-side without sending usage metadata", async () => {
+  it("sends no usage metadata and charges nothing when a meeting turn fails with no output delivered", async () => {
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test";
     _setStripeClient(mockStripe(null));
@@ -1558,9 +1558,8 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       expect(text).not.toContain('"stream_error"');
       expect(text).not.toMatch(/"usage"|"id"|private-completion-id/);
       expect(traces).toEqual([expect.objectContaining({ terminal: "upstream_incomplete" })]);
-      expect(getUsage(ADDR, TIERS.free, null).used).toBe(1);
-      expect(entries).toHaveLength(1);
-      expect(entries[0]).toMatchObject({ prompt_tokens: 17, completion_tokens: 5, credits: 1 });
+      expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
+      expect(entries).toHaveLength(0);
     } finally { restore(); }
   });
 
