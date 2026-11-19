@@ -13,6 +13,8 @@ import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 export interface UndoItem {
   /** The card it takes away, hidden from the list while the pill counts. */
   key: string;
+  /** Every card it takes away, when it takes several ("Acknowledge all"); `key` stands for the item itself. */
+  keys?: readonly string[];
   /** What happened: "Dropped", "Acknowledged", "Back at 08:00". */
   text: string;
   /** What a screen reader hears: "Dropping this card in 5 seconds. Undo is available until then." */
@@ -42,11 +44,14 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
   const commit = useCallback((item: Pending) => {
     live.current = live.current.filter((other) => other.id !== item.id);
     setItems(live.current);
-    setCommitting((current) => new Map(current).set(item.key, (current.get(item.key) ?? 0) + 1));
+    const taken = item.keys ?? [item.key];
+    setCommitting((current) => { const next = new Map(current); for (const key of taken) next.set(key, (current.get(key) ?? 0) + 1); return next; });
     const settled = () => setCommitting((current) => {
-      const count = (current.get(item.key) ?? 0) - 1;
       const next = new Map(current);
-      if (count > 0) next.set(item.key, count); else next.delete(item.key);
+      for (const key of taken) {
+        const count = (current.get(key) ?? 0) - 1;
+        if (count > 0) next.set(key, count); else next.delete(key);
+      }
       return next;
     });
     // A plain sentence, never the store's own error text; the cause goes along so the caller can tell a held send.
@@ -85,7 +90,7 @@ export function useUndoBar(onError: (message: string, cause?: unknown) => void) 
     setItems(live.current);
     item?.undo?.();
   }, []);
-  const hidden = useCallback((key: string) => committing.has(key) || items.some((item) => item.key === key), [items, committing]);
+  const hidden = useCallback((key: string) => committing.has(key) || items.some((item) => (item.keys ?? [item.key]).includes(key)), [items, committing]);
   /** Every count that runs ends now: a new wait starts, so only one waits at a time. */
   const flushAll = useCallback(() => { for (const item of [...live.current]) commit(item); }, [commit]);
   const pills: PillItem[] = items.map((item) => ({

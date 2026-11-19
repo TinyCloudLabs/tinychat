@@ -1,6 +1,6 @@
 import { answerHandling } from "./AnswerSteps";
 import type { HomeFeedEntry } from "./feedStoreTypes";
-import { ShortTime, shortTime } from "./ShortTime";
+import { shortTime } from "./ShortTime";
 import { cn } from "@/lib/utils";
 
 export type HistoryTone = "done" | "current" | "upcoming" | "failed";
@@ -14,38 +14,56 @@ export interface HistoryItem {
   tone?: HistoryTone;
 }
 
-// One dot per step. Done is solid, the current step is solid with a soft ring so it reads as "where things stand",
-// a step still to come is an empty circle, and a failure is red. All of them use theme colours, so dark mode follows.
+// One dot per step, 10 px. Past steps are grey, the latest is black (the theme's foreground, so dark mode follows),
+// a step still to come is an empty circle, and a failure is red.
 const dotClass: Record<HistoryTone, string> = {
-  done: "bg-foreground",
-  current: "bg-foreground ring-4 ring-foreground/15",
+  done: "bg-muted-foreground/45",
+  current: "bg-foreground",
   upcoming: "border-[1.5px] border-muted-foreground",
-  failed: "bg-destructive ring-4 ring-destructive/15",
+  failed: "bg-destructive",
 };
 
+const UTC_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** A step's time in UTC, as the mock reads: "16 Nov, 15:15 UTC" (with the year when it is not this one). */
+export function utcStamp(at: string, now = Date.now()): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return at;
+  const year = date.getUTCFullYear() === new Date(now).getUTCFullYear() ? "" : ` ${date.getUTCFullYear()}`;
+  return `${date.getUTCDate()} ${UTC_MONTHS[date.getUTCMonth()]}${year}, ${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")} UTC`;
+}
+
 /**
- * A card's history as a vertical rail with a dot per step, oldest first. The list is a real `<ol>` so a screen reader
- * hears how many steps there are; the rail and dots are decoration and hidden from it.
+ * A card's history as a vertical rail with a dot per step, oldest first, each step's time under its title. The list is
+ * a real `<ol>` so a screen reader hears how many steps there are; the rail and dots are decoration and hidden from it.
  */
 export function HistoryTimeline({ items, className }: { items: HistoryItem[]; className?: string }) {
   return <ol className={cn("text-sm", className)}>
     {items.map((item, index) => {
       const tone = item.tone ?? "done";
-      return <li key={item.key} data-tone={tone} aria-current={tone === "current" ? "step" : undefined} className="relative pb-4 pl-7 last:pb-0">
+      return <li key={item.key} data-tone={tone} aria-current={tone === "current" ? "step" : undefined} className="relative pb-4 pl-6 last:pb-0">
         {/* The rail runs from under this dot to just above the next one, leaving a small gap around each dot so an
             empty dot stays empty on any background. */}
-        {index < items.length - 1 && <span aria-hidden className="absolute bottom-0 left-1.5 top-5 w-px -translate-x-1/2 bg-border" />}
-        <span aria-hidden className={cn("absolute left-1.5 top-1 size-3 -translate-x-1/2 rounded-full", dotClass[tone])} />
-        <div className="flex items-baseline gap-3">
-          <p className={cn("min-w-0 break-words font-medium", tone === "upcoming" && "font-normal text-muted-foreground", tone === "failed" && "text-destructive")}>
-            {item.title}{tone === "upcoming" && <span className="sr-only">, not yet</span>}
-          </p>
-          <ShortTime at={item.at} className="ml-auto shrink-0 text-xs text-muted-foreground" />
-        </div>
+        {index < items.length - 1 && <span aria-hidden className="absolute bottom-0 left-[5px] top-[18px] w-px -translate-x-1/2 bg-border" />}
+        <span aria-hidden className={cn("absolute left-[5px] top-[5px] size-2.5 -translate-x-1/2 rounded-full", dotClass[tone])} />
+        <p className={cn("min-w-0 break-words font-medium", tone === "upcoming" && "font-normal text-muted-foreground", tone === "failed" && "text-destructive")}>
+          {item.title}{tone === "upcoming" && <span className="sr-only">, not yet</span>}
+        </p>
+        <time dateTime={item.at} title={new Date(item.at).toLocaleString()} className="mt-0.5 block text-xs text-muted-foreground">{utcStamp(item.at)}</time>
         {item.detail && <p className="mt-0.5 whitespace-pre-wrap break-words text-xs text-muted-foreground">{item.detail}</p>}
       </li>;
     })}
   </ol>;
+}
+
+/**
+ * Steps from several sources as one rail: oldest first (a step with no readable time sorts as the oldest), a step
+ * two sources both list once, the latest marked current unless it failed and every earlier one past.
+ */
+export function joinHistory(...groups: readonly (readonly HistoryItem[])[]): HistoryItem[] {
+  const seen = new Set<string>();
+  const items = groups.flat().filter((item) => { const key = `${item.title}|${item.at}`; if (seen.has(key)) return false; seen.add(key); return true; });
+  items.sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+  return items.map((item, index) => ({ ...item, tone: item.tone === "failed" ? item.tone : index === items.length - 1 ? "current" as const : "done" as const }));
 }
 
 /**
