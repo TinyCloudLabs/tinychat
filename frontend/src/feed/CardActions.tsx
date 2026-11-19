@@ -63,7 +63,7 @@ export function CardDetails({ children, actions, secondary, close, card, typed, 
   // An update's Acknowledge is quiet and outlined (the dark pill is the page's undo pill). It stands alone on its row;
   // under it, one line: the card's later action, its comment, and Details.
   const acknowledge = close?.kind === "acknowledge"
-    ? <button type="button" onClick={close.onTap} className="mr-1 inline-flex min-h-11 items-center gap-1.5 rounded-full border border-border pl-3 pr-3.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-2 active:scale-[.97] motion-reduce:transform-none fine:min-h-9"><CheckIcon aria-hidden className="size-4" />Acknowledge</button>
+    ? <button type="button" onClick={close.onTap} className="ml-1.5 mr-1 inline-flex min-h-11 items-center gap-1.5 rounded-full border border-border pl-3 pr-3.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-2 active:scale-[.97] motion-reduce:transform-none fine:min-h-9"><CheckIcon aria-hidden className="size-4" />Acknowledge</button>
     : undefined;
   const leading = <>
     {actions}
