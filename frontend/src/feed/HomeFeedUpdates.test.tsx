@@ -183,9 +183,9 @@ test("Acknowledge all sits at the right of the Updates heading with the count ke
   const feed = store([update("ship-one", "Release one"), update("ship-two", "Release two"), update("note-one", "A note", { typed: false }), question]);
   const host = await mount(feed.source);
   const heading = updatesSection(host).querySelector("h2")!;
-  expect(heading.textContent).toBe("Updates3Acknowledge all");
+  expect(heading.textContent).toBe("Updates3");
   expect(acknowledgeAll(host)!.getAttribute("aria-label")).toBe("Acknowledge all 3 updates");
-  expect(heading.lastElementChild).toBe(acknowledgeAll(host)!);
+  expect(heading.previousElementSibling?.contains(acknowledgeAll(host)!)).toBe(true);
 });
 
 test("Acknowledge all takes every update at once under one pill; one write per card once the 5 s pass; none lost if the page closes first", async () => {

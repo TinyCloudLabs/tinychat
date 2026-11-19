@@ -1235,8 +1235,10 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const sectionNode = ([id, heading, list]: StreamPart) => {
     if (!list.length && !(id === "needs" && listed.length)) return null;
     return <section key={id || "cards"} data-stream={id || undefined} aria-label={heading || "Snoozed"}>
-      {heading && <h2 className={STREAM_HEADING_CLASS}><span>{heading}</span><span className="tabular-nums">{countOf(list)}</span>
-        {id === "updates" && !!acknowledgeable.length && <button type="button" aria-label={acknowledgeAllLabel(acknowledgeable.length)} onClick={() => acknowledgeAll(acknowledgeable)} className="-my-2 ml-auto inline-flex min-h-11 items-center rounded-full px-3 text-[13px] font-medium normal-case tracking-normal text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9">{ACKNOWLEDGE_ALL}</button>}</h2>}
+      {id === "updates" && !!acknowledgeable.length && <div className="sticky top-[55px] z-[6] h-0">
+        <button type="button" aria-label={acknowledgeAllLabel(acknowledgeable.length)} onClick={() => acknowledgeAll(acknowledgeable)} className="absolute -top-1.5 right-1 inline-flex min-h-11 items-center rounded-full px-3 text-[13px] font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9 fine:top-0">{ACKNOWLEDGE_ALL}</button>
+      </div>}
+      {heading && <h2 className={id === "updates" && acknowledgeable.length ? `${STREAM_HEADING_CLASS} !justify-start gap-2` : STREAM_HEADING_CLASS}><span>{heading}</span><span className="tabular-nums">{countOf(list)}</span></h2>}
       {list.length ? <ul className="space-y-2">{renderList(list)}</ul> : <p className="px-1 py-1 text-[15px] text-muted-foreground">Nothing needs you.</p>}
     </section>;
   };
