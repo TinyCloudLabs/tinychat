@@ -36,15 +36,15 @@ export function botIdFor(ownerDid: string, key: string = MAIN_KEY): string {
   return digest(`${ownerDid}\n${key}`).toString("hex");
 }
 
-/**
- * Service authentication for every API request except /healthz: the shared secret, a well-formed owner DID,
- * and an owner on the service's own account allowlist. Returns the owner DID, or null for a 401.
- */
+/** A well-formed owner DID whose address is on the service's own account allowlist. */
+export function ownerAllowed(owner: string, accounts: Set<string> | "*"): boolean {
+  if (!OWNER_DID.test(owner)) return false;
+  return accounts === "*" || accounts.has(owner.slice(owner.lastIndexOf(":") + 1));
+}
+
+/** Used only while BOTS_ACCEPT_LEGACY_OWNER_HEADER=1. Returns the owner DID, or null for a 401. */
 export function authorizedOwner(req: Request, secret: string, accounts: Set<string> | "*"): string | null {
   if (!bearerMatches(req.headers.get("authorization"), secret)) return null;
   const owner = req.headers.get("x-tinycloud-owner") ?? "";
-  if (!OWNER_DID.test(owner)) return null;
-  const address = owner.slice(owner.lastIndexOf(":") + 1);
-  if (accounts !== "*" && !accounts.has(address)) return null;
-  return owner;
+  return ownerAllowed(owner, accounts) ? owner : null;
 }

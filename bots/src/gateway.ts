@@ -168,8 +168,8 @@ async function readCapped(response: Response, cap: number): Promise<string | nul
   return bytes.byteLength > cap ? null : new TextDecoder().decode(bytes);
 }
 
-/** Reads a request body as it arrives, stopping at `cap` bytes or `timeoutMs`, whichever comes first. */
-async function readBody(req: Request, cap: number, timeoutMs: number): Promise<Uint8Array | "too_large" | "timeout"> {
+/** Reads a body as it arrives, stopping at `cap` bytes or `timeoutMs`, whichever comes first. */
+export async function readBody(req: Request | Response, cap: number, timeoutMs: number): Promise<Uint8Array | "too_large" | "timeout"> {
   const reader = req.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];

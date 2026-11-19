@@ -54,6 +54,7 @@ import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
+import { ChatViewSetting } from "../bots/ChatViewControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
 import { AppLockSettings } from "./AppLockSettings";
 import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
@@ -218,6 +219,7 @@ export function SettingsPage({
           <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
+          <ChatViewSetting account={did} />
           <SectionCard
             id="agent-access"
             icon={ShieldCheckIcon}

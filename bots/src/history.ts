@@ -3,6 +3,7 @@ import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readF
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { recoverMessageAddress } from "viem";
+import { isRecord } from "./guards";
 import type { BotLayout } from "./layout";
 import { BOT_KEY, botIdFor } from "./owner";
 
@@ -17,6 +18,12 @@ const PRODUCTION_NODE_ORIGINS = ["https://node.tinycloud.xyz", "https://tee.node
 const sameNode = (host: unknown, expected: string) => host === expected
   || (typeof host === "string" && PRODUCTION_NODE_ORIGINS.includes(host) && PRODUCTION_NODE_ORIGINS.includes(expected));
 export interface HistoryOptions { signerDid: string; host: string; policy: "notice-then-expiry-30-days" }
+export type ActivityRecord = {
+  type: "activity";
+  id: string;
+  count: number;
+  at: string;
+} & ({ verb: "ran_commands" | "changed_files" } | { verb: "messaged_bot"; targetKey: string });
 /** `bot` is a sibling's key. It is inside the batch, so it is inside the hash the backend signs. Main's batches have none. */
 export interface JournalBatch { v: 1; generation: string; seq: number; challenge: string; record: unknown; bot?: string }
 export interface ExpiryNotice { id: string; expiresAt: number; firstAttemptAt: number; deliveredAt?: number; deleteAt?: number }
@@ -121,6 +128,10 @@ export class HistoryJournal {
       return (record.type === "user" || record.type === "assistant") && typeof record.text === "string"
         ? [{ id: `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "" }] : [];
     });
+  }
+  activities(): ActivityRecord[] {
+    return this.#state.batches.flatMap(({ record }) =>
+      isRecord(record) && record.type === "activity" ? [record as unknown as ActivityRecord] : []);
   }
   stage(staged: StagedHistory) {
     const batch = this.#state.batches[this.#state.receipts.length];

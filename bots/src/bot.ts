@@ -2,16 +2,18 @@
 // on demand and stopped once the session has settled and stayed idle. Everything the sandbox says is treated as
 // untrusted input; only checked fields are turned into events, which the server encodes itself.
 
-import { existsSync, readdirSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
+import { type ActivityRecord, HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
+import { MESSAGING_STRINGS } from "./messaging-strings";
 import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
-import { type Frame, RpcError } from "./rpc";
+import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 
-export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "invalid";
+export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
 export const MAX_TEXT = 8000;
 
@@ -20,12 +22,14 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   bot_unavailable: "Main isn't available. Try again later.",
   model_unavailable: "Main's model isn't answering. Try again later.",
   busy: "Main is still working on your last message. Send this one when it replies.",
+  at_capacity: "Main can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
   invalid: "Messages can be up to 8,000 characters.",
 };
 
 export interface TurnSink {
   status(state: "starting" | "working"): void;
   delta(text: string): void;
+  activity?(record: ActivityRecord): void;
   done(messageId: string): void;
   error(code: ErrorCode): void;
 }
@@ -37,18 +41,26 @@ export interface ListedMessage {
   at: string;
 }
 
+export interface BotMessenger {
+  keys: readonly string[];
+  dispatch(targetKey: string, text: string, signal: AbortSignal): Promise<HostToolReply>;
+}
+
+type StopFailure = "teardown_failed" | "gateway_cleanup_pending";
+
 /** A running sandbox with OMP's RPC channel on its stdio, already bound to the bot's session. */
 export interface Sandbox {
   nextId(): string;
   request(command: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
   onFrame(listener: (frame: Frame) => void): () => void;
+  onHostToolCall?(handle: HostToolHandler): () => void;
   /** Settles once the sandbox has exited and been cleaned up. */
   readonly exited: Promise<void>;
   /** Registers the bot's egress socket and token with the gateway again (idempotent; the gateway may have restarted). */
   refreshEgress(): Promise<void>;
   /** Saves the bot's state to disk while the sandbox is paused. Never rejects; a failure keeps the previous copy. */
   snapshot(): Promise<void>;
-  stop(): Promise<void>;
+  stop(): Promise<void | "gateway_cleanup_pending">;
 }
 
 export interface SandboxLauncher {
@@ -57,6 +69,8 @@ export interface SandboxLauncher {
   /** Unconfirmed sandbox or copier teardown; sandboxOnly counts just sandboxes for running slots. */
   leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
   launch(layout: BotLayout): Promise<Sandbox>;
+  /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
+  cleanupEgress?(layout: BotLayout): Promise<boolean>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
   mountPoints?(): string[];
   provenance?(layout: BotLayout): Promise<unknown>;
@@ -75,6 +89,13 @@ export interface BotOptions {
   history?: HistoryOptions;
 }
 
+/** Thrown by a start refused at BOTS_MAX_RUNNING; the turn ends with at_capacity, never bot_unavailable. */
+class AtCapacity extends Error {
+  constructor() {
+    super("BOTS_MAX_RUNNING sandboxes already running");
+  }
+}
+
 /** How many sandboxes may run at once (BOTS_MAX_RUNNING), shared by every bot. */
 export class RunningLimit {
   readonly #max: number;
@@ -91,6 +112,11 @@ export class RunningLimit {
     return true;
   }
 
+  /** Whether a place is free now. Only a hint: take() decides. */
+  hasRoom(): boolean {
+    return this.#running < this.#max;
+  }
+
   release(): void {
     this.#running--;
   }
@@ -99,6 +125,89 @@ export class RunningLimit {
 const LIST_LIMIT = 50;
 const PAGE_LIMIT = 256;
 const MAX_PAGES = 64;
+const MAX_ACTIVITY_COUNT = 256;
+const HOST_TOOLS_TIMEOUT_MS = 5_000;
+const MESSAGE_BOT = "message_bot";
+
+function messageBotTool(keys: readonly string[]) {
+  return {
+    name: MESSAGE_BOT,
+    description: MESSAGING_STRINGS.description,
+    loadMode: "essential",
+    parameters: {
+      type: "object",
+      properties: {
+        targetKey: { type: "string", enum: keys, description: MESSAGING_STRINGS.target },
+        text: { type: "string", minLength: 1, maxLength: MAX_TEXT, description: MESSAGING_STRINGS.text },
+      },
+      required: ["targetKey", "text"],
+      additionalProperties: false,
+    },
+  };
+}
+
+/** Only fixed verbs and counters leave the supervisor. Paths are used in memory to count distinct files. */
+class TurnActivity {
+  readonly #calls = new Map<string, { tool: string; completed: boolean }>();
+  readonly #files = new Set<string>();
+  readonly #messages = new Map<string, number>();
+  #commands = 0;
+
+  frame(frame: Frame): void {
+    const { toolCallId: id, toolName: tool } = frame;
+    if (typeof id !== "string" || id.length < 1 || id.length > 256) return;
+    if (tool !== "bash" && tool !== "write" && tool !== "edit") return;
+    if (frame.type === "tool_execution_start") {
+      if (this.#calls.size < MAX_ACTIVITY_COUNT && !this.#calls.has(id)) {
+        this.#calls.set(id, { tool, completed: false });
+      }
+      return;
+    }
+    const call = this.#calls.get(id);
+    if (!call || call.completed || call.tool !== tool) return;
+    call.completed = true;
+    if (frame.isError !== undefined && frame.isError !== false) return;
+    if (tool === "bash") {
+      this.#commands++;
+      return;
+    }
+    const details = isRecord(frame.result) ? frame.result.details : undefined;
+    if (!isRecord(details)) return;
+    if (tool === "write") {
+      if (!details.touchesNoFiles) this.#addFile(details.resolvedPath);
+    } else if (Array.isArray(details.perFileResults)) {
+      for (const file of details.perFileResults.slice(0, MAX_ACTIVITY_COUNT)) {
+        if (isRecord(file) && !file.isError) this.#addFile(file.path);
+      }
+    } else if (!details.errorKind) {
+      this.#addFile(details.path);
+    }
+  }
+
+  #addFile(path: unknown): void {
+    if (typeof path === "string" && path.startsWith("/") && path.length <= 4096 && this.#files.size < MAX_ACTIVITY_COUNT) {
+      this.#files.add(path);
+    }
+  }
+
+  messaged(key: string): void {
+    this.#messages.set(key, Math.min((this.#messages.get(key) ?? 0) + 1, MAX_ACTIVITY_COUNT));
+  }
+
+  records(): ActivityRecord[] {
+    const counts = { ran_commands: this.#commands, changed_files: this.#files.size } as const;
+    const records: ActivityRecord[] = [];
+    const base = () => ({ type: "activity" as const, id: randomBytes(16).toString("hex") });
+    for (const verb of ["ran_commands", "changed_files"] as const) {
+      const count = counts[verb];
+      if (count > 0) records.push({ ...base(), verb, count, at: new Date().toISOString() });
+    }
+    for (const [targetKey, count] of this.#messages) {
+      records.push({ ...base(), verb: "messaged_bot", count, at: new Date().toISOString(), targetKey });
+    }
+    return records;
+  }
+}
 
 function log(event: string, botId: string, extra: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ bots: event, bot: botId.slice(0, 12), ...extra }));
@@ -176,7 +285,7 @@ export class Bot {
   #history: HistoryJournal | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
-  #stopping: Promise<void> | undefined;
+  #stopping: Promise<StopFailure | undefined> | undefined;
   #deleting: Promise<DeleteSkip | undefined> | undefined;
   #busy = false;
   #listing = 0;
@@ -196,10 +305,17 @@ export class Bot {
     this.#running = running;
   }
 
-  /** Runs one message through Main. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string): Promise<void> {
+  /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
+      return;
+    }
+    // A start that will be refused at the cap must not leave the message in the history, or a retry would show it twice.
+    if (!this.#sandbox && !this.#starting && !this.#hasPlace && !this.#retired && !this.#running.hasRoom()) {
+      log("at_capacity", this.layout.botId);
+      sink.status("starting");
+      sink.error("at_capacity");
       return;
     }
     if (this.#options.history) {
@@ -217,6 +333,7 @@ export class Bot {
     sink = {
       status: state => output.status(state),
       delta: text => { this.#history?.delta(text); output.delta(text); },
+      activity: record => { this.#history?.append(record); output.activity?.(record); },
       done: messageId => { this.#history?.finishDraft({ type: "done", messageId }); output.done(messageId); },
       error: code => { this.#history?.finishDraft({ type: "error", code }); output.error(code); },
     };
@@ -232,6 +349,11 @@ export class Bot {
         this.#markUsed();
         await sandbox.refreshEgress();
       } catch (error) {
+        if (error instanceof AtCapacity) {
+          log("at_capacity", this.layout.botId);
+          sink.error("at_capacity");
+          return;
+        }
         log("start_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
         sink.error("bot_unavailable");
         return;
@@ -240,7 +362,23 @@ export class Bot {
         state = "working";
         sink.status(state);
       }
-      await this.#turn(sandbox, text, sink);
+      if (!messenger || !sandbox.onHostToolCall) {
+        await this.#turn(sandbox, text, sink);
+        return;
+      }
+      try {
+        await sandbox.request({ type: "set_host_tools", tools: [messageBotTool(messenger.keys)] }, HOST_TOOLS_TIMEOUT_MS);
+      } catch {
+        sink.error("bot_unavailable");
+        await this.#stop(sandbox);
+        return;
+      }
+      try {
+        await this.#turn(sandbox, text, sink, messenger);
+      } finally {
+        try { await sandbox.request({ type: "set_host_tools", tools: [] }, HOST_TOOLS_TIMEOUT_MS); }
+        catch { if (this.#sandbox === sandbox) await this.#stop(sandbox); }
+      }
     } finally {
       clearInterval(heartbeat);
       if (this.#history) {
@@ -285,13 +423,20 @@ export class Bot {
     return this.#busy || this.#listing > 0;
   }
 
-  /** Stops the sandbox if one is running or starting. False if its teardown failed (logged as stop_failed). */
+  async listActivities(): Promise<ActivityRecord[]> {
+    if (!this.#options.history) return [];
+    return await this.#historyOperation(journal => journal.activities(), true) ?? [];
+  }
+
+  /** Stops the sandbox if one is running or starting. False if its teardown is incomplete. */
   async stop(): Promise<boolean> {
+    return (await this.#stopSandbox()) === undefined;
+  }
+
+  async #stopSandbox(): Promise<StopFailure | undefined> {
     this.#clearIdle();
     const sandbox = this.#sandbox ?? (await this.#starting?.catch(() => undefined));
-    const stopped = sandbox ? await this.#stop(sandbox) : true;
-    await this.#stopping;
-    return stopped;
+    return sandbox ? this.#stop(sandbox) : this.#stopping;
   }
 
   /**
@@ -308,13 +453,20 @@ export class Bot {
     this.#deleting ??= (async () => {
       let cause: DeleteSkip | undefined;
       try {
-        const stopped = await this.stop();
-        if (!stopped || this.#launcher.leftover(this.layout)) cause = "teardown_failed";
+        const stopFailure = await this.#stopSandbox();
+        if (this.#launcher.leftover(this.layout)) cause = "teardown_failed";
+        else if (stopFailure) cause = stopFailure;
+        else if (await this.#launcher.cleanupEgress?.(this.layout) === false) cause = "gateway_cleanup_pending";
         else {
-          const covered = await this.historyCovered();
+          const noWorkingState = this.#retiring && !this.inUse && !lstatSync(this.layout.dataDir, { throwIfNoEntry: false })
+            && !lstatSync(this.layout.bundleDir, { throwIfNoEntry: false });
+          const covered = noWorkingState || await this.historyCovered();
           // Signature checks await: closing or a newly appended message can change eligibility meanwhile.
-          cause = closing() ? "closing" : this.#options.history && (!covered || !this.#history?.covered) && !this.#history?.expiryDue() ? "archive_pending"
-            : await removeWorkingState(this.layout, this.#launcher);
+          if (closing()) cause = "closing";
+          else if (!noWorkingState) {
+            cause = this.#options.history && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
+              ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
+          }
         }
       } catch {
         cause = "error";
@@ -347,8 +499,6 @@ export class Bot {
       return await run(this.#journal());
     } finally { this.#listing--; }
   }
-  /** Marks a bot the backend has deleted and that has no working state left. */
-  retire(): void { this.#retired = true; }
   historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
     // A sibling that has never run has no journal, and a change of permission must not make one (or its directory).
     return this.#historyOperation(journal => {
@@ -378,9 +528,29 @@ export class Bot {
     }
   }
 
-  #turn(sandbox: Sandbox, text: string, sink: TurnSink): Promise<void> {
+  #turn(sandbox: Sandbox, text: string, sink: TurnSink, messenger?: BotMessenger): Promise<void> {
     const id = sandbox.nextId();
-    const { promise, resolve } = Promise.withResolvers<void>();
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const activity = new TurnActivity();
+    const reaching = new Set<string>();
+    const offHost = messenger && sandbox.onHostToolCall?.(async (name, args, signal) => {
+      if (name !== MESSAGE_BOT) return { text: MESSAGING_STRINGS.unavailable, isError: true };
+      if (!isRecord(args) || Object.keys(args).length !== 2
+        || typeof args.targetKey !== "string" || !messenger.keys.includes(args.targetKey)
+        || typeof args.text !== "string" || args.text.length < 1 || args.text.length > MAX_TEXT) {
+        return { text: MESSAGING_STRINGS.invalid, isError: true };
+      }
+      const { targetKey } = args;
+      if (reaching.has(targetKey)) return { text: MESSAGING_STRINGS.busy, isError: true };
+      reaching.add(targetKey);
+      try {
+        const reply = await messenger.dispatch(targetKey, args.text, signal);
+        if (!signal.aborted && !reply.isError) activity.messaged(targetKey);
+        return reply;
+      } finally {
+        reaching.delete(targetKey);
+      }
+    });
     let firstReplyAt: number | undefined;
     let wroteText = false;
     let separate = false;
@@ -391,9 +561,15 @@ export class Bot {
       finished = true;
       clearTimeout(deadline);
       off();
-      if ("messageId" in outcome) sink.done(outcome.messageId);
-      else sink.error(outcome.code);
-      resolve();
+      offHost?.();
+      try {
+        for (const record of activity.records()) sink.activity?.(record);
+        if ("messageId" in outcome) sink.done(outcome.messageId);
+        else sink.error(outcome.code);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
     };
     // A turn that never reports back (a wedged agent, or one that ignores its tools' limits) loses its sandbox.
     const deadline = setTimeout(() => {
@@ -423,6 +599,8 @@ export class Bot {
         if (!isRecord(frame.message) || frame.message.role !== "assistant") return;
         firstReplyAt ??= timestamp(frame.message.timestamp);
         separate = wroteText;
+      } else if (frame.type === "tool_execution_start" || frame.type === "tool_execution_end") {
+        activity.frame(frame);
       } else if (frame.type === "prompt_result" && frame.id === id) {
         this.#settled = frame.sessionSettled === true;
         if (frame.status === "completed") finish({ messageId: `b-${firstReplyAt ?? Date.now()}` });
@@ -455,7 +633,7 @@ export class Bot {
       // At the cap a start is refused, never squeezed into memory the running bots may need. A leftover's place
       // passes to the next start, which first ends the leftover.
       if (!this.#hasPlace) {
-        if (!this.#running.take()) throw new Error("BOTS_MAX_RUNNING sandboxes already running");
+        if (!this.#running.take()) throw new AtCapacity();
         this.#hasPlace = true;
       }
       const started = Date.now();
@@ -498,21 +676,21 @@ export class Bot {
     this.#running.release();
   }
 
-  async #stop(sandbox: Sandbox): Promise<boolean> {
+  async #stop(sandbox: Sandbox): Promise<StopFailure | undefined> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
-    let stopped = true;
     this.#stopping = sandbox
       .stop()
+      .then(cause => cause || undefined)
       .catch(error => {
-        stopped = false;
         log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
+        return "teardown_failed" as const;
       })
       .finally(() => {
         this.#stopping = undefined;
       });
-    await this.#stopping;
+    const cause = await this.#stopping;
     log("stopped", this.layout.botId);
-    return stopped;
+    return cause;
   }
 
   #clearIdle(): void {
@@ -571,10 +749,6 @@ export class BotManager {
    */
   deleteBot(ownerDid: string, key: string): Promise<DeleteSkip | undefined> {
     const bot = this.forBot(ownerDid, key);
-    if (!bot.inUse && !existsSync(bot.layout.dataDir) && !existsSync(bot.layout.bundleDir)) {
-      bot.retire();
-      return Promise.resolve(undefined);
-    }
     return this.deleteWorkingState(bot.layout.botId, "deleted", true);
   }
 
