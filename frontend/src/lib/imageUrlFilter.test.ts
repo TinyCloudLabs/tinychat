@@ -26,7 +26,7 @@ const score = (src: string) => {
 describe("the verdict", () => {
   test("an ordinary address loads with no reasons, and says how much room it has and over what that was counted", () => {
     const src = "https://example.com/photos/2026/11/team-offsite-group-photo.jpg";
-    expect(imageUrlVerdict(src)).toEqual({ kind: "load", score: 0, reasons: [], bits: 287, charged: [src] });
+    expect(imageUrlVerdict(src)).toEqual({ kind: "load", score: 0, reasons: [], bits: 291, charged: [src] });
   });
 
   test("weak signs are listed on an address that still loads", () => {
@@ -55,7 +55,7 @@ describe("the verdict", () => {
         { code: "credentials", weight: 100, detail: "a user name or password before the host" },
         { code: "port", weight: 35, detail: "port 8443" },
       ],
-      bits: 230,
+      bits: 225,
     });
   });
 });

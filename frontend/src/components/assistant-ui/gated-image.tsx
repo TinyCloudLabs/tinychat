@@ -2,16 +2,16 @@ import { useEffect, useId, useState, type ComponentPropsWithoutRef, type FC } fr
 import { INTERNAL } from "@assistant-ui/react";
 
 import { useReplyImageBudget, useWaitingImages } from "@/components/assistant-ui/image-budget";
-import { isAllowlistedImageHost } from "@/lib/imageHosts";
 import { IMAGE_PROMPT_COPY, imageUrlVerdict } from "@/lib/imageUrlFilter";
 
 type ImgProps = ComponentPropsWithoutRef<"img"> & { node?: unknown };
 
 /**
  * A Markdown image in a chat reply. It loads as usual unless its address looks like it carries data (then it asks first), or
- * the reply already holds its share of images from other hosts (then it waits for the reply's one prompt). While the text is
- * still streaming only images from our own and the trusted hosts load: half-written addresses must not use the budget, and
- * the silent set must be the same on every mount, so it is decided once from the finished text, in document order.
+ * the reply's images have used its budget (then it waits for the reply's one prompt). While the text is still streaming no
+ * image loads, whatever its host: half-written addresses must not use the budget, every image that loads must be counted
+ * against it, and the silent set must be the same on every mount, so it is decided once from the finished text, in
+ * document order.
  */
 export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) => {
   const budget = useReplyImageBudget();
@@ -44,7 +44,7 @@ export const GatedImage: FC<ImgProps> = ({ node: _node, src, alt, ...props }) =>
   const notLoaded = <span className="text-muted-foreground">{IMAGE_PROMPT_COPY.notLoaded(alt ?? "")}</span>;
 
   if (address === null || verdict.kind === "block") return notLoaded;
-  if (streaming && !(verdict.kind === "load" && isAllowlistedImageHost(new URL(address).hostname))) return notLoaded;
+  if (streaming) return notLoaded;
   if (verdict.kind === "load") {
     if (!budget?.isHeld(address)) return picture;
     const held = budget.choice(address);

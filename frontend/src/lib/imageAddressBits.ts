@@ -94,7 +94,9 @@ function wholeRun(run: string): number {
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])";
 // A UUID (in either case), a run of ASCII letters and digits, a run outside ASCII, or one other ASCII character.
-const PIECES = new RegExp(`${UUID}|${UUID.replace(/a-f/g, "A-F")}|[A-Za-z0-9]+|[^\\u0000-\\u007f]+|[\\u0000-\\u007f]`, "g");
+const UUID_UPPER = UUID.replace(/a-f/g, "A-F");
+const PIECES = new RegExp(`${UUID}|${UUID_UPPER}|[A-Za-z0-9]+|[^\\u0000-\\u007f]+|[\\u0000-\\u007f]`, "g");
+const IS_UUID = new RegExp(`^(?:${UUID}|${UUID_UPPER})$`);
 
 /** A run of ASCII letters and digits: as one piece, as one already seen, or as its letter runs and digit runs in turn
  * ("320px" is a number and a word), whichever is cheapest. Everything it holds is then seen. */
@@ -132,8 +134,8 @@ function foreignBits(run: string, seen: Set<string>): number {
 function textBits(text: string, seen: Set<string>): number {
   let bits = END_OF_TEXT;
   for (const piece of text.match(PIECES) ?? []) {
-    if (piece.length === 36) {
-      // A UUID is 128 bits in either case, however it is punctuated.
+    if (IS_UUID.test(piece)) {
+      // A UUID is 128 bits in either case. The shape is tested, not the length: other pieces are 36 long too.
       bits += seen.has(piece) ? KIND.seen + Math.log2(seen.size) : KIND.rare + 1 + 128;
       seen.add(piece);
     } else if (/^[A-Za-z0-9]/.test(piece)) bits += runBits(piece, seen);
@@ -257,21 +259,22 @@ export function addressBits(address: URL, seen: Set<string>): number {
   const userinfo = address.username || address.password ? `${address.username}:${address.password}@` : "";
   const origin = `//${userinfo}${address.hostname}${address.port ? `:${address.port}` : ""}`;
   // http or https, and whether a bare "?" ends the address: a bit each. A host the reply already sent to is one index; a
-  // new one is spelled out.
+  // new one is spelled out. The path and the query are two texts, each with its own end, so where the query starts is
+  // never in doubt.
   let bits = 2 + (seen.has(origin) ? KIND.seen + Math.log2(seen.size) : textBits(origin.slice(2), seen));
   seen.add(origin);
   bits += escapeBits(address.pathname, PATH_MUST_ESCAPE) + escapeBits(address.search.slice(1), QUERY_MUST_ESCAPE);
 
   // A signed shape is charged by its grammar, plus where each of its parameters sits among the others; the rest is text.
-  let query = address.search;
-  const params = query.slice(1).split("&").map((param) => {
+  let query = address.search.slice(1);
+  const params = query.split("&").map((param) => {
     const eq = param.indexOf("=");
     return [decodeEscapes(eq < 0 ? param : param.slice(0, eq)), decodeEscapes(eq < 0 ? "" : param.slice(eq + 1)), param] as const;
   });
   const signed = signedShape(params.map(([name, value]) => [name, value] as const));
   if (signed) {
     bits += KIND.rare + SHAPE_CHOICE + signed.bits + signed.names.size * Math.log2(params.length + 1);
-    query = `?${params.filter(([name]) => !signed.names.has(name)).map(([, , param]) => param).join("&")}`;
+    query = params.filter(([name]) => !signed.names.has(name)).map(([, , param]) => param).join("&");
   }
-  return bits + textBits(decodeEscapes(address.pathname + query), seen);
+  return bits + textBits(decodeEscapes(address.pathname), seen) + textBits(decodeEscapes(query), seen);
 }

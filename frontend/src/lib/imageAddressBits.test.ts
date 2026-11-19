@@ -136,6 +136,11 @@ describe("how it was escaped", () => {
     expect(bits("https://a.io/caf%E9")).toBeGreaterThan(bits("https://a.io/caf%C3%A9"));
     expect(bits("https://a.io/%E4%B8%E4%B8") - bits("https://a.io/%E4%B8")).toBeGreaterThanOrEqual(16);
   });
+
+  test("where the query starts is part of the address: an escaped ? in the path is not the ? that starts a query", () => {
+    expect(bits("https://a.io/a%3Fb")).not.toBe(bits("https://a.io/a?b"));
+    expect(bits("https://a.io/a%3Fb?c")).toBeGreaterThan(bits("https://a.io/a?bc"));
+  });
 });
 
 describe("shapes that are charged by their grammar", () => {
@@ -232,5 +237,59 @@ describe("the charge is never less than what the address carries", () => {
     const pieces = cut(inAlphabet(payload, BASE62).join(""), 8);
     const total = pieces.reduce((sum, piece, i) => sum + bits(`https://e.example/gallery/${piece}/${i % 2 ? "a" : "b"}.png`, seen), 0);
     expect(total).toBeGreaterThanOrEqual(carried);
+  });
+
+  // Security review v7, F1: any piece 36 units long was charged as a UUID, 136 bits, whatever it held.
+  const pick = (alphabet: string[], count: number, seed: number) =>
+    noise(count * 2, seed).reduce((text, byte, i, bytes) => (i % 2 ? text + alphabet[((bytes[i - 1]! << 8) | byte) % alphabet.length]! : text), "");
+  const han = Array.from({ length: 16384 }, (_, i) => String.fromCharCode(0x4e00 + i));
+  const extensionB = Array.from({ length: 4096 }, (_, i) => String.fromCodePoint(0x20000 + i));
+
+  test("a piece that is as long as a UUID but is not one is charged for what it holds", () => {
+    const over = (piece: string) => bits(`https://e.example/${encodeURIComponent(piece)}.png`) - bits("https://e.example/.png");
+    expect(over(pick(BASE62.split(""), 36, 41))).toBeGreaterThanOrEqual(36 * Math.log2(62));
+    expect(over(pick(han, 36, 42))).toBeGreaterThanOrEqual(36 * 14);
+    // 36 UTF-16 units, 32 characters: four outside the basic plane and 28 inside it.
+    expect(over(pick(extensionB, 4, 43) + pick(han, 28, 44))).toBeGreaterThanOrEqual(4 * 12 + 28 * 14);
+    expect(over(pick(extensionB, 18, 45))).toBeGreaterThanOrEqual(18 * 12);
+  });
+
+  test("2,000 random addresses of mixed pieces: none is charged less than the random choices in it", () => {
+    const alphabets = [
+      LOWER.split(""),
+      (LOWER + LOWER.toUpperCase()).split(""),
+      BASE62.split(""),
+      "0123456789abcdef".split(""),
+      "0123456789".split(""),
+      han,
+      extensionB,
+      Array.from({ length: 400 }, (_, i) => String.fromCharCode(0xc0 + i)), // Latin with diacritics
+      Array.from({ length: 512 }, (_, i) => String.fromCodePoint(0x1f300 + i)), // emoji
+    ];
+    let state = 20261119;
+    const below = (limit: number) => {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      state >>>= 0;
+      return state % limit;
+    };
+    let lowest = Infinity;
+    for (let i = 0; i < 2000; i++) {
+      let carried = 0;
+      const part = (pieces: number, separators: string) => {
+        let text = "";
+        for (let n = 0; n < pieces; n++) {
+          const alphabet = alphabets[below(alphabets.length)]!;
+          const length = 1 + below(40);
+          carried += length * Math.log2(alphabet.length);
+          text += (n ? separators[below(separators.length)] : "") + encodeURIComponent(Array.from({ length }, () => alphabet[below(alphabet.length)]).join(""));
+        }
+        return text;
+      };
+      const address = `https://e.example/${part(1 + below(5), "/-._")}${below(2) ? `?${part(1 + below(3), "=&")}` : ""}`;
+      lowest = Math.min(lowest, bits(address) / carried);
+    }
+    expect(lowest).toBeGreaterThanOrEqual(1);
   });
 });

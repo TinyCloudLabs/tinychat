@@ -32,6 +32,8 @@ const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const base62 = (length: number, seed: number) => noise(length, seed).map((byte) => BASE62[byte % 62]).join("");
 /** Random CJK ideographs: about 14 bits each. */
 const cjk = (length: number, seed: number) => noise(length * 2, seed).reduce((text, byte, i, bytes) => (i % 2 ? text + String.fromCharCode(0x4e00 + ((bytes[i - 1]! << 8) | byte) % 0x5000) : text), "");
+/** Random ideographs outside the basic plane (two UTF-16 units each): 12 bits each. */
+const cjkExtensionB = (length: number, seed: number) => noise(length * 2, seed).reduce((text, byte, i, bytes) => (i % 2 ? text + String.fromCodePoint(0x20000 + (((bytes[i - 1]! << 8) | byte) % 4096)) : text), "");
 const LOWER = "abcdefghijklmnopqrstuvwxyz";
 /** Made-up lower-case words, `size` letters each: log2(26) = 4.7 bits a letter. */
 const madeUpWords = (count: number, size: number, seed: number) => chunks(noise(count * size, seed).map((byte) => LOWER[byte % 26]).join(""), size);
@@ -758,6 +760,11 @@ const REPLIES_THAT_HOLD: Record<string, DataReply> = {
   "two hundred file names with one truncated UTF-8 sequence each": {
     srcs: times(200, (i) => `https://evil.example/a%E${(noise(1, 1700 + i)[0]! & 0xf).toString(16)}%${(0x80 | (noise(2, 1700 + i)[1]! & 0x3f)).toString(16)}.png`),
     carries: 10,
+  },
+  // Review v7, F1: a run of 36 UTF-16 units (4 ideographs outside the basic plane and 28 inside it) was charged as a UUID.
+  "twelve addresses with two runs of ideographs as long as a UUID": {
+    srcs: times(12, (i) => `https://e.example/${[0, 1].map((n) => encodeURIComponent(cjkExtensionB(4, 1900 + 2 * i + n) + cjk(28, 2000 + 2 * i + n))).join("/")}.png`),
+    carries: 2 * (4 * 12 + 28 * Math.log2(0x5000)),
   },
 };
 

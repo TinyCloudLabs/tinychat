@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { TextMessagePartProvider } from "@assistant-ui/react";
 
 import { installDom } from "@/test/dom";
+import { IMAGE_BIT_FLOOR, REPLY_BIT_BUDGET } from "@/lib/imageAddressBits";
 import { heavyImageAddress } from "@/lib/imageBudget.fixture";
 import { IMAGE_PROMPT_COPY } from "@/lib/imageUrlFilter";
 import { ImageBudgetScope } from "./image-budget";
@@ -160,7 +161,7 @@ test("an approval covers the addresses it named: an image added to the reply aft
 
 const srcs = (host: HTMLElement) => [...host.querySelectorAll("img")].map((img) => img.getAttribute("src"));
 
-test("while a reply streams, no image from another host loads; the silent three are chosen from the finished text, in document order", async () => {
+test("while a reply streams, no image loads, not even one of ours; the silent three are chosen from the finished text, in document order", async () => {
   const text = [
     "![a][r]",
     photo("b.example", "b"),
@@ -177,7 +178,7 @@ test("while a reply streams, no image from another host loads; the silent three 
   // A reference definition arriving character by character: every prefix that parses as an address is a different image.
   for (const prefix of [text.slice(0, text.indexOf("[r]:") + 14), text.slice(0, text.indexOf("[r]:") + 21), text]) {
     await show(mounted, prefix, host, true);
-    expect(srcs(host)).toEqual(prefix.includes("own") ? [heavyImageAddress("node.tinycloud.xyz", "own")] : []);
+    expect(srcs(host)).toEqual([]);
     expect(host.textContent).not.toContain("more image");
   }
 
@@ -240,6 +241,19 @@ test("a finished reply loads its first three images and no other address is ever
   const { host, ever } = await mountRecorded();
   await show(mounted!, row("a", "b", "c", "d", "e"), host, false);
   expect(new Set(ever)).toEqual(new Set(loaded("a", "b", "c")));
+});
+
+// Security review v7, F2: an image that loads before the reply ends is a request the budget never counted.
+test("images on an allowlisted host are counted too: none is requested while the reply streams, and no more than the budget allows after it", async () => {
+  const { host, ever } = await mountRecorded();
+  const allowed = REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR;
+  const text = Array.from({ length: allowed + 12 }, (_, i) => `![i](https://i.imgur.com/Zq${i.toString(36).padStart(5, "0")}.png)`).join("\n");
+  await show(mounted!, text, host, true);
+  expect(ever).toEqual([]);
+  await show(mounted!, text, host, false);
+  for (let waited = 0; srcs(host).length < allowed && waited < 8000; waited += 50) await act(async () => { await Bun.sleep(50); });
+  expect(srcs(host)).toHaveLength(allowed);
+  expect(new Set(ever).size).toBe(allowed);
 });
 
 test("an address changed in place while the reply is finished keeps its place: no held image takes it", async () => {
