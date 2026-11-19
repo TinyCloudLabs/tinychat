@@ -1,6 +1,6 @@
 // Sam, 11-13: answered cards that are Waiting (the agent hasn't picked the answer up) or Done but not yet
-// acknowledged leave the main flow, which keeps only what needs him. They gather in a "Pending" section at the foot
-// of the stream, in the stream's own row style (mock 24): the agent's mark, what he chose in bold with the post under
+// acknowledged leave the main flow, which keeps only what needs him. They gather in a "Pending" section after Updates
+// and before History, in the stream's own row style (mock 24): the agent's mark, what he chose in bold with the post under
 // it, and at the row's end whom it waits on. The section is not there while it is empty. A Done row offers Acknowledge,
 // which goes through the page's undo pill like every other closing action. Tapping a row opens its card in place,
 // where "Change answer" is.
@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { Clock3Icon } from "lucide-react";
 
 import { AgentMark } from "./AgentMark";
+import { STREAM_HEADING_CLASS } from "./feedStream";
 
 export interface PendingItem {
   key: string;
@@ -32,7 +33,7 @@ export interface PendingItem {
 
 export function PendingCard({ items }: { items: readonly PendingItem[] }) {
   return <section aria-label="Pending">
-    <h2 className="mb-2 flex items-baseline justify-between px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>Pending</span><span className="tabular-nums">{items.length}</span></h2>
+    <h2 className={STREAM_HEADING_CLASS}><span>Pending</span><span className="tabular-nums">{items.length}</span></h2>
     <ul id="home-feed-pending" className="-mx-3 divide-y divide-border border-y border-border bg-card sm:-mx-6 lg:-mx-8">
       {items.map((item) => {
         const waiting = item.status.startsWith("Waiting");
