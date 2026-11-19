@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.9.1-beta.4
+
+### Patch Changes
+
+- 05459bb: Enable Granola imports and API sync in production.
+
+  Details: TC-3292
+
 ## 0.9.1-beta.3
 
 ### Patch Changes
