@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.9.1-beta.2
+
+### Patch Changes
+
+- 4444996: Main gives earlier messages more time to load when it starts. It shows "Loading earlier messages…" while they load, and you can send a message in the meantime.
+
 ## 0.9.1-beta.1
 
 ### Patch Changes

@@ -16,6 +16,20 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.1-beta.2
+
+### Patch Changes
+
+- 7b5b37a: Courier opens inside TinyCloud One as a read-only view of your threads, orders and requests. Approving, denying and saving orders open Courier in a new tab.
+
+  Details: TC-3337
+
+- 414c37a: If your sign-in method can't support this device's sync, sync now stops quietly for that session instead of retrying. Syncing everything to this device after sign-in can take a little longer to finish. A new account no longer logs connector errors on its first sign-in.
+
+  Details: TC-2685
+
+- 4444996: Main gives earlier messages more time to load when it starts. It shows "Loading earlier messages…" while they load, and you can send a message in the meantime.
+
 ## 0.15.1-beta.1
 
 ### Patch Changes
