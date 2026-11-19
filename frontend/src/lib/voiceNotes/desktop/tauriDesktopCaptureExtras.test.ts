@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { spyOn } from "bun:test";
 import { getDesktopCaptureExtras, registerDesktopCaptureExtras, type DownloadProgress } from "../desktopCaptureExtras";
 import { newIdbEnv } from "../web/testing/idb";
 import { memoryLocks } from "../web/webStore";

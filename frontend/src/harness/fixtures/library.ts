@@ -238,8 +238,10 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
     return { ok: true, data: { rows: [] } };
   };
   // The speaker-name writes (TC-2189), as the SQL applies them: one label merged into the row's `speaker_names`
-  // (a null name clears it) with that label's suggestion dropped on a row that has suggestions, then the maps
-  // dropped once they are empty.
+  // (a null name clears it), then the map dropped once it is empty.
+  // Names in the call: that write is now one merge patch, which also drops the label's suggestion on a row that has
+  // suggestions, and `speaker_suggestions` is dropped once it is empty too. Those statements are handled first; the
+  // write of the older form stays below.
   const execute = async (sql: string, params: unknown[] = []) => {
     if (sql.includes("call_participants")) return { ok: true, data: { changes: 0 } };
     if (sql.includes("json_patch") && sql.includes("speaker_suggestions")) {
@@ -252,11 +254,21 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
       return { ok: true, data: { changes: 1 } };
     }
     if (!sql.includes("speaker_names")) return { ok: true, data: { changes: 0 } };
-    const row = rows.find((r) => r.id === params[0]);
-    for (const key of ["speaker_names", "speaker_suggestions"]) {
-      const map = row?.metadata[key];
-      if (row && map !== null && typeof map === "object" && Object.keys(map).length === 0) delete row.metadata[key];
+    if (sql.includes("json_patch")) {
+      const [label, shown, , rowId] = params as [string, string | null, string, string];
+      const row = rows.find((r) => r.id === rowId);
+      if (!row) return { ok: true, data: { changes: 0 } };
+      const names = { ...((row.metadata.speaker_names as Record<string, string> | undefined) ?? {}) };
+      if (shown === null) delete names[label];
+      else names[label] = shown;
+      row.metadata.speaker_names = names;
+      return { ok: true, data: { changes: 1 } };
     }
+    const row = rows.find((r) => r.id === params[0]);
+    const names = row?.metadata.speaker_names as Record<string, string> | undefined;
+    if (row && names && Object.keys(names).length === 0) delete row.metadata.speaker_names;
+    const suggested = row?.metadata.speaker_suggestions;
+    if (row && suggested !== null && typeof suggested === "object" && Object.keys(suggested).length === 0) delete row.metadata.speaker_suggestions;
     return { ok: true, data: { changes: row ? 1 : 0 } };
   };
   const get = async (key: string) => {
