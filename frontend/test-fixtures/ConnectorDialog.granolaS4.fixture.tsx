@@ -105,6 +105,8 @@ async function click(root: ParentNode, label: string) {
 }
 
 async function enterKey(value: string) {
+  const openKey = button(dialog()!, "Connect with an API key");
+  if (openKey) await click(dialog()!, "Connect with an API key");
   const input = dialog()?.querySelector("input");
   if (!input) throw new Error("Missing Granola key field");
   await act(async () => {
