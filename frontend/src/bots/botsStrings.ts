@@ -60,7 +60,7 @@ export const BOT_VIEW_STRINGS = {
     label: "Chat view",
     classic: "Classic",
     bots: "Bots",
-    helper: "Classic is the chat you've used so far. Bots gives each bot its own chat.",
+    helper: "Classic shows one chat. Bots gives each bot its own chat.",
     notAdmitted: "Bots aren't available on this account. Classic chat works as before.",
   },
 } as const;
