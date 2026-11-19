@@ -61,7 +61,7 @@ describe("limit warnings and the automatic-stop setting", () => {
     const root = mount();
     await root.render(createElement(Probe, { state: recording(HOUR, 20) }));
     await wait(60);
-    expect(sent).toEqual([{ title: "TinyCloud Home", body: LIMIT_WARNING_TEXT }]);
+    expect(sent).toEqual([{ title: "TinyCloud One", body: LIMIT_WARNING_TEXT }]);
     await root.render(createElement(Probe, { state: recording(2 * HOUR, 20) }));
     await wait(60);
     expect(sent).toHaveLength(2);

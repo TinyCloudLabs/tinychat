@@ -10,56 +10,13 @@
 // to the app, and links that open only in sandboxed windows.
 import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { FileTextIcon, XIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
+import { briefPage, MAX_MARKDOWN, type Brief } from "./brief";
 import { BriefMarkdown } from "./BriefMarkdown";
 
-/** A card's brief: `markdown` carried inline, or `url`, a .md or .html page on this app's own origin. */
-export interface Brief {
-  title: string;
-  markdown?: string;
-  url?: string;
-}
-
-// Past this a brief is no longer one page, and rendering it would stall the sheet.
-const MAX_MARKDOWN = 100_000;
 // A brief page is read only this far, and only for this long; the rest is cancelled unread (Bobbie's review, #680).
 const MAX_PAGE_BYTES = 1_000_000;
 const PAGE_DEADLINE_MS = 10_000;
-
-/**
- * The page a brief's `url` names, when the sheet can open it: a page on this app's own origin (a path, or an absolute
- * address on this origin), ending .md or .html. Nothing off-host: another host would learn the owner's address and
- * when they read the card, and could track or phish inside the frame (Bobbie's review, #680). Inline Markdown is the
- * preferred way to send a brief.
- */
-function briefPage(value: string): { href: string; format: "markdown" | "html" } | undefined {
-  if (value.length > 2048) return undefined;
-  const here = typeof window === "undefined" ? undefined : window.location.href;
-  const onThisHost = value.startsWith("/") && !value.startsWith("//");
-  let url: URL;
-  try {
-    // A path can only be resolved in the browser; elsewhere (tests, the server render) a placeholder host parses it.
-    url = new URL(value, here ?? "https://this-host.invalid");
-  } catch {
-    return undefined;
-  }
-  const sameOrigin = onThisHost || (here !== undefined && url.origin === new URL(here).origin);
-  if (!sameOrigin) return undefined;
-  const path = url.pathname.toLowerCase();
-  const format = /\.(md|markdown)$/.test(path) ? "markdown" : /\.html?$/.test(path) ? "html" : undefined;
-  return format && { href: here ? url.href : value, format };
-}
-
-/** A card payload's brief, if it carries a well-formed one (`payload.brief`). Markdown wins when both are given. */
-export function briefOf(payload: Record<string, unknown> | undefined): Brief | undefined {
-  const value = payload?.brief;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const { title, markdown, url } = value as Record<string, unknown>;
-  if (typeof title !== "string" || !title.trim() || title.length > 200) return undefined;
-  if (typeof markdown === "string" && markdown.trim() && markdown.length <= MAX_MARKDOWN) return { title: title.trim(), markdown };
-  if (typeof url === "string" && briefPage(url)) return { title: title.trim(), url };
-  return undefined;
-}
 
 async function readBriefPage(href: string, signal: AbortSignal): Promise<string> {
   const deadline = new AbortController();
@@ -172,22 +129,4 @@ export function BriefSheet({ brief, open, onOpenChange }: {
       </Dialog.Content>
     </Dialog.Portal>
   </Dialog.Root>;
-}
-
-/** "Read the brief": a quiet control on an open card that opens its brief in a sheet. */
-export function BriefButton({ brief, className = "" }: { brief: Brief; className?: string }) {
-  const [open, setOpen] = useState(false);
-  return <>
-    <button
-      type="button"
-      aria-haspopup="dialog"
-      aria-expanded={open}
-      onClick={() => setOpen(true)}
-      className={`inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 text-sm text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:bg-surface-2 fine:min-h-10 ${className}`}
-    >
-      <FileTextIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-      Read the brief
-    </button>
-    <BriefSheet brief={brief} open={open} onOpenChange={setOpen} />
-  </>;
 }

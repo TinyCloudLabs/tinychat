@@ -3,5 +3,5 @@
   "instructionsUrl": "https://agents.tinycloud.xyz/chat",
   "dataHost": "https://tee.node.tinycloud.xyz",
   "installerVersion": "1.7.0",
-  "packVersion": "0.1.1-onboarding.25"
+  "packVersion": "0.1.1-onboarding.27"
 }

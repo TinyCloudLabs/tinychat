@@ -10,10 +10,13 @@ import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
+import { APP_NAME } from "@/lib/homeSite";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 
 export const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground";
 const controlEdge = "shadow-[inset_0_0_0_1px_hsl(var(--muted-foreground))]";
-export const cardClass = "relative min-w-0 overflow-hidden rounded-[20px] bg-card py-4 pl-[18px] pr-4 text-card-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]";
+/** A card's frame. Long unbroken tokens (hashes, paths, URLs) wrap rather than run past its edge. */
+export const cardClass = "relative min-w-0 overflow-hidden rounded-[20px] bg-card py-4 pl-[18px] pr-4 text-card-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))] [overflow-wrap:anywhere]";
 export const quietClass = `inline-flex min-h-11 items-center gap-1.5 rounded-md text-[13px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-50 ${focusRing}`;
 export const pillClass = `inline-flex h-11 max-w-full items-center justify-center gap-2 rounded-full px-5 text-[13.5px] font-bold ${controlEdge} hover:bg-muted disabled:opacity-50 ${focusRing}`;
 export const primaryPillClass = `inline-flex h-[52px] max-w-full items-center justify-center gap-2 rounded-full bg-foreground px-[30px] text-[15px] font-bold text-background hover:bg-foreground/90 disabled:opacity-50 ${focusRing}`;
@@ -202,11 +205,11 @@ export const UNDO_SECONDS = 5;
 /** What a card says about an answer that was waiting to be sent when the page closed. */
 export const HELD_ANSWER_COPY = {
   /** It was sent at this launch, later than the owner chose it. */
-  sent: "Sent when you opened Home again.",
+  sent: "Sent when you opened TinyCloud One again.",
 } as const;
 
 /** A failed answer send: the answer is held in the outbox, so it goes at the next launch. */
-export const ANSWER_HELD_COPY = "Your answer isn't sent yet. Send it again now, or Home will send it the next time you open it.";
+export const ANSWER_HELD_COPY = `Your answer isn't sent yet. Send it again now, or ${APP_NAME} will send it the next time you open it.`;
 
 /** A failed answer send that isn't held (refused, or it failed before it was held): nothing will send it later. */
 export const ANSWER_FAILED_COPY = "Your answer wasn't saved. Try again.";
@@ -220,16 +223,45 @@ export function AnswerFailedLine({ held }: { held: boolean }) {
 export const NOT_SENT_COPY = {
   yourAnswer: "your answer",
   changed: "This card changed. Answer the newer version.",
+  /** An answer whose agent is no longer connected: no card is left to show it on, so a notice says it. */
+  disconnected: "Its agent isn't connected any more.",
 } as const;
+
+/** How much of an answer in words the "Not sent" line shows; the rest is in the line's title and aria-label. */
+export const NOT_SENT_WORDS_MAX = 80;
+
+/** The owner's words as the "Not sent" line quotes them: the first 80 characters with "…" when longer, the full text kept for the title. */
+export function quotedWords(text: string): { label: string; full?: string; ends: boolean } {
+  const clipped = text.length > NOT_SENT_WORDS_MAX;
+  const shown = clipped ? `${text.slice(0, NOT_SENT_WORDS_MAX).trimEnd()}…` : text;
+  return { label: `“${shown}”`, ...(clipped ? { full: text } : {}), ends: !clipped && /[.!?]$/.test(text.trimEnd()) };
+}
+
+/**
+ * A clipped answer in words, as a control: tapping it (or Enter / Space) shows the whole answer in place, and again
+ * folds it back, so the full text is readable on a phone where a title never shows. Its accessible name is always the
+ * whole answer in quotes.
+ */
+function ClippedWords({ label, full }: { label: string; full: string }) {
+  const [open, setOpen] = useState(false);
+  return <button type="button" aria-expanded={open} aria-label={`“${full}”`} title={full} onClick={() => setOpen((current) => !current)}
+    className="whitespace-normal break-words text-left font-semibold underline decoration-dotted underline-offset-4">{open ? `“${full}”` : label}</button>;
+}
 
 /**
  * "Not sent: {label}." for an answer that was never sent, during its countdown or from the
  * page-close outbox. `changed` adds why, for a card a newer version replaced; a closed card
- * already says it ended.
+ * already says it ended. `full` is a clipped answer in words: the quote becomes a control that expands to the whole
+ * answer and folds back (and keeps the full text in its title and aria-label);
+ * `ends` drops the sentence's own full stop when the owner's words already end in one.
  */
-export function NotSent({ label, changed = false }: { label: string; changed?: boolean }) {
-  return <span className="text-foreground">Not sent: {label === NOT_SENT_COPY.yourAnswer ? label : <b className="font-semibold">{label}</b>}.{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
+export function NotSent({ label, changed = false, full, ends = false, to }: { label: string; changed?: boolean; full?: string; ends?: boolean; to?: string }) {
+  const quoted = label === NOT_SENT_COPY.yourAnswer ? label : full ? <ClippedWords label={label} full={full} /> : <b className="font-semibold">{label}</b>;
+  return <span className="text-foreground">Not sent{to ? ` to ${to}` : ""}: {quoted}{ends ? "" : "."}{changed && ` ${NOT_SENT_COPY.changed}`}</span>;
 }
+
+/** Why an answer's notice has no card: the agent it was for is gone (named when the card said who it was, else "Its agent"). */
+export const disconnectedCopy = (agent?: string): string => agent ? `${agent} isn't connected any more.` : NOT_SENT_COPY.disconnected;
 
 /**
  * The list's "send now" registry: when the owner leaves the view (switches segment),
@@ -245,6 +277,10 @@ export const PendingSendContext = createContext<Set<() => void> | null>(null);
  */
 export function usePendingSend(guard: { stale: boolean; onRefused: (label: string) => void }) {
   const [pending, setPending] = useState<{ label: string; seconds: number } | null>(null);
+  // An answer waiting out its undo window is in memory only, and the page-close flush below would write it to this
+  // origin's storage after the move cleared it. A held page does not move while one waits; once it is sent, it is held
+  // in the outbox (written before the first await) and the hold keeps the page here until it is written.
+  useOriginMoveDeferral(pending !== null);
   const send = useRef<{ label: string; run: () => void } | null>(null);
   const timers = useRef<number[]>([]);
   // Read at commit time, not at tap time: a newer issuance may arrive during the countdown.

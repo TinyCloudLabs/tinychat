@@ -29,10 +29,11 @@ import { emptySitrepOwnerData, isClosed, jsonValue, ownerThreadResponseKey, pars
 import { OWNER_EVENT_SCHEMA, privateOwnerStateFromRows, savePrivateOwnerState, savePrivateHeldNote, savePrivateGroupPriority, combineOwnerData } from "./sitrepOwnerStore";
 import { OWNER_IMPORT_SCHEMA, OwnerArchiveCache } from "./sitrepArchiveStore";
 import { enrichTypedEntry } from "./loadTypedFeed";
+import { redactedCard, redactedState } from "./redactedCard";
 import { OUTPUT_TALLY, readAgent, readRegistry, readTally, REGISTRY_TALLY, RESPONSES_TALLY, type AgentRead, type RegistryRead } from "./feedRead";
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
-import { clearHeldAnswers, heldAnswers, holdAnswer, isHeld, releaseAnswer, type HeldAnswer } from "./answerOutbox";
+import { clearHeldAnswers, clearUnsentAnswer, heldAnswers, holdAnswer, isHeld, recordUnsentAnswer, releaseAnswer, unsentAnswers, type HeldAnswer } from "./answerOutbox";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { ownerActionMessage, type OwnerAction } from "./ownerActions";
 
@@ -84,6 +85,12 @@ function optionLabel(card: FeedCard, choiceId: string): string | undefined {
   return options.find((option) => option.id === choiceId)?.label;
 }
 
+/** The agent's name as the card shows it: the crew member a typed card names, else the connection's label. */
+function agentName(entry: HomeFeedEntry): string | undefined {
+  const from = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record.from?.trim();
+  return from || entry.source.label || undefined;
+}
+
 /** The outbox entry for an answer: only what rebuilds it (see answerOutbox.ts). */
 function heldAnswerOf(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload): HeldAnswer {
   const data = payload?.type === "sitrep.answer" && payload.data && typeof payload.data === "object" && !Array.isArray(payload.data) ? payload.data : undefined;
@@ -94,6 +101,9 @@ function heldAnswerOf(entry: HomeFeedEntry, response: NewFeedResponse, payload?:
     sourceId: entry.source.sourceId, cardId: response.cardId, revision: response.revision, issuanceId: response.issuanceId, responseId: response.responseId,
     ...(typeof choiceId === "string" && choiceId ? { choiceId } : {}),
     ...(typeof text === "string" && text ? { text } : {}),
+    // What the owner saw, for a "Not sent" notice that has no card left to read it from.
+    ...(agentName(entry) ? { agent: agentName(entry) } : {}),
+    ...(typeof choiceId === "string" && choiceId && optionLabel(entry.state.card, choiceId) ? { choiceLabel: optionLabel(entry.state.card, choiceId)! } : {}),
     ...(action === "answer" || action === "accept-default" ? { action } : {}),
     ...(response.supersedesResponseId ? { supersedesResponseId: response.supersedesResponseId } : {}),
     // A plain card's own payload (a post's answers) is sent unchanged; a typed answer's is rebuilt from its action.
@@ -164,6 +174,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   let renewal: number | undefined;
   let streamError: Error | undefined;
   let localReads = 0;
+  /** A device copy or a registry read has named the agents the stream covers. */
+  let sourcesKnown = false;
   /** The device copy's read, which names the agents the first load reads beside the registry. */
   let localRead: Promise<unknown> | undefined;
   let hiddenAt: number | undefined;
@@ -214,8 +226,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
 
   function connect(force = false) {
     // The device's copy names the agents to subscribe to; wait for it rather
-    // than open a stream that its answer would replace.
-    if (!listeners.size || document.visibilityState === "hidden" || localReads) return;
+    // than open a stream that its answer would replace. Without a copy (a new
+    // device) the first load's registry read names them.
+    if (!listeners.size || document.visibilityState === "hidden" || localReads || !sourcesKnown) return;
     const resources = [HOME_FEED_RESOURCE, THREADS_SQL_DB_NAME, ...sources.flatMap((source) => [source.output.database, source.responses.database])];
     const nextKey = JSON.stringify(resources);
     const hooks: FeedHooks = tcw.hooks;
@@ -386,6 +399,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   async function loadFeed(focused?: HomeFeedEntry, options?: HomeFeedLoadOptions): Promise<HomeFeedSnapshot> {
     assertAccount();
     const load = readFeed(focused);
+    // A load that failed before its registry read named the agents still
+    // opens the stream: its ready retries the load.
+    load.catch(() => { if (!sourcesKnown) { sourcesKnown = true; connect(); } });
     if (!options?.feed) return (await load).snapshot;
     feedLoad = load;
     try {
@@ -457,6 +473,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         responses: { spaceId: space, database: responses as string },
       };
     });
+    sourcesKnown = true;
     connect();
     // Archives this session has not validated yet are read beside the agents'
     // rows; both are needed only to assemble entries.
@@ -500,10 +517,10 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         if (!state) throw new Error("Card issuance not found");
         const key = JSON.stringify([source.sourceId, identity.cardId, identity.revision, identity.issuanceId]);
         const entry: HomeFeedEntry = {
-          source, state,
+          source, state: redactedState(state),
           currentIssuance: latestKeys.has(key),
           view: views.get(key) ?? { sourceId: source.sourceId, cardId: identity.cardId, revision: identity.revision, issuanceId: identity.issuanceId },
-          earlierRevisions: (revisionsByCard.get(identity.cardId) ?? []).filter((card) => card.revision < identity.revision),
+          earlierRevisions: (revisionsByCard.get(identity.cardId) ?? []).filter((card) => card.revision < identity.revision).map(redactedCard),
           responses: histories.get(key) ?? [],
           viewEvents: events.get(key) ?? [],
         };
@@ -607,6 +624,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         const read = readLocal<LocalFeed>(localKey).then((local) => {
           // Subscribe to every agent's databases from the first connection, and
           // let the first network load read them beside the registry.
+          if (local) sourcesKnown = true;
           if (local && !loadedOnce && !sources.length) sources = local.value.sources;
           return local;
         });
@@ -630,8 +648,16 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         // Cleared meanwhile (sign-out gave up on this flush): an entry that hasn't started is never sent.
         if (!isHeld(space, held)) continue;
         const source = sources.find((candidate) => candidate.sourceId === held.sourceId);
-        // Its agent is no longer connected: there is no card left to answer or to tell.
-        if (!source) { releaseAnswer(space, held); continue; }
+        // Its agent is no longer connected: no card is left to answer or to tell, and none to carry a "Not sent" line,
+        // so an answer is kept as a notice of its own (shown until dismissed). An owner action has nothing to say.
+        if (!source) {
+          if (!held.ownerAction) {
+            recordUnsentAnswer(space, { sourceId: held.sourceId, cardId: held.cardId, revision: held.revision, issuanceId: held.issuanceId, outcome: "disconnected", at: new Date().toISOString(), ...(held.text ? { text: held.text } : {}), ...(held.choiceLabel ? { choiceLabel: held.choiceLabel } : {}), ...(held.agent ? { agent: held.agent } : {}) });
+            outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "disconnected", ...(held.text ? { text: held.text } : {}), ...(held.choiceLabel ? { choiceLabel: held.choiceLabel } : {}), ...(held.agent ? { agent: held.agent } : {}) });
+          }
+          releaseAnswer(space, held);
+          continue;
+        }
         const output = db(source.output.database);
         const responses = db(source.responses.database);
         try {
@@ -663,10 +689,21 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           const refusal = (outcome: "closed" | "replaced" | "refused"): HeldAnswerOutcome => ({
             sourceId: held.sourceId, cardId: held.cardId, outcome,
             ...(label ? { choiceLabel: label } : {}),
+            ...(!label && held.text ? { text: held.text } : {}),
             ...(outcome === "replaced" && answered ? { answered: storedRevisionEntry(source, answered) } : {}),
           });
+          // Never silent: the answer is kept as "Not sent" in the same step that releases the held entry, so no page
+          // that closes, remounts or loses its source while this flush finishes can lose what the owner said.
+          const refuse = (outcome: "closed" | "replaced" | "refused") => {
+            recordUnsentAnswer(space, {
+              sourceId: held.sourceId, cardId: held.cardId, revision: held.revision, issuanceId: held.issuanceId, outcome, at: new Date().toISOString(),
+              ...(label ? { choiceLabel: label } : {}), ...(!label && held.text ? { text: held.text } : {}),
+            });
+            releaseAnswer(space, held);
+            outcomes.push(refusal(outcome));
+          };
           const target = heldAnswerTarget(source, held, revisions, latest);
-          if (typeof target === "string") { releaseAnswer(space, held); outcomes.push(refusal(target)); continue; }
+          if (typeof target === "string") { refuse(target); continue; }
           // Nothing newer may be overwritten: the owner may have answered since, on another device or tab.
           // A held answer goes only to a card not answered from its answered revision on; a held follow-up
           // only while the answer it replaces is still the newest on its issuance.
@@ -684,17 +721,29 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
             await saveResponse({ source, state, view: { sourceId: source.sourceId, cardId: target.cardId, revision: target.revision, issuanceId: target.issuanceId } }, rebuilt.response, rebuilt.payload);
           } catch (error) {
             // The feed's definitive no: the request no longer takes this answer.
-            if (error instanceof RefusedWrite) { releaseAnswer(space, held); outcomes.push(refusal("refused")); continue; }
+            if (error instanceof RefusedWrite) { refuse("refused"); continue; }
             throw error;
           }
           releaseAnswer(space, held);
+          clearUnsentAnswer(space, held.sourceId, held.cardId);
           outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "sent" });
         } catch {
-          // A failed transport keeps the answer for the next launch.
+          // A failed transport keeps the answer for the next launch, and says so: the owner is told it is not sent yet.
+          if (!held.ownerAction && isHeld(space, held)) outcomes.push({ sourceId: held.sourceId, cardId: held.cardId, outcome: "held", ...(held.text ? { text: held.text } : {}) });
         }
+      }
+      // Beside this launch's own: what an earlier launch's flush kept and the owner has not yet seen.
+      const reported = new Set(outcomes.map((outcome) => JSON.stringify([outcome.sourceId, outcome.cardId])));
+      for (const unsent of unsentAnswers(space)) {
+        if (reported.has(JSON.stringify([unsent.sourceId, unsent.cardId])) || (unsent.outcome !== "disconnected" && !sources.some((candidate) => candidate.sourceId === unsent.sourceId))) continue;
+        outcomes.push({
+          sourceId: unsent.sourceId, cardId: unsent.cardId, outcome: unsent.outcome,
+          ...(unsent.choiceLabel ? { choiceLabel: unsent.choiceLabel } : {}), ...(unsent.text ? { text: unsent.text } : {}), ...(unsent.agent ? { agent: unsent.agent } : {}),
+        });
       }
       return outcomes;
     },
+    dismissUnsentAnswer(sourceId, cardId) { clearUnsentAnswer(space, sourceId, cardId); },
     async sendMessage(entry, message, payload) {
       assertEntryScope(entry, message);
       if (payload?.type.startsWith("sitrep.")) {

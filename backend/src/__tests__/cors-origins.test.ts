@@ -14,6 +14,7 @@ import {
   HOME_WEB_ORIGIN,
   LOCAL_WEB_ORIGINS,
   TINYCHAT_WEB_ORIGIN,
+  TINYCLOUD_ONE_WEB_ORIGIN,
 } from "../cors-origins.js";
 
 const WEB_ORIGIN = "https://tinycloud.chat";
@@ -45,12 +46,12 @@ afterAll(async () => {
 });
 
 describe("frontend origin allowlist", () => {
-  test("defaults to both production web origins plus FRONTEND_URL", () => {
-    expect(DEFAULT_FRONTEND_ORIGINS).toEqual([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN]);
-    expect(frontendOriginsFromEnv("https://tinycloud.chat", {})).toEqual([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN]);
-    expect(frontendOriginsFromEnv("https://home.tinycloud.xyz/", {})).toEqual([HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN]);
+  test("defaults to every production web origin plus FRONTEND_URL", () => {
+    expect(DEFAULT_FRONTEND_ORIGINS).toEqual([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN]);
+    expect(frontendOriginsFromEnv("https://tinycloud.chat", {})).toEqual([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN]);
+    expect(frontendOriginsFromEnv("https://home.tinycloud.xyz/", {})).toEqual([HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN]);
     expect(frontendOriginsFromEnv("http://localhost:5186", { FRONTEND_ORIGINS: " " }))
-      .toEqual(["http://localhost:5186", TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN]);
+      .toEqual(["http://localhost:5186", TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN]);
   });
 
   test("an explicit list replaces the default and always keeps FRONTEND_URL", () => {
@@ -72,7 +73,7 @@ describe("frontend origin allowlist", () => {
   });
 });
 
-describe.each([WEB_ORIGIN, HOME_WEB_ORIGIN])("CORS with FRONTEND_URL=%s and the default allowlist", (frontendUrl) => {
+describe.each([WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN])("CORS with FRONTEND_URL=%s and the default allowlist", (frontendUrl) => {
   let origins: { server: Server; baseUrl: string };
   beforeAll(async () => {
     origins = await listen(frontendOriginsFromEnv(frontendUrl, {}));
@@ -81,7 +82,7 @@ describe.each([WEB_ORIGIN, HOME_WEB_ORIGIN])("CORS with FRONTEND_URL=%s and the 
     await close(origins.server);
   });
 
-  test.each([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN])("allows the preflight from %s", async (origin) => {
+  test.each([TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN])("allows the preflight from %s", async (origin) => {
     const response = await fetch(`${origins.baseUrl}/health`, {
       method: "OPTIONS",
       headers: {
@@ -94,7 +95,7 @@ describe.each([WEB_ORIGIN, HOME_WEB_ORIGIN])("CORS with FRONTEND_URL=%s and the 
     expect(response.headers.get("access-control-allow-origin")).toBe(origin);
   });
 
-  test.each(["https://attacker.example", "https://tinycloud.chat.evil.example", "http://tinycloud.chat"])(
+  test.each(["https://attacker.example", "https://tinycloud.chat.evil.example", "http://tinycloud.chat", "https://tinycloud.one.evil.example", "http://tinycloud.one"])(
     "refuses the preflight from %s",
     async (origin) => {
       const response = await fetch(`${origins.baseUrl}/health`, {
@@ -154,6 +155,12 @@ describe("app CORS origins", () => {
     "http://home.tinycloud.xyz",
     "https://home.tinycloud.xyz:8443",
     "https://home.tinycloud.xyz.",
+    "https://www.tinycloud.one",
+    "https://evil-tinycloud.one",
+    "https://tinycloud.one.evil.example",
+    "http://tinycloud.one",
+    "https://tinycloud.one:8443",
+    "https://tinycloud.one.",
   ])("does not allow unrelated origin %s", async (origin) => {
     const response = await fetch(`${baseUrl}/health`, {
       headers: { Origin: origin },

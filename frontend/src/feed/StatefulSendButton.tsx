@@ -5,7 +5,7 @@
 // sits inside a composer's field (ComposerField.tsx).
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpIcon } from "lucide-react";
-import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { AnimatePresence, MotionConfig, m } from "motion/react";
 import { cn } from "@/lib/utils";
 
 export type SendState = "idle" | "sending" | "sent" | "error";
@@ -60,7 +60,7 @@ export function StatefulSendButton({ onSend, disabled = false, label = "Send", c
   const inert = current === "sending" || current === "sent";
   const spinner = <span aria-hidden className="size-3.5 rounded-full border-2 border-current border-r-transparent animate-spin [animation-duration:0.8s] motion-reduce:animate-none" />;
   return <MotionConfig reducedMotion="user">
-    <motion.button type="button" layout="size" transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+    <m.button type="button" layout="size" transition={{ type: "spring", bounce: 0, duration: 0.3 }}
       disabled={disabled && current === "idle"} aria-disabled={inert || undefined} aria-busy={current === "sending" || undefined}
       onClick={() => void run()}
       className={compact
@@ -72,7 +72,7 @@ export function StatefulSendButton({ onSend, disabled = false, label = "Send", c
               : "rounded-lg bg-primary text-primary-foreground",
           inert && "cursor-default", className)}>
       <AnimatePresence mode="popLayout" initial={false}>
-        <motion.span key={current} className={compact
+        <m.span key={current} className={compact
           ? cn("inline-flex h-8 items-center justify-center gap-2 whitespace-nowrap rounded-full group-focus-visible:ring-2 group-focus-visible:ring-ring group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-background",
             current === "sent" ? "bg-neutral-900 px-3 text-white dark:bg-neutral-100 dark:text-neutral-900"
               : current === "error" ? "border border-destructive/60 bg-destructive/10 px-3 text-destructive"
@@ -83,9 +83,9 @@ export function StatefulSendButton({ onSend, disabled = false, label = "Send", c
           {current === "sent" && <span className="text-[11px] font-semibold uppercase tracking-wider">Sent</span>}
           {current === "error" && <>Couldn't send · Retry</>}
           {current === "idle" && (compact ? <><ArrowUpIcon aria-hidden className="size-4" /><span className="sr-only">{label}</span></> : label)}
-        </motion.span>
+        </m.span>
       </AnimatePresence>
-    </motion.button>
+    </m.button>
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{STATUS[current]}</span>
   </MotionConfig>;
 }

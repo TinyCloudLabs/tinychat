@@ -3,7 +3,7 @@
 Details: TC-2808
 
 ## Scenario
-A test account opens TinyCloud Home, types in the "What do you want done?" box, and sees Main, its main bot, reply in Main's chat, streamed. Main is an OMP instance in its own gVisor sandbox inside a TDX CVM, answering on TinyCloud's model service (RedPill). Accounts not on the test list see today's Home unchanged.
+A test account opens TinyCloud One, types in the "What do you want done?" box, and sees Main, its main bot, reply in Main's chat, streamed. Main is an OMP instance in its own gVisor sandbox inside a TDX CVM, answering on TinyCloud's model service (RedPill). Accounts not on the test list see today's Home unchanged.
 
 ## Pieces and contracts
 

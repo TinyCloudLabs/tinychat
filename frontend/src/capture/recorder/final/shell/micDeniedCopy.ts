@@ -8,7 +8,7 @@ export const BROWSER_REVOKED_LINE = "Microphone permission was revoked.";
 export const deniedLine = (): string => (openSettingsUnavailable() ? BROWSER_DENIED_LINE : FINAL_COPY.denied);
 export const revokedLine = (): string => (openSettingsUnavailable() ? BROWSER_REVOKED_LINE : FINAL_COPY.permissionRevoked);
 
-export const OPEN_SETTINGS_FAILED_LINE = "Couldn't open Settings. Open Settings › TinyCloud Home › Microphone.";
+export const OPEN_SETTINGS_FAILED_LINE = "Couldn't open Settings. Open Settings › TinyCloud One › Microphone.";
 
 /** What the person sees when opening Settings fails; the cause is only logged, never shown. */
 export function openSettingsFailedLine(cause: unknown): string {
@@ -24,7 +24,7 @@ export function closeRecoveryFailedLine(cause: unknown): string {
   return CLOSE_RECOVERY_FAILED_LINE;
 }
 
-export const MIC_CHECK_FAILED_LINE = "Couldn't check microphone access. TinyCloud Home will try again.";
+export const MIC_CHECK_FAILED_LINE = "Couldn't check microphone access. TinyCloud One will try again.";
 
 /** What the signed-out recovery shows when native cannot report the microphone state; the cause is only logged, never shown. */
 export function micCheckFailedLine(cause: unknown): string {

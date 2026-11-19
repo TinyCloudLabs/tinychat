@@ -60,7 +60,7 @@ import {
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
-import { createTranscriberRouter } from "./routes/transcriber.js";
+import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
 import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
 import { WakeQueue } from "./exo/wake-intake.js";
@@ -90,6 +90,7 @@ import {
   transcriptDeliveryConfigFromEnv,
 } from "./services/transcription-api.js";
 import { KvJsonKv, KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { PurgeSweeper } from "./services/transcriber-purge.js";
 import { TranscriptDeliveryWorker, WriteGovernor } from "./services/transcript-delivery.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -97,6 +98,7 @@ import {
   privateCloudTranscriptionConfigFromEnv,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
+import { createPrivateCloudPurger } from "./services/private-cloud-purge.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { runInWriteLane } from "./services/write-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
@@ -622,6 +624,8 @@ async function main() {
   const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
   const transcriberApi = transcriptionConfig ? createTranscriptionApiClient({ ...transcriptionConfig, requestIdFirstPartyOrigins }) : null;
   const transcriberIndex = new KvTranscriberIndexStore(node, transcriberStorageLane);
+  // TC-3136: retries recording removals whose provider-side purge is not yet confirmed.
+  const transcriberPurgeSweeper = transcriberApi ? new PurgeSweeper(transcriberApi, transcriberIndex) : null;
   const transcriptCoordinator = new TenantCoordinator();
   const transcriptEligibility = (address: string) =>
     transcriptDeliveryConfig.enabled &&
@@ -1045,15 +1049,15 @@ async function main() {
     // Google revocation is exclusively through the connection service's shared-grant guard.
     const credentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane));
     const backfillCredentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }));
-    // Same lane; see kvCalendarAutojoinStores for the priorities. The worker shares the one
-    // connection service (it single-flights token refreshes), so its few calls through it
-    // (cleanupEnabling, accessToken) run foreground under the request budget.
+    // Same lane; see kvCalendarAutojoinStores for the priorities and the shared row cache. The
+    // worker shares the one connection service (it single-flights token refreshes); the reads of
+    // its per-tick calls through it (cleanupEnabling, accessToken) use the worker's cached store.
     const stores = kvCalendarAutojoinStores(node, transcriberStorageLane);
     // Fail boot rather than claiming unattended recovery on a KV without prefix listing.
     await stores.worker.listConnections();
     const coordinator = new TenantCoordinator();
     calendarAutojoin = new CalendarAutojoinConnection({
-      store: stores.request, credentials, backfillCredentials, oauth: google, coordinator, calendar,
+      store: stores.request, workerStore: stores.worker, credentials, backfillCredentials, oauth: google, coordinator, calendar,
       teardownExoOwner,
       // TC-1047: disable, disconnect and needs_reconnect cancel the tenant's due-time timers.
       onDisabled: tenant => calendarAutojoinWorker?.cancelTenant(tenant),
@@ -1206,6 +1210,11 @@ async function main() {
   );
   app.use("/api/billing", createBillingRouter({ authMiddleware, rehydrator: ledgerRehydrator }));
 
+  // One PTX client serves the private cloud relay below and the account-deletion purge (TC-3166).
+  const privateCloudPtxClient = privateCloudTranscription.enabled
+    ? createPtxClient({ ...privateCloudTranscription, requestIdFirstPartyOrigins })
+    : null;
+
   // The TRANSCRIBER surface (routes/transcriber.ts): send a bot to a meeting URL through the
   // TinyCloud Private Transcription API and read the speaker-attributed transcript back. Mounted
   // only when TRANSCRIPTION_API_URL + TRANSCRIPTION_API_KEY are set — the project key stays in
@@ -1219,6 +1228,10 @@ async function main() {
       createTranscriberRouter({
         api: transcriberApi!,
         index: transcriberIndex,
+        purger: transcriberPurgeSweeper ?? undefined,
+        ...(privateCloudPtxClient && privateCloudTranscription.enabled
+          ? { privateCloud: createPrivateCloudPurger(privateCloudPtxClient, privateCloudTranscription.tenantKey) }
+          : {}),
         webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
         onObservedCompletion: transcriptWorker
           ? async (address, meetingId) => { await transcriptWorker.wake(address, meetingId, "observed"); }
@@ -1232,6 +1245,15 @@ async function main() {
     console.warn(
       "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.",
     );
+    // Private cloud transcription can be on without the meeting transcriber: account deletion still has to
+    // clear its jobs, so the bulk DELETE alone is mounted (TC-3166). Otherwise it would 404 as "dark".
+    if (privateCloudPtxClient && privateCloudTranscription.enabled) {
+      app.use(
+        "/api/transcriber/meetings",
+        authMiddleware,
+        createPrivateCloudOnlyBulkDeleteRouter(createPrivateCloudPurger(privateCloudPtxClient, privateCloudTranscription.tenantKey)),
+      );
+    }
   }
 
   // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can
@@ -1259,7 +1281,7 @@ async function main() {
     PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
     authMiddleware,
     createPrivateCloudTranscriptionRouter({
-      client: privateCloudTranscription.enabled ? createPtxClient({ ...privateCloudTranscription, requestIdFirstPartyOrigins }) : null,
+      client: privateCloudPtxClient,
       tenantKey: privateCloudTranscription.enabled ? privateCloudTranscription.tenantKey : null,
     }),
   );
@@ -1322,6 +1344,7 @@ async function main() {
 
   calendarAutojoinWorker?.start();
   transcriptWorker?.start();
+  transcriberPurgeSweeper?.start();
   // TC-1964: optional one-time, log-only count of stored credential rows. Unset = nothing runs.
   // Fired after boot, never awaited, and it cannot throw; it lists through the shared KV lane.
   if (process.env[CREDENTIAL_ROW_COUNT_ENV]?.trim()) {

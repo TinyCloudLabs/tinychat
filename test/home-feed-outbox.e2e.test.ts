@@ -166,9 +166,12 @@ async function firstVisit(context: BrowserContext, space: string, agent: Awaited
   agent.register();
   await setup.close();
   const page = await open(context, space);
-  // Cards are short by default: a tap opens the card in place, with its options.
-  await page.getByRole("button", { name: /Book the Thursday flight\?/ }).click();
-  await page.getByRole("button", { name: /^Go/ }).waitFor();
+  // Needs you opens its first card (TC-2941); a card shown as a row opens with a tap.
+  const go = page.getByRole("button", { name: /^Go/ });
+  const row = page.getByRole("button", { name: /Book the Thursday flight\?/ });
+  await Promise.race([go.waitFor(), row.waitFor()]);
+  if (!(await go.isVisible())) await row.click();
+  await go.waitFor();
   return page;
 }
 
@@ -214,7 +217,7 @@ describe("Home's page-close outbox in Chromium", () => {
       await reopened.getByRole("radio", { name: "All", exact: true }).check();
       await reopened.getByRole("button", { name: /Book the Thursday flight\?/ }).click();
       await reopened.getByText("You chose Go.").waitFor();
-      await reopened.getByText("Sent when you opened Home again.").waitFor();
+      await reopened.getByText("Sent when you opened TinyCloud One again.").waitFor();
       const rows = await stored(agent.responses);
       console.log(`[${when}] stored after reopening: ${JSON.stringify(rows.map((row) => [row.responseId, row.kind, row.choiceId]))}`);
       expect(rows.map((row) => [row.responseId, row.kind, row.choiceId])).toEqual([[entry.responseId, "answer", "go"]]);

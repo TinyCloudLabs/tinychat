@@ -16,7 +16,7 @@ import {
 import { newIdbEnv } from "./voiceNotes/web/testing/idb";
 import { memoryLocks, openWebStore, recordingFromSession, type WebStore } from "./voiceNotes/web/webStore";
 import {
-  CANONICAL_ORIGIN, CANONICAL_VERSION_URL, canonicalServesThisBuild, LEGACY_HOSTNAME, canonicalUrlFor, countLocalOnlyRecordingWork,
+  CANONICAL_ORIGIN, CANONICAL_VERSION_URL, canonicalServesThisBuild, canonicalUrlFor, countLocalOnlyRecordingWork,
   decideOriginMove, deferOriginMove, isLegacyOrigin, isOriginMoveDeferred, moveWhenClear, NO_LOCAL_WORK, originMoveExemption,
   type LocalRecordingWork,
 } from "./originMove";
@@ -113,13 +113,13 @@ describe("origin move", () => {
   test("only the exact legacy hostname counts as legacy", () => {
     expect(isLegacyOrigin({ hostname: "tinycloud.chat" })).toBe(true);
     expect(isLegacyOrigin({ hostname: "www.tinycloud.chat" })).toBe(false);
-    expect(isLegacyOrigin({ hostname: "home.tinycloud.xyz" })).toBe(false);
+    expect(isLegacyOrigin({ hostname: "home.tinycloud.xyz" })).toBe(true);
   });
 
   test("a non-legacy host stays without reading storage", async () => {
     let reads = 0;
     const countWork = async () => { reads++; return none; };
-    expect(await decideOriginMove({ location: { ...legacy, hostname: "home.tinycloud.xyz" }, countWork })).toEqual({ kind: "stay" });
+    expect(await decideOriginMove({ location: { ...legacy, hostname: "tinycloud.one" }, countWork })).toEqual({ kind: "stay" });
     expect(await decideOriginMove({ location: { ...legacy, hostname: "localhost" }, countWork })).toEqual({ kind: "stay" });
     expect(reads).toBe(0);
   });
@@ -317,12 +317,12 @@ describe("origin move", () => {
     const countWork = async () => { reads++; return none; };
     const decide = (search: string, pathname = "/chat/connectors") =>
       decideOriginMove({ location: { ...legacy, pathname, search, hash: "" }, countWork, canonicalReady: ready });
-    const tab = sameTabState("/chat/connectors", "n".repeat(24), false);
+    const tab = sameTabState("/chat/connectors", "n".repeat(24), null);
     expect(tab.startsWith("tab.")).toBe(true);
     for (const search of [
       `?${new URLSearchParams({ state: tab, [SAME_TAB_CODE_PARAM]: "code" })}`,
       `?${new URLSearchParams({ state: tab, [SAME_TAB_ERROR_PARAM]: "not_completed" })}`,
-      `?${new URLSearchParams({ state: sameTabState("/chat", "n".repeat(24), true), [SAME_TAB_CODE_PARAM]: "code" })}`,
+      `?${new URLSearchParams({ state: sameTabState("/chat", "n".repeat(24), "home"), [SAME_TAB_CODE_PARAM]: "code" })}`,
     ]) {
       expect(originMoveExemption({ pathname: "/chat/connectors", search }, false)).toBe("oauth-return");
       expect(await decide(search)).toEqual({ kind: "stay" });
@@ -330,7 +330,7 @@ describe("origin move", () => {
     expect(reads).toBe(0);
     // A started flow's state without the backend's return markers, or a popup state (its return is the backend's
     // own /callback page, never this app), is an ordinary URL.
-    for (const search of [`?state=${tab}`, `?${new URLSearchParams({ state: popupOAuthState("n".repeat(24), false), code: "c" })}`, "?tab=all"]) {
+    for (const search of [`?state=${tab}`, `?${new URLSearchParams({ state: popupOAuthState("n".repeat(24), null), code: "c" })}`, "?tab=all"]) {
       expect(originMoveExemption({ pathname: "/chat", search }, false)).toBeNull();
       expect((await decide(search)).kind).toBe("move");
     }
@@ -359,7 +359,7 @@ describe("origin move", () => {
     for (const pathname of ["/agentsx", "/chat/agents"]) expect(originMoveExemption({ pathname, search: "" }, false)).toBeNull();
   });
 
-  test("the move waits until home.tinycloud.xyz serves this build", async () => {
+  test("the move waits until tinycloud.one serves this build", async () => {
     const calls: { url: string; init?: RequestInit }[] = [];
     const serving = (body: unknown, status = 200) => async (url: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(url), init });
@@ -392,7 +392,7 @@ describe("origin move", () => {
     expect(asked).toBe(0);
   });
 
-  test("a held page shows no notice until home.tinycloud.xyz serves this build, and clears it while the move is blocked", async () => {
+  test("a held page shows no notice until tinycloud.one serves this build, and clears it while the move is blocked", async () => {
     const w = watcher();
     let servesThisBuild = false;
     let work: LocalRecordingWork = counted({ saving: 1 });
@@ -452,7 +452,7 @@ describe("origin move", () => {
     stop();
   });
 
-  test("every build publishes version.json, and home.tinycloud.xyz lets tinycloud.chat read it uncached", () => {
+  test("every build publishes version.json, and tinycloud.one lets both legacy hosts read it uncached", () => {
     const vite = readFileSync(new URL("../../vite.config.ts", import.meta.url), "utf8");
     const plugin = vite.slice(vite.indexOf('name: "tinychat-version-json"'));
     expect(plugin).toContain('fileName: "version.json"');
@@ -462,7 +462,7 @@ describe("origin move", () => {
     const headers = readFileSync(new URL("../../public/_headers", import.meta.url), "utf8");
     const rule = headers.slice(headers.indexOf("\n/version.json\n") + 1).split(/\n(?=\S)/)[0]!;
     expect(rule).toContain("Cache-Control: no-store");
-    expect(rule).toContain(`Access-Control-Allow-Origin: https://${LEGACY_HOSTNAME}`);
+    expect(rule).toContain(`Access-Control-Allow-Origin: *`);
   });
 
   test("a held transcript holds the move even when the note's audio is in the space, for every account", async () => {

@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 
 import { __setBuildInfoForTests } from "@/lib/buildInfo";
+import { setShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
@@ -52,6 +53,7 @@ import { savedNoteScreens } from "./screens/savedNote";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
 import { homeScreens } from "./screens/home";
+import { homeFeedDetailsScreens } from "./screens/homeFeedDetails";
 import { botsScreens } from "./screens/bots";
 import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
@@ -69,6 +71,7 @@ const SCREENS: HarnessScreen[] = [
   ...legacyScreens,
   ...shellScreens,
   ...homeScreens,
+  ...homeFeedDetailsScreens,
   ...botsScreens,
   ...sheetsScreens,
   ...recorderScreens,
@@ -117,6 +120,9 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
 const params = new URLSearchParams(window.location.search);
 const platform = PLATFORMS.find((p) => p === params.get("platform")) ?? "web";
 if (params.get("freeze") === "1") freezeClock();
+// Hidden features (the Home ask box, the Agents pill) show in every screen, as they did before they were hidden; the
+// `home-hidden-features-off` screen turns them off itself.
+setShowHiddenFeatures(true);
 applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();
@@ -195,7 +201,7 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
 function Index() {
   return (
     <main className="mx-auto max-w-xl px-4 py-8">
-      <h1 className="font-display text-title-1">TinyCloud Home UI screens</h1>
+      <h1 className="font-display text-title-1">TinyCloud One UI screens</h1>
       <ul className="mt-4 flex flex-col gap-2 text-body">
         {SCREENS.map((screen) => (
           <li key={screen.id} className="flex items-baseline gap-3">

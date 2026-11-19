@@ -6,7 +6,8 @@ name: Deploy bots to Phala Cloud
 # Redeploy or roll back by running it again with an earlier SHA; the bot-data and bot-budget volumes are kept.
 # It builds and pushes the bots image and the ingress image (infra/phala-ingress), writes both pushed digests into a
 # copy of bots/docker-compose.phala.yml, deploys that copy with a complete encrypted env file, syncs the CVM's
-# allowed_envs, checks the CVM OS image before and after, and probes https://<BOTS_INGRESS_DOMAIN>/healthz.
+# allowed_envs, checks the CVM OS image before and after, and probes the service's /healthz the way the backend reaches
+# it: through the CVM's TLS-passthrough host, with the certificate checked against BOTS_INGRESS_DOMAIN (TC-3056).
 # Configuration lives in the production-bots environment (see "Deploying" in bots/README.md). The backend reaches
 # this service through the BOTS_* settings that deploy-backend-phala.yml passes to the backend CVM.
 
@@ -81,8 +82,8 @@ jobs:
             exit 1
           fi
 
-      # Keep guard policy at the workflow revision even for old application refs.
-      - name: Check out trusted OS guard
+      # Keep guard policy, and the health probe, at the workflow revision even for old application refs.
+      - name: Check out trusted OS guard and health probe
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.workflow_sha }}
@@ -90,6 +91,7 @@ jobs:
           sparse-checkout: |
             /.github/scripts/phala-os-guard.sh
             /.github/scripts/test-phala-os-guard.sh
+            /.github/scripts/bots-healthz.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -194,6 +196,14 @@ jobs:
             exit 1
           fi
           echo "PHALA_GATEWAY_CNAME=$PHALA_GATEWAY_CNAME" >> "$GITHUB_ENV"
+          # The TLS-passthrough name the backend connects to (its BOTS_SERVICE_CONNECT_HOST): <app id>-443s.<gateway domain>.
+          BOTS_CONNECT_HOST="${PHALA_APP_ID}-443s.$(jq -r '.gateway.base_domain // empty' <<<"$RAW")"
+          if [[ ! "$BOTS_CONNECT_HOST" =~ ^[0-9a-f]{40}-443s\.dstack-[a-z0-9-]+\.phala\.network$ ]]; then
+            echo "::error title=No TLS passthrough host::Could not derive it from app_id and .gateway.base_domain for CVM ${BOTS_PHALA_CVM_ID}"
+            jq '{id, app_id, gateway}' <<<"$RAW"
+            exit 1
+          fi
+          echo "BOTS_CONNECT_HOST=$BOTS_CONNECT_HOST" >> "$GITHUB_ENV"
           {
             echo
             echo "### Phala gateway"
@@ -201,6 +211,7 @@ jobs:
             echo "- Gateway CNAME: \`$PHALA_GATEWAY_CNAME\`"
             echo "- App ID: \`$PHALA_APP_ID\`"
             echo "- DNS: \`${BOTS_INGRESS_DOMAIN}\` CNAME \`$PHALA_GATEWAY_CNAME\`"
+            echo "- TLS passthrough host (health probe, and the backend's BOTS_SERVICE_CONNECT_HOST): \`$BOTS_CONNECT_HOST\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Log in to GitHub Container Registry
@@ -424,26 +435,24 @@ jobs:
           exit 1
 
       # The first deploy to a new domain also waits for the ingress to obtain its certificate, hence the longer backoff.
+      # Through the passthrough host, as the backend does: https://<BOTS_INGRESS_DOMAIN> itself does not route at the
+      # gateway (TC-3056). Passes only on 200 "ok" from the service, with a certificate valid for BOTS_INGRESS_DOMAIN.
       - name: Verify /healthz
         run: |
-          url="https://${BOTS_INGRESS_DOMAIN}/healthz"
-          echo "Probing $url (expect ok)"
+          echo "Probing /healthz at ${BOTS_CONNECT_HOST}, certificate for ${BOTS_INGRESS_DOMAIN} (expect 200 ok)"
           for i in {1..30}; do
             rc=0
-            body="$(curl -fsS --connect-timeout 5 --max-time 15 "$url")" || rc=$?
-            echo "Attempt $i/30: curl_exit=$rc body=${body:0:100}"
-            if [ "$rc" = 0 ] && [ "$body" = ok ]; then
-              echo "- \`${url}\`: \`ok\`" >> "$GITHUB_STEP_SUMMARY"
+            result="$(node .os-guard/.github/scripts/bots-healthz.mjs "$BOTS_CONNECT_HOST" "$BOTS_INGRESS_DOMAIN")" || rc=$?
+            echo "Attempt $i/30: exit=$rc $result"
+            if [ "$rc" = 0 ]; then
+              echo "- \`/healthz\` via \`${BOTS_CONNECT_HOST}\` (certificate for \`${BOTS_INGRESS_DOMAIN}\`): \`ok\`" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             delay=$((i * 5))
             [ "$delay" -le 30 ] || delay=30
             sleep "$delay"
           done
-          echo "::error title=Bots health probe failed::$url did not answer ok"
-          echo "::group::Verbose curl diagnostics"
-          curl -v --max-time 20 "$url" || true
-          echo "::endgroup::"
+          echo "::error title=Bots health probe failed::/healthz via ${BOTS_CONNECT_HOST} did not answer 200 ok with a certificate for ${BOTS_INGRESS_DOMAIN}"
           exit 1
 
       - name: Remove the env file

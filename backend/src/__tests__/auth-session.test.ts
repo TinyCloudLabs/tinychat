@@ -271,6 +271,21 @@ describe("HTTP SIWE sessions", () => {
     expect((await postVerify(base, mismatched)).status).toBe(400);
   });
 
+  test("accepts the tinycloud.one domain with its own HTTPS URI, but not lookalikes", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://tinycloud.chat");
+    const one = await signMessage(await requestNonce(base, account.address), { domain: "tinycloud.one", uri: "https://tinycloud.one" });
+    expect((await postVerify(base, one)).status).toBe(200);
+    for (const domain of ["other.tinycloud.one", "www.tinycloud.one", "evil-tinycloud.one", "tinycloud.one.evil.example", "tinycloud.one:443"]) {
+      const lookalike = await signMessage(await requestNonce(base, account.address), { domain, uri: `https://${domain}` });
+      const response = await postVerify(base, lookalike);
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ error: "invalid_origin" });
+    }
+    const mismatched = await signMessage(await requestNonce(base, account.address), { domain: "tinycloud.one", uri: "https://tinycloud.chat" });
+    expect((await postVerify(base, mismatched)).status).toBe(400);
+  });
+
   test.each(["https://tinycloud.chat", "https://home.tinycloud.xyz"])(
     "with FRONTEND_URL=%s both web domains sign in and a foreign domain does not",
     async (frontendUrl) => {
