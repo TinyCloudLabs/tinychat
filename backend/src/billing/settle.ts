@@ -4,7 +4,10 @@
 //   - The user is never charged above the allowance they had when the reply
 //     started, nor above what was left of that window when it settles. The
 //     excess is platform cost; the raw figure is only logged.
-//   - A failed reply that delivered no output is free.
+//   - A failed reply is charged only when the model's own output broke it
+//     (failureCause "model"), whether or not anything was delivered. Our
+//     failures (provider, network, our limits and code) are free, even after
+//     content was delivered. An unknown cause is ours.
 //   - The charge goes to the window the reply STARTED in, even if it settles
 //     after the window rolled over.
 // Settlement is synchronous: reading what is left and writing the charge never
@@ -17,6 +20,7 @@ import { creditBudgetFor, type BudgetWindow, type TierConfig } from "./tiers.js"
 import { recordUsageInWindow, usedInWindow, windowStartFor } from "./usage.js";
 
 export type ReplyOutcome = "success" | "limit_stop" | "failed" | "timed_out" | "cancelled";
+export type FailureCause = "model" | "ours";
 
 export interface SettleReplyInput {
   address: string;
@@ -31,7 +35,9 @@ export interface SettleReplyInput {
   /** Null prices the usage at the conservative fallback rates. */
   rates: ModelRates | null;
   outcome: ReplyOutcome;
-  /** True once answer content (not an error notice) reached the user. */
+  /** Who broke a "failed" reply. Missing means ours: an unclassified failure is never charged. */
+  failureCause?: FailureCause;
+  /** True once answer content (not an error notice) reached the user. Logged only. */
   deliveredOutput: boolean;
   /** Becomes the ledger record id, so a replayed enqueue is a no-op. */
   executionId: string;
@@ -55,7 +61,7 @@ export function settleReply(input: SettleReplyInput): SettledReply {
   // Null when the window rolled over twice: no record says what it used, so only the allowance bounds the charge.
   const windowUsed = usedInWindow(address, tier, anchor, startedAt);
   let charged = 0;
-  if (!(input.outcome === "failed" && !input.deliveredOutput) && rawCredits > 0) {
+  if (!(input.outcome === "failed" && input.failureCause !== "model") && rawCredits > 0) {
     const left = windowUsed === null ? Number.POSITIVE_INFINITY : Math.max(0, creditBudgetFor(tier.id) - windowUsed);
     charged = Math.max(0, Math.min(rawCredits, input.allowance, left));
   }
@@ -76,7 +82,7 @@ export function settleReply(input: SettleReplyInput): SettledReply {
     }
   }
   console.info("[billing] reply settled", {
-    executionId: input.executionId, outcome: input.outcome, deliveredOutput: input.deliveredOutput,
+    executionId: input.executionId, outcome: input.outcome, ...(input.outcome === "failed" ? { failureCause: input.failureCause ?? "ours" } : {}), deliveredOutput: input.deliveredOutput,
     allowance: input.allowance, rawCredits, charged, windowKind: tier.budgetWindow, windowStart, windowRecordLost: windowUsed === null,
   });
   return { charged, rawCredits, windowKind: tier.budgetWindow, windowStart };

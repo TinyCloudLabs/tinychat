@@ -31,7 +31,7 @@ import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/cata
 import { truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
 import { FALLBACK_MODEL_RATES, ratesForModel, type ModelRates } from "../billing/credits.js";
 import { createReplyBudget, lengthStoppedByBudget, type ReplyBudget } from "../billing/reply-budget.js";
-import { settleReply, type ReplyOutcome } from "../billing/settle.js";
+import { settleReply, type FailureCause, type ReplyOutcome } from "../billing/settle.js";
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
@@ -459,13 +459,13 @@ async function dispatchTool(
   signal?: AbortSignal,
   allowedTools?: readonly string[],
 ): Promise<ToolDispatchOutcome> {
-  if (config.privateAccessActive === false && call.name !== "web_search") throw new StreamFailure("routing_mismatch");
-  if (allowedTools && !allowedTools.includes(call.name)) throw new StreamFailure("routing_mismatch");
+  if (config.privateAccessActive === false && call.name !== "web_search") throw new StreamFailure("routing_mismatch", "model");
+  if (allowedTools && !allowedTools.includes(call.name)) throw new StreamFailure("routing_mismatch", "model");
   let args: Record<string, unknown>;
   try {
     args = call.args ? (JSON.parse(call.args) as Record<string, unknown>) : {};
   } catch {
-    throw new StreamFailure("upstream_incomplete");
+    throw new StreamFailure("upstream_incomplete", "model");
   }
   throwIfAborted(signal);
   // An MCP turn never falls back to eliza-service: a name the wrapper does not serve (invented or injected) is refused here.
@@ -592,7 +592,7 @@ export interface OrchestrateParams {
   /** Stops the reply at the allowance it started with: caps each provider call and refuses calls and tools it cannot afford. */
   budget?: ReplyBudget;
   /** A meeting failure whose user-visible terminal text has already been written. */
-  onTerminalError?: (code: StreamErrorCode) => void;
+  onTerminalError?: (code: StreamErrorCode, cause: FailureCause) => void;
 }
 
 export interface OrchestrateResult {
@@ -601,6 +601,8 @@ export interface OrchestrateResult {
   completionId: string;
   /** Nonthrowing failures retain completed-round accounting eligibility. */
   errorCode?: StreamErrorCode;
+  /** Set when the model's own output caused errorCode; absent means ours. */
+  errorCause?: FailureCause;
 }
 
 /**
@@ -633,6 +635,7 @@ export async function orchestrateToolCalling(input: OrchestrateParams): Promise<
   const result = await runMeetingTurn({
     ...params,
     contextWindowTokens: contextLengthFor(params.model),
+    streamErrorCause: error => error instanceof StreamFailure ? error.failureCause : "ours",
     streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
     modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
@@ -686,7 +689,7 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
     if (Array.isArray(choice?.delta?.tool_calls)) {
       accumulateToolCalls(calls, normalizeToolCallDeltas(choice.delta.tool_calls));
     }
-    if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit");
+    if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit", "model");
     if (choice?.finish_reason != null) finish = choice.finish_reason;
   }
   // Output cut at the budget's cap is the limit, not an incomplete provider reply; a model's own length stop is not.
@@ -724,6 +727,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   let totalCompletionTokens = 0;
   let finalCompletionId = "";
   let errorCode: StreamErrorCode | undefined;
+  let errorCause: FailureCause | undefined;
   let repairing = false;
   // A provider can emit a private-tool preamble in standalone content deltas
   // before the later tool_calls delta identifies it as private progress. Those
@@ -952,17 +956,18 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     // Output cut at the budget's cap is the limit; text already streamed stays with the user. A model's own length stop is a normal end.
     if (params.budget && limit && finish === "length" && lengthStoppedByBudget(limit, roundCompletionTokens, params.budget)) { errorCode = "budget_exhausted"; break; }
 
-    if (generalOnly && [...toolCalls.values()].some(call => call.name !== "web_search")) { errorCode = "routing_mismatch"; break; }
-    if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete");
+    if (generalOnly && [...toolCalls.values()].some(call => call.name !== "web_search")) { errorCode = "routing_mismatch"; errorCause = "model"; break; }
+    if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete", "model");
     if (finish === "tool_calls") {
       // A round that used up the allowance must not run its tools: nothing after them could be afforded.
       if (params.budget?.exhausted()) { errorCode = "budget_exhausted"; break; }
       const calls = [...toolCalls.values()];
-      if (!calls.length) throw new StreamFailure("upstream_incomplete");
+      if (!calls.length) throw new StreamFailure("upstream_incomplete", "model");
       for (const call of calls) {
         let args: unknown;
-        try { args = JSON.parse(call.args); } catch { throw new StreamFailure("upstream_incomplete"); }
-        if (!call.id || !call.name || !args || typeof args !== "object" || Array.isArray(args)) throw new StreamFailure("upstream_incomplete");
+        try { args = JSON.parse(call.args); } catch { throw new StreamFailure("upstream_incomplete", "model"); }
+        if (!call.id) throw new StreamFailure("upstream_incomplete");
+        if (!call.name || !args || typeof args !== "object" || Array.isArray(args)) throw new StreamFailure("upstream_incomplete", "model");
         // Normalize before recording tool_calls so provider history and dispatch
         // agree. Scoped reads keep their existing room/meeting selection.
         const hasMeetingRef = "meetingRef" in args && typeof args.meetingRef === "string" && args.meetingRef.trim().length > 0;
@@ -1038,14 +1043,17 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   }
 
 
-  return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
+  return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}), ...(errorCause ? { errorCause } : {}) };
 }
 
 export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "private_response_unverified" | "private_response_unverified_streamed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
+/** Eliza final codes that only the model's own output produces; its other failure codes also cover provider and tool causes. */
+const MODEL_CAUSED_TASK_CODES: Record<string, true> = { routing_mismatch: true, tool_attempt_limit: true };
+/** `failureCause` "model": the model's own output broke the reply (charged). Everything else is ours (free). */
 class StreamFailure extends Error {
-  constructor(readonly code: StreamErrorCode) { super(code); }
+  constructor(readonly code: StreamErrorCode, readonly failureCause: FailureCause = "ours") { super(code); }
 }
 
 export interface AgentStreamSummary {
@@ -1618,7 +1626,9 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           : code === "budget_exhausted" ? "limit_stop"
             : code === "turn_timeout" || final?.outcome === "timed_out" ? "timed_out"
               : result.cancelled ? "cancelled" : "failed";
-        const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
+        // Only eliza's own final code can name a model-caused failure; the client's codes are transport and our limits.
+        const failureCause: FailureCause = !result.errorCode && final?.code && MODEL_CAUSED_TASK_CODES[final.code] === true ? "model" : "ours";
+        const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, failureCause, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
         noteRequestRecord(res, { credits: settled.charged });
       }
       console.info("[agent-chat] task accounting", {
@@ -1643,7 +1653,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     }
     const executionId = crypto.randomUUID();
     const replyBudget = allowance === null ? undefined : createReplyBudget(allowance, rates ?? FALLBACK_MODEL_RATES, contextLengthFor(resolvedModel));
-    // Only answer content makes a failed reply billable; error notices and tool activity do not.
+    // Logged with the settlement: whether answer content (not an error notice or tool activity) reached the user.
     let deliveredOutput = false;
     const writeFrame = async (frame: string, notice?: boolean) => {
       await streamOwner.write(frame);
@@ -1651,6 +1661,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     };
     let orchestrateResult: OrchestrateResult | null = null;
     let meetingTerminalErrorCode: StreamErrorCode | undefined;
+    let meetingTerminalErrorCause: FailureCause | undefined;
     let observedUsage = { promptTokens: 0, completionTokens: 0 };
     if (await streamOwner.open()) {
       try {
@@ -1659,14 +1670,15 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
-          onTerminalError: code => { meetingTerminalErrorCode = code; },
+          onTerminalError: (code, cause) => { meetingTerminalErrorCode = code; meetingTerminalErrorCause = cause; },
           write: writeFrame, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
           ...(replyBudget ? { budget: replyBudget } : {}),
         });
       } catch (error) {
         // Preserve the failure for terminal delivery after observed usage settles.
         orchestrateResult = { ...observedUsage, completionId: "",
-          errorCode: error instanceof StreamFailure ? error.code : "agent_failed" };
+          errorCode: error instanceof StreamFailure ? error.code : "agent_failed",
+          ...(error instanceof StreamFailure && error.failureCause === "model" ? { errorCause: "model" as const } : {}) };
       }
     } else {
       await streamOwner.fail(new StreamFailure("agent_failed"));
@@ -1679,11 +1691,12 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     // Never throws after bytes were served.
     if (paywallEnabled() && address && allowance !== null) {
       const failure = orchestrateResult.errorCode ?? meetingTerminalErrorCode;
+      const failureCause = orchestrateResult.errorCode ? orchestrateResult.errorCause : meetingTerminalErrorCause;
       const cancelledByClient = streamOwner.signal.aborted && !(streamOwner.signal.reason instanceof StreamFailure);
       const outcome: ReplyOutcome = failure === "budget_exhausted" ? "limit_stop"
         : failure === "turn_timeout" ? "timed_out"
           : cancelledByClient ? "cancelled" : failure ? "failed" : "success";
-      const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: orchestrateResult, rates, outcome, deliveredOutput, executionId, flusher: config.flusher });
+      const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: orchestrateResult, rates, outcome, failureCause, deliveredOutput, executionId, flusher: config.flusher });
       noteRequestRecord(res, { credits: settled.charged });
     }
     // Also await an already claimed timeout/cancellation terminal's drain.

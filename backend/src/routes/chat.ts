@@ -557,8 +557,9 @@ export function createChatRouter(options?: ChatRouterOptions) {
     }
 
     // ── Settle usage (best effort; only when gating is active) ────────────────
-    // Clamped to the allowance the reply started with, and free when the stream
-    // failed before any content reached the user. NEVER throws after bytes were served.
+    // Clamped to the allowance the reply started with. A failed stream is free:
+    // every /api/chat failure is the provider's or ours, never the model's
+    // output. NEVER throws after bytes were served.
     if (paywallEnabled() && address && budgetRemaining !== null) {
       const usage = scanner.hasUsage
         ? { promptTokens: scanner.promptTokens ?? 0, completionTokens: scanner.completionTokens ?? 0 }
@@ -566,7 +567,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
       const settled = settleReply({
         address, tier: TIERS[gatedTier], anchor, startedAt, allowance: Math.max(0, budgetRemaining), model: resolvedModel,
         usage, rates, deliveredOutput: scanner.completionText.length > 0, executionId: crypto.randomUUID(), flusher,
-        outcome: controller.signal.aborted ? "cancelled" : streamFailed ? "failed" : "success",
+        outcome: controller.signal.aborted ? "cancelled" : streamFailed ? "failed" : "success", failureCause: "ours",
       });
       noteRequestRecord(res, { credits: settled.charged });
     }
