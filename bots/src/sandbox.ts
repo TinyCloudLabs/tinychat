@@ -405,6 +405,7 @@ export class RunscHost implements SandboxLauncher {
         nextId: () => rpc.nextId(),
         request: (command, timeoutMs) => rpc.request(command, timeoutMs),
         onFrame: listener => rpc.onFrame(listener),
+        onHostToolCall: handle => rpc.onHostToolCall(handle),
         exited,
         refreshEgress: () => this.#control("PUT", layout.botId, token, layout.ownerId),
         snapshot,

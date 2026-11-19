@@ -19,6 +19,8 @@ export interface BotsConfig {
   postTimeoutMs: number;
   fetchImpl?: typeof fetch;
   onTurnFinished?: () => void;
+  /** Current owner-scoped admission for an outgoing turn, supplied by the registry. */
+  listForTurn?: (ownerDid: string, sourceKey: string) => Promise<string[]>;
 }
 
 const MAX_TEXT = 8000;
@@ -27,6 +29,15 @@ const UNAVAILABLE = { code: "bot_unavailable", message: "Main isn't available. T
 /** Same canonical owner DID as MCP chat: did:pkh on chain 1 with the lowercased address. */
 export function botOwnerDid(address: string): string {
   return `did:pkh:eip155:1:${address.toLowerCase()}`;
+}
+
+/** Builds the internal send body from the authenticated owner and route's admitted bot. */
+export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string) {
+  try {
+    const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
+    if (messageableBotKeys?.length) return { text, messageableBotKeys };
+  } catch { /* A registry read failure leaves the turn without messaging. */ }
+  return { text };
 }
 
 /**
@@ -127,7 +138,7 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
 
     try {
       const url = `${config!.serviceUrl}/v1/bots/main/messages`;
-      const body = JSON.stringify({ text });
+      const body = JSON.stringify(await botTurnBody(config!, address, "main", text));
       const upstream = await (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
         headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),

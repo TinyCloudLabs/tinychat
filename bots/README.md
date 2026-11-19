@@ -10,7 +10,7 @@ except the ingress:
 | Container | Privileges | Holds | Does |
 | --- | --- | --- | --- |
 | `bots-supervisor` | capability set below, no published port, no outbound network | `BOTS_SERVICE_SECRET` | internal API, starts and stops the sandboxes, talks to OMP over each sandbox's stdio |
-| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY` | the only way out of a sandbox: one Unix socket per bot, forwards allowed model calls to `https://tee.redpill.ai` |
+| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY` | one Unix socket per bot for allowed model calls and a control socket for bot admission |
 | `dstack-ingress` | the backend's ingress image | `CLOUDFLARE_API_TOKEN` (DNS for the certificate) | ends TLS inside the CVM, forwards to the supervisor |
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
@@ -211,6 +211,7 @@ Supervisor (`bots-supervisor`):
 | Var | Default | |
 | --- | --- | --- |
 | `BOTS_SERVICE_SECRET` | required | unique 256-bit secret (at least 43 characters); `openssl rand -hex 32` |
+| `BOTS_ADMISSION_CONTROL_KEY` | unset | admission control socket key from the deploy workflow |
 | `BOTS_ACCEPT_LEGACY_OWNER_HEADER` | `0` | see [Deploy order](#deploy-order) |
 | `BOTS_TEST_ACCOUNTS` | empty (nobody) | comma-separated addresses, or `*` |
 | `BOTS_MODEL` | `z-ai/glm-5.2` | the backend's `REDPILL_DEFAULT_MODEL` default |
@@ -231,6 +232,8 @@ Gateway (`bots-gateway`):
 | Var | Default | |
 | --- | --- | --- |
 | `REDPILL_API_KEY` | required | a dedicated RedPill key with its own provider-side budget, not shared with main chat |
+| `BOTS_BACKEND_CALL_SECRET` | unset in local model-only runs | key for bot admission calls |
+| `BACKEND_ORIGIN` | `https://api.tinycloud.chat` | HTTPS origin for bot admission at `/api/internal/bots/admit` |
 | `BOTS_MODELS` | `BOTS_MODEL` | comma-separated model allowlist |
 | `BOTS_MAX_TOKENS` | `8192` | |
 | `BOTS_BOT_DAILY_TOKENS` / `BOTS_GLOBAL_DAILY_TOKENS` | `2000000` / `20000000` | UTC day |
@@ -314,6 +317,9 @@ Its configuration lives in the `production-bots` GitHub environment:
 | limit overrides from [Configuration](#configuration) | variables | optional, e.g. `BOTS_MODEL`, `BOTS_TOTAL_MEMORY_MB`, `BOTS_GLOBAL_DAILY_TOKENS`; empty keeps the compose default |
 | `PHALA_CLOUD_API_KEY` | secret | deploy tooling only; never a CVM env |
 | `BOTS_SERVICE_SECRET` | secret | the supervisor's secret, the same value as the backend's |
+| `BOTS_BACKEND_CALL_SECRET` | secret | bot admission key |
+| `BOTS_ADMISSION_CONTROL_KEY` | derived | control socket key from the deploy workflow |
+| `BACKEND_ORIGIN` | variable | set from `TINYCHAT_BACKEND_URL` in the deployment environment, default `https://api.tinycloud.chat` |
 | `BOTS_REDPILL_API_KEY` | secret | the dedicated RedPill key, written to the CVM as `REDPILL_API_KEY` |
 | `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL` | secrets | the ingress certificate |
 
