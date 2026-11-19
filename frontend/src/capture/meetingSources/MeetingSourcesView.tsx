@@ -322,6 +322,9 @@ export function SourceRow(props: SourceRowProps) {
           </button>
         )}
       </div>
+      {id === "fireflies" && !props.comingSoon && props.lookup === "ready" && !props.connected && (
+        <p className="ms-desc ms-hint">Connecting imports your meetings from Fireflies.</p>
+      )}
       {props.connected && props.manageOpen && (
         <div className="ms-panel" id={`msx-${id}`}>
           {props.manage}
