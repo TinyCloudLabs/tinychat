@@ -812,6 +812,12 @@ export async function upsertMeeting(
     && notesOwnedFields.includes(field);
   const existingStartedAt = cellStr(row, 3, null);
   const existingMetadata = parseJsonObject(row[11]);
+  // A CSV cannot replace content already fetched from Granola's API, including its freshness marker.
+  if (meeting.source === "granola"
+    && meeting.metadata.imported_from === "granola_csv"
+    && Object.hasOwn(existingMetadata, "granola_updated_at")) {
+    return { ok: true, data: { id: existingId, inserted: false, createdAt } };
+  }
   const acceptsIncomingDatetime = meeting.startedAt !== null
     && (existingStartedAt === null
       || datetimeConfidence(meeting.metadata, true) >= datetimeConfidence(existingMetadata, true));

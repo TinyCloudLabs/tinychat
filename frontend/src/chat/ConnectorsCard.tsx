@@ -336,10 +336,12 @@ export async function runGranolaSyncNow(opts: {
       sessionStore: opts.sessionStore,
       apiKey: opts.apiKey,
     });
+    const webhooks = createConnectorWebhooksClient(opts.backendUrl, { sessionStore: opts.sessionStore });
     const res = await syncGranola({
       client,
       store: connectorStore,
       tcw: opts.tcw,
+      checkPurge: (id, timestamp) => webhooks.checkPurge(id, timestamp, "granola"),
       onProgress: opts.onProgress,
       signal: opts.signal,
       isCurrent: opts.isCurrent,

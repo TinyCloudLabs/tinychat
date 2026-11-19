@@ -163,7 +163,7 @@ class MockClient implements GranolaSyncClient {
 }
 
 function syncOpts(store: FakeStore, client: MockClient): Parameters<typeof syncGranola>[0] {
-  return { client, store, tcw, sleepImpl: async () => true, now: () => "2026-11-18T12:00:00Z" };
+  return { client, store, tcw, checkPurge: async () => false, sleepImpl: async () => true, now: () => "2026-11-18T12:00:00Z" };
 }
 
 // ── Mapper ──────────────────────────────────────────────────────────────
@@ -220,6 +220,34 @@ describe("normalizeGranolaNote", () => {
 // ── Engine ──────────────────────────────────────────────────────────────
 
 describe("syncGranola", () => {
+  test("REST sync skips a deleted note without recreating its row or transcript", async () => {
+    const store = new FakeStore();
+    const client = new MockClient([{ notes: [noteSummary("not_0001")], hasMore: false, cursor: null }]);
+    client.details.set("not_0001", { ok: true, data: noteDetail("not_0001") });
+    const result = await syncGranola({
+      ...syncOpts(store, client),
+      checkPurge: async () => true,
+    });
+    expect(result).toMatchObject({ ok: true, data: { added: 0, skipped: 1 } });
+    expect(store.meetings).toEqual([]);
+    expect(store.bodies.has("granola/not_0001")).toBe(false);
+  });
+
+  test("an unreadable purge ledger prevents REST sync from writing the note", async () => {
+    const store = new FakeStore();
+    const client = new MockClient([{ notes: [noteSummary("not_0001")], hasMore: false, cursor: null }]);
+    client.details.set("not_0001", { ok: true, data: noteDetail("not_0001") });
+    const result = await syncGranola({
+      ...syncOpts(store, client),
+      checkPurge: async () => { throw new Error("purge ledger unavailable"); },
+    });
+    expect(result).toMatchObject({ ok: true, data: { added: 0 } });
+    expect(store.meetings).toEqual([]);
+    expect(store.bodies.has("granola/not_0001")).toBe(false);
+    expect(store.state?.lastSyncStatus).toBe("partial");
+    expect(store.state?.lastSyncedAt).toBeNull();
+  });
+
   test("full sync stores the meeting row and the transcript body", async () => {
     const store = new FakeStore();
     const client = new MockClient([

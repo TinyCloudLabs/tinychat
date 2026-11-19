@@ -1010,6 +1010,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       res.sendStatus(202);
     } },
     "./routes/connector-webhooks.js": {
+      createConnectorPurgeRouter: load("./routes/connector-webhooks.ts").createConnectorPurgeRouter,
       createConnectorWebhookCompanionRouter: (config: Record<string, unknown>) => {
         options.capture?.("connectorWebhooks", config);
         return express.Router();

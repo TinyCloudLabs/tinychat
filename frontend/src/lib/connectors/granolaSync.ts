@@ -139,6 +139,7 @@ export interface SyncGranolaOptions {
   client: GranolaSyncClient;
   store: GranolaSyncStore;
   tcw: TinyCloudWeb;
+  checkPurge: (meetingId: string, sourceTimestamp: string | null) => Promise<boolean>;
   onProgress?: (progress: SyncProgress) => void;
   signal?: AbortSignal;
   detailCap?: number;
@@ -543,10 +544,13 @@ async function runGranolaSync(
                   if (!before.ok) return { error: before.error };
                   if (before.data?.status !== "connected") return { disconnected: true };
                   if (!current()) return null;
+                  if (await opts.checkPurge(meeting.sourceId, meeting.startedAt)) return { purged: true };
+                  if (!current() || signal.aborted) return null;
                   return { upsert: await store.upsertMeeting(tcw, meeting, sentences) };
                 });
                 if (!write) return { ok: true, data: result };
                 if ("disconnected" in write) break;
+                if ("purged" in write) { result.skipped++; continue; }
                 if ("error" in write) {
                   terminal = fromStore(
                     write.error ?? { code: "STORE_ERROR", message: "Connection read failed" },

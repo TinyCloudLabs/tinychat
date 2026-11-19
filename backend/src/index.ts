@@ -54,6 +54,7 @@ import {
   ConnectorControlStore,
   ConnectorWebhookLimiters,
   createConnectorWebhookCompanionRouter,
+  createConnectorPurgeRouter,
   respondToConnectorPurgeCheck,
   createConnectorWebhookHandler,
   createConnectorWebhookHostGuard,
@@ -856,6 +857,7 @@ async function main() {
   // Direct imports consult the ledger even when notification delivery is disabled.
   app.post("/api/connectors/webhooks/purge-check", authMiddleware, (req, res) =>
     respondToConnectorPurgeCheck(connectorControl, req, res));
+  app.use("/api/connectors/webhooks", createConnectorPurgeRouter({ control: connectorControl, authMiddleware }));
   if (connectorWebhooks) {
     app.use(
       "/api/connectors/webhooks",

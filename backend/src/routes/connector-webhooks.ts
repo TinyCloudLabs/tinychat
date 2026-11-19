@@ -2016,6 +2016,223 @@ function pendingView(item: PendingItem) {
   };
 }
 
+/** Deletion ledgers do not depend on webhook delivery being enabled. */
+export function createConnectorPurgeRouter(
+  options: Pick<ConnectorCompanionOptions, "control" | "now"> & {
+    webhooks?: Pick<ConnectorCompanionOptions, "tokens" | "queue" | "registry">;
+    authMiddleware?: RequestHandler;
+  },
+): Router {
+  const { control, webhooks } = options;
+  const registry = webhooks?.registry ?? (webhooks ? CONNECTOR_REGISTRY : new Set<string>());
+  const tokens = webhooks?.tokens;
+  const queue = webhooks?.queue;
+  const now = options.now ?? (() => Date.now());
+  const router = Router();
+  if (!webhooks) {
+    router.use((req, _res, next) => {
+      const source = bodyOf(req).source;
+      if (typeof source !== "string" || !LEDGER_ONLY_SOURCES.has(source)) { next("router"); return; }
+      next();
+    });
+  }
+  if (options.authMiddleware) router.use(options.authMiddleware);
+  /**
+   * §4.8 — the purge notification that writes §6.2's tombstone ledger.
+   *
+   * The ledger is an AUTHORIZATION input (it suppresses writes), so this route carries the
+   * rigour of the delegation accept route, not of a telemetry beacon: a pre-inserted
+   * `source_id` tombstones a meeting before it ever arrives. The address comes from the
+   * session, never the body; every id goes through the shared `isValidMeetingId()`.
+   */
+  router.post("/purged", connectionMutation(async (req, res, user) => {
+
+    const body = bodyOf(req);
+    if (!isValidSource(body.source) || !(registry.has(body.source) || LEDGER_ONLY_SOURCES.has(body.source))) {
+      res.status(400).json({ error: "unknown_source" });
+      return;
+    }
+    const source = body.source;
+    // No webhook state belongs to a ledger-only source, so the two "no webhook" guards below
+    // (which describe Fireflies delivery) must not swallow its tombstone.
+    const ledgerOnly = !registry.has(source);
+
+    const ids = body.ids;
+    if (!Array.isArray(ids)) {
+      res
+        .status(400)
+        .json({ error: "invalid_body", message: "ids must be an array" });
+      return;
+    }
+    // Nothing is written unless EVERY element validates: a 60 kb id, a traversal segment or a
+    // non-string anywhere in the array rejects the whole call (§4.8).
+    for (const id of ids) {
+      if (!isValidMeetingId(id)) {
+        logWebhook(
+          `op=purge result=invalid_meeting_id source=${source} aid=${hashedField(user.address)}`,
+        );
+        res.status(400).json({ error: "invalid_meeting_id" });
+        return;
+      }
+    }
+
+    // §4.8: `purgedThrough` defaults to now. That default is FAIL-CLOSED and it is broad — the
+    // watermark tombstones by time, so a purge of one meeting suppresses every delivery whose
+    // provider stamp predates the request instant, not just the submitted ids. That is the
+    // §6.2 reading ("we will not re-add a meeting you delete") and it is deliberate, but it is
+    // invisible from the response, so callers that mean "these ids and no more history" must
+    // send the newest stamp among them (§6.2's "max receivedAt at purge time"). Logged either
+    // way so an operator can tell a targeted purge from a whole-history one.
+    const requestedThrough = body.purgedThrough;
+    const defaultedThrough =
+      requestedThrough === undefined || requestedThrough === null;
+    let purgedThroughMs = now();
+    if (requestedThrough !== undefined && requestedThrough !== null) {
+      const parsed =
+        typeof requestedThrough === "string"
+          ? Date.parse(requestedThrough)
+          : Number.NaN;
+      if (!Number.isFinite(parsed) || parsed > now() + PURGE_FUTURE_SKEW_MS) {
+        res.status(400).json({ error: "invalid_purged_through" });
+        return;
+      }
+      purgedThroughMs = parsed;
+    }
+
+    try {
+      const config = ledgerOnly ? null : await tokens!.config(user.address);
+      const marker = ledgerOnly ? null : await control.readDisabled(user.address);
+      if (marker?.connectionRemoved === true) {
+        res.status(204).end();
+        return;
+      }
+      if (!ledgerOnly && config === null && marker === null) {
+        // Background sync was never enabled for this address — an idempotent no-op, not a
+        // reason to grow backend KV from an authenticated client.
+        //
+        // F007, deliberately: the guard stops HERE and does NOT extend to a REVOKED address
+        // (config deleted, marker standing). That address is the second half of
+        // disconnect-with-delete — the browser tears the connector down first so nothing can
+        // arrive mid-delete, then reports the ids it purged — and refusing its tombstone is
+        // fail-OPEN, because re-enable clears the queue but never the ledger (only
+        // `DELETE /purged` does), so a dropped tombstone is a meeting that returns on
+        // reconnect. The KV-growth concern does not reach it either: a marker exists only for
+        // an address that enabled at least once. Pinned by connector-companions.test.ts's
+        // "a REVOKED address (config gone, marker standing) still records its purge".
+        logWebhook(
+          `op=purge result=noop source=${source} aid=${hashedField(user.address)}`,
+        );
+        res.status(204).end();
+        return;
+      }
+
+      const read = await control.readLedger(source, user.address);
+      if (read.status === "unparseable") {
+        // §6.2: quarantine, never read as empty. This POST carries the user's real purge, so
+        // the watermark it writes is theirs — not a silently-restarted empty ledger.
+        await control.quarantineLedger(source, user.address, read.raw);
+        logWebhookWarn(
+          `op=ledger-quarantine source=${source} aid=${hashedField(user.address)} ` +
+            `moved_to=${CORRUPT_PURGED_KEY_PREFIX}/${source}`,
+        );
+      }
+      const existing = read.status === "ok" ? read.ledger : null;
+
+      // A corrupted ledger cannot provide a safe prior watermark; fail closed at this
+      // authenticated purge rather than accepting an older client timestamp.
+      const existingMs =
+        existing !== null
+          ? Date.parse(existing.purgedThrough)
+          : read.status === "unparseable"
+            ? now()
+            : Number.NEGATIVE_INFINITY;
+      const nextThroughMs = Math.max(existingMs, purgedThroughMs);
+
+      // §4.8: the per-request cap bounds `recentIds` (forensics) and NOTHING ELSE. The
+      // watermark above tombstones a purge of any size, so a 500-id purge leaves nothing
+      // resurrectable even though only the newest 200 ids are retained for attribution.
+      const dropped = Math.max(0, ids.length - PURGE_IDS_PER_REQUEST_CAP);
+      const contributed =
+        dropped > 0 ? ids.slice(-PURGE_IDS_PER_REQUEST_CAP) : ids;
+      if (dropped > 0) {
+        // No silent caps.
+        logWebhookWarn(
+          `op=purge-overflow source=${source} aid=${hashedField(user.address)} ` +
+            `submitted=${ids.length} stored=${contributed.length} dropped=${dropped}`,
+        );
+      }
+
+      const updatedAt = new Date(now()).toISOString();
+      const retainedIds = mergePurgeLedgerIds(existing, contributed, updatedAt);
+      await control.writeLedger(source, user.address, {
+        purgedThrough: new Date(nextThroughMs).toISOString(),
+        ...retainedIds,
+        updatedAt,
+      });
+
+      // §6.2: purge drops the pending queue for that source, exactly as the teardown does.
+      if (!ledgerOnly) await queue!.clear(source, user.address);
+
+      logWebhook(
+        `op=purge source=${source} aid=${hashedField(user.address)} ids=${ids.length} ` +
+          `stored=${retainedIds.recentIds.length + (retainedIds.recentIdCodes?.length ?? 0)} through=${new Date(nextThroughMs).toISOString()} ` +
+          `through_source=${defaultedThrough ? "default_now" : "client"}`,
+      );
+
+      if (dropped > 0) {
+        res
+          .status(200)
+          .json({ status: "accepted", stored: contributed.length, dropped });
+        return;
+      }
+      res.status(204).end();
+    } catch (error) {
+      logWebhookWarn(
+        `op=purge result=error source=${source} aid=${hashedField(user.address)}`,
+      );
+      console.warn(
+        "[connector-webhook] purge ledger write failed:",
+        redactedErrorMessage(error),
+      );
+      res.status(503).json({ error: "unavailable" });
+    }
+  }));
+
+  /**
+   * §4.8's CLEAR verb — the "explicit user-initiated re-sync" §6.1 step -1 and §6.2 both
+   * reference. It resets `purgedThrough` AND `recentIds`, is fired by the reconnect / re-sync
+   * flow (F3) and by nothing else: never automatically on drain, never on enable.
+   */
+  router.delete("/purged", connectionMutation(async (req, res, user) => {
+
+    const body = bodyOf(req);
+    if (!isValidSource(body.source) || !(registry.has(body.source) || LEDGER_ONLY_SOURCES.has(body.source))) {
+      res.status(400).json({ error: "unknown_source" });
+      return;
+    }
+    const source = body.source;
+
+    try {
+      await control.clearLedger(source, user.address);
+
+      logWebhook(
+        `op=ledger-clear source=${source} aid=${hashedField(user.address)}`,
+      );
+      res.status(204).end();
+    } catch (error) {
+      logWebhookWarn(
+        `op=ledger-clear result=error source=${source} aid=${hashedField(user.address)}`,
+      );
+      console.warn(
+        "[connector-webhook] purge ledger clear failed:",
+        redactedErrorMessage(error),
+      );
+      res.status(503).json({ error: "unavailable" });
+    }
+  }));
+  return router;
+}
+
 /**
  * The authenticated companion router. Mounted at `/api/connectors/webhooks` behind
  * `authMiddleware` and the companion rate-limit bucket; every path below is ONE segment deep.
@@ -2735,199 +2952,7 @@ export function createConnectorWebhookCompanionRouter(
     }
   });
 
-  /**
-   * §4.8 — the purge notification that writes §6.2's tombstone ledger.
-   *
-   * The ledger is an AUTHORIZATION input (it suppresses writes), so this route carries the
-   * rigour of the delegation accept route, not of a telemetry beacon: a pre-inserted
-   * `source_id` tombstones a meeting before it ever arrives. The address comes from the
-   * session, never the body; every id goes through the shared `isValidMeetingId()`.
-   */
-  router.post("/purged", connectionMutation(async (req, res, user) => {
-
-    const body = bodyOf(req);
-    if (!isValidSource(body.source) || !(registry.has(body.source) || LEDGER_ONLY_SOURCES.has(body.source))) {
-      res.status(400).json({ error: "unknown_source" });
-      return;
-    }
-    const source = body.source;
-    // No webhook state belongs to a ledger-only source, so the two "no webhook" guards below
-    // (which describe Fireflies delivery) must not swallow its tombstone.
-    const ledgerOnly = !registry.has(source);
-
-    const ids = body.ids;
-    if (!Array.isArray(ids)) {
-      res
-        .status(400)
-        .json({ error: "invalid_body", message: "ids must be an array" });
-      return;
-    }
-    // Nothing is written unless EVERY element validates: a 60 kb id, a traversal segment or a
-    // non-string anywhere in the array rejects the whole call (§4.8).
-    for (const id of ids) {
-      if (!isValidMeetingId(id)) {
-        logWebhook(
-          `op=purge result=invalid_meeting_id source=${source} aid=${hashedField(user.address)}`,
-        );
-        res.status(400).json({ error: "invalid_meeting_id" });
-        return;
-      }
-    }
-
-    // §4.8: `purgedThrough` defaults to now. That default is FAIL-CLOSED and it is broad — the
-    // watermark tombstones by time, so a purge of one meeting suppresses every delivery whose
-    // provider stamp predates the request instant, not just the submitted ids. That is the
-    // §6.2 reading ("we will not re-add a meeting you delete") and it is deliberate, but it is
-    // invisible from the response, so callers that mean "these ids and no more history" must
-    // send the newest stamp among them (§6.2's "max receivedAt at purge time"). Logged either
-    // way so an operator can tell a targeted purge from a whole-history one.
-    const requestedThrough = body.purgedThrough;
-    const defaultedThrough =
-      requestedThrough === undefined || requestedThrough === null;
-    let purgedThroughMs = now();
-    if (requestedThrough !== undefined && requestedThrough !== null) {
-      const parsed =
-        typeof requestedThrough === "string"
-          ? Date.parse(requestedThrough)
-          : Number.NaN;
-      if (!Number.isFinite(parsed) || parsed > now() + PURGE_FUTURE_SKEW_MS) {
-        res.status(400).json({ error: "invalid_purged_through" });
-        return;
-      }
-      purgedThroughMs = parsed;
-    }
-
-    try {
-      const config = ledgerOnly ? null : await tokens.config(user.address);
-      const marker = ledgerOnly ? null : await control.readDisabled(user.address);
-      if (marker?.connectionRemoved === true) {
-        res.status(204).end();
-        return;
-      }
-      if (!ledgerOnly && config === null && marker === null) {
-        // Background sync was never enabled for this address — an idempotent no-op, not a
-        // reason to grow backend KV from an authenticated client.
-        //
-        // F007, deliberately: the guard stops HERE and does NOT extend to a REVOKED address
-        // (config deleted, marker standing). That address is the second half of
-        // disconnect-with-delete — the browser tears the connector down first so nothing can
-        // arrive mid-delete, then reports the ids it purged — and refusing its tombstone is
-        // fail-OPEN, because re-enable clears the queue but never the ledger (only
-        // `DELETE /purged` does), so a dropped tombstone is a meeting that returns on
-        // reconnect. The KV-growth concern does not reach it either: a marker exists only for
-        // an address that enabled at least once. Pinned by connector-companions.test.ts's
-        // "a REVOKED address (config gone, marker standing) still records its purge".
-        logWebhook(
-          `op=purge result=noop source=${source} aid=${hashedField(user.address)}`,
-        );
-        res.status(204).end();
-        return;
-      }
-
-      const read = await control.readLedger(source, user.address);
-      if (read.status === "unparseable") {
-        // §6.2: quarantine, never read as empty. This POST carries the user's real purge, so
-        // the watermark it writes is theirs — not a silently-restarted empty ledger.
-        await control.quarantineLedger(source, user.address, read.raw);
-        logWebhookWarn(
-          `op=ledger-quarantine source=${source} aid=${hashedField(user.address)} ` +
-            `moved_to=${CORRUPT_PURGED_KEY_PREFIX}/${source}`,
-        );
-      }
-      const existing = read.status === "ok" ? read.ledger : null;
-
-      // A corrupted ledger cannot provide a safe prior watermark; fail closed at this
-      // authenticated purge rather than accepting an older client timestamp.
-      const existingMs =
-        existing !== null
-          ? Date.parse(existing.purgedThrough)
-          : read.status === "unparseable"
-            ? now()
-            : Number.NEGATIVE_INFINITY;
-      const nextThroughMs = Math.max(existingMs, purgedThroughMs);
-
-      // §4.8: the per-request cap bounds `recentIds` (forensics) and NOTHING ELSE. The
-      // watermark above tombstones a purge of any size, so a 500-id purge leaves nothing
-      // resurrectable even though only the newest 200 ids are retained for attribution.
-      const dropped = Math.max(0, ids.length - PURGE_IDS_PER_REQUEST_CAP);
-      const contributed =
-        dropped > 0 ? ids.slice(-PURGE_IDS_PER_REQUEST_CAP) : ids;
-      if (dropped > 0) {
-        // No silent caps.
-        logWebhookWarn(
-          `op=purge-overflow source=${source} aid=${hashedField(user.address)} ` +
-            `submitted=${ids.length} stored=${contributed.length} dropped=${dropped}`,
-        );
-      }
-
-      const updatedAt = new Date(now()).toISOString();
-      const retainedIds = mergePurgeLedgerIds(existing, contributed, updatedAt);
-      await control.writeLedger(source, user.address, {
-        purgedThrough: new Date(nextThroughMs).toISOString(),
-        ...retainedIds,
-        updatedAt,
-      });
-
-      // §6.2: purge drops the pending queue for that source, exactly as the teardown does.
-      if (!ledgerOnly) await queue.clear(source, user.address);
-
-      logWebhook(
-        `op=purge source=${source} aid=${hashedField(user.address)} ids=${ids.length} ` +
-          `stored=${retainedIds.recentIds.length + (retainedIds.recentIdCodes?.length ?? 0)} through=${new Date(nextThroughMs).toISOString()} ` +
-          `through_source=${defaultedThrough ? "default_now" : "client"}`,
-      );
-
-      if (dropped > 0) {
-        res
-          .status(200)
-          .json({ status: "accepted", stored: contributed.length, dropped });
-        return;
-      }
-      res.status(204).end();
-    } catch (error) {
-      logWebhookWarn(
-        `op=purge result=error source=${source} aid=${hashedField(user.address)}`,
-      );
-      console.warn(
-        "[connector-webhook] purge ledger write failed:",
-        redactedErrorMessage(error),
-      );
-      res.status(503).json({ error: "unavailable" });
-    }
-  }));
-
-  /**
-   * §4.8's CLEAR verb — the "explicit user-initiated re-sync" §6.1 step -1 and §6.2 both
-   * reference. It resets `purgedThrough` AND `recentIds`, is fired by the reconnect / re-sync
-   * flow (F3) and by nothing else: never automatically on drain, never on enable.
-   */
-  router.delete("/purged", connectionMutation(async (req, res, user) => {
-
-    const body = bodyOf(req);
-    if (!isValidSource(body.source) || !(registry.has(body.source) || LEDGER_ONLY_SOURCES.has(body.source))) {
-      res.status(400).json({ error: "unknown_source" });
-      return;
-    }
-    const source = body.source;
-
-    try {
-      await control.clearLedger(source, user.address);
-
-      logWebhook(
-        `op=ledger-clear source=${source} aid=${hashedField(user.address)}`,
-      );
-      res.status(204).end();
-    } catch (error) {
-      logWebhookWarn(
-        `op=ledger-clear result=error source=${source} aid=${hashedField(user.address)}`,
-      );
-      console.warn(
-        "[connector-webhook] purge ledger clear failed:",
-        redactedErrorMessage(error),
-      );
-      res.status(503).json({ error: "unavailable" });
-    }
-  }));
+  router.use(createConnectorPurgeRouter({ control, now, webhooks: { tokens, queue, registry } }));
 
   return router;
 }

@@ -64,6 +64,9 @@ function fixture() {
     if (url.origin === backendUrl && url.pathname === "/api/connectors/google/autojoin/status") {
       return Response.json({ state: "off", enabled: false, offReason: "never_enabled", lastScanAt: null, errorCode: null, outcomes: [] });
     }
+    if (url.origin === backendUrl && url.pathname === "/api/connectors/webhooks/purge-check") {
+      return Response.json({ blocked: false });
+    }
     const headers = new Headers(init?.headers);
     requests.push({ url: url.href, key: headers.get("x-granola-key"), auth: headers.get("authorization") });
     if (url.origin !== backendUrl || !url.pathname.startsWith(listPath)) throw new Error("Unexpected fixture endpoint");
