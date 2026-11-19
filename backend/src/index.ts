@@ -26,9 +26,10 @@ import { createAuthRouter } from "./routes/auth.js";
 import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
-import { botsFromEnv, createBotsRouter } from "./routes/bots.js";
+import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
 import { BotsRegistry, turnListHook } from "./bots-registry.js";
+import { BOT_DELETION_PASS_MS, BotDeletions } from "./bot-deletion.js";
 import { resolveTier } from "./billing/stripe.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
@@ -1125,21 +1126,37 @@ async function main() {
 
   // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
   const botsConfig = botsFromEnv(process.env);
-  if (botsConfig && process.env.BOTS_HISTORY_ENABLED === "true") {
-    const history = new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST);
-    app.use("/api/bots/history", createBotHistoryRouter(history, botsConfig, authMiddleware));
-    const historyDrain = startBotHistoryDrain(history, botsConfig);
+  // Stored history permissions are read and removed here whether or not the history routes are on, so that deleting
+  // a bot always clears one that was stored earlier.
+  const botHistory = botsConfig ? new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST) : undefined;
+  if (botsConfig && botHistory && process.env.BOTS_HISTORY_ENABLED === "true") {
+    app.use("/api/bots/history", createBotHistoryRouter(botHistory, botsConfig, authMiddleware));
+    const historyDrain = startBotHistoryDrain(botHistory, botsConfig);
     botsConfig.onTurnFinished = () => { void historyDrain.drain(); };
     process.once("SIGTERM", historyDrain.stop);
     process.once("SIGINT", historyDrain.stop);
   }
   // The record of each owner's bots is kept in the backend's own space and written through the one storage lane.
-  const botsRegistry = botsConfig ? new BotsRegistry(exoBackendKv) : undefined;
+  // Finding every owner pages through the store's listing.
+  const botsRegistry = botsConfig ? new BotsRegistry({ get: exoBackendKv.get, put: exoBackendKv.put, list: options => node.kv.list(options) }) : undefined;
   if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
+  // A deletion is carried out when it is recorded, and on a pass for whatever is still outstanding, as after a restart.
+  const botDeletions = botsConfig && botsRegistry && botHistory ? new BotDeletions({
+    registry: botsRegistry,
+    removeFromService: (address, key, seq) => removeBotFromService(botsConfig, address, key, seq),
+    storedGrantCid: (address, key) => botHistory.storedGrantCid(address, key),
+    forgetGrant: (address, key) => botHistory.forget(address, key),
+    revoke: cid => botHistory.revoke(cid),
+  }) : undefined;
+  if (botDeletions) {
+    void botDeletions.sweep();
+    setInterval(() => { void botDeletions.sweep(); }, BOT_DELETION_PASS_MS).unref();
+  }
   app.use("/api/bots", createBotsRouter({
     config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,
     capMode: capModeFromEnv(process.env),
     planOf: async address => planFor((await resolveTier(address)).tier),
+    onDeleting: (address, key) => { void botDeletions?.run(address, key); },
   }));
 
   // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.

@@ -79,6 +79,9 @@ export async function carryOutDeletion(ports: DeletionPorts, address: string, ke
 /** What a pass found. `listed` is false when the owners could not be listed: the pass then did nothing. */
 export interface SweepResult { listed: boolean; ran: number; skipped: number }
 
+/** How often the pass over every owner runs. A deletion is also run at once when it is recorded; the pass is what picks up the rest. */
+export const BOT_DELETION_PASS_MS = 5 * 60_000;
+
 /** Runs deletions: one bot's when it is recorded as being deleted, and every outstanding one on each pass. */
 export class BotDeletions {
   readonly #ports: DeletionPorts & { registry: DeletionPorts["registry"] & Pick<BotsRegistry, "owners"> };
