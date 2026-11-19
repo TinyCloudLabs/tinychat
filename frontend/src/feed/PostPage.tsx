@@ -15,6 +15,7 @@ import type { FeedResponse, NewFeedResponse } from "@tinycloud/sdk-services/feed
 import { Button } from "@/components/ui/button";
 import { NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { ANSWER_FAILED_COPY, ANSWER_HELD_COPY, NOT_SENT_COPY, UNDO_SECONDS, usePendingSend } from "./cardKit";
+import { FeedLink } from "./FeedLink";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
 import {
   answeredCount, clearPostDraft, EMPTY_ANSWER, pageAnswerPayload, pageSummary, postDraft, rememberPageAnswer, sameAnswers, savedPageAnswers, savePostDraft,
@@ -29,7 +30,7 @@ function Media({ media }: { media: LabPageMedia }) {
       ? <div className="rounded-xl focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
         <video src={media.src} poster={media.poster} controls playsInline preload="metadata" className="block aspect-video w-full rounded-xl border border-border bg-black object-contain focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background" />
       </div>
-      : <a href={media.src} target="_blank" rel="noopener noreferrer"><img src={media.src} alt={media.caption ?? ""} loading="lazy" className="block w-full rounded-xl border border-border bg-muted" /></a>}
+      : <FeedLink href={media.src}><img src={media.src} alt={media.caption ?? ""} loading="lazy" className="block w-full rounded-xl border border-border bg-muted" /></FeedLink>}
     {media.caption && <figcaption className="mt-1 text-xs text-muted-foreground">{media.caption}</figcaption>}
   </figure>;
 }

@@ -7,6 +7,31 @@ import {
 } from "@tinycloud/sdk-core";
 import type { ServerInfo, ServerInfoPermission } from "@tinyboilerplate/core";
 
+// ── Space capabilities read ───────────────────────────────────────────
+
+/**
+ * `manifest` plus, stated explicitly, the space-level `tinycloud.capabilities/read` entries the SDK adds to a
+ * sign-in on its own: one per space the manifest uses. Before web-sdk 3.12.0-beta.37 every sign-in got them; the
+ * SDK now adds them only when it sets up an account at sign-in (js-sdk TC-2931), which these sessions turn off
+ * (`autoBootstrapAccount: false`). Asking for them explicitly keeps the signed grant exactly as it was: the same
+ * spaces, nothing wider. Agent delegations sub-delegate this read. Details: TC-3030
+ */
+export function withSpaceCapabilitiesRead(manifest: Manifest): Manifest {
+  const options = { includeAccountRegistryPermissions: false };
+  const stated = composeManifestRequest([manifest], { ...options, includeImplicitCapabilitiesRead: false }).resources;
+  const implicit = composeManifestRequest([manifest], options).resources.filter((entry) =>
+    entry.service === "tinycloud.capabilities" &&
+    !stated.some((own) => own.service === entry.service && own.space === entry.space && own.path === entry.path));
+  if (implicit.length === 0) return manifest;
+  return {
+    ...manifest,
+    permissions: [
+      ...(manifest.permissions ?? []),
+      ...implicit.map((entry) => ({ ...entry, skipPrefix: true, description: "Read what this session may do in the space." })),
+    ],
+  } as Manifest;
+}
+
 // ── Manifest Loading ──────────────────────────────────────────────────
 
 /**
