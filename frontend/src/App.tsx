@@ -1576,6 +1576,7 @@ export function App() {
               screen={screen}
               platform={platform}
               pendingMeetings={pendingMeetings}
+              accountDid={did}
               chat={
                 <ChatWorkspace
                   key={importRefreshKey}
@@ -1622,8 +1623,8 @@ export function App() {
               /></HomeFeatureGate>}
               feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
               apps={LOCAL_VALIDATION ? null : ONE_APPS_ENABLED && screen.appId
-                ? <FramedAppScreen appId={screen.appId} tcw={tcw} fallback={<AppsPage />} />
-                : <AppsPage />}
+                ? <FramedAppScreen appId={screen.appId} tcw={tcw} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} />} />
+                : <AppsPage accountDid={did} pendingMeetings={pendingMeetings} />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}
                 did={did}

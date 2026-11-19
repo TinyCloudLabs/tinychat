@@ -178,11 +178,8 @@ const ALL_APPS: readonly OneApp[] = [
         : "https://account.tinycloud.xyz",
     path: "/",
     ceiling: () => [
-      kv("installedApps", "account", "applications/", ["get", "list", "put"]),
-      kv("spaces", "account", "spaces/", ["get", "list", "put"]),
-      entry("spaces", { service: "tinycloud.space", space: "account", path: "", actions: ["list"], skipPrefix: true }),
-      sql("accountSummary", "account", "account", ["read"]),
-      entry("delegations", { service: "tinycloud.delegation", space: "account", path: "", actions: ["list", "status"], skipPrefix: true }),
+      kv("installedApps", "account", "applications/", ["get", "list"]),
+      kv("spaces", "account", "spaces/", ["get", "list"]),
     ],
   },
   {

@@ -1,18 +1,22 @@
 // One Apps dev harness: https://localhost:5190/one-apps-dev.html?node=http://127.0.0.1:<port> under `bun run dev:apps`.
 // One's sign-in needs an OpenKey passkey, so this page signs a throwaway key into a local node (shared/local-run-kit)
-// and mounts the real FramedAppScreen: the same frame, EmbedHost, grants, ask card and step-up One uses; only the
-// wallet is a local key (OpenKey's role in the step-up included). The key lives in memory for this page load only.
+// and mounts One's real shell (AppShell, nav, launcher, framed routes, as App.tsx wires them) with the real
+// FramedAppScreen: the same frame, EmbedHost, grants, ask card and step-up One uses; only the wallet is a local key
+// (OpenKey's role in the step-up included). The key lives in memory for this page load only.
 import "../../index.css";
 import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createAndSignIn } from "@tinyboilerplate/client";
-import { StrictMode, useState } from "react";
+import { StrictMode, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { installEd25519Polyfill } from "../../lib/ed25519Polyfill";
 import { initTheme } from "../../lib/theme";
 import { FramedAppScreen } from "../FramedAppScreen";
-import { ONE_APPS } from "../registry";
+import { AppsPage } from "../../home/AppsPage";
+import { AppShell } from "../../shell/AppShell";
+import { PATHS, screenFor } from "../../shell/routes";
 import type { StepUpConnect } from "../stepUp";
 
 if (!import.meta.env.DEV || import.meta.env.VITE_ONE_APPS !== "true") throw new Error("Run the One Apps dev harness with `bun run dev:apps`.");
@@ -22,6 +26,9 @@ const node = params.get("node");
 // A registry that knows no one (shared/local-run-kit registry-stub.ts) routes every owner to `node`: never the
 // production registry.
 const registry = params.get("registry");
+// `?spaces=applications,account,credentials,secrets,public`: spaces to host and create for the throwaway key right after sign-in
+// (the sign-in creates only the default ones), so an app whose space exists gets a real grant. Default none: the missing-space path.
+const spaces = (params.get("spaces") ?? "").split(",").map((name) => name.trim()).filter(Boolean);
 const account = privateKeyToAccount(generatePrivateKey());
 
 /** A minimal EIP-1193 wallet over the throwaway key: accounts, chain 1 and personal_sign. */
@@ -53,12 +60,35 @@ const connect: StepUpConnect = async () => ({
 
 const MANIFEST = { manifest_version: 1, app_id: "xyz.tinycloud.one-apps-dev", name: "One Apps dev harness", defaults: true, permissions: [] } as unknown as Manifest;
 
+const ACCOUNT_DID = `did:pkh:eip155:1:${account.address}`;
+
+/** One's shell around the apps as App.tsx wires it: the nav, the launcher and the framed route. Chat, Recording and Connectors are not part of this harness. */
+function HarnessShell({ tcw }: { tcw: TinyCloudWeb | null }) {
+  const { pathname } = useLocation();
+  const screen = useMemo(() => screenFor(pathname), [pathname]);
+  const launcher = <AppsPage accountDid={ACCOUNT_DID} pendingMeetings={0} />;
+  const notHere = <p className="p-4 text-sm text-muted-foreground">Not part of this harness.</p>;
+  return (
+    <AppShell
+      screen={screen}
+      accountDid={ACCOUNT_DID}
+      platform="web"
+      pendingMeetings={0}
+      chat={notHere}
+      capture={notHere}
+      connectors={notHere}
+      settings={null}
+      feed={notHere}
+      apps={screen.appId ? <FramedAppScreen appId={screen.appId} tcw={tcw} connect={connect} fallback={launcher} /> : launcher}
+    />
+  );
+}
+
 function Harness() {
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
   const [status, setStatus] = useState(node && registry
     ? "Signed out"
     : "Add ?node=http://127.0.0.1:<port>&registry=http://127.0.0.1:<port> (local-run-kit start-node.sh and registry-stub.ts).");
-  const [appId, setAppId] = useState<string>(ONE_APPS.find((app) => app.kind === "framed" && app.framed)?.id ?? "");
 
   async function signIn() {
     if (!node || !registry) return;
@@ -70,6 +100,10 @@ function Harness() {
         newUserHost: node,
         manifest: MANIFEST,
       } as never);
+      for (const name of spaces) {
+        setStatus(`Hosting ${name}…`);
+        await signed.ensureOwnedSpaceHosted(name);
+      }
       setTcw(signed);
       setStatus(`Signed in as ${account.address} on ${node}`);
     } catch (error) {
@@ -82,15 +116,12 @@ function Harness() {
       <header className="flex flex-wrap items-center gap-2 border-b border-border p-2 text-sm">
         <strong>One Apps dev harness</strong>
         <button type="button" className="rounded border border-border px-2 py-1" onClick={() => void signIn()} disabled={!node || !!tcw}>Sign in (throwaway key)</button>
-        {ONE_APPS.filter((app) => app.kind === "framed").map((app) => (
-          <button key={app.id} type="button" className={`rounded border px-2 py-1 ${app.id === appId ? "border-foreground" : "border-border"}`} onClick={() => setAppId(app.id)}>
-            {app.name}
-          </button>
-        ))}
         <span data-testid="harness-status" className="text-muted-foreground">{status}</span>
       </header>
-      <main className="flex min-h-0 flex-1 flex-col">
-        <FramedAppScreen appId={appId} tcw={tcw} connect={connect} fallback={<p className="p-4 text-sm">Not framed here (signed out, unknown app, or an app that opens in a new tab).</p>} />
+      <main className="min-h-0 flex-1">
+        <MemoryRouter initialEntries={[PATHS.apps]}>
+          <HarnessShell tcw={tcw} />
+        </MemoryRouter>
       </main>
     </div>
   );

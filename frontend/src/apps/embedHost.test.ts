@@ -312,11 +312,26 @@ describe("missing-space copy (Monica, CONTRACT.md)", () => {
   });
 
   test("none exist, one and two", () => {
-    expect(missingSpacesLine("Credentials", ["credentials"], true)).toBe(
-      "Credentials uses Credentials, which isn't set up in your TinyCloud. Open Credentials once to set it up, then come back to give Credentials access.",
+    expect(missingSpacesLine("Explorer", ["secrets"], true)).toBe(
+      "Explorer uses Secrets, which isn't set up in your TinyCloud. Open Secrets once to set it up, then come back to give Explorer access.",
     );
     expect(missingSpacesLine("Explorer", ["secrets", "account"], true)).toBe(
       "Explorer uses Secrets and Account, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give Explorer access.",
+    );
+  });
+
+  test("the app's own space missing: its own line, with or without other spaces existing", () => {
+    const own = "Credentials isn't set up in your TinyCloud. Open Credentials once to set it up, then come back to give it access.";
+    expect(missingSpacesLine("Credentials", ["credentials"], true)).toBe(own);
+    expect(missingSpacesLine("Credentials", ["credentials"], false)).toBe(own);
+  });
+
+  test("the app's own space and others: its own line first, then the usual line for the rest", () => {
+    expect(missingSpacesLine("Account", ["secrets", "account"], false)).toBe(
+      "Account isn't set up in your TinyCloud. Open Account once to set it up, then come back to give it access. Account also uses Secrets, which isn't set up in your TinyCloud. Open Secrets once to set it up, then come back to give Account access to it.",
+    );
+    expect(missingSpacesLine("Account", ["account", "credentials", "secrets"], true)).toBe(
+      "Account isn't set up in your TinyCloud. Open Account once to set it up, then come back to give it access. Account uses Credentials and Secrets, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give Account access.",
     );
   });
 
